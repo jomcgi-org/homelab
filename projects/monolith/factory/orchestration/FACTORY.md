@@ -1947,8 +1947,11 @@ Merged-head verification uses a separate route. With
 `FACTORY_MERGED_VERIFY_HANDOFF_ENABLED=true` (default off, no chart activation),
 `factory_merged_delivery.reconcile_merged_delivery` can append one
 `review_merged_<pr>_<head>` node. Its single attempt uses the existing reviewer
-routing and reservations. Graph admission carries `read_only` through the pin;
-the checkout and artifact schema select the immutable merged head. The guest
+routing and reservations. Graph admission accepts `read_only` only for this
+flag-gated merged-head caller and carries it through the pin. Existing scout,
+refill, browser and dependency-review contexts retain their previous admission
+refusal; enabling those callers needs separately scoped work. The checkout and
+artifact schema select the immutable merged head. The guest
 prompt prohibits source edits, commits, pushes, merges and deployment. A
 `changes_requested`, failed or ambiguous terminal result stays visible as
 `merged_verify_review_blocked`; it never enters `_insert_review_round` or a
@@ -1970,7 +1973,8 @@ The existing `landing_tick` invokes bounded terminal discovery independently of
 merge arming and review publication. That scan selects escalated receipts with
 `owned_pr_merged`, rotates by receipt identity and uses `OBSERVATION_BATCH` (10).
 Only the historical missing-review escalation states can reacquire the same task.
-Each candidate is isolated so a held or unreadable one cannot starve its peers.
+Each candidate is isolated so a held or failing one cannot starve its peers.
+A scan failure also leaves the remaining landing tick reachable.
 Handoff graph edits and their audit share the control/task transaction and
 expected graph revision. Repeated or competing ticks retain one PR/head node.
 Recovery preserves original runs, costs, ownership, hold-release evidence and
@@ -1979,6 +1983,11 @@ Recording a handoff can precede pause release; dispatch and physical session
 creation still recheck local authority. Human decisions, landing holds,
 cancellation, uncertain execution and exhausted bounds remain fenced. No planner,
 fresh receipt or funding extension is created for this route.
+This is the flag-gated exception to ordinary operator re-admission with a new
+task. Quiescent deadline expiry fails the task and releases capacity, including
+after recording a handoff and after verification I/O. An allowance refusal
+retains the legacy missing-review escalation. An expired escalated receipt stays
+settled and cannot reacquire a slot.
 
 The same loop owns landing recovery. A delivered PR with a merge conflict or
 confirmed queue ejection returns to the same task for bounded assessment and
@@ -2463,6 +2472,11 @@ branch and its pull request so the work is carried on rather than started
 again. Later rounds do not repeat it, because the plan it shaped and the
 decision feedback under that are already the record of it. Reading it audits
 `operator_direction_read`.
+
+The default-off `FACTORY_MERGED_VERIFY_HANDOFF_ENABLED` exception described
+above can reactivate a historical owned-merged-review escalation on its same
+task. It preserves accounting and the absolute deadline, and cannot override
+an open human decision, hold, cancellation or unresolved execution.
 
 `close`, `defer`, `split` and the escape group behave exactly as they do for a
 refine escalation, and then settle the receipt `cancelled`. Cancelled rather

@@ -630,18 +630,26 @@ the dispatched model; guest model claims, PR prose, merge observation and pause
 release grant no approval. The existing reviewer pool and judgment floor still
 apply, including permitted fallback. A rejected or ambiguous merged-head review
 stays visible and cannot create a source-writing correction round.
+Graph admission accepts `read_only` only for this flag-gated merged-head
+caller. Existing scout, refill, browser and dependency-review contexts retain
+their previous admission refusal; this change does not enable those callers.
 
 The existing landing owner's normal tick also scans escalated receipts with an
 owned-merge observation, using its ten-receipt observation bound and a rotating
 cursor. Each candidate gets isolated read-only discovery before locked mutation.
-A held or unreadable candidate cannot consume the rest of that pass. Handoff
+A held or failing candidate cannot consume the rest of that pass. Scan failures
+also leave the rest of the landing tick reachable. Handoff
 identity and graph revision serialize competing ticks. This separate scan covers
 old review-stranded escalations absent from the settled-delivery scan. It keeps
 the same receipt and task, original history and spend, allowance envelope and
 absolute deadline. Reacquisition uses existing execution capacity. A task pause
 can retain a recorded handoff while preventing dispatch; human decisions, landing
 holds, cancellation and unresolved execution remain fences. No recovery grant,
-fresh task or deadline extension is created.
+fresh task or deadline extension is created. This flag-gated reactivation is
+the exception to ordinary operator-directed re-admission with a new task.
+Once execution is quiescent, an expired deadline fails the task and releases
+capacity, including after a handoff or verification I/O. An allowance refusal
+retains the legacy missing-review escalation instead of holding an active slot.
 
 **Why.** The graph/review owner already reserves attempts and authenticates
 physical session creation. The merged route uses that owner with an immutable

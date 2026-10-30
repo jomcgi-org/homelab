@@ -1426,7 +1426,12 @@ def landing_tick(policy: dict) -> None:
 
         # Same recovery owner and tick while merge arming is disabled. This
         # separate bounded scan includes escalated receipts absent below.
-        recover_stranded(policy)
+        try:
+            recover_stranded(policy)
+        except Exception:
+            # A scan/DB failure outside candidate isolation must not suppress
+            # hold enforcement or observation of other settled deliveries.
+            logger.exception("Merged verification discovery failed")
 
         merge_enabled = auto_merge_enabled(policy)
         publish_enabled = review_publisher.enabled()

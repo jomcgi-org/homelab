@@ -1515,6 +1515,207 @@ def test_staged_authenticated_approval_reused_and_operational_completion_stays_p
     assert s.issue["state"] == "open"
 
 
+@pytest.mark.parametrize("paused", [False, True])
+@pytest.mark.parametrize("blocker", ["deadline", "bounds", "recorded_deadline"])
+def test_staged_permanent_refusal_settles_and_releases_capacity(
+    merged_handoff, paused, blocker
+):
+    from datetime import timedelta
+    from factory.orchestration import factory_controls as controls
+
+    s = merged_handoff
+    if blocker == "recorded_deadline":
+        conductor.tick()
+        assert any(
+            n["node_key"] == s.review_key
+            for n in conductor.graph.load_graph(s.task["id"])
+        )
+    if not paused:
+        assert controls.set_control("resume_task", "operator", task_id=s.task["id"])[
+            "ok"
+        ]
+    if blocker == "bounds":
+        with Session(s.engine) as db, db.begin():
+            row = controls._receipt(db, s.task["id"])
+            policy = json.loads(row.policy_json)
+            policy.update(max_turns_per_task=2, max_task_turns_hard=2)
+            row.policy_json = json.dumps(policy)
+    else:
+        s.clock[0] = s.deadline + timedelta(seconds=1)
+    before = controls.task_snapshot(s.task["id"])
+    runs = conductor.graph.node_runs(s.task["id"])
+    for _ in range(2):
+        conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == ("escalated" if blocker == "bounds" else "failed")
+    assert after["evidence"]["state"] == (
+        "merged_review_missing" if blocker == "bounds" else "task_deadline"
+    )
+    assert not controls.conductor_status()["active_tasks"]
+    assert not controls.can_start(s.task["id"])["ok"]
+    for field in (
+        "id",
+        "task_id",
+        "starts",
+        "turns_used",
+        "committed_cost_usd",
+        "deadline_at",
+    ):
+        assert after[field] == before[field]
+    assert conductor.graph.node_runs(s.task["id"]) == runs
+
+
+@pytest.mark.parametrize("paused", [False, True])
+@pytest.mark.parametrize("blocker", ["reserved", "uncertain", "admitted", "dispatched"])
+def test_staged_expiry_cannot_release_unresolved_execution(
+    merged_handoff, paused, blocker
+):
+    from datetime import timedelta
+    from factory.orchestration import factory_controls as controls
+
+    s = merged_handoff
+    if not paused:
+        assert controls.set_control("resume_task", "operator", task_id=s.task["id"])[
+            "ok"
+        ]
+    pause_blocker(s, blocker)
+    before = controls.task_snapshot(s.task["id"])
+    s.clock[0] = s.deadline + timedelta(seconds=1)
+    for _ in range(2):
+        conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == "admitted" and after["evidence"] is None
+    assert after["starts"] == before["starts"]
+    assert controls.conductor_status()["active_tasks"]
+
+
+def test_staged_dispatch_refusal_rechecks_deadline(merged_handoff, monkeypatch):
+    from datetime import timedelta
+    from factory.orchestration import factory_controls as controls
+
+    s = merged_handoff
+    assert controls.set_control("resume_task", "operator", task_id=s.task["id"])["ok"]
+    can_start = controls.can_start
+
+    def expire(task_id, **kwargs):
+        s.clock[0] = s.deadline + timedelta(seconds=1)
+        return can_start(task_id, **kwargs)
+
+    monkeypatch.setattr(controls, "can_start", expire)
+    conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == "failed"
+    assert after["evidence"]["state"] == "task_deadline"
+    assert not controls.conductor_status()["active_tasks"]
+
+
+@pytest.mark.parametrize("paused", [False, True])
+def test_staged_reactivated_approval_expiring_during_verification_releases_capacity(
+    merged_handoff, monkeypatch, paused
+):
+    from datetime import timedelta
+    from factory.orchestration import factory_controls as controls, factory_landing
+    from factory.orchestration.models import SwarmNodeRun
+
+    s = merged_handoff
+    # Produce the historical escalation through its actual predecessor path.
+    monkeypatch.delenv("FACTORY_MERGED_VERIFY_HANDOFF_ENABLED")
+    with Session(s.engine) as db, db.begin():
+        db.exec(
+            select(SwarmNodeRun).where(SwarmNodeRun.node_key == "review_fix")
+        ).one().head_sha = "d" * 40
+    conductor.tick()
+    assert controls.task_snapshot(s.task["id"])["state"] == "escalated"
+    monkeypatch.setenv("FACTORY_MERGED_VERIFY_HANDOFF_ENABLED", "true")
+    monkeypatch.setattr(factory_landing, "landing_tick", s.landing_tick)
+    assert controls.set_control("enable", "operator")["ok"]
+    conductor.tick()
+    assert controls.task_snapshot(s.task["id"])["state"] == "admitted"
+    assert controls.set_control("resume_task", "operator", task_id=s.task["id"])["ok"]
+    run_feedback_node(
+        s.task,
+        s.review_key,
+        {
+            "pr_number": 3,
+            "head_sha": s.pr["head"]["sha"],
+            "verdict": "approve",
+            "summary": "Reviewed",
+        },
+        head=s.pr["head"]["sha"],
+    )
+    authenticate_handoff_review(s, conductor.graph.node_runs(s.task["id"])[-1])
+    if paused:
+        assert controls.set_control("pause_task", "operator", task_id=s.task["id"])[
+            "ok"
+        ]
+    verify = conductor.verify_delivery
+
+    def expire(*args, **kwargs):
+        evidence = verify(*args, **kwargs)
+        s.clock[0] = s.deadline + timedelta(seconds=1)
+        return evidence
+
+    monkeypatch.setattr(conductor, "verify_delivery", expire)
+    before = controls.task_snapshot(s.task["id"])
+    conductor.tick()
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == "failed"
+    assert after["evidence"]["state"] == "task_deadline"
+    assert not controls.conductor_status()["active_tasks"]
+    for field in (
+        "id",
+        "task_id",
+        "starts",
+        "turns_used",
+        "committed_cost_usd",
+        "deadline_at",
+    ):
+        assert after[field] == before[field]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize(
+    "node_key",
+    [
+        "scout_collect_1",
+        "scout_review_1",
+        "backlog_refill_collect_1",
+        "implement_browser_capture_1",
+        "review_dependency_1",
+    ],
+)
+def test_staged_read_only_admission_does_not_enable_other_callers(
+    feedback_db, monkeypatch, enabled, node_key
+):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = feedback_task()
+    monkeypatch.setenv("FACTORY_MERGED_VERIFY_HANDOFF_ENABLED", str(enabled).lower())
+    assert conductor._add(
+        task,
+        policy,
+        node_key,
+        "Read-only work",
+        [],
+        "opus",
+        f"test:{node_key}",
+        "test fixture",
+    ).ok
+    key = f"factory-node:{task['id']}:{node_key}:1"
+    before = controls.task_snapshot(task["id"])
+    # Use the actual reservation/admission boundary, without mocking either.
+    result = conductor.reserve_node(
+        task["id"],
+        node_key,
+        key,
+        {"repo": task["repo"], "branch": "main", "workflow_id": key, "read_only": True},
+    )
+    assert not result
+    assert result.refusal_code == "invalid_execution_context"
+    assert conductor.graph.node_runs(task["id"]) == []
+    assert controls.task_snapshot(task["id"])["starts"] == before["starts"]
+
+
 @pytest.mark.parametrize(
     "invalid",
     [
@@ -1831,7 +2032,7 @@ def test_staged_competing_handoffs_share_one_durable_graph_identity(
     assert len(conductor.graph.node_runs(s.task["id"])) == 2
 
 
-@pytest.mark.parametrize("blocked", ["held", "unreadable"])
+@pytest.mark.parametrize("blocked", ["held", "unreadable", "key_error", "database"])
 def test_staged_terminal_discovery_rotates_bounded_pages_past_blocked_candidate(
     merged_handoff, monkeypatch, blocked
 ):
@@ -1897,6 +2098,12 @@ def test_staged_terminal_discovery_rotates_bounded_pages_past_blocked_candidate(
     def read(repo, path):
         reads.append(path)
         if path == "issues/8":
+            if blocked == "key_error":
+                raise KeyError("Synthetic malformed candidate")
+            if blocked == "database":
+                from sqlalchemy.exc import OperationalError
+
+                raise OperationalError("test", {}, Exception("Synthetic DB failure"))
             raise httpx.ReadTimeout("Synthetic unavailable candidate")
         return original(repo, path)
 
@@ -1914,8 +2121,124 @@ def test_staged_terminal_discovery_rotates_bounded_pages_past_blocked_candidate(
         n["node_key"] == s.review_key for n in conductor.graph.load_graph(s.task["id"])
     )
     assert len(conductor.graph.node_runs(s.task["id"])) == 2
-    assert reads.count("issues/8") == int(blocked == "unreadable")
+    assert reads.count("issues/8") == int(blocked != "held")
     assert controls.task_snapshot(s.task["id"])["starts"] == s.before["starts"]
+
+
+@pytest.mark.parametrize("failure", ["candidate", "scan"])
+def test_staged_discovery_failure_leaves_peers_and_landing_tick_reachable(
+    merged_handoff, monkeypatch, caplog, failure
+):
+    from factory import review_publisher
+    from factory.orchestration import factory_controls as controls, factory_landing
+    from factory.orchestration import factory_merged_delivery as merged
+    from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
+    from factory.orchestration.models import SwarmTask
+
+    s = merged_handoff
+    assert controls.finish_task(
+        s.task["id"],
+        "escalated",
+        "test",
+        evidence={"state": "merged_review_missing", "reason": "Legacy stranded review"},
+    )["ok"]
+    with Session(s.engine) as db, db.begin():
+        controls._audit(db, "test", "owned_pr_merged", task_id=s.task["id"])
+        db.add(
+            SwarmTask(
+                id="t-peer",
+                task_text="Peer",
+                repo=s.task["repo"],
+                base_branch="main",
+                conductor_model="opus",
+            )
+        )
+        db.flush()
+        db.add(
+            FactoryReceipt(
+                repo=s.task["repo"],
+                issue_number=8,
+                title="Peer",
+                body="",
+                url="https://github.com/owner/repo/issues/8",
+                actor="test",
+                state="escalated",
+                task_id="t-peer",
+                policy_json=json.dumps(s.policy),
+            )
+        )
+        db.add_all(
+            [
+                FactoryAudit(
+                    actor="test",
+                    action="owned_pr_merged",
+                    task_id="t-peer",
+                    detail_json="{}",
+                ),
+                FactoryAudit(
+                    actor="test",
+                    action="finish_task",
+                    task_id="t-peer",
+                    detail_json='{"evidence":{"state":"merged_review_missing"}}',
+                ),
+            ]
+        )
+    events = []
+
+    def reconcile(task, *args):
+        events.append(task["id"])
+        if task["id"] == s.task["id"]:
+            raise KeyError("Synthetic candidate failure")
+
+    monkeypatch.setattr(merged, "reconcile_merged_delivery", reconcile)
+    reader = conductor.github_get
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda repo, path: s.issue if path == "issues/8" else reader(repo, path),
+    )
+    if failure == "scan":
+
+        def fail_scan(*args):
+            raise RuntimeError("Synthetic scan failure")
+
+        monkeypatch.setattr(merged, "recover_stranded", fail_scan)
+    # The real landing tick must continue every stage after discovery fails.
+    monkeypatch.setattr(factory_landing, "auto_merge_enabled", lambda *_: True)
+    monkeypatch.setattr(review_publisher, "enabled", lambda: True)
+    item = {"task_id": "t-delivery", "pr_number": 9, "merged": False, "closed": False}
+    monkeypatch.setattr(factory_landing, "_deliveries", lambda *a, **kw: [item])
+
+    def record(name, result=None):
+        def visit(*args):
+            events.append(name)
+            return result
+
+        return visit
+
+    for name in (
+        "_enforce_landing_hold",
+        "_fence_ungranted_queue_entry",
+        "_handoff_human_delivery",
+        "holding",
+    ):
+        monkeypatch.setattr(factory_landing, name, record(name, False))
+    for name in ("_recover_refused", "_observe_merge", "_publish_review_gate", "_arm"):
+        monkeypatch.setattr(factory_landing, name, record(name))
+    monkeypatch.setattr(factory_landing, "arm_eligible", lambda *_: True)
+    monkeypatch.setattr(factory_landing, "_armed_on_github", lambda *_: None)
+    s.landing_tick(s.policy)
+    if failure == "candidate":
+        assert events[:2] == [s.task["id"], "t-peer"]
+    for name in (
+        "_enforce_landing_hold",
+        "_handoff_human_delivery",
+        "_observe_merge",
+        "_publish_review_gate",
+        "_arm",
+    ):
+        assert name in events
+    assert "Merged verification discovery failed" in caplog.text
 
 
 @pytest.mark.parametrize(
