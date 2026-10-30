@@ -211,16 +211,19 @@ def test_candidate_audit_finalizes_after_real_locked_admission(db, monkeypatch):
         ("refused", "receipt_refused"),
         ("failed", "receipt_failed"),
         ("race", "capacity"),
+        ("lane_failed", "evaluation_failed"),
     ],
 )
 def test_candidate_does_not_invent_admission(db, monkeypatch, mode, reason):
     fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
     calls = []
-    if mode == "race":
+    if mode in ("race", "lane_failed"):
         original = intake_loop.open_lanes
 
         def room(*args, **kwargs):
             calls.append(args)
+            if mode == "lane_failed" and len(calls) > 1:
+                raise RuntimeError("lane re-read failed")
             return (
                 original(*args, **kwargs)
                 if len(calls) == 1
@@ -242,6 +245,76 @@ def test_candidate_does_not_invent_admission(db, monkeypatch, mode, reason):
     observation = candidate_evidence(db)[0]
     assert observation["decision"] == "skipped"
     assert observation["reason"] == reason
+    if mode in ("failed", "lane_failed"):
+        inventory = json.loads(audits(db, "intake_inventory")[0].detail_json)
+        assert inventory["coverage"] == {"owner/repo": "partial"}
+
+
+@pytest.mark.parametrize("failure", ["candidate_read", "evaluation_audit"])
+def test_aborted_evaluation_preserves_partial_evidence(db, monkeypatch, failure):
+    from contextlib import contextmanager
+
+    from factory.orchestration.intake_evidence import backlog
+
+    fake_pages(
+        monkeypatch,
+        [
+            issue(1, ["agent-ready"]),
+            issue(2, ["agent-ready"]),
+            issue(3, ["agent-ready", "human"]),
+        ],
+    )
+    synced = []
+    sync = work_items.sync_github_work_items
+
+    def record_sync(*args, **kwargs):
+        result = sync(*args, **kwargs)
+        synced.append(args[0])
+        return result
+
+    monkeypatch.setattr(work_items, "sync_github_work_items", record_sync)
+    if failure == "candidate_read":
+        read_session = intake_loop._read_session
+
+        @contextmanager
+        def fail_candidate_read(*args, **kwargs):
+            if synced:
+                raise RuntimeError("candidate receipt lookup failed")
+            with read_session(*args, **kwargs) as session:
+                yield session
+
+        monkeypatch.setattr(intake_loop, "_read_session", fail_candidate_read)
+    else:
+        audit = intake_loop._audit
+
+        def fail_evaluation_audit(session, actor, action, **detail):
+            if action == "intake_evaluated":
+                raise RuntimeError("evaluation audit failed")
+            return audit(session, actor, action, **detail)
+
+        monkeypatch.setattr(intake_loop, "_audit", fail_evaluation_audit)
+
+    assert intake_loop.intake_tick(policy(), generation=0) == []
+    assert synced == ["owner/repo"]
+    observations = candidate_evidence(db)
+    assert [(row["issue_number"], row["reason"]) for row in observations] == [
+        (1, "evaluation_failed"),
+        (2, "evaluation_failed"),
+        (3, "human"),
+    ]
+    assert all(row["decision"] == "skipped" for row in observations)
+    inventory = json.loads(audits(db, "intake_inventory")[0].detail_json)
+    assert inventory["coverage"] == {"owner/repo": "partial"}
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).all() == []
+        board = backlog(session, now=NOW)
+    assert board["available"] is True
+    assert board["coverage"] == {"owner/repo": "partial"}
+    assert [row["reason"] for row in board["issues"]] == [
+        "evaluation_failed",
+        "evaluation_failed",
+        "human",
+    ]
 
 
 def test_candidate_specific_exclusions_and_cooldown_deadline(db, monkeypatch):

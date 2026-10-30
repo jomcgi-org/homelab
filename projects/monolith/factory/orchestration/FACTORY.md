@@ -1053,6 +1053,8 @@ Finalization is replay-safe under the same control lock and batches candidate
 inserts. A standalone observation pass records queued receipts as `skipped`
 with reason `queued`. Recovery finalizes abandoned staged evidence against
 committed admission audits; an interrupted sweep before staging remains unfinished.
+Caught evaluation failures downgrade complete discovery to partial coverage and
+record `evaluation_failed` for candidates without a completed decision.
 The legacy aggregate `intake_admitted` audit still marks receipt creation for
 the existing sweep clock. It is not the admission oracle for candidate rows.
 
@@ -1069,8 +1071,8 @@ excludes subsequently admitted and closed work, and names insufficient coverage.
 The public snapshot publisher explicitly disables this private reader extension;
 public routes and the public image gain no backlog fields or issue details.
 
-Within an equal lane and critical/bug priority group, autonomous queued receipts
-prefer issue creation time, repository and issue number for ties. Unknown issue
+Within an equal repository, lane and critical/bug priority group, autonomous
+queued receipts prefer issue creation time and issue number for ties. Unknown issue
 age sorts last. Groups retain their original queue position and operator receipts
 retain FIFO. Receipt creation and later comments never reset autonomous issue age.
 

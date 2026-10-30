@@ -547,6 +547,7 @@ def intake_tick(
     without touching the policy.
     """
     evidence = None
+    evaluation_complete = False
     local_errors = False
     try:
         policy = {**policy, "generation": generation}
@@ -1161,6 +1162,7 @@ def intake_tick(
                     lanes,
                     now,
                 )
+            evaluation_complete = True
             return []
 
         # One per lane, in lane-blind rank order, so the delivery lane keeps
@@ -1195,6 +1197,10 @@ def intake_tick(
 
         received_all = []
         for candidate in chosen:
+            if evidence is not None:
+                evidence.reason(
+                    candidate["repo"], candidate["number"], "evaluation_failed"
+                )
             # Re-read the lane under the lock. The room that picked this
             # candidate was measured before a GitHub sweep that takes seconds,
             # and another replica may have filled the lane in between. admit_next
@@ -1353,17 +1359,22 @@ def intake_tick(
                 lanes,
                 now,
             )
+        evaluation_complete = True
         return received_all
     except Exception:  # noqa: BLE001 - intake is optional and never stops the lane
         logger.exception("factory autonomous intake failed")
         return []
     finally:
         if evidence is not None:
-            if local_errors:
+            if local_errors or not evaluation_complete:
                 evidence.coverage = {
                     repo: "partial" if value == "complete" else value
                     for repo, value in evidence.coverage.items()
                 }
+            if not evaluation_complete:
+                for observation in evidence.issues.values():
+                    if observation["reason"] == "not_selected":
+                        observation["reason"] = "evaluation_failed"
             evidence.stage()
             if evidence_sink is not None:
                 evidence_sink.append(evidence.id)
