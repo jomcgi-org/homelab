@@ -464,13 +464,14 @@ rationed the wrong resource. Review independence survives a cheaper opinion;
 judgment floors and unknown quota evidence still constrain routing (#6002).
 See [reviewer fallback](factory/orchestration/FACTORY.md#reviewer-fallback-while-the-claude-window-is-spent).
 
-**Why.** One-node planning spent five planner turns on two pieces of work.
+**Why.** One-node planning spent nine starts on five pieces of work in #5981;
+five starts were planner turns.
 Mechanical correction loops add no new planning information; lost re-review
 verdicts supply no fresh findings (#5419). See [execution](factory/orchestration/FACTORY.md#execution-and-evidence).
 
 ### Execution and recovery rationale
 
-**Why.** Codex admission needs a fresh permitting grant; a stale pool can block
+**Why.** KG admission needs a fresh permitting grant; a stale pool can block
 the traffic that refreshes it. Inference-free usage refresh and a bounded probe
 must preserve account selection and freshness. See [quota evidence](factory/orchestration/FACTORY.md#quota-evidence-and-probe-cleanup).
 
@@ -1506,8 +1507,9 @@ is tracked in [section 4](#factory-acceptance).
 **Why.** Reversible parameter, repository/live-acceptance and existing-branch
 questions consumed operator attention without adding needed authority (#6208).
 The [gate design](factory/orchestration/FACTORY.md#conductor-owned-reversible-gates)
-preserves spending, production deletion, external-account, credential and branch
-ownership decisions, independent review and required Linux CI.
+preserves spending, production deletion, external-account and branch ownership
+decisions, independent review and required Linux CI. Delegating these gates
+grants no deployment or credential authority.
 
 **Why.** Successful repository delivery cannot complete outstanding operational
 acceptance. Durable checklists must survive interrupted graph edits, re-admission
