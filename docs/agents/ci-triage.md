@@ -21,8 +21,37 @@ BuildBuddy MCP tools:
 2. `get_target` to find the failing targets.
 3. `get_log` for the trace.
 
-Without the BuildBuddy MCP (a cloud session, say), the workflow log for a
-`pr-checks` run is readable without auth. Take the invocation ID from the
+Factory guests ship `ci-log <full-commit-sha>` in the Claude runtime image:
+
+```bash
+ci-log "$(git rev-parse HEAD)"
+ci-log "$(git rev-parse HEAD)" --wait 60
+```
+
+Use `--repo owner/name` outside `jomcgi-org/homelab`. From a checkout without
+the installed command, run `python3 projects/embervm/runtimes/claude/ci_log.py`
+with the same arguments. It uses the existing `gh` identity to read the exact
+commit's latest `pr-checks` status, then the credential-free log endpoint.
+It never starts CI or changes authentication. A failed status or log read is
+an error. An empty log response is labeled unavailable; it provides no evidence
+that tests ran.
+
+The output labels running versus terminal from the GitHub status, separately
+from log coverage. It scans up to 16 stored chunks and 1 MiB backwards, then
+prints failure context, test-count lines and the final 60 lines within a 64 KiB
+output bound (long windows may be omitted).
+Omitted lines and traversal bounds are explicit; a tail is not a full log.
+If the failure lies outside that bound, use the invocation link or the manual
+chunk procedure below. Common credentials are redacted before output and
+caching. A terminal result is cached for one hour in a private temporary
+directory, with at most 32 entries. Every call still reads fresh GitHub status;
+a new status or invocation bypasses that cache. `--wait` polls only status with
+2/4/8/16-second backoff, then reads logs once. Default operation does not wait.
+Exit codes are 0 for a successful check, 1 for failure/error, 2 for pending,
+and 3 for failed reads or malformed evidence. They do not prove tests ran.
+
+Without the helper or BuildBuddy MCP, the workflow log for a `pr-checks` run
+is readable without auth. Take the invocation ID from the
 status `target_url` (`GET /repos/{owner}/{repo}/commits/{sha}/status`), then:
 
 ```bash

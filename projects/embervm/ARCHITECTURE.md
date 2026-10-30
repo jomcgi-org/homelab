@@ -739,6 +739,15 @@ contracts still own roles, scope, tool limits and sequencing. The shim does not
 copy instructions into `CLAUDE.md` or inject a second copy into the prompt.
 (see: /projects/embervm/runtimes/claude/shim.py, /AGENTS.md)
 
+**Why.** The Claude runtime ships a stdlib `ci-log` helper (#6442) so factory
+workers share commit-status lookup, bounded log traversal and redaction.
+It uses existing GitHub access and the credential-free BuildBuddy log RPC;
+guests receive no new CI credentials. Fresh exact-commit status determines
+running versus terminal, while chunk coverage and test counts remain separate
+evidence. Private bounded caches reuse only redacted terminal logs. Image
+publication does not establish guest uptake or measured reductions in repeated
+CI calls; the next retro window supplies that operational acceptance.
+
 A sequential Firecracker dirty-page diff bank path exists and is dormant.
 The merge-at-bank step now attempts Linux `FICLONE` for the temporary copy of
 the previous full and falls back to a byte copy on ext4 or across filesystems.
@@ -2462,6 +2471,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Factory guests share credential-free bounded CI log reads | section 4 | #6442 | helper packaged; guest uptake and next-window repeated-call evidence pending |
 | Brick scale-down couples durable archive acknowledgement with one brick per node (Joe, 2026-10-10) | section 7 | #6533 | single repository gate default-off; staged enable and live acceptance pending |
 | Guest digest-only publishes bake rootfs files in place without rolling bricks or draining live sessions | section 8 | #6662 | repository implementation staged; ReplicaSet and session live acceptance pending |
 | The Firecracker jailer arms on every brick, closing the direct-root-exec gap between co-resident guests | section 10 | #5255 | built and staged; dev arming then production after a dev soak (#6965) |

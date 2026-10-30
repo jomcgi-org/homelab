@@ -92,6 +92,31 @@ tar(
     ],
 )
 
+py_library(
+    name = "ci_log_lib",
+    srcs = ["ci_log.py"],
+    imports = ["."],
+)
+
+tar(
+    name = "ci_log_tar",
+    srcs = ["ci_log.py"],
+    mtree = [
+        "./usr/local/bin/ci-log type=file content=$(execpath ci_log.py) mode=0755 uid=0 gid=0",
+    ],
+)
+
+py_test(
+    name = "ci_log_test",
+    srcs = ["ci_log_test.py"],
+    data = ["BUILD"],
+    imports = ["."],
+    deps = [
+        ":ci_log_lib",
+        "@pip//pytest",
+    ],
+)
+
 apko_image(
     name = "image",
     # amd64-only: the Claude Code CLI is a single 262 MB arch-specific ELF and
@@ -107,6 +132,7 @@ apko_image(
         ":shim_tar",
         ":guest_config_tar",
         ":prewarm_clis_tar",
+        ":ci_log_tar",
         ":guest_init_tar_amd64",
         # The Claude Code CLI, a single 262 MB glibc ELF extracted from the npm
         # registry tarball (see claude_code_cli in MODULE.bazel). amd64 only, so
