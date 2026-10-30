@@ -886,5 +886,152 @@ if [[ -s "$format_body" ]]; then
 	done
 fi
 
+# Run the entire production workflow, including commands after formatting.
+# Only external commands and repository tools are stubbed; classification and
+# stage boundaries come verbatim from buildbuddy.yaml. Git diffs use real trees.
+workflow_body="$TMP/writeback-workflow.sh"
+awk '
+    /^      - run: \|$/ { capture = 1; next }
+    capture && /^          / { sub(/^          /, ""); print; next }
+    capture && /^$/ { print; next }
+    capture { exit }
+' "$BUILD_BUDDY" >"$workflow_body"
+real_git=$(command -v git)
+for scenario in qualifying chart-only app-only multi-project mixed ordinary handmade formatter pr-main queue feature missing-branch missing-default missing-parent diff-failure partial-diff empty rename-in rename-out nested newline space; do
+	workflow_root="$TMP/workflow-$scenario"
+	mkdir -p "$workflow_root"
+	"$real_git" -C "$workflow_root" init -q -b fixture
+	"$real_git" -C "$workflow_root" config user.name author
+	"$real_git" -C "$workflow_root" config user.email author@example.invalid
+	mkdir -p "$workflow_root/projects/service/chart" "$workflow_root/projects/service/deploy"
+	printf 'version: 1.0.0\n' >"$workflow_root/projects/service/chart/Chart.yaml"
+	printf 'targetRevision: 1.0.0\n' >"$workflow_root/projects/service/deploy/application.yaml"
+	printf 'source\n' >"$workflow_root/source.py"
+	"$real_git" -C "$workflow_root" add .
+	"$real_git" -C "$workflow_root" commit -qm 'chore(charts): publish initial'
+	"$real_git" -C "$workflow_root" update-ref refs/remotes/origin/main HEAD
+	case "$scenario" in
+	app-only) printf 'targetRevision: 1.0.1\n' >"$workflow_root/projects/service/deploy/application.yaml" ;;
+	empty | missing-parent) ;;
+	rename-in) "$real_git" -C "$workflow_root" mv -f source.py projects/service/chart/Chart.yaml ;;
+	rename-out) "$real_git" -C "$workflow_root" mv projects/service/chart/Chart.yaml outside.yaml ;;
+	*) printf 'version: 1.0.1\n' >"$workflow_root/projects/service/chart/Chart.yaml" ;;
+	esac
+	case "$scenario" in
+	qualifying) printf 'targetRevision: 1.0.1\n' >"$workflow_root/projects/service/deploy/application.yaml" ;;
+	multi-project)
+		mkdir -p "$workflow_root/projects/other/deploy"
+		printf 'targetRevision: 1.0.1\n' >"$workflow_root/projects/other/deploy/application.yaml"
+		;;
+	mixed | handmade) printf 'changed\n' >"$workflow_root/source.py" ;;
+	nested | newline | space)
+		project='nested/service'
+		[[ "$scenario" != newline ]] || project=$'service\nother'
+		[[ "$scenario" != space ]] || project='service other'
+		mkdir -p "$workflow_root/projects/$project/chart"
+		printf 'version: 1.0.1\n' >"$workflow_root/projects/$project/chart/Chart.yaml"
+		;;
+	esac
+	subject='chore(charts): publish 1 chart version(s)'
+	[[ "$scenario" != ordinary && "$scenario" != handmade ]] || subject='chore: update chart'
+	[[ "$scenario" != formatter ]] || subject='style: auto-format'
+	if [[ "$scenario" != missing-parent ]]; then
+		"$real_git" -C "$workflow_root" add .
+		"$real_git" -C "$workflow_root" commit -q --allow-empty -m "$subject"
+	fi
+	# Relative workflow tools record their invocation without running build or
+	# publish code. No network, credentials or real snapshot cleanup is used.
+	for tool in bazel/images/generate-push-all.sh bazel/helm/ci-diff-manifests.sh bazel/images/push/push-changed.sh bazel/helm/write-back-versions.sh bazel/images/validate-generate-scripts.sh bazel/tools/format/check-migration-ordering.sh bazel/tools/git/check-commit-msg-ascii.sh bazel/tools/hooks/validate-hooks-executable.sh projects/monolith/dev/grimoire/ci-runner.sh; do
+		mkdir -p "$workflow_root/${tool%/*}"
+		printf '#!/usr/bin/env bash\nprintf "tool %%s\\n" "$0" >> "$TRACE"\n' >"$workflow_root/$tool"
+		chmod +x "$workflow_root/$tool"
+	done
+	mkdir -p "$workflow_root/bazel/tools/ci"
+	printf '#!/usr/bin/env bash\necho //fixture:test\n' >"$workflow_root/bazel/tools/ci/affected-targets.sh"
+	chmod +x "$workflow_root/bazel/tools/ci/affected-targets.sh"
+	for failed_guard in none verification_genrule_guard central_build_ratchet chart_version_guard source_ratchet test_source_reachability; do
+		# Failure injection applies to the qualifying path only.
+		[[ "$scenario" == qualifying || "$failed_guard" == none ]] || continue
+		export TRACE="$workflow_root/trace-$failed_guard"
+		rc=0
+		set +e
+		(
+			cd "$workflow_root"
+			export GIT_BRANCH=main GIT_REPO_DEFAULT_BRANCH=main GIT_PR_NUMBER=0 GHCR_TOKEN=fixture
+			case "$scenario" in
+			pr-main) GIT_PR_NUMBER=7 ;;
+			queue) GIT_BRANCH=gh-readonly-queue/main/pr-7 ;;
+			feature) GIT_BRANCH=feature ;;
+			missing-branch) unset GIT_BRANCH ;;
+			missing-default) unset GIT_REPO_DEFAULT_BRANCH ;;
+			esac
+			git() {
+				case "$1 $2" in
+				'fetch origin' | 'remote set-url') return 0 ;;
+				esac
+				if [[ "$1" == diff && "$*" == *HEAD~1* ]]; then
+					case "$scenario" in
+					diff-failure) return 9 ;;
+					partial-diff) printf 'projects/service/chart/Chart.yaml\0'; return 9 ;;
+					esac
+				fi
+				if [[ "$scenario" == formatter && "$*" == "log -1 --format=%an" ]]; then echo ci-format-bot; return; fi
+				"$real_git" "$@"
+			}
+			bazel() { printf 'bazel %s\n' "$*" >>"$TRACE"; }
+			python3() {
+				printf 'python3 %s\n' "$*" >>"$TRACE"
+				[[ "$failed_guard" == none || "$1" != *"/$failed_guard.py" ]]
+			}
+			docker() { :; }
+			df() { :; }
+			du() { :; }
+			rm() {
+				if [[ "$*" == *sandbox_stash* ]]; then echo cleanup >>"$TRACE"; else command rm "$@"; fi
+			}
+			source "$workflow_body"
+		) >"$workflow_root/output-$failed_guard" 2>&1
+		rc=$?
+		set -e
+		if [[ "$failed_guard" != none ]]; then
+			if [[ "$rc" -ne 0 ]] && ! grep -q '^bazel test\|^tool ' "$TRACE" && grep -q '^cleanup$' "$TRACE"; then
+				pass "workflow_writeback_fatal_$failed_guard"
+			else
+				fail "workflow_writeback_fatal_$failed_guard" "guard failure must stop the fast path: $(cat "$TRACE")"
+			fi
+			continue
+		fi
+		if [[ "$rc" -ne 0 ]]; then
+			fail "workflow_$scenario" "workflow failed: $(cat "$workflow_root/output-$failed_guard")"
+			continue
+		fi
+		for guard in verification_genrule_guard central_build_ratchet chart_version_guard source_ratchet test_source_reachability; do
+			grep -q "/$guard.py" "$TRACE" || fail "workflow_${scenario}_$guard" 'head guard was skipped'
+		done
+		grep -q '^cleanup$' "$TRACE" || fail "workflow_${scenario}_cleanup" 'snapshot hygiene was skipped'
+		case "$scenario" in
+		qualifying | chart-only | app-only | multi-project)
+			if ! grep -q '^bazel test\|push_all\|push-changed.sh\|write-back-versions.sh\|check_go_stubs' "$TRACE"; then
+				pass "workflow_${scenario}_no_tests_images_publish"
+			else
+				fail "workflow_$scenario" "fast path leaked expensive work: $(cat "$TRACE")"
+			fi
+			;;
+		*)
+			if grep -q '^bazel test .*gazelle_test' "$TRACE" && grep -q '^bazel test .*fixture:test\|^bazel test //...\|--target_pattern_file=' "$TRACE" && grep -q check_go_stubs "$TRACE"; then
+				pass "workflow_${scenario}_ordinary_gates"
+			else
+				fail "workflow_$scenario" "fallback lost tests or generation acceptance: $(cat "$TRACE")"
+			fi
+			case "$scenario" in
+			ordinary | handmade | formatter | missing-branch | missing-default | pr-main | queue | feature)
+				grep -q 'push_all\|push-changed.sh' "$TRACE" || fail "workflow_${scenario}_images" 'ordinary image gate was skipped'
+				;;
+			esac
+			;;
+		esac
+	done
+done
+
 echo "--- $PASS passed, $FAIL failed ---"
 [[ $FAIL -eq 0 ]]
