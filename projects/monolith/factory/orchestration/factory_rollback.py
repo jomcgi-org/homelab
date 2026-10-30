@@ -17,17 +17,18 @@ import hashlib
 import json
 import re
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlmodel import select
 
 from factory.orchestration import factory_controls as controls
 from factory.orchestration.factory_models import FactoryAudit
+from factory.orchestration.factory_rollout import READ_CACHE_TTL_SECONDS
 
 ACTOR = "factory:rollback"
 SHA = re.compile(r"[0-9a-f]{40}")
 SIGNALS = frozenset({"argocd", "kargo_promotion", "revision_health"})
-FRESHNESS_SECONDS = 90
+FRESHNESS_SECONDS = READ_CACHE_TTL_SECONDS
 
 
 def reverse_source(checkout: str, delivery: dict) -> dict:
@@ -69,14 +70,10 @@ def reverse_source(checkout: str, delivery: dict) -> dict:
 def utc(value: object) -> datetime:
     """Normalize database timestamps; malformed observations stay unknown."""
     if isinstance(value, str):
-        value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        value = datetime.fromisoformat(value)
     if not isinstance(value, datetime):
-        raise ValueError("timestamp required")
-    return (
-        value.replace(tzinfo=timezone.utc)
-        if value.tzinfo is None
-        else value.astimezone(timezone.utc)
-    )
+        raise TypeError("timestamp required")
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def identity(delivery: dict) -> str:
@@ -280,8 +277,6 @@ def reserve(
             prior = json.loads(row.detail_json)
             if prior.get("repo") != delivery["repo"]:
                 continue
-            if prior.get("revert_pr_number") == delivery["pr_number"]:
-                return {"state": "needs_human", "reason": "automatic_revert_of_revert"}
             if clock - timedelta(hours=1) < utc(prior["recorded_at"]) <= clock:
                 recent.append(row)
         reverted_prs = db.exec(
