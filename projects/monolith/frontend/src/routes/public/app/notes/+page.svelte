@@ -2,6 +2,12 @@
   import { browser } from "$app/environment";
   import { page } from "$app/state";
   import GraphView from "$lib/public/notes/GraphView.svelte";
+  import {
+    SiteIndex,
+    TechnicalDrawingChrome,
+    Trail,
+  } from "$lib/public/components";
+  import "$lib/public/styles/technical-drawing.css";
 </script>
 
 <svelte:head>
@@ -12,26 +18,40 @@
   />
 </svelte:head>
 
-<main>
-  <h1>Public notes</h1>
-  <a href="/slop/factory">Watch the factory</a>
-  {#if browser}
-    <div class="graph">
-      <GraphView focusId={page.url.searchParams.get("focus")} />
+{#snippet trail()}
+  <Trail crumbs={[{ label: "notes" }]} />
+{/snippet}
+
+<TechnicalDrawingChrome {trail} />
+
+<main class="td sheet notes-page">
+  <div class="frame">
+    <div class="journal">
+      <aside class="spine">
+        <div class="trail-dock">{@render trail()}</div>
+        <SiteIndex here="notes" />
+      </aside>
+      <section class="edition" aria-labelledby="notes-title">
+        <div class="ed-lead">
+          <h1 id="notes-title">Public notes</h1>
+        </div>
+        <div class="ed-head">
+          <a href="/slop/factory">Watch the factory</a>
+        </div>
+        {#if browser}
+          <div class="graph">
+            <GraphView focusId={page.url.searchParams.get("focus")} />
+          </div>
+        {/if}
+      </section>
     </div>
-  {/if}
+  </div>
 </main>
 
 <style>
-  main {
-    padding: 24px;
-  }
-  h1 {
-    margin: 0 0 8px;
-  }
   .graph {
     height: 80dvh;
     min-height: 480px;
-    margin-top: 24px;
+    min-width: 0;
   }
 </style>
