@@ -5,6 +5,7 @@ import json
 import re
 from datetime import timedelta
 
+import httpx
 from core.jsonio import dumps
 from sqlmodel import select
 
@@ -17,11 +18,93 @@ from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt, W
 
 ACTION = "progress_continuation_authorized"
 LEASE = "progress_continuation_lease"
+RENEWAL = "progress_continuation_renewed"
+REFUSAL = "progress_continuation_renewal_refused"
 LEASE_SECONDS = 7200
 
 
 def _digest(value):
     return hashlib.sha256(dumps(value).encode()).hexdigest()
+
+
+def _compatible_direction(previous, current):
+    """Only append staged holds with an already-bound scope and effects.
+
+    Free text cannot establish new authority. Existing records stay byte-for-
+    value identical, and additions may only restate a validated unmerged gate
+    or require more checks. Every other direction field remains exact.
+    """
+    from factory.orchestration import factory_gates
+
+    if previous == current:
+        return True
+    if not isinstance(previous, dict) or not isinstance(current, dict):
+        return False
+    before, after = (
+        previous.get("conductor_gates", []),
+        current.get("conductor_gates", []),
+    )
+    if (
+        not isinstance(before, list)
+        or not isinstance(after, list)
+        or after[: len(before)] != before
+        or {k: v for k, v in previous.items() if k != "conductor_gates"}
+        != {k: v for k, v in current.items() if k != "conductor_gates"}
+    ):
+        return False
+
+    def staged(gate):
+        try:
+            factory_gates.validate_gate(gate)
+        except ValueError:
+            return False
+        return (
+            gate.get("kind") == "live_validation"
+            and gate.get("leave_unmerged") is True
+            and not factory_gates.restricted(gate)
+        )
+
+    def boundary(gate):
+        return {k: v for k, v in gate.items() if k not in {"reason", "live_checks"}}
+
+    return all(
+        staged(added)
+        and any(
+            staged(bound)
+            and boundary(added) == boundary(bound)
+            and set(bound["live_checks"]) <= set(added["live_checks"])
+            for bound in before
+        )
+        for added in after[len(before) :]
+    )
+
+
+def _allocation_pause(db, row, last_lease):
+    """An operator renewal may resolve only this factory-owned allocation pause."""
+    from factory.orchestration import factory_pause
+
+    card = json.loads(row.escalation_json or "{}")
+    pause = db.exec(
+        select(FactoryAudit)
+        .where(FactoryAudit.task_id == row.task_id, FactoryAudit.action == "pause_task")
+        .order_by(FactoryAudit.id.desc())
+    ).first()
+    if (
+        pause is None
+        or pause.actor != "factory:nonrenewable-recovery"
+        or not json.loads(pause.detail_json).get("ok")
+        or pause.id <= last_lease["audit_id"]
+        or not factory_pause.is_card(card)
+        or card.get("actor") != pause.actor
+        or card.get("task_id") != row.task_id
+        or card.get("resolved") is not None
+        or card.get("options") != [factory_pause.STOP]
+        or not card.get("reason", "").startswith(
+            "Correction plan exceeds current allocation:"
+        )
+    ):
+        raise ValueError("progress_pause_not_owned")
+    return pause.id
 
 
 def _review(db, task_id):
@@ -223,7 +306,16 @@ def _observe(receipt_id):
 
 
 def _preview(
-    db, control, receipt_id, pr_number, head_sha, direction, observed, *, renewal=False
+    db,
+    control,
+    receipt_id,
+    pr_number,
+    head_sha,
+    direction,
+    observed,
+    *,
+    renewal=False,
+    resume_paused=False,
 ):
     from factory.orchestration import factory_conductor as conductor
     from factory.orchestration.factory_decisions import decision_in_flight
@@ -234,7 +326,7 @@ def _preview(
         or row.state != "admitted"
         or row.cancellation_requested
         or control.state != "enabled"
-        or (row.task_paused == renewal)
+        or row.task_paused != (not renewal or resume_paused)
     ):
         raise ValueError("progress_receipt_not_eligible")
     graph._lock_task(db, row.task_id)
@@ -302,6 +394,7 @@ def _preview(
     if renewal:
         if (
             not authorization
+            or not leases
             or authorization["proposal"]["original_recovery"] != original
             or authorization["proposal"]["pr_number"] != pr_number
         ):
@@ -313,8 +406,12 @@ def _preview(
         if (
             not current_funding
             or current_funding.get("grant_kind") != LEASE
-            or json.loads(row.direction_json or "{}")
-            != authorization["proposal"]["prior_direction"]
+            or not _compatible_direction(
+                last.get(
+                    "direction_snapshot", authorization["proposal"]["prior_direction"]
+                ),
+                json.loads(row.direction_json or "{}"),
+            )
         ):
             raise ValueError("progress_authority_changed")
         if (
@@ -366,6 +463,17 @@ def _preview(
         ),
         "previous_lease": leases[-1] if leases else None,
     }
+    if renewal:
+        result.update(
+            renewal=True,
+            resume_paused=resume_paused,
+            authorization_audit_id=authorization["audit_id"],
+            pause_audit_id=_allocation_pause(
+                db, row, funding.latest(db, row.task_id, LEASE)
+            )
+            if resume_paused
+            else None,
+        )
     result["preview_sha256"] = _digest(result)
     return result
 
@@ -376,12 +484,20 @@ def _target(pr_number, head_sha):
         raise ValueError("progress_head_invalid")
 
 
-def preview(receipt_id, pr_number, head_sha, direction):
+def preview(receipt_id, pr_number, head_sha, direction, *, renewal=False):
     _target(pr_number, head_sha)
     observed = _observe(receipt_id)
     with controls._locked_session() as (db, control):
         return _preview(
-            db, control, receipt_id, pr_number, head_sha, direction, observed
+            db,
+            control,
+            receipt_id,
+            pr_number,
+            head_sha,
+            direction,
+            observed,
+            renewal=renewal,
+            resume_paused=renewal,
         )
 
 
@@ -402,6 +518,7 @@ def _lease(db, row, proposal, actor, observed):
         "deadline_at": deadline,
         "work_turn_ceiling": proposal["work_turn_ceiling"],
         "planner_turn_ceiling": proposal["planner_turn_ceiling"],
+        "direction_snapshot": proposal["prior_direction"],
     }
     controls._audit(
         db,
@@ -441,6 +558,7 @@ def apply(
     actor,
     request_key,
     expected_preview_sha256,
+    renewal=False,
 ):
     _target(pr_number, head_sha)
     request = {
@@ -452,17 +570,26 @@ def apply(
         "expected_preview_sha256": expected_preview_sha256,
     }
     actor = controls._text(actor, "actor")
+    action = RENEWAL if renewal else ACTION
     with controls._read_session() as db:
-        replay = _replay(db, actor, request)
+        replay = _replay(db, actor, request, action=action)
         if replay:
             return replay
     observed = _observe(receipt_id)
     with controls._locked_session() as (db, control):
-        replay = _replay(db, actor, request)
+        replay = _replay(db, actor, request, action=action)
         if replay:
             return replay
         proposal = _preview(
-            db, control, receipt_id, pr_number, head_sha, direction, observed
+            db,
+            control,
+            receipt_id,
+            pr_number,
+            head_sha,
+            direction,
+            observed,
+            renewal=renewal,
+            resume_paused=renewal,
         )
         if proposal["preview_sha256"] != expected_preview_sha256:
             raise ValueError("progress_preview_changed")
@@ -471,7 +598,7 @@ def apply(
         escalation = proposal["prior_escalation"].copy()
         escalation["resolved"] = {
             "actor": actor,
-            "effect": ACTION,
+            "effect": action,
             "request_key": request_key,
             "at": controls._now().isoformat(),
         }
@@ -491,7 +618,7 @@ def apply(
         controls._audit(
             db,
             actor,
-            ACTION,
+            action,
             task_id=row.task_id,
             request=request,
             proposal=proposal,
@@ -500,10 +627,10 @@ def apply(
         return result
 
 
-def _replay(db, actor, request):
+def _replay(db, actor, request, *, action=ACTION):
     for raw in db.exec(
         select(FactoryAudit.detail_json).where(
-            FactoryAudit.actor == actor, FactoryAudit.action == ACTION
+            FactoryAudit.actor == actor, FactoryAudit.action == action
         )
     ).all():
         previous = json.loads(raw)
@@ -516,6 +643,7 @@ def _replay(db, actor, request):
 
 def renew(task_id):
     """Called only after native execution reconciliation, before new starts."""
+    binding = None
     try:
         with controls._read_session() as db:
             row = controls._receipt(db, task_id)
@@ -528,9 +656,14 @@ def renew(task_id):
                 or row.state != "admitted"
             ):
                 return False
+            binding = {
+                "authorization_audit_id": authorization["audit_id"],
+                "lease_audit_id": last["audit_id"],
+            }
             review, artifact, _ = _review(db, task_id)
             if review["id"] == last["review_id"]:
                 return False
+            binding.update(review_id=review["id"], head_sha=artifact.get("head_sha"))
             receipt_id = row.id
         observed = _observe(receipt_id)
         with controls._locked_session() as (db, control):
@@ -552,6 +685,74 @@ def renew(task_id):
                 controls._now(),
             )
         return True
-    except ValueError:
+    except ValueError as exc:
         # No observation or rejected evidence is authority to renew a lease.
+        if binding is not None:
+            _record_refusal(task_id, binding, exc)
         return False
+    except httpx.HTTPError:
+        if binding is not None:
+            _record_refusal(
+                task_id, binding, ValueError("progress_observation_unavailable")
+            )
+        return False
+
+
+def _record_refusal(task_id, binding, exc):
+    reason = str(exc)[:300]
+    diagnostics = getattr(exc, "diagnostics", None)
+    key = {**binding, "reason": reason}
+    if diagnostics:
+        refused = diagnostics["refused_model"]
+        key["subscription"] = {k: refused[k] for k in ("model", "state")}
+    with controls._locked_session() as (db, _control):
+        last = funding.latest(db, task_id, REFUSAL)
+        if last and last["key"] == key:
+            return
+        controls._audit(
+            db,
+            "factory:progress-continuation",
+            REFUSAL,
+            task_id=task_id,
+            key=key,
+            reason=reason,
+            **binding,
+            subscription_diagnostics=diagnostics,
+        )
+
+
+def renewal_status(db, task_id):
+    """Bounded last-attempt evidence, not a claim of current admission eligibility."""
+    if not task_id:
+        return None
+    event = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.task_id == task_id, FactoryAudit.action.in_((LEASE, REFUSAL))
+        )
+        .order_by(FactoryAudit.id.desc())
+    ).first()
+    if event is None:
+        return None
+    detail = json.loads(event.detail_json)
+    return {
+        "state": "refused" if event.action == REFUSAL else "leased",
+        "audit_id": event.id,
+        "observed_at": str(event.created_at),
+        "coverage": "last_recorded_attempt",
+        **{
+            k: detail[k]
+            for k in (
+                "reason",
+                "head_sha",
+                "review_id",
+                "authorization_audit_id",
+                "lease_audit_id",
+                "deadline_at",
+                "work_turn_ceiling",
+                "planner_turn_ceiling",
+                "subscription_diagnostics",
+            )
+            if k in detail
+        },
+    }

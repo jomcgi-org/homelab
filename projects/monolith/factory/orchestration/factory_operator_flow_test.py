@@ -601,3 +601,491 @@ def test_delegated_execution_identity_cannot_grant_operator_authority(flow, over
     )
     assert refused["error"] == mcp.OPERATOR_REQUIRED
     assert ledger(engine) == before
+
+
+def staged_gate(reason="Retain repository-only scope"):
+    return {
+        "kind": "live_validation",
+        "classification": "reversible",
+        "reason": reason,
+        "scope": "Repository-only saved PR. No merge, deployment or production access.",
+        "leave_unmerged": True,
+        "tracked_in": 7153,
+        "live_checks": ["Separately authorized rollout and real-host checks"],
+        "effects": {
+            "spends_money": False,
+            "deletes_data": False,
+            "touches_external_account": False,
+            "uses_credentials": False,
+        },
+    }
+
+
+@pytest.fixture
+def renewed_review(flow):
+    """The v269 restriction, v271 grant, and completed correction/review lineage."""
+    engine, pulls, _, _, _ = flow
+    task = "task-927"
+    with Session(engine) as db, db.begin():
+        row = db.get(FactoryReceipt, 927)
+        direction = json.loads(row.direction_json)
+        direction["conductor_gates"] = [
+            staged_gate(f"Earlier hold {i}") for i in range(4)
+        ]
+        row.direction_json = json.dumps(direction)
+    restrict(927)
+    preview = call("preview", 927, continuation(927), CONTINUE)
+    applied = call(
+        "apply",
+        927,
+        continuation(927),
+        CONTINUE,
+        request_key="initial-927",
+        expected_preview_sha256=preview["preview_sha256"],
+    )
+    assert applied["version"] == 271
+    assert applied["lease"]["work_turn_ceiling"] == 8
+    head = "c" * 40
+    pulls[7436]["head"]["sha"] = head
+    with Session(engine) as db, db.begin():
+        row = db.get(FactoryReceipt, 927)
+        direction = json.loads(row.direction_json)
+        direction["conductor_gates"].append(staged_gate("Reaffirm the existing hold"))
+        row.direction_json = json.dumps(direction)
+        for index, (node, model) in enumerate(
+            (("correct_2", "astra"), ("review_2", "opus")), 1
+        ):
+            artifact = {"pr_number": 7436, "head_sha": head}
+            if node.startswith("review"):
+                artifact.update(
+                    verdict="changes_requested", summary="Fix CI colour vocabulary"
+                )
+            db.add_all(
+                [
+                    AgentSession(
+                        id=10000 + index,
+                        local_session_id=f"factory:{task}:{node}:1",
+                        workspace="guest",
+                        branch=f"factory/{task}",
+                        status="completed",
+                        model=model,
+                    ),
+                    SwarmNodeRun(
+                        task_id=task,
+                        node_key=node,
+                        attempt=1,
+                        status="succeeded",
+                        model=model,
+                        pin_json=json.dumps({"model": model}),
+                        session_id=10000 + index,
+                        head_sha=head,
+                        cost_usd=1,
+                        outcome_json=json.dumps({"artifact": artifact}),
+                    ),
+                    FactoryStart(
+                        task_id=task,
+                        start_key=f"factory-node:{task}:{node}:1",
+                        actor="factory",
+                        model=model,
+                        status="succeeded",
+                        cost_usd=1,
+                        max_cost_usd=4,
+                    ),
+                ]
+            )
+    return flow, {"progress_renewal": {"pr_number": 7436, "head_sha": head}}
+
+
+def test_progress_renewal_preserves_appended_staged_hold_and_funds_correction(
+    renewed_review,
+):
+    (engine, _, _, _, _), _ = renewed_review
+    before = ledger(engine)
+    with Session(engine) as db:
+        direction = db.get(FactoryReceipt, 927).direction_json
+    assert progress.renew("task-927")
+    assert (
+        ledger(engine) == before
+    )  # No new dispatch, model run or accounting identity.
+    with Session(engine) as db:
+        lease = funding.latest(db, "task-927", progress.LEASE)
+        assert lease["work_turn_ceiling"] == 10
+        assert lease["consecutive_failures"] == 1
+        assert db.get(FactoryReceipt, 927).direction_json == direction
+        assert len(json.loads(direction)["conductor_gates"]) == 5
+        assert db.get(FactoryControl, "factory").version == 272
+        assert db.get(FactoryReceipt, 1027).task_paused
+        assert db.get(FactoryReceipt, 996).task_paused
+    assert not progress.renew("task-927")  # Same reviewed head is never renewed twice.
+
+
+@pytest.mark.parametrize(
+    "change", ["remove", "weaken", "scope", "effect", "authority", "checks", "untyped"]
+)
+def test_progress_renewal_refuses_changed_boundaries(renewed_review, change):
+    (engine, _, _, _, _), _ = renewed_review
+    with Session(engine) as db, db.begin():
+        row = db.get(FactoryReceipt, 927)
+        direction = json.loads(row.direction_json)
+        gates = direction["conductor_gates"]
+        if change == "remove":
+            gates.pop(0)
+        elif change == "weaken":
+            gates[-1]["leave_unmerged"] = False
+        elif change == "scope":
+            gates[-1]["scope"] = "Deploy a new public endpoint"
+        elif change == "effect":
+            gates[-1]["effects"]["spends_money"] = True
+        elif change == "authority":
+            direction["task_recovery"] = {"reason": "replacement authority"}
+        elif change == "checks":
+            gates[-1]["live_checks"] = ["Unrelated check"]
+        else:
+            gates[-1]["unknown"] = "new instruction"
+        row.direction_json = json.dumps(direction)
+    before = ledger(engine)
+    assert not progress.renew("task-927")
+    assert ledger(engine) == before
+    with Session(engine) as db:
+        assert funding.latest(db, "task-927", progress.LEASE)["work_turn_ceiling"] == 8
+        diagnostic = progress.renewal_status(db, "task-927")
+        assert diagnostic["reason"] == "progress_authority_changed"
+        assert diagnostic["head_sha"] == "c" * 40
+        assert diagnostic["review_id"] is not None
+    # Repeated observation must not flood the durable audit.
+    assert not progress.renew("task-927")
+    with Session(engine) as db:
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(FactoryAudit.action == progress.REFUSAL)
+                ).all()
+            )
+            == 1
+        )
+
+
+def pause_allocation(engine):
+    assert controls.pause_nonrenewable_recovery(
+        "task-927",
+        'Correction plan exceeds current allocation: envelope exceeded: {"turns":{"allowed":8,"needed":10}}',
+    )
+    with Session(engine) as db:
+        assert db.get(FactoryReceipt, 927).task_paused
+
+
+def test_exact_operator_renewal_recovers_allocation_pause_without_regrant(
+    renewed_review,
+):
+    (engine, _, _, _, observations), overlay = renewed_review
+    pause_allocation(engine)
+    before = ledger(engine)
+    with Session(engine) as db:
+        direction = db.get(FactoryReceipt, 927).direction_json
+        original = funding.latest(db, "task-927", progress.ACTION)
+    preview = call(
+        "preview",
+        927,
+        overlay,
+        "Reconcile the existing continuation grant with retained holds",
+    )
+    assert preview["resume_paused"] and preview["expected_version"] == 272
+    assert preview["work_turn_ceiling"] == 10
+    assert ledger(engine) == before
+    with Session(engine) as db:
+        assert db.get(FactoryReceipt, 927).task_paused
+    args = {
+        "request_key": "renew-927",
+        "expected_preview_sha256": preview["preview_sha256"],
+    }
+    result = call(
+        "apply",
+        927,
+        overlay,
+        "Reconcile the existing continuation grant with retained holds",
+        **args,
+    )
+    assert result["ok"] and result["version"] == 273
+    reads = len(observations["quota"])
+    assert (
+        call(
+            "apply",
+            927,
+            overlay,
+            "Reconcile the existing continuation grant with retained holds",
+            **args,
+        )
+        == result
+    )
+    assert len(observations["quota"]) == reads
+    assert ledger(engine) == before
+    with Session(engine) as db:
+        assert funding.latest(db, "task-927", progress.ACTION) == original
+        row = db.get(FactoryReceipt, 927)
+        assert not row.task_paused and row.direction_json == direction
+        assert (
+            db.get(FactoryReceipt, 1027).task_paused
+            and db.get(FactoryReceipt, 996).task_paused
+        )
+        assert funding.effective_policy(db, row)["task_budget_usd"] == 50
+        assert (
+            json.loads(db.get(FactoryControl, "factory").policy_json)["generation"]
+            == 14
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["operator_pause", "version", "head", "quota", "uncertain", "hold", "grant"],
+)
+def test_operator_renewal_rechecks_pause_identity_artifact_and_quota(
+    renewed_review, change
+):
+    (engine, pulls, _, quota, _), overlay = renewed_review
+    pause_allocation(engine)
+    proposal = call("preview", 927, overlay, "Renew existing authority")
+    assert "preview_sha256" in proposal
+    if change == "operator_pause":
+        assert controls.set_control("pause_task", "human", task_id="task-927")["ok"]
+    elif change == "head":
+        pulls[7436]["head"]["sha"] = "d" * 40
+    elif change == "quota":
+        quota["providers"]["claude"]["age_seconds"] = 901
+    else:
+        with Session(engine) as db, db.begin():
+            if change == "version":
+                db.get(FactoryControl, "factory").version += 1
+            elif change == "uncertain":
+                db.exec(
+                    select(FactoryStart).where(FactoryStart.task_id == "task-927")
+                ).first().status = "uncertain"
+            elif change == "hold":
+                row = db.get(FactoryReceipt, 927)
+                direction = json.loads(row.direction_json)
+                direction["landing_hold"] = {"reason": "changed"}
+                row.direction_json = json.dumps(direction)
+            else:
+                controls._audit(
+                    db,
+                    "other",
+                    controls.TASK_RECOVERY_ACTION,
+                    task_id="task-927",
+                    proposal={},
+                )
+    before = ledger(engine)
+    result = call(
+        "apply",
+        927,
+        overlay,
+        "Renew existing authority",
+        request_key="refused-renewal",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    assert result["ok"] is False
+    assert ledger(engine) == before
+    with Session(engine) as db:
+        assert db.get(FactoryReceipt, 927).task_paused
+        assert funding.latest(db, "task-927", progress.LEASE)["work_turn_ceiling"] == 8
+
+
+def test_renewed_lease_admits_existing_engine_correction_and_independent_review(
+    renewed_review, monkeypatch
+):
+    from factory.orchestration import graph
+    from factory.orchestration.models import SwarmConductorCall
+
+    (engine, _, _, _, _), _ = renewed_review
+    monkeypatch.setattr(conductor, "get_engine", lambda: engine)
+    monkeypatch.setattr(graph, "get_engine", lambda: engine)
+    SQLModel.metadata.create_all(engine, tables=[SwarmConductorCall.__table__])
+    with Session(engine) as db, db.begin():
+        for node in db.exec(
+            select(SwarmPlanNode).where(SwarmPlanNode.task_id == "task-927")
+        ).all():
+            node.kind = "gate" if node.node_key.startswith("review") else "work"
+            node.max_attempts = 1
+        db.add_all(
+            [
+                SwarmNodeRun(
+                    task_id="task-927",
+                    node_key=f"past_{i}",
+                    attempt=1,
+                    status="succeeded",
+                    model="astra",
+                    cost_usd=1,
+                    pin_json=json.dumps({"model": "astra"}),
+                    outcome_json="{}",
+                )
+                for i in range(4)
+            ]
+        )
+        db.add_all(
+            [
+                SwarmPlanNode(
+                    task_id="task-927",
+                    node_key="correct_2",
+                    kind="work",
+                    model="astra",
+                    prompt="Remove unrelated changes",
+                    deps_json='["review_1"]',
+                    side_effects=True,
+                    max_cost_usd=4,
+                    max_attempts=1,
+                    created_in_version=1,
+                ),
+                SwarmPlanNode(
+                    task_id="task-927",
+                    node_key="review_2",
+                    kind="gate",
+                    model="opus",
+                    prompt="Independent review",
+                    deps_json='["correct_2"]',
+                    side_effects=False,
+                    max_cost_usd=4,
+                    max_attempts=1,
+                    created_in_version=1,
+                ),
+            ]
+        )
+    task = conductor._task("task-927")
+    nodes = graph.load_graph("task-927")
+    runs = graph.node_runs("task-927")
+    review = next(r for r in runs if r["node_key"] == "review_2")
+    projected = nodes + [
+        {
+            "node_key": "correct_3",
+            "deps": ["review_2"],
+            "max_cost_usd": 4,
+            "max_attempts": 1,
+        },
+        {
+            "node_key": "review_3",
+            "deps": ["correct_3"],
+            "max_cost_usd": 4,
+            "max_attempts": 1,
+        },
+    ]
+    with Session(engine) as db:
+        old_policy = funding.effective_policy(db, db.get(FactoryReceipt, 927))
+    refusal = conductor._envelope_refusal(
+        "task-927",
+        old_policy,
+        projected,
+        review_rounds_remaining=0,
+        fan_ins_remaining=0,
+    )
+    assert '"allowed": 8' in refusal and '"needed": 10' in refusal
+    assert progress.renew("task-927")
+    with Session(engine) as db:
+        policy = funding.effective_policy(db, db.get(FactoryReceipt, 927))
+    assert conductor._insert_review_round(
+        task, policy, nodes, runs, review, 3, 3, 1
+    ) == (True, None)
+    updated = {n["node_key"]: n for n in graph.load_graph("task-927")}
+    assert updated["correct_3"]["deps"] == ["review_2"]
+    assert updated["review_3"]["deps"] == ["correct_3"]
+    assert updated["correct_3"]["model"] == "astra"
+    assert updated["review_3"]["model"] == "opus"
+    assert (
+        len(graph.node_runs("task-927")) == 8
+    )  # Graph insertion never invokes a model.
+
+
+def test_appended_hold_may_require_more_checks_but_next_lease_cannot_remove_it(
+    renewed_review,
+):
+    (engine, pulls, _, _, _), _ = renewed_review
+    with Session(engine) as db, db.begin():
+        row = db.get(FactoryReceipt, 927)
+        direction = json.loads(row.direction_json)
+        direction["conductor_gates"][-1]["live_checks"].append(
+            "Additional private-host regression check"
+        )
+        row.direction_json = json.dumps(direction)
+    assert progress.renew("task-927")
+    pulls[7436]["head"]["sha"] = "d" * 40
+    with Session(engine) as db, db.begin():
+        row = db.get(FactoryReceipt, 927)
+        direction = json.loads(row.direction_json)
+        direction[
+            "conductor_gates"
+        ].pop()  # This gate was absent from initial authority.
+        row.direction_json = json.dumps(direction)
+        db.add_all(
+            [
+                AgentSession(
+                    id=10003,
+                    local_session_id="factory:task-927:review_3:1",
+                    workspace="guest",
+                    branch="factory/task-927",
+                    status="completed",
+                    model="opus",
+                ),
+                SwarmNodeRun(
+                    task_id="task-927",
+                    node_key="review_3",
+                    attempt=1,
+                    status="succeeded",
+                    model="opus",
+                    pin_json=json.dumps({"model": "opus"}),
+                    session_id=10003,
+                    head_sha="d" * 40,
+                    cost_usd=1,
+                    outcome_json=json.dumps(
+                        {
+                            "artifact": {
+                                "pr_number": 7436,
+                                "head_sha": "d" * 40,
+                                "verdict": "approve",
+                                "summary": "Reviewed",
+                            }
+                        }
+                    ),
+                ),
+            ]
+        )
+    assert not progress.renew("task-927")
+    with Session(engine) as db:
+        assert (
+            progress.renewal_status(db, "task-927")["reason"]
+            == "progress_authority_changed"
+        )
+
+
+@pytest.mark.parametrize(
+    "fault,reason",
+    [
+        ("ci", "progress_ci_failed"),
+        ("quota", "progress_subscription_evidence_stale"),
+        ("transport", "progress_observation_unavailable"),
+    ],
+)
+def test_renewal_records_exact_observation_refusal_without_grant(
+    renewed_review, monkeypatch, fault, reason
+):
+    import httpx
+
+    (engine, _, checks, quota, _), _ = renewed_review
+    if fault == "ci":
+        checks["state"] = "failure"
+    elif fault == "quota":
+        quota["providers"]["claude"]["age_seconds"] = 901
+    else:
+
+        def unavailable(*args, **kwargs):
+            raise httpx.ConnectError("unavailable")
+
+        monkeypatch.setattr(conductor, "github_get", unavailable)
+    before = ledger(engine)
+    assert not progress.renew("task-927")
+    assert ledger(engine) == before
+    with Session(engine) as db:
+        status = progress.renewal_status(db, "task-927")
+        assert status["reason"] == reason
+        assert status["coverage"] == "last_recorded_attempt"
+        if fault == "quota":
+            assert (
+                status["subscription_diagnostics"]["refused_model"]["provider"]
+                == "claude"
+            )
+        assert funding.latest(db, "task-927", progress.LEASE)["work_turn_ceiling"] == 8

@@ -378,6 +378,24 @@ Neither code deployment nor a successful preview grants execution.
    Renewals require new reviewed progress, fresh quota and no repeated failure.
    Read back the lease and actual native progress separately. Do not use
    ordinary resume to replace this grant, or retry an unknown original start.
+   An appended validated `leave_unmerged` gate is compatible only when its
+   scope and effects exactly match an existing bound gate and it retains every
+   required live check. Original records and all other direction fields remain
+   exact. Each lease binds the accumulated holds, so a later renewal cannot
+   remove one added after the initial grant.
+
+   If the existing correction allocator already paused an authorized task,
+   use the separate `progress_renewal` overlay with the exact PR and current
+   reviewed head. Preview and apply bind the current version, original grant,
+   graph, accounting, artifact and factory-owned allocation pause. This mode
+   computes one further finite lease under the original authority, preserving
+   holds and accounting. It refuses a later operator pause, cancellation,
+   another pause cause, unresolved execution, stale evidence, reused heads or
+   repeated failures. It never replaces the initial grant. Apply alone resolves
+   the bound allocation pause. `factory_task_detail.progress_continuation`
+   reports the last recorded lease or precise renewal refusal, including its
+   reviewed head and subscription diagnosis when relevant. This historical
+   observation is not a fresh admission verdict.
 3. Once `factory_configure_refill` is actually callable and activation is
    authorized, read bounded status and preview `enabled=true`, `model=opus`,
    `hourly=true`, the fresh `expected_version` and a concrete reason. The
