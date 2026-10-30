@@ -774,7 +774,11 @@ def _operator_view(
 async def _control_catalog() -> dict:
     """Bounded native evidence, not a claim about gateway or client discovery."""
     tools = {}
-    for name in ("factory_configure_refill", "factory_amend_policy"):
+    for name in (
+        "factory_configure_refill",
+        "factory_amend_policy",
+        "factory_reconcile_learning_execution",
+    ):
         tool = await mcp.get_tool(name)
         if tool is None:
             tools[name] = {"registered": False}
@@ -2481,6 +2485,52 @@ async def factory_configure_refill(
             model,
             hourly,
             expected_version,
+            reason,
+            request_key,
+            expected_preview_sha256,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
+async def factory_reconcile_learning_execution(
+    operation: Literal["preview", "apply"],
+    session_id: Annotated[MCPInteger, Field(ge=1)],
+    seq: Annotated[MCPInteger, Field(ge=1)],
+    permit_id: Annotated[MCPInteger, Field(ge=1)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    request_key: str | None = None,
+    expected_preview_sha256: str | None = None,
+) -> dict:
+    """Acknowledge one ceased factory-retro-daily attempt as a standing operator.
+
+    Preview exact session, turn and permit identity. Apply the reviewed digest
+    with identical arguments and a stable request key. Both phases read fresh
+    positive guest cessation and recheck current ownership under lock. Only the
+    hourly learning cadence guard may disregard this exact historical attempt.
+    Its unknown outcome, failed session and execution fences remain unchanged.
+    Does not dispatch, retry, rearm, change cadence, enable refill or clear any
+    other hold. Replay identical arguments after an uncertain apply response.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from factory import learning_reconciliation
+
+    try:
+        if operation == "preview":
+            return await learning_reconciliation.preview(
+                session_id, seq, permit_id, reason
+            )
+        if not request_key or not expected_preview_sha256:
+            return {"ok": False, "reason": "learning_preview_required"}
+        return await learning_reconciliation.apply(
+            principal.subject,
+            session_id,
+            seq,
+            permit_id,
             reason,
             request_key,
             expected_preview_sha256,

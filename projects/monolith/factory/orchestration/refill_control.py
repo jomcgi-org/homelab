@@ -146,6 +146,72 @@ def _observations(enabled, model, hourly):
     return observations
 
 
+def learning_job(db):
+    """Current cadence owner under the control and capacity locks."""
+    job = _job(db, lock=True)
+    if (
+        job is None
+        or job["routine_kind"] != "qwen-drain"
+        or job["interval_secs"] not in (86400, 3600)
+        or job["next_run_at"] is None
+        or job["locked_by"] is not None
+        or job["locked_at"] is not None
+        or job["last_status"] != "ok"
+    ):
+        raise ValueError("refill_learning_job_held")
+    payload = learning._json(job["payload"])
+    if (
+        not learning.enabled()
+        or payload.get("learning_stage") != "evidence"
+        or payload.get("model") != "luna"
+        or payload.get("repo") != learning.REPO
+        or payload.get("digest") != "factory-retro"
+    ):
+        raise ValueError("refill_learning_job_unrecognized")
+    if (
+        db.exec(
+            select(AgentCapacityReservation.id).where(
+                AgentCapacityReservation.routine_job_name == JOB,
+                AgentCapacityReservation.state != "settled",
+            )
+        ).first()
+        is not None
+    ):
+        raise ValueError("refill_learning_execution_active")
+    owners = select(AgentSession.id).where(
+        AgentSession.local_session_id.endswith(":qwen-drain:" + JOB)
+    )
+    if (
+        db.exec(
+            select(AgentSession.id).where(
+                AgentSession.id.in_(owners),
+                (AgentSession.status == "running")
+                | AgentSession.ember_session_id.is_not(None)
+                | AgentSession.result_receipt_fence_id.is_not(None)
+                | AgentSession.guest_cleanup_id.is_not(None),
+            )
+        ).first()
+        is not None
+        or db.exec(
+            select(PendingMessage.id).where(PendingMessage.session_id.in_(owners))
+        ).first()
+        is not None
+    ):
+        raise ValueError("refill_learning_execution_active")
+    return job
+
+
+def unknown_learning_sessions(db):
+    from factory.execution import store
+
+    return db.exec(
+        select(AgentSession.id).where(
+            AgentSession.local_session_id.endswith(":qwen-drain:" + JOB),
+            store._unknown_outcome_exists(AgentSession.id),
+        )
+    ).all()
+
+
 def _plan(db, control, enabled, model, hourly, expected_version, reason, quota):
     if (
         type(enabled) is not bool
@@ -185,67 +251,12 @@ def _plan(db, control, enabled, model, hourly, expected_version, reason, quota):
     normalize({**policy, "backlog_refill": changed})
     if changed != block and refill._ledger(db, policy.get("repo", ""))[2]:
         raise ValueError("refill_in_flight")
-    job = _job(db, lock=True) if hourly else None
+    job = learning_job(db) if hourly else None
     if hourly:
-        if (
-            job is None
-            or job["routine_kind"] != "qwen-drain"
-            or job["interval_secs"] not in (86400, 3600)
-            or job["next_run_at"] is None
-            or job["locked_by"] is not None
-            or job["locked_at"] is not None
-            or job["last_status"] != "ok"
-        ):
-            raise ValueError("refill_learning_job_held")
-        payload = learning._json(job["payload"])
-        if (
-            not learning.enabled()
-            or payload.get("learning_stage") != "evidence"
-            or payload.get("model") != "luna"
-            or payload.get("repo") != learning.REPO
-            or payload.get("digest") != "factory-retro"
-        ):
-            raise ValueError("refill_learning_job_unrecognized")
-        if (
-            db.exec(
-                select(AgentCapacityReservation.id).where(
-                    AgentCapacityReservation.routine_job_name == JOB,
-                    AgentCapacityReservation.state != "settled",
-                )
-            ).first()
-            is not None
-        ):
-            raise ValueError("refill_learning_execution_active")
-        owners = select(AgentSession.id).where(
-            AgentSession.local_session_id.endswith(":qwen-drain:" + JOB)
-        )
-        if (
-            db.exec(
-                select(AgentSession.id).where(
-                    AgentSession.id.in_(owners),
-                    (AgentSession.status == "running")
-                    | AgentSession.ember_session_id.is_not(None)
-                    | AgentSession.result_receipt_fence_id.is_not(None),
-                )
-            ).first()
-            is not None
-            or db.exec(
-                select(PendingMessage.id).where(PendingMessage.session_id.in_(owners))
-            ).first()
-            is not None
-        ):
-            raise ValueError("refill_learning_execution_active")
-        from factory.execution import store
+        from factory import learning_reconciliation
 
-        if (
-            db.exec(
-                select(AgentSession.id).where(
-                    AgentSession.id.in_(owners),
-                    store._unknown_outcome_exists(AgentSession.id),
-                )
-            ).first()
-            is not None
-        ):
+        unknown = set(unknown_learning_sessions(db))
+        if unknown - learning_reconciliation.resolutions(db, unknown, lock=True):
             raise ValueError("refill_learning_execution_unknown")
     proposal = {
         "ok": True,
