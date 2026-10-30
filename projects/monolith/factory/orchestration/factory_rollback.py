@@ -16,7 +16,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import subprocess
 from datetime import UTC, datetime, timedelta
 
 from sqlmodel import select
@@ -31,65 +30,11 @@ FRESHNESS_SECONDS = 30
 
 
 def reverse_source(checkout: str, delivery: dict) -> dict:
-    """Worker-side git revert of the landed commit, never a deployment pin edit.
+    """Validate identity then run the same stdlib helper shipped to workers."""
+    from factory.orchestration.factory_rollback_source import reverse_source as reverse
 
-    The worker must already own the deterministic branch in its linked
-    worktree. A merge commit reverses relative to its first parent; a squash or
-    single-parent landed commit needs no mainline option. This helper performs
-    no network I/O and never pushes, creates a PR or changes queue state.
-    """
-    key = identity(delivery)
-
-    def git(*args):
-        return subprocess.run(
-            ["git", "-C", checkout, *args], check=True, capture_output=True, text=True
-        ).stdout.strip()
-
-    branch = "factory/rollback-" + key[:32]
-    if git("branch", "--show-current") != branch:
-        raise ValueError("rollback source branch is not owned")
-    if git("status", "--porcelain"):
-        raise ValueError("rollback source worktree is dirty")
-    merge = delivery["merge_commit_sha"]
-    parents = git("rev-list", "--parents", "-n", "1", merge).split()[1:]
-    if not parents:
-        raise ValueError("cannot automatically revert a root commit")
-    count = delivery.get("commit_count")
-    if type(count) is not int or count < 1:
-        raise ValueError("authoritative PR commit count required")
-    if len(parents) > 1:
-        commits = [merge]
-    else:
-        # The queue rebases every PR commit. merge_commit_sha is its LAST
-        # commit, not the full change. Refuse non-linear or incomplete ranges.
-        base = git("rev-parse", f"{merge}~{count}")
-        commits = git("rev-list", "--first-parent", f"{base}..{merge}").splitlines()
-        if len(commits) != count or any(
-            len(git("rev-list", "--parents", "-n", "1", sha).split()) != 2
-            for sha in commits
-        ):
-            raise ValueError("landed range does not match PR commit count")
-    marker = f"Factory-Rollback: {key}"
-    lines = [f"This reverts commit {sha}." for sha in commits]
-    # Resume only the complete range, never the last member of a partial revert.
-    message = git("log", "-1", "--format=%B").splitlines()
-    if marker in message and all(line in message for line in lines):
-        return {"head_sha": git("rev-parse", "HEAD"), "branch": branch}
-    git("merge-base", "--is-ancestor", merge, "HEAD")
-    command = ["revert", "--no-commit"]
-    if len(parents) > 1:
-        command.extend(["--mainline", "1"])
-    git(*command, *commits)
-    git(
-        "commit",
-        "-m",
-        f"revert({delivery['chart']}): recover PR #{delivery['pr_number']}\n\n"
-        + f"Reverts #{delivery['pr_number']}\n\n"
-        + "\n".join(lines)
-        + "\n\n"
-        + marker,
-    )
-    return {"head_sha": git("rev-parse", "HEAD"), "branch": branch}
+    identity(delivery)
+    return reverse(checkout, delivery)
 
 
 def utc(value: object) -> datetime:
@@ -395,6 +340,7 @@ def reserve(
                     opening=opening,
                     reason="rolling_hour_limit",
                     needs_human=True,
+                    delivery=delivery,
                 )
             return {"state": "breaker_open", "opening": opening}
         detail = {
