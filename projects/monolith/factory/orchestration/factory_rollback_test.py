@@ -22,7 +22,7 @@ from factory.orchestration.factory_models import (
     WorkItemEdge,
     WorkItemEvent,
 )
-from factory.orchestration.models import SwarmTask
+from factory.orchestration.models import SwarmNodeRun, SwarmTask
 
 
 def test_default_off():
@@ -82,6 +82,7 @@ def delivery(n=1, **changes):
         "issue_number": n + 10,
         "merge_commit_sha": f"{n:040x}",
         "commit_count": 1,
+        "source_checked": True,
         "application": "demo",
         "chart": "demo",
         "revision": "1.2.3",
@@ -125,6 +126,7 @@ def engine(tmp_path, monkeypatch):
             m.__table__
             for m in (
                 SwarmTask,
+                SwarmNodeRun,
                 FactoryControl,
                 FactoryReceipt,
                 FactoryAudit,
@@ -488,21 +490,34 @@ def test_reverse_source_uses_real_git_revert_and_resumes(tmp_path, merge_commit,
     (path / "service").write_text("healthy\n")
     git("add", "service")
     git("commit", "-m", "test: healthy base")
-    if merge_commit:
+    if merge_commit or count == 2:
         git("checkout", "-b", "feature")
     (path / "service").write_text("broken\n")
     git("add", "service")
     git("commit", "-m", "test: changed service")
+    source_commits = [git("rev-parse", "HEAD")]
     if count == 2:
         (path / "service").write_text("broken twice\n")
         git("add", "service")
         git("commit", "-m", "test: second change")
+        source_commits.append(git("rev-parse", "HEAD"))
     if merge_commit:
         git("checkout", "main")
         git("merge", "--no-ff", "feature", "-m", "test: land service")
+    elif count == 2:
+        git("checkout", "main")
+        (path / "unrelated").write_text("another delivery\n")
+        git("add", "unrelated")
+        git("commit", "-m", "test: unrelated main change")
+        git("cherry-pick", *source_commits)
     d = delivery(merge_commit_sha=git("rev-parse", "HEAD"), commit_count=count)
     branch = "factory/rollback-" + rollback.identity(d)[:32]
     git("checkout", "-b", branch)
+    from factory.orchestration.factory_rollback_source import validate_landed_range
+
+    validate_landed_range(str(path), d, source_commits)
+    with pytest.raises(ValueError, match="inventory incomplete"):
+        validate_landed_range(str(path), d, [])
     # Supply an isolated test identity to the production subprocess seam.
     from unittest.mock import patch
 
@@ -522,6 +537,8 @@ def test_reverse_source_uses_real_git_revert_and_resumes(tmp_path, merge_commit,
         "log", "-1", "--format=%B"
     )
     assert result["head_sha"] != d["merge_commit_sha"]
+    if count == 2 and not merge_commit:
+        assert (path / "unrelated").read_text() == "another delivery\n"
 
 
 def test_changed_head_can_be_observed_then_landed(engine):
@@ -807,7 +824,7 @@ def test_landing_caller_observes_healthy_window_without_intent(
     }
     for minute, expected in [(0, "rollout_observing"), (15, "rollout_verified")]:
         now = NOW + timedelta(minutes=minute)
-        monkeypatch.setattr(r.landing, "_now", lambda: now)
+        monkeypatch.setattr(r.landing, "_now", lambda now=now: now)
         target = {k: d[k] for k in ("application", "chart", "revision")}
         target["observations"] = [
             sample(d, outcome="healthy", observed_at=now.isoformat())
@@ -832,6 +849,38 @@ def test_disabled_runtime_observes_head_move_and_merge(engine, runtime):
     assert not events(engine, "rollback_landed")
     p.update(merged=True, merged_at=NOW.isoformat(), merge_commit_sha="e" * 40)
     r.tick({"repo": d["repo"]})
+    assert not events(engine, "rollback_landed")  # Ordinary owner has not attested.
+    child = delivery(2, task_id="rollback-" + rollback.identity(d)[:32])
+    seed(engine, child)
+    with controls._locked_session() as (db, _control):
+        child_row = controls._receipt(db, child["task_id"])
+        rollback._append(
+            db,
+            d,
+            "rollback_receipt",
+            rollback.identity(d),
+            NOW,
+            receipt_id=child_row.id,
+        )
+        controls._audit(
+            db,
+            r.landing.ACTOR,
+            "merged",
+            task_id=child["task_id"],
+            pr_number=p["number"],
+            merge_commit_sha=p["merge_commit_sha"],
+        )
+        controls._audit(
+            db,
+            "factory:reconciler",
+            "delivery_ready",
+            task_id=child["task_id"],
+            evidence={
+                "pr_url": f"https://github.com/{d['repo']}/pull/{p['number']}",
+                "head_sha": p["head"]["sha"],
+            },
+        )
+    r.tick({"repo": d["repo"]})
     assert len(events(engine, "rollback_landed")) == 1
     assert issues[11]["state"] == "open"
 
@@ -840,3 +889,177 @@ def test_generated_revert_is_recognized_by_outcome_sweep():
     from factory.orchestration.factory_reverts import revert_evidence
 
     assert revert_evidence("revert(demo): recover\n\nReverts #12")[1] == {12}
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_actual_landing_window_caller_keeps_failure_terminal(
+    engine, runtime, monkeypatch, failed
+):
+    from factory.orchestration import factory_rollout
+
+    r, _issues, _writes, pulls = runtime
+    d = delivery()
+    seed(engine, d)
+    pulls.append(
+        {
+            "number": 1,
+            "merged": True,
+            "merged_at": d["merged_at"],
+            "merge_commit_sha": d["merge_commit_sha"],
+            "commits": 1,
+        }
+    )
+    target = {k: d[k] for k in ("application", "chart", "revision")}
+    target["observations"] = [sample(d, outcome="failed" if failed else "healthy")]
+    monkeypatch.setattr(
+        factory_rollout,
+        "verify",
+        lambda *_a: {"verified": not failed, "rollback_targets": [target]},
+    )
+    monkeypatch.setattr(
+        factory_rollout, "collect_rollback_signals", lambda _p, targets: targets
+    )
+    item = {**d, "approved_head_sha": "a" * 40}
+    assert not r.landing._verify_rollout(d["repo"], item)
+    later = NOW + timedelta(minutes=15)
+    monkeypatch.setattr(r.landing, "_now", lambda: later)
+    target["observations"] = [
+        sample(d, outcome="healthy", observed_at=later.isoformat())
+    ]
+    # A later read that loses its target scope cannot erase an earlier failure.
+    monkeypatch.setattr(
+        factory_rollout,
+        "verify",
+        lambda *_a: {
+            "verified": True,
+            **({} if failed else {"rollback_targets": [target]}),
+        },
+    )
+    assert r.landing._verify_rollout(d["repo"], item) is (not failed)
+    assert len(events(engine, "rollout_failed")) == int(failed)
+    assert len(events(engine, "rollout_verified")) == int(not failed)
+    assert not events(engine, "rollback_reserved")
+
+
+@pytest.mark.parametrize(
+    "message,is_revert",
+    [("feat: normal", False), ("This reverts commit " + "b" * 40, True)],
+)
+def test_source_details_reads_commit_evidence_before_reservation(
+    engine, runtime, monkeypatch, message, is_revert
+):
+    r, _issues, _writes, pulls = runtime
+    d = delivery(source_checked=False)
+    pulls.append(
+        {
+            "number": 1,
+            "merged": True,
+            "merge_commit_sha": d["merge_commit_sha"],
+            "commits": 2,
+        }
+    )
+    monkeypatch.setattr(
+        r.landing,
+        "github_list",
+        lambda _r, _p: [
+            {"commit": {"message": "feat: first"}},
+            {"commit": {"message": message}},
+        ],
+    )
+    enriched = r.source_details(d)
+    assert enriched["source_checked"] is True
+    assert enriched["is_revert"] is is_revert
+    assert enriched["commit_count"] == 2
+    if is_revert:
+        assert (
+            rollback.reserve(POLICY, enriched, sample(d), now=NOW)["state"]
+            == "needs_human"
+        )
+    pulls[0]["commits"] = 3
+    with pytest.raises(ValueError, match="inventory incomplete"):
+        r.source_details(d)
+
+
+def test_runtime_breaker_issue_created_once(engine, runtime, monkeypatch):
+    r, _issues, writes, _pulls = runtime
+    for n in range(1, 4):
+        d = delivery(n)
+        seed(engine, d)
+        rollback.reserve(POLICY, d, sample(d), now=NOW)
+    monkeypatch.setattr(r, "_dispatch", lambda *_a: None)
+    # No new reservations while disabled, but the already-opened breaker is reconciled.
+    for _ in range(2):
+        r.tick({"repo": "owner/repo"})
+    created = [w for w in writes if w[0] == "issues"]
+    assert len(created) == 1
+    assert created[0][1]["labels"] == ["needs-human"]
+
+
+@pytest.mark.parametrize("lost_response", [False, True])
+def test_source_worker_replays_same_pr_after_create(engine, monkeypatch, lost_response):
+    from factory.orchestration import factory_rollback_source as worker
+
+    d = delivery()
+    branch = "factory/rollback-" + rollback.identity(d)[:32]
+    result = {"branch": branch, "head_sha": "d" * 40}
+    created, calls = [], []
+
+    def run(_checkout, *args):
+        calls.append(args)
+        if args[:3] == ("git", "rev-parse", "FETCH_HEAD"):
+            return "b" * 40
+        if args[0] == "git":
+            assert args[1] in {"fetch", "push"}
+            return ""
+        if args[:3] == ("gh", "pr", "create"):
+            created.append({"number": 99})
+            if lost_response:
+                raise subprocess.CalledProcessError(1, args)
+            return "https://github.com/owner/repo/pull/99"
+        assert args[:2] == ("gh", "api")
+        path = args[2]
+        if path.endswith("/pulls/1"):
+            return json.dumps(
+                {
+                    "merged": True,
+                    "merge_commit_sha": d["merge_commit_sha"],
+                    "commits": 1,
+                    "head": {"sha": "b" * 40},
+                }
+            )
+        if "/commits?" in path:
+            return json.dumps([{"sha": "b" * 40}])
+        if "pulls?state=all" in path:
+            return json.dumps(created)
+        assert path.endswith("/pulls/99")
+        return json.dumps({"number": 99, "head": {"sha": result["head_sha"]}})
+
+    monkeypatch.setattr(worker, "_run", run)
+    monkeypatch.setattr(worker, "reverse_source", lambda *_a: result)
+    monkeypatch.setattr(worker, "validate_landed_range", lambda *_a: None)
+    for _ in range(2):
+        assert worker.publish("unused", d, 12)["pr_number"] == 99
+    assert len(created) == 1
+    assert len([c for c in calls if c[:3] == ("gh", "pr", "create")]) == 1
+
+
+def test_named_synthetic_requires_exact_revision(engine):
+    from core.platform_probe import PlatformProbe
+
+    from factory.orchestration.factory_rollout import _rollback_synthetic
+
+    PlatformProbe.__table__.create(engine)
+    d = delivery()
+    detail = {k: d[k] for k in ("application", "chart", "revision")}
+    with Session(engine) as db:
+        db.add(
+            PlatformProbe(
+                name="demo.ready", ok=False, checked_at=NOW, detail=json.dumps(detail)
+            )
+        )
+        db.commit()
+    result = _rollback_synthetic("demo.ready", d)
+    assert result["outcome"] == "failed"
+    assert result["signal"] == "synthetic:demo.ready"
+    assert _rollback_synthetic("other", d) is None
+    assert _rollback_synthetic("demo.ready", {**d, "revision": "1.2.4"}) is None

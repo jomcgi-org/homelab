@@ -1478,6 +1478,15 @@ def test_codex_synthetic_uses_release_derived_internal_api():
     assert container["resources"] == {"requests": {"cpu": "100m", "memory": "256Mi"}}
 
 
+def test_rollback_health_uses_release_derived_internal_api():
+    rendered = _render("alternate", [], namespace="another-namespace")
+    env = _env_by_name(_deployment_backend_env(rendered))
+    assert (
+        env["MONOLITH_INTERNAL_URL"]["value"]
+        == "http://alternate.another-namespace.svc:8000"
+    )
+
+
 @pytest.mark.parametrize("environment", ["prod", "gke"])
 def test_cd_health_renders_every_kargo_production_mapping(environment, renders):
     env = _env_by_name(_deployment_backend_env(renders[environment]))

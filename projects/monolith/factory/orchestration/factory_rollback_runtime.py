@@ -18,6 +18,21 @@ from factory.orchestration import factory_rollback as rollback
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 
 
+def terminal_failure(task_id):
+    with controls._read_session() as db:
+        return (
+            db.exec(
+                select(FactoryAudit.id)
+                .where(
+                    FactoryAudit.task_id == task_id,
+                    FactoryAudit.action == "rollout_failed",
+                )
+                .limit(1)
+            ).first()
+            is not None
+        )
+
+
 def observe_targets(policy, item, pull, targets):
     """Public landing caller: durable window and failure even while default-off."""
     if pull.get("merged") is not True or pull.get("merge_commit_sha") != item.get(
@@ -36,8 +51,7 @@ def observe_targets(policy, item, pull, targets):
             "merge_commit_sha": pull["merge_commit_sha"],
             "merged_at": pull["merged_at"],
             "commit_count": pull["commits"],
-            "title": pull.get("title"),
-            "body": pull.get("body"),
+            "source_checked": False,
             **{k: target[k] for k in ("application", "chart", "revision")},
         }
         observations = [
@@ -47,8 +61,6 @@ def observe_targets(policy, item, pull, targets):
             policy, delivery, observations, now=landing._now()
         )
         results.append(judged["verdict"])
-        if judged["verdict"] == "rollout_failed":
-            rollback.reserve(policy, delivery, judged["failure"], now=landing._now())
     if "rollout_failed" in results:
         return "rollout_failed"
     return (
@@ -64,6 +76,42 @@ def _rows(db, action):
         .where(FactoryAudit.action == action)
         .order_by(FactoryAudit.id)
     ).all()
+
+
+def source_details(delivery):
+    from factory.orchestration.factory_reverts import is_revert_source
+
+    repo, number = delivery["repo"], delivery["pr_number"]
+    pull = landing.github_get(repo, f"pulls/{number}")
+    if (
+        pull.get("merged") is not True
+        or pull.get("merge_commit_sha") != delivery["merge_commit_sha"]
+    ):
+        raise ValueError("source merge identity changed")
+    commits = []
+    for page in range(1, 11):
+        batch = landing.github_list(
+            repo, f"pulls/{number}/commits?per_page=100&page={page}"
+        )
+        commits.extend(batch)
+        if len(batch) < 100:
+            break
+    if (
+        type(pull.get("commits")) is not int
+        or pull["commits"] < 1
+        or len(commits) != pull["commits"]
+    ):
+        raise ValueError("source commit inventory incomplete")
+    is_revert = is_revert_source(pull) or any(
+        is_revert_source({"commit_message": c.get("commit", {}).get("message")})
+        for c in commits
+    )
+    return {
+        **delivery,
+        "commit_count": pull["commits"],
+        "source_checked": True,
+        "is_revert": is_revert,
+    }
 
 
 def _details(db, action):
@@ -128,14 +176,14 @@ def _recorded(action, token):
         return next((d for d in _details(db, action) if d.get("token") == token), None)
 
 
-def _find_issue(repo, marker):
+def _find_issue(repo, marker, since):
     # All states, no search-index lag. A truncated listing cannot authorize a
     # create. An unknown create is never retried even when the read is empty.
     matches = []
     for page in range(1, 11):
         batch = landing.github_list(
             repo,
-            f"issues?state=all&sort=created&direction=desc&per_page=100&page={page}",
+            f"issues?state=all&sort=created&direction=desc&since={since}&per_page=100&page={page}",
         )
         matches.extend(
             i
@@ -157,7 +205,8 @@ def _issue_once(delivery, token, title, body, labels):
             delivery["repo"], f"issues/{previous['issue_number']}"
         )
     marker = f"<!-- factory-rollback:{token} -->"
-    found = _find_issue(delivery["repo"], marker)
+    since = rollback.utc(delivery["merged_at"]).strftime("%Y-%m-%dT%H:%M:%SZ")
+    found = _find_issue(delivery["repo"], marker, since)
     if found is None:
         if not _record(delivery, "rollback_external_issue_started", token):
             return None
@@ -259,6 +308,7 @@ def _receive(delivery, issue, policy):
                 landing._now(),
                 receipt_id=receipt_id,
             )
+        return receipt_id
 
 
 def _dispatch(delivery, policy):
@@ -279,7 +329,8 @@ def _dispatch(delivery, policy):
         for label in issue.get("labels", [])
     ):
         return
-    _receive(delivery, issue, policy)
+    if _receive(delivery, issue, policy) is None:
+        return
     # The durable creation fence identifies one logical recovery worker, not a
     # new attempt on each tick. After a crash the receipt/branch is reconciled.
     rollback.begin_pr_creation(delivery, now=landing._now())
@@ -306,6 +357,39 @@ def _pull(delivery):
         if found
         else None
     )
+
+
+def _owned_merge(delivery, pull):
+    """The ordinary landing owner must attest its exact-head merge first."""
+    key = rollback.identity(delivery)
+    with controls._read_session() as db:
+        link = next(
+            (
+                d
+                for d in _details(db, "rollback_receipt")
+                if d.get("delivery_key") == key
+            ),
+            None,
+        )
+        row = db.get(FactoryReceipt, link["receipt_id"]) if link else None
+        if row is None or row.task_id is None:
+            return False
+        events = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == row.task_id,
+                FactoryAudit.action == "merged",
+                FactoryAudit.actor == landing.ACTOR,
+            )
+        ).all()
+        approved = landing._delivery_prs(db, [row.task_id]).get(row.task_id)
+        return approved == (
+            pull["number"],
+            (pull.get("head") or {}).get("sha"),
+        ) and any(
+            (detail := json.loads(event.detail_json)).get("pr_number") == pull["number"]
+            and detail.get("merge_commit_sha") == pull.get("merge_commit_sha")
+            for event in events
+        )
 
 
 def _reopen(delivery, pull):
@@ -386,6 +470,8 @@ def settle(delivery):
         row = controls._receipt(db, delivery["task_id"])
         if row is None:
             return False
+        if controls._quiescence_refusal(db, delivery["task_id"]):
+            return False
         task = db.get(SwarmTask, delivery["task_id"])
         if row.state in {"landing", "succeeded"} and not row.cancellation_requested:
             row.state = "failed"
@@ -421,11 +507,34 @@ def tick(policy):
         failures = _details(db, "rollout_failed")
         intents = _details(db, "rollback_reserved")
         breakers = _details(db, "rollback_breaker_opened")
-    for entry in failures[-200:]:
+        settled = {d["delivery_key"] for d in _details(db, "rollback_settled")}
+        issue_tokens = {
+            d["token"] for d in _details(db, "rollback_external_issue_observed")
+        }
+    reserved = {d["delivery_key"] for d in intents}
+    failures = [
+        d
+        for d in failures
+        if d["repo"] == policy["repo"] and d["delivery_key"] not in reserved | settled
+    ]
+    intents = [
+        d
+        for d in intents
+        if d["repo"] == policy["repo"] and d["delivery_key"] not in settled
+    ]
+    breakers = [
+        d
+        for d in breakers
+        if d["repo"] == policy["repo"] and "breaker:" + d["opening"] not in issue_tokens
+    ]
+    for entry in failures[:20]:
         delivery = entry["delivery"]
         if delivery["repo"] != policy["repo"]:
             continue
         try:
+            if not controls.rollback_policy(policy)["enabled"]:
+                continue  # Failure is already durable; no new effects while off.
+            delivery = source_details(delivery)
             decision = rollback.reserve(
                 policy, delivery, entry["failure"], now=landing._now()
             )
@@ -438,9 +547,9 @@ def tick(policy):
                     + recovery_prompt(delivery),
                     ["needs-human"],
                 )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate an unavailable source; preserve its ledger
             landing._error(delivery["task_id"], "rollback_reserve", exc)
-    for entry in breakers[-200:]:
+    for entry in breakers[:20]:
         delivery = entry.get("delivery")
         if delivery is None or delivery["repo"] != policy["repo"]:
             continue
@@ -454,9 +563,9 @@ def tick(policy):
                 + recovery_prompt(delivery),
                 ["needs-human"],
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - an uncertain write is reconciled, never replayed
             landing._error(delivery["task_id"], "rollback_breaker_issue", exc)
-    for entry in intents[-200:]:
+    for entry in intents[:20]:
         delivery = entry["delivery"]
         if delivery["repo"] != policy["repo"]:
             continue
@@ -465,11 +574,13 @@ def tick(policy):
             if pull is None:
                 _dispatch(delivery, policy)
                 continue
+            if pull.get("merged") is True and not _owned_merge(delivery, pull):
+                continue
             observed = rollback.observe_pr(delivery, pull, now=landing._now())
             if observed["state"] == "rollback_landed":
                 _reopen(delivery, pull)
                 settle(delivery)
             # An existing branch/PR is the same recovery receipt. The normal
             # conductor discovers its head and owns re-review and queueing.
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - keep independent recovery receipts progressing
             landing._error(delivery["task_id"], "rollback_reconcile", exc)

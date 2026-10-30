@@ -1117,8 +1117,10 @@ def _observe(repo: str, item: dict) -> None:
 def _verify_rollout(repo: str, item: dict) -> bool:
     """One bounded observation per minute; unknown evidence keeps landing open."""
     from factory.orchestration import factory_rollout
+    from factory.orchestration import factory_rollback_runtime
 
-    if item.get("rollout_verified"):
+    failed = factory_rollback_runtime.terminal_failure(item["task_id"])
+    if item.get("rollout_verified") and not failed:
         return True
     previous = item.get("rollout_observation") or {}
     if previous.get("observed_at"):
@@ -1134,9 +1136,12 @@ def _verify_rollout(repo: str, item: dict) -> bool:
         except (httpx.HTTPError, ValueError) as exc:
             _error(item["task_id"], "rollout_identity", exc)
             return False
-    result = factory_rollout.verify(repo, merge_sha, item["pr_number"])
+    result = (
+        {"verified": False, "reason": "rollout_failed"}
+        if failed
+        else factory_rollout.verify(repo, merge_sha, item["pr_number"])
+    )
     if result.get("rollback_targets"):
-        from factory.orchestration import factory_rollback_runtime
         from factory.orchestration.factory_models import FactoryControl
 
         # Every network call finishes before the durable window core opens its
@@ -1144,7 +1149,10 @@ def _verify_rollout(repo: str, item: dict) -> bool:
         try:
             pull = github_get(repo, f"pulls/{item['pr_number']}")
             with _read_session() as db:
-                policy = json.loads(db.get(FactoryControl, "factory").policy_json)
+                policy = {
+                    **json.loads(db.get(FactoryControl, "factory").policy_json),
+                    "repo": repo,
+                }
             targets = factory_rollout.collect_rollback_signals(
                 policy, result["rollback_targets"]
             )

@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
+import os
 import posixpath
 import re
 import time
@@ -30,6 +32,7 @@ WORKLOADS = {"Deployment", "StatefulSet", "DaemonSet"}
 MAX_PUBLICATION_CANDIDATES = 8
 _recent: dict[tuple, tuple[float, object]] = {}
 READ_CACHE_TTL_SECONDS = 30
+logger = logging.getLogger(__name__)
 
 
 def _detached_failure(exc: Exception) -> Exception:
@@ -1132,7 +1135,9 @@ async def _rollback_network_signals(targets):
             name, revision = target["application"], target["revision"]
             signals = []
             try:
-                proof = await verify_deployment(name, revision)
+                proof = await asyncio.wait_for(
+                    verify_deployment(name, revision), timeout=5
+                )
                 kargo = proof.get("kargo") or {}
                 promotion = (
                     kargo.get("current_promotion") or kargo.get("last_promotion") or {}
@@ -1150,15 +1155,16 @@ async def _rollback_network_signals(targets):
                             "observed_at": datetime.now(timezone.utc).isoformat(),
                         }
                     )
-            except Exception:  # noqa: BLE001 - missing evidence remains unknown
-                pass
+            except Exception as exc:  # noqa: BLE001 - missing evidence remains unknown
+                logger.debug(
+                    "rollback Kargo evidence unavailable: %s", type(exc).__name__
+                )
             # This is the existing private monolith revision endpoint. Never
             # follow URLs supplied by issue text or probe data.
-            if name == "monolith" and target["chart"] == "monolith":
+            internal_url = os.environ.get("MONOLITH_INTERNAL_URL", "")
+            if internal_url and name == "monolith" and target["chart"] == "monolith":
                 try:
-                    response = await client.get(
-                        "http://monolith.monolith.svc.cluster.local:8000/healthz"
-                    )
+                    response = await client.get(internal_url.rstrip("/") + "/healthz")
                     body = response.json() if len(response.content) <= 65536 else {}
                     if body.get("chart_version") == revision:
                         outcome = (
@@ -1177,49 +1183,54 @@ async def _rollback_network_signals(targets):
                                 "observed_at": datetime.now(timezone.utc).isoformat(),
                             }
                         )
-                except Exception:  # noqa: BLE001 - transport failure is not service failure
-                    pass
-            result.append(
-                {**target, "observations": [*target["observations"], *signals]}
-            )
+                except Exception as exc:  # noqa: BLE001 - transport failure is not service failure
+                    logger.debug(
+                        "rollback revision health unavailable: %s", type(exc).__name__
+                    )
+            target["observations"].extend(signals)
+            result.append(target)
     return result
 
 
 def collect_rollback_signals(policy, targets):
     """Network first, then fresh synchronous sessions on the landing thread."""
-    from core.platform_probe import PlatformProbe
     from factory.orchestration import factory_controls as controls
 
     async def bounded():
-        return await asyncio.wait_for(_rollback_network_signals(targets), timeout=30)
+        return await asyncio.wait_for(_rollback_network_signals(targets), timeout=28)
 
     try:
         targets = asyncio.run(bounded())
-    except Exception:  # noqa: BLE001 - retain the available Argo observation
-        pass
+    except Exception as exc:  # noqa: BLE001 - retain observations already collected
+        logger.debug("rollback signals incomplete: %s", type(exc).__name__)
     config = controls.rollback_policy(policy)
-    with controls._read_session() as db:
-        for target in targets:
-            signal = config["charts"].get(target["chart"], {}).get("synthetic_signal")
-            if not signal:
-                continue
+    for target in targets:
+        signal = config["charts"].get(target["chart"], {}).get("synthetic_signal")
+        if signal and (sample := _rollback_synthetic(signal, target)):
+            target["observations"].append(sample)
+    return targets
+
+
+def _rollback_synthetic(signal, target):
+    from core.platform_probe import PlatformProbe
+    from factory.orchestration import factory_controls as controls
+
+    try:
+        with controls._read_session() as db:
             row = db.get(PlatformProbe, signal)
             if row is None:
-                continue
-            try:
-                detail = json.loads(row.detail)
-            except (TypeError, ValueError):
-                continue
+                return None
+            detail = json.loads(row.detail)
             if not isinstance(detail, dict) or any(
                 detail.get(k) != target[k] for k in ("application", "chart", "revision")
             ):
-                continue
-            target["observations"].append(
-                {
-                    "signal": "synthetic:" + signal,
-                    "available": True,
-                    "outcome": "healthy" if row.ok else "failed",
-                    "observed_at": row.checked_at.isoformat(),
-                }
-            )
-    return targets
+                return None
+            return {
+                "signal": "synthetic:" + signal,
+                "available": True,
+                "outcome": "healthy" if row.ok else "failed",
+                "observed_at": row.checked_at.isoformat(),
+            }
+    except Exception as exc:  # noqa: BLE001 - missing probe never masks other evidence
+        logger.debug("rollback synthetic unavailable: %s", type(exc).__name__)
+        return None

@@ -60,6 +60,8 @@ spec:
               containerPort: 8000
               protocol: TCP
           env:
+            - name: MONOLITH_INTERNAL_URL
+              value: "http://{{ include "monolith.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.apiPort }}"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
