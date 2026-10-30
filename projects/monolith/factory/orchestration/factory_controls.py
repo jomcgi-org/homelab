@@ -89,6 +89,7 @@ _POLICY_KEYS = {
     "auto_merge",
     "repos",
     "backlog_refill",
+    "rollback",
 }
 _OPTIONAL_POLICY_KEYS = {
     "reviewer_model",
@@ -107,6 +108,7 @@ _OPTIONAL_POLICY_KEYS = {
     "auto_merge",
     "repos",
     "backlog_refill",
+    "rollback",
 }
 
 
@@ -749,6 +751,7 @@ def validate_policy(policy: dict) -> dict:
     result["progress_watchdog"] = _validate_progress_watchdog(
         policy.get("progress_watchdog", {})
     )
+    result["rollback"] = rollback_policy(policy)
     # Landing is the one factory step that writes to the repository rather
     # than reading it, so it is a flag of its own and defaults off. A policy
     # written before landing existed reads as false and lands nothing.
@@ -765,6 +768,40 @@ def validate_policy(policy: dict) -> dict:
     if result["turn_timeout_seconds"] > result["task_timeout_seconds"]:
         raise ValueError("turn timeout exceeds task timeout")
     result["base_branch"] = _text(policy["base_branch"], "base_branch", 256)
+    return result
+
+
+def rollback_policy(policy: dict) -> dict:
+    """Operator-owned, default-off rollback configuration; no deployment flips."""
+    value = policy.get("rollback", {})
+    if not isinstance(value, dict) or set(value) - {
+        "enabled", "window_minutes", "max_per_hour", "charts"
+    }:
+        raise ValueError("invalid rollback policy")
+    enabled = value.get("enabled", False)
+    if type(enabled) is not bool:
+        raise ValueError("invalid rollback.enabled")
+    result = {
+        "enabled": enabled,
+        "window_minutes": _integer(value.get("window_minutes", 15), "rollback.window_minutes", 1, 1440),
+        "max_per_hour": _integer(value.get("max_per_hour", 2), "rollback.max_per_hour", 1, 2),
+        "charts": {},
+    }
+    charts = value.get("charts", {})
+    if not isinstance(charts, dict) or len(charts) > 100:
+        raise ValueError("invalid rollback.charts")
+    for name, override in charts.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", name):
+            raise ValueError("invalid rollback chart name")
+        if not isinstance(override, dict) or set(override) - {"window_minutes", "synthetic_signal"}:
+            raise ValueError("invalid rollback chart override")
+        parsed = {"window_minutes": _integer(override.get("window_minutes", result["window_minutes"]), "rollback chart window_minutes", 1, 1440)}
+        if "synthetic_signal" in override:
+            signal = override["synthetic_signal"]
+            if not isinstance(signal, str) or not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_.:-]{0,127}", signal):
+                raise ValueError("invalid rollback synthetic_signal")
+            parsed["synthetic_signal"] = signal
+        result["charts"][name] = parsed
     return result
 
 
