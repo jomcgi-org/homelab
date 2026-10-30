@@ -83,6 +83,7 @@ agents:
     repo: jomcgi-org/homelab
     branch: main
 swarm:
+  factoryPlannerHoldRefusalEnabled: false
   enabled: false
 
 semgrep:

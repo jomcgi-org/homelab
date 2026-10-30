@@ -28,9 +28,24 @@ import pytest
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_planner_hold_refusal_is_default_off_and_configurable(enabled):
+@pytest.mark.parametrize("overlay", ["chart", "hub", "dev", "recovery"])
+def test_planner_hold_refusal_is_default_off_and_configurable(enabled, overlay):
     chart = find_chart_dir()
-    command = ["helm", "template", "test", str(chart), "--set", "swarm.enabled=true"]
+    command = [os.environ.get("HELM_BIN", "helm"), "template", "test", str(chart)]
+    if overlay == "hub":
+        files = [
+            chart.parent / "deploy" / name
+            for name in ("values.yaml", "values-gke.yaml")
+        ]
+    elif overlay in ("dev", "recovery"):
+        files = [chart.parent / "dev/deploy/values.yaml"]
+        if overlay == "recovery":
+            files.append(chart.parent / "dev/deploy/values-recovery-gke.yaml")
+    else:
+        files = []
+    for path in files:
+        command += ["--values", str(path)]
+    command += ["--set", "swarm.enabled=true"]
     if enabled:
         command += ["--set", "swarm.factoryPlannerHoldRefusalEnabled=true"]
     rendered = subprocess.check_output(command, text=True)
