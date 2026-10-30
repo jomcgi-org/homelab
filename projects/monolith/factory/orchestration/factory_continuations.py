@@ -78,7 +78,7 @@ def try_grant(
             return False, "continuation_control_refused"
         if not controls.execution_capacity_available(db, control, row):
             return False, "continuation_waiting"
-        pinned = json.loads(row.policy_json)
+        pinned = controls._effective_policy(db, row)
         if (
             pinned != policy
             or graph.current_version(task["id"], session=db) != expected_version

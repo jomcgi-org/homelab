@@ -16958,6 +16958,96 @@ def continuation_task(monkeypatch):
     return task, policy
 
 
+@pytest.mark.parametrize("restricted", [False, True])
+@pytest.mark.parametrize("constraint", [None, "policy", "revision", "nonrenewable"])
+def test_continuation_after_model_restriction_preserves_existing_fences(
+    feedback_db, monkeypatch, restricted, constraint
+):
+    from sqlmodel import SQLModel
+    from factory.execution.models import AgentSession, PendingMessage
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_policy_amendment as amendments
+
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "false")
+    feedback_db.update_execution_options(
+        schema_translate_map={"swarm": None, "agent_sessions": None}
+    )
+    SQLModel.metadata.create_all(
+        feedback_db, tables=[AgentSession.__table__, PendingMessage.__table__]
+    )
+    task, _ = continuation_task(monkeypatch)
+    with Session(feedback_db) as db, db.begin():
+        row = controls._receipt(db, task["id"])
+        receipt_id = row.id
+        original = json.loads(row.policy_json)
+        original["allowed_models"].append("spark")
+        row.policy_json = json.dumps(original)
+    if restricted:
+        controls.set_control("pause_task", "operator", task_id=task["id"])
+        overlay = {"remove_models": ["spark"]}
+        proposal = amendments.preview(receipt_id, overlay, "Remove unused Spark")
+        amendments.apply(
+            receipt_id,
+            overlay,
+            "Remove unused Spark",
+            actor="operator",
+            request_key="remove-spark",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+        controls.set_control("resume_task", "operator", task_id=task["id"])
+    before = controls.task_snapshot(task["id"])
+    policy = before["policy"]
+    nodes = conductor.graph.load_graph(task["id"])
+    runs = conductor.graph.node_runs(task["id"])
+    pending = conductor._pending_correction(nodes, runs)
+    revision = conductor.graph.current_version(task["id"])
+    if constraint == "policy":
+        policy = {**policy, "task_timeout_seconds": policy["task_timeout_seconds"] + 1}
+    elif constraint == "revision":
+        revision -= 1
+    elif constraint == "nonrenewable":
+        with Session(feedback_db) as db, db.begin():
+            row = controls._receipt(db, task["id"])
+            direction = json.loads(row.direction_json or "{}")
+            row.direction_json = json.dumps(
+                {
+                    **direction,
+                    "nonrenewable_recovery": {"actor": "operator"},
+                }
+            )
+    result = conductor._insert_review_round(
+        task,
+        policy,
+        nodes,
+        runs,
+        pending,
+        1,
+        4,
+        revision,
+    )
+    if constraint is None:
+        assert result == (True, None)
+        assert controls.continuation_grant(task["id"])["node_keys"] == [
+            "correct_1",
+            "review_1",
+        ]
+    else:
+        assert result == (
+            False,
+            "nonrenewable_recovery"
+            if constraint == "nonrenewable"
+            else "continuation_changed",
+        )
+        assert controls.continuation_grant(task["id"]) is None
+        assert conductor.graph.load_graph(task["id"]) == nodes
+    after = controls.task_snapshot(task["id"])
+    assert after["policy"] == before["policy"]
+    assert after["starts"] == before["starts"]
+    assert ("spark" in after["policy"]["allowed_models"]) is (not restricted)
+    if constraint == "nonrenewable":
+        assert after["task_paused"] is True
+
+
 def test_continuation_keeps_task_limits_and_grants_only_one_exact_pair(
     feedback_db, monkeypatch
 ):
