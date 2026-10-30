@@ -25,7 +25,7 @@ js_library(
         "src/lib/private/components/ModeToggle.svelte",
         "src/lib/private/components/ReviewCard.svelte",
         "src/lib/private/components/UndoToast.svelte",
-        "src/lib/public/styles/design-system.css",
+        "src/lib/public/styles/technical-drawing.css",
         "src/lib/styles/shared/tokens.css",
     ],
     deps = [
