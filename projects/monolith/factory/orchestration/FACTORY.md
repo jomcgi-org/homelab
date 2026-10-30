@@ -1228,8 +1228,8 @@ human-owned decision. `defer` requires a concrete prerequisite or external
 event preventing progress. Missing design detail alone justifies neither.
 Brief-only restrictions and typed gate effects still apply. A new
 `leave_unmerged` hold requires server-observed operator provenance when
-`FACTORY_PLANNER_HOLD_REFUSAL_ENABLED` is enabled. Existing holds remain binding, and the
-authorized landing owner still decides whether merge and rollout may proceed.
+`FACTORY_PLANNER_HOLD_REFUSAL_ENABLED` is enabled. Existing holds remain binding.
+The authorized landing owner still decides whether merge and rollout may proceed.
 
 Closing is gated twice. It needs `close_enabled`, and it needs room under
 `max_closes_per_day`, counted from the `intake_closed` audits of the last 24
@@ -3626,13 +3626,16 @@ threshold re-arms from the current turn count instead of being read as turns.
 
 **Why.** A landing hold is an operator act (#7449). With
 `FACTORY_PLANNER_HOLD_REFUSAL_ENABLED=true`, the server accepts an unmerged hold
-only from an `operator:` cause or an authoritative work-item `human` label.
+only from an `operator:` cause, an authoritative work-item `human` label or a
+durable operator handoff to human ownership.
 Model prose and artifact fields cannot establish provenance. True effects keep
 the restricted human decision path and grant no autonomous authority. Refused
 planner gates persist `landing_hold_refused` evidence and actionable feedback
 before any accepted gate or hold is written. Both admission paths exclude only
 holds with matching server-recorded planner provenance and refusal identity;
 unknown and operator holds remain binding. The operator release path remains.
+Explicit operator reassertions remain binding after a prior planner refusal;
+unrelated readmission preserves refusal evidence.
 The flag ships false in code, chart defaults and deployment overlays. After
 #7450 lands, one verified disabled rollout precedes separately reviewed GitOps
 activation coordinated with #7451. Disabling the flag restores prior hold

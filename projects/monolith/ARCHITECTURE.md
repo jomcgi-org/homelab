@@ -436,7 +436,8 @@ by being added (#6463). See [repositories](factory/orchestration/FACTORY.md#serv
 ### Capacity and delivery rationale
 
 **Why.** Operator provenance owns landing holds (#7449): a server-supplied
-`operator:` cause or authoritative `human` issue ownership can retain an
+`operator:` cause or authoritative `human` issue ownership (including a durable
+operator handoff) can retain an
 unmerged hold; a true declared effect still requires the human decision path.
 Planner text supplies neither authority nor provenance. The default-off
 `FACTORY_PLANNER_HOLD_REFUSAL_ENABLED` stages refusal audits and exact-provenance
