@@ -6,6 +6,12 @@ import { setPage } from "../../../test/profile-page.svelte.js";
 import { reroute } from "../../hooks.js";
 import * as cv from "./cv/cv-data.js";
 
+// The ships page mounted by the shared route harness imports MapLibre's
+// worker URL, which the Bazel test sandbox cannot resolve.
+vi.mock("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url", () => ({
+  default: "/test-worker.js",
+}));
+
 vi.mock("$app/state", () => import("../../../test/profile-page.svelte.js"));
 vi.mock("$app/stores", () => import("../../../test/profile-stores.js"));
 
