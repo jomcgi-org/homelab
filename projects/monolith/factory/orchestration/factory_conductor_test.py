@@ -1863,11 +1863,22 @@ def test_tick_admits_into_quiescent_waiting_slots(
         monkeypatch.setattr(module, name, lambda *a, **kw: None)
     monkeypatch.setattr(agent_board_poll, "eligible_lanes", lambda lanes: lanes)
     intake_calls = []
-    monkeypatch.setattr(
-        factory_intake_loop,
-        "intake_tick",
-        lambda *a, **kw: intake_calls.append(kw["lanes"]),
-    )
+
+    def observe_intake(
+        actual_policy,
+        *,
+        generation,
+        lanes=None,
+        defer_evidence=False,
+        evidence_sink=None,
+        observe_only=False,
+    ):
+        assert actual_policy["repo"] == policy["repo"]
+        assert generation == policy.get("generation", 0)
+        intake_calls.append((lanes, observe_only))
+        return []
+
+    monkeypatch.setattr(factory_intake_loop, "intake_tick", observe_intake)
     reconciled = []
     monkeypatch.setattr(
         conductor, "reconcile_task", lambda task_id, *a: reconciled.append(task_id)
@@ -1879,7 +1890,10 @@ def test_tick_admits_into_quiescent_waiting_slots(
     assert after["lanes"]["delivery"]["active"] == 2
     assert len(after["active_tasks"]) == 4 - len(blockers)
     assert after["lanes"]["delivery"]["queued"] == 1 + len(blockers)
-    assert len(intake_calls) == int(len(blockers) < 2)
+    assert len(intake_calls) == 1
+    assert intake_calls[0][1] is (len(blockers) == 2)
+    if len(blockers) < 2:
+        assert intake_calls[0][0]
     assert reconciled == waiting_ids
     with Session(feedback_db) as db:
         for task_id in waiting_ids:
@@ -1914,13 +1928,16 @@ def test_tick_polls_once_and_keeps_blocked_queued_lane_out_of_admission(monkeypa
 
     monkeypatch.setattr(agent_board_poll, "eligible_lanes", eligible)
     intake_lanes = []
-    monkeypatch.setattr(
-        factory_intake_loop,
-        "intake_tick",
-        lambda _policy, *, generation, lanes: intake_lanes.append(
-            (generation, tuple(lanes))
-        ),
-    )
+
+    def observe_intake(
+        actual_policy, *, generation, lanes, defer_evidence, evidence_sink
+    ):
+        assert actual_policy is policy
+        assert defer_evidence is True and evidence_sink == []
+        intake_lanes.append((generation, tuple(lanes)))
+        return []
+
+    monkeypatch.setattr(factory_intake_loop, "intake_tick", observe_intake)
     admission_lanes = []
 
     def admit(_actor, *, lanes):
