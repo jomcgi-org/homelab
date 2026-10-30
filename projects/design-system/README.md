@@ -57,29 +57,30 @@ link, so the generated target is dead weight that shows up as permanent
 
 ## Current state, honestly
 
-The contract is wired; production pages do not consume the shared primitives.
-As of this README:
+The contract is wired and the sheet pages consume `Button` for their
+controls (ships, stars, hikes, notes, trips). As of this README:
 
 - The package is linked and the stylesheet loads on every route. The
   technical-drawing sheet (`.td` in the frontend's
   `technical-drawing.css`) derives every `--ds-*` role from its page
-  tokens, which is the one production scope that defines them; no
-  production page consumes a primitive yet. The package's own
-  technical-drawing export stays opt-in for surfaces outside a sheet.
+  tokens, which is the one production scope that defines them. The
+  package's own technical-drawing export stays opt-in for surfaces
+  outside a sheet.
 - The five conflicting public tokens are scoped to
   `body:has(.public-theme)`, while the shared defaults remain at `:root`.
   The public layout mounts that marker, so the legacy brutalist palette
   follows the rendered surface rather than stylesheet import order; the
   root error boundary moved to the sheet and no longer needs it.
 - Opt-in controls and navigation primitives exist under `components/`, with
-  synthetic SSR/hydration fixtures. No production page consumes them. There is
-  no `jomcgi.dev/design` gallery or Storybook. #4449 requires no migration.
+  synthetic SSR/hydration fixtures. The sheet apps consume `Button`; the
+  rest have no production consumer. There is no `jomcgi.dev/design`
+  gallery or Storybook. #4449 requires no migration.
 - #6875 adds an opt-in data-display primitive set under `data-display/`,
   exercised by synthetic fixtures only. No production page consumes it.
 
-The live styling rules are the shared sheet and, until each surface
-migrates, the three legacy stylesheets named in `.impeccable.md`; that file
-is the document to follow when touching any of them. The `--ds-*` contract
+The live styling rules are the shared sheet; the legacy stylesheets named
+in `.impeccable.md` have no rendering page left and retire under #7160.
+That file is the document to follow when touching any of them. The `--ds-*` contract
 migration of #4449 is not outstanding work: a page adopts the sheet, and
 the roles come with it.
 

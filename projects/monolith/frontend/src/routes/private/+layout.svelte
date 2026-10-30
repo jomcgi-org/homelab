@@ -4,9 +4,9 @@
 
   let { children } = $props();
 
-  // Minimal private-tier chrome: the shared Nav is suppressed for the whole
-  // tier (see routes/+layout.svelte), so every private page other than the
-  // dashboard root gets a small "back to dashboard" link.
+  // Minimal private-tier chrome: the tier has no nav bar (the dashboard
+  // root is the nav), so every private page other than the dashboard root
+  // gets a small "back to dashboard" link.
   //
   // Suppressed on:
   // - the dashboard root itself ("/"): it IS the nav

@@ -2164,9 +2164,13 @@ site index and the scheme chrome under `src/lib/public/components/`. Four
 separate systems were kept apart on purpose until then; `.impeccable.md`
 records each one's vetoes. The cost was four sets of chrome, three duplicated
 page vocabularies and a public baseline no other page could share. The
-engineering index, the docs and the root error page moved first; #7016 tracks
-the rest, surface by surface, and the three legacy stylesheets leave the tree
-with their last consumer.
+engineering index, the docs and the root error page moved first, then home
+and the CV; on 2026-10-30 the public apps, the Ember pages and stories, the
+private tools and the friends screens followed, the brutalist nav retired,
+and the Grimoire ledger theme became a bridge onto the sheet tokens. #7016
+tracks live acceptance; the legacy stylesheets leave the tree under #7160,
+the brutalist one once the Grimoire rehearsal clears its removal from the
+root error page.
 
 ## 9. Observability and health
 
@@ -2324,7 +2328,7 @@ this table when the work ships or the issue closes without it.
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
 | Bound oversized source coverage with exact literal witnesses and reconsider deterministic blocks by cited blob identity | section 6, source coverage | #6995 | default-off contract; broader behavioral and negative claims require complete evidence |
-| Every public, private and friends surface renders in the technical-drawing language; the brutalist, ember and grimoire stylesheets retire with their last consumer | section 8, visual language | #7016 | foundation, `/engineering`, `/docs` and the root error page shipped; home, cv, the apps, the private and friends tiers remain |
+| Every public, private and friends surface renders in the technical-drawing language; the brutalist, ember and grimoire stylesheets retire with their last consumer | section 8, visual language | #7016 | every tier renders on the sheet in the repository; live acceptance of the rollout and the final stylesheet retirement (#7160, after the Grimoire rehearsal) remain |
 | Sol-first planner implementation follows pool routing and role effort, with structured complex-work overrides | The factory conductor, implementation admission | #6992 | admission fix staged; merge and deployment held for operator confirmation |
 | Restore Astra planning and refinement, retain Sol routine implementation and Opus independent review | #6983, factory model pools | #6983 | follow-up migration staged for the already-allowed Astra policy; rollout and live Astra planner observation remain |
 | Retire the household gateway and its exclusively owned schema, retaining shared data | section 5, Household gateway retired | #6915 | repository retirement staged; merge, rollout, migration and shared-job acceptance remain |
