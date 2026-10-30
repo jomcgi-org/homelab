@@ -1,4 +1,5 @@
 <script>
+  import { observeScheme } from "./observe-scheme.js";
   // Small, non-interactive, pre-settled canvas graph. Same simulation and
   // draw mechanics as explore/ExploreCanvas.svelte (deterministic id-hash
   // placement, synchronous settle before the first paint, fade+scale reveal
@@ -52,7 +53,7 @@
   let colors = { line: "", ink: "", dim: "", faint: "", accent: "", paper: "" };
   let typeColors = {};
 
-  function readVar(name, fallback) {
+  function readVar(name, fallback = getComputedStyle(canvasEl).color) {
     if (!canvasEl) return fallback;
     const v = getComputedStyle(canvasEl).getPropertyValue(name).trim();
     return v || fallback;
@@ -61,12 +62,12 @@
   function refreshColors() {
     if (!canvasEl) return;
     colors = {
-      line: readVar("--grim-line", "#999"),
-      ink: readVar("--grim-ink", "#111"),
-      dim: readVar("--grim-text-dim", "#666"),
-      faint: readVar("--grim-text-faint", "#999"),
-      accent: readVar("--grim-accent", "#33507a"),
-      paper: readVar("--grim-paper", "#fff"),
+      line: readVar("--stroke"),
+      ink: readVar("--ink"),
+      dim: readVar("--ink-2"),
+      faint: readVar("--ink-2"),
+      accent: readVar("--accent-ink"),
+      paper: readVar("--sheet"),
     };
     const nextTypeColors = {};
     for (const n of sim) {
@@ -315,7 +316,7 @@
       const isFocus = n.id === focusId;
       ctx.font =
         (isFocus ? "600 12px " : "11px ") +
-        '"Iowan Old Style", Palatino, Georgia, serif';
+        getComputedStyle(canvasEl).getPropertyValue("--font-ui");
       const ty = p.y + r + 4;
       ctx.lineWidth = 3;
       ctx.strokeStyle = colors.paper;
@@ -406,17 +407,12 @@
     const ro = new ResizeObserver(() => resize());
     ro.observe(stageEl);
 
-    const root = canvasEl.closest(".grimoire");
-    let mo = null;
-    if (root) {
-      mo = new MutationObserver(() => refreshColors());
-      mo.observe(root, { attributes: true, attributeFilter: ["class"] });
-    }
+    const stopScheme = observeScheme(refreshColors);
 
     return () => {
       if (rafId) cancelAnimationFrame(rafId);
       ro.disconnect();
-      mo?.disconnect();
+      stopScheme();
     };
   });
 </script>

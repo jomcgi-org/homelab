@@ -162,8 +162,8 @@
   }
 </script>
 
-<div class="library-page">
-  <h1 class="grim-title lib-title">Library</h1>
+<div class="library-page edition">
+  <h1 class="grim-title lib-title ed-lead">Library</h1>
 
   {#if !loading && !error && books.length > 0}
     <p class="summary">
@@ -318,7 +318,7 @@
 
   .summary {
     margin-top: 14px;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font-size: 13.5px;
     font-variant-numeric: tabular-nums;
   }
@@ -326,7 +326,7 @@
   .legend {
     margin-top: 8px;
     max-width: 620px;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     font-size: 12px;
     line-height: 1.5;
   }
@@ -337,9 +337,9 @@
     margin-top: 16px;
     padding: 3px;
     gap: 3px;
-    background: var(--grim-surface-2);
-    border: 1px solid var(--grim-line);
-    border-radius: 8px;
+    background: var(--band);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
   }
 
   .filter-btn {
@@ -348,9 +348,9 @@
     gap: 6px;
     padding: 6px 14px;
     border: 0;
-    border-radius: 6px;
+    border-radius: 0;
     background: transparent;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font: inherit;
     font-size: 12px;
     font-weight: 600;
@@ -362,22 +362,21 @@
   }
 
   .filter-btn:hover {
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .filter-btn.active {
-    background: var(--grim-paper);
-    color: var(--grim-ink);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+    background: var(--sheet);
+    color: var(--ink);
   }
 
   .filter-n {
     font-variant-numeric: tabular-nums;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
 
   .filter-btn.active .filter-n {
-    color: var(--grim-accent);
+    color: var(--accent-ink);
   }
 
   .lib-group {
@@ -389,20 +388,20 @@
     align-items: baseline;
     gap: 10px;
     padding: 0 8px 8px;
-    border-bottom: 1px solid var(--grim-line);
+    border-bottom: 1px solid var(--stroke);
   }
 
   .gh .kind {
     font-size: 11px;
     letter-spacing: 0.18em;
     text-transform: uppercase;
-    color: var(--grim-accent);
+    color: var(--accent-ink);
     font-weight: 700;
   }
 
   .gh .kn {
     font-size: 11px;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     font-variant-numeric: tabular-nums;
   }
 
@@ -428,17 +427,17 @@
     gap: 9px;
     text-decoration: none;
     color: inherit;
-    border-radius: 10px;
+    border-radius: 0;
   }
 
   .cover {
     position: relative;
     display: block;
     aspect-ratio: 2 / 3;
-    border-radius: 8px;
+    border-radius: 0;
     overflow: hidden;
-    background: var(--grim-surface-2);
-    border: 1px solid var(--grim-line);
+    background: var(--band);
+    border: 1px solid var(--stroke);
     transition:
       transform 0.16s ease-out,
       box-shadow 0.16s ease-out;
@@ -461,12 +460,11 @@
     justify-content: center;
     width: 100%;
     height: 100%;
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: clamp(22px, 5vw, 30px);
     font-weight: 700;
     letter-spacing: 0.04em;
-    color: var(--grim-on-accent);
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    color: var(--ink);
   }
 
   .cover.muted .cover-generated {
@@ -476,7 +474,6 @@
   /* Readable books get a page-lift on hover: transform/shadow only. */
   .card:not(.locked):hover .cover {
     transform: translateY(-4px);
-    box-shadow: 0 10px 18px rgba(0, 0, 0, 0.14);
   }
 
   .card.locked {
@@ -492,7 +489,7 @@
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    border-radius: 5px;
+    border-radius: 0;
     padding: 3px 6px;
     line-height: 1.3;
   }
@@ -500,9 +497,9 @@
   .locked-badge {
     top: 6px;
     left: 6px;
-    color: var(--grim-ink);
-    background: rgba(255, 255, 255, 0.88);
-    border: 1px solid var(--grim-line);
+    color: var(--ink);
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
   }
 
   .read-badge {
@@ -510,8 +507,8 @@
     bottom: 6px;
     left: 6px;
     justify-content: center;
-    color: var(--grim-on-accent);
-    background: var(--grim-accent);
+    color: var(--sheet);
+    background: var(--accent-ink);
     opacity: 0;
     transform: translateY(4px);
     transition:
@@ -531,7 +528,7 @@
   }
 
   .title {
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: 15px;
     font-weight: 600;
     line-height: 1.25;
@@ -539,12 +536,12 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .kind-label {
     font-size: 10px;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
 
   .chips {
@@ -556,9 +553,9 @@
 
   .chip {
     font-size: 10.5px;
-    color: var(--grim-text-dim);
-    background: var(--grim-surface-2);
-    border-radius: 4px;
+    color: var(--ink-2);
+    background: var(--band);
+    border-radius: 0;
     padding: 2px 6px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
@@ -569,9 +566,9 @@
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: var(--grim-accent);
-    background: var(--grim-accent-soft);
-    border-radius: 4px;
+    color: var(--accent-ink);
+    background: var(--band);
+    border-radius: 0;
     padding: 2px 6px;
   }
 
@@ -585,7 +582,7 @@
   }
 
   .empty-help {
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font-size: 13px;
   }
 
@@ -603,13 +600,8 @@
 
   .skeleton-card {
     aspect-ratio: 2 / 3;
-    border-radius: 8px;
-    background: linear-gradient(
-      90deg,
-      var(--grim-surface-2) 25%,
-      transparent 37%,
-      var(--grim-surface-2) 63%
-    );
+    border-radius: 0;
+    background: var(--band);
     background-size: 400% 100%;
     animation: shimmer 1.4s ease infinite;
   }
