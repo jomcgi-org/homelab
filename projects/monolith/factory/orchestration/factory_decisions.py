@@ -1081,6 +1081,7 @@ def _direction(
                 "delivery_adoption",
                 "landing_hold",
                 "nonrenewable_recovery",
+                "model_restriction",
             )
             if key in stored
         },

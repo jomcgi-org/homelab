@@ -857,6 +857,23 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             **pinned_policy,
             **(dispatch_grant["policy_overlay"] if dispatch_grant else {}),
         }
+        restriction = direction.get("model_restriction")
+        if restriction:
+            from factory.orchestration.factory_funding_limits import restrict_models
+
+            effective_policy = restrict_models(
+                effective_policy, restriction["removed_models"]
+            )
+            try:
+                # Requeue keeps receipt restrictions. A newly configured scalar
+                # or emptied pool must refuse before a new task is created.
+                validate_policy(effective_policy)
+            except ValueError as exc:
+                return {
+                    "ok": False,
+                    "reason": "model_restriction_invalid",
+                    "detail": str(exc),
+                }
         task_id = mint_task_id()
         task = SwarmTask(
             id=task_id,

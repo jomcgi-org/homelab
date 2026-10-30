@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "970f6df81",
+  "commit": "68c9ca11c",
   "nodes": [
     {
       "key": "console-caller",
@@ -617,6 +617,15 @@
       "to": "postgres",
       "maturity": "built",
       "evidence": "projects/monolith/factory/orchestration/backlog_refill.py:298"
+    },
+    {
+      "key": "mcp.restrict-receipt-models",
+      "label": "Remove unused model choices from one paused receipt after an exact operator preview",
+      "view": "logical",
+      "from": "mcp-caller",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/factory_policy_amendment.py:277"
     }
   ],
   "feedback": [

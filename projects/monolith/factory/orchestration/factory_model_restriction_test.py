@@ -669,3 +669,28 @@ def test_restriction_protects_default_enabled_refill_model(database):
         )
     with pytest.raises(ValueError, match="model_restriction_model_in_use"):
         amendments.preview(927, {"remove_models": ["astra"]}, DIRECTION)
+
+
+@pytest.mark.parametrize("restricted", [False, True])
+@pytest.mark.parametrize("model", ["spark", "qwen", "sol", None])
+def test_restriction_fences_new_turns_on_historical_sessions(
+    database, restricted, model
+):
+    from factory.orchestration.api import factory_session_allowed
+
+    with Session(database) as db, db.begin():
+        # Give this separate execution scenario a valid deadline and no funding
+        # hold so the model fence is the only admission difference.
+        for audit in db.exec(select(FactoryAudit)).all():
+            db.delete(audit)
+        db.get(SwarmTask, "task").created_at = NOW - timedelta(minutes=1)
+    if restricted:
+        apply(amendments.preview(927, OVERLAY, DIRECTION))
+    controls.set_control("resume_task", "operator", task_id="task")
+    before = snapshot(database)
+    identity = "factory:task:old:1"
+    assert factory_session_allowed(identity)
+    assert factory_session_allowed(identity, model=model) is (
+        not restricted or model == "sol"
+    )
+    assert snapshot(database) == before

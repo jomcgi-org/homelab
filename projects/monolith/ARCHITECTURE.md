@@ -379,6 +379,15 @@ The planner is called back only for a named deviation: no plan applied yet, a no
 that failed or escalated with no runnable retry, review rounds spent, a fan-in
 the engine could not open, or a settled graph with no verified delivery.
 
+Receipt model restrictions live in `direction_json.model_restriction` and filter
+the effective policy after funding overlays. Exact operator preview/apply can
+only remove unused models while paused and quiescent. The restriction survives
+same-receipt requeue, and native dispatch checks the queued model against it.
+
+**Why.** Removing an unsupported lane must preserve the admission snapshot,
+historical attempts and expired deadlines. A separate receipt restriction keeps
+funding and execution authority unchanged.
+
 The proposed-decision preview is staged behind
 `swarm.factoryPlannerPreviewEnabled=false`, which renders
 `FACTORY_PLANNER_PREVIEW_ENABLED=false`. `planner_preview.py` is an unregistered

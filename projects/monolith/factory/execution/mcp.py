@@ -1159,7 +1159,9 @@ async def _execute_pending_message(session_id: int) -> None:
                 if rollout_shutdown_in_progress():
                     raise asyncio.CancelledError
                 if not await asyncio.to_thread(
-                    factory_session_allowed, session_row.local_session_id
+                    factory_session_allowed,
+                    session_row.local_session_id,
+                    model=effective_model,
                 ):
                     raise EmberVMTransportError("Factory admission is fenced")
                 if not await asyncio.to_thread(
@@ -1189,7 +1191,9 @@ async def _execute_pending_message(session_id: int) -> None:
             if artifact_path is not None:
                 deliver_kwargs["artifact_path"] = artifact_path
             if not await asyncio.to_thread(
-                factory_session_allowed, getattr(session_row, "local_session_id", None)
+                factory_session_allowed,
+                getattr(session_row, "local_session_id", None),
+                model=effective_model,
             ):
                 if residency is not None:
                     claim_released = await capacity_wait.return_before_post(
