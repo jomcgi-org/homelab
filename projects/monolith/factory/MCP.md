@@ -418,3 +418,44 @@ two saved-artifact lineages, separate authority/digests, expired paused deadline
 idempotence, changed grants/heads/revisions/funding/holds, fresh subscription
 coverage and an unresolved original despite a later non-invocation. These are
 local regression fixtures, not claims of live continuation or activation.
+
+### Inspecting historical cessation
+
+`factory_permit_diagnostics` projects `observation.recorded_cessation` from the
+saved supervisor audit: its identity hash, guest identity, generation, invocation
+timestamps, observation time, terminal state, cessation marker and response hash.
+Only those typed, bounded fields leave the query. The free-form evidence document
+is not returned. Invalid or absent fields remain null; the tool does not contact
+the guest, validate the old response hash, or authorize recovery.
+
+`permit_supervision._record` checks the exact permit/session/turn identity and a
+fresh positive guest response before saving `guest_cessation_confirmed`. It stores
+the observation and settles the permit in one transaction, retaining the failed
+turn and its unknown result. A settled observation is not overwritten by later
+supervision. The stored identity hash covered the pre-settlement state; it is
+not a signature or a recomputable hash of the now-settled permit.
+
+Historical settlement and a current recovery preview answer different questions.
+`factory_reconcile_learning_execution` still requires a fresh positive response
+for the exact guest, generation and invocation in both preview and apply. A
+missing guest row, an old reason string, or a stored hash cannot satisfy that
+check. This diagnostic does not add a fallback.
+
+For an expired guest, corroboration may remain in EmberVM's durable `ops` journal.
+Terminal session projections expire after seven days; journal prefix compaction
+uses a separate configured horizon, normally thirty days. Retention policy is
+not proof that a particular event still exists. An authorized evidence reader
+would need the exact session's creation, invocation and terminal events, their
+sequence/timestamps and generation, and coverage of any later transitions.
+`session_destroying` is intent, not cessation. A terminal event's writer/version
+must establish its teardown semantics. The current MCP surface has no journal
+reader; do not substitute an unapproved database or HTTP path.
+
+Any proposal to accept a durable receipt must first corroborate the saved fields
+against that identity-bound history (or a verified archival snapshot), prove the
+terminal identity cannot resume, and retain fresh checks for all local work and
+ownership. It must bind the exact evidence into preview/CAS/idempotency and retain
+unknown results, accounting and unrelated fences. If corroboration is unavailable,
+keep recovery blocked. A new operator attestation would need independently
+verified teardown/absence evidence for the exact worker incarnation and separate
+explicit authority; merely asserting that the record is missing is insufficient.

@@ -85,6 +85,77 @@ def _dispatch_metadata(db, params):
     }
 
 
+def _recorded_cessation(db, permit_id):
+    """Project historical supervisor evidence, never the free-form document.
+
+    These fields support inspection after the guest row has expired. They are
+    not fresh cessation evidence or a substitute for a recovery guard.
+    """
+    strings = (
+        "session_id",
+        "observed_at",
+        "response_sha256",
+        "terminal_state",
+        "cessation_evidence",
+    )
+    integers = ("generation", "invoke_started_at", "updated_at", "last_invoke_at")
+    if db.bind.dialect.name == "sqlite":
+        document = (
+            "CASE WHEN json_valid(evidence_json) THEN evidence_json ELSE '{}' END"
+        )
+        fields = ["substr(identity_sha256, 1, 65) AS identity_sha256"]
+        fields += [
+            f"CASE WHEN json_type({document}, '$.{key}') = 'text' "
+            f"THEN substr(json_extract({document}, '$.{key}'), 1, 257) END AS {key}"
+            for key in strings
+        ]
+        fields += [
+            f"CASE WHEN json_type({document}, '$.{key}') = 'integer' "
+            f"THEN json_extract({document}, '$.{key}') END AS {key}"
+            for key in integers
+        ]
+    else:
+        document = (
+            "CASE WHEN pg_input_is_valid(evidence_json, 'jsonb') "
+            "THEN evidence_json::jsonb ELSE '{}'::jsonb END"
+        )
+        fields = ["left(identity_sha256, 65) AS identity_sha256"]
+        fields += [
+            f"CASE WHEN jsonb_typeof(({document})->'{key}') = 'string' "
+            f"THEN left(({document})->>'{key}', 257) END AS {key}"
+            for key in strings
+        ]
+        fields += [
+            f"CASE WHEN jsonb_typeof(({document})->'{key}') = 'number' "
+            f"AND length(({document})->>'{key}') <= 19 "
+            f"THEN ({document})->'{key}' END AS {key}"
+            for key in integers
+        ]
+    rows = _rows(
+        db,
+        f"SELECT {', '.join(fields)} FROM agent_sessions.probe_observations "
+        "WHERE permit_id=:id",
+        {"id": permit_id},
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    for key in strings:
+        if not isinstance(row[key], str) or len(row[key]) > 256:
+            row[key] = None
+    for key in integers:
+        if type(row[key]) is not int or not 0 <= row[key] <= 2**63 - 1:
+            row[key] = None
+    for key in ("identity_sha256", "response_sha256"):
+        if not isinstance(row[key], str) or not re.fullmatch(r"[0-9a-f]{64}", row[key]):
+            row[key] = None
+    if row["terminal_state"] not in {"evicted", "destroyed", "failed"}:
+        row["terminal_state"] = None
+    if row["cessation_evidence"] not in {"terminal_dispatch", "invoke_failure"}:
+        row["cessation_evidence"] = None
+    return row
+
+
 def inspect_permits(permit_ids, *, session=None):
     if (
         not isinstance(permit_ids, list)
@@ -130,6 +201,10 @@ def inspect_permits(permit_ids, *, session=None):
             ),
             None,
         )
+        if item["observation"] is not None:
+            item["observation"]["recorded_cessation"] = _recorded_cessation(
+                db, permit_id
+            )
         params = {"id": permit["session_id"], "seq": permit["pending_seq"]}
         agents = _rows(
             db,
@@ -237,7 +312,7 @@ def inspect_permits(permit_ids, *, session=None):
                     "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
                 )
             },
-            "coverage": "Persisted metadata only. Receipt presence does not establish validity or adoption. Guest cessation is not verified.",
+            "coverage": "Persisted metadata only. Saved cessation fields are historical observations, not current verification. Hashes alone do not establish validity. Guest cessation is not verified; receipt presence does not establish validity or adoption.",
             "recovery_authorized": False,
         }
     )

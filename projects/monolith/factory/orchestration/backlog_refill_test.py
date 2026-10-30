@@ -2545,13 +2545,29 @@ async def test_learning_reconciliation_requires_exact_positive_cessation(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["missing", "timeout", "gone", "permission"])
+@pytest.mark.parametrize(
+    "failure", ["missing", "timeout", "gone", "http_404", "permission"]
+)
 async def test_learning_reconciliation_remote_failure_never_authorizes_apply(
     learning_recovery_world, monkeypatch, failure
 ):
+    from factory.execution.models import ProbeObservation
     from factory.execution.transport import EmberSessionGone, EmberVmShimTransport
 
     s = learning_recovery_world
+    with Session(s.engine) as db, db.begin():
+        audit = db.get(ProbeObservation, s.ids[2])
+        audit.evidence_json = dumps(
+            {
+                **s.observed,
+                "terminal_state": s.observed["state"],
+                "cessation_evidence": "terminal_dispatch",
+                "observed_at": audit.checked_at.isoformat(),
+                "response_sha256": "b" * 64,
+            }
+        )
+        db.add(audit)
+    original = _learning_snapshot(s)
     p = await s.recovery.preview(*s.ids, "reason")
 
     async def read(*args, **kwargs):
@@ -2559,11 +2575,18 @@ async def test_learning_reconciliation_remote_failure_never_authorizes_apply(
             return
         if failure == "gone":
             raise EmberSessionGone("gone")
+        if failure == "http_404":
+            response = httpx.Response(
+                404, request=httpx.Request("GET", "https://guest.invalid")
+            )
+            response.raise_for_status()
         if failure == "permission":
             raise PermissionError("denied")
         raise TimeoutError("unavailable")
 
     monkeypatch.setattr(EmberVmShimTransport, "get_session", read)
+    with pytest.raises(ValueError, match="cessation_unavailable"):
+        await s.recovery.preview(*s.ids, "reason")
     with pytest.raises(ValueError, match="cessation_unavailable"):
         await s.recovery.apply(
             "operator", *s.ids, "reason", "stable", p["preview_sha256"]
@@ -2573,6 +2596,7 @@ async def test_learning_reconciliation_remote_failure_never_authorizes_apply(
             select(FactoryAudit).where(FactoryAudit.action == s.recovery.ACTION)
         ).all()
         assert db.get(FactoryControl, "factory").version == 0
+    assert _learning_snapshot(s) == original
 
 
 @pytest.mark.asyncio
