@@ -1,7 +1,7 @@
 """Reconcile a mutable factory plan outside durable node workflow replay.
 
-The server enforces policy and schedules pinned units. Every planning decision
-is made by an Opus guest and arrives through the typed turn-artifact channel.
+The server enforces policy and schedules pinned units. The policy-pinned
+Planner makes planning decisions through the typed turn-artifact channel.
 One tick performs bounded work; durable receipts, graph edits and node ledgers
 are the recovery state, so losing this process cannot lose a task or its pin.
 """
