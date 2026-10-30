@@ -15247,6 +15247,84 @@ def test_tick_ingests_the_operators_issues_before_it_discovers_one(monkeypatch):
     assert order == ["ingest", "intake"]
 
 
+def test_full_conductor_still_observes_intake_without_admission(monkeypatch):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_intake as intake
+    from factory.orchestration import factory_intake_loop as loop
+
+    policy = {"max_tasks": 1, "generation": 7}
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "1")
+    monkeypatch.setattr(
+        controls,
+        "conductor_status",
+        lambda: {"state": "enabled", "policy": policy, "active_tasks": []},
+    )
+    monkeypatch.setattr(
+        controls, "execution_slot_holders", lambda *args, **kwargs: [object()]
+    )
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    observed = []
+
+    def observe(actual_policy, *, generation, observe_only):
+        assert actual_policy is policy and generation == 7 and observe_only is True
+        observed.append(generation)
+        return []
+
+    monkeypatch.setattr(loop, "intake_tick", observe)
+    monkeypatch.setattr(
+        intake,
+        "admit_next",
+        lambda *args, **kwargs: pytest.fail("full observation must not admit"),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "ingest_eligible",
+        lambda *args: pytest.fail("full observation must not ingest"),
+    )
+    conductor.tick()
+    assert observed == [7]
+
+
+def test_conductor_finalizes_candidate_evidence_after_admission(monkeypatch):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_intake as intake
+    from factory.orchestration import factory_intake_loop as loop
+    from factory.orchestration import intake_evidence
+
+    policy = {"max_tasks": 1, "generation": 7}
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "1")
+    monkeypatch.setattr(
+        controls,
+        "conductor_status",
+        lambda: {"state": "enabled", "policy": policy, "active_tasks": []},
+    )
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    order = []
+    monkeypatch.setattr(
+        conductor, "ingest_eligible", lambda *args: order.append("ingest")
+    )
+
+    def observe(actual_policy, *, generation, lanes, defer_evidence, evidence_sink):
+        assert actual_policy is policy and generation == 7 and lanes
+        assert defer_evidence is True
+        evidence_sink.append(19)
+        order.append("observe")
+        return []
+
+    def admit(actor, *, lanes):
+        assert actor and lanes
+        order.append("admit")
+        return {"ok": False}
+
+    monkeypatch.setattr(loop, "intake_tick", observe)
+    monkeypatch.setattr(intake, "admit_next", admit)
+    monkeypatch.setattr(intake_evidence, "finalize", lambda: order.append("finalize"))
+    conductor.tick()
+    assert order == ["ingest", "observe", "admit", "finalize"]
+
+
 def _review_node(node_key, model="opus"):
     return {
         "node_key": node_key,

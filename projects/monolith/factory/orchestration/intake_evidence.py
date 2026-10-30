@@ -7,12 +7,12 @@ pending sweep is finalized before the next sweep; no audit history is rewritten.
 """
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
+from core.clock import aware
 from sqlalchemy import func, tuple_
 from sqlmodel import select
 
-from core.clock import aware
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryReceipt,
@@ -84,7 +84,7 @@ class Sweep:
             previous = latest(db, "intake_pending")
             if (
                 previous is not None
-                and json.loads(previous.detail_json)["sweep_id"] == self.id
+                and json.loads(previous.detail_json)["sweep_id"] >= self.id
             ):
                 return
             _audit(
@@ -237,7 +237,9 @@ def finalize():
 
 def backlog(db, now=None):
     """Latest snapshot plus current indexed work items, never full audit history."""
-    now = aware(now or datetime.now(timezone.utc))
+    from factory.orchestration.factory_controls import is_advisory, receipt_task_class
+
+    now = aware(now or datetime.now(UTC))
     snapshot = latest(db, "intake_inventory")
     swept = latest(db, "intake_swept")
     data = json.loads(snapshot.detail_json) if snapshot is not None else {}
@@ -263,7 +265,8 @@ def backlog(db, now=None):
     admitted = {
         (row.repo, row.issue_number)
         for row in receipts
-        if row.state in ("admitted", "landing", "uncertain", "succeeded")
+        if row.state in ("admitted", "landing", "uncertain")
+        or (row.state == "succeeded" and not is_advisory(receipt_task_class(row)))
     }
     rows = []
     observed = data.get("observed_at")
@@ -322,9 +325,7 @@ def backlog(db, now=None):
             continue
         prior = observations[key]
         try:
-            created = aware(
-                datetime.fromisoformat(prior["created_at"].replace("Z", "+00:00"))
-            )
+            created = aware(datetime.fromisoformat(prior["created_at"]))
         except (AttributeError, TypeError, ValueError):
             created = None
         rows.append(
