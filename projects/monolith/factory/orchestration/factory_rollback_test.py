@@ -77,6 +77,7 @@ def delivery(n=1, **changes):
         "pr_number": n,
         "issue_number": n + 10,
         "merge_commit_sha": f"{n:040x}",
+        "commit_count": 1,
         "application": "demo",
         "chart": "demo",
         "revision": "1.2.3",
@@ -330,6 +331,7 @@ def pull(d, **changes):
             "repo": {"full_name": d["repo"]},
         },
         "body": f"Reverts #{d['pr_number']}",
+        "base": {"ref": "main"},
         "title": "revert(demo): recover rollout",
         "merged": False,
         "state": "open",
@@ -411,6 +413,8 @@ def test_revert_of_revert_and_holds(engine):
     )
     with controls._locked_session() as (db, _control):
         controls._receipt(db, d["task_id"]).task_paused = True
+    assert rollback.reserve(POLICY, d, sample(d), now=NOW)["state"] == "needs_human"
+    d = {**d, "is_revert": False}
     assert rollback.reserve(POLICY, d, sample(d), now=NOW)["state"] == "held"
     assert not events(engine, "rollback_reserved")
 
@@ -419,6 +423,7 @@ def test_revert_of_revert_and_holds(engine):
     "changes",
     [
         {"body": None},
+        {"base": {"ref": "other"}},
         {"title": "wrong"},
         {"number": True},
         {"head": {"ref": "factory/other"}},
@@ -446,8 +451,8 @@ def test_sqlite_naive_and_postgres_aware_timestamps_agree():
     assert rollback.utc(NOW.replace(tzinfo=None)) == rollback.utc(NOW) == NOW
 
 
-@pytest.mark.parametrize("merge_commit", [False, True])
-def test_reverse_source_uses_real_git_revert_and_resumes(tmp_path, merge_commit):
+@pytest.mark.parametrize("merge_commit,count", [(False, 1), (False, 2), (True, 2)])
+def test_reverse_source_uses_real_git_revert_and_resumes(tmp_path, merge_commit, count):
     path = tmp_path / "repo"
     path.mkdir()
 
@@ -475,10 +480,14 @@ def test_reverse_source_uses_real_git_revert_and_resumes(tmp_path, merge_commit)
     (path / "service").write_text("broken\n")
     git("add", "service")
     git("commit", "-m", "test: changed service")
+    if count == 2:
+        (path / "service").write_text("broken twice\n")
+        git("add", "service")
+        git("commit", "-m", "test: second change")
     if merge_commit:
         git("checkout", "main")
         git("merge", "--no-ff", "feature", "-m", "test: land service")
-    d = delivery(merge_commit_sha=git("rev-parse", "HEAD"))
+    d = delivery(merge_commit_sha=git("rev-parse", "HEAD"), commit_count=count)
     branch = "factory/rollback-" + rollback.identity(d)[:32]
     git("checkout", "-b", branch)
     # Supply an isolated test identity to the production subprocess seam.
@@ -500,3 +509,82 @@ def test_reverse_source_uses_real_git_revert_and_resumes(tmp_path, merge_commit)
         "log", "-1", "--format=%B"
     )
     assert result["head_sha"] != d["merge_commit_sha"]
+
+
+def test_changed_head_can_be_observed_then_landed(engine):
+    d = delivery()
+    seed(engine, d)
+    rollback.reserve(POLICY, d, sample(d), now=NOW)
+    rollback.begin_pr_creation(d, now=NOW)
+    p = pull(d)
+    rollback.observe_pr(d, p, now=NOW)
+    p["head"]["sha"] = "c" * 40
+    assert rollback.observe_pr(d, p, now=NOW)["state"] == "head_moved"
+    assert events(engine, "rollback_pr_observed")[-1]["review_invalidated"]
+    p.update(merged=True, merge_commit_sha="d" * 40, merged_at=NOW.isoformat())
+    assert rollback.observe_pr(d, p, now=NOW)["state"] == "rollback_landed"
+
+
+def test_failure_is_durable_even_disabled_and_never_verifies(engine):
+    d = delivery()
+    seed(engine, d)
+    with controls._locked_session() as (_db, control):
+        control.policy_json = json.dumps({"rollback": {"enabled": False}})
+    assert rollback.reserve({}, d, sample(d), now=NOW)["state"] == "disabled"
+    later = NOW + timedelta(minutes=16)
+    for _ in range(2):
+        result = rollback.observe_window(
+            {},
+            d,
+            [sample(d, outcome="healthy", observed_at=later.isoformat())],
+            now=later,
+        )
+        assert result["verdict"] == "rollout_failed"
+    assert len(events(engine, "rollout_failed")) == 1
+    assert not events(engine, "rollback_window_verified")
+
+
+def test_window_survives_restart(engine):
+    d = delivery()
+    seed(engine, d)
+    for minute, expected in [
+        (0, "rollout_observing"),
+        (14, "rollout_observing"),
+        (15, "rollout_verified"),
+    ]:
+        now = NOW + timedelta(minutes=minute)
+        assert (
+            rollback.observe_window(
+                {},
+                d,
+                [sample(d, outcome="healthy", observed_at=now.isoformat())],
+                now=now,
+            )["verdict"]
+            == expected
+        )
+    assert len(events(engine, "rollback_window_started")) == 1
+    assert len(events(engine, "rollback_window_verified")) == 1
+
+
+def test_breaker_is_factory_wide(engine):
+    for n in range(1, 5):
+        d = delivery(n, repo=f"owner/repo-{n}")
+        seed(engine, d)
+        assert rollback.reserve(POLICY, d, sample(d), now=NOW)["state"] == (
+            "reserved" if n <= 2 else "breaker_open"
+        )
+    assert len(events(engine, "rollback_breaker_opened")) == 1
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"title": 'Revert "fix"'},
+        {"title": "revert(demo): fix"},
+        {"body": "Reverts #12"},
+        {"commit_message": "This reverts commit " + "b" * 40},
+    ],
+)
+def test_source_revert_detected_without_receipt_or_observation(engine, source):
+    d = delivery(**source)
+    assert rollback.reserve(POLICY, d, sample(d), now=NOW)["state"] == "needs_human"
