@@ -7,7 +7,7 @@ import logging
 import json
 from datetime import timezone, timedelta
 
-from sqlalchemy import or_
+from sqlalchemy import String, case, cast, func, or_
 from sqlmodel import Session, select
 
 from core.jsonio import dumps
@@ -20,6 +20,7 @@ from factory.orchestration.factory_controls import (
     _snapshot,
     _text,
     ADMISSION_CANDIDATE_SCAN_LIMIT,
+    ADVISORY_CLASSES,
     admission_eligible as admission_eligible,
     DEFAULT_TASK_CLASS,
     delivery_branch_owner,
@@ -659,7 +660,55 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             .exists()
         )
 
-        ordered = base_query.order_by(FactoryReceipt.created_at, FactoryReceipt.id)
+        # Autonomous receipts may have waited in the queue across sweeps.
+        # Reorder only equal lane/rank autonomous work by issue age. Each
+        # group's original queue position and operator FIFO remain unchanged.
+        natural = FactoryReceipt.actor == INTAKE_ACTOR
+        issue_age = (
+            select(
+                case(
+                    (
+                        WorkItem.github_created_at.is_not(None),
+                        WorkItem.github_created_at,
+                    ),
+                    (WorkItem.authority == "local", WorkItem.created_at),
+                    else_=None,
+                )
+            )
+            .where(WorkItem.id == FactoryReceipt.work_item_id)
+            .correlate(FactoryReceipt)
+            .scalar_subquery()
+        )
+        issue_rank = (
+            select(
+                case(
+                    (cast(WorkItem.labels, String).like('%"critical"%'), 0),
+                    (cast(WorkItem.labels, String).like('%"bug"%'), 1),
+                    else_=2,
+                )
+            )
+            .where(WorkItem.id == FactoryReceipt.work_item_id)
+            .correlate(FactoryReceipt)
+            .scalar_subquery()
+        )
+        age = case((natural, issue_age), else_=FactoryReceipt.created_at)
+        lane_rank = case((FactoryReceipt.task_class.in_(ADVISORY_CLASSES), 1), else_=0)
+        rank = func.coalesce(issue_rank, 2)
+        queue_position = func.min(FactoryReceipt.created_at).over(
+            partition_by=(
+                case((natural, 0), else_=FactoryReceipt.id),
+                lane_rank,
+                rank,
+            )
+        )
+        ordered = base_query.order_by(
+            queue_position,
+            age.is_(None),
+            age,
+            FactoryReceipt.repo,
+            FactoryReceipt.issue_number,
+            FactoryReceipt.id,
+        )
         candidates = db.exec(
             ordered.where(blocker_predicate).limit(ADMISSION_CANDIDATE_SCAN_LIMIT)
         ).all()
@@ -670,10 +719,8 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         # later receipt was admitted past it.
         blocked_head = db.exec(ordered.where(~blocker_predicate)).first()
         if blocked_head is not None and (first is None or blocked_head.id != first.id):
-            head_is_first = first is None or (
-                blocked_head.created_at,
-                blocked_head.id,
-            ) < (first.created_at, first.id)
+            head = db.exec(ordered.limit(1)).first()
+            head_is_first = head is not None and head.id == blocked_head.id
             if head_is_first:
                 blockers = db.exec(
                     select(WorkItem).where(

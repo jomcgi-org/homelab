@@ -97,7 +97,9 @@ def issue(number: int, labels=(), **overrides):
         "state": "open",
         "assignees": [],
         "labels": [{"name": label} for label in labels],
-        "created_at": f"2026-09-{number:02d}T00:00:00Z",
+        "created_at": (
+            datetime(2026, 9, 1, tzinfo=timezone.utc) + timedelta(days=number - 1)
+        ).isoformat(),
     }
     value.update(overrides)
     return value
@@ -112,6 +114,226 @@ def fake_pages(monkeypatch, issues, pulls=()):
 
     monkeypatch.setattr(intake_loop, "github_list", github_list)
     return calls
+
+
+def candidate_evidence(db):
+    return [json.loads(row.detail_json) for row in audits(db, "intake_candidate")]
+
+
+def test_candidate_audit_one_per_identity_per_actual_sweep(db, monkeypatch):
+    from factory.orchestration.intake_evidence import finalize
+
+    fake_pages(
+        monkeypatch,
+        [
+            issue(1, ["agent-ready"]),
+            issue(1, ["agent-ready"]),
+            issue(2, ["agent-ready", "human"]),
+        ],
+    )
+    intake_loop.intake_tick(policy(), generation=0, lanes=())
+    observations = candidate_evidence(db)
+    assert [(row["issue_number"], row["reason"]) for row in observations] == [
+        (1, "capacity"),
+        (2, "human"),
+    ]
+    assert len({row["sweep_id"] for row in observations}) == 1
+    finalize()
+    intake_loop.intake_tick(policy(), generation=0, lanes=())
+    assert len(candidate_evidence(db)) == 2
+    release_sweep(db)
+    intake_loop.intake_tick(policy(), generation=0, lanes=())
+    observations = candidate_evidence(db)
+    assert len(observations) == 4
+    assert len({row["sweep_id"] for row in observations}) == 2
+
+
+def test_candidate_blocker_uses_github_issue_identity(db, monkeypatch):
+    fake_pages(
+        monkeypatch,
+        [issue(1, ["agent-ready"], body="blocked by #17"), issue(17, ["human"])],
+    )
+    intake_loop.intake_tick(policy(), generation=0)
+    assert candidate_evidence(db)[0]["reason"] == "blocked_by:#17"
+
+
+def test_candidate_audit_finalizes_after_real_locked_admission(db, monkeypatch):
+    from factory.orchestration.factory_intake import admit_next
+    from factory.orchestration.intake_evidence import finalize
+
+    configured = multi_repo_policy(repos={"owner/repo": {}})
+    assert controls.set_control("configure", "operator", policy=configured)["ok"]
+    assert controls.set_control("enable", "operator")["ok"]
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"]), issue(2, ["agent-ready"])])
+    received = intake_loop.intake_tick(configured, generation=0, defer_evidence=True)
+    assert len(received) == 1
+    assert candidate_evidence(db) == []
+    with Session(db) as session:
+        assert (
+            session.get(FactoryReceipt, received[0]["receipt"]["id"]).state == "queued"
+        )
+    admitted = admit_next("test")
+    assert admitted["ok"], admitted
+    with Session(db) as session:
+        # A fast failure after admission cannot erase the actual transition.
+        session.get(FactoryReceipt, admitted["receipt_id"]).state = "failed"
+        session.commit()
+    finalize()
+    observations = candidate_evidence(db)
+    assert [
+        (row["issue_number"], row["decision"], row["reason"]) for row in observations
+    ] == [(1, "admitted", "admitted"), (2, "skipped", "not_selected")]
+    finalize()
+    assert len(candidate_evidence(db)) == 2
+
+
+@pytest.mark.parametrize(
+    "mode, reason",
+    [
+        ("refused", "receipt_refused"),
+        ("failed", "receipt_failed"),
+        ("race", "capacity"),
+    ],
+)
+def test_candidate_does_not_invent_admission(db, monkeypatch, mode, reason):
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
+    calls = []
+    if mode == "race":
+        original = intake_loop.open_lanes
+
+        def room(*args, **kwargs):
+            calls.append(args)
+            return (
+                original(*args, **kwargs)
+                if len(calls) == 1
+                else {"delivery": 0, "advisory": 0}
+            )
+
+        monkeypatch.setattr(intake_loop, "open_lanes", room)
+    else:
+
+        def receive(repo, number, title, *args, **kwargs):
+            calls.append((repo, number, title, kwargs["issue"]["number"]))
+            if mode == "failed":
+                raise ValueError("receipt refused by current authority")
+            return {"ok": False, "reason": "ineligible"}
+
+        monkeypatch.setattr(intake_loop, "receive_issue", receive)
+    assert intake_loop.intake_tick(policy(), generation=0) == []
+    assert calls
+    observation = candidate_evidence(db)[0]
+    assert observation["decision"] == "skipped"
+    assert observation["reason"] == reason
+
+
+def test_candidate_specific_exclusions_and_cooldown_deadline(db, monkeypatch):
+    fake_pages(
+        monkeypatch,
+        [
+            issue(1, ["agent-ready", "custom-hold"]),
+            issue(2, ["agent-ready"]),
+            issue(3, ["agent-ready"]),
+        ],
+    )
+    with Session(db) as session:
+        intake_receipt(session, 2, state="failed", updated_at=NOW - timedelta(hours=1))
+        intake_receipt(
+            session,
+            3,
+            task_class="refine",
+            state="failed",
+            updated_at=NOW - timedelta(hours=25),
+        )
+        session.commit()
+    intake_loop.intake_tick(policy(exclude_labels=["custom-hold"]), generation=1)
+    reasons = {row["issue_number"]: row["reason"] for row in candidate_evidence(db)}
+    assert reasons == {
+        1: "excluded_label:custom-hold",
+        2: "cooldown_until:" + (NOW + timedelta(hours=23)).isoformat(),
+        3: "refinement_failed",
+    }
+
+
+def test_candidate_partial_page_failure_keeps_observed_identity(db, monkeypatch):
+    monkeypatch.setattr(intake_loop, "PAGE_SIZE", 1)
+
+    def listing(repo, suffix):
+        if "issues?" in suffix and "page=1" in suffix:
+            return [issue(1, ["agent-ready"])]
+        raise RuntimeError("listing unavailable")
+
+    monkeypatch.setattr(intake_loop, "github_list", listing)
+    assert intake_loop.intake_tick(policy(), generation=0) == []
+    observation = candidate_evidence(db)[0]
+    assert observation["reason"] == "discovery_failed"
+    assert observation["decision"] == "skipped"
+    inventory = json.loads(audits(db, "intake_inventory")[0].detail_json)
+    assert inventory["coverage"] == {"owner/repo": "unavailable"}
+
+
+def test_candidate_malformed_inventory_is_partial(db, monkeypatch):
+    fake_pages(
+        monkeypatch,
+        [
+            "bad",
+            issue(1, ["agent-ready"], created_at="invalid"),
+            issue(2, ["agent-ready"]),
+        ],
+    )
+    received = intake_loop.intake_tick(policy(), generation=0)
+    assert received[0]["receipt"]["issue_number"] == 2
+    observations = candidate_evidence(db)
+    assert observations[0]["reason"] == "malformed"
+    inventory = json.loads(audits(db, "intake_inventory")[0].detail_json)
+    assert inventory["coverage"] == {"owner/repo": "partial"}
+
+
+def test_candidate_local_and_github_identity_has_one_authoritative_row(db, monkeypatch):
+    with Session(db) as session:
+        session.add(
+            WorkItem(
+                title="local",
+                state="ready",
+                source_kind="factory",
+                trust="trusted",
+                authority="local",
+                github_repo="owner/repo",
+                github_issue_number=1,
+                labels=["agent-ready"],
+            )
+        )
+        session.commit()
+    fake_pages(monkeypatch, [issue(1, ["agent-ready", "human"])])
+    received = intake_loop.intake_tick(policy(), generation=0)
+    assert received[0]["receipt"]["title"] == "local"
+    observations = candidate_evidence(db)
+    assert len(observations) == 1
+    assert observations[0]["source"] == "local"
+    assert observations[0]["reason"] == "queued"
+
+
+def test_backlog_uses_latest_evidence_age_and_current_closure(db, monkeypatch):
+    from factory.orchestration.intake_evidence import backlog
+
+    fake_pages(
+        monkeypatch,
+        [
+            issue(2, ["agent-ready"]),
+            issue(1, ["agent-ready"], created_at="2026-09-02T00:00:00"),
+        ],
+    )
+    intake_loop.intake_tick(policy(), generation=0, lanes=())
+    with Session(db) as session:
+        view = backlog(session, NOW)
+    assert [row["issue_number"] for row in view["issues"]] == [1, 2]
+    assert view["issues"][0]["age_days"] == 8
+    release_sweep(db)
+    fake_pages(monkeypatch, [issue(2, ["agent-ready", "human"])])
+    intake_loop.intake_tick(policy(), generation=0, lanes=())
+    with Session(db) as session:
+        view = backlog(session, NOW)
+    assert [row["issue_number"] for row in view["issues"]] == [2]
+    assert view["issues"][0]["reason"] == "human"
 
 
 def intake_receipt(session, number, task_class="bug-fix", **overrides):
@@ -279,11 +501,7 @@ def test_disabled_intake_has_no_github_or_audit(db, monkeypatch):
 
 
 def test_staged_all_lane_deferral_is_audited_before_listing(db, monkeypatch):
-    monkeypatch.setattr(
-        intake_loop,
-        "github_list",
-        lambda *_args: pytest.fail("blocked intake listed or claimed work"),
-    )
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
     assert (
         intake_loop.intake_tick(
             policy(labels=["agent-ready"], refine_enabled=True),
@@ -298,6 +516,11 @@ def test_staged_all_lane_deferral_is_audited_before_listing(db, monkeypatch):
         "deferred_lanes": ["delivery", "advisory"],
         "eligible_lanes": [],
     }
+    observations = audits(db, "intake_candidate")
+    assert len(observations) == 1
+    assert json.loads(observations[0].detail_json)["reason"] == "capacity"
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).all() == []
 
 
 @pytest.mark.parametrize("state", ["queued", "admitted", "uncertain"])
@@ -1619,7 +1842,7 @@ def test_intake_skips_active_issues_across_generations(db, monkeypatch, state):
         assert json.loads(idle.detail_json)["excluded"] == {"active_issue": 1}
 
 
-def test_work_item_sync_failure_does_not_change_admission(db, monkeypatch):
+def test_work_item_sync_failure_fails_closed_with_candidate_evidence(db, monkeypatch):
     fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
 
     def fail_sync(*_args, **_kwargs):
@@ -1627,9 +1850,11 @@ def test_work_item_sync_failure_does_not_change_admission(db, monkeypatch):
 
     monkeypatch.setattr(work_items, "sync_github_work_items", fail_sync)
     result = intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0)
-    assert len(result) == 1
-    assert result[0]["receipt"]["issue_number"] == 1
+    assert result == []
     assert len(audits(db, "work_item_sync_error")) == 1
+    observation = json.loads(audits(db, "intake_candidate")[0].detail_json)
+    assert observation["decision"] == "skipped"
+    assert observation["reason"] == "discovery_failed"
 
 
 def test_local_ready_item_creates_linked_delivery_receipt(db, monkeypatch):

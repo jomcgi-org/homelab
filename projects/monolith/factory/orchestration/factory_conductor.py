@@ -9078,8 +9078,18 @@ def _tick(checkpoint) -> None:
         )
     )
     if occupied >= limit:
+        # Admission may be full while the bounded observation clock is due.
+        # Observation-only mode prevents receipt creation in this pass.
+        from factory.orchestration.factory_intake_loop import intake_tick
+
+        intake_tick(
+            snapshot["policy"],
+            generation=snapshot["policy"].get("generation", 0),
+            observe_only=True,
+        )
         return
     checkpoint("intake")
+    staged_sweeps = []
     try:
         from factory.orchestration.agent_board_poll import eligible_lanes
         from factory.orchestration.factory_intake_loop import intake_tick
@@ -9097,6 +9107,8 @@ def _tick(checkpoint) -> None:
             snapshot["policy"],
             generation=snapshot["policy"].get("generation", 0),
             lanes=lanes,
+            defer_evidence=True,
+            evidence_sink=staged_sweeps,
         )
         while occupied < limit:
             admitted = admit_next(ACTOR, lanes=lanes)
@@ -9112,6 +9124,11 @@ def _tick(checkpoint) -> None:
         scout_tick(snapshot["policy"])
     except Exception:  # noqa: BLE001 - admission problems are logged, not fatal
         logger.exception("factory admission failed")
+    finally:
+        if staged_sweeps:
+            from factory.orchestration import intake_evidence
+
+            intake_evidence.finalize()
 
 
 def _watch_progress(task: dict) -> None:

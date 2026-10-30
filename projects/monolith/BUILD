@@ -1478,6 +1478,7 @@ py_library(
         # pkg_swarm's existing glob shares this same source artifact.
         "factory/orchestration/factory_landing.py",
         "factory/orchestration/factory_models.py",
+        "factory/orchestration/intake_evidence.py",
         "factory/orchestration/factory_pause.py",
         # Refill physical transport reuses exact-model quota freshness and floors.
         "factory/orchestration/model_pool.py",

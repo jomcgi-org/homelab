@@ -33,6 +33,39 @@ from factory.publication import (
 )
 
 
+def test_public_snapshot_never_loads_or_serializes_private_intake_backlog(monkeypatch):
+    from dataclasses import asdict
+    import json
+
+    from factory import private_view, publication
+
+    calls = []
+
+    def private_board(*, session, plan_tasks, include_backlog):
+        calls.append((session, plan_tasks, include_backlog))
+        assert include_backlog is False
+        # Even a reader returning an unexpected private field must not leak it.
+        return {
+            "ok": True,
+            "state": "enabled",
+            "intake_backlog": {"secret_issue": "private-backlog-sentinel"},
+        }
+
+    monkeypatch.setattr(private_view, "build_factory_view", private_board)
+    monkeypatch.setattr(publication, "_public_work_items", lambda *args: {})
+    monkeypatch.setattr(publication, "_board_task_ids", lambda *args: ([], {}))
+    monkeypatch.setattr(publication, "_raw_policy", lambda *args: {})
+    monkeypatch.setattr(publication, "_sessions_and_turns", lambda *args: ({}, {}))
+    monkeypatch.setattr(publication, "_task_list_costs", lambda *args: {})
+    monkeypatch.setattr(publication, "ledger_totals", lambda *args: {})
+    db = object()
+    result = publication.build_public_snapshot(db)
+    assert calls == [(db, [], False)]
+    serialized = json.dumps(asdict(result))
+    assert "intake_backlog" not in serialized
+    assert "private-backlog-sentinel" not in serialized
+
+
 def test_public_work_item_exposes_local_record_without_private_factory_details():
     item = {
         "id": 100123,

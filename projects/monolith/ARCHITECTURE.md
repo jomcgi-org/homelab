@@ -22,6 +22,20 @@ companion, require the operator group. The earlier anonymous companion
 exception is retired; anonymous catalogue discovery remains available to the
 gateway, while anonymous tool calls are denied.
 
+Intake stages per-sweep issue observations in the existing audit store and
+finalizes them after locked receipt admission. The aggregate sweep audit ID is
+the observation identity. Candidate audit insertion and a latest private
+inventory snapshot commit together under the singleton factory lock. Readers
+load that snapshot and current indexed work-item/receipt state; they do not scan
+candidate audit history. A full lane still runs observation at the existing
+sweep cadence. Public snapshot publication disables the private backlog reader.
+
+**Why.** Receipt creation only queues work. Separating observation from its
+finalization records actual admission without rewriting append-only history.
+The snapshot preserves the latest observation per issue across partial sweeps,
+with its original timestamp and explicit coverage. This adds no scheduler,
+admission authority or public database grants (Refs #7459).
+
 The existing private `factory-public-snapshot` job also fetches broker quota
 before opening its database session. `factory.publication.shape_quota` adds an
 allowlisted `quota` object to the board JSON: provider, window duration, account
@@ -358,6 +372,7 @@ See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-check
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Per-sweep intake decisions, private backlog age and digest evidence | section 4; repository-only Conductor rescope | #7459 | staged repository delivery; rollout, first-sweep distribution and credential-backed follow-up remain on the issue |
 | Optional queue-driven inventory refill, default-off with durable advisory execution and bounded issue publication | section 4, recorded Conductor rescope and cap decision | #7376 | repository-only; operational checklist remains on the issue; no shipped policy enablement |
 | Admit agent-ready security findings under existing ownership and eligibility fences | Joe's 2026-10-28 decision, section 4 | [#7372](https://github.com/jomcgi-org/homelab/issues/7372) | repository-only staged delivery; guarded migration, rollout and natural-sweep acceptance remain |
 | Automatic pauses retain actionable questions and audit superseded cards | The factory conductor | #7165 | repository-only staged delivery under an unmerged landing hold; historical pause attribution and post-rollout checks remain |

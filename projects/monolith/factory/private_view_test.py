@@ -278,6 +278,10 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
         )
         db.commit()
         view = build_factory_view(session=db)
+        assert view["intake_backlog"]["available"] is False
+        assert view["intake_backlog"]["issues"] == []
+        public_input = build_factory_view(session=db, include_backlog=False)
+        assert "intake_backlog" not in public_input
         control = db.get(FactoryControl, "factory")
         policy = json.loads(control.policy_json)
         policy["issue_numbers"] = [5983]

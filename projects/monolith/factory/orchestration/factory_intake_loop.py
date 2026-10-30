@@ -38,6 +38,7 @@ from factory.orchestration.factory_intake import (
     receive_issue,
 )
 from factory.orchestration import factory_operational_handoff as handoff
+from factory.orchestration import intake_evidence
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryReceipt,
@@ -119,7 +120,7 @@ def github_list(repo: str, suffix: str) -> list:
 
 
 def _pages(
-    repo: str, endpoint: str, *, page_size: int = PAGE_SIZE
+    repo: str, endpoint: str, *, page_size: int = PAGE_SIZE, on_page=None
 ) -> tuple[list, bool]:
     """Open rows oldest first, and whether the read hit the page cap.
 
@@ -136,6 +137,10 @@ def _pages(
             f"{endpoint}?state=open&sort=created&direction=asc"
             f"&per_page={page_size}&page={page}",
         )
+        if not isinstance(rows, list):
+            raise ValueError("malformed discovery page")
+        if on_page is not None:
+            on_page(rows)
         result.extend(rows)
         if len(rows) < page_size:
             break
@@ -256,7 +261,7 @@ def _slot_holders(rows, policy: dict, *, unresolved_task_ids=None) -> list:
     )
 
 
-def _listing_due(now: datetime) -> bool:
+def _listing_due(now: datetime, *, session=None) -> bool:
     """Whether this tick may spend GitHub reads on a fresh sweep.
 
     A completed sweep refreshes after four minutes while a lane has room.
@@ -282,7 +287,7 @@ def _listing_due(now: datetime) -> bool:
     caller has already established that a lane has room; a tick with none
     returns before reaching this.
     """
-    with _read_session() as db:
+    with _read_session(session) as db:
         last = _latest(db, "intake_swept")
         if last is None:
             return True
@@ -302,6 +307,8 @@ def _listing_due(now: datetime) -> bool:
                 interval = DISCOVERY_REFRESH_SECONDS
         if marked <= now - timedelta(seconds=interval):
             return True
+        if evaluated is None or evaluated.id < last.id:
+            return False
         admitted = _latest(db, "intake_admitted")
         if admitted is not None and aware(admitted.created_at) >= marked:
             return True
@@ -324,6 +331,7 @@ def _local_candidates(
     room: dict[str, bool],
     cooldown_cutoff: datetime,
     eligible: set | None = None,
+    evidence=None,
 ) -> tuple[list[dict], dict[str, int], int]:
     """Build candidates from authoritative local rows without a GitHub read."""
     excluded = {reason: 0 for reason in _EXCLUSION_REASONS}
@@ -384,6 +392,25 @@ def _local_candidates(
     excluded["local_unnumbered"] = len(unnumbered_items)
     for work_item in local_items:
         number = work_item.github_issue_number
+        if evidence is not None:
+            evidence.observe(
+                repo,
+                {
+                    "number": number,
+                    "title": work_item.title,
+                    "labels": work_item.labels,
+                    "created_at": aware(
+                        work_item.github_created_at or work_item.created_at
+                    ).isoformat(),
+                },
+                "local",
+            )
+
+        def exclude(reason):
+            excluded[reason.split(":", 1)[0]] += 1
+            if evidence is not None:
+                evidence.reason(repo, number, reason)
+
         if number is None:
             excluded["local_unnumbered"] += 1
             continue
@@ -396,7 +423,7 @@ def _local_candidates(
             or not isinstance(body, str)
             or len(body) > 65536
         ):
-            excluded["local_malformed"] += 1
+            exclude("local_malformed")
             _throttled(
                 "local_item_malformed",
                 {"work_item_id": work_item.id},
@@ -404,25 +431,25 @@ def _local_candidates(
             continue
         labels = {label.lower() for label in work_item.labels}
         if "human" in labels:
-            excluded["human"] += 1
+            exclude("human")
             continue
         if labels & exclude_labels:
-            excluded["excluded_label"] += 1
+            exclude("excluded_label:" + ",".join(sorted(labels & exclude_labels)))
             continue
         if work_item.id in blocked_local_ids:
-            excluded["blocked"] += 1
+            exclude("blocked")
             continue
         delivery = work_item.state == "ready"
         if intake["refinement_batch"] and (
             delivery or number not in intake["refinement_batch"]
         ):
-            excluded["outside_refinement_batch"] += 1
+            exclude("outside_refinement_batch")
             continue
         refine = not delivery
         task_class, class_reason = derive_task_class(labels, refine=refine)
         rows = [row for row in local_receipts if row.work_item_id == work_item.id]
         if refine and "needs-thought" in labels:
-            excluded["deferred"] += 1
+            exclude("deferred")
             continue
         receipt_exclusion = _receipt_exclusion(
             rows,
@@ -431,13 +458,23 @@ def _local_candidates(
             cooldown_cutoff=cooldown_cutoff,
         )
         if receipt_exclusion is not None:
-            excluded[receipt_exclusion] += 1
+            exclude(receipt_exclusion)
+            if receipt_exclusion == "cooldown" and evidence is not None:
+                evidence.reason(
+                    repo,
+                    number,
+                    "cooldown_until:"
+                    + (
+                        aware(rows[0].updated_at)
+                        + timedelta(hours=intake["cooldown_hours"])
+                    ).isoformat(),
+                )
             continue
         if refine and not intake["refine_enabled"]:
-            excluded["refine_disabled"] += 1
+            exclude("refine_disabled")
             continue
         if type(number) is not int or not 1 <= number <= 2**31 - 1:
-            excluded["local_malformed"] += 1
+            exclude("local_malformed")
             _throttled(
                 "local_item_malformed",
                 {"work_item_id": work_item.id},
@@ -454,7 +491,7 @@ def _local_candidates(
         if eligible is not None and delivery and "agent-ready" in labels:
             eligible.add((repo, number))
         if not room.get(lane):
-            excluded["lane_full"] += 1
+            exclude("lane_full")
             continue
         created_at = work_item.github_created_at or work_item.created_at
         item = {
@@ -493,7 +530,15 @@ def _local_candidates(
     )
 
 
-def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
+def intake_tick(
+    policy: dict,
+    *,
+    generation: int,
+    lanes=LANES,
+    defer_evidence=False,
+    evidence_sink=None,
+    observe_only=False,
+) -> list[dict]:
     """Queue at most one issue per open lane, or audit why it queued none.
 
     The lanes are ranked and filled independently: a delivery candidate and an
@@ -501,6 +546,8 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
     and never more than one of either. ``lanes`` lets a caller hold one shut
     without touching the policy.
     """
+    evidence = None
+    local_errors = False
     try:
         policy = {**policy, "generation": generation}
         intake = intake_policy(policy)
@@ -515,8 +562,6 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 },
             )
         if not intake["enabled"]:
-            return []
-        if not lanes:
             return []
         # The ceiling is chart configuration and the lane maxima are posted
         # policy, so neither says the other is the binding constraint. Name it
@@ -540,8 +585,8 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 unresolved_task_ids=unresolved_start_task_ids(db),
             )
             room = open_lanes(policy, held, lanes)
-            if not any(room.values()):
-                return []
+            if observe_only:
+                room = {lane: 0 for lane in LANES}
         # Every enabled repo sweeps under its own intake labels and daily
         # cap; a repo outside the enabled set is not even read. A policy
         # with only the legacy repo reads as that one entry, so today's
@@ -554,6 +599,16 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
         if not repos:
             return []
         entries = repos_map(policy)
+        intake_evidence.finalize()
+        # Claim the aggregate discovery clock under the same control lock used
+        # by admission. Replicas cannot both reserve a due sweep.
+        with _locked_session() as (db, _control):
+            listing_due = _listing_due(now, session=db)
+            if listing_due:
+                _audit(db, ACTOR, "intake_swept")
+                marker = _latest(db, "intake_swept")
+                evidence = intake_evidence.Sweep(marker.id, now)
+                evidence.coverage = {repo: "unavailable" for repo in repos}
         with _read_session() as db:
             # Delivery only. The cap bounds delivery churn, and an advisory
             # refine costs cents and produces a comment, so the cap is not
@@ -566,6 +621,14 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
 
         def exclude(reason: str) -> None:
             excluded[reason] += 1
+            if evidence is not None and isinstance(item, dict):
+                evidence.reason(slug, item.get("number"), reason)
+                if reason == "excluded_label":
+                    row = evidence.issues.get((slug, item.get("number")))
+                    if row is not None:
+                        row["excluded_labels"] = sorted(
+                            _label_names(item) & exclude_labels
+                        )
 
         candidates = []
         eligible = set()
@@ -586,6 +649,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     room=room,
                     cooldown_cutoff=cooldown_cutoff,
                     eligible=eligible,
+                    evidence=evidence,
                 )
                 for candidate in local_candidates:
                     candidate["repo"] = slug
@@ -607,10 +671,6 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
         # is how it stays spent. One stamp covers every repo; each repo then
         # reads and syncs on its own, so one repo's failure never blinds the
         # others.
-        listing_due = _listing_due(now)
-        if listing_due:
-            with _locked_session() as (db, _control):
-                _audit(db, ACTOR, "intake_swept")
         github_status = None if listing_due else "not_due"
         listed_total = 0
         truncated = False
@@ -623,13 +683,56 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             pulls_cut = False
             if listing_due:
                 try:
-                    issues, issues_cut = _pages(slug, "issues")
+
+                    def observed_page(rows):
+                        for issue in rows:
+                            evidence.observe(slug, issue)
+
+                    issues, issues_cut = _pages(slug, "issues", on_page=observed_page)
+                    # Reject malformed identities/text before the batch sync.
+                    # One invalid row must not poison valid rows or masquerade
+                    # as complete coverage (which could close unseen items).
+                    from factory.orchestration.work_items import _github_values
+
+                    valid_issues = []
+                    for issue in issues:
+                        try:
+                            if not isinstance(issue, dict):
+                                raise ValueError("malformed issue")
+                            _github_values(slug, issue)
+                        except (TypeError, ValueError, AttributeError):
+                            issues_cut = True
+                            excluded["malformed"] += 1
+                            if isinstance(issue, dict):
+                                evidence.reason(slug, issue.get("number"), "malformed")
+                        else:
+                            valid_issues.append(issue)
+                    issues = valid_issues
+                    if evidence is not None:
+                        evidence.coverage[slug] = (
+                            "partial" if issues_cut else "complete"
+                        )
+                        if any(
+                            not isinstance(issue, dict)
+                            or type(issue.get("number")) is not int
+                            for issue in issues
+                        ):
+                            evidence.coverage[slug] = "partial"
+                            issues_cut = True
                     pulls, pulls_cut = _pages(slug, "pulls", page_size=PULL_PAGE_SIZE)
                     if pulls_cut:
                         # An unseen PR may already own any candidate issue.
                         # Exclude GitHub candidates until coverage is complete.
                         raise ValueError("open PR discovery incomplete")
                 except Exception as exc:  # noqa: BLE001 - recorded, never swallowed
+                    if evidence is not None:
+                        evidence.coverage[slug] = "unavailable"
+                        for observation in evidence.issues.values():
+                            if (
+                                observation["repo"] == slug
+                                and observation["source"] == "github"
+                            ):
+                                observation["reason"] = "discovery_failed"
                     # A 403 from the shared rate limit, or any other read
                     # failure, would otherwise leave intake silently dead: the
                     # blanket handler below logs where nobody looks. Record
@@ -700,6 +803,13 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                             logger.info("work_item_edge_reconcile", extra=edge_counts)
                         db.commit()
                 except Exception as exc:  # noqa: BLE001 - intake survives sync failure
+                    if evidence is not None:
+                        evidence.coverage[slug] = "unavailable"
+                        for issue in issues:
+                            if isinstance(issue, dict):
+                                evidence.reason(
+                                    slug, issue.get("number"), "discovery_failed"
+                                )
                     logger.exception("work_item_sync_error")
                     _throttled(
                         "work_item_sync_error",
@@ -709,6 +819,9 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                             "repo": slug,
                         },
                     )
+                    read_failed.append(slug)
+                    per_repo.append((slug, [], []))
+                    continue
             truncated = truncated or issues_cut or pulls_cut
             listed_total += len(issues)
             per_repo.append((slug, issues, pulls))
@@ -777,6 +890,14 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             for item in issues:
                 if not isinstance(item, dict):
                     exclude("malformed")
+                    continue
+                if (
+                    evidence is not None
+                    and evidence.issues.get((slug, item.get("number")), {}).get(
+                        "source"
+                    )
+                    == "local"
+                ):
                     continue
                 labels = _label_names(item)
                 if "pull_request" in item:
@@ -915,6 +1036,25 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 )
                 if receipt_exclusion is not None:
                     exclude(receipt_exclusion)
+                    if receipt_exclusion == "active_issue" and evidence is not None:
+                        observation = evidence.issues.get((slug, number))
+                        if observation is not None:
+                            active = next(
+                                row
+                                for row in rows
+                                if row.state in ("admitted", "uncertain", "landing")
+                            )
+                            observation["receipt_id"] = active.id
+                    if receipt_exclusion == "cooldown" and evidence is not None:
+                        evidence.reason(
+                            slug,
+                            number,
+                            "cooldown_until:"
+                            + (
+                                aware(rows[0].updated_at)
+                                + timedelta(hours=intake["cooldown_hours"])
+                            ).isoformat(),
+                        )
                     continue
                 if not delivery and not intake["refine_enabled"]:
                     exclude("refine_disabled")
@@ -1043,6 +1183,8 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 candidate["lane"] == "delivery"
                 and admitted_today[repo] >= repo_max_per_day
             ):
+                if evidence is not None:
+                    evidence.reason(repo, candidate["number"], "daily_cap")
                 capped[repo] = {
                     "admitted_today": admitted_today[repo],
                     "max_per_day": repo_max_per_day,
@@ -1076,6 +1218,8 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     key = f"{lane_of(row)}:{row.state}"
                     held_counts[key] = held_counts.get(key, 0) + 1
             if not room.get(candidate["lane"]):
+                if evidence is not None:
+                    evidence.reason(candidate["repo"], candidate["number"], "capacity")
                 # The lane filled between the pre-sweep room check and this
                 # re-read: another replica, or an earlier candidate this tick
                 # admitted above. admit_next is still the real gate; this idle
@@ -1112,6 +1256,8 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     logger.warning("dependency PR evidence unavailable", exc_info=True)
                     continue
             else:
+                if evidence is not None:
+                    evidence.reason(repo, candidate["number"], "receipt_failed")
                 received = receive_issue(
                     repo,
                     candidate["number"],
@@ -1124,6 +1270,16 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     issue=issue,
                     work_item_id=candidate["work_item_id"],
                 )
+            if not received.get("ok") or not received.get("receipt", {}).get("id"):
+                if evidence is not None:
+                    evidence.reason(repo, candidate["number"], "receipt_refused")
+                continue
+            if evidence is not None:
+                observation = evidence.issues.get((repo, candidate["number"]))
+                if observation is not None:
+                    observation.update(
+                        reason="queued", receipt_id=received["receipt"]["id"]
+                    )
             if delivery:
                 admitted_today[repo] += 1
             received_all.append(received)
@@ -1201,6 +1357,18 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
     except Exception:  # noqa: BLE001 - intake is optional and never stops the lane
         logger.exception("factory autonomous intake failed")
         return []
+    finally:
+        if evidence is not None:
+            if local_errors:
+                evidence.coverage = {
+                    repo: "partial" if value == "complete" else value
+                    for repo, value in evidence.coverage.items()
+                }
+            evidence.stage()
+            if evidence_sink is not None:
+                evidence_sink.append(evidence.id)
+            if not defer_evidence:
+                intake_evidence.finalize()
 
 
 def _refill_observation(policy, eligible, complete, lanes, observed_at):
