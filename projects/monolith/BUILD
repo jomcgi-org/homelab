@@ -5250,6 +5250,19 @@ py_test(
 )
 
 py_test(
+    name = "swarm_factory_rollback_test",
+    srcs = ["factory/orchestration/factory_rollback_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "factory_review_publisher_test",
     srcs = ["factory/review_publisher_test.py"],
     imports = ["."],

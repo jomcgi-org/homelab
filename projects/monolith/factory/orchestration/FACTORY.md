@@ -2388,6 +2388,78 @@ existed, are never judged and read as unknown. With rebase merges the merge
 commit is only a pull request's last rebased commit, so a partial revert of an
 earlier commit in the same pull request is not detected.
 
+### Automated rollback
+
+Issue #7450 retains operational acceptance. The staged implementation connects
+`factory_rollout.py`, `factory_landing.py` and `factory_rollback_runtime.py` to
+the `factory_rollback.py` evidence and reservation core. No deployed policy enables
+rollback, and `promotion.revisionGate.enabled` remains off. Existing
+`MONOLITH_CHART_VERSION` and `/healthz` `chart_version` wiring is unchanged.
+
+The policy defaults to `enabled: false`, `window_minutes: 15` and
+`max_per_hour: 2`. `charts.<chart>.window_minutes` overrides the observation
+window; `charts.<chart>.synthetic_signal` names an optional synthetic signal.
+The core accepts only matching delivery, merge, application, chart and revision
+identities with available, fresh observations. Its verdict contract is
+`rollout_failed`, `rollout_observing`, `rollout_verified` or `unknown`. It
+recognizes explicit ArgoCD, Kargo Promotion, revision-health and configured
+synthetic failures. The first covering publication identifies the expected
+chart revision, including when its Argo sync failed. Kargo failures must name
+that revision. The private monolith `/healthz` read requires matching
+`chart_version`; an unavailable endpoint or an unversioned error stays unknown.
+Named synthetics read `PlatformProbe` by exact name; its JSON `detail` must carry
+`application`, `chart` and `revision`, and `checked_at` supplies freshness.
+Missing, malformed and stale observations remain unknown. No new synthetic
+producer or public health access is enabled here.
+
+Landing persists `rollback_window_started` once per application. Healthy
+completion requires the configured window and a fresh healthy sample from
+each required signal. `rollout_failed` is an idempotent, terminal delivery
+audit with its evidence, regardless of rollback enablement, holds or breaker
+state. A later healthy read cannot turn that delivery into `rollout_verified`.
+
+Intent reservation uses the existing factory control-row transaction lock and
+append-only audit ledger. It reserves once per delivery before external effects
+and counts reservations factory-wide in `(now - 1 hour, now]`. A third
+reservation records one breaker opening and files one `needs-human` issue.
+Source titles, bodies and the complete PR commit inventory identify human and
+generated reverts before factory-ownership checks; automatic revert-of-revert
+requires a person.
+
+Each intent files a recovery issue and receives one ordinary intake receipt.
+Its private ledger link gives it the deterministic `factory/rollback-<key>`
+branch. Admission, model selection, execution limits and ownership fences are
+unchanged; disabled intake or occupied lanes keep it queued. The ordinary
+implementation worker runs `factory_rollback_source.py`. It verifies the PR
+commit count and patch identities against the landed range, reverses every
+rebased commit newest-first, and uses `git revert -m 1` for a true merge.
+It pushes and creates or adopts `revert(<scope>): ...` with `Reverts #N`, without
+editing pins or cluster state. The branch and complete range marker survive a
+worker restart or formatter writeback. Closed PRs are adopted, never replaced.
+
+`rollback_pr_started` fences the logical recovery worker. A crash before PR
+creation resumes its same receipt and deterministic branch. Issue writes have
+separate durable fences and read back their markers after lost responses; an
+unresolved create is never repeated. PR head changes append observations and
+invalidate prior review evidence. The normal conductor owns exact-head review,
+required Linux checks and ordinary merge-queue ordering. Source receipt holds
+also fence recovery starts and landing. Disabling rollback prevents new intents
+while existing recovery receipts and PRs continue.
+
+The reconciler records `rollback_landed` only after GitHub reports an actual
+merge and the ordinary landing owner has attested its reviewed head. It then
+reopens the source issue with timestamped failure and rollback evidence and
+adds `agent-ready` only when ownership and holds permit. Repeated observation
+cannot duplicate that evidence or the terminal `reverted` audit. The original
+receipt settles `failed` with `rollback_settled.outcome=reverted`; its graph,
+spend and holds remain intact. The recovery delivery itself still follows
+normal rollout verification of its freshly built chart.
+
+Live acceptance on #7450 requires the authorized low-risk failure exercise,
+fresh-chart forward promotion, issue recovery, healthy-window observation,
+breaker checks and disabled-policy reconciliation. Offline tests establish
+none of those live claims.
+
 ### A delivery pause is a decision request
 
 The delivery planner's fifth action is `pause`, and it now leaves the lane

@@ -53,6 +53,14 @@ they do not launch their own planner, review or landing sequence.
   Rebase only for conflicts or CI's branch writeback, not because main moved.
 - Queue entries can have `autoMergeRequest: null`; inspect
   `mergeQueueEntry{state}`. Read an ejection's failure before re-enqueueing.
+- The #7450 rollback implementation is staged default-off. Durable rollout
+  failure creates a recovery receipt only when enabled. Its worker reverses
+  the full landed PR range and creates or adopts `revert(<scope>): ...` with
+  `Reverts #N`. Ordinary admission, required Linux checks, independent exact-head
+  review and queue ordering still apply. Landing reopens the original issue
+  with evidence and records the reverted outcome. Source holds and human
+  ownership stay binding. The revision gate stays off; operational acceptance
+  remains on #7450 with the authorized landing and validation owner.
 - For deployable changes, wait for chart writeback and call
   `verify_deployment` with the expected revision until terminal. Without it,
   verify ArgoCD Synced/Healthy, the new pod image and a responding service.
