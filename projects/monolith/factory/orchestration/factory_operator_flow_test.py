@@ -1089,3 +1089,26 @@ def test_renewal_records_exact_observation_refusal_without_grant(
                 == "claude"
             )
         assert funding.latest(db, "task-927", progress.LEASE)["work_turn_ceiling"] == 8
+
+
+def test_operator_renewal_refuses_same_actor_new_pause_with_retained_old_card(
+    renewed_review,
+):
+    (engine, _, _, _, _), overlay = renewed_review
+    pause_allocation(engine)
+    with Session(engine) as db:
+        old_card = db.get(FactoryReceipt, 927).escalation_json
+    assert controls.set_control("resume_task", "human", task_id="task-927")["ok"]
+    assert controls.pause_nonrenewable_recovery(
+        "task-927",
+        "Automatic funding or lease renewal is outside the operator envelope",
+    )
+    with Session(engine) as db:
+        assert db.get(FactoryReceipt, 927).escalation_json == old_card
+    before = ledger(engine)
+    result = call("preview", 927, overlay, "Renew existing authority")
+    assert result["reason"] == "progress_pause_not_owned"
+    assert ledger(engine) == before
+    with Session(engine) as db:
+        assert db.get(FactoryReceipt, 927).task_paused
+        assert funding.latest(db, "task-927", progress.LEASE)["work_turn_ceiling"] == 8
