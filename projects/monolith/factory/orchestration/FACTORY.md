@@ -418,11 +418,12 @@ overlays and decisions stay unchanged. Results are advisory; submission repeats
 current-state validation and accounting. The enabled prompt asks for at most two
 previews, then a feasible smaller decision, authorized funding request or pause,
 with measured needed/allowed turns and USD and reserve-aware spare figures.
-Repository delivery leaves the flag off. Binding provisioning, authorized enablement with a live
-in-turn preview, and the 72-hour rejected-run/cost comparison remain live checks
-on #6650. Its reported baseline for 2026-09-28 through 2026-10-01 is 11
-`envelope_exceeded` refusals and $10.17; savings count only eliminated rejection
-or replan work.
+Repository delivery leaves the flag off. #6650 is closed completed; its recorded
+staged acceptance calls for binding provisioning, authorized enablement with a
+live in-turn preview, and a 72-hour rejected-run/cost comparison. Repository
+completion does not establish those operational observations. Its reported
+baseline for 2026-09-28 through 2026-10-01 is 11 `envelope_exceeded` refusals and
+$10.17; savings count only eliminated rejection or replan work.
 
 ## Availability and operator policy
 
