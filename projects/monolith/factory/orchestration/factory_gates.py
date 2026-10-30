@@ -376,6 +376,10 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
                     "gate_id": identity,
                     "hold": direction["landing_hold"],
                 }
+            elif origin in {"operator", "human_issue"}:
+                # A trusted reassertion must remain binding even if this exact
+                # restriction previously had refused planner provenance.
+                direction.pop("landing_hold_provenance", None)
         row.direction_json = json.dumps(direction)
         row.updated_at = _now()
         db.add(row)

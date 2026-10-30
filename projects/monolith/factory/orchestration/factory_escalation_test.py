@@ -1694,6 +1694,21 @@ def test_shared_prompt_preserves_operator_schema_without_planner_hold_guidance()
     assert "leave_unmerged" in gates.GATE_SCHEMA["properties"]
 
 
+def test_operator_gate_reasserts_exact_previously_refused_hold(db, github, monkeypatch):
+    from factory.orchestration import factory_gates as gates
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "false")
+    task_id, _ = admitted(ISSUE)
+    assert gates.resolve(task_of(task_id), {"gate": hold_gate()}, "planner:test")
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    with pytest.raises(gates.LandingHoldRefused):
+        gates.resolve(task_of(task_id), {"gate": hold_gate()}, "planner:test")
+    assert not controls.landing_held(receipt_of(db, task_id))
+    assert gates.resolve(task_of(task_id), {"gate": hold_gate()}, "operator:joe")
+    assert controls.landing_held(receipt_of(db, task_id))
+    assert audits(db, "landing_hold_refused")
+
+
 def existing_pull(task, *, number=6070, branch="factory/earlier-task"):
     return {
         "number": number,

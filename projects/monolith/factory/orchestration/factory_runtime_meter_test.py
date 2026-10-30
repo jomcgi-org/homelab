@@ -2649,6 +2649,109 @@ def held_apply(owner, proposal, key="continuation"):
     )
 
 
+def refused_hold_direction(cause="refine-gate:task", origin="planner"):
+    hold = {"actor": "factory:conductor", "cause": cause, "reason": "stage"}
+    return {
+        "landing_hold": hold,
+        "landing_hold_provenance": {
+            "origin": origin,
+            "cause": cause,
+            "gate_id": "exact",
+            "hold": hold.copy(),
+        },
+        "landing_hold_refusals": [{"cause": cause, "gate_id": "exact"}],
+    }
+
+
+@pytest.mark.parametrize("origin", ["planner", "operator", "human_issue"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_refinement_continuation_preserves_hold_evidence(
+    database, held_refinement, monkeypatch, origin, enabled
+):
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", str(enabled).lower())
+    owner, _issue, direction = held_refinement
+    direction.update(refused_hold_direction(origin=origin))
+    with Session(database) as db, db.begin():
+        db.get(FactoryReceipt, 838).direction_json = json.dumps(direction)
+    if enabled and origin == "planner":
+        with pytest.raises(ValueError, match="restrictions_not_supported"):
+            owner.preview(838, "continue held work")
+        return
+    proposal = owner.preview(838, "continue held work")
+    result = held_apply(owner, proposal)
+    with Session(database) as db:
+        copied = json.loads(db.get(FactoryReceipt, result["receipt_id"]).direction_json)
+        assert all(copied[key] == value for key, value in direction.items())
+        assert controls.landing_held({"direction": copied})
+
+
+def test_operator_amendment_reasserts_previously_refused_hold(database, monkeypatch):
+    from factory.orchestration import factory_policy_amendment as amendments
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    paused(database)
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        row.direction_json = json.dumps(refused_hold_direction())
+        assert not controls.landing_held(row)
+    proposal = amendments.preview(838, {"landing_hold": True}, "Operator hold")
+    amendments.apply(
+        838,
+        {"landing_hold": True},
+        "Operator hold",
+        actor="operator",
+        request_key="reassert",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        assert controls.landing_held(row)
+        assert json.loads(row.direction_json)["landing_hold_refusals"]
+
+
+def test_operator_recovery_reasserts_previously_refused_hold(
+    database, expired_recovery, monkeypatch
+):
+    from factory.orchestration import factory_task_recovery as recovery
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    args, _issue, _now = expired_recovery
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        direction = json.loads(row.direction_json)
+        direction.update(refused_hold_direction())
+        row.direction_json = json.dumps(direction)
+        assert not controls.landing_held(row)
+    proposal = recovery.preview(**args)
+    recovery.apply(
+        **args,
+        actor="operator",
+        request_key="reassert",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    with Session(database) as db:
+        assert controls.landing_held(db.get(FactoryReceipt, 838))
+
+
+def test_unrelated_human_readmission_preserves_exact_refusal(database, monkeypatch):
+    from factory.orchestration import factory_decisions as decisions
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    paused(database)
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        row.direction_json = json.dumps(refused_hold_direction())
+        direction = decisions._direction(
+            row,
+            {},
+            {"key": "chat", "label": "continue", "effect": "chat"},
+            "operator",
+            None,
+        )
+        assert not controls.landing_held({"direction": direction})
+        assert direction["landing_hold_refusals"]
+
+
 def test_held_refinement_creates_distinct_restricted_delivery(
     database, held_refinement
 ):

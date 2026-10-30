@@ -245,6 +245,9 @@ def apply(
         task = graph._lock_task(db, row.task_id)
         authority = {"actor": actor, "request_key": request_key, "reason": direction}
         stored_direction = proposal["prior_direction"].copy()
+        # Recovery explicitly reasserts the operator's hold. Old planner
+        # refusal evidence remains historical and cannot suppress that act.
+        stored_direction.pop("landing_hold_provenance", None)
         for hold in ("landing_hold", "nonrenewable_recovery"):
             stored_direction.setdefault(hold, authority)
         stored_direction["task_recovery"] = authority
