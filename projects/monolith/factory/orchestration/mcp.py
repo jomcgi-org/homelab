@@ -1215,7 +1215,7 @@ def _detail_payload(
     receipt_id: int, node_offset: int, limit: int, history_limit: int = 10
 ) -> dict:
     from factory.orchestration import factory_controls as controls
-    from factory.orchestration import graph
+    from factory.orchestration import factory_progress_continuation, graph
     from factory.orchestration.factory_models import FactoryReceipt
     from factory.private_view import shape_node
 
@@ -1249,6 +1249,9 @@ def _detail_payload(
             "work_item": work_item,
             "lifecycle": _lifecycle_evidence(db, row, snapshot),
             "watchdog": _watchdog_detail(db, row, snapshot),
+            "progress_continuation": factory_progress_continuation.renewal_status(
+                db, row.task_id
+            ),
             "source_timestamps": {
                 "receipt_created_at": iso_or_str(getattr(row, "created_at", None)),
                 "receipt_updated_at": iso_or_str(getattr(row, "updated_at", None)),
@@ -1482,19 +1485,22 @@ def _amend_policy(
     from factory.orchestration.factory_progress_continuation import SubscriptionRefusal
 
     try:
-        if "progress_continuation" in overlay:
+        modes = set(overlay) & {"progress_continuation", "progress_renewal"}
+        if modes:
             from factory.orchestration import factory_progress_continuation as progress
 
-            target = overlay["progress_continuation"]
+            mode = next(iter(modes))
+            target = overlay[mode]
             if (
-                set(overlay) != {"progress_continuation"}
+                set(overlay) != {mode}
                 or not isinstance(target, dict)
                 or set(target) != {"pr_number", "head_sha"}
             ):
                 raise ValueError("progress_exact_target_required")
             args = (receipt_id, target["pr_number"], target["head_sha"], direction)
+            kwargs = {"renewal": True} if mode == "progress_renewal" else {}
             if operation == "preview":
-                return progress.preview(*args)
+                return progress.preview(*args, **kwargs)
             if not request_key or not expected_preview_sha256:
                 return {
                     "ok": False,
@@ -1505,6 +1511,7 @@ def _amend_policy(
                 actor=actor,
                 request_key=request_key,
                 expected_preview_sha256=expected_preview_sha256,
+                **kwargs,
             )
         if operation == "preview":
             return amendments.preview(receipt_id, overlay, direction)
@@ -1549,6 +1556,15 @@ async def factory_amend_policy(
     requires a new independent reviewed head, CI, fresh subscription evidence,
     quiescence and no repeated failures. Holds and accounting remain intact.
     It cannot be combined with ordinary policy fields or renew other receipts.
+
+    A separate progress_renewal overlay with the same exact target fields
+    renews an existing continuation grant after a factory-owned correction
+    allocation pause. It requires a new independently reviewed head, CI,
+    fresh subscription evidence and unchanged authority. Only appended staged
+    unmerged holds with the same scope and effects and retained checks are
+    compatible. Operator pauses and other holds remain closed. Preview binds
+    the current pause, graph, accounting and version. Apply resumes this same
+    task under one finite lease without replacing its original grant.
 
     A remove_models overlay containing only a nonempty list of existing model
     names restricts one paused, quiescent receipt. It removes those names from

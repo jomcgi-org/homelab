@@ -1366,6 +1366,10 @@ def test_detail_pages_nodes_and_bounds_attempt_history(monkeypatch):
     monkeypatch.setattr(mcp, "_queue_context", lambda *args: None)
     monkeypatch.setattr(mcp, "_watchdog_detail", lambda *args: None)
     monkeypatch.setattr(
+        "factory.orchestration.factory_progress_continuation.renewal_status",
+        lambda session, task: {"reason": "progress_authority_changed", "task_id": task},
+    )
+    monkeypatch.setattr(
         mcp,
         "_lifecycle_evidence",
         lambda *args: {
@@ -1386,6 +1390,10 @@ def test_detail_pages_nodes_and_bounds_attempt_history(monkeypatch):
     assert node["state"] == "failed"
     assert result["updated_at"] == "2026-09-14T00:00:00+00:00"
     assert result["lifecycle"]["deployment"]["status"] == "unknown"
+    assert result["progress_continuation"] == {
+        "reason": "progress_authority_changed",
+        "task_id": "task",
+    }
     assert (
         _as(_principal(), lambda: mcp.factory_task_detail(99))["reason"]
         == "unknown_receipt"
