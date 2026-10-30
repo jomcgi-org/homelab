@@ -23,12 +23,11 @@ from sqlmodel import select
 
 from factory.orchestration import factory_controls as controls
 from factory.orchestration.factory_models import FactoryAudit
-from factory.orchestration.factory_rollout import READ_CACHE_TTL_SECONDS
 
 ACTOR = "factory:rollback"
 SHA = re.compile(r"[0-9a-f]{40}")
 SIGNALS = frozenset({"argocd", "kargo_promotion", "revision_health"})
-FRESHNESS_SECONDS = READ_CACHE_TTL_SECONDS
+FRESHNESS_SECONDS = 30
 
 
 def reverse_source(checkout: str, delivery: dict) -> dict:
@@ -52,18 +51,44 @@ def reverse_source(checkout: str, delivery: dict) -> dict:
     if git("status", "--porcelain"):
         raise ValueError("rollback source worktree is dirty")
     merge = delivery["merge_commit_sha"]
-    # Resume a completed local revert after a lost worker result.
-    message = git("log", "-1", "--format=%B")
-    if f"This reverts commit {merge}" in message:
-        return {"head_sha": git("rev-parse", "HEAD"), "branch": branch}
     parents = git("rev-list", "--parents", "-n", "1", merge).split()[1:]
     if not parents:
         raise ValueError("cannot automatically revert a root commit")
+    count = delivery.get("commit_count")
+    if type(count) is not int or count < 1:
+        raise ValueError("authoritative PR commit count required")
+    if len(parents) > 1:
+        commits = [merge]
+    else:
+        # The queue rebases every PR commit. merge_commit_sha is its LAST
+        # commit, not the full change. Refuse non-linear or incomplete ranges.
+        base = git("rev-parse", f"{merge}~{count}")
+        commits = git("rev-list", "--first-parent", f"{base}..{merge}").splitlines()
+        if len(commits) != count or any(
+            len(git("rev-list", "--parents", "-n", "1", sha).split()) != 2
+            for sha in commits
+        ):
+            raise ValueError("landed range does not match PR commit count")
+    marker = f"Factory-Rollback: {key}"
+    lines = [f"This reverts commit {sha}." for sha in commits]
+    # Resume only the complete range, never the last member of a partial revert.
+    message = git("log", "-1", "--format=%B").splitlines()
+    if marker in message and all(line in message for line in lines):
+        return {"head_sha": git("rev-parse", "HEAD"), "branch": branch}
     git("merge-base", "--is-ancestor", merge, "HEAD")
-    command = ["revert", "--no-edit"]
+    command = ["revert", "--no-commit"]
     if len(parents) > 1:
         command.extend(["--mainline", "1"])
-    git(*command, merge)
+    git(*command, *commits)
+    git(
+        "commit",
+        "-m",
+        f"revert({delivery['chart']}): recover PR #{delivery['pr_number']}\n\n"
+        + f"Reverts #{delivery['pr_number']}\n\n"
+        + "\n".join(lines)
+        + "\n\n"
+        + marker,
+    )
     return {"head_sha": git("rev-parse", "HEAD"), "branch": branch}
 
 
@@ -177,7 +202,7 @@ def verdict(
         return unknown
 
 
-def _events(db, key: str, task_id: str) -> dict[str, dict]:
+def _events(db, key: str, task_id: str, application=None) -> dict[str, dict]:
     rows = db.exec(
         select(FactoryAudit)
         .where(
@@ -188,6 +213,9 @@ def _events(db, key: str, task_id: str) -> dict[str, dict]:
                     "rollback_pr_observed",
                     "rollback_landed",
                     "rollback_issue_reopened",
+                    "rollout_failed",
+                    "rollback_window_started",
+                    "rollback_window_verified",
                 )
             ),
             FactoryAudit.task_id == task_id,
@@ -198,6 +226,9 @@ def _events(db, key: str, task_id: str) -> dict[str, dict]:
     for row in rows:
         detail = json.loads(row.detail_json)
         if detail.get("delivery_key") == key:
+            if row.action.startswith("rollback_window_"):
+                if detail.get("application") != application:
+                    continue
             result[row.action] = detail
     return result
 
@@ -213,6 +244,57 @@ def _append(db, delivery: dict, action: str, key: str, now: datetime, /, **detai
         recorded_at=utc(now).isoformat(),
         **detail,
     )
+
+
+def _observe(db, policy, delivery, observations, now):
+    key = identity(delivery)
+    events = _events(db, key, delivery["task_id"], delivery["application"])
+    if "rollout_failed" in events:
+        return {"verdict": "rollout_failed", **events["rollout_failed"]}
+    if "rollback_window_verified" in events:
+        return {"verdict": "rollout_verified", "delivery_key": key}
+    started = events.get("rollback_window_started", {}).get("window_started_at")
+    delivery = {
+        **delivery,
+        "window_started_at": started or delivery.get("window_started_at"),
+    }
+    result = verdict(policy, delivery, observations, now=now)
+    if result["verdict"] == "rollout_failed":
+        _append(
+            db,
+            delivery,
+            "rollout_failed",
+            key,
+            now,
+            failure=result["failure"],
+            delivery=delivery,
+        )
+    elif result["verdict"] == "rollout_observing" and not started:
+        _append(
+            db,
+            delivery,
+            "rollback_window_started",
+            key,
+            now,
+            application=delivery["application"],
+            window_started_at=utc(now).isoformat(),
+        )
+    elif result["verdict"] == "rollout_verified":
+        _append(
+            db,
+            delivery,
+            "rollback_window_verified",
+            key,
+            now,
+            application=delivery["application"],
+        )
+    return result
+
+
+def observe_window(policy, delivery, observations, *, now, session=None):
+    """Persist the window and its terminal failure, independently of enablement."""
+    with controls._locked_session(session) as (db, _control):
+        return _observe(db, policy, delivery, observations, now)
 
 
 def reserve(
@@ -231,6 +313,22 @@ def reserve(
         if events.get("rollback_reserved"):
             return {"state": "existing", **events["rollback_reserved"]}
         live = controls.rollback_policy(json.loads(control.policy_json or "{}"))
+        judged = _observe(db, {"rollback": live}, delivery, [evidence], clock)
+        from factory.orchestration.factory_reverts import is_revert_source
+
+        reverted_prs = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "rollback_pr_observed")
+        ).all()
+        if (
+            delivery.get("is_revert") is True
+            or is_revert_source(delivery)
+            or any(
+                (detail := json.loads(row.detail_json)).get("repo") == delivery["repo"]
+                and detail.get("pr_number") == delivery["pr_number"]
+                for row in reverted_prs
+            )
+        ):
+            return {"state": "needs_human", "reason": "automatic_revert_of_revert"}
         if (
             not live["enabled"]
             or not controls.rollback_policy(policy)["enabled"]
@@ -238,9 +336,9 @@ def reserve(
         ):
             return {"state": "disabled"}
         # Re-evaluate the raw observation under current policy inside the lock.
-        judged = verdict({"rollback": live}, delivery, [evidence], now=clock)
         if judged["verdict"] != "rollout_failed":
             return {"state": "unknown"}
+        evidence = judged["failure"]
         receipt = controls._receipt(db, delivery["task_id"])
         if (
             receipt is None
@@ -275,21 +373,10 @@ def reserve(
         recent = []
         for row in reserved:
             prior = json.loads(row.detail_json)
-            if prior.get("repo") != delivery["repo"]:
-                continue
             if clock - timedelta(hours=1) < utc(prior["recorded_at"]) <= clock:
                 recent.append(row)
-        reverted_prs = db.exec(
-            select(FactoryAudit).where(FactoryAudit.action == "rollback_pr_observed")
-        ).all()
-        if delivery.get("is_revert") is True or any(
-            (detail := json.loads(row.detail_json)).get("repo") == delivery["repo"]
-            and detail.get("pr_number") == delivery["pr_number"]
-            for row in reverted_prs
-        ):
-            return {"state": "needs_human", "reason": "automatic_revert_of_revert"}
         if len(recent) >= live["max_per_hour"]:
-            opening = f"{delivery['repo']}:{recent[-1].id}"
+            opening = f"factory:{recent[-1].id}"
             existing = db.exec(
                 select(FactoryAudit).where(
                     FactoryAudit.action == "rollback_breaker_opened"
@@ -354,6 +441,7 @@ def observe_pr(delivery: dict, pull: dict, *, now: datetime, session=None) -> di
         body = pull.get("body")
         if (
             head.get("ref") != intent["branch"]
+            or (pull.get("base") or {}).get("ref") != "main"
             or (head.get("repo") or {}).get("full_name") != delivery["repo"]
             or not SHA.fullmatch(head.get("sha", ""))
             or type(pull.get("number")) is not int
@@ -368,9 +456,8 @@ def observe_pr(delivery: dict, pull: dict, *, now: datetime, session=None) -> di
         previous = events.get("rollback_pr_observed")
         if previous and previous["pr_number"] != pull["number"]:
             return {"state": "duplicate_pr_requires_person"}
-        if previous and previous["head_sha"] != head["sha"]:
-            return {"state": "head_moved", "pr_number": pull["number"]}
-        if previous is None:
+        moved = previous is not None and previous["head_sha"] != head["sha"]
+        if previous is None or moved:
             _append(
                 db,
                 delivery,
@@ -379,9 +466,13 @@ def observe_pr(delivery: dict, pull: dict, *, now: datetime, session=None) -> di
                 now,
                 pr_number=pull["number"],
                 head_sha=head["sha"],
+                review_invalidated=moved,
             )
         if pull.get("merged") is not True:
-            return {"state": "review_and_queue_pending", "pr_number": pull["number"]}
+            return {
+                "state": "head_moved" if moved else "review_and_queue_pending",
+                "pr_number": pull["number"],
+            }
         if not SHA.fullmatch(pull.get("merge_commit_sha", "")):
             return {"state": "merge_unknown"}
         try:
