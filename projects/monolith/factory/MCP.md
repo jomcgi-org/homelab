@@ -321,3 +321,11 @@ releasing holds. It retains intake selection, generation, receipts, budgets,
 uncertainty and breaker history. In-flight refill and held or uncertain learning
 execution refuse modification. It neither creates a scheduler nor dispatches work.
 Existing cooldowns, admission, deduplication and low-yield stopping remain in force.
+
+Progress-continuation refusals include bounded `subscription_diagnostics` for
+standing operators: the refused model, its effective-policy or graph sources,
+adapter family, provider feed, observation time and age. Missing or unsupported
+feeds are distinguished from stale observations and unavailable subscription
+capacity. This is read-only evidence; it changes no admission rule or quota and
+never authorizes a retry. At most 32 model rows are returned, with the exact
+refused model retained separately if truncated. No prompts or credentials appear.

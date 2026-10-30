@@ -1,18 +1,19 @@
 """Explicit same-artifact continuation; finite leases, never reset accounting."""
 
-from datetime import timedelta
 import hashlib
 import json
 import re
-
-from sqlmodel import select
+from datetime import timedelta
 
 from core.jsonio import dumps
+from sqlmodel import select
+
 from factory.execution import provider_quota
-from factory.orchestration import factory_controls as controls, graph, model_pool
-from factory.orchestration import factory_funding_limits as funding
-from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt, WorkItem
 from factory.execution.models import AgentSession, PendingMessage
+from factory.orchestration import factory_controls as controls
+from factory.orchestration import factory_funding_limits as funding
+from factory.orchestration import graph, model_pool
+from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt, WorkItem
 
 ACTION = "progress_continuation_authorized"
 LEASE = "progress_continuation_lease"
@@ -72,6 +73,78 @@ def _review(db, task_id):
     return review, artifact, runs
 
 
+class SubscriptionRefusal(ValueError):
+    """Admission refusal with bounded read-only evidence for the operator."""
+
+    def __init__(self, reason, diagnostics):
+        super().__init__(reason)
+        self.diagnostics = diagnostics
+
+
+def _subscription_diagnostics(policy, node_models, raw, quota, refused_model):
+    origins = {}
+
+    def add(model, origin):
+        origins.setdefault(model, set()).add(origin)
+
+    for model in policy["allowed_models"]:
+        add(model, "allowed_models")
+    for field in ("conductor_model", "worker_model", "reviewer_model"):
+        add(policy.get(field), field)
+    for role, pool in policy.get("model_pools", {}).items():
+        for model in pool:
+            add(model, "model_pools." + role)
+    for model in node_models:
+        add(model, "graph_pin")
+
+    def describe(model):
+        family = model_pool.family_for(model) if model else None
+        provider = model_pool.QUOTA_PROVIDERS.get(family)
+        view = quota.get(provider, {})
+        observed = raw.get("providers", {}).get(provider, {})
+        freshness = model_pool.grant_observation_state(view)
+        if not model:
+            state = "missing_model"
+        elif provider not in {"codex", "claude"}:
+            state = "unsupported_subscription_feed"
+        elif view.get("observed") is not True:
+            state = "missing_observation"
+        elif freshness != "fresh":
+            state = freshness + "_observation"
+        elif not view.get("windows") or any(
+            not w.get("usable") or w.get("used_percent", 100) >= 100
+            for w in view["windows"]
+        ):
+            state = "subscription_unavailable"
+        elif any(
+            not model_pool.availability(model, quota, role)[0]
+            for role in ("conductor", "worker", "reviewer")
+        ):
+            state = "role_admission_refused"
+        else:
+            state = "fresh_admissible"
+        return {
+            "model": model,
+            "family": family,
+            "provider": provider,
+            "required_by": sorted(origins.get(model, ()))[:16],
+            "state": state,
+            "observed_at": observed.get("observed_at"),
+            "age_seconds": view.get("age_seconds"),
+        }
+
+    models = sorted(origins, key=lambda model: str(model))
+    return {
+        "broker_available": raw.get("available") is True,
+        "checked_at": controls._now().isoformat(),
+        "refused_model": describe(refused_model),
+        "models": [describe(model) for model in models[:32]],
+        "model_count": len(models),
+        "truncated": len(models) > 32,
+        "effect": "read_only_refusal_no_admission",
+    }
+
+
 def _observe(receipt_id):
     from factory.orchestration import factory_conductor as conductor
 
@@ -108,7 +181,7 @@ def _observe(receipt_id):
     for pool in policy.get("model_pools", {}).values():
         models.update(pool)
     models.update(node_models)
-    for model in models:
+    for model in sorted(models, key=lambda value: str(value)):
         if not model:
             raise ValueError("progress_model_pin_missing")
         provider = model_pool.QUOTA_PROVIDERS.get(model_pool.family_for(model))
@@ -118,17 +191,26 @@ def _observe(receipt_id):
             or view.get("observed") is not True
             or model_pool.grant_observation_state(view) != "fresh"
         ):
-            raise ValueError("progress_subscription_evidence_stale")
+            raise SubscriptionRefusal(
+                "progress_subscription_evidence_stale",
+                _subscription_diagnostics(policy, node_models, raw, quota, model),
+            )
         if not view.get("windows") or any(
             not w.get("usable") or w.get("used_percent", 100) >= 100
             for w in view["windows"]
         ):
-            raise ValueError("progress_subscription_unavailable")
+            raise SubscriptionRefusal(
+                "progress_subscription_unavailable",
+                _subscription_diagnostics(policy, node_models, raw, quota, model),
+            )
         if any(
             not model_pool.availability(model, quota, role)[0]
             for role in ("conductor", "worker", "reviewer")
         ):
-            raise ValueError("progress_subscription_unavailable")
+            raise SubscriptionRefusal(
+                "progress_subscription_unavailable",
+                _subscription_diagnostics(policy, node_models, raw, quota, model),
+            )
     return {
         "review_id": review["id"],
         "artifact": artifact,
