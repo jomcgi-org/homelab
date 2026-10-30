@@ -1,10 +1,17 @@
 <script>
   import { onMount } from "svelte";
   import "maplibre-gl/dist/maplibre-gl.css";
+  import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
+  import Button from "@homelab/design-system/components/Button.svelte";
   import {
     groupWindowsByDay,
     windowFields,
   } from "$lib/public/hikes/filters.js";
+  import {
+    applyMapPalette,
+    readMapPalette,
+    WALKS_LAYER,
+  } from "$lib/public/hikes/mapTheme.js";
 
   // `walks` is the filtered set to plot; clicking a marker opens the card.
   // `selectedDay` is the parent's chosen day chip (YYYY-MM-DD) or null for
@@ -24,18 +31,20 @@
   } = $props();
 
   // Effort ramp: the universal trail-difficulty convention, green (easy) ->
-  // red (hard), keeping the ships heat ramp's orange/red hot end so the two
-  // maps still rhyme. Green keeps the gentle majority (≈67% of the corpus)
-  // reading calm instead of alarming-hot. Hardcoded hex (data-viz ramp stops,
-  // not design-system surface tokens). Keep in sync with the .legend-bar
-  // gradient below.
+  // red (hard). Green keeps the gentle majority (about two thirds of the
+  // corpus) reading calm instead of alarming-hot. These are data-ramp stops,
+  // not surface tokens, so they stay fixed in both schemes; the legend bar
+  // below draws the same stops.
   const EFFORT_RAMP = [
     { at: 0.0, color: "#15a34a" }, // green, gentlest
     { at: 0.25, color: "#84c91e" }, // lime
     { at: 0.5, color: "#ffcb1f" }, // golden yellow
-    { at: 0.75, color: "#ff6a00" }, // orange (ships)
-    { at: 1.0, color: "#ff0019" }, // red (ships), most strenuous
+    { at: 0.75, color: "#ff6a00" }, // orange
+    { at: 1.0, color: "#ff0019" }, // red, most strenuous
   ];
+  const LEGEND_GRADIENT = `linear-gradient(to right, ${EFFORT_RAMP.map(
+    (s) => s.color,
+  ).join(", ")})`;
 
   // Effort score in [0,1]: equal-weight blend of duration, ascent and distance,
   // each normalized against the corpus p95 and clamped. Triple-counts effort on
@@ -57,30 +66,29 @@
     return `${Number(hours.toFixed(1))} h`;
   }
 
-  // OpenFreeMap needs no API key (same hosted liberty style as /app/ships, so
-  // the two maps read as siblings).
+  // Keep the hosted vector style and its geography (the same liberty style as
+  // ships and stars). Paint follows the sheet in place after load and on every
+  // explicit or system scheme change.
   const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 
   const SOURCE_ID = "walks";
-  const LAYER_ID = "walks";
 
   let maplibregl; // loaded lazily in onMount (browser-only module)
   let mapContainer; // bound <div>
   let map = null;
   let layerReady = false;
   // Signature of the coordinate set we last framed. The filtered `walks` prop
-  // changes as the user adjusts filters, so (unlike ShipsMap's stable live
-  // snapshot) we re-fit whenever the set of plotted coordinates actually
-  // changes, but skip unrelated re-renders that leave the points identical.
+  // changes as the user adjusts filters, so we re-fit whenever the set of
+  // plotted coordinates actually changes, but skip unrelated re-renders that
+  // leave the points identical.
   let lastFitKey = null;
 
   // uuid -> walk row, so a marker click can recover the full record.
   const index = new Map();
 
-  // Map init failed: either the (~1 MB) maplibre chunk did not load or the
-  // browser refused a WebGL context. The map is the only view of the walks, so
-  // without this the page renders its controls over a blank rectangle and a
-  // dead map is indistinguishable from a slow one.
+  // Map init failed: either the maplibre chunk did not load or the browser
+  // refused a WebGL context. The map is the only view of the walks, so without
+  // this a dead map is indistinguishable from a slow one.
   let mapError = $state(false);
 
   let selected = $state(null); // selected walk (light list row), or null
@@ -124,17 +132,6 @@
     if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return false;
     if (lat === 0 && lon === 0) return false;
     return true;
-  }
-
-  // Marker stroke comes from the design tokens; the fill is the effort ramp
-  // (see EFFORT_RAMP). A paper stroke keeps every dot legible over the
-  // basemap's greens and water regardless of its ramp colour.
-  function palette() {
-    const s = getComputedStyle(document.documentElement);
-    return {
-      ink: s.getPropertyValue("--ink").trim(),
-      paper: s.getPropertyValue("--paper").trim(),
-    };
   }
 
   function buildFeatures() {
@@ -218,10 +215,10 @@
   }
 
   // The day-separated sections the card shows. With a specific day chip selected
-  // we show just that day; in "Any" mode we stack EVERY doable day (a long
-  // day-separated list, like the stars site card) so the card represents the
-  // week ahead rather than only the next good day. Each group is {key, label,
-  // rows} and only includes days that are both doable and have hourly rows.
+  // we show just that day; in "Any" mode we stack EVERY doable day so the card
+  // represents the week ahead rather than only the next good day. Each group is
+  // {key, label, rows} and only includes days that are both doable and have
+  // hourly rows.
   let cardGroups = $derived.by(() => {
     if (!selectedDetail) return [];
     const days =
@@ -260,11 +257,15 @@
   });
 
   onMount(() => {
+    let cleanup = () => {};
     let destroyed = false;
 
     (async () => {
       maplibregl = await import("maplibre-gl");
       if (destroyed) return;
+      // Vite must bundle the worker's shared imports too. The package-relative
+      // default URL otherwise points at a missing asset in a production build.
+      maplibregl.setWorkerUrl(workerUrl);
 
       map = new maplibregl.Map({
         container: mapContainer,
@@ -282,7 +283,7 @@
 
       // Collapse the compact attribution on every update so it never paints as
       // a full-width credit bar; leave it alone once the user taps it open.
-      // Same handling as ShipsMap.
+      // Same handling as ShipsMap / StarsMap.
       let userOpenedAttrib = false;
       const collapseAttrib = () => {
         if (userOpenedAttrib) return;
@@ -290,27 +291,74 @@
         attrib?.removeAttribute("open");
         attrib?.classList.remove("maplibregl-compact-show");
       };
-      mapContainer.addEventListener("click", (e) => {
+      const trackAttribution = (e) => {
         if (e.target.closest(".maplibregl-ctrl-attrib-button")) {
           userOpenedAttrib = true;
         }
-      });
+      };
+      mapContainer.addEventListener("click", trackAttribution);
       map.on("styledata", collapseAttrib);
       map.on("sourcedata", collapseAttrib);
       collapseAttrib();
 
+      // The sheet's scheme is the map's scheme: repaint in place on the
+      // reader's toggle and on a system change, without touching the camera,
+      // sources or the open card.
+      const restyle = () => {
+        if (map && layerReady)
+          applyMapPalette(map, readMapPalette(mapContainer));
+      };
+      const scheme = new MutationObserver(restyle);
+      scheme.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-theme"],
+      });
+      const media = window.matchMedia("(prefers-color-scheme: dark)");
+      media.addEventListener("change", restyle);
+      const resize = new ResizeObserver(() => map?.resize());
+      resize.observe(mapContainer);
+
+      // MapLibre supplies keyboard pan and zoom. Enter selects the walk under
+      // the map centre; Escape closes its card without moving focus.
+      const canvas = map.getCanvas();
+      canvas.setAttribute("aria-label", "Hill walks");
+      canvas.setAttribute(
+        "aria-description",
+        "Arrow keys pan, plus and minus zoom, Enter selects a walk at the map centre, Escape closes its card.",
+      );
+      const keyboard = (event) => {
+        if (event.key === "Escape") closeCard();
+        if (event.key !== "Enter" || !layerReady) return;
+        event.preventDefault();
+        const point = map.project(map.getCenter());
+        const feature = map.queryRenderedFeatures(point, {
+          layers: [WALKS_LAYER],
+        })[0];
+        const walk = feature && index.get(feature.properties.uuid);
+        if (walk) selectWalk(walk);
+      };
+      canvas.addEventListener("keydown", keyboard);
+
+      cleanup = () => {
+        scheme.disconnect();
+        media.removeEventListener("change", restyle);
+        resize.disconnect();
+        canvas.removeEventListener("keydown", keyboard);
+        mapContainer.removeEventListener("click", trackAttribution);
+      };
+
       map.on("load", () => {
-        const pal = palette();
+        const pal = readMapPalette(mapContainer);
 
         map.addSource(SOURCE_ID, { type: "geojson", data: emptyFC() });
         map.addLayer({
-          id: LAYER_ID,
+          id: WALKS_LAYER,
           type: "circle",
           source: SOURCE_ID,
           paint: {
-            // Fill by effort: violet (gentle) -> red (strenuous), interpolated
-            // over the score. Paper stroke keeps every dot legible on any
-            // basemap colour; harder walks read a touch larger.
+            // Fill by effort, interpolated over the score. A sheet-coloured
+            // stroke keeps every dot legible on the basemap in either
+            // scheme; harder walks read a touch larger.
             "circle-color": [
               "interpolate",
               ["linear"],
@@ -327,21 +375,22 @@
               8,
             ],
             "circle-stroke-width": 2,
-            "circle-stroke-color": pal.paper,
+            "circle-stroke-color": pal.sheet,
           },
         });
         layerReady = true;
+        applyMapPalette(map, pal);
 
-        map.on("click", LAYER_ID, (e) => {
+        map.on("click", WALKS_LAYER, (e) => {
           const f = e.features?.[0];
           if (!f) return;
           const walk = index.get(f.properties.uuid);
           if (walk) selectWalk(walk);
         });
-        map.on("mouseenter", LAYER_ID, () => {
+        map.on("mouseenter", WALKS_LAYER, () => {
           map.getCanvas().style.cursor = "pointer";
         });
-        map.on("mouseleave", LAYER_ID, () => {
+        map.on("mouseleave", WALKS_LAYER, () => {
           map.getCanvas().style.cursor = "";
         });
 
@@ -350,8 +399,7 @@
         // Deep link (?walk=): open that route's card on load and fly to it so a
         // shared link lands on the marker. Only if it survived the active
         // filters (it is in the plotted set / index); otherwise there is no
-        // marker to show. fitToWalks already ran in syncWalks, so override the
-        // frame with a closer view centred on the selected walk.
+        // marker to show.
         if (initialUuid) {
           const walk = index.get(initialUuid);
           if (walk && validLatLon(walk.latitude, walk.longitude)) {
@@ -367,8 +415,6 @@
     })().catch((err) => {
       // Rejects if the maplibre chunk failed to load or the Map constructor
       // threw, which it does when the browser hands out no WebGL context.
-      // Unhandled, both leave the container blank forever with nothing logged.
-      // Errors raised later from map event callbacks are outside this chain.
       if (destroyed) return;
       console.error("hikes map failed to initialise", err);
       mapError = true;
@@ -378,6 +424,7 @@
     // throw partway through cannot strand a live map instance.
     return () => {
       destroyed = true;
+      cleanup();
       index.clear();
       map?.remove();
       map = null;
@@ -391,36 +438,37 @@
   <div class="map" bind:this={mapContainer}></div>
 
   {#if mapError}
-    <p class="map-error" role="status">
+    <p class="map-error edition" role="status">
       The map could not be loaded. It needs WebGL, which some browsers restrict.
       Try reloading, or open this page in another browser.
     </p>
   {/if}
 
   {#if selected}
-    <aside class="card">
-      <button
-        class="card-close"
-        onclick={closeCard}
-        aria-label="Close walk card">&times;</button
-      >
-      <h2 class="card-name">
-        <a href={selected.url} target="_blank" rel="noopener"
-          >{selected.name}<span class="card-name-arrow" aria-hidden="true"
-            >&nearr;</span
-          ></a
+    <aside class="card edition" aria-label={selected.name}>
+      <header class="card-head ed-head">
+        <p class="card-title">
+          <a href={selected.url} target="_blank" rel="noopener"
+            >{selected.name} ↗</a
+          >
+        </p>
+        <Button
+          class="card-close"
+          variant="quiet"
+          onclick={closeCard}
+          aria-label="Close walk card">&times;</Button
         >
-      </h2>
-      <dl class="card-stats">
-        <div>
+      </header>
+      <dl class="card-stats spec">
+        <div class="row">
           <dt>Distance</dt>
           <dd>{selected.distance_km} km</dd>
         </div>
-        <div>
+        <div class="row">
           <dt>Ascent</dt>
           <dd>{selected.ascent_m} m</dd>
         </div>
-        <div>
+        <div class="row">
           <dt>Duration</dt>
           <dd>{fmtDuration(selected.duration_h)}</dd>
         </div>
@@ -430,11 +478,13 @@
       {/if}
 
       {#if detailLoading}
-        <p class="card-empty">Loading forecast…</p>
+        <p class="card-note" role="status">Loading forecast…</p>
       {:else if detailError}
-        <p class="card-empty">Couldn't load the forecast. Try again.</p>
+        <p class="card-note" role="status">
+          Couldn't load the forecast. Try again.
+        </p>
       {:else if cardGroups.length}
-        <p class="eyebrow card-windows-title">{cardEyebrow}</p>
+        <p class="card-windows-title">{cardEyebrow}</p>
         <table class="card-windows">
           <thead>
             <tr>
@@ -448,7 +498,7 @@
           <tbody>
             {#each cardGroups as g (g.key)}
               <!-- A full-width day header separates each day's hours. Shown only
-                   when stacking several days; with one section the eyebrow above
+                   when stacking several days; with one section the title above
                    already names the day. -->
               {#if cardGroups.length > 1}
                 <tr class="day-head">
@@ -468,13 +518,13 @@
           </tbody>
         </table>
       {:else if cardDayKeys.length}
-        <p class="card-empty">
+        <p class="card-note">
           Not enough good daylight hours for this {fmtDuration(
             selected.duration_h,
           )} walk on any day in the forecast.
         </p>
       {:else}
-        <p class="card-empty">No viable weather windows in the forecast.</p>
+        <p class="card-note">No viable weather windows in the forecast.</p>
       {/if}
     </aside>
   {/if}
@@ -484,327 +534,284 @@
   {#if !mapError}
     <div class="legend">
       <span class="legend-title">Effort</span>
-      <span class="legend-bar" aria-hidden="true"></span>
-      <span class="legend-ends"><span>Gentle</span><span>Strenuous</span></span>
-      <span class="legend-note">distance + ascent + time</span>
+      <span class="legend-ramp" style:background={LEGEND_GRADIENT}></span>
+      <span class="legend-ends"><span>gentle</span><span>strenuous</span></span>
     </div>
   {/if}
 </div>
 
 <style>
   .map-wrap {
-    position: absolute;
-    inset: 0;
-    overflow: hidden;
-    background: var(--cream);
+    /* Geography uses neutral sheet roles so it cannot compete with the effort
+       ramp, the one coloured thing on the map. */
+    --hikes-sheet: var(--sheet);
+    --hikes-ink: var(--ink);
+    --hikes-ink-2: var(--ink-2);
+    --hikes-stroke: var(--stroke);
+    --hikes-band: var(--band);
+    --hikes-water: color-mix(in srgb, var(--tone-cache) 10%, var(--sheet));
+    position: relative;
+    background: var(--sheet);
+    min-width: 0;
   }
 
   .map {
-    position: absolute;
-    inset: 0;
+    height: clamp(32rem, calc(100dvh - 7rem), 54rem);
+    background: var(--sheet);
   }
 
-  /* Inset the bottom-right control stack past device safe areas (same reasons
-     as ShipsMap: home indicator + landscape notch). */
+  /* MapLibre's controls keep their behavior; their surfaces use sheet roles. */
   .map :global(.maplibregl-ctrl-bottom-right) {
     bottom: env(safe-area-inset-bottom, 0);
     right: env(safe-area-inset-right, 0);
   }
 
-  /* Each zoom button is its own square that lifts off (neobrutalist), matching
-     the ships map and the homepage buttons. */
   .map :global(.maplibregl-ctrl-group) {
-    border: none;
+    border: 1px solid var(--ink);
     border-radius: 0;
-    background: transparent;
+    background: var(--sheet);
     box-shadow: none;
     overflow: visible;
   }
 
   .map :global(.maplibregl-ctrl-group button) {
-    border: 2px solid var(--ink);
-    background: var(--paper);
-    transition:
-      transform 110ms ease,
-      box-shadow 110ms ease;
+    width: 44px;
+    height: 44px;
+    background: var(--sheet);
   }
 
   .map :global(.maplibregl-ctrl-group button + button) {
-    margin-top: 6px;
+    border-top: 1px solid var(--stroke);
   }
 
-  .map :global(.maplibregl-ctrl-group button:hover),
-  .map :global(.maplibregl-ctrl-group button:focus-visible),
-  .map :global(.maplibregl-ctrl-group button:active) {
-    transform: translate(-2px, -2px);
-    box-shadow: 2px 2px 0 var(--ink);
-    background: var(--paper);
-    position: relative;
-    z-index: 1;
+  .map :global(.maplibregl-ctrl-group button:hover) {
+    background: var(--band);
   }
 
-  /* Compact attribution: a single square "i" toggle matching the zoom stack. */
-  .map :global(.maplibregl-ctrl-attrib.maplibregl-compact) {
-    min-height: 24px;
-    padding-block: 0;
-    background: transparent;
+  /* The stock icons are black bitmap SVGs. Text glyphs inherit ink instead. */
+  .map :global(.maplibregl-ctrl-icon) {
+    background-image: none;
+    display: grid;
+    place-items: center;
+    font: 1.5rem var(--font-code);
+    color: var(--ink);
+  }
+
+  .map :global(.maplibregl-ctrl-zoom-in .maplibregl-ctrl-icon)::before {
+    content: "+";
+  }
+
+  .map :global(.maplibregl-ctrl-zoom-out .maplibregl-ctrl-icon)::before {
+    content: "−";
+  }
+
+  .map :global(.maplibregl-ctrl-attrib) {
+    background: var(--sheet);
+    color: var(--ink-2);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     box-shadow: none;
+    font: 0.65rem var(--font-code);
+  }
+
+  .map :global(.maplibregl-ctrl-attrib a) {
+    color: var(--ink-2);
   }
 
   .map :global(.maplibregl-ctrl-attrib-button) {
-    width: 24px;
-    height: 24px;
-    border: 2px solid var(--ink);
     border-radius: 0;
-    background-color: var(--paper);
+    background: var(--sheet);
+    color: var(--ink);
   }
 
-  .map :global(.maplibregl-ctrl-attrib.maplibregl-compact-show) {
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    border-radius: 0;
+  .map :global(.maplibregl-ctrl-attrib-button)::before {
+    content: "i";
+    font: 1rem var(--font-code);
   }
 
-  .map :global(.maplibregl-ctrl-attrib-inner) {
-    font-family: var(--mono);
-    font-size: 10px;
+  .map :global(.maplibregl-canvas:focus-visible) {
+    outline-offset: -3px;
   }
 
-  /* Map-failed notice: centred in the dead map area, same paper/ink treatment
-     as the legend and card so it reads as part of the page, not a crash. */
+  /* Map-failed notice: centred in the dead map area, drawn like any panel so
+     it reads as part of the page, not a crash. */
   .map-error {
     position: absolute;
     top: 50%;
     left: 50%;
-    transform: translate(-50%, -50%);
     z-index: 3;
-    max-width: min(320px, calc(100% - 32px));
-    padding: 14px 16px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    font-family: var(--mono);
-    font-size: 12px;
-    line-height: 1.5;
-    color: var(--ink);
+    max-width: min(20rem, calc(100% - 2rem));
+    margin: 0;
+    padding: 0.8rem 1rem;
+    background: var(--sheet);
+    font: 0.75rem/1.6 var(--font-code);
+    color: var(--ink-2);
     text-align: center;
+    transform: translate(-50%, -50%);
   }
 
-  /* Walk detail card: a hard-shadow paper card (neobrutalist), top-right and
-     clear of the global app chrome. */
-  /* Flat sharp-bordered overlay, matching the ships map overlays (no
-     border-radius, no drop shadow, paper bg) rather than the global card-hard. */
+  /* Walk card: one panel over the map, top right, clear of the controls. */
   .card {
     position: absolute;
-    top: 16px;
-    right: 16px;
-    width: 320px;
-    max-width: calc(100% - 32px);
-    max-height: calc(100% - 32px);
+    z-index: 3;
+    top: 1rem;
+    right: 1rem;
+    width: 18rem;
+    max-width: calc(100% - 2rem);
+    max-height: calc(100% - 8rem);
     overflow-y: auto;
-    padding: 18px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
+    background: var(--sheet);
   }
 
-  .card-close {
-    position: absolute;
-    top: 8px;
-    right: 10px;
-    background: none;
-    border: none;
-    font-family: var(--mono);
-    font-size: 22px;
-    line-height: 1;
-    cursor: pointer;
-    color: var(--ink);
-  }
-
-  .card-name {
-    font-family: var(--serif);
-    font-size: 26px;
-    line-height: 1.05;
-    margin: 2px 28px 12px 0;
-    word-break: break-word;
+  .card-head {
+    display: flex;
+    align-items: center;
+    padding: 0.4rem 0.75rem;
+    gap: 0.5rem;
   }
 
   /* The name is the link to WalkHighlands (no separate footer link). */
-  .card-name a {
+  .card-title {
+    flex: 1;
+    margin: 0;
+    font: 600 0.8rem/1.4 var(--font-ui);
     color: var(--ink);
-    text-decoration: underline;
-    text-decoration-color: var(--blue);
-    text-decoration-thickness: 2px;
-    text-decoration-skip-ink: none;
-    text-underline-offset: 3px;
-    transition: background 140ms ease;
   }
 
-  .card-name a:hover,
-  .card-name a:focus-visible {
-    background: linear-gradient(transparent 62%, var(--accent) 62%);
-    text-decoration-color: var(--ink);
+  .card-title a {
+    color: inherit;
+    text-decoration: none;
   }
 
-  .card-name-arrow {
-    font-size: 0.62em;
-    margin-left: 3px;
-    white-space: nowrap;
-    vertical-align: 0.18em;
+  .card-title a:hover {
+    color: var(--accent-ink);
   }
 
-  /* Stats sit in a framed box so the grey labels read as a distinct block
-     rather than floating low-contrast on the paper. */
+  .card-head :global(.card-close) {
+    flex: none;
+    padding: 0;
+    font-size: 1.5rem;
+    text-decoration: none;
+  }
+
   .card-stats {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 14px;
-    padding: 10px 12px;
-    background: var(--cream);
-    border: 2px solid var(--ink);
+    margin: 0;
+    border-top: 0;
   }
 
-  .card-stats > div {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
+  .card-stats.spec .row {
+    grid-template-columns: 1fr 1fr;
   }
 
-  .card-stats dt {
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--ink-2);
+  .card-stats.spec dt,
+  .card-stats.spec dd {
+    padding: 0.45rem 0.75rem;
   }
 
-  .card-stats dd {
-    font-family: var(--mono);
-    font-size: 15px;
-    font-weight: 700;
+  .card-stats.spec dd {
+    font-family: var(--font-code);
+    font-size: 0.8rem;
   }
 
   .card-summary {
-    font-family: var(--sans);
-    font-size: 13px;
-    line-height: 1.45;
-    color: var(--ink-2);
-    margin-bottom: 14px;
+    margin: 0;
+    padding: 0.6rem 0.75rem;
+    border-top: 1px solid var(--stroke);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    color: var(--ink);
   }
 
-  /* Highlighted header bar so "Next viable: <day>" reads as the answer, not a
-     faint grey eyebrow (overrides .eyebrow's muted colour). */
+  .card-note {
+    margin: 0;
+    padding: 0.6rem 0.75rem;
+    border-top: 1px solid var(--stroke);
+    font: 0.75rem/1.5 var(--font-code);
+    color: var(--ink-2);
+  }
+
+  /* "Next viable: <day>" is the answer the card exists for: a band, like the
+     head of any record. */
   .card-windows-title {
-    display: inline-block;
-    margin: 0 0 10px;
-    padding: 4px 8px;
-    background: var(--accent);
+    margin: 0;
+    padding: 0.45rem 0.75rem;
+    border-top: 1px solid var(--stroke);
+    border-bottom: 1px solid var(--stroke);
+    background: var(--band);
+    font: 500 0.72rem/1.5 var(--font-code);
     color: var(--ink);
-    border: 2px solid var(--ink);
   }
 
   .card-windows {
-    width: 100%;
+    width: calc(100% - 1.5rem);
+    margin: 0.35rem 0.75rem 0.6rem;
     border-collapse: collapse;
-    font-family: var(--mono);
-    font-size: 11px;
-    margin-bottom: 14px;
+    font: 0.75rem var(--font-code);
   }
 
-  .card-windows th {
+  .card-windows th,
+  .card-windows td {
+    padding: 0.4rem 0;
+    border-bottom: 1px solid var(--line);
     text-align: left;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    color: var(--ink-3);
-    border-bottom: 2px solid var(--ink);
-    padding: 4px 6px 4px 0;
   }
 
-  /* Day section header inside the stacked "Any" list: a full-width label that
-     divides each day's hours. A top rule separates day groups; it drops the
-     column row's heavy underline (that belongs to the Time/Temp/... header). */
+  .card-windows thead th {
+    color: var(--ink-2);
+    font-weight: 500;
+    border-bottom-color: var(--stroke);
+  }
+
+  /* Day section header inside the stacked "Any" list. */
   .card-windows .day-head th {
-    border-top: 2px solid var(--ink);
-    border-bottom: 1px solid var(--rule-2);
-    padding: 11px 0 5px;
+    padding-top: 0.8rem;
     color: var(--ink);
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  /* The first day header sits right under the column row, so it needs no extra
-     top rule. */
-  .card-windows .day-head:first-of-type th {
-    border-top: none;
-    padding-top: 8px;
+    font-weight: 600;
+    border-bottom-color: var(--stroke);
   }
 
   .card-windows td {
-    padding: 4px 6px 4px 0;
-    border-bottom: 1px dashed var(--rule-2);
+    color: var(--ink);
   }
 
-  .card-empty {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--ink-3);
-    margin-bottom: 14px;
-  }
-
-  /* Effort legend, bottom-left, clear of the bottom-right zoom + attribution. */
+  /* Effort legend, bottom-left, clear of the bottom-right zoom + attribution.
+     The ramp is the figure; its ends are labelled on the bar itself. */
   .legend {
     position: absolute;
-    left: 16px;
-    bottom: 16px;
-    z-index: 4;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    width: 184px;
-    padding: 10px 12px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    font-family: var(--mono);
-  }
-
-  .legend-title {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    left: 1rem;
+    bottom: 1rem;
+    z-index: 2;
+    display: grid;
+    gap: 0.3rem;
+    width: 10rem;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--stroke);
+    background: var(--sheet);
+    font: 0.68rem var(--font-code);
     color: var(--ink-2);
   }
 
-  /* Gradient mirrors EFFORT_RAMP (kept in sync by hand: CSS can't read the JS
-     const). */
-  .legend-bar {
-    height: 10px;
-    border: 2px solid var(--ink);
-    background: linear-gradient(
-      to right,
-      #15a34a,
-      #84c91e,
-      #ffcb1f,
-      #ff6a00,
-      #ff0019
-    );
+  .legend-title {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .legend-ramp {
+    display: block;
+    height: 0.6rem;
+    border: 1px solid var(--stroke);
   }
 
   .legend-ends {
     display: flex;
     justify-content: space-between;
-    font-size: 9px;
-    letter-spacing: 0.04em;
-    color: var(--ink-3);
   }
 
-  .legend-note {
-    font-size: 9px;
-    letter-spacing: 0.02em;
-    color: var(--ink-3);
-  }
+  @media (max-width: 760px) {
+    .map {
+      height: clamp(24rem, calc(100dvh - 12rem), 40rem);
+    }
 
-  @media (max-width: 640px) {
     /* Tight on phones: the open card is a bottom sheet, so the legend would
        collide with it; drop the legend there (the colours stay self-evident). */
     .legend {
@@ -819,17 +826,8 @@
       right: 0;
       width: auto;
       max-width: none;
-      max-height: 70vh;
-      border-width: 2px 0 0;
-      box-shadow: none;
-      border-radius: 0;
-      padding: 20px 18px calc(20px + env(safe-area-inset-bottom));
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .map :global(.maplibregl-ctrl-group button) {
-      transition: none;
+      max-height: 70%;
+      border-width: 1px 0 0;
     }
   }
 </style>

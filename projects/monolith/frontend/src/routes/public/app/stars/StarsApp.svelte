@@ -274,8 +274,8 @@
                 </p>
               {:else}
                 <p class="stats">
-                  {count} dark-sky sites{#if topClearDark != null}
-                    &middot; best {topClearDark} hrs of clear dark sky{/if}{#if agoLabel}
+                  {count} dark-sky sites{#if topClearDark != null}{" "}
+                    &middot; best {topClearDark} hrs of clear dark sky{/if}{#if agoLabel}{" "}
                     &middot; updated {agoLabel} ago{/if}
                 </p>
               {/if}
