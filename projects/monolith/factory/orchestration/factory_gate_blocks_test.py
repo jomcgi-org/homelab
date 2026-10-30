@@ -60,6 +60,7 @@ def test_append_replace_retry():
         ),
         render("one", "a" * 20, text()).replace("- [ ] Verify new", "unknown content"),
         legacy() + "\n<!-- factory-gate:task -->",
+        "```\n" + legacy(),
         "<!-- factory-gate:task:"
         + "a" * 20
         + " -->\nConductor rescope: human\n- [ ] Manual",
@@ -85,6 +86,7 @@ def test_inline_and_fenced_marker_examples_are_preserved():
     assert count == 1
     assert updated.startswith(examples)
     assert len(blocks(updated)) == 1
+    assert cleanup([issue(1, updated)], None, lambda _row: None, audit=True) == 0
 
 
 def issue(number, body=None, **extra):
