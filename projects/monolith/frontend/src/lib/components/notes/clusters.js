@@ -1,19 +1,5 @@
-// Maps Note.type values to hex colours shared by the canvas and legend.
-// Unknown types use the white FALLBACK below.
-
-// Hex strings, not CSS-var references — canvas fillStyle can't follow
-// var() chains and getPropertyValue() returns the authored "var(--x)"
-// rather than the resolved colour in most browsers. Hardcoding here
-// keeps the canvas renderer simple and the legend swatches consistent.
-//
-// Palette matches the prototype's cluster colours; the Note.type → colour
-// mapping uses semantics from that aesthetic:
-//   atom/fact → yellow (most common, distilled facts)
-//   raw       → black  (raw inputs, pre-distillation)
-//   gap       → coral  (missing knowledge — visually loud)
-//   active    → blue   (in-progress tasks)
-//   paper     → green  (curated reference material)
-//   other     → white  (catch-all)
+// The private graph retains its legacy palette. Public sheet consumers opt
+// into semantic page tokens; canvas-palette.js resolves those through CSS.
 export const CLUSTER_COLORS = {
   atom: "#F5D90A",
   fact: "#5DD879",
@@ -24,6 +10,15 @@ export const CLUSTER_COLORS = {
 };
 
 const FALLBACK = "#FFFFFF";
+
+export const SHEET_CLUSTER_COLORS = {
+  atom: "var(--warn)",
+  fact: "var(--tone-cache)",
+  raw: "var(--ink)",
+  gap: "var(--tone-disk)",
+  active: "var(--tone-gpu)",
+  paper: "var(--tone-ram)",
+};
 
 // Display labels — Note.type values are stored verbatim in the DB but
 // "gap" reads as a perceptual negative ("missing knowledge"); the
@@ -42,6 +37,7 @@ export function labelFor(type) {
   return CLUSTER_LABELS[type] ?? type ?? "other";
 }
 
-export function colorFor(type) {
+export function colorFor(type, sheet = false) {
+  if (sheet) return SHEET_CLUSTER_COLORS[type] ?? "var(--sheet)";
   return CLUSTER_COLORS[type] ?? FALLBACK;
 }
