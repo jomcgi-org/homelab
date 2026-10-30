@@ -52,6 +52,7 @@ actions:
           # ---- 0. classify the run -----------------------------------------
           ON_MAIN=false
           SKIP_MAIN_PUBLISH=false
+          WRITE_BACK_ONLY=false
           if [ -n "${GIT_BRANCH:-}" ] &&
              [ "${GIT_BRANCH:-}" = "${GIT_REPO_DEFAULT_BRANCH:-}" ] &&
              [ "${GIT_PR_NUMBER:-0}" = "0" ]; then
@@ -60,7 +61,25 @@ actions:
             case "$COMMIT_SUBJECT" in
               "chore(charts): publish"*)
                 SKIP_MAIN_PUBLISH=true
-                echo "On ${GIT_BRANCH}: tests will refresh the snapshot; the chart-version write-back is already complete."
+                # Read the complete first-parent diff before classifying. NUL
+                # records preserve filenames; disabling rename detection keeps
+                # an outside source path visible even when its destination fits.
+                write_back_paths=$(mktemp)
+                if git diff --no-renames --name-only -z HEAD~1 HEAD -- > "$write_back_paths"; then
+                  write_back_seen=false
+                  write_back_allowed=true
+                  while IFS= read -r -d '' write_back_path; do
+                    write_back_seen=true
+                    if [[ ! "$write_back_path" =~ ^projects/[A-Za-z0-9_-]+/(chart/Chart\.yaml|deploy/application\.yaml)$ ]]; then
+                      write_back_allowed=false
+                    fi
+                  done < "$write_back_paths"
+                  if [ "$write_back_seen" = true ] && [ "$write_back_allowed" = true ]; then
+                    WRITE_BACK_ONLY=true
+                    echo "Version-only main write-back: skipping tests and images; retaining head guards."
+                  fi
+                fi
+                rm -f "$write_back_paths"
                 ;;
               *)
                 echo "On ${GIT_BRANCH}: full gate plus publish."
@@ -148,7 +167,9 @@ actions:
           python3 ./bazel/tools/ci/test_source_reachability.py
 
           # ---- 2. tests ---------------------------------------------------
-          if [[ "${GIT_BRANCH:-}" =~ ^gh-readonly-queue/ ]] || [ "${GIT_PR_NUMBER:-0}" = "0" ]; then
+          if [ "$WRITE_BACK_ONLY" = true ]; then
+            : # The publishing run already exercised this source tree.
+          elif [[ "${GIT_BRANCH:-}" =~ ^gh-readonly-queue/ ]] || [ "${GIT_PR_NUMBER:-0}" = "0" ]; then
             bazel test //... --config=ci --deleted_packages=bazel/tools/python
           else
             ./bazel/tools/ci/local-affected-test.sh "$base_ref"
@@ -178,6 +199,8 @@ actions:
           echo "DISK pr-checks after images:"; df -h /
 
           # ---- 4. format, generators, drift -------------------------------
+          # Recognized main write-backs retain the existing format/publish
+          # skip, including mixed-file heads that still require stage 2 tests.
           if [ "$ON_MAIN" = true ] && [ "$SKIP_MAIN_PUBLISH" = true ]; then
             echo "Skipping format for generated main commit."
           else
@@ -218,13 +241,16 @@ actions:
             fi
           fi
 
-          # Check generated sources on every head, including bot and queue heads.
+          # Verified version-only paths cannot change generated sources. Keep
+          # acceptance on every other head, including formatter-bot and queue.
           # Download stubs even on cache hits so the runfiles check sees them.
-          bazel build --config=ci --remote_download_outputs=toplevel \
-            //projects/embervm/proto/embervm/node/v1:node_go_src \
-            //projects/embervm/proto/embervm/node/v1:nodev1
-          bazel test --config=ci //bazel/helm/gazelle:gazelle_test
-          bazel run //projects/embervm/proto/embervm/node/v1:check_go_stubs --config=ci
+          if [ "$WRITE_BACK_ONLY" = false ]; then
+            bazel build --config=ci --remote_download_outputs=toplevel \
+              //projects/embervm/proto/embervm/node/v1:node_go_src \
+              //projects/embervm/proto/embervm/node/v1:nodev1
+            bazel test --config=ci //bazel/helm/gazelle:gazelle_test
+            bazel run //projects/embervm/proto/embervm/node/v1:check_go_stubs --config=ci
+          fi
 
           # STPA freshness remains advisory, including checker errors.
           stpa_freshness_rc=0
