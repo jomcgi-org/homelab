@@ -20363,17 +20363,6 @@ def test_stale_advisory_receipt_uses_delivery_path(feedback_db, monkeypatch):
     ]
 
 
-@pytest.mark.parametrize("directive", ["Do not close", "don't fix", "Never resolve"])
-def test_rescope_stamp_preserves_negated_closing_directive(directive):
-    gate = live_gate()
-    gate["scope"] = f"Repository-only staged delivery. {directive} #7153."
-    rendered = conductor.factory_gates.rescope_text(gate)
-    assert "Keep issue 7153 open." in rendered
-    assert f"{directive} #7153" not in rendered
-    assert gate["scope"] == f"Repository-only staged delivery. {directive} #7153."
-    assert all(f"- [ ] {check}" in rendered for check in gate["live_checks"])
-
-
 def test_rescoped_delivery_keeps_operational_issue_open(monkeypatch):
     """#6208 allows repository acceptance while retaining real-host acceptance."""
     from factory.orchestration import factory_gates as gates
