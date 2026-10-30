@@ -4,6 +4,7 @@ from __future__ import annotations
 
 DEFAULTS = {
     "enabled": False,
+    "max_findings": 100,
     "min_eligible": 25,
     "cooldown_minutes": 15,
     "min_new_issues": 3,
@@ -24,6 +25,7 @@ def normalize(policy: dict) -> dict:
         raise ValueError("invalid backlog_refill enabled")
     for key, low, high in (
         ("min_eligible", 1, 1000),
+        ("max_findings", 1, 100),
         ("cooldown_minutes", 1, 1440),
         ("min_new_issues", 0, 100),
         ("breaker_consecutive_low_yield", 1, 10),

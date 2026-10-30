@@ -1260,3 +1260,309 @@ def test_receipt_identity_cannot_match_numeric_prefix(world):
     task_id = "t-" + start["run_id"]
     assert worker.receipt(task_id)["start"]["run_id"] == start["run_id"]
     assert refill.dispatch_allowed(task_id)
+
+
+@pytest.fixture
+def control_world(world, monkeypatch):
+    import json
+    from sqlalchemy import text
+    from factory.execution.models import (
+        AgentSession,
+        AgentTurn,
+        AgentCapacityPool,
+        AgentCapacityReservation,
+        PendingMessage,
+    )
+    from factory.orchestration import refill_control as api
+
+    engine, policy, clock = world
+    engine.update_execution_options(
+        schema_translate_map={"swarm": None, "agent_sessions": None}
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            m.__table__
+            for m in (
+                AgentSession,
+                AgentTurn,
+                AgentCapacityPool,
+                AgentCapacityReservation,
+                PendingMessage,
+            )
+        ],
+    )
+    with Session(engine) as db:
+        db.execute(
+            text(
+                "CREATE TABLE routine_jobs (name TEXT PRIMARY KEY,routine_kind TEXT,interval_secs INTEGER,next_run_at TIMESTAMP,last_run_at TIMESTAMP,last_status TEXT,locked_by TEXT,locked_at TIMESTAMP,payload TEXT)"
+            )
+        )
+        db.execute(
+            text(
+                "INSERT INTO routine_jobs VALUES (:name,'qwen-drain',86400,:next,:last,'ok',NULL,NULL,:payload)"
+            ),
+            {
+                "name": api.JOB,
+                "next": NOW + timedelta(days=1),
+                "last": NOW,
+                "payload": json.dumps(
+                    {
+                        "learning_stage": "evidence",
+                        "model": "luna",
+                        "repo": api.learning.REPO,
+                        "digest": "factory-retro",
+                    }
+                ),
+            },
+        )
+        row = db.get(FactoryControl, "factory")
+        p = json.loads(row.policy_json)
+        p["backlog_refill"]["enabled"] = False
+        row.policy_json = dumps(p)
+        db.commit()
+    monkeypatch.setenv("FACTORY_LEARNING_HANDOFF_ENABLED", "true")
+    monkeypatch.setattr(
+        api,
+        "_quota",
+        lambda model: {
+            "provider": "codex",
+            "observation": {"status": "allowed"},
+            "checked_at": clock[0].isoformat(),
+        },
+    )
+    return world
+
+
+def test_safe_refill_control_minimal_diff_hourly_replay_and_history(control_world):
+    import json
+    from sqlalchemy import text
+    from factory.orchestration import refill_control as api
+
+    engine, _, _ = control_world
+    with Session(engine) as db:
+        before = json.loads(db.get(FactoryControl, "factory").policy_json)
+        job_before = dict(
+            db.execute(text("SELECT * FROM routine_jobs")).mappings().one()
+        )
+        refill.record(
+            db, "breaker_open", repo=before["repo"], reason="low yield", runs=["old"]
+        )
+        db.commit()
+    p = api.preview(True, "astra", True, 0, "hourly useful refill")
+    r = api.apply(
+        "operator",
+        True,
+        "astra",
+        True,
+        0,
+        "hourly useful refill",
+        "one",
+        p["preview_sha256"],
+    )
+    assert (
+        api.apply(
+            "operator",
+            True,
+            "astra",
+            True,
+            0,
+            "hourly useful refill",
+            "one",
+            p["preview_sha256"],
+        )
+        == r
+    )
+    with Session(engine) as db:
+        after = json.loads(db.get(FactoryControl, "factory").policy_json)
+        assert {k: v for k, v in before.items() if k != "backlog_refill"} == {
+            k: v for k, v in after.items() if k != "backlog_refill"
+        }
+        assert (
+            after["backlog_refill"]["enabled"]
+            and after["backlog_refill"]["model"] == "astra"
+            and after["backlog_refill"]["max_findings"] == 5
+        )
+        assert refill.state(after, session=db)["status"] == "breaker open"
+        job_after = dict(
+            db.execute(text("SELECT * FROM routine_jobs")).mappings().one()
+        )
+        assert job_after["interval_secs"] == 3600
+        assert {
+            k: v
+            for k, v in job_after.items()
+            if k not in ("interval_secs", "next_run_at")
+        } == {
+            k: v
+            for k, v in job_before.items()
+            if k not in ("interval_secs", "next_run_at")
+        }
+        assert len(db.execute(text("SELECT * FROM routine_jobs")).all()) == 1
+        assert not db.exec(select(FactoryReceipt)).all()
+        assert not db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "backlog_refill_policy_observed"
+            )
+        ).all()
+    assert r["generation"] == before["generation"] and not r["dispatched"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["version", "policy", "locked", "held", "pending", "uncertain", "unknown"],
+)
+def test_refill_control_refuses_stale_or_executing_learning(control_world, mutation):
+    import json
+    from sqlalchemy import text
+    from factory.execution.models import (
+        AgentSession,
+        AgentTurn,
+        AgentCapacityReservation,
+        PendingMessage,
+    )
+    from factory.orchestration import refill_control as api
+
+    engine, _, _ = control_world
+    p = api.preview(True, "astra", True, 0, "reason")
+    with Session(engine) as db:
+        c = db.get(FactoryControl, "factory")
+        if mutation == "version":
+            c.version += 1
+        elif mutation == "policy":
+            d = json.loads(c.policy_json)
+            d["intake"]["cooldown_hours"] += 1
+            c.policy_json = dumps(d)
+        elif mutation == "locked":
+            db.execute(text("UPDATE routine_jobs SET locked_by='owner'"))
+        elif mutation == "held":
+            db.execute(text("UPDATE routine_jobs SET next_run_at=NULL"))
+        else:
+            a = AgentSession(
+                local_session_id="w:qwen-drain:" + api.JOB,
+                workspace=".",
+                branch="main",
+                workflow_id="w",
+                node_key="qwen-drain",
+                status="completed",
+            )
+            db.add(a)
+            db.flush()
+            if mutation == "pending":
+                db.add(PendingMessage(session_id=a.id, seq=2, message_text="pending"))
+            elif mutation == "uncertain":
+                db.add(
+                    AgentCapacityReservation(
+                        session_id=a.id,
+                        local_session_id=a.local_session_id,
+                        pending_seq=1,
+                        tier="project",
+                        state="uncertain",
+                        routine_job_name=api.JOB,
+                    )
+                )
+            else:
+                db.add(
+                    AgentTurn(
+                        session_id=a.id,
+                        seq=1,
+                        prompt="",
+                        result_text="",
+                        terminal_reason="error",
+                        stop_reason="invocation_outcome_unknown",
+                    )
+                )
+        db.commit()
+    with pytest.raises(ValueError):
+        api.apply(
+            "operator", True, "astra", True, 0, "reason", "key", p["preview_sha256"]
+        )
+    with Session(engine) as db:
+        assert not db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == api.ACTION)
+        ).all()
+
+
+def test_refill_control_replay_conflict_and_quota_refusal(control_world, monkeypatch):
+    from factory.orchestration import refill_control as api
+
+    p = api.preview(True, "astra", False, 0, "reason")
+    api.apply("operator", True, "astra", False, 0, "reason", "key", p["preview_sha256"])
+    with pytest.raises(ValueError, match="request_conflict"):
+        api.apply(
+            "operator", True, "astra", False, 0, "changed", "key", p["preview_sha256"]
+        )
+    monkeypatch.setattr(
+        api,
+        "_quota",
+        lambda _: (_ for _ in ()).throw(ValueError("refill_subscription_unavailable")),
+    )
+    with pytest.raises(ValueError, match="subscription"):
+        api.preview(True, "opus", False, 1, "reason")
+
+
+def test_refill_status_exposes_bounded_policy_schedule_and_events(control_world):
+    from factory.orchestration import refill_control as api
+
+    engine, policy, _ = control_world
+    with Session(engine) as db:
+        for i in range(8):
+            refill.record(
+                db,
+                "skipped",
+                repo=policy["repo"],
+                reason="cooldown",
+                private_body="not returned",
+            )
+        db.commit()
+        s = api.status(db, db.get(FactoryControl, "factory"))
+        assert s["configured"] and not s["policy"]["enabled"]
+        assert len(s["recent_events"]) == 5 and s["events_truncated"]
+        assert all("private_body" not in e for e in s["recent_events"])
+        assert s["learning_job"]["interval_secs"] == 86400
+        assert s["intake_selection"][0]["issue_numbers"] == [1]
+
+
+def test_hourly_learning_checks_codex_even_when_refill_disabled(
+    control_world, monkeypatch
+):
+    from factory.orchestration import refill_control as api
+
+    checked = []
+
+    def refuse(model):
+        checked.append(model)
+        raise ValueError("refill_subscription_unavailable")
+
+    monkeypatch.setattr(api, "_quota", refuse)
+    with pytest.raises(ValueError, match="subscription"):
+        api.preview(False, "opus", True, 0, "hourly")
+    assert checked == ["astra"]
+    assert api.preview(False, "opus", False, 0, "disable")["ok"]
+
+
+def test_new_refill_batch_is_enforced_before_collection_audit(world):
+    engine, policy, _ = world
+    with Session(engine) as db:
+        refill.record(
+            db,
+            "started",
+            repo=policy["repo"],
+            run_id="small",
+            policy={"max_findings": 1},
+        )
+        db.commit()
+    collection = {
+        "summary": "Evidence",
+        "findings": [
+            {
+                "key": str(i),
+                "title": "fix: useful finding",
+                "body": "Acceptance: verified.",
+            }
+            for i in range(2)
+        ],
+    }
+    with pytest.raises(ValueError, match="pinned batch"):
+        writer.collection("small", collection)
+    with Session(engine) as db:
+        assert refill.latest_event(db, "collection", run_id="small") is None

@@ -276,7 +276,7 @@ def observe(
             work_item_id=charter.id if charter is not None else None,
             recurrence_key=run_id,
             title="repo: report-only project inventory",
-            body=inventory_brief(run_id),
+            body=inventory_brief(run_id, max_findings=block["max_findings"]),
             url=f"https://github.com/{repo}/issues/{CHARTER}",
         )
         db.add(row)
@@ -354,7 +354,7 @@ retire anything, deploy, change policy/credentials, use paid services, or start 
 Return a structured artifact only. The trusted server publishes validated outputs."""
 
 
-def inventory_brief(run_id):
+def inventory_brief(run_id, *, max_findings=100):
     return f"""Run {run_id}. Report-only repository audit from #7366, scoped to this checkout.
 {READ_ONLY_BOUNDARY}
 
@@ -377,7 +377,12 @@ and git log --since=2026-10-18 --name-only. Use ruff, vulture, Go deadcode
 and staticcheck where available. Verify each symbol with reference searches.
 List file:line, symbol, why dead, command and honest tool limitations.
 
-Return at most 100 distinct actionable new findings, each with a stable key,
+First rank valuable existing blocked work and identify its exact safe next step.
+Never duplicate an existing issue or release a hold. Recommend recovery only when
+cessation and ownership are established; do not retry uncertain execution.
+Prefer the smallest useful batch, ranked by evidence, impact and readiness.
+Use no findings when no useful actionable work is supported.
+Return at most {max_findings} distinct actionable new findings, each with a stable key,
 an <area>: <summary> title, evidence, reproduction and acceptance checks in body.
 These become agent-ready issues. Existing observations belong in the summary
 with links, never in new findings. The summary contains both tables and links

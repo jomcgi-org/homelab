@@ -70,7 +70,9 @@ def reconcile(task, policy, nodes, runs, expected_version):
         task,
         policy,
         refill.NODE,
-        refill.inventory_brief(owned["run_id"]),
+        refill.inventory_brief(
+            owned["run_id"], max_findings=start["policy"].get("max_findings", 100)
+        ),
         [],
         start["policy"]["model"],
         "factory-backlog-refill",
