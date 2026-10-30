@@ -1001,7 +1001,8 @@ decision-authored edges are never touched; only edges with source "github_body"
 are updated. Block cycles in body edges produce a throttled
 `work_item_edge_cycle` audit but do not prevent intake from proceeding.
 
-While a lane has room, a completed GitHub sweep refreshes after four minutes.
+Completed GitHub sweeps refresh after four minutes, including when all lanes
+are full. The conductor runs a read-only observation pass in that case.
 New or newly eligible work can therefore replenish an empty lane without an
 operator command or a full hour of idle time. Failed, partial and unfinished
 attempts retain the hourly retry bound. Only an evaluation recorded after the
@@ -1010,7 +1011,8 @@ hide a newer failure. Shared GitHub quota cooldowns still gate every request.
 
 Settlements and admissions reopen discovery on the next tick. Each sweep takes
 at most one candidate per lane, and an admission buys one more sweep so lanes
-can fill. A tick with no room returns before it reaches the clock. A tick that
+can fill. Observation claims the aggregate sweep clock under the factory
+control lock; replicas share that clock. A tick that
 cannot read GitHub audits `intake_error`. Listing reads oldest-first, at most
 20 pages of 25 issues and 10 pages of 25 pull requests per repository. The
 500-issue and 250-PR coverage ceilings and the 1 MB response limit are unchanged.
@@ -1032,6 +1034,68 @@ tick cannot erase this evidence. Candidate counts precede the daily cap and
 the final locked admission checks; they are not admission counts. A failed
 or partial GitHub read is explicit, and local candidates remain independent.
 An old error is historical evidence, not proof that a newer sweep failed.
+
+Each actual sweep stages one observation per open `agent-ready` issue it sees,
+keyed by repository, issue number and the `intake_swept` audit ID. Local authority
+wins over a duplicate GitHub representation. Selection exclusions retain their
+specific reasons, including `blocked_by:#N` (the blocking issue number),
+`excluded_label:<label>`, `cooldown_until:<UTC deadline>`, `refinement_failed`,
+`capacity`, `daily_cap` and `not_selected`. Receipt refusal and failed discovery
+have separate reasons. Malformed rows make coverage partial and cannot close
+unseen work items. Failed work-item synchronization fences that repository's
+GitHub candidates for the sweep.
+
+`receive_issue` queues a receipt. The authoritative admission is the locked
+`admit_next` transaction that creates the task and changes its receipt to
+`admitted`. After its admission pass, the conductor finalizes staged evidence
+into append-only `intake_candidate` rows and one private inventory snapshot.
+Finalization is replay-safe under the same control lock and batches candidate
+inserts. A standalone observation pass records queued receipts as `skipped`
+with reason `queued`. Recovery finalizes abandoned staged evidence against
+actual receipt state; an interrupted sweep before staging remains unfinished.
+The legacy aggregate `intake_admitted` audit still marks receipt creation for
+the existing sweep clock. It is not the admission oracle for candidate rows.
+
+The private `/api/agents/factory` reader lists currently open agent-ready work
+oldest first, using issue creation time, with latest decision, reason and
+observation time. Never-considered issues have no decision. Partial, unavailable,
+unfinished and stale evidence remains labelled. Freshness follows the existing
+four-minute complete-sweep or hourly incomplete-sweep clock. A partial sweep
+retains earlier observations with their original timestamps. Closed work leaves
+the view; receipts admitted after an observation are marked separately. The
+daily digest names up to three oldest currently skipped issues and their reasons,
+excludes subsequently admitted and closed work, and names insufficient coverage.
+The public snapshot publisher explicitly disables this private reader extension;
+public routes and the public image gain no backlog fields or issue details.
+
+Within an equal lane and critical/bug priority group, autonomous queued receipts
+prefer issue creation time, repository and issue number for ties. Unknown issue
+age sorts last. Groups retain their original queue position and operator receipts
+retain FIFO. Receipt creation and later comments never reset autonomous issue age.
+
+#### Staged acceptance for #7459
+
+Repository delivery does not complete operational acceptance. Keep #7459 open:
+
+- The authorized landing owner verifies the reviewed, Linux-CI-passing rollout
+  and records its live revision before collecting acceptance evidence.
+- Compare the private board with a fresh complete open agent-ready inventory,
+  including age, latest reason, ordering, never-considered and coverage states.
+  Confirm due full-capacity sweeps still record capacity skips.
+- Observe two distinct completed sweeps: one candidate row per observed issue
+  per sweep, actual blocker issue references, genuine admissions, cooldown
+  deadlines, excluded labels, refinement failures, capacity and not-selected
+  reasons, with no within-sweep duplicates.
+- Report the first reason distribution, sweep times and inventory coverage on
+  #7459 or its PR. Failed and truncated inventory remains incomplete.
+- Verify the live digest's three oldest skips and the public serialization
+  boundary against the deployed revision.
+- A separately authorized operational owner checks and labels #6193, #6640,
+  #6642 and #6649 appropriately, preserving ownership and admission fences.
+- That owner checks previous comments and posts actually observed first-sweep
+  reasons on #6621, #6622, #6625, #6630, #6631, #6632, #6634, #6635, #6636,
+  #6662, #6659, #6482, #6306 and #6307. Report changed or closed targets.
+  No script in this delivery performs these credential-backed writes.
 
 Intake admits at most one issue per lane per tick, and never opens more than
 `max_per_day` deliveries over a rolling 24 hours. The cap bounds delivery

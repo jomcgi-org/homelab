@@ -1477,7 +1477,9 @@ def build_public_snapshot(
     quota = shape_quota(provider_quota, now)
     work_items = _public_work_items(session, snapshotted_at)
     task_ids, bodies = _board_task_ids(session)
-    board = build_factory_view(session=session, plan_tasks=task_ids)
+    board = build_factory_view(
+        session=session, plan_tasks=task_ids, include_backlog=False
+    )
     policy = shape_policy(board.get("policy"), _raw_policy(session))
 
     if not board.get("ok"):

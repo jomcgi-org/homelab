@@ -147,6 +147,66 @@ function renderPage(data) {
   return target;
 }
 
+test("private backlog renders age, latest reason and incomplete coverage", async () => {
+  const target = renderPage({
+    board: board({
+      intake_backlog: {
+        available: true,
+        stale: true,
+        unfinished: true,
+        observed_at: "2026-10-30T12:00:00Z",
+        coverage: { "owner/repo": "partial" },
+        issues: [
+          {
+            repo: "owner/repo",
+            issue_number: 17,
+            title: "older",
+            age_days: 40,
+            decision: "skipped",
+            reason: "blocked_by:#9",
+            observed_at: "2026-10-30T12:00:00Z",
+          },
+          {
+            repo: "owner/repo",
+            issue_number: 18,
+            title: "newer",
+            age_days: 3,
+            decision: null,
+            reason: "never_considered",
+            observed_at: null,
+          },
+        ],
+      },
+    }),
+    error: null,
+    task: null,
+  });
+  await tick();
+  const backlog = target.querySelector('[aria-label="Agent-ready backlog"]');
+  expect(backlog.textContent).toContain("40 days old");
+  expect(backlog.textContent).toContain("blocked_by:#9");
+  expect(backlog.textContent).toContain("never considered");
+  expect(backlog.textContent).toContain("Stale observations");
+  expect(backlog.textContent).toContain("unfinished");
+  expect(backlog.textContent).toContain("partial");
+  expect([...backlog.querySelectorAll("a")].map((a) => a.textContent)).toEqual([
+    expect.stringContaining("#17"),
+    expect.stringContaining("#18"),
+  ]);
+});
+
+test("private backlog failure cannot look like an empty inventory", async () => {
+  const target = renderPage({
+    board: board({ intake_backlog: { available: false, issues: [] } }),
+    error: null,
+    task: null,
+  });
+  await tick();
+  const backlog = target.querySelector('[aria-label="Agent-ready backlog"]');
+  expect(backlog.textContent).toContain("evidence unavailable");
+  expect(backlog.textContent).not.toContain("No open agent-ready");
+});
+
 afterEach(() => {
   while (mounted.length) {
     const { component, target } = mounted.pop();
@@ -217,7 +277,8 @@ describe("factory board page", () => {
     );
     expect(labels[0]).toMatch(/^\/ In flight/);
     expect(labels[1]).toMatch(/^\/ Queue/);
-    expect(labels[2]).toMatch(/^\/ Recent/);
+    expect(labels[2]).toMatch(/^\/ Agent-ready backlog/);
+    expect(labels[3]).toMatch(/^\/ Recent/);
     expect(target.querySelectorAll(".panel")).toHaveLength(3);
     expect(target.querySelector(".policy-line").textContent).toContain(
       "1/1 delivery \u00b7 0/2 advisory",

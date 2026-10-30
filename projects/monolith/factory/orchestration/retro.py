@@ -985,6 +985,41 @@ def _optimizer(data, now):
     ]
 
 
+def _intake_skips(data):
+    backlog = data.get("intake_backlog") or {}
+    coverage = backlog.get("coverage") or {}
+    lines = []
+    if (
+        not backlog.get("available")
+        or backlog.get("stale")
+        or backlog.get("unfinished")
+        or not coverage
+        or any(value != "complete" for value in coverage.values())
+    ):
+        lines.append(
+            "Insufficient coverage: inventory unavailable, stale, partial or unfinished; this is not a complete backlog ranking."
+        )
+    skipped = [
+        row
+        for row in backlog.get("issues", [])
+        if row.get("decision") == "skipped" and not row.get("subsequently_admitted")
+    ]
+    skipped.sort(
+        key=lambda row: (
+            row.get("created_at") or "9999",
+            row["repo"],
+            row["issue_number"],
+        )
+    )
+    for row in skipped[:3]:
+        lines.append(
+            f"{row['repo']}#{row['issue_number']}: {_one_line(row['reason'])} (created {row.get('created_at') or 'unknown'}; observed {row.get('observed_at') or 'unknown'})."
+        )
+    if len(skipped) < 3:
+        lines.append(f"Only {len(skipped)} currently skipped issues have evidence.")
+    return lines
+
+
 def build_retro_digest(data: dict, now: datetime | None = None) -> str:
     """Render the bounded evidence digest from plain loaded rows."""
     now = now or datetime.now(timezone.utc)
@@ -1019,6 +1054,7 @@ def build_retro_digest(data: dict, now: datetime | None = None) -> str:
     )
     sections = [
         header,
+        _section("Oldest currently skipped agent-ready issues", _intake_skips(data)),
         _section("0. Selected optimizer experiment", _optimizer(data, now)),
         _section(
             "1. Planner decision refusals (conductor_rejected)",
@@ -1173,6 +1209,13 @@ def _github_issues(now: datetime) -> dict:
 def load_retro_data(session, now: datetime | None = None) -> dict:
     """Read the window's factory evidence as plain dicts (Postgres only)."""
     now = now or datetime.now(timezone.utc)
+    from factory.orchestration.intake_evidence import backlog
+
+    try:
+        with session.begin_nested():
+            intake_backlog = backlog(session, now)
+    except Exception:  # noqa: BLE001 - missing evidence must stay visible
+        intake_backlog = {"available": False, "issues": [], "coverage": {}}
     since = now - timedelta(hours=WINDOW_HOURS)
     params = {"since": since}
     runs = _rows(session, _RUNS, params)
@@ -1207,6 +1250,7 @@ def load_retro_data(session, now: datetime | None = None) -> dict:
         logger.warning("factory optimizer evidence unavailable", exc_info=True)
         optimizer = {"error": type(exc).__name__}
     return {
+        "intake_backlog": intake_backlog,
         "optimizer": optimizer,
         "window_hours": WINDOW_HOURS,
         "runs": runs,

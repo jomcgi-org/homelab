@@ -39,6 +39,7 @@
   const intake = $derived(board?.intake ?? null);
   const problemIssues = $derived(board?.problem_issues ?? null);
   const backlogRefill = $derived(board?.backlog_refill ?? null);
+  const intakeBacklog = $derived(board?.intake_backlog ?? null);
   const lanes = $derived(board?.lanes ?? null);
   const routing = $derived(board?.review_routing ?? null);
   // Only worth a word when review is not on the model the policy asked for,
@@ -280,6 +281,47 @@
     {#each queued as receipt (receipt.id)}
       {@render card(receipt, false)}
     {/each}
+  </section>
+
+  <section aria-label="Agent-ready backlog">
+    <p class="sec-label">/ Agent-ready backlog</p>
+    {#if unavailable || !intakeBacklog?.available}
+      <p class="none">
+        Intake evidence unavailable. This is not an empty backlog.
+      </p>
+    {:else}
+      <p>
+        Observed {intakeBacklog.observed_at ?? "never"}.
+        {#if intakeBacklog.stale}Stale observations.{/if}
+        {#if intakeBacklog.unfinished}Latest sweep unfinished.{/if}
+        {#each Object.entries(intakeBacklog.coverage ?? {}) as [repo, coverage]}
+          {repo}: {coverage}.
+        {/each}
+      </p>
+      {#each intakeBacklog.issues ?? [] as issue (`${issue.repo}#${issue.issue_number}`)}
+        <p>
+          <a
+            href={`https://github.com/${issue.repo}/issues/${issue.issue_number}`}
+          >
+            {issue.repo}#{issue.issue_number}: {issue.title}
+          </a>
+          · {issue.age_days == null
+            ? "age unknown"
+            : `${issue.age_days} days old`}
+          · {issue.subsequently_admitted
+            ? "admitted since observation"
+            : (issue.decision ?? "never considered")}
+          · {issue.reason} · {issue.observed_at ?? "never observed"}
+          {#if issue.stale}
+            · stale{/if}
+        </p>
+      {/each}
+      {#if intakeBacklog.issues?.length === 0}
+        <p class="none">
+          No open agent-ready issues in the observed inventory.
+        </p>
+      {/if}
+    {/if}
   </section>
 
   <section>

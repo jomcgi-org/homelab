@@ -11,6 +11,40 @@ TASK = "t-aaaaaaaa-1111"
 OTHER = "t-bbbbbbbb-2222"
 
 
+def test_intake_digest_uses_three_oldest_latest_skips_and_marks_coverage():
+    rows = [
+        {
+            "repo": "owner/repo",
+            "issue_number": number,
+            "decision": "skipped",
+            "reason": f"blocked_by:#{number + 10}",
+            "created_at": f"2026-09-{number:02d}",
+            "observed_at": "2026-10-01",
+        }
+        for number in (5, 3, 1, 4, 2)
+    ]
+    rows[-1]["subsequently_admitted"] = True
+    data = {
+        "intake_backlog": {
+            "available": True,
+            "coverage": {"owner/repo": "partial"},
+            "issues": rows,
+        }
+    }
+    text = "\n".join(retro._intake_skips(data))
+    assert "Insufficient coverage" in text
+    assert "owner/repo#2:" not in text and "owner/repo#5:" not in text
+    assert (
+        text.index("owner/repo#1:")
+        < text.index("owner/repo#3:")
+        < text.index("owner/repo#4:")
+    )
+    assert "blocked_by:#11" in text
+    data["intake_backlog"]["issues"] = rows[:1]
+    assert "Only 1 currently skipped" in "\n".join(retro._intake_skips(data))
+    assert "Insufficient coverage" in "\n".join(retro._intake_skips({}))
+
+
 def _run(task, node, attempt, status="succeeded", outcome=None, run_id=None):
     return {
         "id": run_id,

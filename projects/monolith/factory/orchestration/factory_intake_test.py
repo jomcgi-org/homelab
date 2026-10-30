@@ -124,6 +124,48 @@ def enable(policy):
     assert controls.set_control("enable", "operator")["ok"]
 
 
+@pytest.mark.parametrize("same_age, expected", [(False, 2), (True, 1)])
+def test_autonomous_receipt_queue_preserves_issue_age_and_ties(
+    db, policy, same_age, expected
+):
+    from datetime import datetime, timezone
+
+    policy.update(issue_numbers=[], intake={"enabled": True})
+    enable(policy)
+    # Newer issue was received first. Equal creation times break by issue
+    # identity, independent of receipt insertion order.
+    for number in (3, 1, 2):
+        snapshot = github_issue(number)
+        snapshot["created_at"] = (
+            "2026-09-01T00:00:00Z"
+            if same_age or number == 2
+            else "2026-09-02T00:00:00Z"
+        )
+        receive_issue(
+            "owner/repo",
+            number,
+            snapshot["title"],
+            "body",
+            snapshot["html_url"],
+            INTAKE_ACTOR,
+            issue=snapshot,
+        )
+    with Session(db) as session:
+        receipts = session.exec(
+            select(FactoryReceipt).order_by(FactoryReceipt.id)
+        ).all()
+        assert [row.issue_number for row in receipts] == [3, 1, 2]
+        # Receipt timestamps deliberately disagree with issue age.
+        receipts[0].created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        session.commit()
+    admitted = admit_next("test")
+    assert admitted["ok"], admitted
+    with Session(db) as session:
+        assert (
+            session.get(FactoryReceipt, admitted["receipt_id"]).issue_number == expected
+        )
+
+
 @pytest.mark.parametrize("identity", ["canonical", "alias", "legacy"])
 @pytest.mark.parametrize("history", ["cancelled", "held", "failed_refinement"])
 def test_natural_history_fence_rechecks_receiving_and_claim_without_blocking_others(

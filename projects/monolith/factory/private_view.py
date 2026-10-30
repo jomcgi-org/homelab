@@ -242,6 +242,7 @@ def build_factory_view(
     *,
     session: Session | None = None,
     plan_tasks: Iterable[str] | None = None,
+    include_backlog: bool = True,
 ) -> dict:
     """Everything the factory board needs in one read.
 
@@ -259,6 +260,20 @@ def build_factory_view(
     from core.db import get_engine
 
     def build(db: Session) -> dict:
+        backlog = None
+        if include_backlog:
+            from factory.orchestration.intake_evidence import backlog as load_backlog
+
+            try:
+                with db.begin_nested():
+                    backlog = load_backlog(db)
+            except Exception:  # noqa: BLE001 - evidence failure is not an empty backlog
+                backlog = {
+                    "available": False,
+                    "issues": [],
+                    "coverage": {},
+                    "stale": True,
+                }
         state = status(session=db)
         if not state.get("ok"):
             return {
@@ -314,6 +329,7 @@ def build_factory_view(
             "intake": state.get("intake"),
             "problem_issues": state.get("problem_issues"),
             "backlog_refill": state.get("backlog_refill"),
+            **({"intake_backlog": backlog} if include_backlog else {}),
             "lanes": state.get("lanes"),
             "review_routing": state.get("review_routing"),
             "version": state["version"],
