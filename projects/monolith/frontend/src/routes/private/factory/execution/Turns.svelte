@@ -342,7 +342,7 @@
   .prompt {
     padding: 12px 14px;
     border: 0;
-    border-radius: 6px;
+    border-radius: 0;
     background: var(--code-bg);
     font-size: 14px;
     line-height: 1.5;
@@ -364,7 +364,7 @@
     gap: 5px;
     padding: 0 9px 0 7px;
     border: 1px solid var(--line);
-    border-radius: var(--radius-pill);
+    border-radius: 0;
     color: var(--text-soft);
     font: 12px var(--font-mono);
     list-style: none;
@@ -397,7 +397,7 @@
   .step-list {
     margin: 8px 0 0 6px;
     padding: 0 0 0 12px;
-    border-left: 2px solid var(--line);
+    border-left: 1px solid var(--line);
     list-style: none;
     display: grid;
     gap: 4px;
@@ -434,7 +434,7 @@
     width: 6px;
     height: 6px;
     flex: 0 0 6px;
-    border-radius: var(--radius-circle);
+    border-radius: 0;
     background: currentColor;
   }
   .live-latest {
@@ -474,7 +474,7 @@
   }
   .result-md :global(code) {
     padding: 2px 4px;
-    border-radius: 3px;
+    border-radius: 0;
     background: var(--code-bg);
     font: 12.5px var(--font-mono);
   }
@@ -483,7 +483,7 @@
     padding: 12px 14px;
     overflow-x: auto;
     border: 0;
-    border-radius: 6px;
+    border-radius: 0;
     background: var(--code-bg);
     font-size: 12.5px;
     line-height: 1.55;
@@ -515,7 +515,7 @@
     margin: 8px 0 0;
     padding: 12px 14px;
     border: 1px solid var(--err-line);
-    border-radius: 6px;
+    border-radius: 0;
     color: var(--err);
     background: var(--err-bg);
     white-space: pre-wrap;
@@ -527,7 +527,7 @@
     margin: 8px 0 0;
     padding: 8px 12px;
     border: 1px solid var(--attn);
-    border-radius: var(--radius-lg);
+    border-radius: 0;
     color: var(--attn-text);
     background: var(--attn-soft);
     font-size: var(--size-meta);
