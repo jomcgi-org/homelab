@@ -144,7 +144,11 @@ def test_status_distinguishes_native_registration_from_caller_catalog(monkeypatc
     catalog = result["control_catalog"]
     assert catalog["source"] == "native_server_registry"
     assert catalog["caller_visibility"] == "not_observed"
-    assert set(catalog["tools"]) == {"factory_configure_refill", "factory_amend_policy"}
+    assert set(catalog["tools"]) == {
+        "factory_configure_refill",
+        "factory_amend_policy",
+        "factory_reconcile_learning_execution",
+    }
     refill = catalog["tools"]["factory_configure_refill"]
     assert refill["registered"] is True
     assert refill["operations"] == ["preview", "apply"]
@@ -2829,3 +2833,59 @@ def test_progress_preview_returns_bounded_subscription_refusal(monkeypatch):
         "reason": "progress_subscription_evidence_stale",
         "subscription_diagnostics": diagnostics,
     }
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+        _principal(groups=()),
+    ],
+)
+def test_learning_reconciliation_requires_standing_operator(monkeypatch, principal):
+    from factory import learning_reconciliation
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("unauthorized caller reached recovery")
+
+    monkeypatch.setattr(learning_reconciliation, "preview", forbidden)
+    assert (
+        _as(
+            principal,
+            lambda: mcp.factory_reconcile_learning_execution(
+                "preview", 18004, 1, 15160, "reason"
+            ),
+        )["error"]
+        == mcp.OPERATOR_REQUIRED
+    )
+
+
+def test_learning_reconciliation_adapter_binds_actor_and_requires_digest(monkeypatch):
+    from factory import learning_reconciliation
+
+    calls = []
+
+    async def apply(*args):
+        calls.append(args)
+        return {"ok": True}
+
+    monkeypatch.setattr(learning_reconciliation, "apply", apply)
+    p = _principal()
+    assert (
+        _as(
+            p,
+            lambda: mcp.factory_reconcile_learning_execution(
+                "apply", 18004, 1, 15160, "reason"
+            ),
+        )["reason"]
+        == "learning_preview_required"
+    )
+    assert not calls
+    assert _as(
+        p,
+        lambda: mcp.factory_reconcile_learning_execution(
+            "apply", 18004, 1, 15160, "reason", "stable", "digest"
+        ),
+    )["ok"]
+    assert calls == [(p.subject, 18004, 1, 15160, "reason", "stable", "digest")]

@@ -328,6 +328,18 @@ expired paused deadlines and uncertain execution. No second control route or
 access change is introduced to work around stale discovery.
 (see: /projects/monolith/factory/MCP.md)
 
+**Why.** A settled learning permit can retain an unknown invocation result even
+after its guest ceased. That history must continue to fence the old session,
+but need not permanently prevent changing the recurring learning cadence.
+`factory_reconcile_learning_execution` lets a standing operator preview and
+acknowledge one exact `factory-retro-daily` session/turn/permit after a fresh,
+positive control-plane cessation read and locked checks of the terminal worker,
+job, dispatch, receipts and pending work. Missing remote records are not proof.
+The digest-bound, idempotent audit changes neither execution history nor the job.
+Only the hourly cadence guard consumes it, and changed evidence invalidates it.
+Refill enablement itself does not inspect historical learning sessions unless
+the request also changes cadence. Recovery does not enable either operation.
+
 **Why.** Factory outcome comparisons use receipt cohorts and count every attempt
 through an explicit as-of bound. A positive requires successful delivery CI and
 a completed seven-day clean revert scan. Missing evidence stays unknown or

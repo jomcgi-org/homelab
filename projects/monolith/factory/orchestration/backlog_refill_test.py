@@ -2300,3 +2300,559 @@ def test_refill_control_preserves_existing_active_uncertain_and_held_receipts(
             for r in db.exec(select(FactoryReceipt).order_by(FactoryReceipt.id)).all()
         ]
         assert after == before
+
+
+@pytest.fixture
+def learning_recovery_world(control_world, monkeypatch):
+    from copy import deepcopy
+    from types import SimpleNamespace
+
+    from sqlalchemy import text
+
+    from factory import learning_reconciliation as recovery
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        ProbeObservation,
+    )
+    from factory.execution.transport import EmberVmShimTransport
+
+    engine, _, clock = control_world
+    SQLModel.metadata.create_all(
+        engine, tables=[AgentResultReceipt.__table__, ProbeObservation.__table__]
+    )
+    failed = NOW - timedelta(days=2)
+    dispatched = failed - timedelta(minutes=5)
+    started = int(dispatched.timestamp() * 1000) + 1000
+    updated = int((failed + timedelta(minutes=10)).timestamp() * 1000)
+    workflow = "_drainer-worker:1:1821"
+    with Session(engine) as db:
+        db.execute(
+            text(
+                "CREATE TABLE workflow_status (workflow_uuid TEXT PRIMARY KEY,status TEXT)"
+            )
+        )
+        db.execute(
+            text("INSERT INTO workflow_status VALUES (:id,'SUCCESS')"), {"id": workflow}
+        )
+        agent = AgentSession(
+            local_session_id=f"{workflow}:qwen-drain:factory-retro-daily",
+            workflow_id=workflow,
+            node_key="qwen-drain",
+            status="failed",
+            admission_tier="project",
+            model="luna",
+            workspace=".",
+            branch="main",
+            created_at=dispatched,
+            last_turn_at=failed,
+        )
+        db.add(agent)
+        db.flush()
+        turn = AgentTurn(
+            session_id=agent.id,
+            seq=1,
+            prompt="retained private prompt",
+            result_text="retained partial output",
+            terminal_reason="error",
+            stop_reason="invocation_outcome_unknown",
+            created_at=failed,
+            usage_json=dumps(
+                {
+                    "cost_usd": 1.25,
+                    "recovery": {
+                        "claim_owner": "old-owner",
+                        "dispatch_count": 1,
+                        "last_dispatch_at": dispatched.isoformat(),
+                    },
+                }
+            ),
+        )
+        permit = AgentCapacityReservation(
+            session_id=agent.id,
+            local_session_id=agent.local_session_id,
+            pending_seq=1,
+            tier="project",
+            routine_job_name="factory-retro-daily",
+            state="settled",
+            outcome="guest_cessation_confirmed",
+            owner="old-owner",
+            created_at=dispatched,
+            settled_at=failed + timedelta(minutes=11),
+        )
+        db.add_all([turn, permit])
+        db.flush()
+        observation = ProbeObservation(
+            permit_id=permit.id,
+            identity_sha256="a" * 64,
+            guest_id="old-guest",
+            generation=0,
+            invoke_started_at=started,
+            cp_updated_at=updated,
+            reason="guest_cessation_confirmed",
+            checked_at=failed + timedelta(minutes=10),
+            settled_at=failed + timedelta(minutes=11),
+        )
+        db.add(observation)
+        ids = (agent.id, 1, permit.id)
+        db.commit()
+    observed = {
+        "session_id": "old-guest",
+        "generation": 0,
+        "invoke_started_at": started,
+        "updated_at": updated,
+        "last_invoke_at": None,
+        "state": "destroyed",
+    }
+    calls = []
+
+    async def get_session(self, guest_id, session_token=None):
+        calls.append(guest_id)
+        return deepcopy(observed)
+
+    monkeypatch.setattr(EmberVmShimTransport, "get_session", get_session)
+    return SimpleNamespace(
+        engine=engine,
+        clock=clock,
+        ids=ids,
+        observed=observed,
+        calls=calls,
+        recovery=recovery,
+    )
+
+
+def _learning_snapshot(state):
+    from sqlalchemy import text
+
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentSession,
+        AgentTurn,
+        ProbeObservation,
+    )
+
+    with Session(state.engine) as db:
+        return {
+            "agent": db.get(AgentSession, state.ids[0]).model_dump(),
+            "turn": db.exec(
+                select(AgentTurn).where(AgentTurn.session_id == state.ids[0])
+            )
+            .one()
+            .model_dump(),
+            "permit": db.get(AgentCapacityReservation, state.ids[2]).model_dump(),
+            "observation": db.get(ProbeObservation, state.ids[2]).model_dump(),
+            "job": dict(
+                db.execute(text("SELECT * FROM routine_jobs")).mappings().one()
+            ),
+            "policy": db.get(FactoryControl, "factory").policy_json,
+        }
+
+
+@pytest.mark.asyncio
+async def test_learning_reconciliation_only_unblocks_cadence_and_preserves_unknown(
+    learning_recovery_world,
+):
+    from factory.execution import store
+    from factory.orchestration import refill_control as api
+
+    s = learning_recovery_world
+    before = _learning_snapshot(s)
+    with pytest.raises(ValueError, match="refill_learning_execution_unknown"):
+        api.preview(True, "opus", True, 0, "activate")
+    # Coupling is explicit: refill-only does not run the cadence guard. This is
+    # a diagnostic regression test, not an alternative activation path.
+    assert api.preview(True, "opus", False, 0, "inspect coupling")["refill_after"][
+        "enabled"
+    ]
+    p = await s.recovery.preview(*s.ids, "Acknowledge ceased historical attempt")
+    assert "retained private" not in dumps(p) and "retained partial" not in dumps(p)
+    r = await s.recovery.apply(
+        "operator",
+        *s.ids,
+        "Acknowledge ceased historical attempt",
+        "stable",
+        p["preview_sha256"],
+    )
+    assert (
+        r["unknown_outcome_preserved"]
+        and not r["dispatched"]
+        and not r["cadence_changed"]
+    )
+    assert _learning_snapshot(s) == before
+    assert r["version"] == 1
+    with Session(s.engine) as db:
+        with pytest.raises(store.SessionOutcomeUnknown):
+            store._assert_sendable(db, s.ids[0])
+        assert s.recovery.resolutions(db, {s.ids[0]}) == {s.ids[0]}
+    assert api.preview(True, "opus", True, 1, "activate")["hourly"]
+
+
+@pytest.mark.asyncio
+async def test_learning_reconciliation_replays_lost_apply_before_remote_read(
+    learning_recovery_world, monkeypatch
+):
+    from factory.execution.transport import EmberVmShimTransport
+
+    s = learning_recovery_world
+    p = await s.recovery.preview(*s.ids, "reason")
+    args = ("operator", *s.ids, "reason", "stable", p["preview_sha256"])
+    r = await s.recovery.apply(*args)
+
+    async def unavailable(*args, **kwargs):
+        pytest.fail("replay must not contact the guest")
+
+    monkeypatch.setattr(EmberVmShimTransport, "get_session", unavailable)
+    assert await s.recovery.apply(*args) == r
+    with pytest.raises(ValueError, match="request_conflict"):
+        await s.recovery.apply(
+            "operator", *s.ids, "changed", "stable", p["preview_sha256"]
+        )
+    with Session(s.engine) as db:
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(FactoryAudit.action == s.recovery.ACTION)
+                ).all()
+            )
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("state", "running"),
+        ("state", "parked"),
+        ("state", "failed"),
+        ("session_id", "different"),
+        ("generation", 1),
+        ("generation", True),
+        ("invoke_started_at", 1),
+        ("updated_at", 1),
+        ("last_invoke_at", True),
+    ],
+)
+async def test_learning_reconciliation_requires_exact_positive_cessation(
+    learning_recovery_world, field, value
+):
+    s = learning_recovery_world
+    s.observed[field] = value
+    with pytest.raises(ValueError, match="learning_cessation_mismatch"):
+        await s.recovery.preview(*s.ids, "reason")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["missing", "timeout", "gone", "permission"])
+async def test_learning_reconciliation_remote_failure_never_authorizes_apply(
+    learning_recovery_world, monkeypatch, failure
+):
+    from factory.execution.transport import EmberSessionGone, EmberVmShimTransport
+
+    s = learning_recovery_world
+    p = await s.recovery.preview(*s.ids, "reason")
+
+    async def read(*args, **kwargs):
+        if failure == "missing":
+            return
+        if failure == "gone":
+            raise EmberSessionGone("gone")
+        if failure == "permission":
+            raise PermissionError("denied")
+        raise TimeoutError("unavailable")
+
+    monkeypatch.setattr(EmberVmShimTransport, "get_session", read)
+    with pytest.raises(ValueError, match="cessation_unavailable"):
+        await s.recovery.apply(
+            "operator", *s.ids, "reason", "stable", p["preview_sha256"]
+        )
+    with Session(s.engine) as db:
+        assert not db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == s.recovery.ACTION)
+        ).all()
+        assert db.get(FactoryControl, "factory").version == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        "version",
+        "policy",
+        "job_held",
+        "job_locked",
+        "workflow",
+        "pending",
+        "binding",
+        "cleanup",
+        "receipt_fence",
+        "permit",
+        "job_identity",
+        "observation",
+        "turn",
+        "extra_turn",
+        "result_receipt",
+        "new_owner",
+        "new_work",
+    ],
+)
+async def test_learning_reconciliation_rechecks_every_owner_before_commit(
+    learning_recovery_world, change
+):
+    from sqlalchemy import text
+
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+        ProbeObservation,
+    )
+
+    s = learning_recovery_world
+    p = await s.recovery.preview(*s.ids, "reason")
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.ids[0])
+        permit = db.get(AgentCapacityReservation, s.ids[2])
+        if change == "version":
+            db.get(FactoryControl, "factory").version += 1
+        elif change == "policy":
+            import json
+
+            c = db.get(FactoryControl, "factory")
+            policy = json.loads(c.policy_json)
+            policy["generation"] += 1
+            c.policy_json = dumps(policy)
+        elif change == "job_held":
+            db.execute(text("UPDATE routine_jobs SET next_run_at=NULL"))
+        elif change == "job_locked":
+            db.execute(text("UPDATE routine_jobs SET locked_by='worker'"))
+        elif change == "workflow":
+            db.execute(text("UPDATE workflow_status SET status='PENDING'"))
+        elif change == "pending":
+            db.add(PendingMessage(session_id=agent.id, seq=2, message_text="queued"))
+        elif change == "binding":
+            agent.ember_session_id = "old-guest"
+        elif change == "cleanup":
+            agent.guest_cleanup_id = "pending-cleanup"
+        elif change == "receipt_fence":
+            agent.result_receipt_fence_id = "late-receipt"
+        elif change == "permit":
+            permit.state = "uncertain"
+        elif change == "job_identity":
+            permit.routine_job_name = "other-job"
+        elif change == "observation":
+            db.get(ProbeObservation, permit.id).identity_sha256 = "b" * 64
+        elif change == "turn":
+            db.exec(
+                select(AgentTurn).where(AgentTurn.session_id == agent.id)
+            ).one().result_text = "late output"
+        elif change == "extra_turn":
+            db.add(
+                AgentTurn(
+                    session_id=agent.id, seq=2, prompt="new", result_text="unknown"
+                )
+            )
+        elif change == "result_receipt":
+            db.add(
+                AgentResultReceipt(
+                    id="late",
+                    token_sha256="b" * 64,
+                    session_id=agent.id,
+                    local_session_id=agent.local_session_id,
+                    seq=1,
+                    dispatch_count=1,
+                    claim_owner="old-owner",
+                    guest_id="old-guest",
+                    request_sha256="a" * 64,
+                    created_at=NOW,
+                    accept_until=NOW,
+                    retain_until=NOW,
+                )
+            )
+        else:
+            other = AgentSession(
+                local_session_id="other:qwen-drain:factory-retro-daily"
+                if change == "new_work"
+                else "other",
+                workspace=".",
+                branch="main",
+                status="running",
+                ember_session_id="old-guest" if change == "new_owner" else None,
+            )
+            db.add(other)
+        db.commit()
+    with pytest.raises(ValueError):
+        await s.recovery.apply(
+            "operator", *s.ids, "reason", "stable", p["preview_sha256"]
+        )
+    with Session(s.engine) as db:
+        assert not db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == s.recovery.ACTION)
+        ).all()
+
+
+@pytest.mark.asyncio
+async def test_learning_reconciliation_rechecks_after_remote_io_and_stale_evidence(
+    learning_recovery_world, monkeypatch
+):
+    from factory.execution.models import PendingMessage
+    from factory.execution.transport import EmberVmShimTransport
+
+    s = learning_recovery_world
+    p = await s.recovery.preview(*s.ids, "reason")
+    candidate, _ = s.recovery._prepare(*s.ids, "reason")
+    for delta in [-1, 31]:
+        s.clock[0] = NOW + timedelta(seconds=delta)
+        with pytest.raises(ValueError, match="stale_cessation"):
+            s.recovery._finish(candidate, s.observed, NOW)
+    s.clock[0] = NOW
+
+    async def race(*args, **kwargs):
+        with Session(s.engine) as db:
+            db.add(PendingMessage(session_id=s.ids[0], seq=2, message_text="raced"))
+            db.commit()
+        return dict(s.observed)
+
+    monkeypatch.setattr(EmberVmShimTransport, "get_session", race)
+    with pytest.raises(ValueError):
+        await s.recovery.apply(
+            "operator", *s.ids, "reason", "stable", p["preview_sha256"]
+        )
+
+
+@pytest.mark.asyncio
+async def test_learning_reconciliation_does_not_hide_other_unknowns_or_changed_history(
+    learning_recovery_world,
+):
+    from factory.execution.models import AgentSession, AgentTurn
+    from factory.orchestration import refill_control as api
+
+    s = learning_recovery_world
+    p = await s.recovery.preview(*s.ids, "reason")
+    await s.recovery.apply("operator", *s.ids, "reason", "stable", p["preview_sha256"])
+    with Session(s.engine) as db:
+        other = AgentSession(
+            local_session_id="another:qwen-drain:factory-retro-daily",
+            workspace=".",
+            branch="main",
+            status="failed",
+        )
+        db.add(other)
+        db.flush()
+        db.add(
+            AgentTurn(
+                session_id=other.id,
+                seq=1,
+                prompt="",
+                result_text="",
+                terminal_reason="error",
+                stop_reason="invocation_outcome_unknown",
+            )
+        )
+        db.commit()
+    with pytest.raises(ValueError, match="execution_unknown"):
+        api.preview(True, "opus", True, 1, "activate")
+    with Session(s.engine) as db:
+        db.get(AgentSession, s.ids[0]).prior_cli_session_id = "changed-history"
+        db.commit()
+    with Session(s.engine) as db:
+        assert not s.recovery.resolutions(db, {s.ids[0]})
+
+
+@pytest.mark.asyncio
+async def test_learning_reconciliation_concurrent_identical_apply_is_one_audit(
+    learning_recovery_world,
+):
+    import asyncio
+
+    s = learning_recovery_world
+    p = await s.recovery.preview(*s.ids, "reason")
+    args = ("operator", *s.ids, "reason", "stable", p["preview_sha256"])
+    results = await asyncio.gather(s.recovery.apply(*args), s.recovery.apply(*args))
+    assert results[0] == results[1]
+    with Session(s.engine) as db:
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(FactoryAudit.action == s.recovery.ACTION)
+                ).all()
+            )
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+async def test_learning_reconciliation_preserves_receipt_holds_and_other_session_fence(
+    learning_recovery_world,
+):
+    from factory.execution import store
+    from factory.execution.models import AgentSession, AgentTurn
+
+    s = learning_recovery_world
+    with Session(s.engine) as db:
+        receipts = [
+            FactoryReceipt(
+                id=i,
+                repo="jomcgi-org/homelab",
+                issue_number=i,
+                actor="owner",
+                title="held",
+                body="",
+                url="",
+                state="uncertain" if i == 996 else "escalated",
+                task_paused=i != 996,
+                allowance_json='{"spent":8}',
+                direction_json='{"landing_hold":true}',
+            )
+            for i in (927, 996, 1027)
+        ]
+        other = AgentSession(
+            local_session_id="factory:unrelated",
+            workspace=".",
+            branch="main",
+            status="failed",
+        )
+        db.add_all([*receipts, other])
+        db.flush()
+        other_id = other.id
+        db.add(
+            AgentTurn(
+                session_id=other_id,
+                seq=1,
+                prompt="",
+                result_text="",
+                terminal_reason="error",
+                stop_reason="invocation_outcome_unknown",
+            )
+        )
+        db.commit()
+        before = [
+            r.model_dump()
+            for r in db.exec(select(FactoryReceipt).order_by(FactoryReceipt.id)).all()
+        ]
+    p = await s.recovery.preview(*s.ids, "reason")
+    await s.recovery.apply("operator", *s.ids, "reason", "stable", p["preview_sha256"])
+    with Session(s.engine) as db:
+        assert [
+            r.model_dump()
+            for r in db.exec(select(FactoryReceipt).order_by(FactoryReceipt.id)).all()
+        ] == before
+        with pytest.raises(store.SessionOutcomeUnknown):
+            store._assert_sendable(db, other_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "identity", [(True, 1, 1), (1, 2, 1), (1, 1, False), (0, 1, 1), (99999, 1, 1)]
+)
+async def test_learning_reconciliation_rejects_nonexact_identity(
+    learning_recovery_world, identity
+):
+    s = learning_recovery_world
+    with pytest.raises(ValueError):
+        await s.recovery.preview(*identity, "reason")
+    assert not s.calls
