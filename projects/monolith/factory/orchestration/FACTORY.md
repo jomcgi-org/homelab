@@ -3105,6 +3105,12 @@ deadlines are preserved, including expired deadlines. Apply leaves the task
 paused and creates no funding, execution or lease authority. Its audit records
 the reviewed preview and supports replay after a lost response.
 
+The restriction survives operator chat and decision requeue of the same receipt.
+Fresh admission refuses a configured scalar or empty pool that conflicts with it.
+Native execution checks the actual queued model before delivery and physical
+dispatch, including a new message on a historical session. Historical pins and
+results remain unchanged.
+
 ### Explicit progress continuation of a recovered artifact
 
 The `progress_continuation` mode of `factory_amend_policy` is a standing-human

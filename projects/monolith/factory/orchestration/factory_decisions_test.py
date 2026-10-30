@@ -2990,3 +2990,82 @@ def test_explicit_held_readmission_consumes_current_queue_authority(
             "reason": "leave unmerged"
         }
         assert not operator_readmission_queued(session, receipt_id)
+
+
+@pytest.mark.parametrize("durable", [False, True])
+@pytest.mark.parametrize(
+    "conflict",
+    [None, "conductor_model", "worker_model", "reviewer_model", "empty_pool"],
+)
+def test_model_restriction_survives_same_receipt_readmission(
+    db, github, durable, conflict
+):
+    receipt_id = escalate(db, "deliver", state="escalated", task_class="bug-fix")
+    configure(issues=())
+    restriction = {
+        "removed_models": ["spark"],
+        "actor": "operator",
+        "request_key": "remove-spark",
+    }
+    with Session(db) as session, session.begin():
+        row = session.get(FactoryReceipt, receipt_id)
+        row.direction_json = json.dumps(
+            {
+                "landing_hold": {"reason": "leave unmerged"},
+                "model_restriction": restriction,
+            }
+        )
+        policy = json.loads(session.get(FactoryControl, "factory").policy_json)
+        policy["allowed_models"].append("spark")
+        policy["model_pools"] = {
+            "implement": ["spark", "opus"],
+            "worker": ["luna", "spark"],
+        }
+        if conflict == "empty_pool":
+            policy["model_pools"]["implement"] = ["spark"]
+        elif conflict:
+            policy[conflict] = "spark"
+            if conflict == "worker_model":
+                policy["model_pools"]["worker"] = ["spark", "luna"]
+        history = [task.model_dump() for task in session.exec(select(SwarmTask)).all()]
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    if durable:
+        result = decisions.request_decision(
+            receipt_id,
+            current_decision_id(),
+            "chat",
+            "operator",
+            request_key="continue-restricted",
+            note="Continue with existing restrictions",
+            action="chat",
+        )
+    else:
+        result = decisions.request_chat(
+            receipt_id, "Continue with existing restrictions", "operator"
+        )
+    assert result["requeued"] is True
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt_id)
+        assert json.loads(row.direction_json)["model_restriction"] == restriction
+        assert row.task_id is None and row.policy_json is None
+    admitted = admit_next("scheduler")
+    with Session(db) as session:
+        assert [
+            session.get(SwarmTask, task["id"]).model_dump() for task in history
+        ] == history
+        row = session.get(FactoryReceipt, receipt_id)
+        assert json.loads(row.direction_json)["model_restriction"] == restriction
+        if conflict:
+            assert admitted["reason"] == "model_restriction_invalid"
+            assert not admitted["ok"]
+            assert row.task_id is None and row.state == "queued"
+            assert len(session.exec(select(SwarmTask)).all()) == len(history)
+        else:
+            assert admitted["ok"] and admitted["receipt_id"] == receipt_id
+            effective = controls._effective_policy(session, row)
+            assert "spark" not in effective["allowed_models"]
+            assert effective["model_pools"] == {
+                "implement": ["opus"],
+                "worker": ["luna"],
+            }
+            assert "spark" in json.loads(row.policy_json)["allowed_models"]

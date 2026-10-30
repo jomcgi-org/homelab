@@ -6,6 +6,8 @@ import json
 import logging
 import posixpath
 
+_UNSPECIFIED_MODEL = object()
+
 
 def _check_relative_path(path: str) -> None:
     if "\x00" in path or "\\" in path:
@@ -69,8 +71,10 @@ def declared_artifact_path(
         return None
 
 
-def factory_session_allowed(local_session_id: str | None) -> bool:
-    """Apply current factory controls only to factory-owned session identities."""
+def factory_session_allowed(
+    local_session_id: str | None, *, model: object = _UNSPECIFIED_MODEL
+) -> bool:
+    """Fence a factory session and, at physical dispatch, its actual turn model."""
     if not local_session_id or not local_session_id.startswith("factory:"):
         return True
     fields = local_session_id.split(":")
@@ -89,6 +93,20 @@ def factory_session_allowed(local_session_id: str | None) -> bool:
     from factory.orchestration.backlog_refill import dispatch_allowed as refill_allowed
 
     try:
+        if model is not _UNSPECIFIED_MODEL:
+            from factory.execution import normalize_model
+            from factory.orchestration import factory_controls as controls
+
+            with controls._read_session() as db:
+                row = controls._receipt(db, fields[1])
+                if row is None:
+                    return False
+                if json.loads(row.direction_json or "{}").get("model_restriction"):
+                    if (
+                        normalize_model(model)
+                        not in controls._effective_policy(db, row)["allowed_models"]
+                    ):
+                        return False
         return transport_allowed(
             fields[1], fields[2], int(fields[3])
         ) and refill_allowed(fields[1], fields[2], int(fields[3]), physical=True)

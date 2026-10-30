@@ -137,7 +137,7 @@ def _factory_artifact_session(monkeypatch, session):
 
     monkeypatch.setattr(core_db, "get_engine", lambda: session.bind)
     monkeypatch.setattr(
-        "factory.orchestration.api.factory_session_allowed", lambda _key: True
+        "factory.orchestration.api.factory_session_allowed", lambda _key, **kw: True
     )
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _sid: None)
     row = store.create_session(
@@ -2912,6 +2912,42 @@ def test_executor_checks_shared_permit_before_delivery_and_settles(
     assert observed == [("running", "interactive")]
     session.expire_all()
     assert session.exec(select(AgentCapacityReservation)).one().state == "settled"
+
+
+@pytest.mark.parametrize("fence_at", ["before_delivery", "physical_post"])
+def test_executor_fences_actual_pending_model_at_each_physical_check(
+    monkeypatch, session, fence_at
+):
+    from factory.orchestration import api
+
+    checked = []
+    posted = []
+
+    def allowed(_identity, **kwargs):
+        if "model" not in kwargs:
+            return True
+        checked.append(kwargs["model"])
+        return fence_at == "physical_post" and len(checked) == 1
+
+    async def deliver(_ember, _cli, message, model, **kwargs):
+        await kwargs["admission_check"]()
+        posted.append(model)
+        return _completed_delivery(message)
+
+    async def notify(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr(api, "factory_session_allowed", allowed)
+    monkeypatch.setattr(mcp._transport, "deliver", deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _sid: None)
+    row = store.create_session(
+        session, "pending-model-fence", "<guest>", "main", model="astra"
+    )
+    store.create_pending_message(session, row.id, "continue", model="sol")
+    asyncio.run(mcp._execute_pending_message(row.id))
+    assert checked == ["sol"] * (1 if fence_at == "before_delivery" else 2)
+    assert posted == []
 
 
 def test_probe_delivered_by_worker_path_destroys_guest(monkeypatch, session):

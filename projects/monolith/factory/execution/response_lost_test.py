@@ -364,7 +364,7 @@ def test_factory_pin_reaches_real_invoke_and_response_loss_hold(
     database, monkeypatch, lose_response
 ):
     monkeypatch.setattr(
-        "factory.orchestration.api.factory_session_allowed", lambda _key: True
+        "factory.orchestration.api.factory_session_allowed", lambda _key, **kw: True
     )
     sid = queue(database, "factory:t-artifact:implement:2")
     with Session(database) as db:
@@ -2022,7 +2022,7 @@ def test_roll_mid_invoke_hands_off_before_observer_cleanup_and_node_succeeds(
         # This fixture fences only the unrelated factory admission API.
         import factory.orchestration.api as api
 
-        monkeypatch.setattr(api, "factory_session_allowed", lambda _key: True)
+        monkeypatch.setattr(api, "factory_session_allowed", lambda _key, **kw: True)
         _REAL_SCHEDULE_NEXT_MESSAGE(sid)
         task = next(iter(mcp._inflight_tasks))
         await asyncio.wait_for(posted.wait(), 5)

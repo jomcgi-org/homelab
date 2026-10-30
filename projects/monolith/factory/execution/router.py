@@ -1478,7 +1478,7 @@ async def prewarm_session(session_id: int) -> Response:
             from factory.orchestration.api import factory_session_allowed
 
             if not await asyncio.to_thread(
-                factory_session_allowed, row.local_session_id
+                factory_session_allowed, row.local_session_id, model=row.model
             ):
                 raise RuntimeError("Factory admission is fenced")
             if not await asyncio.to_thread(admission.recheck_prewarm, session_id):
