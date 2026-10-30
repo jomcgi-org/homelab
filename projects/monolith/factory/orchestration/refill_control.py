@@ -198,6 +198,11 @@ def _plan(db, control, enabled, model, hourly, expected_version, reason, quota):
     changed = {**block, "enabled": enabled}
     if enabled:
         changed.update(model=model, max_findings=5)
+    elif changed["model"] not in policy.get("allowed_models", []):
+        # Omitted legacy policies may have an unavailable inert default.
+        # Do not persist that default as an explicitly configured model.
+        changed.pop("model")
+    normalize({**policy, "backlog_refill": changed})
     if changed != block and refill._ledger(db, policy.get("repo", ""))[2]:
         raise ValueError("refill_in_flight")
     job = _job(db, lock=True) if hourly else None

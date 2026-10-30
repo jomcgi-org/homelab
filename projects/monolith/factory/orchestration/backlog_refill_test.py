@@ -1566,3 +1566,29 @@ def test_new_refill_batch_is_enforced_before_collection_audit(world):
         writer.collection("small", collection)
     with Session(engine) as db:
         assert refill.latest_event(db, "collection", run_id="small") is None
+
+
+def test_disable_legacy_refill_keeps_unavailable_default_inert(control_world):
+    import json
+    from factory.orchestration import refill_control as api
+
+    engine, _, _ = control_world
+    with Session(engine) as db:
+        control = db.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json)
+        policy.pop("backlog_refill")
+        policy["allowed_models"] = ["opus"]
+        control.policy_json = dumps(policy)
+        db.commit()
+    p = api.preview(False, "opus", False, 0, "disable")
+    api.apply(
+        "operator", False, "opus", False, 0, "disable", "legacy", p["preview_sha256"]
+    )
+    with Session(engine) as db:
+        policy = json.loads(db.get(FactoryControl, "factory").policy_json)
+        assert normalize(policy)["enabled"] is False
+        assert "model" not in policy["backlog_refill"]
+        assert (
+            api.status(db, db.get(FactoryControl, "factory"))["policy"]["enabled"]
+            is False
+        )
