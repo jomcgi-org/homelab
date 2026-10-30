@@ -20272,8 +20272,12 @@ def test_gate_issue_write_replaces_contract_with_history_and_comment_idempotency
     assert issue["body"].startswith("Human intro\n- [ ] Manual\n\n")
     assert "\n\nHuman tail" in issue["body"]
     assert gates.pending_live_validation(issue["body"])
+    issue["body"] = issue["body"].replace(
+        "- [ ] Second live drill", "- [X] Second live drill"
+    )
     assert gates.resolve(task, {"gate": gate}, "test:second")
     assert len(patches) == 2
+    assert "- [X] Second live drill" in issue["body"]
     # The task-only issue boundary must not suppress a second per-hash card.
     assert len(comments) == 2
     assert comments[0]["body"] != comments[1]["body"]
@@ -20305,9 +20309,153 @@ def test_gate_issue_write_failure_retains_all_history(
         raise RuntimeError("GitHub unavailable")
 
     monkeypatch.setattr(landing, "github_write", fail)
-    with pytest.raises(ValueError if failure == "malformed" else RuntimeError):
-        gates.resolve(task, {"gate": second}, "test:second")
+    if failure == "malformed":
+        assert gates.resolve(task, {"gate": second}, "test:second")
+        assert conductor._decision_processed(task["id"], "test:second")
+    else:
+        with pytest.raises(RuntimeError):
+            gates.resolve(task, {"gate": second}, "test:second")
     assert conductor._task(task["id"])["conductor_gates"] == [first, second]
+
+
+@pytest.mark.parametrize("field", ["scope", "live_checks"])
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        " leading space",
+        "\tleading tab",
+        "line\nbreak",
+        "trailing\n",
+        "line\rbreak",
+        "line\vbreak",
+        "line\fbreak",
+        "line\x1cbreak",
+        "line\x85break",
+        "line\u2028break",
+        "line\u2029break",
+        "embedded <!-- comment -->",
+    ],
+)
+def test_gate_contract_text_rejected_before_persistence(
+    feedback_db, monkeypatch, field, invalid
+):
+    from factory.orchestration import factory_gates as gates
+
+    task, _ = feedback_task()
+    gate = {**live_gate(), field: [invalid] if field == "live_checks" else invalid}
+    monkeypatch.setattr(
+        conductor, "_post_decision_card", lambda *_: pytest.fail("invalid gate posted")
+    )
+    with pytest.raises(ValueError, match="invalid gate"):
+        gates.resolve(task, {"gate": gate}, "test:invalid-contract")
+    assert conductor._task(task["id"])["conductor_gates"] == []
+    assert not conductor._decision_processed(task["id"], "test:invalid-contract")
+
+
+@pytest.mark.parametrize("action", ["plan", "add_node", "pause", "direct_escalation"])
+@pytest.mark.parametrize(
+    "body_kind",
+    [
+        "legacy_ticked",
+        "bounded_ticked",
+        "malformed",
+        "unclosed_marker",
+        "marker_free_fence",
+    ],
+)
+def test_gate_decision_continues_through_ticked_or_unparseable_issue_body(
+    feedback_db, monkeypatch, action, body_kind
+):
+    from factory.orchestration import factory_gates as gates
+    from factory.orchestration import factory_landing as landing
+    from factory.orchestration.factory_gate_blocks import render
+    from factory.orchestration.factory_models import FactoryAudit
+
+    task, policy = feedback_task()
+    task["delivery_pr_number"] = 3
+    gate = live_gate()
+    old_text = gates.rescope_text(gate).replace("- [ ]", "- [x]")
+    legacy = f"<!-- factory-gate:old:{'a' * 20} -->\n{old_text}"
+    before = {
+        "legacy_ticked": legacy,
+        "bounded_ticked": render("old", "a" * 20, old_text),
+        "malformed": "Human text\n<!-- factory-gate:broken -->",
+        "unclosed_marker": "```\n" + legacy,
+        "marker_free_fence": "Human text\n```\nunfinished example",
+    }[body_kind]
+    issue = {"state": "open", "body": before}
+    pr = {
+        "state": "open",
+        "body": "Closes #7",
+        "head": {"ref": f"factory/{task['id']}", "repo": {"full_name": task["repo"]}},
+    }
+    patches = []
+
+    def read(_repo, path):
+        assert path in ("issues/7", "pulls/3")
+        return (issue if path == "issues/7" else pr).copy()
+
+    def write(_repo, path, payload, **kwargs):
+        assert conductor._task(task["id"])["conductor_gates"] == [gate]
+        assert kwargs["method"] == "PATCH"
+        patches.append(path)
+        target = issue if path == "issues/7" else pr
+        target.update(payload)
+        return target.copy()
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    monkeypatch.setattr(landing, "github_write", write)
+    cards = []
+    monkeypatch.setattr(
+        conductor, "_post_decision_card", lambda *args: cards.append(args)
+    )
+    edit = plan_edit("staged", "implement")
+    if action == "plan":
+        decision = {"action": "plan", "reason": "staged delivery", "edits": [edit]}
+    elif action == "add_node":
+        decision = edit
+    else:
+        decision = {
+            "action": "pause",
+            "reason": "staged delivery",
+            "question": "Stage acceptance?",
+        }
+    decision["gate"] = gate
+    run = complete_feedback_node(task, policy, "conductor_1", decision)
+    cause = "factory-decision:conductor_1:1"
+    for _ in range(2):
+        if action == "direct_escalation":
+            conductor._escalate_task(task, decision, cause, [])
+        else:
+            conductor.apply_decision(task, policy, run, [])
+    assert cards
+    assert conductor._task(task["id"])["conductor_gates"] == [gate]
+    assert conductor._decision_processed(task["id"], cause)
+    assert "Closes #7" not in pr["body"]
+    assert gates.rescope_text(gate) in pr["body"]
+    assert patches.count("pulls/3") == 1
+    ambiguous = body_kind in ("malformed", "unclosed_marker")
+    assert patches.count("issues/7") == (0 if ambiguous else 1)
+    if ambiguous:
+        assert issue["body"] == before
+    if action in ("plan", "add_node"):
+        assert "implement_staged" in {
+            node["node_key"] for node in conductor.graph.load_graph(task["id"])
+        }
+    with Session(feedback_db) as db:
+        audits = db.exec(
+            select(FactoryAudit).where(FactoryAudit.task_id == task["id"])
+        ).all()
+        assert not any(row.action == "conductor_rejected" for row in audits)
+        # A direct retry after appending into an unfinished human fence now
+        # sees a marker in that fence and conservatively skips its body write.
+        skipped = ambiguous or (
+            body_kind == "marker_free_fence" and action == "direct_escalation"
+        )
+        assert sum(
+            row.action == "conductor_gate_issue_body_skipped" for row in audits
+        ) == int(skipped)
+        assert sum(row.action == "conductor_gate_decided" for row in audits) == 1
 
 
 def record_closing_gate(task, monkeypatch):

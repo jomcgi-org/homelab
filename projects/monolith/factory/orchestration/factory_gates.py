@@ -27,6 +27,12 @@ GATE_EFFECTS = (
     "uses_credentials",
 )
 
+# Generated scope and checklist entries must each fit one Markdown line. Cover
+# every splitlines separator, and reject HTML comments and leading whitespace.
+_GATE_LINE_PATTERN = (
+    r"^(?![\s\S]*(?:<!--|[\r\n\u000b\u000c\u001c-\u001e\u0085\u2028\u2029]))\S"
+)
+
 GATE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -51,12 +57,22 @@ GATE_SCHEMA = {
             "properties": {effect: {"type": "boolean"} for effect in GATE_EFFECTS},
         },
         "value": {"type": "string", "minLength": 1, "maxLength": 1000},
-        "scope": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "scope": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "pattern": _GATE_LINE_PATTERN,
+        },
         "live_checks": {
             "type": "array",
             "minItems": 1,
             "maxItems": 10,
-            "items": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000,
+                "pattern": _GATE_LINE_PATTERN,
+            },
         },
         "delivered_prs": {
             "type": "array",
@@ -105,7 +121,8 @@ GATE_PROMPT = (
     "For live validation this runner cannot "
     "perform, use kind `live_validation`, classification `reversible`, a "
     "repository-only default-off or staged `scope`, and `live_checks` naming "
-    "outstanding acceptance. The server appends the checklist to the issue. "
+    "outstanding acceptance. Use single-line scope and check text without leading "
+    "whitespace or HTML comments. The server appends the checklist to the issue. "
     "Never weaken acceptance. State the rescope "
     "in the PR body; remove closing keywords while operational work remains. "
     "Required Linux CI and independent exact-head review still apply. For an "
@@ -283,14 +300,26 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
 
         issue = conductor.github_get(repo, f"issues/{number}")
         body = issue.get("body") or ""
-        updated, _ = rewrite(body, render(task["id"], identity, text))
-        if updated != body:
-            github_write(
-                repo,
-                f"issues/{number}",
-                {"body": updated},
-                method="PATCH",
+        replacement = render(task["id"], identity, text)
+        try:
+            updated, _ = rewrite(body, replacement)
+        except ValueError as exc:
+            # The durable gate and card still carry acceptance. Ambiguous human
+            # text only prevents this body write, never the PR rescope or audit.
+            conductor._audit_once(
+                task["id"],
+                cause,
+                "conductor_gate_issue_body_skipped",
+                {"cause": cause, "issue_number": number, "reason": str(exc)},
             )
+        else:
+            if updated != body:
+                github_write(
+                    repo,
+                    f"issues/{number}",
+                    {"body": updated},
+                    method="PATCH",
+                )
     if gate["kind"] == "live_validation":
         rescope_pr(
             task, artifact.get("pr_number") or task.get("delivery_pr_number"), gate
