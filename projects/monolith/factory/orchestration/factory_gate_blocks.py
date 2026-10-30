@@ -64,6 +64,8 @@ def _visible_body(body: str) -> str:
             elif run[0] == fence[0] and len(run) >= len(fence) and not rest.strip():
                 fence = None
         visible.append(re.sub(r"[^\n]", " ", line) if was_fenced or fence else line)
+    if fence is not None:
+        raise ValueError("unterminated fence makes gate boundaries ambiguous")
     return "".join(visible)
 
 
