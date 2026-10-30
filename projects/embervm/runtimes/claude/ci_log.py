@@ -33,10 +33,12 @@ MAX_RESPONSE = 2 * MAX_BYTES
 MAX_OUTPUT = 64 * 1024
 TIMEOUT = 10
 CACHE_TTL = 3600
+CACHE_FORMAT = 2  # Older entries may retain a credential split at a chunk limit.
 ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 EVIDENCE = re.compile(
     r"FAILED|FAIL:|ERROR|Error:|Traceback|AssertionError|E +assert|Executed \d+ out of \d+ tests?"
 )
+TEST_COUNT = re.compile(r"Executed \d+ out of \d+ tests?")
 
 
 class EvidenceError(Exception):
@@ -169,12 +171,8 @@ def read_log(invocation, fetch=fetch_chunk, max_chunks=MAX_CHUNKS):
         except (ValueError, TypeError, binascii.Error, AttributeError):
             raise EvidenceError("Malformed log chunk") from None
         if size + len(data) > MAX_BYTES:
-            # Discard the cut line, so a credential is never truncated before
-            # the redactor can see its key/prefix.
             remaining = MAX_BYTES - size
-            cut = data[-remaining:].split(b"\n", 1) if remaining else []
-            data = cut[1] if len(cut) == 2 else b""
-            pieces.append(data)
+            pieces.append(data[-remaining:] if remaining else b"")
             reason = "byte_limit"
             break
         pieces.append(data)
@@ -185,7 +183,17 @@ def read_log(invocation, fetch=fetch_chunk, max_chunks=MAX_CHUNKS):
     else:
         if cursor:
             reason = "chunk_limit"
-    text = redact(b"".join(reversed(pieces)).decode("utf-8", errors="replace"))
+    raw = b"".join(reversed(pieces))
+    if reason:
+        # Any retained boundary can split a credential from its recognizable
+        # prefix, including a line spanning several chunks or a byte limit
+        # with no room for the oldest chunk. Trim only after joining them.
+        raw = raw.partition(b"\n")[2]
+        begin = re.search(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----", raw)
+        end = re.search(rb"-----END [A-Z ]*PRIVATE KEY-----", raw)
+        if end and (begin is None or end.start() < begin.start()):
+            raw = b"[REDACTED]\n" + raw[end.end() :].lstrip(b"\r\n")
+    text = redact(raw.decode("utf-8", errors="replace"))
     return {
         "text": text,
         "chunks": len(pieces),
@@ -214,7 +222,7 @@ def cache_directory():
 
 def cached_log(repo, sha, status, *, cache=None, fetch=fetch_chunk):
     key = hashlib.sha256(
-        json.dumps([1, repo, sha, status], sort_keys=True).encode()
+        json.dumps([CACHE_FORMAT, repo, sha, status], sort_keys=True).encode()
     ).hexdigest()
     path = cache / (key + ".json") if cache else None
     terminal = status["state"] != "pending"
@@ -267,6 +275,13 @@ def excerpts(text):
         tail_start += 1
     selected = set(range(tail_start, len(lines)))
     used = sum(sizes[tail_start:])
+    summaries = [i for i, line in enumerate(lines) if TEST_COUNT.search(line)]
+    summary_used = 0
+    for i in reversed(summaries):
+        if i not in selected and summary_used + sizes[i] <= MAX_OUTPUT // 8:
+            selected.add(i)
+            summary_used += sizes[i]
+            used += sizes[i]
     windows = [
         (max(0, i - 12), min(len(lines), i + 26))
         for i, line in enumerate(lines)
@@ -291,6 +306,8 @@ def excerpts(text):
         previous = i
     if limited:
         output.append("[some context omitted: output byte limit]\n")
+    if any(i not in selected for i in summaries):
+        output.append("[some test-count summaries omitted: summary byte limit]\n")
     return "".join(output) or "[no log text available]\n"
 
 
@@ -325,7 +342,7 @@ def inspect(
         f"pr-checks {phase}: {status['state']} | {repo}@{sha}\n"
         f"https://jomcgi.buildbuddy.io/invocation/{status['invocation']}\n"
         f"Evidence: {log['chunks']} chunks, {log['bytes']} bytes; {coverage}; "
-        f"{'cached' if hit else 'fetched'}; failure context and tail below.\n"
+        f"{'cached' if hit else 'fetched'}; failure context, test counts and tail below.\n"
         "Status is not a test count; inspect the Executed N out of M tests line.\n"
         + excerpts(log["text"])
     ), status["state"]

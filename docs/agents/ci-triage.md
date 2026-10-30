@@ -39,7 +39,9 @@ that tests ran.
 The output labels running versus terminal from the GitHub status, separately
 from log coverage. It scans up to 16 stored chunks and 1 MiB backwards, then
 prints failure context, test-count lines and the final 60 lines within a 64 KiB
-output bound (long windows may be omitted).
+output bound (long windows may be omitted). Test-count lines have a separate
+reserved budget, so earlier errors cannot consume all their space. A cut first
+line and any orphaned private-key suffix are removed before redaction or caching.
 Omitted lines and traversal bounds are explicit; a tail is not a full log.
 If the failure lies outside that bound, use the invocation link or the manual
 chunk procedure below. Common credentials are redacted before output and

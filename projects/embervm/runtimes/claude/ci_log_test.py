@@ -1,6 +1,7 @@
 """Hermetic CI evidence reads: real traversal and CLI, fake network/clock."""
 
 import base64
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -253,6 +254,34 @@ def test_expired_or_corrupt_cache_refetches(tmp_path, monkeypatch):
     assert not hit and len(calls) == 3
 
 
+def test_prior_cache_format_with_a_cut_credential_is_not_reused(tmp_path):
+    legacy_key = hashlib.sha256(
+        json.dumps([1, "owner/repo", SHA, STATUS], sort_keys=True).encode()
+    ).hexdigest()
+    (tmp_path / (legacy_key + ".json")).write_text(
+        json.dumps(
+            {
+                "text": "sensitive-token-value\n",
+                "chunks": 16,
+                "bytes": 22,
+                "truncated": "chunk_limit",
+                "live": False,
+            }
+        )
+    )
+    calls = []
+
+    def fetch(*_args):
+        calls.append(True)
+        return chunk("safe\n")
+
+    value, hit = ci_log.cached_log(
+        "owner/repo", SHA, STATUS, cache=tmp_path, fetch=fetch
+    )
+    assert calls == [True] and not hit
+    assert value["text"] == "safe\n"
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -286,6 +315,56 @@ def test_byte_bound_and_cross_chunk_redaction(monkeypatch):
     )
     assert log["bytes"] <= 20 and log["truncated"] == "byte_limit"
     assert log["text"] == "safe\n"
+
+
+@pytest.mark.parametrize(
+    "suffix", ["sensitive-token-value\nsafe\n", "sensitive-token-value"]
+)
+def test_chunk_limit_discards_an_unrecognizable_credential_suffix(suffix):
+    log = ci_log.read_log(INVOCATION, lambda *_: chunk(suffix, "0000"), max_chunks=1)
+    assert log["truncated"] == "chunk_limit"
+    assert "sensitive-token-value" not in log["text"]
+    assert log["text"] == ("safe\n" if suffix.endswith("safe\n") else "")
+
+
+@pytest.mark.parametrize("remaining", [0, 3])
+def test_byte_limit_discards_a_partial_line_spanning_retained_chunks(
+    monkeypatch, remaining
+):
+    newer = "sensitive-token-value\nsafe\n"
+    monkeypatch.setattr(ci_log, "MAX_BYTES", len(newer) + remaining)
+    pages = {"": chunk(newer, "0000"), "0000": chunk("BUILDBUDDY_API_KEY=")}
+    log = ci_log.read_log(INVOCATION, lambda _, cursor: pages[cursor])
+    assert log["truncated"] == "byte_limit"
+    assert log["text"] == "safe\n"
+
+
+def test_chunk_limit_never_caches_the_cut_credential_prefix(tmp_path):
+    calls = []
+
+    def fetch(_invocation, _cursor):
+        calls.append(True)
+        if len(calls) == 16:
+            return chunk("sensitive-token-value\nsafe\n", "0000")
+        return chunk("later context\n", f"{16 - len(calls):04x}")
+
+    value, _hit = ci_log.cached_log(
+        "owner/repo", SHA, STATUS, cache=tmp_path, fetch=fetch
+    )
+    assert len(calls) == 16 and value["truncated"] == "chunk_limit"
+    assert "sensitive-token-value" not in value["text"]
+    assert all(
+        "sensitive-token-value" not in path.read_text() for path in tmp_path.iterdir()
+    )
+
+
+def test_truncated_private_key_suffix_is_removed_through_its_end_marker():
+    suffix = (
+        "first-private-line\nsecond-private-line\n-----END PRIVATE KEY-----\nsafe\n"
+    )
+    log = ci_log.read_log(INVOCATION, lambda *_: chunk(suffix, "0000"), max_chunks=1)
+    assert "private-line" not in log["text"]
+    assert log["text"].endswith("safe\n")
 
 
 def test_redaction_happens_before_excerpt_selection():
@@ -359,6 +438,27 @@ def test_test_counts_survive_later_publication_output():
     output = ci_log.excerpts(text)
     assert "Executed 0 out of 50 tests: 50 tests pass." in output
     assert output.endswith("publishing image\n")
+
+
+def test_test_counts_are_protected_after_error_budget_is_exhausted():
+    text = "".join(f"ERROR {i}: " + "x" * 100 + "\n" for i in range(1500))
+    text += "Executed 0 out of 50 tests: 50 tests pass.\n"
+    text += "publishing image\n" * 500
+    output = ci_log.excerpts(text)
+    assert "Executed 0 out of 50 tests: 50 tests pass." in output
+    assert "ERROR 0:" in output and "publishing image" in output
+    assert len(output.encode()) < ci_log.MAX_OUTPUT
+
+
+def test_protected_test_count_budget_stays_bounded_and_labels_omissions():
+    text = "".join(
+        f"Executed {i} out of 2000 tests: 2000 tests pass.\n" for i in range(2000)
+    )
+    text += "publishing image\n" * 500
+    output = ci_log.excerpts(text)
+    assert "Executed 1999 out of 2000 tests: 2000 tests pass." in output
+    assert "some test-count summaries omitted: summary byte limit" in output
+    assert len(output.encode()) < ci_log.MAX_OUTPUT
 
 
 def test_absent_log_text_is_explicit_not_a_complete_log():
