@@ -256,7 +256,7 @@
   path="/slop/factory/context"
 />
 
-<main class="td factory-page context-page">
+<main class="td sheet factory-page context-page">
   <div class="frame">
     <header class="masthead">
       <h1 class="sr-only">Ember Software Factory</h1>

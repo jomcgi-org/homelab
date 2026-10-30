@@ -1,6 +1,6 @@
 <script>
-  // This unmigrated document owns its legacy day/night tokens.
-  import "$lib/private/dashboard-theme.css";
+  import "$lib/public/styles/technical-drawing.css";
+  import SchemePreference from "$lib/public/components/SchemePreference.svelte";
   import {
     facetHref,
     formatDate,
@@ -10,17 +10,6 @@
   } from "./updates.js";
 
   let { data } = $props();
-  let dark = $state(
-    typeof window !== "undefined" &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches,
-  );
-  $effect(() => {
-    const scheme = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => (dark = scheme.matches);
-    apply();
-    scheme.addEventListener("change", apply);
-    return () => scheme.removeEventListener("change", apply);
-  });
   let activeDate = $state("");
   let activeMonth = $derived(activeDate.slice(0, 7) || data.selectedMonth);
   let filtering = $derived(
@@ -58,7 +47,8 @@
   />
 </svelte:head>
 
-<main class="updates-page shell {dark ? 'night' : 'day'}">
+<SchemePreference />
+<main class="td sheet updates-page">
   <div class="frame">
     <h1 class="sr-only">Product updates</h1>
 
@@ -278,7 +268,7 @@
             </section>
           {/if}
         {:else}
-          <section class="editions" aria-label="Product update entries">
+          <section class="editions ruled" aria-label="Product update entries">
             {#each data.updates as update}
               <article
                 class="edition"
@@ -375,7 +365,8 @@
 
 <style>
   @media (prefers-reduced-motion: no-preference) {
-    :global(html) {
+    /* Keep journal navigation smooth without changing other sheet routes. */
+    :global(html:has(main.updates-page)) {
       scroll-behavior: smooth;
     }
   }
@@ -384,110 +375,46 @@
     margin: 0;
   }
 
-  /* Pin the overscroll ground to the sheet so rubber banding never shows
-     the cream tier background (same approach as html:has(.ember-site)).
-     Tokens are scoped to .shell and cannot reach html, so these are the
-     literal day and night card values. */
-  :global(html:has(.updates-page)) {
-    background: #ffffff; /* nosemgrep: svelte-hardcoded-color-in-style */
-    /* The tier scales the root font with the viewport (global.css clamp
-       up to 48px); a fixed document wants a fixed basis, and every rem
-       on this page assumes it. */
+  /* The journal's 48em measure and all rem spacing use a 16px basis.
+     The shared sheet owns the overscroll ground and scheme precedence. */
+  :global(html:has(main.updates-page)) {
     font-size: 16px;
   }
 
-  @media (prefers-color-scheme: dark) {
-    :global(html:has(.updates-page)) {
-      background: #181a20; /* nosemgrep: svelte-hardcoded-color-in-style */
-    }
-  }
-
   .updates-page {
-    /* Header bands tint from the sheet itself so they stay in the same
-       neutral family as the paper. */
-    --band: color-mix(in srgb, var(--ink) 5%, var(--sheet));
     /* Accent mixed toward ink: one darker accent for all small chrome so
        accent text sits well above AA on both schemes (6.1:1 day, 8.8:1
        night) instead of hovering near the floor. */
     --accent-ink: color-mix(in srgb, var(--accent) 85%, var(--ink));
-    /* Rule and box borders: --line is too faint to carry the drawing on
-       the night palette, so structural strokes get a stronger mix. */
-    --stroke: color-mix(in srgb, var(--ink) 28%, transparent);
-    min-height: 100vh;
-    box-sizing: border-box;
     padding: clamp(3.25rem, 5vh, 3.75rem) clamp(1.5em, 5vw, 4.5em) 6em;
-    color: var(--ink);
-    /* One bright sheet for the whole page: the drawing is on white, not
-       white panels floating on cream. */
-    background: var(--sheet);
-    font-family: var(--font-ui);
     font-size: 16px;
   }
-
-  .updates-page a:focus-visible,
-  .updates-page summary:focus-visible {
-    outline: 2px solid var(--accent-ink);
-    outline-offset: 3px;
+  .updates-page :global(:focus-visible) {
+    /* Keep the inherited public-reset focus shape during this migration. */
+    border-radius: calc(var(--radius) * 0.75);
+  }
+  .updates-page .ed-head {
+    display: block;
+    gap: normal;
+    color: var(--ink);
   }
 
-  .frame {
-    position: relative;
+  .updates-page .frame {
     /* Sheet width = spine + gap + a 48em text measure: the ruled strokes
        end where the text ends, so no rule implies content that is not
        there. */
     max-width: 69em;
-    margin: 0 auto;
-  }
-
-  /* ── Section labels: the one heading style for all chrome ── */
-
-  .sec-label {
-    margin: 0 0 1em;
-    padding-bottom: 0.55em;
-    border-bottom: 1px solid var(--stroke);
-    color: var(--ink-2);
-    font-family: var(--font-code);
-    font-size: 0.68rem;
-    font-weight: 500;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  /* ── Masthead ── */
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
   }
 
   /* ── Layout ── */
 
-  .journal {
-    display: grid;
+  .updates-page .journal {
     grid-template-columns: minmax(12em, 15em) minmax(0, 48em);
-    gap: clamp(2em, 4vw, 4em);
-  }
-
-  .spine {
-    position: sticky;
-    top: 1.5rem;
-    align-self: start;
-    max-height: calc(100vh - 3rem);
-    overflow-y: auto;
-    scrollbar-width: none;
-    /* Left padding keeps the offset focus ring from being clipped by this
-       element's own scroll container. */
-    padding-left: 0.4rem;
   }
 
   /* ── Spine: filters ── */
 
-  .spine-group summary {
+  .updates-page .spine-group summary {
     display: flex;
     gap: 0.6em;
     align-items: baseline;
@@ -498,41 +425,35 @@
     list-style: none;
   }
 
-  .spine-group summary::-webkit-details-marker {
+  .updates-page .spine-group summary::-webkit-details-marker {
     display: none;
   }
 
-  .group-name {
+  .updates-page .group-name {
+    /* Private filter headings retain their sentence-case UI typography. */
+    font-family: var(--font-ui);
+    color: inherit;
     font-size: 0.8em;
     font-weight: 600;
+    letter-spacing: normal;
+    text-transform: none;
   }
 
-  .spine-group summary:hover .group-name {
+  .updates-page .spine-group summary:hover .group-name {
     color: var(--accent-ink);
   }
 
-  .group-count {
-    color: var(--ink-2);
-    font-family: var(--font-code);
-    font-size: 0.7em;
-  }
-
-  .group-count::after {
-    padding-left: 0.5em;
-    content: "+";
-  }
-
-  .spine-group[open] .group-count::after,
-  .rail-month > details[open] .group-count::after {
+  .updates-page .spine-group[open] .group-count::after,
+  .updates-page .rail-month > details[open] .group-count::after {
     content: "\2212";
   }
 
-  .spine-list {
+  .updates-page .spine-list {
     padding: 0.35em 0;
     border-bottom: 1px solid var(--line);
   }
 
-  .spine-list a {
+  .updates-page .spine-list a {
     display: flex;
     gap: 0.6em;
     align-items: baseline;
@@ -545,31 +466,31 @@
     transition: color 120ms ease;
   }
 
-  .spine-list a:hover,
-  .spine-list a.active {
+  .updates-page .spine-list a:hover,
+  .updates-page .spine-list a.active {
     color: var(--accent-ink);
   }
 
-  .spine-list a.active {
+  .updates-page .spine-list a.active {
     border-left-color: var(--accent-ink);
     font-weight: 650;
   }
 
-  .spine-list .count {
+  .updates-page .spine-list .count {
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.85em;
   }
 
-  .spine-list .remove {
+  .updates-page .spine-list .remove {
     margin-left: 0.2em;
   }
 
-  .spine-list a.active .count {
+  .updates-page .spine-list a.active .count {
     color: inherit;
   }
 
-  .filter-results {
+  .updates-page .filter-results {
     display: flex;
     flex-wrap: wrap;
     gap: 0.3rem 0.6rem;
@@ -580,34 +501,34 @@
     font-size: 0.72rem;
   }
 
-  .clear {
+  .updates-page .clear {
     color: var(--ink-2);
     border-bottom: 1px solid currentColor;
     text-decoration: none;
   }
 
-  .clear:hover {
+  .updates-page .clear:hover {
     color: var(--accent-ink);
   }
 
   /* ── Spine: index ── */
 
-  .date-rail {
+  .updates-page .date-rail {
     margin-top: 1.8rem;
   }
 
-  .rail-month summary {
+  .updates-page .rail-month summary {
     padding: 0 3.2rem 0 0;
     border-bottom: 1px solid var(--line);
     cursor: pointer;
     list-style: none;
   }
 
-  .rail-month summary::-webkit-details-marker {
+  .updates-page .rail-month summary::-webkit-details-marker {
     display: none;
   }
 
-  .rail-month .month-link {
+  .updates-page .rail-month .month-link {
     display: flex;
     gap: 0.6em;
     align-items: baseline;
@@ -617,11 +538,11 @@
     text-decoration: none;
   }
 
-  .rail-month {
+  .updates-page .rail-month {
     position: relative;
   }
 
-  .month-navigation {
+  .updates-page .month-navigation {
     position: absolute;
     top: 0;
     right: 0;
@@ -633,11 +554,11 @@
     text-transform: uppercase;
   }
 
-  .month-navigation:hover {
+  .updates-page .month-navigation:hover {
     color: var(--accent-ink);
   }
 
-  .month-name {
+  .updates-page .month-name {
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.68em;
@@ -646,16 +567,16 @@
     text-transform: uppercase;
   }
 
-  .rail-month summary:hover .month-name {
+  .updates-page .rail-month summary:hover .month-name {
     color: var(--accent-ink);
   }
 
-  .rail-days {
+  .updates-page .rail-days {
     padding: 0.35em 0;
     border-bottom: 1px solid var(--line);
   }
 
-  .rail-days a {
+  .updates-page .rail-days a {
     display: grid;
     grid-template-columns: 2em minmax(0, 1fr);
     gap: 0.65em;
@@ -667,12 +588,12 @@
     transition: color 120ms ease;
   }
 
-  .rail-days a > span {
+  .updates-page .rail-days a > span {
     font-family: var(--font-code);
     font-size: 0.75em;
   }
 
-  .rail-month small {
+  .updates-page .rail-month small {
     display: -webkit-box;
     overflow: hidden;
     font-size: 0.7em;
@@ -681,55 +602,26 @@
     -webkit-line-clamp: 2;
   }
 
-  .rail-days a:hover,
-  .rail-days a.active {
+  .updates-page .rail-days a:hover,
+  .updates-page .rail-days a.active {
     color: var(--accent-ink);
   }
 
-  .rail-days a.active {
+  .updates-page .rail-days a.active {
     border-left-color: var(--accent-ink);
   }
 
-  .rail-days a.active > span {
+  .updates-page .rail-days a.active > span {
     font-weight: 700;
   }
 
   /* ── Editions ── */
 
-  /* Each edition is one outlined panel with internal partitions, like a
-     technical diagram: content never floats in open space between rules. */
-  .edition {
-    border: 1px solid var(--ink);
-    scroll-margin-top: 1.5rem;
-  }
-
-  /* Editions run into each other as one continuous ruled document; the
-     tinted date band is the separator, and adjacent panel borders
-     collapse into a single line. */
-  .edition + .edition {
-    margin-top: -1px;
-  }
-
-  /* ── Edition head and metadata rows ──
-     The content column follows the spine's discipline: label left, value
-     right, one hairline per row. A slash-labeled edition banner, boxed
-     chips, and a free-wrapping filed line were all tried and vetoed as
-     noise the spine never needed. */
-
-  .ed-head {
-    margin: 0;
-    padding: 0.55em 1rem;
-    border-bottom: 1px solid var(--stroke);
-    background: var(--band);
-    font-family: var(--font-code);
-    font-size: 0.72rem;
-  }
-
-  .ed-head time {
+  .updates-page .ed-head time {
     color: var(--ink-2);
   }
 
-  .meta-rows {
+  .updates-page .meta-rows {
     margin: 0;
     border-top: 1px solid var(--stroke);
   }
@@ -737,33 +629,33 @@
   /* Spec-table shape: fixed label column, value flows left beside it.
      The spine's space-between works for short counts; a long value list
      right-aligned against it wraps ragged with a gulf in the middle. */
-  .meta-kv {
+  .updates-page .meta-kv {
     display: grid;
     grid-template-columns: 6.5em minmax(0, 1fr);
     align-items: stretch;
     margin: 0;
   }
 
-  .meta-kv + .meta-kv {
+  .updates-page .meta-kv + .meta-kv {
     border-top: 1px solid var(--line);
   }
 
-  .meta-kv .k {
+  .updates-page .meta-kv .k {
     padding: 0.5em 0 0.5em 1rem;
   }
 
-  .meta-kv .v {
+  .updates-page .meta-kv .v {
     padding: 0.5em 1rem 0.5em 1.2em;
     /* Label column rule, drawn by the value cell so it spans row height. */
     border-left: 1px solid var(--line);
   }
 
-  .meta-kv .v.filed-tags {
+  .updates-page .meta-kv .v.filed-tags {
     padding: 0;
   }
 
-  .meta-kv .k,
-  .meta-kv .v {
+  .updates-page .meta-kv .k,
+  .updates-page .meta-kv .v {
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.72rem;
@@ -772,13 +664,13 @@
   /* A real table of uniform cells: flex with a fixed basis sizes every
      cell the same, each cell draws its own left and top rule, and the
      container clips the outer edges so only internal dividers remain. */
-  .filed-tags {
+  .updates-page .filed-tags {
     display: flex;
     flex-wrap: wrap;
     overflow: hidden;
   }
 
-  .filed-tags a {
+  .updates-page .filed-tags a {
     box-sizing: border-box;
     flex: 0 0 10.5rem;
     margin: -1px 0 0 -1px;
@@ -789,26 +681,20 @@
     text-decoration: none;
   }
 
-  .filed-tags a:hover {
+  .updates-page .filed-tags a:hover {
     color: var(--accent-ink);
   }
 
-  .source-link {
+  .updates-page .source-link {
     color: var(--ink-2);
     text-decoration: none;
   }
 
-  .source-link:hover {
+  .updates-page .source-link:hover {
     color: var(--accent-ink);
   }
 
-  /* ── Edition article ── */
-
-  .ed-lead {
-    padding: 0.9rem 1rem 1rem;
-  }
-
-  .ed-lead h2 {
+  .updates-page .ed-lead h2 {
     max-width: 40ch;
     margin: 0;
     font-size: clamp(1.1rem, 1.6vw, 1.35rem);
@@ -817,19 +703,19 @@
     line-height: 1.15;
   }
 
-  .summary {
+  .updates-page .summary {
     margin: 0.5rem 0 0;
     color: var(--ink);
     font-size: 0.84rem;
     line-height: 1.5;
   }
 
-  .ed-section {
+  .updates-page .ed-section {
     border-top: 1px solid var(--stroke);
   }
 
   /* Tinted band distinguishes section headers from content at a glance. */
-  .sec-sublabel {
+  .updates-page .sec-sublabel {
     margin: 0;
     padding: 0.45em 1rem;
     border-bottom: 1px solid var(--line);
@@ -840,54 +726,54 @@
     font-weight: 500;
   }
 
-  .items {
+  .updates-page .items {
     margin: 0;
   }
 
   /* Items are ruled rows inside the section, not floating text. */
-  .item {
+  .updates-page .item {
     padding: 0.6rem 1rem 0.7rem;
   }
 
-  .item + .item {
+  .updates-page .item + .item {
     border-top: 1px solid var(--line);
   }
 
-  .item h3 {
+  .updates-page .item h3 {
     margin: 0 0 0.15em;
     font-size: 0.8rem;
     font-weight: 650;
   }
 
-  .item p {
+  .updates-page .item p {
     margin: 0;
     color: var(--ink-2);
     font-size: 0.78rem;
     line-height: 1.5;
   }
 
-  .supporting .item h3 {
+  .updates-page .supporting .item h3 {
     font-size: 0.78rem;
   }
 
-  .supporting .item p {
+  .updates-page .supporting .item p {
     font-size: 0.76rem;
   }
 
   /* ── States ── */
 
-  .state {
+  .updates-page .state {
     display: grid;
     gap: 0.5em;
     padding: 1.5em;
     border: 1px solid var(--stroke);
   }
 
-  .state span {
+  .updates-page .state span {
     color: var(--ink-2);
   }
 
-  .empty-meta {
+  .updates-page .empty-meta {
     display: flex;
     flex-wrap: wrap;
     gap: 0.65em 1.1em;
@@ -898,11 +784,11 @@
     text-transform: uppercase;
   }
 
-  .empty-meta span:last-child {
+  .updates-page .empty-meta span:last-child {
     margin-left: auto;
   }
 
-  .ready-dot {
+  .updates-page .ready-dot {
     width: 0.45em;
     height: 0.45em;
     border-radius: 50%;
@@ -910,7 +796,7 @@
     box-shadow: 0 0 0 0.2em color-mix(in srgb, var(--ok) 13%, transparent);
   }
 
-  .empty-entry h2 {
+  .updates-page .empty-entry h2 {
     max-width: 22ch;
     margin: 1.2rem 0 0;
     font-size: clamp(1.5rem, 2.6vw, 2.2rem);
@@ -919,14 +805,14 @@
     line-height: 1.12;
   }
 
-  .empty-entry > p {
+  .updates-page .empty-entry > p {
     margin: 1rem 0 0;
     color: var(--ink-2);
     font-size: 0.95em;
     line-height: 1.65;
   }
 
-  .empty-flow {
+  .updates-page .empty-flow {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     margin-top: 2.2em;
@@ -934,31 +820,31 @@
     border-bottom: 1px solid var(--stroke);
   }
 
-  .empty-flow > div {
+  .updates-page .empty-flow > div {
     display: grid;
     align-content: start;
     min-width: 0;
     padding: 1.1em 1em 1.2em 0;
   }
 
-  .empty-flow > div + div {
+  .updates-page .empty-flow > div + div {
     padding-left: 1em;
     border-left: 1px solid var(--line);
   }
 
-  .empty-flow span {
+  .updates-page .empty-flow span {
     color: var(--accent-ink);
     font-family: var(--font-code);
     font-size: 0.62em;
   }
 
-  .empty-flow strong {
+  .updates-page .empty-flow strong {
     margin-top: 1.2em;
     font-size: 0.92em;
     font-weight: 650;
   }
 
-  .empty-flow small {
+  .updates-page .empty-flow small {
     margin-top: 0.35em;
     color: var(--ink-2);
     font-size: 0.7em;
@@ -967,8 +853,6 @@
 
   /* The folio is the first thing to go when the masthead track tightens;
      a wrapped or clipped identity string is worse than a shorter one. */
-  @media (max-width: 980px) {
-  }
 
   /* ── Mobile ── */
 
@@ -977,38 +861,27 @@
       padding: 3rem 1.35em 4em;
     }
 
-    .journal {
-      display: block;
-    }
-
-    .spine {
-      position: static;
-      max-height: none;
-      padding-left: 0;
-      overflow: visible;
-    }
-
-    .spine-group summary {
+    .updates-page .spine-group summary {
       padding: 0.9em 0;
     }
 
-    .spine-list {
+    .updates-page .spine-list {
       display: flex;
       flex-wrap: wrap;
       gap: 0 1.1em;
     }
 
-    .spine-list a {
+    .updates-page .spine-list a {
       padding: 0.62em 0;
       border-left: 0;
       border-bottom: 2px solid transparent;
     }
 
-    .spine-list a.active {
+    .updates-page .spine-list a.active {
       border-bottom-color: var(--accent-ink);
     }
 
-    .date-rail {
+    .updates-page .date-rail {
       position: sticky;
       z-index: 4;
       top: 0;
@@ -1024,24 +897,24 @@
       backdrop-filter: blur(14px);
     }
 
-    .date-rail > .sec-label {
+    .updates-page .date-rail > .sec-label {
       display: none;
     }
 
-    .rail-month {
+    .updates-page .rail-month {
       margin: 0;
     }
 
-    .rail-month summary {
+    .updates-page .rail-month summary {
       min-width: max-content;
       border-bottom: 2px solid transparent;
     }
 
-    .rail-month .month-link {
+    .updates-page .rail-month .month-link {
       padding: 0.65em 0;
     }
 
-    .rail-days {
+    .updates-page .rail-days {
       display: flex;
       gap: 0.35em;
       align-items: center;
@@ -1049,7 +922,7 @@
       border-bottom: 0;
     }
 
-    .rail-days a {
+    .updates-page .rail-days a {
       display: block;
       min-width: 2.2em;
       padding: 0.65em 0.4em;
@@ -1060,40 +933,40 @@
       border-bottom: 2px solid transparent;
     }
 
-    .rail-days a.active {
+    .updates-page .rail-days a.active {
       border-bottom-color: var(--accent-ink);
     }
 
-    .rail-month small {
+    .updates-page .rail-month small {
       display: none;
     }
 
     /* Anchor jumps must clear the sticky index strip (about 52px). */
-    .edition {
+    .updates-page .edition {
       scroll-margin-top: 4rem;
     }
 
-    .empty-flow {
+    .updates-page .empty-flow {
       grid-template-columns: 1fr;
     }
 
-    .empty-flow > div {
+    .updates-page .empty-flow > div {
       grid-template-columns: 2.5em 1fr;
       padding: 1em 0;
     }
 
-    .empty-flow > div + div {
+    .updates-page .empty-flow > div + div {
       padding-left: 0;
       border-top: 1px solid var(--line);
       border-left: 0;
     }
 
-    .empty-flow strong,
-    .empty-flow small {
+    .updates-page .empty-flow strong,
+    .updates-page .empty-flow small {
       grid-column: 2;
     }
 
-    .empty-flow strong {
+    .updates-page .empty-flow strong {
       margin-top: 0;
     }
   }
