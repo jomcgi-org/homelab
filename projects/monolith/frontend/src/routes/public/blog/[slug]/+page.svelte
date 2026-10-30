@@ -178,7 +178,7 @@
   type="article"
 />
 
-<main class="td post-page" class:with-landing={hasLanding}>
+<main class="td sheet post-page" class:with-landing={hasLanding}>
   <div class="frame">
     {#if hasLanding}
       <section class="demo-landing" aria-labelledby="landing-title">
@@ -264,9 +264,9 @@
             <Trail post={data.title} />
           </div>
           {#if data.toc.length}
-            <nav class="toc" aria-label="Sections">
+            <nav class="toc index" aria-label="Sections">
               <p class="sec-label">/ Index</p>
-              <ol>
+              <ol class="index-list">
                 {#each data.toc as section}
                   <li>
                     <a
@@ -285,6 +285,7 @@
                         {#each section.children as sub}
                           <li>
                             <a
+                              class="sub"
                               href={`#${sub.id}`}
                               onclick={onIndexClick}
                               class:active={activeId === sub.id}
@@ -324,10 +325,10 @@
 
           {#if data.preamble}
             <!-- Server-rendered, constrained first-party markdown. -->
-            <div class="post-body">{@html data.preamble}</div>
+            <div class="post-body prose">{@html data.preamble}</div>
           {/if}
           {#if replay && !replay.within}
-            <div class="post-body">
+            <div class="post-body prose">
               {#await replay.load()}
                 <p>Loading the recording...</p>
               {:then module}
@@ -351,7 +352,7 @@
             section.includes(replay.within) &&
             replayBoundary >= 0}
           {#if !hasLanding || !section.startsWith('<h2 id="inference-demo"')}
-            <section class="edition post-body">
+            <section class="edition post-body prose">
               {#each splitInteractive(showReplay ? section.slice(0, replayBoundary) : section) as part}
                 {#if part.ix}
                   <Interactive name={part.ix} fallback={part.fallback} />
@@ -379,17 +380,40 @@
 </main>
 
 <style>
-  .post-page {
-    box-sizing: border-box;
-    min-height: 100vh;
-    padding: 1.5rem clamp(4rem, 5vw, 4.5em) 6em;
-    background: var(--sheet);
-    color: var(--ink);
-    font-family: var(--font-ui);
-    font-size: 1rem;
+  /* The post retains its panel-per-section rhythm, first-viewport landing
+     and nested numbered TOC. The shared strip has different mobile spacing. */
+  .post-page :global(:focus-visible) {
+    /* Retain the public reset's focus shape with its existing radius token. */
+    border-radius: calc(var(--radius) * 0.75);
   }
 
-  .demo-landing {
+  /* HTML prose and the demo selector previously inherited the public reset's
+     blue ring. TOC, Trail and embedded controls keep their own ring colours. */
+  :global(.post-page .post-body a:focus-visible),
+  :global(.post-page .replay a:focus-visible),
+  .post-page .demo-switch button:focus-visible {
+    outline-color: var(--blue);
+  }
+
+  .post-page :global(.replay input[type="range"]) {
+    /* The range retains its native control colour rather than sheet ink. */
+    color: revert;
+  }
+
+  /* The conformance replay already owns two smaller control shapes. Its
+     topology identifies that embedded figure without changing other replays. */
+  .post-page :global(.replay:has(.topo) button:focus-visible) {
+    border-radius: calc(var(--radius) / 4);
+  }
+  .post-page :global(.replay:has(.topo) button.cell:focus-visible) {
+    border-radius: 0;
+  }
+
+  .post-page .frame {
+    position: static;
+  }
+
+  .post-page .demo-landing {
     min-height: calc(100svh - 1.5rem);
     box-sizing: border-box;
     display: flex;
@@ -397,62 +421,51 @@
     gap: 0.6rem;
     padding-bottom: 0.75rem;
   }
-  .landing-topline {
+  .post-page .landing-topline {
     display: flex;
     justify-content: space-between;
     align-items: center;
     margin-bottom: 0.8rem;
   }
-  .landing-topline nav {
+  .post-page .landing-topline nav {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     color: var(--ink-2);
     font: 0.7rem var(--font-code);
   }
-  .landing-topline a {
+  .post-page .landing-topline a {
     display: inline-flex;
     align-items: center;
     min-height: 2.25rem;
     color: inherit;
     text-decoration: none;
   }
-  .landing-topline a:hover {
+  .post-page .landing-topline a:hover {
     color: var(--accent-ink);
   }
-  .landing-header h1 {
+  .post-page .landing-header h1 {
     margin: 0;
     font-size: clamp(1.4rem, 2.8vw, 2rem);
     line-height: 1.15;
     letter-spacing: -0.025em;
   }
-  .landing-hardware {
+  .post-page .landing-hardware {
     margin: 0.5rem 0 0.25rem;
     color: var(--ink-2);
     font: 0.75rem / 1.5 var(--font-code);
   }
-  .landing-demo {
+  .post-page .landing-demo {
     min-width: 0;
   }
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-    border: 0;
-  }
-  .demo-switch {
+  .post-page .demo-switch {
     display: flex;
     gap: 0;
     margin-bottom: 0.75rem;
     border: 1px solid var(--ink);
     width: fit-content;
   }
-  .demo-switch button {
+  .post-page .demo-switch button {
     padding: 0.4rem 0.8rem;
     min-height: 2.75rem;
     border: 0;
@@ -461,35 +474,35 @@
     font: 0.75rem var(--font-code);
     cursor: pointer;
   }
-  .demo-switch button + button {
+  .post-page .demo-switch button + button {
     border-left: 1px solid var(--ink);
   }
-  .demo-switch button[aria-pressed="true"] {
+  .post-page .demo-switch button[aria-pressed="true"] {
     background: var(--ink);
     color: var(--sheet);
   }
-  .landing-results {
+  .post-page .landing-results {
     width: 100%;
     border-collapse: collapse;
     font: 0.8rem var(--font-code);
   }
-  .landing-results caption {
+  .post-page .landing-results caption {
     padding-bottom: 0.5rem;
     text-align: left;
     color: var(--ink-2);
   }
-  .landing-results th,
-  .landing-results td {
+  .post-page .landing-results th,
+  .post-page .landing-results td {
     padding: 0.4rem 0.5rem 0.4rem 0;
     text-align: left;
     font-weight: normal;
     border-bottom: 1px solid currentColor;
   }
-  .landing-demo h2 {
+  .post-page .landing-demo h2 {
     /* Reloaded demo fragments keep the opening header in view. */
     scroll-margin-top: 12rem;
   }
-  .read-post {
+  .post-page .read-post {
     align-self: flex-start;
     margin-top: auto;
     color: var(--accent-ink);
@@ -508,484 +521,92 @@
     outline: 2px solid var(--accent-ink);
     outline-offset: 3px;
   }
-
-  .frame {
-    max-width: 75em;
-    margin: 0 auto;
-  }
-
-  .journal {
-    display: grid;
-    grid-template-columns: minmax(12em, 15em) minmax(0, 54em);
-    gap: clamp(2em, 4vw, 4em);
-  }
-
-  .journal.single {
-    grid-template-columns: minmax(0, 54em);
-    justify-content: center;
-  }
-  .trail-inline {
+  .post-page .trail-inline {
     grid-column: 1;
-    margin-bottom: 1.25rem;
-  }
-  .spine {
-    position: sticky;
-    top: 1.5rem;
-    align-self: start;
-    max-height: calc(100vh - 3rem);
-    padding-left: 0.4rem;
-    overflow-y: auto;
-    scrollbar-width: none;
   }
 
-  .trail-dock {
-    margin-bottom: 1.4rem;
-  }
-
-  .sec-label {
-    margin: 0 0 1em;
-    padding-bottom: 0.55em;
-    border-bottom: 1px solid var(--stroke);
-    color: var(--ink-2);
-    font-family: var(--font-code);
-    font-size: 0.68rem;
-    font-weight: 500;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .toc ol {
+  .post-page .toc ol {
     margin: 0;
     padding: 0;
     list-style: none;
+    border-bottom: 0;
   }
 
-  .toc a {
-    display: flex;
+  .post-page .toc a {
+    /* The post keeps its tighter rows and UI-font number columns. The
+       reusable index supplies links, active rules and sub-entry sizing. */
+    gap: 0;
+    align-items: normal;
     padding: 0.34em 0 0.34em 0.6rem;
-    border-left: 2px solid transparent;
-    color: var(--ink-2);
-    font-size: 0.8em;
-    line-height: 1.3;
-    text-decoration: none;
   }
 
   /* The number is a fixed column so every title starts on the same line
      and a wrapped title hangs under itself, not under its number. */
-  .toc .num {
-    flex: none;
-    width: 1.7em;
+  .post-page .toc .num {
+    font-family: inherit;
+    font-size: inherit;
     font-variant-numeric: tabular-nums;
   }
 
-  .toc ol ol a {
+  .post-page .toc a.sub {
     padding-left: 1.4rem;
-    font-size: 0.74em;
   }
 
-  .toc ol ol .num {
-    width: 2.3em;
-  }
-
-  .toc a:hover,
-  .toc a.active {
-    color: var(--accent-ink);
-  }
-
-  /* Colour and the rule mark the active entry; no weight change, which
-     would rewrap the line and jog the whole index on every change. */
-  .toc a.active {
-    border-left-color: var(--accent-ink);
-  }
-
-  .post-frame {
+  .post-page .post-frame {
     max-width: 54em;
     min-width: 0;
   }
 
-  .edition {
-    border: 1px solid var(--ink);
-  }
-
-  .edition + .edition {
+  .post-page .edition + .edition {
     margin-top: 1.5rem;
   }
 
-  .ed-head {
-    display: flex;
+  .post-page .ed-head {
     justify-content: space-between;
-    margin: 0;
-    padding: 0.55em 1rem;
-    border-bottom: 1px solid var(--stroke);
-    background: var(--band);
-    font-family: var(--font-code);
-    font-size: 0.72rem;
+    flex-wrap: nowrap;
+    gap: normal;
+    align-items: normal;
+    color: var(--ink);
   }
 
-  .ed-head time {
+  .post-page .ed-head time {
     color: var(--ink-2);
   }
 
-  .ed-lead {
+  .post-page .ed-lead {
     padding: 1rem;
   }
 
-  .ed-lead h1,
-  .ed-lead h2 {
-    max-width: 40ch;
-    margin: 0;
-    font-size: clamp(1.25rem, 2.5vw, 1.6rem);
-    font-weight: 700;
-    letter-spacing: -0.025em;
-    line-height: 1.15;
-  }
-
-  .ed-lead p {
-    margin: 0.6rem 0 0;
-    color: var(--ink);
-    font-size: 0.92rem;
-    line-height: 1.55;
-  }
-
-  .post-body {
+  .post-page .post-body {
     padding: 0 1rem 1rem;
-    counter-reset: fig;
   }
 
-  .ed-lead + .post-body {
+  .post-page .ed-lead + .post-body {
     border-top: 1px solid var(--stroke);
   }
 
   /* The panel body counts figures across the whole post, not per panel. */
-  .post-frame {
+  .post-page .post-frame {
     counter-reset: fig;
   }
 
-  .post-body {
+  .post-page .post-body {
     counter-reset: none;
-  }
-
-  .post-body :global(h1),
-  .post-body :global(h2),
-  .post-body :global(h3),
-  .post-body :global(h4),
-  .post-body :global(h5),
-  .post-body :global(h6) {
-    color: var(--ink);
-    scroll-margin-top: 4rem;
-  }
-
-  .post-body :global(h1),
-  .post-body :global(h2) {
-    margin: 1.4rem -1rem 0.85rem;
-    padding: 0.45em 1rem;
-    border-top: 1px solid var(--stroke);
-    border-bottom: 1px solid var(--stroke);
-    background: var(--band);
-    font-family: var(--font-ui);
-    font-size: 1.1rem;
-    font-weight: 700;
-    letter-spacing: -0.015em;
-    line-height: 1.2;
-  }
-
-  /* The body's top rule already closes the lead, so a section band that
-     opens the body sits directly on it. */
-  .post-body :global(> h2:first-child) {
-    margin-top: 0;
-    border-top: 0;
-  }
-
-  .post-body :global(> :last-child) {
-    margin-bottom: 0;
-  }
-
-  /* A table, figure, or code block that ends a panel ends on the panel's
-     own border: no strip of sheet between its last rule and the outline. */
-  .post-body :global(> table:last-child),
-  .post-body :global(> figure.fig:last-child),
-  .post-body :global(> pre.doc-code:last-child) {
-    margin-bottom: -1rem;
-  }
-
-  .post-body :global(> table:last-child tr:last-child td),
-  .post-body :global(> figure.fig:last-child) {
-    border-bottom: 0;
-  }
-
-  /* Only whole sections get framed bands. Subsections use typography. */
-  .post-body :global(h3) {
-    margin: 1.25rem 0 0.55rem;
-    padding: 0;
-    font-family: var(--font-ui);
-    font-size: 0.85rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.045em;
-    line-height: 1.25;
-  }
-  .post-body :global(h2 + h3) {
-    margin-top: 0.85rem;
-  }
-
-  .post-body :global(h4),
-  .post-body :global(h5),
-  .post-body :global(h6) {
-    margin: 0.8rem 0 0.45rem;
-    font-family: var(--font-code);
-    font-size: 0.82rem;
-    font-weight: 600;
-    line-height: 1.3;
-  }
-
-  .post-body :global(p) {
-    margin: 0.85rem 0;
-    color: var(--ink);
-    font-size: 0.92rem;
-    line-height: 1.6;
-  }
-
-  .post-body :global(a) {
-    color: var(--accent-ink);
-    text-decoration: underline;
-    text-underline-offset: 0.18em;
-  }
-
-  .post-body :global(strong) {
-    font-weight: 650;
-  }
-
-  /* The public tier's reset strips list markers; the post body wants them.
-     Square markers, drawn in ink like everything else on the sheet. */
-  .post-body :global(ul),
-  .post-body :global(ol) {
-    margin: 0.85rem 0;
-    padding-left: 1.5rem;
-  }
-
-  .post-body :global(ul) {
-    list-style: square;
-  }
-
-  .post-body :global(ol) {
-    list-style: decimal;
-  }
-
-  .post-body :global(li::marker) {
-    color: var(--ink-2);
-  }
-
-  .post-body :global(li) {
-    margin: 0.25rem 0;
-    color: var(--ink);
-    font-size: 0.92rem;
-    line-height: 1.55;
-  }
-
-  .post-body :global(blockquote) {
-    margin: 1rem 0;
-    padding-left: 1rem;
-    border-left: 2px solid var(--stroke);
-    color: var(--ink-2);
-  }
-
-  .post-body :global(blockquote p) {
-    color: inherit;
-  }
-
-  .post-body :global(details) {
-    margin: 1rem 0;
-    padding: 0.5rem 0.9rem;
-    border: 1px solid var(--stroke);
-  }
-
-  .post-body :global(summary) {
-    cursor: pointer;
-    padding-block: 0.8rem;
-    font: 0.8rem var(--font-code);
-    color: var(--ink);
-  }
-
-  .post-body :global(details[open] > summary) {
-    margin-bottom: 0.25rem;
-  }
-
-  .post-body :global(hr) {
-    margin: 1.5rem 0;
-    border: 0;
-    border-top: 1px solid var(--stroke);
-  }
-
-  .post-body :global(code) {
-    padding: 0.12em 0.3em;
-    background: var(--band);
-    font-family: var(--font-code);
-    font-size: 0.85em;
-  }
-
-  /* Tables, figures, and code blocks run to the panel's edges so their rules
-     join the outline: boxes made of lines inside the boundary, never a box
-     inside a box. */
-  .post-body :global(pre.doc-code) {
-    margin: 1rem -1rem;
-    padding: 1rem;
-    overflow-x: auto;
-    border-top: 1px solid var(--stroke);
-    border-bottom: 1px solid var(--stroke);
-    background: var(--band);
-    color: var(--ink);
-    font-family: var(--font-code);
-    font-size: 0.8rem;
-    line-height: 1.55;
-  }
-
-  .post-body :global(pre.doc-code code) {
-    padding: 0;
-    background: none;
-    color: inherit;
-    font-size: inherit;
-  }
-
-  .post-body :global(table) {
-    width: calc(100% + 2rem);
-    margin: 1rem -1rem;
-    border-collapse: collapse;
-  }
-
-  /* Column labels sit on the sheet, framed by stroke-weight rules above,
-     below, and between them, while data rows keep hairlines. One band per
-     panel, the title's; the header is a drawn grid line, not a second
-     band, so it never merges with the title or reads as the first row. */
-  .post-body :global(th) {
-    padding: 0.5em 1rem;
-    border-top: 1px solid var(--stroke);
-    border-bottom: 1px solid var(--stroke);
-    background: none;
-    color: var(--ink);
-    font-family: var(--font-code);
-    font-size: 0.72rem;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-align: left;
-    text-transform: uppercase;
-  }
-
-  .post-body :global(td) {
-    padding: 0.55em 1rem;
-    border-bottom: 1px solid var(--line);
-    color: var(--ink);
-    font-size: 0.85rem;
-    line-height: 1.45;
-    text-align: left;
-    vertical-align: top;
-  }
-
-  .post-body :global(td + td) {
-    border-left: 1px solid var(--line);
-  }
-
-  .post-body :global(th + th) {
-    border-left: 1px solid var(--stroke);
-  }
-
-  .post-body :global(img) {
-    display: block;
-    max-width: 100%;
-    height: auto;
-  }
-
-  .post-body :global(.fig) {
-    margin: 1.5rem -1rem;
-    border-top: 1px solid var(--stroke);
-    border-bottom: 1px solid var(--stroke);
-    counter-increment: fig;
-  }
-
-  /* The drawing is flush with the panel: no padding, so an operating
-     sequence's partitions meet the panel walls and the figure's rules,
-     and those four lines are its outline. Exploded views carry their own
-     margin inside the canvas. */
-  .post-body :global(.fig-art) {
-    padding: 0;
-    overflow-x: auto;
-    /* The scroll container's own right border sits on the same pixel as
-       the panel wall (one pixel of negative margin), so it is invisible
-       when the drawing fits and closes the drawing's last cell when it
-       scrolls on a narrow screen. */
-    margin-right: -1px;
-    border-right: 1px solid var(--ink);
-    color: var(--ink);
   }
 
   /* A keyed figure is drawn for a 48em measure. Below that it scrolls
      sideways inside its panel instead of shrinking its 11px labels
      past legibility. */
-  .post-body :global(.fig-art svg) {
+  .post-page .post-body :global(.fig-art svg) {
     display: block;
     width: 100%;
     min-width: 36em;
     height: auto;
   }
 
-  /* The caption leads the drawing, as a stroke-framed title row like a
-     table header (no band: the panel's title keeps the only one). The
-     figure's own top rule is the row's top; its bottom rule opens the art. */
-  .post-body :global(.fig figcaption) {
-    padding: 0.45em 1rem;
-    border-bottom: 1px solid var(--stroke);
-    color: var(--ink);
-    font-family: var(--font-code);
-    font-size: 0.72rem;
-  }
-
-  .post-body :global(.fig figcaption::before) {
-    content: "Fig. " counter(fig) "  ";
-    font-weight: 600;
-    letter-spacing: 0.08em;
-  }
-
-  .post-body :global(figure.fig + table) {
-    margin-top: calc(-1.5rem - 1px);
-  }
-
-  /* A table or figure that opens a section docks to the band: the band's
-     bottom rule is the table's top rule. */
-  .post-body :global(h2 + table),
-  .post-body :global(h2 + figure.fig) {
-    margin-top: calc(-0.85rem - 1px);
-  }
-
-  .post-body :global(tr:last-child td) {
-    border-bottom: 1px solid var(--stroke);
-  }
-
-  .post-body :global(figure.fig + table th:first-child),
-  .post-body :global(figure.fig + table td:first-child) {
-    width: 3.5em;
-    font-family: var(--font-code);
-    text-align: center;
-  }
-
-  /* Keys match figure callouts by number or letter, without color coding. */
-
-  .post-body :global(table.fig-key th:first-child),
-  .post-body :global(table.fig-key td.key) {
-    width: 3.4em;
-    padding: 0.55em 0.4em;
-    border-right: 1px solid var(--line);
-    text-align: center;
-    vertical-align: middle;
-  }
-
-  .post-body :global(td.key .co) {
-    font-family: var(--font-code);
-    font-size: 0.85rem;
-    font-weight: 600;
-  }
-
   @media (min-width: 761px) {
     /* Keep the scheme switch reachable while reading the full article. */
-    .landing-topline :global(.scheme) {
+    .post-page .landing-topline :global(.scheme) {
       position: fixed;
       top: 1.5rem;
       right: 1.2rem;
@@ -999,6 +620,7 @@
       padding-top: 1rem;
       padding-right: 1em;
       padding-left: 1em;
+      padding-bottom: 6em;
     }
 
     /* One quiet header leaves the recording in the first phone viewport.
@@ -1006,22 +628,17 @@
     .post-page.with-landing {
       padding-top: 0.5rem;
     }
-    .demo-landing {
+    .post-page .demo-landing {
       min-height: calc(100svh - 0.5rem);
     }
-    .landing-topline {
+    .post-page .landing-topline {
       margin-bottom: 0.5rem;
     }
 
-    .journal {
-      display: block;
-    }
-
-    .spine {
+    .post-page .spine {
       position: sticky;
       z-index: 4;
       top: 0;
-      max-height: none;
       margin: 0 -1em 1.5rem;
       padding: 0.5em 1em;
       overflow-x: auto;
@@ -1029,34 +646,34 @@
       background: var(--sheet);
     }
 
-    .trail-dock,
-    .trail-inline,
-    .sec-label {
+    .post-page .trail-dock,
+    .post-page .trail-inline,
+    .post-page .sec-label {
       display: none;
     }
 
-    .toc > ol {
+    .post-page .toc > ol {
       display: flex;
       gap: 1em;
     }
 
-    .toc ol ol {
+    .post-page .toc ol ol {
       display: none;
     }
 
-    .toc a {
+    .post-page .toc a {
       padding: 0.5em 0;
       border-left: 0;
       border-bottom: 2px solid transparent;
       white-space: nowrap;
     }
 
-    .toc .num {
+    .post-page .toc .num {
       width: auto;
       margin-right: 0.35em;
     }
 
-    .toc a.active {
+    .post-page .toc a.active {
       border-bottom-color: var(--accent-ink);
     }
   }

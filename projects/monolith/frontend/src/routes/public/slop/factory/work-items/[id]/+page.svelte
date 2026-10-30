@@ -26,7 +26,7 @@
   path={`/slop/factory/work-items/${item.id}`}
 />
 
-<main class="td factory-page work-item-page">
+<main class="td sheet factory-page work-item-page">
   <div class="frame">
     <header class="masthead">
       <h1 class="sr-only">Factory work item</h1>

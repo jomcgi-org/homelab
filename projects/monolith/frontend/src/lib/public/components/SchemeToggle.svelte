@@ -1,4 +1,5 @@
 <script>
+  import SchemePreference from "./SchemePreference.svelte";
   // Scheme: the system preference by default (no attribute stored), or an
   // explicit "light" / "dark" stamped on the root as data-theme once the
   // reader clicks the toggle. technical-drawing.css resolves data-theme
@@ -55,16 +56,7 @@
   });
 </script>
 
-<svelte:head>
-  <!-- Applied before paint; mirrors apply() above. -->
-  <script>
-    try {
-      var t = localStorage.getItem("td-theme");
-      if (t === "light" || t === "dark")
-        document.documentElement.dataset.theme = t;
-    } catch (e) {}
-  </script>
-</svelte:head>
+<SchemePreference />
 
 <button
   class="scheme"
