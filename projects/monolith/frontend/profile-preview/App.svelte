@@ -5,6 +5,7 @@
   import { stats } from "./fixtures.js";
   import { snapshot } from "../test/ships-fixtures.js";
 
+  let { initialUrl } = $props();
   let surface = $state("home");
   let data = $state({});
   function navigate(url) {
@@ -19,6 +20,7 @@
         "/public/ember/bazel": "bazel-fallback",
         "/public/ember/postgres": "postgres-fallback",
         "/public/ember/firecracker": "firecracker",
+        "/public/ember/agents": "agents",
         "/public/legacy-fixture": "legacy",
       }[routed] ?? "error";
     data = {
@@ -35,7 +37,11 @@
       surface === "error" ? { message: "Fixture route missing" } : null,
     );
   }
-  navigate(new URL(location.href));
+  // One initial snapshot for SSR/hydration; later changes use the history adapter.
+  function initialize() {
+    navigate(new URL(initialUrl ?? location.href));
+  }
+  initialize();
   function click(event) {
     const anchor = event.target.closest("a");
     if (
@@ -64,6 +70,7 @@
         "/legacy-fixture",
         "/app/ships",
         "/ember/firecracker",
+        "/ember/agents",
       ].includes(next.pathname)
     )
       return;
@@ -100,7 +107,9 @@
     >Bazel fallback fixture</a
   ><a href="/ember/postgres">Postgres fallback fixture</a><a
     href="/legacy-fixture">Legacy Nav fixture</a
-  ><a href="/ember/firecracker">Firecracker fixture</a>
+  ><a href="/ember/firecracker">Firecracker fixture</a><a href="/ember/agents"
+    >Agents fixture</a
+  >
 </nav>
 
 <style>

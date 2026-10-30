@@ -18,6 +18,13 @@ SHA = "a" * 40
 
 class SuiteTests(unittest.TestCase):
     def test_owner_capture_contracts(self):
+        self.assertEqual(len(suite.expected_captures("agents")), 48)
+        self.assertIn(
+            "agents-390-dark-no-js-full.png", suite.expected_captures("agents")
+        )
+        self.assertIn(
+            "agents-1440-light-normal-resume.png", suite.expected_captures("agents")
+        )
         self.assertEqual(len(suite.expected_captures("trips")), 32)
         self.assertEqual(len(suite.expected_captures("stars")), 8)
         self.assertEqual(len(suite.expected_captures("review")), 16)
@@ -40,6 +47,17 @@ class SuiteTests(unittest.TestCase):
                 ValueError, "missing capture day-390-dark-fullscreen"
             ):
                 suite.validate_captures("trips", root)
+
+    def test_missing_agents_static_capture_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in suite.expected_captures("agents"):
+                (root / name).write_bytes(PNG)
+            (root / "agents-390-dark-no-js-full.png").unlink()
+            with self.assertRaisesRegex(
+                ValueError, "missing capture agents-390-dark-no-js-full"
+            ):
+                suite.validate_captures("agents", root)
 
     def test_missing_empty_and_invalid_capture_fail(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -74,6 +92,13 @@ class SuiteTests(unittest.TestCase):
                     (path / "vite.config.js").touch()
                 self.assertEqual(
                     suite.selected_suites(), ["blog", "factory", "review", "trips"]
+                )
+                path = Path(directory) / "agents-preview"
+                path.mkdir()
+                (path / "vite.config.js").touch()
+                self.assertEqual(
+                    suite.selected_suites(),
+                    ["blog", "factory", "review", "trips", "agents"],
                 )
                 with self.assertRaisesRegex(ValueError, "duplicate"):
                     suite.selected_suites(["trips", "trips"])
