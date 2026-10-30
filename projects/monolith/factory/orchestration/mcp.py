@@ -1517,7 +1517,7 @@ async def factory_amend_policy(
     names restricts one paused, quiescent receipt. It removes those names from
     allowed_models and every explicit model pool, preserving order. Models used
     by scalar defaults, task choices, graph pins or a pending funding review
-    cannot be removed; no pool can become empty. No other field can accompany
+    cannot be removed. Pools must remain nonempty. No other field can accompany
     this mode. It preserves funding, holds, accounting and all deadlines,
     including expired deadlines, and grants no execution or lease renewal.
 
@@ -1532,7 +1532,7 @@ async def factory_amend_policy(
     Add nonrenewable_recovery true to prohibit automatic funding or allowance
     extensions. Set max_planner_turns to the consumed count plus the authorized
     attempts. The final planner result goes through normal server admission.
-    rejection pauses the same task without another planner or funding review.
+    Rejection pauses the same task without another planner or funding review.
     This restriction is sticky. Further bounds require another human amendment.
     Dollar fields are recorded but never refuse work. This changes neither
     provider/global limits nor the $500/$1000 emergency limits.
