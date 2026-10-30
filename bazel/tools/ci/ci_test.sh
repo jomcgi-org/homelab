@@ -994,7 +994,8 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 				printf 'python3 %s\n' "$*" >>"$TRACE"
 				[[ "$failed_guard" == none || "$1" != *"/$failed_guard.py" ]]
 			}
-			docker() { :; }
+			# Drain login stdin so echo cannot race this stub under pipefail.
+			docker() { cat >/dev/null; }
 			df() { :; }
 			du() { :; }
 			rm() {
@@ -1005,7 +1006,8 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 		rc=$?
 		set -e
 		if [[ "$failed_guard" != none ]]; then
-			if [[ "$rc" -ne 0 ]] && ! grep -q '^bazel test\|^tool ' "$TRACE" && grep -q '^cleanup$' "$TRACE"; then
+			if [[ "$rc" -ne 0 ]] && grep -qE "^python3 .*/$failed_guard\\.py( |$)" "$TRACE" &&
+				! grep -q '^bazel test\|^tool ' "$TRACE" && grep -q '^cleanup$' "$TRACE"; then
 				pass "workflow_writeback_fatal_$failed_guard"
 			else
 				fail "workflow_writeback_fatal_$failed_guard" "guard failure must stop the fast path: $(cat "$TRACE")"
