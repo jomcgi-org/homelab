@@ -395,7 +395,7 @@ outcome and exit criteria, and the defaults the server cannot infer. Mechanics
 the server enforces (reserved keys, cost clamping, turn arithmetic, exception
 field minimums) live in the schema, refusal codes and `decision_feedback`.
 Restore a removed line only after a repeated planner failure that the feedback
-did not prevent. The cut from about 1,800 to about 520 words is
+did not prevent. The cut from about 1,800 to about 560 words is
 measured by planner refusal rate, planner rounds per task, first-pass review
 rejection and planner input tokens against the prior 14 days.
 
