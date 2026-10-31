@@ -54,7 +54,13 @@ def node_label(node_key: str) -> str:
     return f"{kind} · {rest.replace('_', ' ')}" if rest else kind
 
 
-def shape_node(node: dict, runs: list[dict], sessions: dict[int, dict]) -> dict:
+def shape_node(
+    node: dict,
+    runs: list[dict],
+    sessions: dict[int, dict],
+    *,
+    receipt_state: str | None = None,
+) -> dict:
     """Join one plan node to its attempts and derive a single display state."""
     attempts = sorted(runs, key=lambda run: run.get("attempt") or 0)
     latest = attempts[-1] if attempts else None
@@ -67,7 +73,9 @@ def shape_node(node: dict, runs: list[dict], sessions: dict[int, dict]) -> dict:
     elif latest is None:
         state = "pending"
     else:
-        state = _RUN_STATE.get(latest.get("status") or "", "running")
+        state = _RUN_STATE.get(latest.get("status") or "", "uncertain")
+        if state == "running" and receipt_state not in (None, "admitted"):
+            state = "uncertain"
     shaped_attempts = []
     for run in attempts:
         session_id = run.get("session_id")
@@ -200,7 +208,12 @@ def shape_receipt(
     for run in runs or []:
         by_node.setdefault(run["node_key"], []).append(run)
     shaped["nodes"] = [
-        shape_node(node, by_node.get(node["node_key"], []), sessions or {})
+        shape_node(
+            node,
+            by_node.get(node["node_key"], []),
+            sessions or {},
+            receipt_state=receipt.get("state"),
+        )
         for node in nodes or []
     ]
     shaped["stop_events"] = receipt.get("stop_events") or []

@@ -40,9 +40,19 @@
 
   const policy = $derived(data.board.policy ?? {});
   const book = $derived(ledger(data.board, now));
-  const everything = $derived([...book.live, ...book.queued, ...book.done]);
+  const everything = $derived([
+    ...book.live,
+    ...book.waiting,
+    ...book.uncertain,
+    ...book.queued,
+    ...book.done,
+  ]);
   const types = $derived(taskTypes(everything));
-  const live = $derived(filterTasks([...book.live, ...book.queued], filters));
+  const live = $derived(filterTasks(book.live, filters));
+  const waiting = $derived(
+    filterTasks([...book.waiting, ...book.queued], filters),
+  );
+  const uncertain = $derived(filterTasks(book.uncertain, filters));
   const done = $derived(filterTasks(book.done, filters));
   const pages = $derived(paginate(done, filters.page - 1, LEDGER_PAGE));
   const days = $derived(groupByDay(pages.rows));
@@ -101,7 +111,7 @@
     <span>Nodes</span>
     <span class="r">Starts</span>
     <span class="r">Spend</span>
-    <span class="r">Time</span>
+    <span class="r">Task age</span>
     <span></span>
   </li>
 {/snippet}
@@ -144,7 +154,8 @@
           ? "–"
           : money(task.cost_usd)}</span
       >
-      <span class="r num"><span class="mobile-label">time</span>{time}</span>
+      <span class="r num"><span class="mobile-label">task age</span>{time}</span
+      >
       <span class="go" aria-hidden="true">›</span>
     </a>
   </li>
@@ -191,11 +202,9 @@
         </div>
       </div>
       <div>
-        <div class="k">In flight</div>
+        <div class="k">Executing</div>
         <div class="v num">
-          {book.live.length}{#if policy.max_tasks != null}<small
-              >of {policy.max_tasks}</small
-            >{/if}
+          {book.live.length}
         </div>
       </div>
       <div>
@@ -259,14 +268,17 @@
         </select></label
       >
       <span class="count num"
-        >{live.length + done.length}{#if filtering}
+        >{live.length +
+          waiting.length +
+          uncertain.length +
+          done.length}{#if filtering}
           of {everything.length}{/if}</span
       >
     </div>
 
     <section class="panel">
       <p class="sec-label">
-        / In flight
+        / Executing
         <span class="win"
           >{data.board.snapshotted_at
             ? `as of ${isoClock(data.board.snapshotted_at)} UTC`
@@ -284,10 +296,28 @@
       </ul>
       {#if !live.length}
         <p class="empty">
-          {filtering ? "nothing matches" : "nothing in the lane"}
+          {filtering ? "nothing matches" : "no current execution confirmed"}
         </p>
       {/if}
     </section>
+
+    {#each [{ label: "Waiting / paused / landing", tasks: waiting }, { label: "Uncertain execution", tasks: uncertain }] as section (section.label)}
+      <section class="panel">
+        <p class="sec-label">
+          / {section.label}<span class="win">{section.tasks.length}</span>
+        </p>
+        <ul class="rows">
+          {@render ledgerHead()}
+          {#each section.tasks as task, index (`${task.issue_number}-${index}`)}
+            {@render row(
+              task,
+              task.state === "queued" ? "–" : relative(task.admitted_at, now),
+            )}
+          {/each}
+        </ul>
+        {#if !section.tasks.length}<p class="empty">nothing here</p>{/if}
+      </section>
+    {/each}
 
     <section class="panel">
       <p class="sec-label">

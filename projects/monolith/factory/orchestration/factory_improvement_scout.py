@@ -401,6 +401,7 @@ def _prompt(current, *, collection=None):
     evidence = {
         key: current[key] for key in ("review_digest", "policy", "goals", "inventory")
     }
+    evidence["recovery_events"] = current.get("recovery_events", [])
     if collection is None:
         text = (
             "Collect at most the configured max_findings evidence-backed improvement findings. "
@@ -408,6 +409,13 @@ def _prompt(current, *, collection=None):
             "and reliability gaps aligned with active goals. Do not invent work to consume quota. "
             "Include factory bottlenecks, prompt failures and obsolete rules when evidence links "
             "them to a goal. Prefer a scoped repair or removal over new machinery. "
+            "Use the bounded recovery_events sample to investigate avoidable paused time, "
+            "operator interruptions, recovery outcomes and repeated causes. Pair events by "
+            "exact task and audit identity; unmatched pauses have unknown duration/outcome. "
+            "Do not call a pause avoidable without evidence of an authorized safe recovery. "
+            "Separate transport/missing-result failures from code rejection and legitimate "
+            "review/CI/dependency waits. Measure reduced disruption without weakening "
+            "unknown-execution fences, human holds, subscription caps or acceptance. "
             "Return an empty findings list when none is actionable. Each finding needs fresh evidence "
             "at the exact repo_head, reproduction, benefit, scoped acceptance tests and proposed owner. "
             "In benefit state the hypothesis and observed baseline; in acceptance_tests state the "

@@ -23,13 +23,16 @@ const TEXT_CLIP = 600;
 // vocabularies over the same six marks, so each gets its own map rather than a
 // shared one that would quietly accept the wrong word.
 const TASK_MARK = {
-  "in flight": "running live",
-  // A landing task is still live: its PR is enqueued and the lane holds the
-  // slot until the merge settles, so it breathes like a running one.
-  landing: "running live",
+  "in flight": "uncertain",
+  executing: "running live",
+  paused: "queued",
+  waiting: "queued",
+  // Landing can occupy capacity without executing a model.
+  landing: "queued",
   uncertain: "uncertain",
   landed: "landed",
   failed: "failed",
+  escalated: "failed",
   cancelled: "cancelled",
   queued: "queued",
 };
@@ -44,8 +47,8 @@ const NODE_WORD = {
   retired: "retired",
 };
 
-/** A task is live while the lane still holds its slot. */
-export const LIVE_STATES = new Set(["in flight", "landing", "uncertain"]);
+/** Execution is distinct from occupied capacity. */
+export const LIVE_STATES = new Set(["executing"]);
 
 export function commitUrl(sha) {
   return sha ? `${REPO}/commit/${sha}` : null;
@@ -153,7 +156,15 @@ export function stepsOf(task) {
  * for a snapshot written before totals_7d existed.
  */
 export function ledger(activity, now) {
-  const live = activity?.active ?? [];
+  const active = activity?.active ?? [];
+  const live = active.filter((task) => task.state === "executing");
+  const waiting = active.filter((task) =>
+    ["paused", "waiting", "landing"].includes(task.state),
+  );
+  const uncertain = active.filter(
+    (task) =>
+      !["executing", "paused", "waiting", "landing"].includes(task.state),
+  );
   const queued = activity?.queued ?? [];
   const done = [...(activity?.recent ?? [])].sort(
     (a, b) =>
@@ -168,6 +179,8 @@ export function ledger(activity, now) {
   if (totals) {
     return {
       live,
+      waiting,
+      uncertain,
       queued,
       done,
       landed: Number(totals.landed) || 0,
@@ -175,16 +188,20 @@ export function ledger(activity, now) {
       spend: Number(totals.spend_usd) || 0,
     };
   }
-  const spend = [...week, ...live].reduce(
+  const spend = [...week, ...active].reduce(
     (total, task) => total + (Number(task.cost_usd) || 0),
     0,
   );
   return {
     live,
+    waiting,
+    uncertain,
     queued,
     done,
     landed: week.filter((task) => task.state === "landed").length,
-    escalated: week.filter((task) => task.state === "failed").length,
+    escalated: week.filter((task) =>
+      ["failed", "escalated"].includes(task.state),
+    ).length,
     spend,
   };
 }
@@ -208,7 +225,11 @@ export function ledgerMeta(task, policy, now) {
   if (task.state === "queued") {
     return `queued · ${plural(policy?.max_tasks ?? 0, "slot")}`;
   }
-  if (task.state === "in flight" || task.state === "uncertain") {
+  if (
+    ["executing", "paused", "waiting", "in flight", "uncertain"].includes(
+      task.state,
+    )
+  ) {
     return `${task.state} · ${task.phase} · ${relative(task.deadline_at, now)}`;
   }
   if (task.state === "landing") {
@@ -219,7 +240,7 @@ export function ledgerMeta(task, policy, now) {
   if (task.state === "landed") {
     return [`landed`, pr && `${pr} merged`, rounds].filter(Boolean).join(" · ");
   }
-  if (task.state === "failed") {
+  if (["failed", "escalated"].includes(task.state)) {
     return `escalated · ${rounds}`;
   }
   return `cancelled · ${rounds}`;
@@ -249,7 +270,7 @@ export function outcome(task, policy, now, runningStep = -1) {
       ],
     };
   }
-  if (task.state === "failed") {
+  if (["failed", "escalated"].includes(task.state)) {
     return {
       tone: "failed",
       headline: "escalated",
@@ -309,6 +330,14 @@ export function outcome(task, policy, now, runningStep = -1) {
       ],
     };
   }
+  if (["paused", "waiting", "in flight"].includes(task.state)) {
+    return {
+      tone: "",
+      headline: task.state === "in flight" ? "uncertain" : task.state,
+      mark,
+      parts: [{ text: "No current execution confirmed by this snapshot." }],
+    };
+  }
   const parts = [{ text: "At " }, { text: task.phase, code: true }];
   if (runningStep >= 0) {
     parts.push(
@@ -323,7 +352,7 @@ export function outcome(task, policy, now, runningStep = -1) {
   parts.push({
     text: ` · ${task.turns_used} of ${task.allowance_turns} starts · ${relative(task.deadline_at, now)}`,
   });
-  return { tone: "live", headline: "in flight", mark, parts };
+  return { tone: "live", headline: "executing", mark, parts };
 }
 
 /** The boxed spec beside the task title: seven rows, label then value. */
@@ -347,7 +376,7 @@ export function taskSpec(task, policy, now) {
       value: `${money(task.cost_usd)} of ${money(policy?.task_budget_usd)}`,
       num: true,
     },
-    { label: "Elapsed", value: elapsed, num: true },
+    { label: "Task age", value: elapsed, num: true },
     {
       label: "Rounds",
       value: `${reviewRounds(task)} of ${policy?.max_review_rounds ?? "?"}`,
@@ -652,11 +681,14 @@ export function sessionHref(issue, nodeKey, attempt) {
 // is no chip. Sorts name the key a reader would reach for, newest first by
 // default because the lane is read as a log.
 export const LEDGER_STATES = [
-  "in flight",
+  "executing",
+  "paused",
+  "waiting",
   "landing",
   "uncertain",
   "queued",
   "landed",
+  "escalated",
   "failed",
   "cancelled",
 ];

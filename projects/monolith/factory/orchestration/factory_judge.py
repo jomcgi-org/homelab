@@ -14,6 +14,7 @@ only ask a person when it doubts the work, never raise them.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -70,7 +71,17 @@ CRITERIA = (
     "Escalate to the operator, rather than approving or stopping, only when "
     "you doubt it: little verified progress, repeated failure on the same "
     "step, or drift from the issue's scope. Stop only when the objective is no "
-    "longer worth pursuing at all. Name the evidence behind your verdict."
+    "longer worth pursuing at all. Name the evidence behind your verdict. "
+    "Minimize avoidable paused time and operator interruptions within the pinned "
+    "allowance. Distinguish code rejection from transport failure, missing output, "
+    "and waiting for review, CI or a dependency. A lost review is not a code rejection. "
+    "For repeated causes, name new evidence or a changed recovery action; another "
+    "funding request alone is not progress. Prefer the existing bounded recovery "
+    "path when authoritative cessation and exact task/attempt identity are established. "
+    "Unknown execution must reconcile before retry: age, a missing result or a "
+    "settled permit alone proves neither cessation nor safe replay. Preserve holds, "
+    "human ownership, deadlines, stop guards and subscription caps; no paid fallback. "
+    "When blocked, name the evidence needed, next action and its authorized owner."
 )
 
 ASSESSMENT_SCHEMA = {
@@ -151,6 +162,37 @@ def deficit_refusal(deficit: object, bound: dict) -> str | None:
     return None
 
 
+def failure_kind(run: dict) -> str:
+    """Classify evidence for judgement only; this never authorizes a retry."""
+    from factory.orchestration.graph import settled_zero_basis
+
+    if run.get("status") == "uncertain":
+        return "unknown_execution"
+    try:
+        outcome = json.loads(run.get("outcome_json") or "{}")
+    except (TypeError, ValueError):
+        return "missing_output"
+    if not isinstance(outcome, dict):
+        return "missing_output"
+    if settled_zero_basis(outcome):
+        return "transport_before_model"
+    if outcome.get("invocation_phase") == "response_lost":
+        return "unknown_execution"
+    if outcome.get("invocation_phase") == "provider_error_before_work":
+        return "transport_error"
+    artifact = outcome.get("artifact")
+    if isinstance(artifact, dict) and artifact.get("status") in {
+        "missing",
+        "unparsable",
+        "invalid",
+        "not_fresh",
+    }:
+        return "missing_or_invalid_artifact"
+    if not outcome:
+        return "missing_output"
+    return "reported_failure"
+
+
 def progress(runs: list[dict]) -> dict:
     """Verified progress, from node runs alone (no GitHub read)."""
     statuses = Counter(run.get("status") for run in runs)
@@ -182,11 +224,20 @@ def progress(runs: list[dict]) -> dict:
         for run in sorted(reviews, key=lambda item: item.get("id") or 0)
     ]
     failures = Counter(
-        run.get("node_key") for run in runs if run.get("status") == "failed"
+        run.get("node_key")
+        for run in runs
+        if run.get("status") == "failed" and failure_kind(run) == "reported_failure"
     )
     repeated = failures.most_common(1)[0] if failures else None
     return {
         "node_runs": dict(statuses),
+        "failure_causes": dict(
+            Counter(
+                failure_kind(run)
+                for run in runs
+                if run.get("status") in {"failed", "uncertain"}
+            )
+        ),
         "implementation_succeeded": len(implemented),
         "commits_pushed": len(heads),
         "latest_head": heads[-1][:12] if heads else None,

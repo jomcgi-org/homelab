@@ -182,10 +182,47 @@ def context(*, scout_receipt_id=None) -> dict:
         control = db.get(FactoryControl, "factory")
         current = _database_context(db, control, scout_receipt_id=scout_receipt_id)
         history = _history(db, current["policy"])
+        # Private advisory evidence, outside the stable authorization digest.
+        # Audit IDs preserve exact identity; a capped sample is not a total.
+        recovery_events = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.action.in_(
+                    (
+                        "pause_task",
+                        "resume_task",
+                        "allocation_recovery_required",
+                        "paused_card_created",
+                        "paused_card_superseded",
+                    )
+                )
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(40)
+        ).all()
+        recovery = []
+        for event in recovery_events:
+            detail = json.loads(event.detail_json)
+            reason = detail.get("reason")
+            recovery.append(
+                {
+                    "audit_id": event.id,
+                    "task_id": event.task_id,
+                    "action": event.action,
+                    "at": aware(event.created_at).isoformat(),
+                    "detail": {
+                        key: detail.get(key)
+                        for key in ("ok", "code", "grant_id", "decision_id")
+                    },
+                    "reason": str(reason)[:500] if reason is not None else None,
+                    "reason_truncated": reason is not None and len(str(reason)) > 500,
+                }
+            )
     return {
         **current,
         "inventory": inventory,
         "improvement_history": history,
+        "recovery_events": recovery,
         "quota": quota,
         "review_digest": _review_digest(current, inventory),
         "captured_at": controls._now().isoformat(),

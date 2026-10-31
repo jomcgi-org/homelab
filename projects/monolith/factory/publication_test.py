@@ -275,7 +275,7 @@ def test_summary_has_no_pr_and_no_finish_while_in_flight():
             ]
         )
     )
-    assert summary["state"] == "in flight"
+    assert summary["state"] == "uncertain"
     assert summary["pr"] is None
     assert summary["finished_at"] is None
 
@@ -1397,3 +1397,39 @@ def test_quota_pacing_does_not_invent_a_binding_reset_for_a_limited_account():
     pacing = shape_quota(raw, now)["providers"][0]["pacing"]
     assert pacing["state_counts"]["wait_for_reset"] == 1
     assert "blocked_next_reset_at" not in pacing
+
+
+def test_activity_distinguishes_execution_pause_and_uncertainty_without_private_details():
+    from factory.publication import activity_state
+
+    running = {
+        "state": "running",
+        "node_key": "review_1",
+        "session": {"status": "running", "guest_bound": True},
+    }
+    assert activity_state({"state": "admitted", "nodes": [running]}) == "executing"
+    assert (
+        activity_state({"state": "admitted", "task_paused": True, "nodes": [running]})
+        == "executing"
+    )
+    assert activity_state({"state": "admitted", "task_paused": True}) == "paused"
+    assert activity_state({"state": "admitted"}) == "waiting"
+    assert (
+        activity_state(
+            {"state": "admitted", "task_paused": True, "unresolved_starts": 1}
+        )
+        == "uncertain"
+    )
+    assert activity_state({"state": "uncertain", "nodes": [running]}) == "uncertain"
+    assert activity_state({"state": "escalated", "nodes": [running]}) == "escalated"
+    summary = task_summary(
+        {
+            "state": "admitted",
+            "task_paused": True,
+            "escalation": {"reason": "private sentinel"},
+            "nodes": [],
+        }
+    )
+    assert summary["state"] == "paused"
+    assert "private sentinel" not in str(summary)
+    assert "task_paused" not in summary
