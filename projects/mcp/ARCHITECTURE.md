@@ -388,13 +388,13 @@ Kubernetes `env` outranks every `envFrom` source, so `extraEnv` closes both.
 
 `SSRF_ALLOWED_NETWORKS` is the seam that lets an in-cluster URL be registered
 at all. Upstream enables SSRF protection with private networks refused,
-resolves the hostname, and rejects any address not in this list, with the real
-cause visible only in the log as `loc=('body','url') type=value_error`. The
-check runs when a gateway row is created or updated, never on the health tick
-or a tool call. The list still names the retired home cluster's pod and
-service ranges, which cover nothing on the hub: the monolith row was
-registered before the move and keeps ticking, but a new in-cluster
-registration will be refused until the value is updated to the hub's ranges.
+resolves the hostname, and rejects any address not in this list with a masked
+422, with the real cause visible only in the log as
+`loc=('body','url') type=value_error`. The check runs when a gateway row is
+created or updated, never on the health tick or a tool call. Since #5840,
+[deploy/values.yaml](context-forge-gateway/deploy/values.yaml) configures the
+hub pod CIDR `10.10.8.0/21` and service CIDR `10.10.16.0/22`. A future cluster
+CIDR change requires updating `SSRF_ALLOWED_NETWORKS` in that file.
 
 **Why.** The gateway was adopted to make backend registration a configuration
 change rather than a custom server build (ADR agents/003). Local proxies for
