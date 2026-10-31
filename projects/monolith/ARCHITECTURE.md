@@ -458,6 +458,18 @@ by being added (#6463). See [repositories](factory/orchestration/FACTORY.md#serv
 
 ### Capacity and delivery rationale
 
+**Why.** A completed Claude quota probe could destroy its guest after bounded
+receipt-fence release retries failed, then retain its binding forever because
+workflow cleanup excludes probes. The leader now retries only delivered Claude
+quota probes with an exact saved receipt, settled permit and fresh positive
+original-generation destroyed guest record. It rechecks the full identity under
+the control, capacity and session locks, then retires the matching fence and
+binding together with an audit. Missing guests, changed identities, aliases,
+pending work and unknown outcomes remain held. Result history, accounting,
+observer timestamps and prior lineage are preserved; this cleanup never invokes
+or deletes a guest. Only the existing bounded probe can refresh provider quota.
+(see: /projects/monolith/factory/completed_probe_cleanup.py)
+
 **Why.** Conflicting chart and lane ceilings starved advisory work; hourly sweeps
 then filled capacity too slowly. Factory work can wait, so shared background
 capacity must remain for drainers and probes (#6002). See [lanes](factory/orchestration/FACTORY.md#two-lanes).

@@ -9407,6 +9407,27 @@ py_test(
 )
 
 py_test(
+    name = "factory_completed_probe_cleanup_test",
+    srcs = ["factory/completed_probe_cleanup_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+bdd_test(
+    name = "factory_completed_probe_cleanup_postgres_test",
+    srcs = ["factory/completed_probe_cleanup_test.py"],
+    env = {"COMPLETED_PROBE_TEST_POSTGRES": "1"},
+)
+
+py_test(
     name = "factory_quota_probe_test",
     srcs = ["factory/quota_probe_test.py"],
     imports = ["."],
