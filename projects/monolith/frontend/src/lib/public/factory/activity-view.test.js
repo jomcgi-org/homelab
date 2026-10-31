@@ -54,7 +54,7 @@ const POLICY = {
 const LIVE_TASK = {
   issue_number: 5980,
   review_rounds: 1,
-  state: "in flight",
+  state: "executing",
   phase: "review_1",
   title: "Worker-delivered probes leave guests parked",
   admitted_at: "2026-09-11T08:14:00Z",
@@ -173,7 +173,7 @@ describe("formatting", () => {
 
 describe("state vocabulary", () => {
   it.each([
-    ["in flight", "running live"],
+    ["executing", "running live"],
     ["landed", "landed"],
     ["failed", "failed"],
     ["cancelled", "cancelled"],
@@ -290,7 +290,7 @@ describe("ledger", () => {
 describe("ledgerMeta", () => {
   it("names the phase and the deadline for a live task", () => {
     expect(ledgerMeta(LIVE_TASK, POLICY, NOW)).toBe(
-      "in flight · review_1 · 5h 42m left",
+      "executing · review_1 · 5h 42m left",
     );
   });
 
@@ -345,7 +345,7 @@ describe("outcome", () => {
 
   it("points a live task at its running step and its draft PR", () => {
     const verdict = outcome(LIVE_TASK, POLICY, NOW, 4);
-    expect(verdict.headline).toBe("in flight");
+    expect(verdict.headline).toBe("executing");
     expect(verdict.parts).toContainEqual({ text: "review_1", code: true });
     expect(verdict.parts).toContainEqual({ text: "step 5", step: 5 });
     expect(verdict.parts).toContainEqual({
@@ -360,7 +360,7 @@ describe("outcome", () => {
   it("gives a landing task its PR state and the deadline", () => {
     const verdict = outcome({ ...LIVE_TASK, state: "landing" }, POLICY, NOW);
     expect(verdict.headline).toBe("landing");
-    expect(verdict.mark).toBe("running live");
+    expect(verdict.mark).toBe("queued");
     expect(text(verdict)).toBe("PR #5996 draft · 1 review round · 5h 42m left");
   });
 
@@ -409,7 +409,7 @@ describe("outcome", () => {
 describe("specs", () => {
   it("reads elapsed time as so-far while a task is still running", () => {
     const rows = taskSpec(LIVE_TASK, POLICY, NOW);
-    expect(rows.find((row) => row.label === "Elapsed").value).toBe(
+    expect(rows.find((row) => row.label === "Task age").value).toBe(
       "6h 18m so far",
     );
     expect(rows.find((row) => row.label === "Spend").value).toBe(
@@ -420,7 +420,7 @@ describe("specs", () => {
 
   it("closes elapsed time once a task has finished", () => {
     expect(
-      taskSpec(LANDED_TASK, POLICY, NOW).find((row) => row.label === "Elapsed")
+      taskSpec(LANDED_TASK, POLICY, NOW).find((row) => row.label === "Task age")
         .value,
     ).toBe("1h 39m");
   });
@@ -847,7 +847,7 @@ describe("ledger filters", () => {
     {
       issue_number: 3,
       title: "embervm: traces",
-      state: "in flight",
+      state: "executing",
       task_class: "bug-fix",
       phase: "review_1",
       admitted_at: "2026-09-11T11:00:00Z",
@@ -926,4 +926,19 @@ describe("ledger filters", () => {
     expect(taskTypes(TASKS)).toEqual(["bug-fix", "refine"]);
     expect(taskTypes([])).toEqual([]);
   });
+});
+
+it("separates six unfinished tasks into one execution, four waits and one uncertainty", () => {
+  const active = [
+    { state: "executing" },
+    ...Array.from({ length: 4 }, () => ({ state: "paused" })),
+    { state: "uncertain" },
+  ];
+  const book = ledger({ active }, NOW);
+  expect(book.live).toHaveLength(1);
+  expect(book.waiting).toHaveLength(4);
+  expect(book.uncertain).toHaveLength(1);
+  expect(ledger({ active: [{ state: "in flight" }] }, NOW).live).toEqual([]);
+  expect(taskMark("in flight")).toBe("uncertain");
+  expect(taskMark("landing")).not.toContain("live");
 });

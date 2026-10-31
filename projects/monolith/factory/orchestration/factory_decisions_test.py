@@ -3069,3 +3069,35 @@ def test_model_restriction_survives_same_receipt_readmission(
                 "worker": ["luna"],
             }
             assert "spark" in json.loads(row.policy_json)["allowed_models"]
+
+
+def test_judge_separates_transport_missing_output_and_code_failure():
+    from factory.orchestration.factory_judge import failure_kind, progress
+
+    def run(ident, status, outcome):
+        return {
+            "id": ident,
+            "node_key": "review_1",
+            "status": status,
+            "outcome_json": json.dumps(outcome),
+        }
+
+    runs = [
+        run(1, "failed", {"invocation_phase": "lost_before_guest"}),
+        run(2, "uncertain", {"invocation_phase": "not_invoked"}),
+        run(3, "failed", {}),
+        run(4, "failed", {"artifact": {"status": "missing"}}),
+    ]
+    assert [failure_kind(row) for row in runs] == [
+        "transport_before_model",
+        "unknown_execution",
+        "missing_output",
+        "missing_or_invalid_artifact",
+    ]
+    assert progress(runs)["most_repeated_failure"] is None
+    runs.append(run(5, "failed", {"error": "tests failed"}))
+    assert progress(runs)["most_repeated_failure"] == {
+        "node_key": "review_1",
+        "failures": 1,
+    }
+    assert progress(runs)["failure_causes"]["unknown_execution"] == 1

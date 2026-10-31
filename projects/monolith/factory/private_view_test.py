@@ -361,3 +361,19 @@ def test_a_policy_pinned_before_the_envelope_still_shows_its_turn_bound():
     )
     shaped = shape_receipt({"policy": legacy, "id": 1, "issue_number": 7})
     assert shaped["policy"]["max_task_turns_hard"] == 9
+
+
+def test_unknown_run_and_terminal_parent_never_claim_running():
+    assert (
+        shape_node(_node("review"), [_run("review", 1, "unrecognized")], {})["state"]
+        == "uncertain"
+    )
+    assert (
+        shape_node(
+            _node("review"),
+            [_run("review", 1, "admitted")],
+            {},
+            receipt_state="escalated",
+        )["state"]
+        == "uncertain"
+    )

@@ -899,6 +899,31 @@ def review_rounds(nodes: list[dict] | None) -> int:
     )
 
 
+def activity_state(receipt: dict) -> str:
+    """Display execution separately from admission; never infer cessation."""
+    state = receipt.get("state")
+    nodes = receipt.get("nodes") or []
+    if state == "uncertain" or any(n.get("state") == "uncertain" for n in nodes):
+        return (
+            "uncertain"
+            if state not in TERMINAL_STATES
+            else RECEIPT_STATE_WORD.get(state, state)
+        )
+    if state != "admitted":
+        return RECEIPT_STATE_WORD.get(state, state)
+    # A pause fences new starts, but does not prove an existing worker stopped.
+    running = [n for n in nodes if n.get("state") == "running"]
+    if any(
+        (n.get("session") or {}).get("status") == "running"
+        and (n.get("session") or {}).get("guest_bound")
+        for n in running
+    ):
+        return "executing"
+    if running or receipt.get("unresolved_starts"):
+        return "uncertain"
+    return "paused" if receipt.get("task_paused") else "waiting"
+
+
 def task_summary(receipt: dict, cost_usd: float | None = None) -> dict:
     """One board card: the task's identity, budget, and where it has got to.
 
@@ -915,7 +940,7 @@ def task_summary(receipt: dict, cost_usd: float | None = None) -> dict:
         "generation": receipt.get("generation"),
         "title": receipt.get("title"),
         "url": receipt.get("url"),
-        "state": RECEIPT_STATE_WORD.get(state, state),
+        "state": activity_state(receipt),
         "phase": task_phase(receipt),
         "task_class": receipt.get("task_class"),
         "admitted_at": _iso(receipt.get("admitted_at")),

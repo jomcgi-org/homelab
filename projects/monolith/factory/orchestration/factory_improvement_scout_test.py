@@ -1031,3 +1031,40 @@ def test_broker_delay_cannot_carry_stale_transport_permission(db, monkeypatch, c
 
     monkeypatch.setattr(fence, "fetch_provider_quota_sync", delayed_read)
     assert not fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
+
+
+def test_recovery_audits_reach_both_scout_roles_without_granting_retry():
+    data = current()
+    data["review_digest"] = "a" * 64
+    data["recovery_events"] = [
+        {"audit_id": 42, "task_id": "exact-task", "action": "pause_task"}
+    ]
+    collect = scout._prompt(data)
+    review = scout._prompt(data, collection={"findings": []})
+    assert '"audit_id": 42' in collect and '"audit_id": 42' in review
+    assert "unmatched pauses have unknown duration/outcome" in collect
+    assert "unknown-execution fences" in collect
+
+
+def test_context_carries_bounded_pause_audits_as_private_advisory_evidence(db):
+    engine, _ = db
+    before = service.context()
+    with Session(engine) as session:
+        session.add(
+            FactoryAudit(
+                actor="test",
+                action="pause_task",
+                task_id="task-a",
+                detail_json=dumps(
+                    {"ok": True, "reason": "x" * 1000, "private_unused": "omit"}
+                ),
+            )
+        )
+        session.commit()
+    after = service.context()
+    event = after["recovery_events"][0]
+    assert event["task_id"] == "task-a" and event["audit_id"]
+    assert event["detail"]["ok"] is True
+    assert event["reason_truncated"] and len(event["reason"]) == 500
+    assert "private_unused" not in str(event)
+    assert after["review_digest"] == before["review_digest"]
