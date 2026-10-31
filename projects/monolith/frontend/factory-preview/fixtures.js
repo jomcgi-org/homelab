@@ -18,7 +18,7 @@ function task(index, state = "landed") {
         ? LONG_TITLE
         : `Synthetic ${index}: ${index === 2 ? LONG_TOKEN : "inspect the fixture build and explain its test results"}`,
     state,
-    phase: state === "in flight" ? "review" : "complete",
+    phase: state === "executing" ? "review" : "complete",
     task_class: "delivery",
     admitted_at: ago(index === 1 ? 47 : 60 + index * 10),
     deadline_at: ago(-73),
@@ -33,7 +33,7 @@ function task(index, state = "landed") {
       { node_key: "plan", state: "done", attempts: [] },
       {
         node_key: "review",
-        state: state === "in flight" ? "running" : "done",
+        state: state === "executing" ? "running" : "done",
         attempts: [],
       },
     ],
@@ -240,7 +240,7 @@ export function payloads(scenario = "live") {
       max_review_rounds: 3,
       task_budget_usd: 30,
     },
-    active: populated ? [task(1, "in flight"), task(2, "landing")] : [],
+    active: populated ? [task(1, "executing"), task(2, "landing")] : [],
     queued: populated ? [task(3, "queued")] : [],
     recent: populated
       ? Array.from({ length: 25 }, (_, i) =>
