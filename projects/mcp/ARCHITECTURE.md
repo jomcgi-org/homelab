@@ -392,9 +392,10 @@ resolves the hostname, and rejects any address not in this list with a masked
 422, with the real cause visible only in the log as
 `loc=('body','url') type=value_error`. The check runs when a gateway row is
 created or updated, never on the health tick or a tool call. Since #5840,
+`SSRF_ALLOWED_NETWORKS` in
 [deploy/values.yaml](context-forge-gateway/deploy/values.yaml) configures the
-hub pod CIDR `10.10.8.0/21` and service CIDR `10.10.16.0/22`. A future cluster
-CIDR change requires updating `SSRF_ALLOWED_NETWORKS` in that file.
+GKE hub's pod and service CIDRs. That file is the source of the current values.
+A future cluster CIDR change requires updating `SSRF_ALLOWED_NETWORKS` there.
 
 **Why.** The gateway was adopted to make backend registration a configuration
 change rather than a custom server build (ADR agents/003). Local proxies for
