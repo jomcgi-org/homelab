@@ -854,7 +854,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                 gates = refined_direction.get("conductor_gates", [])
                 if gates and not direction.get("conductor_gates"):
                     direction["conductor_gates"] = gates
-                if "landing_hold" in refined_direction:
+                if landing_held(refined):
                     direction.setdefault(
                         "landing_hold", refined_direction["landing_hold"]
                     )

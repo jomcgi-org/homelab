@@ -2601,6 +2601,35 @@ def test_close_reloads_live_gate_recorded_after_delivery_snapshot(db, monkeypatc
     ]
 
 
+@pytest.mark.parametrize("origin", ["planner", "operator", None])
+def test_landing_rechecks_exact_refusal_and_preserves_existing_holds(
+    db, monkeypatch, origin
+):
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    delivered(db, "t-refused-hold", 11, 3)
+    hold = {"actor": "factory:conductor", "cause": "planner:test", "reason": "stage"}
+    direction = {
+        "landing_hold": hold,
+        "landing_hold_refusals": [{"cause": "planner:test", "gate_id": "exact"}],
+    }
+    if origin is not None:
+        direction["landing_hold_provenance"] = {
+            "origin": origin,
+            "cause": "planner:test",
+            "gate_id": "exact",
+            "hold": hold,
+        }
+    with Session(db) as session, session.begin():
+        controls._receipt(session, "t-refused-hold").direction_json = json.dumps(
+            direction
+        )
+    pulls = {3: pull(3, armed=True)}
+    github(monkeypatch, pulls=pulls)
+    item = landing._deliveries(POLICY)[0]
+    assert landing._enforce_landing_hold(POLICY["repo"], item) is (origin != "planner")
+    assert (pulls[3]["auto_merge"] is None) is (origin != "planner")
+
+
 @pytest.mark.parametrize("paused", [False, True])
 @pytest.mark.parametrize("entry", ["auto-merge", "queue"])
 def test_receipt_landing_hold_disarms_and_rechecks_even_with_global_flags_off(

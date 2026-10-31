@@ -347,6 +347,7 @@ def apply(
                     raise ValueError(release["reason"])
             else:
                 direction.pop("landing_hold")
+                direction.pop("landing_hold_provenance", None)
                 row.direction_json = dumps(direction)
         row.updated_at = controls._now()
         control.version += 1

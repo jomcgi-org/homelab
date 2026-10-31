@@ -1080,6 +1080,8 @@ def _direction(
                 "conductor_gates",
                 "delivery_adoption",
                 "landing_hold",
+                "landing_hold_provenance",
+                "landing_hold_refusals",
                 "nonrenewable_recovery",
                 "model_restriction",
             )

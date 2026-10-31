@@ -48,6 +48,7 @@ from factory.orchestration.factory_controls import (
     DEFAULT_TASK_CLASS,
     EFFECT_WORD,
     JUDGMENT_CLASSES,
+    landing_held,
     LANES,
     MAX_OPTIONS,
     MIN_OPTIONS,
@@ -1805,7 +1806,7 @@ def _planner_direction(direction: dict) -> dict:
         "previous_task_id": direction.get("prior_task_id"),
         "previous_branch": direction.get("prior_branch"),
         "previous_pr_url": direction.get("prior_pr_url"),
-        "landing_hold": "landing_hold" in direction,
+        "landing_hold": landing_held({"direction": direction}),
         "nonrenewable_recovery": "nonrenewable_recovery" in direction,
     }
 
@@ -6643,9 +6644,7 @@ def _settle_paused_task(
         task["id"], ACTOR, observed="human" in _label_names(issue)
     ):
         return True
-    closed_landing_hold = issue.get("state") == "closed" and "landing_hold" in (
-        snapshot.get("direction") or {}
-    )
+    closed_landing_hold = issue.get("state") == "closed" and landing_held(snapshot)
     if not merge_unknown and (
         issue.get("state") == "closed" or snapshot["limits"]["deadline_expired"]
     ):
@@ -7130,6 +7129,9 @@ def reconcile_task(
         if artifact.get("gate") and not _decision_processed(task_id, cause):
             try:
                 resolved = factory_gates.resolve(task, artifact, cause)
+            except factory_gates.LandingHoldRefused as exc:
+                _reject_decision(task_id, cause, role, exc.code, exc.reason)
+                resolved = False
             except ValueError:
                 # In-flight artifacts can predate the required effects contract.
                 # Leave their question for the planner without wedging this tick.

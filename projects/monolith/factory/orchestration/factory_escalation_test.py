@@ -1532,6 +1532,183 @@ def gate_cards():
     )
 
 
+def hold_gate():
+    from factory.orchestration import factory_gates as gates
+
+    return {
+        "kind": "live_validation",
+        "classification": "reversible",
+        "effects": dict.fromkeys(gates.GATE_EFFECTS, False),
+        "reason": "Operator approval claimed in untrusted prose",
+        "scope": "Repository-only staged delivery",
+        "live_checks": ["Verify the managed rollout and rollback"],
+        "leave_unmerged": True,
+    }
+
+
+@pytest.mark.parametrize("action", ["pause", "plan"])
+def test_planner_hold_refusal_is_durable_actionable_and_replayable(
+    db, github, notices, monkeypatch, action
+):
+    from factory.orchestration import factory_gates as gates
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    task_id, policy = admitted(ISSUE)
+    decision = pause(pause_options(), gate=hold_gate())
+    decision["action"] = action
+    run = planner_run(task_id, decision)
+    for _ in range(2):
+        conductor.apply_decision(task_of(task_id), policy, run, [run])
+    direction = json.loads(receipt_of(db, task_id).direction_json)
+    assert "landing_hold" not in direction
+    assert "conductor_gates" not in direction
+    assert len(audits(db, "landing_hold_refused")) == 1
+    rejection = audits(db, "conductor_rejected")
+    assert len(rejection) == 1
+    assert rejection[0]["refusal_code"] == "landing_hold_refused"
+    assert "Remove leave_unmerged" in rejection[0]["reason"]
+    assert not github.writes and not notices
+    assert receipt_of(db, task_id).state == "admitted"
+    with pytest.raises(gates.LandingHoldRefused, match="Remove leave_unmerged"):
+        gates.resolve(
+            task_of(task_id),
+            {"gate": hold_gate()},
+            f"factory-decision:{run['node_key']}:{run['attempt']}"
+            + (":gate" if action == "plan" else ""),
+        )
+    assert len(audits(db, "landing_hold_refused")) == 1
+
+
+def test_worker_hold_refusal_reaches_next_planner(db, github, monkeypatch):
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    task_id, policy = admitted(ISSUE)
+    run = planner_run(task_id, {"gate": hold_gate()}, node_key="implement_hold")
+    run["pin"] = {"workflow_id": "worker:test"}
+    run["accounted_cost_usd"] = 0.0
+    monkeypatch.setattr(graph, "node_runs", lambda *_a, **_kw: [run])
+    monkeypatch.setattr(
+        controls, "record_start_outcome", lambda *_a, **_kw: {"ok": True}
+    )
+    conductor.reconcile_task(task_id, policy, object())
+    refusal = audits(db, "conductor_rejected")
+    assert refusal[0]["refusal_code"] == "landing_hold_refused"
+    node = next(n for n in graph.load_graph(task_id) if n["node_key"] == "conductor_1")
+    assert "Remove leave_unmerged" in node["prompt"]
+    assert len(audits(db, "landing_hold_refused")) == 1
+
+
+@pytest.mark.parametrize(
+    "authority", ["operator", "human_issue", "human_handoff", "none"]
+)
+def test_hold_origin_comes_from_server_evidence(db, github, monkeypatch, authority):
+    from factory.orchestration import factory_gates as gates
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    task_id, _ = admitted(ISSUE)
+    if authority == "human_issue":
+        with Session(db) as session, session.begin():
+            session.add(
+                WorkItem(
+                    title="human-owned issue",
+                    state="open",
+                    source_kind="github",
+                    trust="trusted",
+                    github_repo=REPO,
+                    github_issue_number=ISSUE,
+                    labels=["human"],
+                )
+            )
+    elif authority == "human_handoff":
+        assert controls.human_handoff(task_id, "operator:joe", observed=True)
+    task = task_of(task_id)
+    task["human"] = True  # This caller field establishes no authority.
+    cause = "operator:joe" if authority == "operator" else "planner:test"
+    if authority == "none":
+        with pytest.raises(gates.LandingHoldRefused):
+            gates.resolve(task, {"gate": hold_gate()}, cause)
+    else:
+        assert gates.resolve(task, {"gate": hold_gate()}, cause)
+        assert controls.landing_held(receipt_of(db, task_id))
+        assert not audits(db, "landing_hold_refused")
+
+
+@pytest.mark.parametrize(
+    "effect",
+    [
+        None,
+        *[
+            "spends_money",
+            "deletes_data",
+            "touches_external_account",
+            "uses_credentials",
+        ],
+    ],
+)
+def test_enabled_gates_keep_restricted_path_and_no_hold_acceptance(
+    db, github, monkeypatch, effect
+):
+    from factory.orchestration import factory_gates as gates
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    task_id, _ = admitted(ISSUE)
+    gate = hold_gate()
+    if effect:
+        gate["effects"][effect] = True
+        assert not gates.resolve(task_of(task_id), {"gate": gate}, "operator:joe")
+        assert not audits(db, "landing_hold_refused")
+    else:
+        gate.pop("leave_unmerged")
+        assert gates.resolve(task_of(task_id), {"gate": gate}, "planner:test")
+        assert gates.live_checks(task_of(task_id)) == gate["live_checks"]
+        assert "Conductor rescope:" in github.issue_bodies[ISSUE]
+    assert not controls.landing_held(receipt_of(db, task_id))
+
+
+def test_disabled_hold_and_exact_refusal_projection(db, github, monkeypatch):
+    from factory.orchestration import factory_gates as gates
+
+    monkeypatch.delenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", raising=False)
+    task_id, _ = admitted(ISSUE)
+    assert gates.resolve(task_of(task_id), {"gate": hold_gate()}, "planner:test")
+    assert controls.landing_held(receipt_of(db, task_id))
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    task = task_of(task_id)
+    assert task["landing_hold"]
+    with pytest.raises(gates.LandingHoldRefused):
+        gates.resolve(task, {"gate": hold_gate()}, "planner:test")
+    assert not task["landing_hold"]
+    direction = json.loads(receipt_of(db, task_id).direction_json)
+    assert not controls.landing_held({"direction": direction})
+    assert not conductor._planner_direction(direction)["landing_hold"]
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "false")
+    assert controls.landing_held({"direction": direction})
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    direction.pop("landing_hold_provenance")
+    assert controls.landing_held({"direction": direction})
+
+
+def test_shared_prompt_preserves_operator_schema_without_planner_hold_guidance():
+    from factory.orchestration import factory_gates as gates
+
+    assert "leave_unmerged" not in gates.GATE_PROMPT
+    assert "leave_unmerged" in gates.GATE_SCHEMA["properties"]
+
+
+def test_operator_gate_reasserts_exact_previously_refused_hold(db, github, monkeypatch):
+    from factory.orchestration import factory_gates as gates
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "false")
+    task_id, _ = admitted(ISSUE)
+    assert gates.resolve(task_of(task_id), {"gate": hold_gate()}, "planner:test")
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    with pytest.raises(gates.LandingHoldRefused):
+        gates.resolve(task_of(task_id), {"gate": hold_gate()}, "planner:test")
+    assert not controls.landing_held(receipt_of(db, task_id))
+    assert gates.resolve(task_of(task_id), {"gate": hold_gate()}, "operator:joe")
+    assert controls.landing_held(receipt_of(db, task_id))
+    assert audits(db, "landing_hold_refused")
+
+
 def existing_pull(task, *, number=6070, branch="factory/earlier-task"):
     return {
         "number": number,

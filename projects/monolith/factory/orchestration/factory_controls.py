@@ -1736,6 +1736,7 @@ def _apply_capacity_release(
         row.task_paused = False
     if "landing_hold" in intent:
         direction.pop("landing_hold", None)
+        direction.pop("landing_hold_provenance", None)
     if settling and intent.get("resume"):
         # finish_task revokes the remaining resume with its original identity.
         direction["pending_capacity_release"] = {
@@ -2164,7 +2165,30 @@ def landing_held(row) -> bool:
         )
     else:
         direction = json.loads(getattr(row, "direction_json", None) or "{}")
-    return "landing_hold" in direction
+    if "landing_hold" not in direction:
+        return False
+    # Unknown and operator holds remain binding. Only an exact server-recorded
+    # refusal of this planner gate can suppress its projection or inheritance.
+    from core.env import flag
+
+    if flag("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED"):
+        source = direction.get("landing_hold_provenance")
+        if (
+            isinstance(source, dict)
+            and source.get("origin") == "planner"
+            and isinstance(source.get("cause"), str)
+            and bool(source["cause"])
+            and isinstance(source.get("gate_id"), str)
+            and bool(source["gate_id"])
+            and isinstance(direction["landing_hold"], dict)
+            and direction["landing_hold"].get("actor") == "factory:conductor"
+            and direction["landing_hold"].get("cause") == source["cause"]
+            and source.get("hold") == direction["landing_hold"]
+            and {"cause": source.get("cause"), "gate_id": source.get("gate_id")}
+            in direction.get("landing_hold_refusals", [])
+        ):
+            return False
+    return True
 
 
 def natural_history_exclusion(rows) -> str | None:

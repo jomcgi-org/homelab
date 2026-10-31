@@ -365,6 +365,60 @@ def test_explicit_delivery_keeps_refinement_landing_hold(db, policy, alias):
     }
 
 
+@pytest.mark.parametrize("task_class", ["bug-fix", "refine"])
+@pytest.mark.parametrize("evidence", ["exact", "different_gate", "operator", "unknown"])
+def test_hold_inheritance_requires_exact_refused_planner_provenance(
+    db, policy, monkeypatch, task_class, evidence
+):
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    enable(policy)
+    hold = {"actor": "factory:conductor", "cause": "planner:test", "reason": "stage"}
+    direction = {
+        "landing_hold": hold,
+        "landing_hold_provenance": {
+            "origin": "operator" if evidence == "operator" else "planner",
+            "cause": "planner:test",
+            "gate_id": "exact",
+            "hold": hold,
+        },
+        "landing_hold_refusals": [
+            {
+                "cause": "planner:test",
+                "gate_id": "other" if evidence == "different_gate" else "exact",
+            }
+        ],
+    }
+    if evidence == "unknown":
+        direction.pop("landing_hold_provenance")
+    with Session(db) as session, session.begin():
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=1,
+                generation=99,
+                task_class=task_class,
+                title="earlier",
+                body="body",
+                url="https://github.com/owner/repo/issues/1",
+                actor="operator",
+                state="succeeded",
+                direction_json=json.dumps(direction),
+            )
+        )
+    receive_issue(
+        "owner/repo",
+        1,
+        "delivery",
+        "body",
+        "https://github.com/owner/repo/issues/1",
+        "operator",
+    )
+    result = admit_next("scheduler")
+    assert result["ok"], result
+    received = controls.task_snapshot(result["task_id"])["direction"] or {}
+    assert ("landing_hold" in received) is (evidence != "exact")
+
+
 @pytest.mark.parametrize("held", [False, True])
 def test_waiting_receipt_retains_issue_and_branch_but_releases_repo_capacity(
     db, policy, monkeypatch, held
