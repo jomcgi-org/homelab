@@ -307,6 +307,7 @@ def test_exact_completed_probe_retires_only_binding_and_fence_once(db, dispatch)
         (AgentSession, {"ember_session_id": "s-successor"}),
         (AgentSession, {"ember_lineage_id": "s-another-lineage"}),
         (AgentSession, {"prior_ember_lineage_id": "s-retained-ancestor"}),
+        (AgentSession, {"prior_cli_session_id": "cli-retained-ancestor"}),
         (AgentSession, {"result_receipt_fence_id": "new-fence"}),
         (AgentSession, {"guest_cleanup_id": "existing-cleanup"}),
         (AgentCapacityReservation, {"state": "uncertain"}),
