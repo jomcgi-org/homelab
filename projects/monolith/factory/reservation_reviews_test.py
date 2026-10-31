@@ -124,162 +124,11 @@ def decision(action="approve"):
     }
 
 
-def seed_cost_attempt(db, *, provider_cost=None, list_cost=None, ceiling=2.0):
-    workflow = "factory-node:task:work:1"
-    pid = seed(db, key=workflow)
-    pin = {
-        "task_id": "task",
-        "node_key": "work",
-        "attempt": 1,
-        "workflow_id": workflow,
-        "model": "sol",
-        "max_cost_usd": ceiling,
-    }
-    with Session(db) as session:
-        permit = session.get(AgentCapacityReservation, pid)
-        agent = session.get(AgentSession, permit.session_id)
-        agent.node_key = "work"
-        agent.node_attempt = 1
-        session.add(agent)
-        session.add(SwarmTask(id="task", task_text="work", conductor_model="astra"))
-        session.add(
-            SwarmNodeRun(
-                task_id="task",
-                node_key="work",
-                attempt=1,
-                dispatch_key=workflow,
-                pin_json=json.dumps(pin),
-                session_id=agent.id,
-                status="dispatched",
-            )
-        )
-        session.add(
-            FactoryStart(
-                task_id="task",
-                start_key=workflow,
-                actor="test",
-                model="sol",
-                max_cost_usd=ceiling,
-                status="reserved",
-                session_id=agent.id,
-            )
-        )
-        session.add(
-            AgentTurn(
-                session_id=agent.id,
-                seq=1,
-                prompt="work",
-                result_text="progress",
-                cost_usd=provider_cost,
-                list_cost_usd=list_cost,
-            )
-        )
-        session.commit()
-        return {
-            "permit_id": pid,
-            "session_id": agent.id,
-            "workflow_id": workflow,
-        }
-
-
-def install_cost_stop_fakes(db, monkeypatch, *, persist=False):
-    from factory.orchestration import factory_attempt_stop as stops
-
-    calls = []
-
-    def read(task_id, node_key, attempt, session_id):
-        assert (task_id, node_key, attempt) == ("task", "work", 1)
-        return {"identity_sha256": "a" * 64, "session_id": session_id}
-
-    def stop(**kwargs):
-        calls.append(kwargs)
-        with Session(db) as session:
-            kwargs["authorization_check"](session)
-            if persist:
-                session.add(
-                    FactoryAudit(
-                        actor=kwargs["actor"],
-                        action=stops.REQUEST_ACTION,
-                        task_id=kwargs["task_id"],
-                        detail_json=json.dumps(
-                            {"identity": {"workflow_id": "factory-node:task:work:1"}}
-                        ),
-                    )
-                )
-                session.commit()
-        return {"ok": True}
-
-    monkeypatch.setattr(stops, "read_attempt_stop", read)
-    monkeypatch.setattr(stops, "request_attempt_stop", stop)
-    return calls
-
-
-def test_provider_cost_above_ceiling_requests_distinct_stop(db, monkeypatch):
-    attempt = seed_cost_attempt(db, provider_cost=1.01)
-    with Session(db) as session:
-        session.add(
-            AgentTurn(
-                session_id=attempt["session_id"],
-                seq=2,
-                prompt="continue",
-                result_text="more progress",
-                cost_usd=1.0,
-            )
-        )
-        session.commit()
-    monkeypatch.setenv("FACTORY_ENFORCE_COST_CEILING_ENABLED", "true")
-    calls = install_cost_stop_fakes(db, monkeypatch)
-
-    reviews.enforce_cost_ceilings()
-
-    assert len(calls) == 1
-    assert calls[0]["session_id"] == attempt["session_id"]
-    assert calls[0]["reason"] == reviews.COST_CEILING_REASON
-    assert calls[0]["actor"] == reviews.COST_CEILING_ACTOR
-    assert calls[0]["request_key"] == "cost-ceiling:" + "a" * 64
-
-
-def test_repeated_cost_checks_do_not_request_a_second_stop(db, monkeypatch):
-    seed_cost_attempt(db, provider_cost=3.0)
-    monkeypatch.setenv("FACTORY_ENFORCE_COST_CEILING_ENABLED", "true")
-    calls = install_cost_stop_fakes(db, monkeypatch, persist=True)
-
-    reviews.enforce_cost_ceilings()
-    reviews.enforce_cost_ceilings()
-
-    assert len(calls) == 1
-
-
-def test_provider_cost_under_ceiling_is_not_stopped(db, monkeypatch):
-    seed_cost_attempt(db, provider_cost=1.99)
-    monkeypatch.setenv("FACTORY_ENFORCE_COST_CEILING_ENABLED", "true")
-    calls = install_cost_stop_fakes(db, monkeypatch)
-
-    reviews.enforce_cost_ceilings()
-
-    assert calls == []
-
-
-def test_list_price_above_ceiling_is_not_stopped(db, monkeypatch):
-    seed_cost_attempt(db, provider_cost=None, list_cost=3.0)
-    monkeypatch.setenv("FACTORY_ENFORCE_COST_CEILING_ENABLED", "true")
-    calls = install_cost_stop_fakes(db, monkeypatch)
-
-    reviews.enforce_cost_ceilings()
-
-    assert calls == []
-
-
-def test_disabled_cost_ceiling_does_not_look_up_spend(db, monkeypatch):
-    seed_cost_attempt(db, provider_cost=3.0)
-    monkeypatch.setenv("FACTORY_ENFORCE_COST_CEILING_ENABLED", "false")
-    monkeypatch.setattr(
-        reviews,
-        "get_engine",
-        lambda: pytest.fail("disabled enforcement must not query spend"),
-    )
-
-    reviews.enforce_cost_ceilings()
+@pytest.mark.parametrize("legacy_flag", ["false", "true"])
+def test_retired_dollar_ceiling_cannot_start_a_supervisor(monkeypatch, legacy_flag):
+    monkeypatch.setenv("FACTORY_ENFORCE_COST_CEILING_ENABLED", legacy_flag)
+    monkeypatch.setattr(leases, "enabled", lambda: False)
+    assert reviews.start_review_loop() == []
 
 
 def test_review_is_due_before_30_minute_expiry(db, monkeypatch):
@@ -307,8 +156,13 @@ def test_starting_review_or_heartbeat_does_not_renew(db, monkeypatch):
     assert reviews.health_snapshot()["ok"] is False
 
 
-def test_completed_approval_renews_exact_dispatch(db):
-    pid, candidate = ready(db, age=1801)
+@pytest.mark.parametrize(
+    "state,guest",
+    [("running", "guest"), ("reserved", None)],
+    ids=["exact-dispatch", "pre-dispatch"],
+)
+def test_completed_approval_renews_exact_dispatch(db, state, guest):
+    pid, candidate = ready(db, state=state, guest=guest, age=1801)
     reviews.apply_decision(candidate, decision())
     with Session(db) as session:
         row = session.get(ReservationReview, pid)
@@ -341,14 +195,6 @@ def test_no_substantive_progress_cannot_renew_again(db, monkeypatch):
     reviews.apply_decision(candidate, decision())
     with Session(db) as session:
         assert session.get(ReservationReview, pid).state == "blocked"
-
-
-def test_reserved_pre_dispatch_work_can_receive_explicit_approval(db):
-    pid, candidate = ready(db, state="reserved", guest=None, age=1801)
-    reviews.apply_decision(candidate, decision())
-    with Session(db) as session:
-        assert session.get(ReservationReview, pid).state == "approved"
-        assert leases.may_dispatch(session, session.get(AgentCapacityReservation, pid))
 
 
 def test_unknown_outcomes_never_receive_model_approval(db):
@@ -999,3 +845,69 @@ def test_unresolved_or_changed_reviewer_still_holds_lane(db, conflict):
         session.commit()
     assert reviews.claim_review() is None
     assert sid in reviews.health_snapshot()["retained_reviewers"]
+
+
+def test_reservation_verdict_uses_funding_and_records_exact_authority(db, monkeypatch):
+    from factory.orchestration import factory_funding as funding
+
+    pid, candidate = ready(db)
+    original = funding.decide
+    seen = []
+
+    def decide(value, **kwargs):
+        seen.append(kwargs["reservation"])
+        return original(value, **kwargs)
+
+    monkeypatch.setattr(funding, "decide", decide)
+    reviews.apply_decision(candidate, decision())
+    assert len(seen) == 1
+    assert seen[0]["current"]["permit_id"] == pid
+    with Session(db) as session:
+        record = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "funding_reservation_decided"
+            )
+        ).one()
+        evidence = json.loads(record.detail_json)
+        assert evidence["permit_id"] == pid
+        assert evidence["identity_sha256"] == candidate["snapshot"]["identity"]
+        assert evidence["review_session_key"] == candidate["key"]
+        assert evidence["verdict"]["action"] == "continue"
+        assert evidence["verdict"]["refusal"] is None
+        assert session.get(ReservationReview, pid).state == "approved"
+
+
+def test_predispatch_factory_audit_retains_task_without_stop_identity(db):
+    pid = seed(db, state="reserved", guest=None)
+    with Session(db) as session, session.begin():
+        permit = session.get(AgentCapacityReservation, pid)
+        agent = session.get(AgentSession, permit.session_id)
+        agent.node_key, agent.node_attempt = "implement", 1
+        session.add(
+            SwarmTask(
+                id="task", task_text="fix", conductor_model="astra", budget_usd=50
+            )
+        )
+        session.add(
+            SwarmNodeRun(
+                task_id="task",
+                node_key="implement",
+                attempt=1,
+                session_id=agent.id,
+                dispatch_key=agent.workflow_id,
+                status="pending",
+            )
+        )
+    candidate = reviews.claim_review()
+    reviews.review_context(candidate)
+    assert "stop_identity" not in candidate
+    reviews.apply_decision(candidate, decision())
+    with Session(db) as session:
+        record = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "funding_reservation_decided"
+            )
+        ).one()
+        assert record.task_id == "task"
+        assert json.loads(record.detail_json)["permit_id"] == pid
+        assert session.get(ReservationReview, pid).state == "approved"

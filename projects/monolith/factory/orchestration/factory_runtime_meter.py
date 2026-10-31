@@ -26,13 +26,18 @@ from factory.execution.runtime_meter_evidence import (
     records_for_receipt as _records_for_receipt,
 )
 from factory.execution.models import AgentResultReceipt, AgentTurn
-from factory.orchestration import factory_controls as controls, factory_pause
+from factory.orchestration import (
+    factory_controls as controls,
+    factory_pause,
+    factory_funding as funding,
+)
 from factory.orchestration.factory_funding_limits import objective_task_ids
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryControl,
     FactoryReceipt,
     FactoryStart,
+    funding_audit_filter,
 )
 from shared.pricing import FIXED_PRICES, price_usage
 
@@ -51,7 +56,7 @@ def _records(db, task_ids, actions):
         {**json.loads(row.detail_json), "audit_id": row.id, "task_id": row.task_id}
         for row in db.exec(
             select(FactoryAudit)
-            .where(FactoryAudit.task_id.in_(task_ids), FactoryAudit.action.in_(actions))
+            .where(FactoryAudit.task_id.in_(task_ids), funding_audit_filter(*actions))
             .order_by(FactoryAudit.id)
         ).all()
     ]
@@ -92,10 +97,18 @@ def bind(db, receipt, agent, request_body):
             409, "meter_adapter_or_authority_unavailable"
         )
     totals = objective_totals(db, owner)
-    if totals["known_list_usd"] >= OBJECTIVE_USD:
-        raise result_receipts.ReceiptRejected(409, "objective_list_backstop")
-    if totals["sessions"].get(agent.id, 0) >= SESSION_USD:
-        raise result_receipts.ReceiptRejected(409, "session_list_backstop")
+    resolved = funding.decide(
+        None,
+        meter={
+            "binding": True,
+            "totals": totals,
+            "session_id": agent.id,
+            "session_usd": SESSION_USD,
+            "objective_usd": OBJECTIVE_USD,
+        },
+    )
+    if resolved["action"] == "stop":
+        raise result_receipts.ReceiptRejected(409, resolved["reason"])
     previous_turn = db.exec(
         select(AgentTurn.list_cost_usd).where(
             AgentTurn.session_id == agent.id, AgentTurn.seq == receipt.seq
@@ -128,7 +141,7 @@ def bind(db, receipt, agent, request_body):
             if row["session_id"] == agent.id and row["seq"] == receipt.seq
         ],
     }
-    controls._audit(
+    funding.record_audit(
         db, "factory:runtime-meter", BOUND, task_id=start.task_id, **binding
     )
     return True
@@ -157,14 +170,10 @@ def objective_totals(db, owner):
     # Use the established objective collector for lost start/run associations.
     from factory.orchestration.factory_progress_shadow import snapshot
 
-    projection = snapshot(db, owner, controls._effective_policy(db, owner))["prices"]
-    session_ids = {row["session_id"] for row in projection["sessions"]}
-    session_ids.update(binding["session_id"] for binding in bindings)
-    for sid, seq, listed in db.exec(
-        select(AgentTurn.session_id, AgentTurn.seq, AgentTurn.list_cost_usd).where(
-            AgentTurn.session_id.in_(session_ids)
-        )
-    ).all():
+    projection = snapshot(
+        db, owner, session_ids={row["session_id"] for row in bindings}
+    )
+    for sid, seq, listed in projection["turns"]:
         if type(listed) in (int, float) and math.isfinite(listed) and listed >= 0:
             by_turn[sid, seq] = max(by_turn[sid, seq], listed)
     sessions = defaultdict(float)
@@ -208,7 +217,7 @@ def _usage_stale(binding, last):
 
 def _trip(db, binding, reason):
     if not _records_for_receipt(db, binding["receipt_id"], TRIP):
-        controls._audit(
+        funding.record_audit(
             db,
             "factory:runtime-meter",
             TRIP,
@@ -259,7 +268,7 @@ def ingest(receipt_id, token, value):
             elif last and listed < last["list_cost_usd"]:
                 reason = "meter_price_regression"
             else:
-                controls._audit(
+                funding.record_audit(
                     db,
                     "factory:runtime-meter",
                     UPDATE,
@@ -298,11 +307,18 @@ def ingest(receipt_id, token, value):
             reason = reason or "meter_usage_stale"
         owner = db.get(FactoryReceipt, binding["objective_receipt_id"])
         totals = objective_totals(db, owner)
-        if totals["sessions"].get(binding["session_id"], 0) >= SESSION_USD:
-            reason = reason or "session_list_backstop"
-        objective_exceeded = totals["known_list_usd"] >= OBJECTIVE_USD
-        if objective_exceeded:
-            reason = reason or "objective_list_backstop"
+        resolved = funding.decide(
+            None,
+            meter={
+                "totals": totals,
+                "session_id": binding["session_id"],
+                "session_usd": SESSION_USD,
+                "objective_usd": OBJECTIVE_USD,
+                "reason": reason,
+            },
+        )
+        reason = resolved["reason"]
+        objective_exceeded = resolved["objective_exceeded"]
         admission.lock_pool(db)
         try:
             active = result_receipts._active_owner(
@@ -338,11 +354,27 @@ def ingest(receipt_id, token, value):
                 db,
                 current_owner,
                 "factory:runtime-meter",
-                "objective_list_backstop"
-                if objective_exceeded
-                else reason or trips[0]["reason"],
+                (
+                    "objective_list_backstop"
+                    if objective_exceeded
+                    else reason or trips[0]["reason"]
+                ),
             )
-        stop = bool(reason or trips or active is None)
+        stop = (
+            funding.decide(
+                None,
+                meter={
+                    "totals": totals,
+                    "session_id": binding["session_id"],
+                    "session_usd": SESSION_USD,
+                    "objective_usd": OBJECTIVE_USD,
+                    "reason": reason,
+                    "tripped": bool(trips),
+                    "active": active is not None,
+                },
+            )["action"]
+            == "stop"
+        )
     # A failed external observation does not erase the committed trip. The
     # regular conductor tick retries through the same attempt-stop owner.
     if stop:
@@ -411,8 +443,17 @@ def reconcile(task_id):
             except result_receipts.ReceiptRejected:
                 active = None
             owner = db.get(FactoryReceipt, binding["objective_receipt_id"])
-            if active is not None and owner is not None and owner.task_id == task_id:
-                _trip(db, binding, "meter_usage_stale")
+            resolved = funding.decide(
+                None,
+                meter={
+                    "stale": True,
+                    "active": active is not None
+                    and owner is not None
+                    and owner.task_id == task_id,
+                },
+            )
+            if resolved["action"] == "stop":
+                _trip(db, binding, resolved["reason"])
                 controls.revoke_capacity_release(
                     db, owner, "factory:runtime-meter", "runtime_meter_pause"
                 )

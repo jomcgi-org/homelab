@@ -10,6 +10,7 @@ from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryReceipt,
     FactoryStart,
+    funding_audit_filter,
 )
 
 OBJECTIVE_CEILING_USD = 200.0
@@ -25,7 +26,7 @@ def enabled():
 def latest(db, task_id, action):
     row = db.exec(
         select(FactoryAudit)
-        .where(FactoryAudit.task_id == task_id, FactoryAudit.action == action)
+        .where(FactoryAudit.task_id == task_id, funding_audit_filter(action))
         .order_by(FactoryAudit.id.desc())
     ).first()
     return None if row is None else {**json.loads(row.detail_json), "audit_id": row.id}

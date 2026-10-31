@@ -111,11 +111,6 @@ swarm:
   # On 2026-10-01 receipts 700/703 (generation 13, admitted) had watchdog
   # cards factory_decide refused once the policy moved to 14.
   factoryActiveReceiptDecisionsEnabled: true
-  # Off (#7161): dollars are accounting only, so an attempt is never stopped
-  # at its max_cost_usd reservation and an overrun no longer fails a node.
-  # The quota guard and the turn, attempt and deadline limits bound the work.
-  # #6169 turned this on when an overrunning node was failed regardless.
-  factoryEnforceCostCeilingEnabled: false
   # Per-class floors on remaining quota percent (#5974). A floor only bites
   # for a role whose stored factory policy carries a model_pools entry with
   # somewhere to spill to; a single-member pool never consults quota. The

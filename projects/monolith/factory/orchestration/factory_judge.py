@@ -1,10 +1,10 @@
-"""What the funding judge and the no-progress watchdog weigh, in one place.
+"""The evidence and criteria used inside the funding decision.
 
-Both decide whether a task should keep spending. With
-``FACTORY_MERIT_JUDGE_ENABLED`` they decide on the merits a person would use:
+With ``FACTORY_MERIT_JUDGE_ENABLED`` the funding judge weighs:
 how much verified progress exists, how close the work is to landing, and what
-the issue is worth. ``CRITERIA`` is the prose both prompts carry, and
-``merit_evidence`` is the bounded, server-read brief beside it. Tune the
+the issue is worth. ``CRITERIA`` is the judge prompt's prose, and
+``merit_evidence`` is the bounded, server-read brief beside it. Progress
+crossings use the same judge request, not a second assessment. Tune the
 judgement here, not in the callers; FACTORY.md documents the contract.
 
 The hard ceilings are policy, not prose: see ``ceiling`` and the

@@ -3157,9 +3157,11 @@ def test_premature_finish_is_processed_once_and_next_planner_gets_reason(
                 "draft": False,
                 "head": {
                     "sha": head,
-                    "ref": "other"
-                    if failure == "wrong_branch"
-                    else f"factory/{task['id']}",
+                    "ref": (
+                        "other"
+                        if failure == "wrong_branch"
+                        else f"factory/{task['id']}"
+                    ),
                     "repo": {"full_name": task["repo"]},
                 },
                 "base": {"ref": "main"},
@@ -5416,9 +5418,9 @@ def test_not_invoked_refuses_conflicting_or_insufficient_proof(
                     local_session_id=agent.local_session_id,
                     seq=1,
                     dispatch_count=1,
-                    claim_owner="other-owner"
-                    if case == "receipt_owner"
-                    else permit.owner,
+                    claim_owner=(
+                        "other-owner" if case == "receipt_owner" else permit.owner
+                    ),
                     guest_id=agent.ember_session_id,
                     request_sha256="c" * 64,
                     created_at=now,
@@ -10318,9 +10320,9 @@ def test_conductor_keeps_unknown_execution_fenced(queued_factory, monkeypatch, c
             db.commit()
     result = {
         "status": "uncertain",
-        "reason": "timeout: unknown"
-        if cause == "attempted"
-        else "start_failed: unknown",
+        "reason": (
+            "timeout: unknown" if cause == "attempted" else "start_failed: unknown"
+        ),
         "session_id": s.sid,
     }
     dbos = SimpleNamespace(
@@ -17129,9 +17131,11 @@ def test_continuation_after_model_restriction_preserves_existing_fences(
     else:
         assert result == (
             False,
-            "nonrenewable_recovery"
-            if constraint == "nonrenewable"
-            else "continuation_changed",
+            (
+                "nonrenewable_recovery"
+                if constraint == "nonrenewable"
+                else "continuation_changed"
+            ),
         )
         assert controls.continuation_grant(task["id"]) is None
         assert conductor.graph.load_graph(task["id"]) == nodes
@@ -18740,13 +18744,108 @@ def test_funding_oversight_accepts_only_the_recorded_allowed_judge(
     )["ok"]
 
 
-def test_funding_can_stop_without_human_escalation(feedback_db, monkeypatch):
+@pytest.mark.parametrize("funding_enabled", [False, True])
+def test_progress_and_exhausted_allocation_share_one_funding_decision(
+    feedback_db, monkeypatch, funding_enabled
+):
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_progress_watchdog as watchdog
+    from factory.orchestration.factory_models import FactoryAudit, FactoryStart
+
+    monkeypatch.setenv(
+        "FACTORY_CONDUCTOR_FUNDING_ENABLED", str(funding_enabled).lower()
+    )
+    task, policy = feedback_task(max_turns=8)
+    monkeypatch.setattr(funding, "_issue", lambda _: {"number": 7, "state": "open"})
+    with controls._locked_session() as (db, _control):
+        db.add_all(
+            [
+                FactoryStart(
+                    task_id=task["id"],
+                    start_key=f"work:{i}",
+                    actor="test",
+                    model="luna",
+                    max_cost_usd=2,
+                    status="succeeded",
+                    cost_usd=1,
+                )
+                for i in range(8)
+            ]
+        )
+    assert watchdog.check(task["id"], policy) == "funding_review"
+    assert watchdog.check(task["id"], policy) == "funding_review"
+    assert funding.request(task, "Task allocation exhausted")
+    with controls._read_session() as db:
+        requests = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "funding_review_requested",
+            )
+        ).all()
+        assert len(requests) == 1
+    settle_funding(task, funding_decision())
+    assert controls.task_snapshot(task["id"])["policy"]["max_task_turns_hard"] > 8
+    assert watchdog.check(task["id"], policy) == "under_threshold"
+    with controls._read_session() as db:
+        assert funding.pending(db, task["id"]) is None
+        assert (
+            watchdog.detail(db, task["id"], policy)["last"]["action"]
+            == "funding_review_settled"
+        )
+
+
+@pytest.mark.parametrize("retry_seconds", [300, 301])
+def test_progress_trigger_cannot_skip_stale_funding_wait(
+    feedback_db, monkeypatch, retry_seconds
+):
+    from datetime import datetime, timedelta
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = funding_task(monkeypatch)
+    assert funding.request(task, "Assess correction")
+    # The issue changes between reservation and settlement, invalidating the review.
+    monkeypatch.setattr(funding, "_issue", lambda _: {"number": 7, "state": "closed"})
+    first = settle_funding(task, funding_decision())
+    with controls._read_session() as db:
+        settled = funding.latest(db, task["id"], "funding_review_settled")
+    now = datetime.fromisoformat(settled["retry_after"]) - timedelta(seconds=300)
+    monkeypatch.setattr(controls, "_now", lambda: now + timedelta(seconds=299))
+    monkeypatch.setattr(
+        funding, "_issue", lambda _: pytest.fail("stale review retried too soon")
+    )
+    assert funding.request(task, "Progress crossing", progress=True)
+    assert funding.request(task, "Another limit crossing")
+    with controls._read_session() as db:
+        assert (
+            funding.latest(db, task["id"], "funding_review_requested")["audit_id"]
+            == first["audit_id"]
+        )
+        assert funding.pending(db, task["id"]) is None
+    monkeypatch.setattr(
+        controls, "_now", lambda: now + timedelta(seconds=retry_seconds)
+    )
+    monkeypatch.setattr(funding, "_issue", lambda _: {"number": 7, "state": "open"})
+    assert funding.reconcile(
+        task, policy, conductor.graph.node_runs(task["id"]), {"ok": True}
+    )
+    with controls._read_session() as db:
+        assert funding.pending(db, task["id"])["audit_id"] > first["audit_id"]
+
+
+def test_funding_stop_retains_issue_pr_and_findings(feedback_db, monkeypatch):
     from factory.orchestration import (
         factory_funding as funding,
         factory_controls as controls,
     )
 
     task, _ = funding_task(monkeypatch)
+    retained = conductor.graph.node_runs(task["id"])
+    review = next(run for run in retained if run["node_key"] == "review_fix")
+    findings = conductor._artifact(review)
+    assert findings["verdict"] == "changes_requested"
+    assert findings["summary"] == "Tighten the retry bound and add a regression test."
     assert funding.request(task, "Assess value")
     settle_funding(
         task,
@@ -18755,6 +18854,11 @@ def test_funding_can_stop_without_human_escalation(feedback_db, monkeypatch):
         ),
     )
     assert controls.task_snapshot(task["id"])["state"] == "failed"
+    assert conductor._task(task["id"])["issue_number"] == task["issue_number"]
+    after = {run["id"]: run for run in conductor.graph.node_runs(task["id"])}
+    assert all(after[run["id"]] == run for run in retained)
+    assert conductor._latest_pr(list(after.values())) == conductor._latest_pr(retained)
+    assert conductor._artifact(after[review["id"]]) == findings
 
 
 def test_funding_review_outlives_only_its_exact_soft_deadline(feedback_db, monkeypatch):
@@ -21213,18 +21317,20 @@ def test_drained_retry_three_dispatch_chain(drained_retry_not_invoked, shape, ac
                     "id": "final",
                     "token_sha256": "e" * 64,
                     "dispatch_count": 3,
-                    "claim_owner": "other"
-                    if shape == "wrong_owner"
-                    else usage["recovery"]["claim_owner"],
+                    "claim_owner": (
+                        "other"
+                        if shape == "wrong_owner"
+                        else usage["recovery"]["claim_owner"]
+                    ),
                     "guest_id": "other" if shape == "wrong_guest" else first.guest_id,
                     "created_at": dispatched,
                     "received_at": dispatched if shape == "final_response" else None,
-                    "result_body": first.result_body
-                    if shape == "final_response"
-                    else None,
-                    "result_sha256": first.result_sha256
-                    if shape == "final_response"
-                    else None,
+                    "result_body": (
+                        first.result_body if shape == "final_response" else None
+                    ),
+                    "result_sha256": (
+                        first.result_sha256 if shape == "final_response" else None
+                    ),
                 }
             )
             db.add(last)
@@ -21785,13 +21891,13 @@ def completed_receipt_factory(uncertain_factory):
                     ),
                     "turn_seq": count,
                     "session_id": agent.cli_session_id,
-                    "terminal_reason": "completed"
-                    if count == 2
-                    else "interrupted_for_drain",
+                    "terminal_reason": (
+                        "completed" if count == 2 else "interrupted_for_drain"
+                    ),
                     "stop_reason": None if count == 2 else "interrupted_for_drain",
-                    "result": "completed native result"
-                    if count == 2
-                    else "drained prefix",
+                    "result": (
+                        "completed native result" if count == 2 else "drained prefix"
+                    ),
                     "voice": "finished",
                     "usage": {"input_tokens": 100, "output_tokens": 50},
                     "total_cost_usd": 0.25,
@@ -21812,9 +21918,9 @@ def completed_receipt_factory(uncertain_factory):
                     received_at=created + timedelta(seconds=5),
                     accept_until=created + timedelta(hours=13),
                     retain_until=created + timedelta(days=7),
-                    superseded_at=s.dispatched_at + timedelta(seconds=2)
-                    if count == 1
-                    else None,
+                    superseded_at=(
+                        s.dispatched_at + timedelta(seconds=2) if count == 1 else None
+                    ),
                     result_body=body,
                     result_sha256=hashlib.sha256(body).hexdigest(),
                 )

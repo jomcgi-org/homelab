@@ -3453,47 +3453,139 @@ After replacement, normal workflow recovery and reconciliation use the existing
 receipt, attempt, session, and accounting identities. HTTP responsiveness alone
 no longer hides a conductor that has stopped making progress.
 
-### Reviewed reservation leases
+## Funding
 
-With `FACTORY_RESERVATION_REVIEW_ENABLED`, every execution reservation starts
-with a 30-minute work-review lease. The existing executor heartbeat remains an
-ownership mechanism; it never renews the work-review lease. The factory begins
-a judge review five minutes before expiry and bounds the review to four minutes.
-The review runs on the policy's `judge` pool (see the pool table), or on Opus
-when no factory policy is recorded. One durable review runs at a time, using reserved interactive headroom so a full
-background pool cannot starve supervision.
-A failed reviewer may retain its historical guest binding after permit
-supervision proves that exact guest ceased. A matching settled cessation audit
-releases the global reviewer concurrency hold and its retained-reviewer health
-warning. New turns, queued work, active permits, aliases, cleanup ownership,
-observer fences, or missing/mismatched proof retain the hold. This does not
-retry the failed reviewer, delete its binding, or change its costs or history.
+Task funding is implemented in `factory_funding.py`. `request` records one
+judge node, `settle` verifies its authority, and `decide` resolves a validated
+artifact to `continue`, `steer` or `stop`. A steer may require an operator
+instead of granting work. The caller commits the grant or stop under both the
+control and task locks. The judge never writes policy directly.
 
-The review sees the task objective, exact attempt, bounded progress, previous
-review, and a fresh control-plane guest observation. Approval renews the exact
-dispatch for 30 minutes. Repeated approval requires new substantive evidence.
-Unknown outcomes cannot be approved. A stop, replan, or steering decision uses
-the existing exact-attempt stop protocol. Steering reaches the next conductor
-plan after cessation confirmation; it does not inject concurrent input into a
-running model turn. Original results and unknown costs remain intact.
+`FACTORY_CONDUCTOR_FUNDING_ENABLED` enables new funding reviews when work turns,
+review rounds or a lease run out. Existing enrolled reviews can finish after
+creation is disabled. The selected policy judge has one exact dispatch, a
+five-minute admission deadline and a recorded $1 reservation. Only that model
+may settle the review while the effective policy still allows it. The issue,
+graph revision, work evidence and policy digest must still match. A failed or
+stale review waits five minutes before retry; six consecutive refusals end the
+task with its evidence retained. Queueing beyond the admission deadline does
+not invalidate a completed review whose authority remains current.
 
-`/api/health` reports the critical `factory_reservations` component unhealthy
-for overdue or blocked reviews, pending stops, held routine jobs, and active
-factory attempts missing reservation coverage. `/healthz` remains process
-liveness, so a blocked job does not restart the monolith repeatedly. Expiry
-fences subsequent dispatch but never refunds capacity or proves guest cessation.
+A continue or steer grants at most 20 work turns and a review horizon of at most
+30 minutes. The horizon fences new work; reserved workers keep their invocation
+deadlines. The original policy stays immutable and `funding_granted` supplies an
+effective overlay. With merit judging enabled, a recorded turn deficit raises
+the requested tranche and the pinned turn ceiling limits it. A deficit that
+cannot fit becomes an operator decision. No amount of oversight or accounting
+correction constitutes new work evidence for another automatic grant.
+`factory_funding.funding_blocker` enforces this check and preserves its pause
+and capacity-release revocation.
 
-The permit observer reconciles held routine jobs only after fresh, exact guest
-cessation evidence. It atomically settles the reservation and either rearms an
-unprocessed job or retains an already-applied extraction. Missing guest identity
-remains unhealthy and requires evidence; elapsed time is not a no-guest proof.
+Objective accounting sums execution and funding across task generations and
+advisory/delivery passes. Immutable admission audits retain ownership across
+readmission. Reservations and unknown outcomes stay charged. Observed costs do
+not raise or shrink the approved dollar figure. The existing explicit budget
+amendment boundary remains: a judge proposing a larger budget pauses the receipt
+for operator approval, without granting the tranche. The funding decision
+function separates that proposal from permission to execute.
 
-Non-graph execution sessions use a durable conditional stop intent and the same
-unknown-outcome fence. The observer accepts only the reviewed invocation's
-cessation proof; later queued user input is preserved. Never-started reservations
-use positive local cancellation proof. An explicit routine stop parks the job
-atomically and prevents ordinary retry from rearming it. Steering and replanning
-carry guidance into the next routine attempt only after confirmed cessation.
+An unresolved funding escalation or budget proposal cannot request a second
+judge. A successful operator resume or exact policy amendment records
+`funding_progress_rearmed` at the current settled-turn count. Both the progress
+trigger and funding reconciler honour that answer. The next progress review
+waits a full step; reservations, charges and legacy watchdog holds are retained.
+
+Exact-artifact continuation also uses `factory_funding.decide`. Its explicit
+operator authority retains the same PR, independent reviewed head, subscription
+admission and landing hold. Renewal still refuses repeated review failures or
+new failed execution. Historical `progress_continuation_*` audit rows remain
+readable and the lease projection retains its existing vocabulary.
+
+`FACTORY_MERIT_JUDGE_ENABLED` adds the criteria and server-read evidence in
+`factory_judge.py`: progress, proximity to landing and issue value. It also
+allows a judge's explicit doubt to steer to an operator card. That artifact must
+carry an assessment. Without merit authority, `escalate` is refused. The pinned
+turn ceiling is the original turn allowance plus
+`factoryMeritJudgeMaxExtensionMultiple` times it (at least two extra turns),
+never a multiple of the last grant. A stop retains the issue, PR and findings.
+Independent exact-head delivery review and required CI remain mandatory.
+
+Reservation supervision owns the currently running invocation.
+`FACTORY_RESERVATION_REVIEW_ENABLED` gives it a 30-minute lease, with a bounded
+review starting five minutes before expiry. One durable reviewer uses reserved
+interactive headroom. Heartbeats never renew the work lease. Approval requires
+new progress and a known running guest or an owned pre-dispatch reservation.
+Steering and stopping use exact-attempt cessation; guidance reaches the next
+plan only after confirmed cessation. Unknown results, queued user input and
+charges survive. A failed reviewer's historical guest binding releases its
+concurrency hold only on exact cessation proof, with no newer work, aliases,
+cleanup ownership or observer fences. Health reports blocked and overdue
+reviews separately from process liveness. `factory_funding.decide` resolves the
+reviewed reservation verdict after current evidence is read under the pool lock.
+The funding module owns the model-invocation step. Identity checks and effects
+remain in `reservation_reviews.py` and the execution lease layer. The verdict's
+canonical audit commits with the lease state, including exact permit and review
+identity; pre-dispatch factory work retains its task attribution.
+
+The no-progress adapter counts settled work and planner turns against the
+configured threshold (default eight). New commits or PRs rearm it. A crossing
+without a delivery requests the same durable funding review as an exhausted
+allocation. There is no second classifier or new watchdog card. Pending reviews
+are shared, failed reviews keep their five-minute retry wait and refusal limit,
+and only a successful settlement advances the progress checkpoint. Unresolved
+attempts wait for their existing owner. Legacy dollar-threshold audits rearm from
+the current turn count. Existing watchdog cards still enact their operator's
+Resume, Stop or Rescope decision before considering fresh delivery evidence.
+
+The former progress shadow no longer classifies evidence or writes
+`progress_shadow_assessed` rows. Its accounting collector remains because the
+runtime meter consumes it, including lost start associations and historical
+watchdog costs. Old shadow rows stay readable in task detail. The retired
+`FACTORY_PROGRESS_SHADOW_ENABLED` setting has no execution or audit effect.
+The runtime meter still validates monotonic native usage and exact ownership;
+its opt-in usage/backstop stops remain unchanged. The dormant reservation
+dollar-ceiling stop path and its Helm setting are removed. Meter admission,
+ongoing backstop and stale-usage outcomes now pass through the shared funding
+decision. Existing opt-in session/objective backstops, uncertainty checks and
+exact-attempt stop authorization are preserved. Accounting coverage must never
+be represented as a spending guarantee.
+
+There are two retained continuation contracts. The legacy
+`FACTORY_AUTONOMOUS_CONTINUATION_ENABLED` path grants one final, named correction
+and independent review pair at a work-turn limit. It cannot fund other nodes or
+renew itself. Failure retains the PR and findings. Funding supersedes this pair
+for enrolled tasks. Separately, an operator's `progress_continuation`
+preview/apply authorizes one paused recovered task and its native-reviewed PR
+head for a two-hour lease. It binds recovery, graph, policy, accounting, funding
+and direction without changing cash fields or clearing landing/security holds.
+Renewal requires a distinct independently reviewed head, green CI, fresh
+subscription evidence and quiescence. Uncertain work, repeated failures, a pause
+or changed authority refuses it. Stop-only cards acquire no continuation
+permission. Automatic renewal uses the same funding decision and review-wait checks.
+
+A saved successful final conductor finish can settle after its lease expires
+when graph/run evidence is unchanged, all starts are accounted, and fresh owned
+PR CI and independent exact-head review pass. It creates no new execution or
+funding authority. Paused, cancelled, human-owned, uncertain and changed tasks
+remain fenced. A typed `landing_hold` can restrict a receipt without extending
+its deadline or altering its pause. Ordinary amendments of recovered tasks bind
+the existing recovery and funding audits and retain their absolute deadlines;
+changing the timeout is refused.
+
+Funding writes retain the `funding_review_requested`, `funding_granted` and
+`funding_review_settled` audit family. Existing report and DORA readers, stop
+ownership and historical rows are preserved. Progress observations now use
+`funding_progress_cleared`, successful funding settlements carry progress
+checkpoints, and old-card refusal writes use `funding_legacy_hold_refused`.
+Continuation and meter records now have canonical `funding_*` names; reservation
+verdicts write `funding_reservation_decided`. Historical rows remain readable.
+Marked legacy projections commit atomically with canonical events solely for old
+binaries during rolling upgrades and rollback. Current readers exclude those
+projections; a later unmarked legacy write is still honored. This retains one
+current decision authority without double-counting usage or losing old-reader
+lease/trip enforcement. Reverting the PR requires no schema rewrite. Required
+Linux/PostgreSQL tests and exact-head independent review remain delivery gates;
+source/test reduction percentages are measurements, not numeric gates.
 
 
 ### Native registration and caller discovery
@@ -3528,146 +3620,6 @@ The `/factory/work-items/{id}` page ships work item details, edges, and recent
 events. All edges show their source (manual, github_body, or decision) for
 transparency about how each relationship was created.
 
-### Autonomous correction continuation
-
-`FACTORY_AUTONOMOUS_CONTINUATION_ENABLED` allows the engine to grant one final
-correction and independent review when a genuine work-turn limit blocks that
-pair. The grant names both one-attempt nodes, the source review and current PR
-head. It commits with the graph edit and survives retries and restarts. Capacity
-denials use the existing bounded no-execution accounting rule.
-
-The task, branch, PR, original dollar budget, deadline, and spent history stay
-in place. Other work cannot borrow the grant, and it cannot create a successor
-grant. Approved delivery goes through the normal exact-head verification gate
-without spending another planner turn. Failure or another negative review ends
-the task with its PR and findings retained, without a human decision card.
-Human escalation remains available for actual missing decisions or authority.
-
-### Conductor funding decisions
-
-`FACTORY_CONDUCTOR_FUNDING_ENABLED` supersedes the fixed final correction pair.
-When a work allocation, review-round limit, or lease is exhausted, the funding
-judge (the policy's `judge` pool, Opus by default; Astra only when policy allows
-it and names it in `model_pools.judge`) judges
-whether the objective is still useful, what progress has been made, and whether
-the likely remaining cost is reasonable. Its typed decision can continue,
-steer, or stop. There is no fixed extension count. Each approval records a
-reason, concrete next plan, current-task dollar figure (accounting only),
-additional work turns, and a funding review horizon of at most 30 minutes. The horizon fences new work;
-already-reserved workers retain their invocation deadlines and continue under
-the existing 30-minute reservation supervisor. Original receipt policy and prior
-charges remain intact; durable amendments supply the effective limits.
-
-Committed factory node execution and funding decisions for the same repository
-issue are summed across tasks, generations, and advisory/delivery passes as the
-objective's accounting, but no dollar total refuses a start, finishes a task or
-caps a grant (#7161). Immutable admission audits retain task-to-receipt
-ownership after readmission; the truncated predecessor list used for display is
-not the accounting ledger. Reservations and unknown outcomes remain charged.
-
-A funding review records the selected judge model and reserves one exact
-dispatch on it with a $1 ceiling and a
-five-minute deadline through the existing durable node executor. That dispatch
-can assess an exhausted task allocation, and start authorization and settlement
-accept only that recorded model while policy still allows it; other work remains fenced until the
-decision commits. Global stop, cancellation, unresolved execution and shared
-capacity still apply. Failed or stale
-reviews wait five minutes before another bounded assessment. A stop decision
-retains the issue, PR, and findings without a human restart question. The
-normal independent exact-head delivery review remains required.
-
-#### Merit judging
-
-`FACTORY_MERIT_JUDGE_ENABLED` (`swarm.factoryMeritJudgeEnabled`, default
-false, needs funding on) has the funding judge and the no-progress watchdog
-decide the way the operator would: approve when he would likely approve, and
-ask him only when the judge doubts the work or a hard cap is hit. The criteria
-and the evidence brief live in `factory_judge.py`, which is the one place to
-tune them:
-
-- `CRITERIA` is the prose both prompts carry. It weighs verified progress
-  (commits, an open pull request, green checks, review rounds passed,
-  implementation nodes done), how close the work is to landing (a clean or
-  nearly green PR with only review or a correction left is close), and value
-  (`VALUE_LABELS` such as `critical`, `bug` and `severity:high`, a milestone,
-  open work the issue blocks, a `factory:` title, and the roadmap or
-  unblocking issues named in `swarm.factoryMeritJudgePriorityIssues`, since
-  this repository has no roadmap label). Money already spent is a reason to finish when
-  progress is real. The judge escalates only on doubt: little verified
-  progress, repeated failure on the same step, or drift from the issue.
-- `merit_evidence` is the server-read brief: node-run progress, the PR's
-  state, mergeability and combined status, and the issue's labels, milestone
-  and open `blocks` edges. It costs at most three GitHub reads, taken outside
-  the control lock, and states a failed read rather than raising.
-
-With merit judging on, a planner edit refused twice in a row with
-`envelope_exceeded` goes to the judge instead of raising the "Should the exact
-deficit be funded" card, whatever the size of the deficit, as long as it fits
-the hard ceiling. The ceiling is policy, not prose: the pinned turn envelope
-plus `factoryMeritJudgeMaxExtensionMultiple` times it (default 1, at least two
-turns). It is measured from the pinned policy, never from the last grant, so a
-run of grants cannot ratchet a task past one total extension. Dollars are
-recorded but never cap a grant (#7161). A deficit past it audits
-`merit_funding_declined` and keeps the card.
-
-Every judge review then carries the criteria, the brief and the ceiling, and
-its verdict must include an `assessment` (one line each for progress,
-proximity and value, plus any doubts). The verdict is `continue`, `steer`,
-`stop` or `escalate`. A continue or steer turn grant is raised to the recorded
-turn deficit and reduced to the turn ceiling; its dollar figure is raised to
-any recorded dollar deficit for the ledger. `funding_granted` records `requested_task_budget_usd`,
-`granted_task_budget_usd`, `merit_ceiling` and the `assessment`, and it is the
-auto-approval the daily digest lists. `escalate`, or a grant the ceiling
-cannot hold, settles the review with `escalated` and raises a fund-or-hold
-card through the ordinary escalation path. `stop` still ends the task
-without a question. A review requested without merit judging refuses
-`escalate`, so a judge cannot page a person on a path that never offered it.
-
-**Why.** The judge was reachable only through the planner's own
-`request_funding`. On 2026-10-01 the planner for #6541 twice shrank an edit
-that was $0.65, then $1.20, over a $50 envelope, never asked for funding, and
-the second refusal paged a person (#6508 and #5938 had the same shape). The
-operator's rule is that a decision he would just approve (lots of progress,
-close to working, or very valuable) belongs to the judge, so the judge needs
-the evidence he would look at and an explicit way to hand back a doubt.
-
-#### No-progress watchdog assessment
-
-`factory_progress_watchdog` assesses an admitted delivery task each time it
-settles another `progress_watchdog.threshold_turns` turns (default 8, planner
-rounds included) without a new commit or pull request. A plain loop short-circuits; anything else asks the
-classifier's chat model for a `progressing` or `looping` verdict. That call
-asks for minimal reasoning effort with a 2048-token ceiling, accepts string or
-content-part replies and a fenced JSON object, and asks once more when the
-answer cannot be read. Only a `looping` verdict, or two unreadable answers,
-pauses the task and raises the card. The assessment audit records `attempts`
-and, for an unreadable answer, its `finish_reason`, completion and reasoning
-token counts. With merit judging on, the system prompt adds
-`factory_judge.CRITERIA` and the user prompt adds the same `merit` brief the
-funding judge reads, so `progressing` means "would approve" and `looping`
-means "doubts it". The deterministic short-circuits (a refusal three times,
-a node re-added and failing again, identical failures, three implementation
-attempts without a commit) are that doubt on their face and still page.
-
-The card offers Resume, Stop and Rescope on the receipt, the issue and Discord.
-A watchdog pause holds until a person answers the card or uses `resume_task`;
-the reconciler's pause expiry does not cancel it. A `progressing` verdict records
-an audit row and re-arms at the next step. A new commit or pull request when no
-watchdog decision is open, or a successful resume, clears the watchdog and
-re-arms a full `progress_watchdog.threshold_turns` step from the current settled
-turn count. A delivery does not release an open watchdog pause.
-
-**Why.** Muse Spark always reasons, and reasoning counts against `max_tokens`.
-At the earlier 512-token cap both assessments on 2026-10-01 (#6529, #6530)
-spent 509 of their 512 tokens reasoning and returned no verdict, so every
-model assessment failed closed and paged. The Claude 5.5 profile change was
-not involved: the watchdog never calls a factory pool model.
-
-**Why turns.** The step was a flat $20 until #7161 took dollars out of every
-factory gate. Turns measure the same thing without a price: #7006 and #7014
-were paused after six planner rounds and no commit, and counting planner rounds
-keeps that case caught. A legacy audit row that carries only a dollar
-threshold re-arms from the current turn count instead of being read as turns.
 
 
 ### Conductor-owned reversible gates
@@ -3780,7 +3732,7 @@ false) decides per notification kind whether the operator is paged
 (`factory_notify_policy.pages`). Pages: `escalation` (a decision card: a
 planner pause, which the charter reserves for human authority; a funding
 question the merit judge escalated or a hard cap blocked; a branch another
-owner holds), `watchdog:*` (a looping verdict or two unreadable answers), and
+owner holds), `watchdog:*` (retained historical cards), and
 `landing` (a pull request left to merge). `intervention` and `deadline` page
 only while nothing will release the slot on its own; with active cessation or
 the deadline backstop on they digest. `refine` needs-human briefs digest.
@@ -3789,7 +3741,7 @@ A digested notice is audited as `task_needs_person_digested` under the same
 per-task, per-kind fence and sends nothing. Once a day the reconciler sends
 one `info` message (`factory_digest_sent`, with its audit watermark) listing,
 since the last digest: the merit judge's funding grants with requested and
-granted figures, watchdog assessments that let a task continue, issues whose
+granted figures, historical watchdog assessments that let a task continue, issues whose
 live checks were handed off, and the digested notices, with the escalations
 link. A failed send is retried an hour later. The first digest after enabling
 covers the previous day rather than all history. Decision cards are not
@@ -3801,34 +3753,6 @@ active cessation, stop supervision or a drain relay, and refine briefs ask a
 minute's scoping question on advisory work. Authority decisions still page;
 the rest, and what the factory approved on its own, arrive once a day.
 
-### Completed finishes after a lease expires
-
-A task deadline prevents new execution. A saved successful final conductor
-`finish` can still settle the same receipt when the complete graph and run
-evidence are unchanged, every start is accounted, and fresh owned-PR CI and
-independent exact-head review pass. Stopped, paused, cancelled, human-owned,
-uncertain and changed deliveries remain fenced. The adoption records its
-original run and revision; it does not dispatch, renew funding or extend a
-deadline. Invalid or temporarily unavailable evidence stays pending.
-
-Draft-only acceptance requires the existing typed `landing_hold`. The exact
-operator policy-amendment preview/apply can add that hold with an overlay of
-only `landing_hold: true`; this restrictive operation preserves the funding
-ledger and deadline, including an expired deadline, and preserves the task pause state.
-It does not infer authorization from a PR body or grant landing.
-
-**Why.** A completed result arriving after its start lease is an observation
-to validate, not a request for another paid turn. Recording its draft-only
-restriction must not accidentally refresh that lease.
-
-
-For an operator-recovered task, ordinary policy amendments validate the existing
-absolute recovery deadline rather than the original task creation time. Their
-preview binds the current recovery and funding audit records; applying preserves
-the funding deadline and review date, even if the funding lease already expired.
-Changing the timeout is refused. The recovery grant and its independent work-turn
-ceiling remain unchanged: changing a policy cap does not authorize more recovery
-starts. Recording a hold alone retains its separate restrictive semantics.
 
 ### Restrict receipt model choices
 
@@ -3853,28 +3777,6 @@ Native execution checks the actual queued model before delivery and physical
 dispatch, including a new message on a historical session. Historical pins and
 results remain unchanged.
 
-### Explicit progress continuation of a recovered artifact
-
-The `progress_continuation` mode of `factory_amend_policy` is a standing-human
-preview/apply control for one
-paused recovered task and its current native-reviewed PR head. It records a
-separate authorization bound to the original recovery audit, graph, policy,
-funding, accounting and artifact. Apply explicitly resumes that same task under
-a two-hour lease; it does not restart it, clear landing/security holds, change
-cash fields, or authorize another receipt. The original recovery audit remains
-unchanged. Existing tasks never acquire this authority implicitly.
-
-The native reconciler may renew only after a distinct reviewed head with green
-CI, fresh subscription evidence for the pinned model roles and confirmed
-quiescence. It records that evidence and permits the next correction/review
-pair plus planner decisions within another finite lease. An unchanged head,
-repeated failed reviews, failed execution, uncertain work, an operator pause,
-or changed authority prevents renewal. Ordinary admission and independent
-review remain mandatory. No lease authorizes paid overage or global policy
-changes; absence of fresh subscription observations is a refusal, not capacity.
-
-Typed automatic stop-only cards remain paused at deadline. They are not
-reinterpreted as planner decisions or given an invented continue option.
 
 ### Settled learning execution
 

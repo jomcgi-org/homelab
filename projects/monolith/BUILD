@@ -5018,42 +5018,16 @@ bdd_test(
     srcs = ["factory/orchestration/swarm_node_run_model_postgres_test.py"],
 )
 
-# Hand-registered real-PostgreSQL coverage for the one-shot migration that
-# moves the live factory policy off astra, which rewrites the TEXT policy
-# through jsonb and so cannot run on SQLite.
+# Parameterized applied-row coverage retains migration guards, pinned receipts,
+# routing, quota fallback and coding effort on real PostgreSQL (#7454).
 bdd_test(
-    name = "swarm_factory_policy_no_astra_postgres_test",
-    srcs = ["factory/orchestration/factory_policy_no_astra_postgres_test.py"],
+    name = "swarm_factory_funding_audit_postgres_test",
+    srcs = ["factory/orchestration/factory_funding_audit_postgres_test.py"],
 )
 
-# Hand-registered real-PostgreSQL coverage for the staged Claude 5.5 policy
-# migration (#6461), which rewrites the TEXT policy through jsonb.
 bdd_test(
-    name = "swarm_factory_policy_claude_55_postgres_test",
-    srcs = ["factory/orchestration/factory_policy_claude_55_postgres_test.py"],
-)
-
-# Hand-registered real-PostgreSQL coverage for the generation-14 policy
-# migration that moves factory workers onto Sol, which rewrites the TEXT
-# policy through jsonb.
-bdd_test(
-    name = "swarm_factory_policy_gen14_sol_postgres_test",
-    srcs = ["factory/orchestration/factory_policy_gen14_sol_postgres_test.py"],
-)
-
-# Real PostgreSQL is needed for the guarded jsonb policy restoration.
-bdd_test(
-    name = "swarm_factory_policy_restore_astra_postgres_test",
-    srcs = ["factory/orchestration/factory_policy_restore_astra_postgres_test.py"],
-)
-
-# Real PostgreSQL covers the already-allowed Astra planner follow-up and harness.
-bdd_test(
-    name = "swarm_factory_policy_astra_planner_postgres_test",
-    srcs = [
-        "factory/orchestration/factory_policy_astra_planner_postgres_test.py",
-        "factory/orchestration/factory_policy_restore_astra_postgres_test.py",
-    ],
+    name = "swarm_factory_policy_rows_postgres_test",
+    srcs = ["factory/orchestration/factory_policy_rows_postgres_test.py"],
 )
 
 # Real PostgreSQL checks guarded security intake policy changes and atomic audit.
@@ -9514,6 +9488,16 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "swarm_factory_funding_test",
+    srcs = ["factory/orchestration/factory_funding_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
     ],
 )
 

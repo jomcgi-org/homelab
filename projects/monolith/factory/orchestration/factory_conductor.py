@@ -7046,9 +7046,9 @@ def reconcile_task(
             policy=policy,
         )
         return
-    from factory.orchestration import factory_progress_continuation
+    from factory.orchestration import factory_funding
 
-    if factory_progress_continuation.renew(task_id):
+    if factory_funding.renew_continuation(task_id):
         # Reload the task's effective policy on the next tick. Never dispatch
         # with the policy snapshot from before this audited lease renewal.
         return
@@ -7065,8 +7065,6 @@ def reconcile_task(
             # Legacy reconciler-pause expiry must not mask terminal facts.
             _expire_reconciler_pause(task_id)
         return
-    from factory.orchestration import factory_funding
-
     if factory_funding.reconcile(task, policy, runs, permission):
         return
     if not permission["ok"]:

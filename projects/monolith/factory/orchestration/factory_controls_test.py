@@ -120,7 +120,7 @@ def grant(task_id, key="one", **kwargs):
 @pytest.mark.parametrize("path", ["allocation", "nonrenewable"])
 @pytest.mark.parametrize("prior", ["missing", "dismissed", "valid"])
 def test_automatic_pause_repairs_only_missing_questions(db, policy, path, prior):
-    from factory.orchestration import factory_allocation_recovery, factory_pause
+    from factory.orchestration import factory_funding, factory_pause
 
     task_id = admitted(policy)
     controls.set_control("pause_task", "operator", task_id=task_id)
@@ -147,7 +147,7 @@ def test_automatic_pause_repairs_only_missing_questions(db, policy, path, prior)
             controls.pause_nonrenewable_recovery(task_id, "work_turns exhausted")
         else:
             with controls._locked_session() as (session, _control):
-                factory_allocation_recovery.pause(
+                factory_funding.pause_allocation(
                     session,
                     task_id,
                     {"code": "funding_without_progress", "grant_id": 12},
@@ -177,13 +177,13 @@ def test_automatic_pause_repairs_only_missing_questions(db, policy, path, prior)
 
 
 def _invoke_pause_path(task_id, path):
-    from factory.orchestration import factory_allocation_recovery, factory_pause
+    from factory.orchestration import factory_funding, factory_pause
 
     if path == "nonrenewable":
         controls.pause_nonrenewable_recovery(task_id, "work_turns exhausted")
     elif path == "allocation":
         with controls._locked_session() as (session, _control):
-            factory_allocation_recovery.pause(
+            factory_funding.pause_allocation(
                 session, task_id, {"code": "funding_without_progress", "grant_id": 12}
             )
     else:
@@ -248,7 +248,22 @@ def test_automatic_pause_only_reuses_current_watchdog_hold(
         "kind": "watchdog",
         "task_id": task_id,
         "question": "No progress. Resume, stop or rescope?",
-        "options": watchdog._options(3),
+        # Persisted cards outlive the retired watchdog card writer.
+        "options": [
+            {
+                "key": "resume",
+                "label": "Resume",
+                "effect": "agent-ready",
+                "detail": {},
+            },
+            {"key": "stop", "label": "Stop", "effect": "hold", "detail": {}},
+            {
+                "key": "rescope",
+                "label": "Rescope",
+                "effect": "defer",
+                "detail": {"comment": "Rewrite issue"},
+            },
+        ],
         "resolved": None,
     }
     with controls._locked_session() as (session, _control):
@@ -843,7 +858,7 @@ def test_hold_only_release_on_paused_receipt_needs_no_capacity(db, policy, monke
 def test_recovery_fences_pending_resume_on_already_paused_receipt(
     db, policy, monkeypatch, recovery
 ):
-    from factory.orchestration import factory_allocation_recovery as allocation
+    from factory.orchestration import factory_funding as allocation
 
     first, second = _capacity_pair(db, policy, monkeypatch, "chart")
     with Session(db) as session, session.begin():
@@ -855,7 +870,9 @@ def test_recovery_fences_pending_resume_on_already_paused_receipt(
         assert controls.pause_nonrenewable_recovery(first, "spent allowance")
     else:
         with controls._locked_session() as (session, _control):
-            allocation.pause(session, first, {"code": "funding_without_progress"})
+            allocation.pause_allocation(
+                session, first, {"code": "funding_without_progress"}
+            )
     assert controls.finish_task(second, "failed", "test")["ok"]
     assert controls.retry_capacity_releases() == 0
     with Session(db) as session:

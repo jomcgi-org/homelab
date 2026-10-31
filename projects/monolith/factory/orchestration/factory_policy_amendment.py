@@ -375,6 +375,9 @@ def apply(
             # Graph budgeting already consumes funding_granted. Keep the task's
             # displayed envelope coherent without changing any existing node pin.
             task.budget_usd = policy["task_budget_usd"]
+            from factory.orchestration import factory_funding
+
+            factory_funding.rearm_progress(db, row.task_id, actor, ACTION)
         control.version += 1
         control.updated_at = controls._now()
         control.actor = actor

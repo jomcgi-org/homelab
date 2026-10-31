@@ -1853,9 +1853,6 @@ swarm:
   # permanently lost by the control plane. Staged off until the live checks in
   # FACTORY.md have exercised the proof and refusal paths.
   factoryDrainedLossSettlementEnabled: false
-  # Stop an exact running attempt after provider-measured spend exceeds its
-  # max_cost_usd. Settlement keeps the same post-hoc check as a backstop.
-  factoryEnforceCostCeilingEnabled: false
   # Settle an attempt whose invoke was sent but whose guest was never bound, so
   # its reservation is refunded instead of held forever: stop supervision has no
   # guest to prove ceased there and leaves the lane slot occupied (#6025).

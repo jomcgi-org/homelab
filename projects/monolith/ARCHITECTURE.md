@@ -363,6 +363,25 @@ Factory receipts retain issue/branch ownership while paused or landing-held.
 See [authoritative records](factory/orchestration/FACTORY.md#authoritative-records-and-context)
 and [cadence ownership](factory/orchestration/FACTORY.md#cadence-and-singleton-ownership).
 
+### Funding consolidation
+
+**Why.** The eight funding, judgement, reservation, watchdog, continuation,
+allocation and metering modules answered overlapping policy questions (#7454).
+Task grants, exact-artifact continuations, reservation verdicts and opt-in meter
+outcomes now share `factory_funding.decide`; its judge call is a bounded step.
+The existing adapters retain authentication, exact-dispatch revalidation, stop
+ownership, unknown-outcome charges and lease deadlines. Historical operator
+holds remain binding. See [Funding](factory/orchestration/FACTORY.md#funding).
+
+**Why.** Canonical `funding_*` audit events commit with marked legacy projections
+so old binaries still enforce continuation leases and meter trips on rollback.
+Current readers select canonical and unmarked historical rows, excluding those
+projections to avoid duplicate bindings and charges. Historical rows are never
+rewritten and no schema migration is required. PostgreSQL policy-row tests share
+meaningful assertions; source/test reductions are measurements under the revised
+acceptance, not numeric gates. Required CI and independent exact-head review
+remain mandatory. Rollback is reverting the PR.
+
 ### Factory acceptance
 
 Repository delivery and operational acceptance are separate. These rows move from
@@ -373,6 +392,7 @@ See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-check
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
 | Per-sweep intake decisions, private backlog age and digest evidence | section 4; repository-only Conductor rescope | #7459 | staged repository delivery; rollout, first-sweep distribution and credential-backed follow-up remain on the issue |
+| One funding decision owns continuation, steering and stop while accounting retains reservations and unknown outcomes | Funding consolidation; repository acceptance in #7454 | #7454 | policy tests consolidated, task grant, progress and continuation decisions unified, allocation recovery folded into funding, shadow and reservation dollar-ceiling paths retired; reservation and meter decisions share the funding resolver; canonical funding audits retain rollback projections; reduction percentages are measurements |
 | Optional queue-driven inventory refill, default-off with durable advisory execution and bounded issue publication | section 4, recorded Conductor rescope and cap decision | #7376 | repository-only; operational checklist remains on the issue; no shipped policy enablement |
 | Admit agent-ready security findings under existing ownership and eligibility fences | Joe's 2026-10-28 decision, section 4 | [#7372](https://github.com/jomcgi-org/homelab/issues/7372) | repository-only staged delivery; guarded migration, rollout and natural-sweep acceptance remain |
 | Automatic pauses retain actionable questions and audit superseded cards | The factory conductor | #7165 | repository-only staged delivery under an unmerged landing hold; historical pause attribution and post-rollout checks remain |
@@ -1555,7 +1575,7 @@ of Opus went on recovery samples that could not converge. No ARCHITECTURE
 section described the loop, so no reviewer saw its bound. Quality routing
 stays retired; review rounds already bound quality (#6283, closed 2026-10-01).
 
-The [no-progress watchdog](factory/orchestration/FACTORY.md#no-progress-watchdog-assessment)
+The [no-progress watchdog](factory/orchestration/FACTORY.md#funding)
 records its measurement and recovery contract in the factory design.
 
 ### Adversarial dependency PR intake
