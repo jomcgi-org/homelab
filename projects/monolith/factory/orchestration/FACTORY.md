@@ -390,6 +390,15 @@ environment section (date, git status) in its system prompt, ahead of the
 charter, so cross-round hits on Claude depend on that section staying the same
 too.
 
+**Charter content.** The charter states authority, untrusted data, the
+outcome and exit criteria, and the defaults the server cannot infer. Mechanics
+the server enforces (reserved keys, cost clamping, turn arithmetic, exception
+field minimums) live in the schema, refusal codes and `decision_feedback`.
+Restore a removed line only after a repeated planner failure that the feedback
+did not prevent. The cut from about 1,800 to about 520 words is
+measured by planner refusal rate, planner rounds per task, first-pass review
+rejection and planner input tokens against the prior 14 days.
+
 ### Planner preview
 
 The proposed-decision preview is staged behind

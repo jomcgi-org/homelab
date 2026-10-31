@@ -4450,10 +4450,6 @@ def test_budget_projection_shares_admission_accounting_and_retry_ceiling(feedbac
     assert context["budget_evidence"] == projection
     assert conductor.graph.node_runs(task["id"]) == before
     assert known["cost_usd"] == 0.25
-    assert (
-        "never multiply the ceiling by the attempt count"
-        in conductor.planner_prompt(task, [], [])
-    )
 
 
 @pytest.fixture
@@ -11457,7 +11453,7 @@ def test_planner_review_contract_accepts_pinned_fallback(feedback_db, task_class
     task, _policy = feedback_task(task_class=task_class)
     prompt = conductor.planner_prompt(task, [], [], task_class=task_class)
     assert "Review is a separate Opus guest" not in prompt
-    assert "a policy-permitted fallback such as Astra is a valid reviewer" in prompt
+    assert "A policy-permitted fallback such as Astra is a valid" in prompt
     assert "run's immutable dispatch model evidence" in prompt
     assert "separate session from every implementer" in prompt
     assert "examine the exact PR head" in prompt
@@ -11759,18 +11755,6 @@ def test_plan_audits_each_clamped_node_once(feedback_db):
     assert feedback_audits(feedback_db, task["id"]) == []
 
 
-def test_planner_prompt_explains_cost_clamping_and_other_bound_refusals():
-    assert (
-        "max_cost_usd above new_node_max_cost_usd (or the review "
-        "reservation for review nodes) is lowered to that ceiling and audited"
-        in conductor._PLANNER_CHARTER
-    )
-    assert (
-        "max_attempts and turn_timeout_seconds above policy are still refused "
-        "with bound_exceeds_policy" in conductor._PLANNER_CHARTER
-    )
-
-
 def test_planner_budget_exposes_server_review_floor_and_round_reserve(feedback_db):
     task, policy = feedback_task(turn_budget_usd=4.0, task_budget_usd=50.0)
     evidence = conductor._budget_evidence(task["id"])
@@ -11791,7 +11775,6 @@ def test_planner_budget_exposes_server_review_floor_and_round_reserve(feedback_d
     )
     assert preview["ok"]
     assert preview["projection"]["allowance"]["usd"] == 32.0
-    assert "even when you request a lower max_cost_usd" in conductor._PLANNER_CHARTER
 
 
 def test_review_plan_over_task_budget_is_accepted_and_reports_full_cost(
@@ -23890,17 +23873,14 @@ def test_normal_plan_restricted_gate_cannot_authorize_work(feedback_db, monkeypa
 
 def test_planner_defaults_to_one_implementation_and_atomic_repair():
     charter = conductor._PLANNER_CHARTER
-    assert "one capable implementation session" in charter
+    assert "one implementation session" in charter
     assert "coding, debugging and testing together" in charter
-    assert (
-        "Initial investigation must name its uncertainty and the decision enabled"
-        in charter
-    )
-    assert "implementation_exception object" in charter
-    assert "UI/design migrations" in charter
-    assert "Do not spend a planner session per cleanup edit" in charter
-    assert "retained history and server correction/re-review reserves" in charter
+    assert "implementation_exception" in charter
+    assert "do not spend a planner session per cleanup edit" in charter
     assert "Review must run in a separate session from every implementer" in charter
+    # Schema and refusal feedback carry the mechanics (#7366 ablation).
+    assert "40 non-whitespace characters" not in charter
+    assert "UI/design migrations" not in charter
 
 
 def test_held_delivery_accepts_reviewed_draft_but_keeps_exact_head_and_ci_gates(
