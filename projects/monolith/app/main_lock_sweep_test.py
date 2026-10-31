@@ -101,14 +101,6 @@ def _make_lock(discord_message_id: int, channel_id: int) -> MagicMock:
     return lock
 
 
-def _make_session_mock(store: MagicMock) -> MagicMock:
-    """Return a context-manager session mock that yields the given store's session."""
-    mock_session_obj = MagicMock()
-    mock_session_obj.__enter__ = MagicMock(return_value=mock_session_obj)
-    mock_session_obj.__exit__ = MagicMock(return_value=False)
-    return mock_session_obj
-
-
 # ---------------------------------------------------------------------------
 # sweep_task registration wiring
 # ---------------------------------------------------------------------------
