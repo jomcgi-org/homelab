@@ -377,3 +377,55 @@ def test_unknown_run_and_terminal_parent_never_claim_running():
         )["state"]
         == "uncertain"
     )
+
+
+def test_execution_requires_fresh_exact_dispatch_without_result_or_cleanup():
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    from factory.private_view import current_execution
+
+    now = datetime.now(timezone.utc)
+    row = SimpleNamespace(
+        id=7,
+        local_session_id="local",
+        status="running",
+        ember_session_id="guest",
+        result_receipt_fence_id=None,
+        guest_cleanup_id=None,
+    )
+    pending = SimpleNamespace(
+        seq=2, dispatch_count=1, claimed_by_replica="owner", claimed_at=now
+    )
+    receipt = SimpleNamespace(
+        session_id=7,
+        local_session_id="local",
+        seq=2,
+        dispatch_count=1,
+        claim_owner="owner",
+        guest_id="guest",
+        superseded_at=None,
+        received_at=None,
+        response_observed_at=None,
+        response_observer_released_at=None,
+    )
+    turn = SimpleNamespace(seq=1)
+    assert current_execution(row, pending, receipt, turn, now)
+    assert not current_execution(row, None, receipt, turn, now)
+    assert not current_execution(row, pending, None, turn, now)
+    for obj, key, value in [
+        (pending, "claimed_at", now - timedelta(seconds=31)),
+        (pending, "claimed_by_replica", "different"),
+        (pending, "dispatch_count", 2),
+        (receipt, "guest_id", "old-guest"),
+        (receipt, "seq", 1),
+        (receipt, "received_at", now),
+        (receipt, "response_observer_released_at", now),
+        (receipt, "superseded_at", now),
+        (row, "result_receipt_fence_id", "fence"),
+        (row, "guest_cleanup_id", "cleanup"),
+        (turn, "seq", 2),
+    ]:
+        original = getattr(obj, key)
+        setattr(obj, key, value)
+        assert not current_execution(row, pending, receipt, turn, now), key
+        setattr(obj, key, original)

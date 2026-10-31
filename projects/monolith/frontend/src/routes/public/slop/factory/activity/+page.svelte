@@ -187,6 +187,12 @@
       <p class="unavailable">Unavailable right now.</p>
     {/if}
 
+    {#if book.stale && !data.unavailable}
+      <p class="unavailable">
+        Snapshot is stale or undated. Current execution is uncertain.
+      </p>
+    {/if}
+
     <div class="stats">
       <div>
         <div class="k">Line</div>
@@ -275,6 +281,12 @@
           of {everything.length}{/if}</span
       >
     </div>
+
+    <p class="m">
+      Executing means a fresh worker dispatch observed in the snapshot,
+      including invocation preparation. Task age includes waits; it is not model
+      execution time.
+    </p>
 
     <section class="panel">
       <p class="sec-label">

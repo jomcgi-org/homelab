@@ -934,11 +934,24 @@ it("separates six unfinished tasks into one execution, four waits and one uncert
     ...Array.from({ length: 4 }, () => ({ state: "paused" })),
     { state: "uncertain" },
   ];
-  const book = ledger({ active }, NOW);
+  const book = ledger({ active, snapshotted_at: NOW }, NOW);
   expect(book.live).toHaveLength(1);
   expect(book.waiting).toHaveLength(4);
   expect(book.uncertain).toHaveLength(1);
   expect(ledger({ active: [{ state: "in flight" }] }, NOW).live).toEqual([]);
   expect(taskMark("in flight")).toBe("uncertain");
   expect(taskMark("landing")).not.toContain("live");
+});
+
+it("never counts a stale executing snapshot as current execution", () => {
+  const book = ledger(
+    { snapshotted_at: "2026-09-11T14:00:00Z", active: [LIVE_TASK] },
+    NOW,
+  );
+  expect(book.live).toEqual([]);
+  expect(book.stale).toBe(true);
+  expect(book.uncertain[0].state).toBe("uncertain");
+  expect(book.uncertain[0].nodes.some((node) => node.state === "running")).toBe(
+    false,
+  );
 });

@@ -913,11 +913,7 @@ def activity_state(receipt: dict) -> str:
         return RECEIPT_STATE_WORD.get(state, state)
     # A pause fences new starts, but does not prove an existing worker stopped.
     running = [n for n in nodes if n.get("state") == "running"]
-    if any(
-        (n.get("session") or {}).get("status") == "running"
-        and (n.get("session") or {}).get("guest_bound")
-        for n in running
-    ):
+    if any((n.get("session") or {}).get("executing") is True for n in running):
         return "executing"
     if running or receipt.get("unresolved_starts"):
         return "uncertain"

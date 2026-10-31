@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
-from core.clock import iso_or_str
+from core.clock import aware, iso_or_str
 
 RECENT_LIMIT = 12
 RESULT_HEAD = 240
@@ -220,8 +220,47 @@ def shape_receipt(
     return shaped
 
 
+def current_execution(row, pending, receipt, turn, now: datetime) -> bool:
+    """Fresh worker dispatch evidence, not proof of continuous provider generation.
+
+    A native receipt is prepared immediately before POST. Match the current
+    owned head, not an old guest binding. Losing freshness means unknown, never
+    cessation; this projection grants no retry or capacity release.
+    """
+    if (
+        pending is None
+        or receipt is None
+        or row.status != "running"
+        or not row.ember_session_id
+        or row.result_receipt_fence_id
+        or row.guest_cleanup_id
+        or not pending.claimed_by_replica
+        or pending.claimed_at is None
+        or not 0 <= (aware(now) - aware(pending.claimed_at)).total_seconds() <= 30
+        or (turn is not None and turn.seq >= pending.seq)
+    ):
+        return False
+    return (
+        receipt.session_id == row.id
+        and receipt.local_session_id == row.local_session_id
+        and receipt.seq == pending.seq
+        and receipt.dispatch_count == pending.dispatch_count
+        and receipt.claim_owner == pending.claimed_by_replica
+        and receipt.guest_id == row.ember_session_id
+        and receipt.superseded_at is None
+        and receipt.received_at is None
+        and receipt.response_observed_at is None
+        and receipt.response_observer_released_at is None
+    )
+
+
 def _session_summaries(db: Session, ids: set[int]) -> dict[int, dict]:
-    from factory.execution.models import AgentSession, AgentTurn
+    from factory.execution.models import (
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
 
     if not ids:
         return {}
@@ -234,7 +273,22 @@ def _session_summaries(db: Session, ids: set[int]) -> dict[int, dict]:
             .order_by(AgentTurn.seq.desc())
             .limit(1)
         ).first()
+        pending = db.exec(
+            select(PendingMessage)
+            .where(PendingMessage.session_id == row.id)
+            .order_by(PendingMessage.seq)
+            .limit(1)
+        ).first()
+        receipt = db.exec(
+            select(AgentResultReceipt)
+            .where(AgentResultReceipt.session_id == row.id)
+            .order_by(AgentResultReceipt.created_at.desc())
+            .limit(1)
+        ).first()
         summaries[row.id] = {
+            "executing": current_execution(
+                row, pending, receipt, turn, datetime.now(timezone.utc)
+            ),
             "id": row.id,
             "model": row.model,
             "status": row.status,
