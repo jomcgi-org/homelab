@@ -1073,6 +1073,18 @@ def build_retro_digest(data: dict, now: datetime | None = None) -> str:
         _section("6. Review verdicts and correction rounds", _reviews(data, cite)),
         _section("7. Cost", _costs(data, cite, task_cost)),
         _section("8. Escalations and stuck receipts", _escalations(data, cite)),
+        _section(
+            "8a. Recovery disruption",
+            [
+                "Bounded private audit sample, not complete history. Pair successful pause/resume "
+                "events by exact task and audit identity; unmatched duration/outcome is unknown. "
+                "Investigate avoidable paused time, interruptions and repeat causes. Distinguish "
+                "transport/missing output from code rejection and legitimate review/CI/dependency waits. "
+                "Call a pause avoidable only with evidence of an authorized safe recovery. Preserve "
+                "unknown-execution fences, human holds, subscription caps and acceptance.",
+                json.dumps(data.get("recovery_events", []), default=str),
+            ],
+        ),
         _section("9. Existing issues (dedupe)", _issues(data)),
     ]
     out = ""
@@ -1210,6 +1222,7 @@ def load_retro_data(session, now: datetime | None = None) -> dict:
     """Read the window's factory evidence as plain dicts (Postgres only)."""
     now = now or datetime.now(timezone.utc)
     from factory.orchestration.intake_evidence import backlog
+    from factory.orchestration.factory_improvements import recovery_events
 
     try:
         with session.begin_nested():
@@ -1251,6 +1264,7 @@ def load_retro_data(session, now: datetime | None = None) -> dict:
         optimizer = {"error": type(exc).__name__}
     return {
         "intake_backlog": intake_backlog,
+        "recovery_events": recovery_events(session),
         "optimizer": optimizer,
         "window_hours": WINDOW_HOURS,
         "runs": runs,

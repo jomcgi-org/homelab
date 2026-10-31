@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  executionView,
   activityRow,
   activitySummary,
   attemptMark,
@@ -954,4 +955,14 @@ it("never counts a stale executing snapshot as current execution", () => {
   expect(book.uncertain[0].nodes.some((node) => node.state === "running")).toBe(
     false,
   );
+});
+
+it("projects stale task detail without rewriting historical attempts", () => {
+  const task = executionView(LIVE_TASK, "2026-09-11T14:00:00Z", NOW);
+  expect(outcome(task, POLICY, NOW).headline).toBe("uncertain");
+  expect(taskSpec(task, POLICY, NOW)[0].value).toBe("uncertain");
+  expect(
+    task.nodes.find((node) => node.node_key === "review_1").attempts[0].status,
+  ).toBe("admitted");
+  expect(LIVE_TASK.state).toBe("executing");
 });

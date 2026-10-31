@@ -130,9 +130,7 @@
   // rows beside the merged list; the ledger holds the rest.
   const LANE_LIVE = 6;
   const LANE_DONE = 5;
-  const laneNow = $derived(
-    data.board.snapshotted_at ?? new Date().toISOString(),
-  );
+  const laneNow = $derived(data.evaluatedAt ?? new Date().toISOString());
   const book = $derived(ledger(data.board, laneNow));
   const lane = $derived({
     live: book.live.slice(0, LANE_LIVE),

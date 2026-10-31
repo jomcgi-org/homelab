@@ -23,6 +23,7 @@ export async function load({ fetch, params, setHeaders }) {
   setHeaders(headers);
 
   return {
+    evaluatedAt: new Date().toISOString(),
     title: `Task #${params.issue}`,
     snapshottedAt: payload.snapshotted_at ?? null,
     policy: payload.policy ?? {},

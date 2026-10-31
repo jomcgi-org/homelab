@@ -157,22 +157,32 @@ export function stepsOf(task) {
  * list price; `recent` is capped at a dozen tasks, so it is only the fallback
  * for a snapshot written before totals_7d existed.
  */
+export function executionSnapshotStale(snapshottedAt, now) {
+  const age = new Date(now).getTime() - new Date(snapshottedAt ?? "").getTime();
+  return (
+    !Number.isFinite(age) || age < 0 || age > EXECUTION_SNAPSHOT_MAX_AGE_MS
+  );
+}
+
+export function executionView(task, snapshottedAt, now) {
+  if (
+    task.state !== "in flight" &&
+    !(executionSnapshotStale(snapshottedAt, now) && task.state === "executing")
+  )
+    return task;
+  return {
+    ...task,
+    state: "uncertain",
+    nodes: (task.nodes ?? []).map((node) =>
+      node.state === "running" ? { ...node, state: "uncertain" } : node,
+    ),
+  };
+}
+
 export function ledger(activity, now) {
-  const age =
-    new Date(now).getTime() -
-    new Date(activity?.snapshotted_at ?? "").getTime();
-  const stale =
-    !Number.isFinite(age) || age < 0 || age > EXECUTION_SNAPSHOT_MAX_AGE_MS;
+  const stale = executionSnapshotStale(activity?.snapshotted_at, now);
   const active = (activity?.active ?? []).map((task) =>
-    task.state === "in flight" || (stale && task.state === "executing")
-      ? {
-          ...task,
-          state: "uncertain",
-          nodes: (task.nodes ?? []).map((node) =>
-            node.state === "running" ? { ...node, state: "uncertain" } : node,
-          ),
-        }
-      : task,
+    executionView(task, activity?.snapshotted_at, now),
   );
   const live = active.filter((task) => task.state === "executing");
   const waiting = active.filter((task) =>
