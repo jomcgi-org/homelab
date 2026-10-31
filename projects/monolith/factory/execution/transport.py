@@ -375,6 +375,14 @@ def _resolve_pi_workload() -> str:
 PI_WORKLOAD = _resolve_pi_workload()
 
 
+class EmberHistoricalCessationUnavailable(EmberVMTransportError):
+    """A bounded authority refusal; its code is safe for operator diagnostics."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
 class EmberSessionGone(EmberVMTransportError):
     """Raised when a reused EmberVM session is confirmed dead by the CP (403/410)
     and the retry also failed. The ORIGINAL binding is dead regardless of retry failure reason."""
@@ -1450,6 +1458,53 @@ class EmberVmShimTransport:
             raise EmberVMTransportError(_status_error_detail(exc)) from exc
         except httpx.TransportError as exc:
             raise EmberVMTransportError(str(exc)) from exc
+
+    async def get_session_cessation_evidence(
+        self,
+        ember_session_id: str,
+        *,
+        generation: int,
+        invoke_started_at: int,
+        updated_at: int,
+    ) -> dict:
+        """Read bounded authoritative journal evidence for one exact old dispatch.
+
+        This management-authenticated read does not stop, restore or invoke a
+        guest. Missing/compacted history and current successor or restore work
+        are refusals, never evidence of cessation. Callers validate both the
+        identity and the control plane's fresh coverage assertion.
+        """
+        if not EMBERVM_URL:
+            raise EmberVMTransportError("EMBERVM_URL is not configured")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", ember_session_id):
+            raise EmberVMTransportError("invalid cessation guest identity")
+        timeout = httpx.Timeout(
+            LIST_SESSIONS_READ_TIMEOUT, connect=SUBMIT_CONNECT_TIMEOUT
+        )
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(
+                    f"{EMBERVM_URL}/v1/sessions/{ember_session_id}/cessation-evidence",
+                    headers=auth_headers(),
+                    params={
+                        "generation": generation,
+                        "invoke_started_at": invoke_started_at,
+                        "updated_at": updated_at,
+                    },
+                )
+                if response.status_code == 409:
+                    body = response.json()
+                    reason = body.get("reason") if isinstance(body, dict) else None
+                    if isinstance(reason, str) and re.fullmatch(
+                        r"[a-z_]{1,80}", reason
+                    ):
+                        raise EmberHistoricalCessationUnavailable(reason)
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as exc:
+            raise EmberVMTransportError(_status_error_detail(exc)) from exc
+        except (httpx.TransportError, ValueError) as exc:
+            raise EmberVMTransportError("cessation evidence unavailable") from exc
 
     async def get_session(
         self, ember_session_id: str, session_token: str | None = None

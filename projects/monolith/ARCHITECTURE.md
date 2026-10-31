@@ -398,7 +398,11 @@ See [discovery](factory/orchestration/FACTORY.md#native-registration-and-caller-
 
 **Why.** A ceased learning guest can leave an unknown historical result that must
 still fence its session without permanently blocking a cadence change. Missing
-remote records prove nothing. See [learning reconciliation](factory/orchestration/FACTORY.md#settled-learning-execution).
+remote records prove nothing. For a pruned guest projection, a fresh authenticated
+EmberVM verifier may instead establish the exact positive terminal journal chain,
+complete retained successor coverage and no remaining restore authority. Monolith
+binds that proof to local lineage ownership, preview digest and audited replay;
+incomplete history remains fenced. See [learning reconciliation](factory/orchestration/FACTORY.md#settled-learning-execution).
 
 **Why.** Outcome comparisons need complete receipt cohorts and attempt accounting.
 Missing evidence must remain unknown; priced turns and ledger bounds answer
