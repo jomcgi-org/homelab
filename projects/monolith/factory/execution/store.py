@@ -2808,6 +2808,9 @@ def persist_turn_from_pending_sync(
                 )
             receipt_provenance = captured["provenance"]
         usage = {**turn.usage, "activities": turn.activities}
+        from factory.execution.push_format import record as record_push_format
+
+        record_push_format(session, sess_row, usage.get("push_format"))
         # Capture identity is a server observation, never a guest usage claim.
         # Commit it with the exact completed turn before cleanup clears bindings.
         usage.pop("browser_capture_producer", None)

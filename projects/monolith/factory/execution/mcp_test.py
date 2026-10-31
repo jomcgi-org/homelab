@@ -180,6 +180,84 @@ def _factory_artifact_session(monkeypatch, session):
     return row
 
 
+@pytest.mark.parametrize(
+    "key",
+    ["implement_format", "correct_1", "integrate_1", "review_1", "conductor_plan"],
+)
+@pytest.mark.parametrize(
+    "hydrate,assigned",
+    [
+        ("main", "factory/t-format"),
+        ("factory/t-format", "factory/t-format-node-one"),
+        ("fix/adopted", "fix/adopted"),
+    ],
+)
+@pytest.mark.parametrize("bound", [False, True])
+def test_executor_forwards_push_contract_only_for_source_roles(
+    monkeypatch, session, key, hydrate, assigned, bound
+):
+    from core import db as core_db
+
+    monkeypatch.setattr(core_db, "get_engine", lambda: session.bind)
+    monkeypatch.setattr(
+        "factory.orchestration.api.factory_session_allowed", lambda _key, **kw: True
+    )
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _sid: None)
+    row = store.create_session(
+        session,
+        f"factory:t-format:{key}:1",
+        "/workspace",
+        hydrate,
+        repo="jomcgi-org/homelab",
+        workflow_id="format-dispatch",
+        node_key=key,
+        node_attempt=1,
+    )
+    session.add(
+        SwarmNodeRun(
+            task_id="t-format",
+            node_key=key,
+            attempt=1,
+            dispatch_key="format-dispatch",
+            session_id=row.id if bound else None,
+            status="running",
+            pin_json=json.dumps(
+                {
+                    "artifact_path": ".factory/format.json",
+                    "repo": "jomcgi-org/homelab",
+                    "branch": assigned,
+                    "hydration_branch": hydrate,
+                }
+            ),
+        )
+    )
+    session.commit()
+    delivered = []
+
+    async def deliver(*args, **kwargs):
+        delivered.append(kwargs)
+        return _completed_delivery(args[2])
+
+    async def notify(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", deliver)
+    monkeypatch.setattr(mcp, "_notify_terminal", notify)
+    store.create_pending_message(session, row.id, "work")
+    asyncio.run(mcp._execute_pending_message(row.id))
+    assert len(delivered) == 1, "must reach the production delivery caller"
+    assert delivered[0]["artifact_path"] == ".factory/format.json"
+    if key.startswith(("implement_", "correct_", "integrate_")):
+        assert delivered[0]["push_format"] == {
+            "task_id": "t-format",
+            "node_key": key,
+            "branch": assigned,
+            "base_ref": "refs/remotes/origin/main",
+        }
+    else:
+        assert "push_format" not in delivered[0]
+
+
 @pytest.mark.parametrize("retry", [False, True])
 def test_factory_executor_declares_exact_pin_before_session_binding(
     monkeypatch, session, retry

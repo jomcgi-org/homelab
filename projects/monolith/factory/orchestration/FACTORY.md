@@ -1783,6 +1783,54 @@ paused work, cancellation, unresolved starts, accounting and direction. Landing
 keeps its separate reader and status retains history; execution authority is
 never cached to avoid reading completed receipts.
 
+Source nodes (`implement_*`, `correct_<round>` and `integrate_*`) receive a
+server-authored push-format contract through the existing session transport.
+The contract matches the exact task, node, attempt and dispatch key. It accepts
+an unbound run because the first pending turn can dispatch before graph binding;
+a run bound to another session is rejected.
+Browser-capture, planner and review nodes receive none. The shared runtime shim
+installs a chained pre-push hook before the model runs. It validates the exact
+outgoing commit in a detached linked worktree with changed-file `ci lint`,
+`ci regen`, then `ci lint` for generated outputs. Missing tools, a missing
+baseline, command failures and changed outputs refuse the push. The hook prints
+the exact drift paths and retains the validation worktree so the worker can
+incorporate its outputs and commit before retrying. It never formats the
+worker's dirty checkout or transient capture files. Existing hooks still run
+with their original arguments and stdin; ordinary human branches keep their
+existing behavior. Hooks protect against accidental drift; CI remains the
+backstop against deliberately disabled hooks.
+
+The guest retains a per-node union of drifted paths under the shared Git
+directory. The shim includes it in native result usage even after a successful
+correction. The existing result transaction writes `format_drift_prevented`
+with task/node identity and the distinct newly observed file count. The task row
+lock and existing audit trail fence replay and duplicate result processing.
+Clean checks and missing-tool failures contribute no saving. No durable workflow
+checkpoint is added or reordered.
+Invalid guest evidence records a bounded `format_drift_evidence_rejected` audit
+under the admitted server identity and does not prevent saving the completed turn.
+
+Experiment #7458 is staged repository delivery. The hypothesis is that validating
+outgoing commits in guests reduces factory PR format writebacks from the issue's
+baseline of about 35 per week to fewer than 5 per week. The operations owner
+starts a 14-day window only after recording the deployed monolith and runtime
+revisions and verifying fresh implement, correct and integrate guests. Each
+seven-day interval must have fewer than 5 `style: auto-format` commits by
+`ci-format-bot`, attributed to originating `factory/` PRs with raw revision and
+time-range evidence. Verify deployed audit identity, distinct file counts and
+replay behavior separately. Leave the issue open until these checks are accepted.
+Stop and revert this change through reviewed GitOps delivery if validation blocks
+correct trees, alters unrelated files or cannot run its packaged tools; revise
+or revert after 14 days if the threshold is missed. No live improvement is claimed.
+
+Rollout checklist: changes to `rules_go`, `rules_python`, `gazelle`, `skylib` or
+`bazel/helm/gazelle` sources invalidate the packaged generator fingerprint. Until
+rebuilt runtime images roll out, `gazelle_inputs verify` refuses guest pushes
+touching Python, Go or BUILD files, including the PR changing those inputs.
+Keep validation fail-closed. The authorized landing and operations owner must
+coordinate generator-input delivery and rebuilt images before fresh source
+guests can pass validation; record the affected runtime revisions in acceptance.
+
 Each graph admission and factory turn reservation commit atomically. The
 node's deterministic session identity is reused after an interrupted submit.
 A workflow replay cannot read a different graph or silently replenish its
