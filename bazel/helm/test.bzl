@@ -44,7 +44,13 @@ def helm_lint_test(name, chart_path = None, extra_values = [], **kwargs):
         chart_path: Path to chart directory (default: current package)
         extra_values: Optional list of additional values file labels to pass
                       to helm lint via -f flags (e.g. generated image values).
+                      Each entry is an explicit caller input and stays required.
         **kwargs: Additional arguments passed to sh_test
+
+    The chart's default values.yaml is optional: library charts ship only
+    Chart.yaml and templates, so the lint data includes values.yaml only when
+    the file exists. Chart.yaml, templates, vendored subcharts and every
+    explicit extra_values entry stay required inputs.
     """
     if chart_path == None:
         chart_path = native.package_name()
@@ -95,8 +101,8 @@ EOF
         data = [
                    "@multitool//tools/helm",
                    ":Chart.yaml",
-                   ":values.yaml",
-               ] + native.glob(["templates/**"], allow_empty = True) +
+               ] + native.glob(["values.yaml"], allow_empty = True) +
+               native.glob(["templates/**"], allow_empty = True) +
                # Vendored subcharts. Without these a chart that declares a
                # file:// dependency and calls {{ include }} on one of its
                # defines fails lint inside the sandbox with "no template
