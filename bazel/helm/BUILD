@@ -200,7 +200,7 @@ sh_test(
     data = [
         ":test.bzl",
         "//projects/platform/cf-ingress-library:chart",
-        "//projects/shared/helm/homelab-library/chart:chart",
+        "//projects/shared/helm/homelab-library/chart",
         "@multitool//tools/helm",
     ],
 )
