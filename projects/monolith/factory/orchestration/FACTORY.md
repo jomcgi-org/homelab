@@ -3890,7 +3890,7 @@ the request also changes cadence. Recovery does not enable either operation.
 A typed missing guest projection may select a fresh, authenticated EmberVM
 historical-cessation verifier. Its narrow original-generation parking and idle
 eviction chain must survive journal compaction with complete creation coverage;
-all current lineage holders, successor creations, restore work and unresolved
+all current lineage holders, successor creations, dispatch-capable restore work and unresolved
 residency claims refuse proof. A surviving terminal holder also refuses because
 it could still authorize a workspace restore. Monolith checks the authority's
 thirty-second freshness separately, binds stable proof facts into preview/apply,
@@ -3898,6 +3898,9 @@ and rejects other current or prior local lineage owners under its existing locks
 The audit records the authority read time separately from the stable digest.
 Only this cadence acknowledgement consumes the proof; historical unknown results,
 accounting, task holds and normal session-send fences remain intact.
+The proof is scoped to EmberVM's one-replica `Recreate` authority. A dead
+manager's orphan Restore/Prime operation cannot register or dispatch through its
+retired owner; absence of orphan resource work is not asserted.
 
 ### Settled quota-probe reconciliation
 

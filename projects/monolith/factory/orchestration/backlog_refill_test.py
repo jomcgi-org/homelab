@@ -2900,6 +2900,7 @@ def historical_learning_world(learning_recovery_world, monkeypatch):
     s.observed["historical_cessation"] = {
         "schema": 1,
         "source": "retained_control_plane_journal",
+        "authority_scope": "single_writer_dispatch",
         "lineage_id": "old-guest",
         "node_id": "original-node",
         "vm_id": "original-vm",
@@ -2990,6 +2991,7 @@ async def test_historical_learning_proof_replays_concurrently_and_preserves_hist
     [
         ("schema", True),
         ("source", "saved_supervisor_observation"),
+        ("authority_scope", "inventory_absence"),
         ("complete", False),
         ("no_successor", 1),
         ("no_pending_restore", False),

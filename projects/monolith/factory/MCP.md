@@ -445,7 +445,13 @@ that path. Missing rows, an old reason string, and saved hashes are never proof.
 The historical path accepts only a complete retained original-generation journal
 chain establishing positive parking followed by idle eviction. The control plane
 must prove no surviving lineage holder, retained successor creation, pending
-restore or unresolved residency claim. Compacted or bounded-out history refuses
+dispatch-capable restore or unresolved residency claim. The verifier's
+`single_writer_dispatch` authority assumes the deployed one-replica `Recreate`
+control plane. Check the trimmed deployment's strategy, replica counts and
+observed generation before live reconciliation. A crashed manager's orphan
+Restore/Prime RPC may finish, but cannot register, Assign or invoke a session
+through its dead owner; the proof does not claim zero orphan resource work.
+Compacted or bounded-out history refuses
 recovery. Monolith additionally checks the exact local history and all current
 or prior lineage owners under its control/admission locks. It validates the
 authority's own observation timestamp within thirty seconds, separately from

@@ -179,6 +179,12 @@ defmodule Embervm.Router do
     handle_residency(conn, id, :submit)
   end
 
+  # Management-only, owner-scoped read of retained journal evidence. It never
+  # recreates a pruned session or accepts its retired session bearer token.
+  get "/v1/sessions/:id/cessation-evidence" do
+    handle_session_cessation_evidence(conn, id)
+  end
+
   get "/v1/sessions/:id/residency" do
     handle_residency(conn, id, :list)
   end
@@ -2088,6 +2094,35 @@ defmodule Embervm.Router do
     # the session process falls back to the workload's invokePath (the shim serves
     # only /invoke, so a baked "/" default 404s the guest, the R1 baked-path trap).
     header_value(conn, @path_header)
+  end
+
+  defp handle_session_cessation_evidence(conn, session_id) do
+    keys = ["generation", "invoke_started_at", "updated_at"]
+    parsed = Enum.map(keys, fn key ->
+      case Map.get(conn.query_params, key) do
+        text when is_binary(text) and byte_size(text) <= 19 ->
+          case Integer.parse(text) do
+            {value, ""} -> value
+            _ -> nil
+          end
+        _ -> nil
+      end
+    end)
+    [generation, started, updated] = parsed
+    expected = %{generation: generation, invoke_started_at: started, updated_at: updated}
+    if Enum.sort(Map.keys(conn.query_params)) == Enum.sort(keys) and Embervm.SessionCessationEvidence.expected?(expected) do
+      owner = if admin?(conn), do: :admin, else: conn.assigns.principal
+      case session_manager().session_cessation_evidence(session_manager_server(), session_id, expected, owner) do
+        {:ok, proof} -> send_json(conn, 200, proof)
+        {:error, :historical_not_found, _} -> send_json(conn, 404, %{error: "session not found", retryable: false})
+        {:error, reason, diagnostics} ->
+          status = if reason == :historical_store_unavailable, do: 503, else: 409
+          send_json(conn, status, %{error: "historical cessation unavailable", reason: to_string(reason), diagnostics: diagnostics, retryable: false})
+        _ -> send_json(conn, 503, %{error: "historical cessation unavailable", reason: "historical_store_unavailable", retryable: false})
+      end
+    else
+      send_json(conn, 400, %{error: "invalid historical cessation identity", retryable: false})
+    end
   end
 
   # GET /v1/sessions/:id (management OR session token). The management-auth plug is

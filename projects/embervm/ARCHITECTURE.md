@@ -777,6 +777,35 @@ restore admitted inside the window is denied with the retryable
 `lineage_restore_in_flight` reason and a restore in flight holds the prefix for
 that sweep. The destructive GC gate stays off by default regardless.
 
+**Historical cessation evidence.** The management-authenticated, owner-scoped
+`GET /v1/sessions/:id/cessation-evidence` reads an exact original dispatch after
+its session projection has been pruned. It accepts only a retained original
+creation, one invocation start, positive `idled` parking/parked commits, and
+`idle_ttl` eviction. Guest, lineage, principal, workload, original node/VM,
+generation and timestamps must agree. Creation must be above the compaction
+marker; complete bounded creation history must contain no successor. Unknown
+transitions, missing fields, malformed payloads and exhausted bounds refuse.
+The limits are 256 target events/1 MiB, 32,768 creation events/16 MiB, and 64 KiB
+per payload. Neither raw payloads nor credential hashes leave the verifier.
+
+The backend reads marker, history and durable ownership in one read-only
+snapshot. The serialized session store and manager additionally refuse all hot
+lineage holders, even terminal ones, registry owners, pending restore authority
+and unresolved residency aliases. A surviving terminal holder could otherwise
+authorize a later restore. Successful reads carry a fresh observation timestamp
+and a stable hash of the exact positive history, independent of unrelated new
+sessions. They neither recreate a session nor determine its invocation result.
+
+**Why.** Seven-day projection pruning can remove a stopped guest while its
+thirty-day journal still contains positive cessation evidence. A missing row
+alone cannot justify recovery. This proof is explicitly scoped to the deployed
+single-writer control plane (`replicas: 1`, `strategy: Recreate`), not an
+unimplemented multi-writer authority. A crashed manager's orphan Restore/Prime
+RPC may finish resource work, but cannot register, Assign or dispatch through
+its dead owner. The restart regression covers that distinction; the proof does
+not assert that every orphan RPC has stopped. Consumers must retain their own
+freshness, exact ownership, audited authorization and unknown-outcome fences.
+
 **Why.** A control-plane restart during an interruptible bank could leave a
 benign generation advance indistinguishable from an unauthorized one, forcing
 quarantine (ADR embervm/017). A live-volume timer snapshot was rejected because

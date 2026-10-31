@@ -186,6 +186,8 @@ defmodule Embervm.OpLog.Postgres do
     )
     """,
     "CREATE INDEX IF NOT EXISTS ops_task_id_idx ON ops(task_id)",
+    "CREATE INDEX IF NOT EXISTS ops_session_id_seq_idx ON ops(session_id, seq)",
+    "CREATE INDEX IF NOT EXISTS ops_kind_seq_idx ON ops(kind, seq)",
     """
     CREATE TABLE IF NOT EXISTS tasks (
       task_id TEXT PRIMARY KEY,
@@ -480,6 +482,11 @@ defmodule Embervm.OpLog.Postgres do
   end
 
   @impl Embervm.OpLog
+  def session_cessation_evidence(server, session_id, expected, principal) do
+    Embervm.OpLog.safe_server_call(server, {:session_cessation_evidence, session_id, expected, principal}, @double_query_call_timeout_ms)
+  end
+
+  @impl Embervm.OpLog
   def load_tasks(server \\ __MODULE__) do
     Embervm.OpLog.safe_server_call(server, :load_tasks, @single_query_call_timeout_ms)
   end
@@ -701,6 +708,25 @@ defmodule Embervm.OpLog.Postgres do
   def handle_call({:read_from, seq}, _from, state) do
     reply_connection_call(state, :read_from, fn ->
       do_read_from(state.conn, seq, state.query_fun)
+    end)
+  end
+
+  def handle_call({:session_cessation_evidence, id, expected, principal}, _from, state) do
+    reply_connection_call(state, :session_cessation_evidence, fn ->
+      case state.transaction_fun.(state.conn, fn conn ->
+        query = fn sql, params ->
+          case state.query_fun.(conn, sql, params) do
+            {:ok, %Postgrex.Result{rows: rows}} -> {:ok, rows}
+            error -> error
+          end
+        end
+        with {:ok, _} <- query.("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY", []) do
+          Embervm.SessionCessationEvidence.read(query, :postgres, &decode_payload/1, id, expected, principal)
+        end
+      end) do
+        {:ok, result} -> result
+        _ -> {:error, :historical_store_unavailable, %{}}
+      end
     end)
   end
 

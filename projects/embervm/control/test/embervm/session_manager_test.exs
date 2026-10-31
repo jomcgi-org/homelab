@@ -4439,6 +4439,65 @@ defmodule Embervm.SessionManagerTest do
     refute MapSet.member?(:sys.get_state(ctx.mgr).inflight_restore_lineages, original.session_id)
   end
 
+  test "a delayed persistence restore cannot dispatch after its manager dies and historical proof is issued" do
+    parent = self()
+    {:ok, clock} = Agent.start_link(fn -> 100 end)
+    {:ok, primes} = Agent.start_link(fn -> 0 end)
+    ctx = start_stack(store_clock: fn -> Agent.get(clock, & &1) end,
+      prime_fun: fn _channel, request ->
+        case Agent.get_and_update(primes, fn n -> {n, n + 1} end) do
+          0 -> {:ok, %PrimeResponse{vm_id: "vm-original"}}
+          _ ->
+            send(parent, {:delayed_restore, self(), request.lineage_id})
+            receive do :finish_restore -> {:ok, %PrimeResponse{vm_id: "vm-late-restore"}} end
+        end
+      end,
+      assign_fun: fn _channel, _request -> send(parent, :unexpected_assign); {:error, :forbidden} end,
+      claim_fun: fn _, _, _ -> send(parent, :unexpected_pool_claim); {:error, :empty} end,
+      reserve_session_vm_fun: fn _dispatcher, vm -> send(parent, {:reserved, vm}); :ok end,
+      release_session_vm_fun: fn _dispatcher, vm -> send(parent, {:pool_release, vm}); :ok end)
+    original = create_persistence_session(ctx)
+    id = original.session_id
+    Agent.update(clock, fn _ -> 200 end)
+    assert {:ok, _} = SessionStore.record_invoke_started(ctx.store, id)
+    Agent.update(clock, fn _ -> 300 end)
+    assert {:ok, _} = SessionStore.record_invoke(ctx.store, id, nil)
+    Agent.update(clock, fn _ -> 400 end)
+    park_session(ctx, original)
+    Agent.update(clock, fn _ -> 600 end)
+    assert {:ok, _} = SessionStore.transition(ctx.store, id, :evict, :session_evicted, %{reason: :idle_ttl}, %{})
+    caller = Task.async(fn ->
+      try do SessionManager.create(ctx.mgr, "wl-persist", "p1", id)
+      catch :exit, _ -> :owner_stopped end
+    end)
+    assert_receive {:delayed_restore, worker, ^id}
+    monitor = Process.monitor(worker)
+    assert {:ok, _} = SQLite.compact(ctx.op_log, 600 + 8 * 86_400_000)
+    GenServer.stop(ctx.mgr)
+    GenServer.stop(ctx.store)
+    assert Task.await(caller) == :owner_stopped
+    {:ok, rebuilt} = SessionStore.start_link(name: nil, op_log: ctx.op_log)
+    {:ok, replacement} = SessionManager.start_link(Keyword.put(ctx.mgr_opts, :session_store, rebuilt))
+    on_exit(fn -> Embervm.TestProcess.stop_safely(replacement); Embervm.TestProcess.stop_safely(rebuilt) end)
+    expected = %{generation: 0, invoke_started_at: 200, updated_at: 600}
+    assert {:ok, _} = SessionManager.session_cessation_evidence(replacement, id, expected, "p1")
+    send(worker, :finish_restore)
+    assert_receive {:DOWN, ^monitor, :process, ^worker, :normal}
+    assert_receive {:reserved, "vm-late-restore"}
+    # The abandoned worker can finish Prime but its response goes to the dead
+    # PID. It cannot register a session, enter the shared primed pool, or Assign.
+    assert {:ok, []} = SQLite.load_sessions(ctx.op_log)
+    assert Registry.lookup(ctx.registry, id) == []
+    assert DynamicSupervisor.which_children(ctx.sup) == []
+    assert :ok = SessionManager.reconcile(replacement)
+    assert {:error, {:denied, :unknown_lineage}} = SessionManager.create(replacement, "wl-persist", "p1", id)
+    assert {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    assert Enum.count(ops, &(&1.kind == :session_created)) == 1
+    refute_receive :unexpected_assign, 30
+    refute_receive :unexpected_pool_claim, 30
+    refute_receive {:pool_release, "vm-late-restore"}, 30
+  end
+
   test "a restoring create is allowed once no restore of that lineage is in flight" do
     ctx = start_stack(prime_fun: fake_prime_fun("vm-inflight-cleared"), channel_fun: fake_channel_fun())
     original = create_persistence_session(ctx)

@@ -49,6 +49,7 @@ def _historical_cessation(saved, observed, observed_at):
         type(evidence.get("schema")) is not int
         or evidence["schema"] != 1
         or evidence.get("source") != "retained_control_plane_journal"
+        or evidence.get("authority_scope") != "single_writer_dispatch"
         or any(
             evidence.get(key) is not True
             for key in ("complete", "no_successor", "no_pending_restore")
@@ -79,6 +80,7 @@ def _historical_cessation(saved, observed, observed_at):
         for key in (
             "schema",
             "source",
+            "authority_scope",
             "lineage_id",
             "node_id",
             "vm_id",
@@ -476,8 +478,11 @@ async def _run(session_id, seq, permit_id, reason, actor=None, request=None):
             if not isinstance(observed, dict) or "historical_cessation" not in observed:
                 raise ValueError("missing authoritative historical proof")
     except EmberHistoricalCessationUnavailable as exc:
+        summary = (
+            ":" + json.dumps(exc.diagnostics, sort_keys=True) if exc.diagnostics else ""
+        )
         raise ValueError(
-            f"learning_historical_cessation_unavailable:{exc.reason}"
+            f"learning_historical_cessation_unavailable:{exc.reason}{summary}"
         ) from exc
     except Exception as exc:
         # Unavailable history, timeouts and permission errors remain fenced.
