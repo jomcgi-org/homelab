@@ -1,6 +1,11 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
+exports_files(
+    ["values-gke.yaml"],
+    visibility = ["//projects/platform-gke/authentik:__pkg__"],
+)
+
 helm_chart(
     name = "chart",
     lint = False,
