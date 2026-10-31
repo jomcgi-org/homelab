@@ -587,18 +587,6 @@ func (t Test) filter(hours []Hour) []Hour {
 	return out
 }
 
-func sameHours(a, b []Hour) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].Unix != b[i].Unix {
-			return false
-		}
-	}
-	return true
-}
-
 // longestRun is _longest_good_run: the longest run of good hours allowing
 // one single-hour gap, as indices into hours (sorted, one day, unique hours).
 // Bounds are inclusive; tied runs keep the earliest slot. A second gap slides
