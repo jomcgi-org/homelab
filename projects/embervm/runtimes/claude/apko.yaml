@@ -21,6 +21,8 @@ contents:
     - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
   packages:
     - busybox
+    # run-generators.sh uses GNU grep's --include/--exclude-dir options.
+    - grep
     - ca-certificates-bundle
     - glibc
     # The Bash tool shells out to bash specifically, not /bin/sh. busybox alone

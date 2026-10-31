@@ -4,14 +4,14 @@
 # Steps:
 #   1. lint     format only files changed vs origin/main
 #   2. regen    selective generators, Helm dependency sync and migration checks
-#               (BUILD generation is CI-only)
+#               (complete guest validation also runs the image's pinned Gazelle)
 #   3. ratchet  verification tags, central BUILD entries, chart versions, source patterns
 #   4. test     bb remote (Linux) affected Bazel tests with the pr-checks flags
 #
 # Usage:
 #   ci              # lint + regen + ratchet + remote test
 #   ci lint         # format changed files only
-#   ci regen        # selective generators (gazelle itself runs only in CI)
+#   ci regen        # selective generators (ordinary local runs defer Gazelle to CI)
 #   ci ratchet      # ordered repository guards against the resolved merge base
 #   ci test         # bb remote affected tests only
 #   ci test -- //path:target  # explicit target override, including //...
@@ -57,6 +57,19 @@ usage() {
 changed_files() {
 	local base
 	local diff_filter="${1:-ACMR}"
+	if [[ "${CI_REQUIRE_COMPLETE:-}" == 1 ]]; then
+		base="$(git merge-base HEAD "$BASE_REF")" || return 1
+		local paths
+		# -z avoids Git's quoted-path syntax (unicode, quotes and tabs). The
+		# push guard rejects embedded newlines before this line-based interface.
+		paths="$(
+			{ git diff --name-only -z --diff-filter="$diff_filter" "$base" &&
+				git diff --cached --name-only -z --diff-filter="$diff_filter" &&
+				git ls-files --others --exclude-standard -z; } | tr '\0' '\n'
+		)" || return 1
+		printf '%s\n' "$paths" | sed '/^$/d' | sort -u
+		return
+	fi
 	if git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
 		base="$(git merge-base HEAD "$BASE_REF" 2>/dev/null || echo "$BASE_REF")"
 	else
@@ -73,13 +86,15 @@ changed_files() {
 # True if any changed path is "code" (not pure docs/agent prose). Used by pre-push.
 code_changed() {
 	local f
+	local changed_paths
+	changed_paths="$(changed_files)" || return 1
 	while IFS= read -r f; do
 		case "$f" in
 		docs/* | .claude/* | *.md | */*.md) continue ;;
 		"") continue ;;
 		*) return 0 ;;
 		esac
-	done < <(changed_files)
+	done <<<"$changed_paths"
 	return 1
 }
 
@@ -89,11 +104,24 @@ code_changed() {
 # --config so PATH prettier loads the plugin the same way the Bazel binary does.
 PRETTIER_CONFIG="${PRETTIER_CONFIG:-bazel/tools/format/prettier.config.cjs}"
 cmd_lint() {
+	local changed_paths
+	changed_paths="$(changed_files)" || return 1
+	if [[ "${CI_REQUIRE_COMPLETE:-}" == 1 ]]; then
+		git rev-parse --verify "$BASE_REF^{commit}" >/dev/null
+		git merge-base HEAD "$BASE_REF" >/dev/null
+		local required_tool
+		for required_tool in buildifier ruff shfmt gofumpt prettier; do
+			command -v "$required_tool" >/dev/null || {
+				err "missing tool: $required_tool; refresh the guest formatter image"
+				return 1
+			}
+		done
+	fi
 	local -a files=()
 	local f
 	while IFS= read -r f; do
 		[[ -n "$f" && -f "$f" ]] && files+=("$f")
-	done < <(changed_files)
+	done <<<"$changed_paths"
 
 	if [[ ${#files[@]} -eq 0 ]]; then
 		log "lint: no changed files vs $BASE_REF"
@@ -172,7 +200,7 @@ need_generators() {
 			return 0
 			;;
 		esac
-	done < <(changed_files)
+	done <<<"$changed_paths"
 	return 1
 }
 
@@ -184,7 +212,7 @@ need_gazelle() {
 			return 0
 			;;
 		esac
-	done < <(changed_files)
+	done <<<"$changed_paths"
 	return 1
 }
 
@@ -196,7 +224,7 @@ need_helm_deps() {
 			return 0
 			;;
 		esac
-	done < <(changed_files ACMRD)
+	done <<<"$changed_paths"
 	return 1
 }
 
@@ -206,11 +234,15 @@ need_migration_check() {
 		case "$f" in
 		*/migrations/*.sql) return 0 ;;
 		esac
-	done < <(changed_files)
+	done <<<"$changed_paths"
 	return 1
 }
 
 cmd_regen() {
+	# Bash dynamically scopes this snapshot to the need_* predicates. Capture
+	# errors here, outside conditional functions; /dev/fd is absent in guests.
+	local changed_paths
+	changed_paths="$(changed_files ACMRD)" || return 1
 	if need_helm_deps; then
 		if ! command -v helm >/dev/null 2>&1; then
 			err "regen: helm is required to sync chart dependencies (run ./bootstrap.sh && direnv allow)"
@@ -239,7 +271,28 @@ cmd_regen() {
 	# branches, so a BUILD change lands as a `style: auto-format` commit rather
 	# than in yours.
 	if need_gazelle; then
-		dim "regen: BUILD inputs changed; CI's Format stage runs //:gazelle"
+		if [[ "${CI_REQUIRE_COMPLETE:-}" == 1 ]]; then
+			if [[ "$(uname -s)" != Linux || ! -x /usr/local/libexec/homelab-gazelle ]]; then
+				err "regen: complete validation requires the image's pinned Linux //:gazelle_binary"
+				return 1
+			fi
+			# This binary is built from //:gazelle_binary in the runtime image,
+			# never the unrelated aspect-gazelle executable on PATH.
+			python3 /usr/local/libexec/gazelle_inputs.py verify /usr/local/libexec/gazelle-inputs.json
+			local repo_config=/usr/local/libexec/gazelle-repo-config
+			if [[ ! -s "$repo_config" ]]; then
+				err "regen: complete validation requires the image's bzlmod repo config"
+				return 1
+			fi
+			# Match gazelle.bash.in: bzlmod repository names and a real Go SDK.
+			# Unknown imports must not trigger Gazelle's unpinned go get fallback.
+			GOROOT="$(go env GOROOT)"
+			export GOROOT
+			ENABLE_LANGUAGES=argocd,bzl,proto,go,python /usr/local/libexec/homelab-gazelle -repo_root "$ROOT" -bzlmod -repo_config "$repo_config" -external=static
+			/usr/local/libexec/homelab-gazelle -repo_root "$ROOT" -bzlmod -repo_config "$repo_config" -external=static -lang=go,proto
+		else
+			dim "regen: BUILD inputs changed; CI's Format stage runs //:gazelle"
+		fi
 	fi
 
 	if need_migration_check; then
@@ -430,6 +483,11 @@ cmd_all() {
 main() {
 	local cmd="${1:-}"
 	case "$cmd" in
+	validation-protocol)
+		# The installed guard must reject old branch helpers that ignore
+		# CI_REQUIRE_COMPLETE and silently defer part of validation to CI.
+		printf '%s\n' 'factory-push-format-v1'
+		;;
 	"" | all)
 		[[ "$cmd" == "all" ]] && shift || true
 		cmd_all "$@"

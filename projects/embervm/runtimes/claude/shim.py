@@ -6984,6 +6984,7 @@ class ProcessManager:
         effort=None,
         runtime_meter=None,
         workspace_handoff=None,
+        push_format=None,
     ):
         total_start = _turn_timing_now()
         self._turn_started_at = total_start
@@ -7030,6 +7031,24 @@ class ProcessManager:
             getattr(self, "workspace", DEFAULT_WORKSPACE), "src"
         )
         turn_base = _capture_turn_base(checkout_dir)
+        push_format_state = None
+        if push_format is not None:
+            import push_format as push_format_guard
+
+            installed = subprocess.run(
+                [
+                    sys.executable,
+                    push_format_guard.__file__,
+                    "install",
+                    checkout_dir,
+                    json.dumps(push_format),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                **_cli_privilege_kwargs(),
+            )
+            push_format_state = installed.stdout.strip()
         dispatch_bound = False
         interrupted_record = None
         if dispatch_id is not None:
@@ -7154,6 +7173,10 @@ class ProcessManager:
                     record["workspace_hydration"] = {"failed": self._hydration_error}
                 elif self._hydration_status:
                     record["workspace_hydration"] = self._hydration_status
+            if isinstance(record, dict) and push_format_state is not None:
+                drift = push_format_guard.evidence(push_format_state)
+                if drift is not None:
+                    record.setdefault("usage", {})["push_format"] = drift
             if isinstance(record, dict) and not reason:
                 diff = _capture_turn_diff(checkout_dir, turn_base)
                 if diff is not None:
@@ -7457,6 +7480,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self._send(400, {"error": "workspace_handoff must be an object"})
             return
         thinking = payload.get("thinking")
+        if "push_format" in payload and not isinstance(payload["push_format"], dict):
+            self._send(400, {"error": "push_format must be an object"})
+            return
         if thinking is not None and not (
             thinking is True
             or thinking is False
@@ -7503,6 +7529,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             dispatch = {"dispatch_id": dispatch_id.strip()} if dispatch_id else {}
             if "workspace_handoff" in payload:
                 dispatch["workspace_handoff"] = payload["workspace_handoff"]
+            if "push_format" in payload:
+                dispatch["push_format"] = payload["push_format"]
             if result_receipt and result_receipt.get("runtime_meter"):
                 dispatch["runtime_meter"] = result_receipt
             if payload.get("turn_seq") is not None:

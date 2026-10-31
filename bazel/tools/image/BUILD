@@ -55,7 +55,10 @@ go_tools_tar(
 # Per-platform Node.js binary tars.
 # Creates :node_tar_linux_amd64, :node_tar_linux_arm64, :node_tar_darwin_arm64
 # each containing /usr/bin/node for the target platform.
-node_tar(name = "node_tar")
+node_tar(
+    name = "node_tar",
+    visibility = ["//:__subpackages__"],
+)
 
 # Package pnpm from the aspect_rules_js-managed @pnpm repo.
 # pnpm is a JS script (cross-platform) that runs on Node.js.
@@ -141,6 +144,7 @@ WRAPPER
         tar -cf $@ -C "$$WORK" .
         rm -rf "$$WORK"
     """,
+    visibility = ["//projects/embervm/runtimes:__subpackages__"],
 )
 
 # Package the homelab CLI into the tools image.

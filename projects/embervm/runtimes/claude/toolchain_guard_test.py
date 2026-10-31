@@ -33,6 +33,7 @@ import yaml
 
 # The names exactly as written in apko.yaml's contents.packages.
 TOOLCHAIN_PACKAGES = [
+    "grep",
     "helm-3",
     "go-1.26",
     "nodejs-22",
@@ -48,6 +49,7 @@ FORBIDDEN_BARE_PACKAGES = ["helm", "go", "nodejs", "pnpm", "pytest", "pyyaml"]
 # Lock package name -> required version prefix ("" = any). The lock records what
 # the constraint resolved to, so `pnpm~10` is the lock entry `pnpm`.
 EXPECTED_LOCK_ENTRIES = {
+    "grep": "",
     "helm-3": "3.",
     "go-1.26": "1.26.",
     "nodejs-22": "22.",

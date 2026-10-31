@@ -10,6 +10,14 @@ exports_files([
     "source_ratchet.py",
 ])
 
+py_test(
+    name = "complete_validation_test",
+    srcs = ["complete_validation_test.py"],
+    data = ["ci"],
+    target_compatible_with = ["@platforms//os:linux"],
+    deps = ["@pip//pytest"],
+)
+
 py_library(
     name = "central_build_ratchet_lib",
     srcs = ["central_build_ratchet.py"],
