@@ -165,7 +165,7 @@ def tick(policy):
                     "summary": f"Receipt settled {status}",
                     "inconclusive": status == "cancelled"
                     or paused
-                    or start["policy_digest"] != refill.digest(policy),
+                    or start["policy_digest"] != controls.digest(policy),
                 }
             ),
         )

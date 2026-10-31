@@ -7,7 +7,6 @@ their own publication identity after bounded reconciliation.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from copy import deepcopy
 from datetime import timedelta
@@ -36,10 +35,6 @@ REVIEW_CONTRACT = {"version": 1, "model": "astra", "effort": "xhigh", "max_findi
 MAX_REVIEW_PROMPT_CHARS = 60000
 PREFIX = "backlog_refill_"
 TERMINAL = {"succeeded", "failed", "cancelled"}
-
-
-def digest(value) -> str:
-    return hashlib.sha256(dumps(value).encode()).hexdigest()
 
 
 def _events(db, action):
@@ -302,7 +297,7 @@ def observe(
             policy=block,
             review_contract=REVIEW_CONTRACT,
             eligible=eligible,
-            policy_digest=digest(policy),
+            policy_digest=controls.digest(policy),
         )
         return {"ok": True, "run_id": run_id, "receipt_id": row.id}
 
@@ -540,7 +535,7 @@ def review_brief(value):
         "findings or invoke other models. Empty useful yield is valid. Return the "
         "exact collection_digest and an independent summary.\n"
         + json.dumps(
-            {"collection_digest": digest(value), "collection": value},
+            {"collection_digest": controls.digest(value), "collection": value},
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -618,7 +613,7 @@ def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
             or receipt.generation != policy.get("generation")
             or receipt.repo not in controls.enabled_repos(policy)
             or not normalize(policy)["enabled"]
-            or digest(policy) != _detail(start)["policy_digest"]
+            or controls.digest(policy) != _detail(start)["policy_digest"]
         ):
             return False
         if latest_event(db, "completed", run_id=receipt.recurrence_key):
