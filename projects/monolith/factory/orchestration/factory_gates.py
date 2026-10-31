@@ -121,7 +121,7 @@ GATE_PROMPT = (
     "and `reason` cannot override effects. Never weaken acceptance: state a "
     "rescope in the PR body and drop closing keywords while operational work "
     "remains. Set leave_unmerged: true only for explicitly unmerged delivery "
-    "scope. Existing holds remain binding; only the authorized landing owner "
+    "scope, not merely outstanding live checks. Existing holds remain binding; only the authorized landing owner "
     "may merge or deploy. "
 )
 

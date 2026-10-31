@@ -23878,7 +23878,10 @@ def test_planner_defaults_to_one_implementation_and_atomic_repair():
     assert "implementation_exception" in charter
     assert "do not spend a planner session per cleanup edit" in charter
     assert "Review must run in a separate session from every implementer" in charter
-    # Schema and refusal feedback carry the mechanics (#7366 ablation).
+    # Defaults the server cannot infer or refuse stay in the charter (#7489).
+    assert "Set expected_version to graph_revision" in charter
+    assert "omitting it takes the policy ceiling" in charter
+    # Schema and refusal feedback carry the mechanics (#7489 ablation).
     assert "40 non-whitespace characters" not in charter
     assert "UI/design migrations" not in charter
 
