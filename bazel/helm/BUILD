@@ -194,6 +194,12 @@ sh_test(
 )
 
 sh_test(
+    name = "lint_inputs_test",
+    srcs = ["lint-inputs_test.sh"],
+    data = [":test.bzl"],
+)
+
+sh_test(
     name = "standalone_render_test",
     srcs = ["render_test.sh"],
     data = [":render.sh"],
