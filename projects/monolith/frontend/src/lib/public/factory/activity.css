@@ -360,7 +360,8 @@
   background: var(--accent-ink);
 }
 
-.factory-page.activity-page .strip i.failed {
+.factory-page.activity-page .strip i.failed,
+.factory-page.activity-page .strip i.escalated {
   border-color: var(--tone-disk);
   background: var(--tone-disk);
 }
@@ -848,11 +849,13 @@
   border-style: dashed;
 }
 
-.factory-page.activity-page .pnode.failed button {
+.factory-page.activity-page .pnode.failed button,
+.factory-page.activity-page .pnode.escalated button {
   border-color: var(--tone-disk);
 }
 
-.factory-page.activity-page .pnode.failed .k {
+.factory-page.activity-page .pnode.failed .k,
+.factory-page.activity-page .pnode.escalated .k {
   color: var(--tone-disk);
 }
 
