@@ -5866,6 +5866,11 @@ py_test(
 )
 
 bdd_test(
+    name = "agent_sessions_admission_diagnostics_postgres_test",
+    srcs = ["factory/execution/admission_diagnostics_postgres_test.py"],
+)
+
+bdd_test(
     name = "agent_sessions_store_postgres_test",
     srcs = ["factory/execution/store_postgres_test.py"],
 )
