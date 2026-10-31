@@ -4,7 +4,6 @@ The old receipt stays terminal. Restrictions are copied by the server, never
 accepted from the caller, and checked against the audit again before admission.
 """
 
-import hashlib
 import json
 
 from sqlmodel import select
@@ -16,10 +15,6 @@ from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 
 ACTION = "refinement_delivery_prepared"
 MARKER = "refinement_delivery"
-
-
-def _digest(value):
-    return hashlib.sha256(dumps(value).encode()).hexdigest()
 
 
 def _inherited(row):
@@ -67,7 +62,7 @@ def _preview(db, control, receipt_id, reason, observation):
         execution_authorized=False,
         landing_authorized=False,
     )
-    result["preview_sha256"] = _digest(result)
+    result["preview_sha256"] = controls.digest(result)
     return result
 
 

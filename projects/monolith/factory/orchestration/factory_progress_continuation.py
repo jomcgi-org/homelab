@@ -1,6 +1,5 @@
 """Explicit same-artifact continuation; finite leases, never reset accounting."""
 
-import hashlib
 import json
 import re
 from datetime import timedelta
@@ -21,10 +20,6 @@ LEASE = "progress_continuation_lease"
 RENEWAL = "progress_continuation_renewed"
 REFUSAL = "progress_continuation_renewal_refused"
 LEASE_SECONDS = 7200
-
-
-def _digest(value):
-    return hashlib.sha256(dumps(value).encode()).hexdigest()
 
 
 def _compatible_direction(previous, current):
@@ -485,7 +480,7 @@ def _preview(
             if resume_paused
             else None,
         )
-    result["preview_sha256"] = _digest(result)
+    result["preview_sha256"] = controls.digest(result)
     return result
 
 
