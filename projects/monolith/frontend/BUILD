@@ -272,6 +272,7 @@ js_library(
         ["src/**/*.test.js"],
         allow_empty = True,
     ) + [
+        "factory-preview/fixtures.js",
         "test/data-display/ChartHarness.svelte",
         "test/data-display/Fixture.svelte",
         "test/data-display/server.js",
@@ -654,6 +655,7 @@ js_library(
         "src/routes/public/slop/Trail.svelte",
         "src/routes/public/slop/factory/+page.server.js",
         "src/routes/public/slop/factory/+page.svelte",
+        "src/routes/public/slop/factory/page.test.js",
         "src/routes/public/slop/factory/activity/+page.server.js",
         "src/routes/public/slop/factory/activity/+page.svelte",
         "src/routes/public/slop/factory/context/+page.server.js",

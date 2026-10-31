@@ -37,6 +37,7 @@ export default defineConfig({
     include: [
       "factory-preview/contract.test.js",
       "factory-preview/execution.dom.test.js",
+      "src/routes/public/slop/factory/page.test.js",
       "src/lib/public/factory/{model,activity-view,charts,search-index}.test.js",
       "src/routes/private/factory/execution/*.test.js",
       "src/routes/private/factory/execution/drain/*.test.js",
