@@ -1664,6 +1664,15 @@ original PR preserves Dependabot's history without replacement changes.
 
 ### The factory conductor
 
+Source-role dispatch carries an exact task/node push-format contract to the
+guest (#7458). The runtime validates outgoing Git objects in detached linked
+worktrees and returns prevented-drift paths through native usage. The existing
+result transaction appends only newly observed paths to the factory audit under
+the task lock. This preserves workflow checkpoint ordering and keeps evidence
+after a worker corrects its tree. Image tools use repository pins and generator
+sources; CI's formatter remains unchanged. The staged experiment and live
+acceptance are recorded in `factory/orchestration/FACTORY.md`.
+
 **Why.** The September policy removed Astra to conserve Codex quota before a
 reset. On 2026-10-17 both grants had substantial headroom and Joe chose to use
 Astra for more planning and difficult work (#6983). Restore that routing for

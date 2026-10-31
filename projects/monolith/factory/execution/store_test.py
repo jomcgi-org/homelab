@@ -15,6 +15,8 @@ from factory.execution.constants import (
     SYNTHETIC_SESSION_PREFIX,
 )
 from factory.execution.models import AgentSession, AgentTurn, PendingMessage
+from factory.orchestration.factory_models import FactoryAudit
+from factory.orchestration.models import SwarmTask
 
 
 def test_lexical_search_excludes_synthetic_sessions():
@@ -1027,11 +1029,13 @@ def test_discord_thread_binds_at_most_one_session(monkeypatch, tmp_path):
 
 
 @pytest.fixture
-def uncertain_lane(monkeypatch, tmp_path):
+def uncertain_lane(monkeypatch, tmp_path, request):
     engine, schemas = _database(monkeypatch, tmp_path)
     try:
         with Session(engine) as session:
-            row = store.create_session(session, "uncertain", "<guest>", "main")
+            row = store.create_session(
+                session, getattr(request, "param", "uncertain"), "<guest>", "main"
+            )
             row.ember_session_id = "guest-investigate"
             row.ember_lineage_id = "lineage-retain"
             row.progress_token = "old-progress"
@@ -1331,6 +1335,100 @@ def _successful_uncertain_turn():
         duration_ms=1,
         activities=[],
     )
+
+
+@pytest.mark.parametrize(
+    "uncertain_lane", ["factory:t-format:correct_1:1"], indirect=True
+)
+@pytest.mark.parametrize("invalid_evidence", [None, "too_many_paths", "foreign_task"])
+def test_native_drift_evidence_is_durable_and_duplicate_result_does_not_inflate(
+    uncertain_lane,
+    invalid_evidence,
+):
+    from factory.execution.push_format import contract
+    from factory.execution.transport import parse_native_turn
+    from factory.orchestration.models import SwarmNodeRun
+
+    engine, session_id = uncertain_lane
+    with Session(engine) as db:
+        db.add(SwarmTask(id="t-format", task_text="format", conductor_model="sol"))
+        source = db.get(AgentSession, session_id)
+        source.node_key = "correct_1"
+        source.node_attempt = 1
+        source.repo = "jomcgi-org/homelab"
+        source.branch = "factory/t-format"
+        source.workflow_id = "format-dispatch"
+        db.add(
+            SwarmNodeRun(
+                task_id="t-format",
+                node_key="correct_1",
+                attempt=1,
+                dispatch_key=source.workflow_id,
+                session_id=source.id,
+                status="running",
+                pin_json=json.dumps({"repo": source.repo, "branch": source.branch}),
+            )
+        )
+        db.flush()
+        evidence = {
+            **contract(source, db),
+            "outcome": "drift_blocked",
+            "paths": ["a.py", "b.py"],
+            "file_count": 2,
+        }
+        db.add(source)
+        db.commit()
+    if invalid_evidence == "too_many_paths":
+        evidence.update(paths=["a.py"] * 10001, file_count=1)
+    elif invalid_evidence == "foreign_task":
+        evidence["task_id"] = "foreign-task"
+    native = parse_native_turn(
+        {
+            "result": "corrected and pushed",
+            "terminal_reason": "completed",
+            "usage": {"push_format": evidence},
+        },
+        "guest",
+    )
+    store.persist_turn_from_pending_sync(
+        session_id,
+        1,
+        "original prompt",
+        native,
+        "done",
+        "completed",
+        claim_owner="owner-1",
+        dispatch_count=1,
+    )
+    with pytest.raises(store.PendingClaimLost):
+        store.persist_turn_from_pending_sync(
+            session_id,
+            1,
+            "original prompt",
+            native,
+            "done",
+            "completed",
+            claim_owner="owner-1",
+            dispatch_count=1,
+        )
+    with Session(engine) as db:
+        audit = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action.startswith("format_drift"))
+        ).all()
+        assert len(audit) == 1
+        assert audit[0].task_id == "t-format"
+        detail = json.loads(audit[0].detail_json)
+        assert detail["node_key"] == "correct_1"
+        if invalid_evidence:
+            assert audit[0].action == "format_drift_evidence_rejected"
+            assert "file_count" not in detail
+        else:
+            assert audit[0].action == "format_drift_prevented"
+            assert detail["file_count"] == 2
+        turn = store.get_turn(db, session_id, 1)
+        assert turn.result_text == "corrected and pushed"
+        assert turn.terminal_reason == "completed"
+        assert json.loads(turn.usage_json)["push_format"] == evidence
 
 
 @pytest.mark.parametrize(

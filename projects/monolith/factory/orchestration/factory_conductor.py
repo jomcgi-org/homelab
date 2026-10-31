@@ -1448,6 +1448,13 @@ def _boundary(
         )
         + "Do not run broad tests on macOS. Planning artifacts are transient output. "
         + (
+            "Source-node pushes require complete guest lint/regen validation of "
+            "the outgoing commit. Incorporate reported drift, commit and recheck; "
+            "missing tooling is a failed validation, not permission to bypass it. "
+            if not review and task["repo"] == "jomcgi-org/homelab"
+            else ""
+        )
+        + (
             "You are an independent reviewer. Inspect the exact pushed PR head, "
             "report its SHA and verdict, and do not modify source. "
             if review

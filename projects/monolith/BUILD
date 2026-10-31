@@ -5472,6 +5472,18 @@ py_test(
 )
 
 py_test(
+    name = "factory_push_format_test",
+    srcs = ["factory/execution/push_format_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_router_test",
     srcs = ["factory/orchestration/router_test.py"],
     imports = ["."],

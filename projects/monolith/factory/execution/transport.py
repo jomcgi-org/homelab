@@ -894,6 +894,7 @@ class ShimTransport(Protocol):
         residency: dict | None = None,
         expected_workspace_fingerprint: str | None = None,
         workspace_handoff: dict | None = None,
+        push_format: dict | None = None,
         capture_evidence_ttl_seconds: int | None = None,
     ) -> tuple[Turn, EmberSession]: ...
 
@@ -1603,6 +1604,7 @@ class EmberVmShimTransport:
         residency: dict | None = None,
         expected_workspace_fingerprint: str | None = None,
         workspace_handoff: dict | None = None,
+        push_format: dict | None = None,
         capture_evidence_ttl_seconds: int | None = None,
     ) -> tuple[Turn, EmberSession]:
         # Set None explicitly for unrelated deliveries, including a nested
@@ -1655,6 +1657,7 @@ class EmberVmShimTransport:
                     residency=residency,
                     expected_workspace_fingerprint=expected_workspace_fingerprint,
                     workspace_handoff=workspace_handoff,
+                    push_format=push_format,
                     capture_evidence_ttl_seconds=capture_evidence_ttl_seconds,
                 )
                 if turn.terminal_reason is not None:
@@ -1700,6 +1703,7 @@ class EmberVmShimTransport:
         residency: dict | None = None,
         expected_workspace_fingerprint: str | None = None,
         workspace_handoff: dict | None = None,
+        push_format: dict | None = None,
         capture_evidence_ttl_seconds: int | None = None,
     ) -> tuple[Turn, EmberSession]:
         """Execute one turn on the guest session and return the result.
@@ -1857,6 +1861,8 @@ class EmberVmShimTransport:
                 payload["effort"] = effort
             if artifact_path is not None:
                 payload["artifact_path"] = artifact_path
+            if push_format is not None:
+                payload["push_format"] = push_format
             body = json.dumps(payload)
             url = f"{EMBERVM_URL}/v1/sessions/{current.session_id}/invoke"
             headers = {

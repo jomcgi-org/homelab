@@ -1119,6 +1119,11 @@ async def _execute_pending_message(session_id: int) -> None:
                 "dispatch_count": row.dispatch_count,
                 "invocation_record": invocation_record,
             }
+            from factory.execution.push_format import contract as push_format_contract
+
+            push_contract = await asyncio.to_thread(push_format_contract, session_row)
+            if push_contract is not None:
+                deliver_kwargs["push_format"] = push_contract
             from factory.execution.workspace_handoff import first_turn_handoff
 
             handoff = first_turn_handoff(session_row, claimed_seq, existing_ember)
