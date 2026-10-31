@@ -561,17 +561,19 @@ def advance(start, *, allow_new=True):
         results.append(result)
         if previous is None:
             return None  # At most one new output boundary per tick.
-    summary = _summary(start, row.created_at, value, results)
-    result = publish(summary, allow_new=allow_new)
-    if not result or result["status"] not in SETTLED:
-        return None
+    outputs = results
+    # Routine findings are the deliverable; their summary stays in the
+    # settled audit rather than opening a needs-human issue every run.
+    if start.get("routine") is None:
+        summary = _summary(start, row.created_at, value, results)
+        result = publish(summary, allow_new=allow_new)
+        if not result or result["status"] not in SETTLED:
+            return None
+        outputs = [*results, result]
     return {
-        "success": all(
-            item["status"] in {"created", "existing"} for item in [*results, result]
-        ),
+        "success": all(item["status"] in {"created", "existing"} for item in outputs),
         "inconclusive": any(
-            item["status"] in {"quarantined", "abandoned"}
-            for item in [*results, result]
+            item["status"] in {"quarantined", "abandoned"} for item in outputs
         ),
         "new_issues": sum(item["status"] == "created" for item in results),
         "summary": value["summary"][:4000],

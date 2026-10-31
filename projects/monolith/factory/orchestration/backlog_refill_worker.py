@@ -81,8 +81,9 @@ def reconcile(task, policy, nodes, runs, expected_version):
         prompt = (
             refill.review_brief(value)
             if key == refill.REVIEW_NODE
-            else refill.inventory_brief(
+            else refill.routine_brief(
                 owned["run_id"],
+                start.get("routine", next(iter(refill.ROUTINES))),
                 max_findings=start["policy"].get("max_findings", 100),
                 reviewed=reviewing,
             )
@@ -97,7 +98,7 @@ def reconcile(task, policy, nodes, runs, expected_version):
             "factory-backlog-refill",
             "Independent challenge and executable planning"
             if key == refill.REVIEW_NODE
-            else "Bounded report-only inventory",
+            else "Bounded report-only maintenance routine",
             refine=True,
             max_attempts=1,
             effort=chosen["effort"],

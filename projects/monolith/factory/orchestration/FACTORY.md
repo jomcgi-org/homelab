@@ -1349,9 +1349,12 @@ The existing sweep pacing is unchanged; there is no calendar schedule.
 Settlement, fresh intake evidence and the cooldown permit another run.
 
 New starts pin two single-attempt read-only roles. The configured generator
-performs #7366's inventory and function-level dead-code delta, prioritizing useful
-work. Selecting `opus` through the bounded refill control uses the deployed Opus
-mapping. An independent Astra xhigh session challenges every finding, rejects
+runs one maintenance routine, recorded as `routine` on the start and rotated in
+order: `dead-code`, `finished-flags`, `test-gaps`, `useless-tests` and
+`abstraction-police`. Each routine in `backlog_refill.ROUTINES` is one sentence
+naming the outcome; the collector chooses its own static and dynamic analysis.
+A start without `routine` uses the first. Selecting `opus` through the bounded
+refill control uses the deployed Opus mapping. An independent Astra xhigh session challenges every finding, rejects
 duplicates and unready scope, and supplies executable plans and acceptance checks.
 Each dispatch requires fresh quota for its exact model without fallback.
 New collections contain at most five findings, a 12,000-character summary and
@@ -1364,8 +1367,9 @@ Legacy dispatch retains the original schema and limits.
 The producer verifies both graph runs, start reservations, immutable pins and
 distinct server-owned sessions. The review must bind the collection digest and
 decide every finding before any issue write. Only approved findings become
-agent-ready issues, followed by one needs-human inventory summary. Legacy starts
-without the review contract retain their original single-role behavior and are
+agent-ready issues. A routine run's summary stays in its settled audit; a start
+recorded before routines still publishes one needs-human inventory summary.
+Legacy starts without the review contract retain their original single-role behavior and are
 explicitly recorded as unreviewed. Existing ledgers are never upgraded in place.
 The labels are fixed. Every output has a run marker and a separate
 stable output marker. Finding identity derives from the normalized title, so
