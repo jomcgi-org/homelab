@@ -87,6 +87,27 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_discord_source_test",
+    srcs = ["grimoire_discord_source_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "blueprints/*.yaml",
+        "optional/*.yaml",
+    ]),
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
     name = "platform_management_test",
     srcs = ["platform_management_test.py"],
     data = [

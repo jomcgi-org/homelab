@@ -732,6 +732,20 @@ boundaries. Keeping a single-use app capability until the final Join provides
 atomic membership, safe retries and revocation without treating Authentik's
 partially completed enrollment as campaign acceptance.
 
+### Optional Discord sign-in (disabled)
+
+The Authentik chart's `grimoireDiscordSource.enabled` flag, default off, adds
+a Discord OAuth source and a Grimoire-only sign-in flow so a friend can enrol
+by signing in with Discord instead of receiving an administrator-made
+invitation. The source matches by Discord account id, never by email. The
+enrollment gate requires a Discord-verified email that no existing Authentik
+account uses, and creates an external user under the `grimoire` path with no
+group. First login then creates the Grimoire account as today. Campaign
+admission stays with invitations and campaign links. Before enabling, gate
+campaign creation, since open enrollment otherwise lets any Discord account
+create campaigns. Follow-up and the enablement decision live in
+[#7461](https://github.com/jomcgi-org/homelab/issues/7461).
+
 ### Optional-link enablement checks
 
 Human-owned access review and activation are tracked in [#6858](https://github.com/jomcgi-org/homelab/issues/6858).
