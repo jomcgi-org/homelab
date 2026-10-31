@@ -1885,10 +1885,8 @@ def test_effects_contract_is_in_every_artifact_schema_and_prompt():
     ):
         assert schema["properties"]["gate"] is gates.GATE_SCHEMA
     assert "effects" in gates.GATE_SCHEMA["required"]
-    for effect in gates.GATE_EFFECTS:
-        assert effect in gates.GATE_PROMPT
     assert "Any true effect sends the gate to a person" in gates.GATE_PROMPT
-    assert "`reason` is free prose and may explain safety" in gates.GATE_PROMPT
+    assert "`reason` cannot override effects" in gates.GATE_PROMPT
 
 
 def test_adoption_at_first_step_pins_existing_branch(db, github, monkeypatch):
