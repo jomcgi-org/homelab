@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from factory.execution.models import AgentSession, PendingMessage
 from factory.orchestration import factory_conductor as conductor
 from factory.orchestration import factory_controls as controls
 from factory.orchestration import factory_decisions as decisions
@@ -45,7 +46,9 @@ def db(tmp_path, monkeypatch):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'decisions.db'}",
         connect_args={"check_same_thread": False, "timeout": 5},
-        execution_options={"schema_translate_map": {"swarm": None}},
+        execution_options={
+            "schema_translate_map": {"swarm": None, "agent_sessions": None}
+        },
     )
 
     @event.listens_for(engine, "connect")
@@ -53,6 +56,8 @@ def db(tmp_path, monkeypatch):
         connection.execute("PRAGMA foreign_keys=ON")
 
     tables = (
+        AgentSession,
+        PendingMessage,
         SwarmTask,
         SwarmPlanVersion,
         SwarmPlanNode,
@@ -2492,6 +2497,95 @@ def _grant(task):
 def _settled(task):
     with controls._read_session() as session:
         return funding.latest(session, task["id"], "funding_review_settled")
+
+
+@pytest.mark.parametrize("answer", ["resume", "amend", "amend_and_resume"])
+@pytest.mark.parametrize("verdict", ["escalate", "budget_approval"])
+def test_operator_answer_rearms_a_full_progress_step(db, monkeypatch, answer, verdict):
+    from factory.orchestration import factory_progress_watchdog as watchdog
+    from factory.orchestration import factory_policy_amendment as amendments
+
+    task, policy = envelope_task(max_turns=20)
+    add_spent_turns(db, task, count=8)
+    _merit_judge(monkeypatch)
+    cards = []
+    monkeypatch.setattr(
+        conductor, "_escalate_funding_doubt", lambda *args: cards.append(args)
+    )
+    assert watchdog.check(task["id"], policy) == "funding_review"
+    request = _pending(task)
+    settle_funding_request(
+        task,
+        request,
+        funding_decision(
+            action="escalate" if verdict == "escalate" else "continue",
+            task_budget_usd=40 if verdict == "budget_approval" else 30,
+            assessment=ASSESSMENT,
+        ),
+    )
+    assert _settled(task)["refusal"] is None
+    assert bool(cards) == (verdict == "escalate")
+    # A settlement awaiting its card must block a second trigger even before
+    # the card writer pauses the receipt.
+    monkeypatch.setattr(
+        funding, "_issue", lambda _: pytest.fail("operator answer was re-litigated")
+    )
+    assert funding.request(task, "Progress crossing", progress=True)
+    assert _pending(task) is None
+    assert controls.set_control("pause_task", "factory:funding", task_id=task["id"])[
+        "ok"
+    ]
+    if "amend" in answer:
+        with Session(db) as session:
+            receipt_id = controls._receipt(session, task["id"]).id
+        proposal = amendments.preview(
+            receipt_id, {"task_budget_usd": 40}, "Fund the correction."
+        )
+        assert amendments.apply(
+            receipt_id,
+            {"task_budget_usd": 40},
+            "Fund the correction.",
+            actor="operator",
+            request_key="fund-correction",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )["ok"]
+    if "resume" in answer:
+        assert controls.set_control("resume_task", "operator", task_id=task["id"])["ok"]
+    assert watchdog.check(task["id"], policy) == "under_threshold"
+    with controls._read_session() as session:
+        detail = watchdog.detail(session, task["id"], policy)
+        assert detail["next_threshold_turns"] == 16
+        assert (
+            funding.latest(session, task["id"], "funding_review_requested")["audit_id"]
+            == request["audit_id"]
+        )
+        assert not funding._awaiting_operator(session, task["id"], _settled(task))
+    assert (
+        funding.reconcile(
+            task, policy, conductor.graph.node_runs(task["id"]), {"ok": True}
+        )
+        is False
+    )
+    assert len(cards) == (verdict == "escalate")
+    if "resume" in answer:
+        _merit_judge(monkeypatch)
+        for index in range(8):
+            with controls._locked_session() as (session, _control):
+                session.add(
+                    FactoryStart(
+                        task_id=task["id"],
+                        start_key=f"after-answer:{index}",
+                        actor="test",
+                        model="luna",
+                        max_cost_usd=1,
+                        status="succeeded",
+                        cost_usd=0.1,
+                    )
+                )
+            assert watchdog.check(task["id"], policy) == (
+                "funding_review" if index == 7 else "under_threshold"
+            )
+        assert _pending(task)["audit_id"] > request["audit_id"]
 
 
 def test_a_repeated_deficit_goes_to_the_merit_judge_not_a_person(db, monkeypatch):

@@ -3836,6 +3836,10 @@ def set_control(
             pending=release_result.get("pending", False),
             **configure_detail,
         )
+        if action == "resume_task" and reason is None:
+            from factory.orchestration import factory_funding
+
+            factory_funding.rearm_progress(db, task_id, actor, action)
         return {
             "ok": reason is None,
             "reason": reason,

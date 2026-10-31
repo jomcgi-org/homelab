@@ -1219,7 +1219,7 @@ def _detail_payload(
     receipt_id: int, node_offset: int, limit: int, history_limit: int = 10
 ) -> dict:
     from factory.orchestration import factory_controls as controls
-    from factory.orchestration import factory_progress_continuation, graph
+    from factory.orchestration import factory_funding, graph
     from factory.orchestration.factory_models import FactoryReceipt
     from factory.private_view import shape_node
 
@@ -1253,7 +1253,7 @@ def _detail_payload(
             "work_item": work_item,
             "lifecycle": _lifecycle_evidence(db, row, snapshot),
             "watchdog": _watchdog_detail(db, row, snapshot),
-            "progress_continuation": factory_progress_continuation.renewal_status(
+            "progress_continuation": factory_funding.continuation_status(
                 db, row.task_id
             ),
             "source_timestamps": {
@@ -1486,13 +1486,11 @@ def _amend_policy(
     expected_preview_sha256,
 ):
     from factory.orchestration import factory_policy_amendment as amendments
-    from factory.orchestration.factory_progress_continuation import SubscriptionRefusal
+    from factory.orchestration import factory_funding as funding
 
     try:
         modes = set(overlay) & {"progress_continuation", "progress_renewal"}
         if modes:
-            from factory.orchestration import factory_progress_continuation as progress
-
             mode = next(iter(modes))
             target = overlay[mode]
             if (
@@ -1504,13 +1502,13 @@ def _amend_policy(
             args = (receipt_id, target["pr_number"], target["head_sha"], direction)
             kwargs = {"renewal": True} if mode == "progress_renewal" else {}
             if operation == "preview":
-                return progress.preview(*args, **kwargs)
+                return funding.preview_continuation(*args, **kwargs)
             if not request_key or not expected_preview_sha256:
                 return {
                     "ok": False,
                     "reason": "progress_requires_preview_and_request_key",
                 }
-            return progress.apply(
+            return funding.apply_continuation(
                 *args,
                 actor=actor,
                 request_key=request_key,
@@ -1529,7 +1527,7 @@ def _amend_policy(
             request_key=request_key,
             expected_preview_sha256=expected_preview_sha256,
         )
-    except SubscriptionRefusal as exc:
+    except funding.SubscriptionRefusal as exc:
         return {
             "ok": False,
             "reason": str(exc),

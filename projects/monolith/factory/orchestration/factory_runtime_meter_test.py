@@ -32,6 +32,14 @@ from factory.orchestration.models import (
 )
 
 
+def operator_request(proposal, key):
+    return dict(
+        actor="operator",
+        request_key=key,
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+
+
 @pytest.fixture
 def database(tmp_path, monkeypatch):
     engine = create_engine(
@@ -410,11 +418,7 @@ def test_exact_policy_amendment_is_reviewable_idempotent_and_stays_paused(databa
     assert proposal["remaining_task_allocation_usd"] == 61
     with Session(database) as db:
         assert db.get(SwarmTask, "task").budget_usd == 50
-    args = dict(
-        actor="operator",
-        request_key="one",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "one")
     applied = amendments.apply(838, overlay, direction, **args)
     assert applied["stays_paused"]
     assert amendments.apply(838, overlay, direction, **args) == applied
@@ -666,9 +670,7 @@ def test_expired_recovery_rechecks_fresh_authority(
     with pytest.raises(ValueError, match=reason):
         recovery.apply(
             **args,
-            actor="operator",
-            request_key="recover",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "recover"),
         )
     with Session(database) as db:
         assert db.get(FactoryReceipt, 838).state == "escalated"
@@ -683,9 +685,7 @@ def test_recovery_fences_old_retry_until_new_plan_and_enforces_deadline(
     proposal = recovery.preview(**args)
     recovery.apply(
         **args,
-        actor="operator",
-        request_key="recover",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "recover"),
     )
     assert controls.set_control("resume_task", "operator", task_id="task")["ok"]
     assert (
@@ -736,9 +736,7 @@ def test_recovery_cumulative_caps_cannot_be_bypassed(
     proposal = recovery.preview(**args)
     recovery.apply(
         **args,
-        actor="operator",
-        request_key="recover",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "recover"),
     )
     assert controls.set_control("resume_task", "operator", task_id="task")["ok"]
     with Session(database) as db, db.begin():
@@ -783,9 +781,7 @@ def test_expired_recovery_cannot_renew_after_second_settlement(
     proposal = recovery.preview(**args)
     recovery.apply(
         **args,
-        actor="operator",
-        request_key="recover",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "recover"),
     )
     later = now + timedelta(hours=2)
     monkeypatch.setattr(controls, "_now", lambda: later)
@@ -853,9 +849,7 @@ def test_policy_preview_changes_or_unresolved_work_prevent_application(
             838,
             {"task_budget_usd": 65},
             "continue",
-            actor="operator",
-            request_key="amend",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "amend"),
         )
 
 
@@ -897,9 +891,7 @@ def test_single_field_amendment_retains_graph_funding_contract(database):
         838,
         {"max_planner_turns": 10},
         "continue",
-        actor="operator",
-        request_key="planner",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "planner"),
     )
     with Session(database) as db:
         assert graph_budget(db, db.get(SwarmTask, "task")) == 50
@@ -996,11 +988,7 @@ def test_capacity_release_intent_matrix(
         assert resumed["ok"] and resumed["pending"]
     if has_hold:
         proposal = releases.preview(838, 7170, "a" * 40, "Approved exact delivery")
-        args = dict(
-            actor="operator",
-            request_key="release-waiting",
-            expected_preview_sha256=proposal["preview_sha256"],
-        )
+        args = operator_request(proposal, "release-waiting")
         result = releases.apply(838, 7170, "a" * 40, "Approved exact delivery", **args)
         assert result["ok"]
         # A hold-only release on an already paused receipt needs no slot.
@@ -1158,11 +1146,7 @@ def test_landing_release_only_removes_hold_and_is_idempotent(
     proposal = releases.preview(838, 7170, "a" * 40, "Operator approved landing")
     with Session(database) as db:
         assert controls.landing_held(db.get(FactoryReceipt, 838))
-    args = dict(
-        actor="operator",
-        request_key="release",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "release")
     result = releases.apply(838, 7170, "a" * 40, "Operator approved landing", **args)
     assert result["ok"] and result["stays_paused"]
     assert result["delivery_accepted"] is False
@@ -1207,9 +1191,7 @@ def released_delivery(database, pull):
         7170,
         "b" * 40,
         "initial release",
-        actor="operator",
-        request_key="initial",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "initial"),
     )
     with Session(database) as db, db.begin():
         db.get(FactoryReceipt, 838).state = "escalated"
@@ -1236,11 +1218,7 @@ def test_landing_authorization_refresh_preserves_state_and_replays(
         before = json.loads(db.get(FactoryReceipt, 838).direction_json)
     proposal = releases.preview(838, 7170, "a" * 40, "reviewed rebase")
     assert proposal["operation"] == "refresh"
-    args = dict(
-        actor="operator",
-        request_key="refresh",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "refresh")
     result = releases.apply(838, 7170, "a" * 40, "reviewed rebase", **args)
     assert result["operation"] == "refresh" and not result["delivery_accepted"]
     assert releases.apply(838, 7170, "a" * 40, "reviewed rebase", **args) == result
@@ -1291,9 +1269,7 @@ def test_landing_refresh_competing_previews_cannot_overwrite_authorization(
         7170,
         "a" * 40,
         "refresh",
-        actor="operator",
-        request_key="first",
-        expected_preview_sha256=first["preview_sha256"],
+        **operator_request(first, "first"),
     )
     with pytest.raises(ValueError):
         releases.apply(
@@ -1301,9 +1277,7 @@ def test_landing_refresh_competing_previews_cannot_overwrite_authorization(
             7170,
             "a" * 40,
             "refresh",
-            actor="operator",
-            request_key="second",
-            expected_preview_sha256=second["preview_sha256"],
+            **operator_request(second, "second"),
         )
     with Session(database) as db:
         authorization = json.loads(db.get(FactoryReceipt, 838).direction_json)[
@@ -1501,9 +1475,7 @@ def test_landing_release_rechecks_preview_and_execution(
             7170,
             "a" * 40,
             "approved",
-            actor="operator",
-            request_key="one",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "one"),
         )
     with Session(database) as db:
         assert controls.landing_held(db.get(FactoryReceipt, 838)) is (
@@ -1837,9 +1809,7 @@ def test_receipt_hold_is_sticky_without_changing_budget_or_other_direction(
             838,
             overlay,
             proposal["direction"],
-            actor="operator",
-            request_key=key,
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, key),
         )
     with Session(database) as db:
         row = db.get(FactoryReceipt, 838)
@@ -1938,11 +1908,7 @@ def test_validation_preparation_is_narrow_audited_and_idempotent(
         assert before[key] == after[key]
     with Session(database) as db:
         receipt_before = db.get(FactoryReceipt, 838).model_dump()
-    args = dict(
-        actor="operator",
-        request_key="prepare",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "prepare")
     result = validation.apply(838, "bounded check", **args)
     assert result["state"] == "paused" and not result["execution_authorized"]
     assert validation.apply(838, "bounded check", **args) == result
@@ -2015,9 +1981,7 @@ def test_validation_rechecks_concurrent_state(database, validation_ready, change
         validation.apply(
             838,
             "bounded check",
-            actor="operator",
-            request_key="stale",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "stale"),
         )
     with Session(database) as db:
         assert json.loads(db.get(FactoryControl, "factory").policy_json)["auto_merge"]
@@ -2035,9 +1999,7 @@ def test_validation_competing_applications_are_serialized(database, validation_r
             return validation.apply(
                 838,
                 "bounded check",
-                actor="operator",
-                request_key=key,
-                expected_preview_sha256=proposal["preview_sha256"],
+                **operator_request(proposal, key),
             )
         except ValueError as exc:
             return str(exc)
@@ -2059,9 +2021,7 @@ def test_validation_preserves_implicit_primary_repository(database, validation_r
     result = validation_ready.apply(
         838,
         "implicit primary",
-        actor="operator",
-        request_key="implicit-primary",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "implicit-primary"),
     )
     assert result["ok"] and result["state"] == "paused"
     with Session(database) as db:
@@ -2125,9 +2085,7 @@ def test_fresh_issue_rechecks_inventory(database, validation_ready, change):
             None,
             "selected work",
             issue_number=7275,
-            actor="operator",
-            request_key="stale-fresh",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "stale-fresh"),
         )
 
 
@@ -2186,9 +2144,7 @@ def test_completed_refinement_prepares_delivery_without_reviving_receipt(
     result = validation.apply(
         838,
         "delivery after verified refinement",
-        actor="operator",
-        request_key="refined-issue",
-        expected_preview_sha256=preview["preview_sha256"],
+        **operator_request(preview, "refined-issue"),
     )
     assert result["state"] == "paused" and not result["execution_authorized"]
     with Session(database) as db:
@@ -2392,9 +2348,7 @@ def test_refinement_apply_rejects_changed_state(database, completed_refinement, 
         validation.apply(
             838,
             "prepare",
-            actor="operator",
-            request_key="changed",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "changed"),
         )
     with Session(database) as db:
         assert db.get(FactoryControl, "factory").model_dump() == control_before
@@ -2411,11 +2365,7 @@ def test_refinement_replay_does_not_read_github(completed_refinement, monkeypatc
 
     validation, _ = completed_refinement
     proposal = validation.preview(838, "prepare")
-    args = dict(
-        actor="operator",
-        request_key="once",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "once")
     result = validation.apply(838, "prepare", **args)
 
     def forbidden(*args):
@@ -2593,9 +2543,7 @@ def test_refinement_late_changes_refuse_apply(
         validation.apply(
             838,
             "prepare",
-            actor="operator",
-            request_key="late",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "late"),
         )
     with Session(database) as db:
         assert (
@@ -2643,9 +2591,7 @@ def held_apply(owner, proposal, key="continuation"):
     return owner.apply(
         838,
         "continue held work",
-        actor="operator",
-        request_key=key,
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, key),
     )
 
 
@@ -2687,9 +2633,7 @@ def test_held_refinement_creates_distinct_restricted_delivery(
         owner.apply(
             838,
             "changed reason",
-            actor="operator",
-            request_key="continuation",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "continuation"),
         )
 
 
@@ -2914,11 +2858,7 @@ def test_backlog_preparation_preserves_bounds_holds_and_requires_enable(
         assert before["intake"][key] == after["intake"][key]
     with Session(database) as db:
         receipt_before = db.get(FactoryReceipt, 838).model_dump()
-    args = dict(
-        actor="operator",
-        request_key="backlog",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "backlog")
     result = validation.apply_backlog("resume useful backlog", **args)
     assert result["state"] == "paused" and not result["execution_authorized"]
     assert validation.apply_backlog("resume useful backlog", **args) == result
@@ -2951,9 +2891,7 @@ def test_backlog_rejects_receipt_race_and_keeps_policy(database, validation_read
     with pytest.raises(ValueError, match="validation_preview_changed"):
         validation.apply_backlog(
             "resume",
-            actor="operator",
-            request_key="race",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "race"),
         )
     with Session(database) as db:
         assert (
@@ -2990,9 +2928,7 @@ def test_backlog_rechecks_authority_snapshot(database, validation_ready, change)
     with pytest.raises(ValueError):
         validation.apply_backlog(
             "resume",
-            actor="operator",
-            request_key="race",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "race"),
         )
     with Session(database) as db:
         assert not db.exec(
@@ -3086,9 +3022,7 @@ def test_backlog_concurrent_apply_has_one_winner(database, validation_ready):
         try:
             return validation_ready.apply_backlog(
                 "resume",
-                actor="operator",
-                request_key=key,
-                expected_preview_sha256=proposal["preview_sha256"],
+                **operator_request(proposal, key),
             )
         except ValueError as exc:
             return {"ok": False, "reason": str(exc)}
@@ -3132,9 +3066,7 @@ def test_backlog_active_restore_only_enables_intake(
         assert not refused["ok"] and refused["reason"] == "generation_not_advanced"
     result = validation.apply_backlog(
         "restore discovery alongside existing work",
-        actor="operator",
-        request_key="restore-active",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "restore-active"),
     )
     assert result["ok"] and result["state"] == "paused"
     with Session(database) as db:
@@ -3218,9 +3150,7 @@ def test_broad_refinement_preserves_policy_and_pinned_work(
         expected, 9999, "factory:intake", task_class="bug-fix", repo=expected["repo"]
     )
     args = dict(
-        actor="operator",
-        request_key="continuous",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "continuous"),
         include_refinement=True,
     )
     result = active_backlog.apply_backlog("continuous eligible work", **args)
@@ -3247,11 +3177,7 @@ def test_broad_refinement_refuses_queued_or_unresolved_work(
 
 def test_legacy_backlog_replay_keeps_original_request_shape(database, validation_ready):
     proposal = validation_ready.preview_backlog("legacy")
-    args = dict(
-        actor="operator",
-        request_key="legacy",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "legacy")
     result = validation_ready.apply_backlog("legacy", **args)
     assert (
         validation_ready.apply_backlog("legacy", **args, include_refinement=False)
@@ -3309,9 +3235,7 @@ def test_active_backlog_rejects_stale_preview(database, active_backlog, change):
     with pytest.raises(ValueError):
         active_backlog.apply_backlog(
             "restore",
-            actor="operator",
-            request_key="stale",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "stale"),
         )
     with Session(database) as db:
         assert not json.loads(db.get(FactoryControl, "factory").policy_json)["intake"][
@@ -3321,11 +3245,7 @@ def test_active_backlog_rejects_stale_preview(database, active_backlog, change):
 
 def test_active_backlog_replay_and_conflicting_key(database, active_backlog):
     proposal = active_backlog.preview_backlog("restore")
-    args = dict(
-        actor="operator",
-        request_key="active-replay",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "active-replay")
     result = active_backlog.apply_backlog("restore", **args)
     assert active_backlog.apply_backlog("restore", **args) == result
     with pytest.raises(ValueError, match="conflicting_validation_request"):
@@ -3363,9 +3283,7 @@ def test_active_backlog_concurrent_apply_has_one_winner(database, active_backlog
         try:
             return active_backlog.apply_backlog(
                 "restore",
-                actor="operator",
-                request_key=key,
-                expected_preview_sha256=proposal["preview_sha256"],
+                **operator_request(proposal, key),
             )["ok"]
         except ValueError as exc:
             assert str(exc) == "validation_preview_changed"
@@ -3419,11 +3337,7 @@ def test_refinement_batch_preserves_active_work_and_requires_enable(
     )
     assert after == expected
     assert not proposal["execution_authorized"]
-    args = dict(
-        actor="operator",
-        request_key="batch",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "batch")
     result = batch.apply([7249, 7251], "prepare exact briefs", **args)
     assert (
         result["ok"]
@@ -3472,9 +3386,7 @@ def test_refinement_batch_rechecks_issue_ownership(refinement_batch, change):
         batch.apply(
             [7249, 7251],
             "briefs",
-            actor="operator",
-            request_key="race",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "race"),
         )
 
 
@@ -3510,9 +3422,7 @@ def test_refinement_batch_rejects_changed_evidence(database, refinement_batch, c
         batch.apply(
             [7249],
             "briefs",
-            actor="operator",
-            request_key="race",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "race"),
         )
     with Session(database) as db:
         assert not json.loads(db.get(FactoryControl, "factory").policy_json)["intake"][
@@ -3570,9 +3480,7 @@ def test_refinement_batch_checks_work_item_ownership_and_history(
         batch.apply(
             [7249],
             "briefs",
-            actor="operator",
-            request_key="work-race",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "work-race"),
         )
 
 
@@ -3585,9 +3493,7 @@ def test_refinement_batch_concurrent_apply_has_one_winner(refinement_batch):
             return batch.apply(
                 [7249],
                 "briefs",
-                actor="operator",
-                request_key=key,
-                expected_preview_sha256=proposal["preview_sha256"],
+                **operator_request(proposal, key),
             )["ok"]
         except ValueError:
             return False
@@ -3607,9 +3513,7 @@ def test_refinement_batch_replenishes_without_draining_unrelated_work(
     batch.apply(
         [7249],
         "first batch",
-        actor="operator",
-        request_key="first",
-        expected_preview_sha256=first["preview_sha256"],
+        **operator_request(first, "first"),
     )
     with Session(database) as db, db.begin():
         active = db.get(FactoryReceipt, 838)
@@ -3624,9 +3528,7 @@ def test_refinement_batch_replenishes_without_draining_unrelated_work(
     result = batch.apply(
         [7251],
         "next batch",
-        actor="operator",
-        request_key="second",
-        expected_preview_sha256=second["preview_sha256"],
+        **operator_request(second, "second"),
     )
     assert result["ok"] and result["state"] == "paused"
     assert second["policy_before"]["intake"]["refinement_batch"] == [7249]
@@ -3645,9 +3547,7 @@ def test_refinement_batch_cannot_replace_in_flight_batch(
     batch.apply(
         [7249],
         "first batch",
-        actor="operator",
-        request_key="first",
-        expected_preview_sha256=first["preview_sha256"],
+        **operator_request(first, "first"),
     )
     with Session(database) as db, db.begin():
         previous = db.get(FactoryReceipt, 838).model_dump(exclude={"id", "task_id"})
@@ -3685,9 +3585,7 @@ def test_scoped_landing_grant_preview_apply_replay(database, scoped_delivery):
     with Session(database) as db:
         assert releases.scoped_refusal(db, db.get(FactoryReceipt, 838), 7170, "a" * 40)
     args = dict(
-        actor="operator",
-        request_key="scoped",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "scoped"),
         scope=scope,
     )
     result = releases.apply(838, 7170, "a" * 40, "Land reviewed change", **args)
@@ -3759,9 +3657,7 @@ def test_scoped_landing_apply_rechecks_preview(database, scoped_delivery, change
             7170,
             "a" * 40,
             "reason",
-            actor="operator",
-            request_key="scoped",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "scoped"),
             scope=scope,
         )
     with Session(database) as db:
@@ -3795,11 +3691,7 @@ def test_landing_hold_only_preserves_expired_lease_and_funding(
     overlay = {"landing_hold": True}
     direction = "Preserve explicitly authorized draft-only repository delivery."
     proposal = amendments.preview(838, overlay, direction)
-    args = dict(
-        actor="operator",
-        request_key="hold-only",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "hold-only")
     applied = amendments.apply(838, overlay, direction, **args)
     assert amendments.apply(838, overlay, direction, **args) == applied
     after = controls.task_snapshot("task")
@@ -3826,9 +3718,7 @@ def recovered_amendment(database, expired_recovery):
     proposal = recovery.preview(**args)
     recovery.apply(
         **args,
-        actor="operator",
-        request_key="recover-for-amendment",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "recover-for-amendment"),
     )
     return now
 
@@ -3849,11 +3739,7 @@ def test_recovered_amendment_preserves_deadline_and_recovery_grant(
     proposal = amendments.preview(
         838, overlay, "Adjust policy only; retain recovery limits."
     )
-    args = dict(
-        actor="operator",
-        request_key="review-cap-only",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "review-cap-only")
     applied = amendments.apply(
         838, overlay, "Adjust policy only; retain recovery limits.", **args
     )
@@ -3910,9 +3796,7 @@ def test_recovered_amendment_binds_existing_authority(
             838,
             overlay,
             "Review cap.",
-            actor="operator",
-            request_key="stale-recovery",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "stale-recovery"),
         )
 
 
@@ -3934,9 +3818,7 @@ def test_recovered_amendment_preserves_expired_funding_lease(
         838,
         {"max_review_rounds": 3},
         "Review cap.",
-        actor="operator",
-        request_key="no-renewal",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "no-renewal"),
     )
     with Session(database) as db:
         assert funding.amendment(db, "task")["review_due_at"] == prior["review_due_at"]
@@ -3963,7 +3845,7 @@ def test_recovered_amendment_cannot_change_timeout(database, recovered_amendment
 
 @pytest.fixture
 def progress_recovery(database, recovered_amendment, monkeypatch):
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
     from factory.orchestration import factory_conductor as conductor
 
     head = "a" * 40
@@ -4059,7 +3941,7 @@ def progress_recovery(database, recovered_amendment, monkeypatch):
 def test_progress_authorization_preserves_original_grant_and_accounting(
     database, progress_recovery
 ):
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
     from factory.orchestration import factory_funding_limits as funding
 
     args, _ = progress_recovery
@@ -4067,15 +3949,15 @@ def test_progress_authorization_preserves_original_grant_and_accounting(
         original = funding.latest(db, "task", controls.TASK_RECOVERY_ACTION)
         spent = controls._accounting(controls._starts(db, "task"))
         direction = db.get(FactoryReceipt, 838).direction_json
-    proposal = progress.preview(**args)
+    proposal = progress.preview_continuation(**args)
     request = {
         **args,
         "actor": "operator",
         "request_key": "progress-one",
         "expected_preview_sha256": proposal["preview_sha256"],
     }
-    first = progress.apply(**request)
-    assert first["ok"] and progress.apply(**request) == first
+    first = progress.apply_continuation(**request)
+    assert first["ok"] and progress.apply_continuation(**request) == first
     with Session(database) as db:
         assert funding.latest(db, "task", controls.TASK_RECOVERY_ACTION) == original
         assert controls._accounting(controls._starts(db, "task")) == spent
@@ -4089,22 +3971,26 @@ def test_progress_authorization_preserves_original_grant_and_accounting(
         assert (
             len(
                 db.exec(
-                    select(FactoryAudit).where(FactoryAudit.action == progress.LEASE)
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == progress.CONTINUATION_LEASE
+                    )
                 ).all()
             )
             == 1
         )
-    assert not progress.renew("task")  # No new reviewed head is no new authority.
+    assert not progress.renew_continuation(
+        "task"
+    )  # No new reviewed head is no new authority.
 
 
 @pytest.mark.parametrize(
     "change", ["version", "grant", "funding", "head", "uncertain", "pause", "quota"]
 )
 def test_progress_apply_rechecks_bound_authority(database, progress_recovery, change):
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
 
     args, quota = progress_recovery
-    proposal = progress.preview(**args)
+    proposal = progress.preview_continuation(**args)
     with Session(database) as db, db.begin():
         if change == "version":
             db.get(FactoryControl, "factory").version += 1
@@ -4142,16 +4028,16 @@ def test_progress_apply_rechecks_bound_authority(database, progress_recovery, ch
         elif change == "quota":
             quota["providers"]["codex"]["age_seconds"] = 999999
     with pytest.raises(ValueError):
-        progress.apply(
+        progress.apply_continuation(
             **args,
-            actor="operator",
-            request_key="progress-stale",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "progress-stale"),
         )
     with Session(database) as db:
         assert (
             db.exec(
-                select(FactoryAudit).where(FactoryAudit.action == progress.ACTION)
+                select(FactoryAudit).where(
+                    FactoryAudit.action == progress.CONTINUATION_AUTHORIZED
+                )
             ).first()
             is None
         )
@@ -4160,15 +4046,13 @@ def test_progress_apply_rechecks_bound_authority(database, progress_recovery, ch
 def test_progress_new_review_renews_once_then_repeated_failure_stops(
     database, progress_recovery
 ):
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
 
     args, _ = progress_recovery
-    p = progress.preview(**args)
-    progress.apply(
+    p = progress.preview_continuation(**args)
+    progress.apply_continuation(
         **args,
-        actor="operator",
-        request_key="progress",
-        expected_preview_sha256=p["preview_sha256"],
+        **operator_request(p, "progress"),
     )
     for i, head in enumerate(("b" * 40, "c" * 40)):
         artifact = {
@@ -4203,12 +4087,14 @@ def test_progress_new_review_renews_once_then_repeated_failure_stops(
                     outcome_json=json.dumps({"artifact": artifact}),
                 )
             )
-        assert progress.renew("task") is (i == 0)
+        assert progress.renew_continuation("task") is (i == 0)
     with Session(database) as db:
         assert (
             len(
                 db.exec(
-                    select(FactoryAudit).where(FactoryAudit.action == progress.LEASE)
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == progress.CONTINUATION_LEASE
+                    )
                 ).all()
             )
             == 2
@@ -4216,10 +4102,47 @@ def test_progress_new_review_renews_once_then_repeated_failure_stops(
 
 
 @pytest.mark.parametrize(
+    "hold", ["pending", "escalated", "budget_approval_required", "refusal"]
+)
+def test_continuation_shares_funding_review_wait(
+    database, progress_recovery, monkeypatch, hold
+):
+    from factory.orchestration import factory_funding as funding
+
+    args, _ = progress_recovery
+    proposal = funding.preview_continuation(**args)
+    funding.apply_continuation(
+        **args,
+        **operator_request(proposal, "progress-wait"),
+    )
+    with controls._locked_session() as (db, _control):
+        controls._audit(db, funding.ACTOR, "funding_review_requested", task_id="task")
+        db.flush()
+        if hold != "pending":
+            controls._audit(
+                db,
+                funding.ACTOR,
+                "funding_review_settled",
+                task_id="task",
+                request_id=funding.latest(db, "task", "funding_review_requested")[
+                    "audit_id"
+                ],
+                **{
+                    hold: "waiting",
+                    "retry_after": (controls._now() + timedelta(minutes=5)).isoformat(),
+                },
+            )
+    monkeypatch.setattr(
+        funding, "_review", lambda *_: pytest.fail("duplicate continuation review")
+    )
+    assert not funding.renew_continuation("task")
+
+
+@pytest.mark.parametrize(
     "problem", ["unavailable", "exhausted", "unobserved", "missing_windows"]
 )
 def test_progress_subscription_evidence_fails_closed(progress_recovery, problem):
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
 
     args, quota = progress_recovery
     if problem == "unavailable":
@@ -4231,22 +4154,20 @@ def test_progress_subscription_evidence_fails_closed(progress_recovery, problem)
     else:
         quota["providers"]["codex"]["windows"] = []
     with pytest.raises(ValueError, match="progress_"):
-        progress.preview(**args)
+        progress.preview_continuation(**args)
 
 
 @pytest.mark.parametrize("restriction", ["pause", "cancel", "uncertain"])
 def test_progress_renewal_does_not_clear_later_restrictions(
     database, progress_recovery, restriction
 ):
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
 
     args, _ = progress_recovery
-    proposal = progress.preview(**args)
-    progress.apply(
+    proposal = progress.preview_continuation(**args)
+    progress.apply_continuation(
         **args,
-        actor="operator",
-        request_key="progress",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "progress"),
     )
     with Session(database) as db, db.begin():
         row = db.get(FactoryReceipt, 838)
@@ -4290,12 +4211,14 @@ def test_progress_renewal_does_not_clear_later_restrictions(
                 ),
             )
         )
-    assert not progress.renew("task")
+    assert not progress.renew_continuation("task")
     with Session(database) as db:
         assert (
             len(
                 db.exec(
-                    select(FactoryAudit).where(FactoryAudit.action == progress.LEASE)
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == progress.CONTINUATION_LEASE
+                    )
                 ).all()
             )
             == 1
@@ -4316,7 +4239,7 @@ def test_progress_renewal_does_not_clear_later_restrictions(
 def test_progress_requires_native_independent_review(
     database, progress_recovery, fault
 ):
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
 
     args, _ = progress_recovery
     with Session(database) as db, db.begin():
@@ -4341,14 +4264,14 @@ def test_progress_requires_native_independent_review(
     with pytest.raises(
         ValueError, match="progress_(independent_review|review_provenance)_missing"
     ):
-        progress.preview(**args)
+        progress.preview_continuation(**args)
 
 
 @pytest.mark.parametrize("lane", ["allowed_models", "model_pools"])
 def test_progress_refuses_non_subscription_execution_lane(
     database, progress_recovery, lane
 ):
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
 
     args, _ = progress_recovery
     with Session(database) as db, db.begin():
@@ -4360,14 +4283,14 @@ def test_progress_refuses_non_subscription_execution_lane(
             policy["model_pools"] = {"implement": ["muse", "astra"]}
         row.policy_json = json.dumps(policy)
     with pytest.raises(ValueError, match="progress_subscription_evidence_stale"):
-        progress.preview(**args)
+        progress.preview_continuation(**args)
 
 
 def test_model_restriction_unblocks_subscription_preview_without_renewing_expiry(
     database, progress_recovery, monkeypatch
 ):
     from factory.orchestration import factory_policy_amendment as amendments
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
     from factory.orchestration import factory_funding_limits as funding
 
     args, _ = progress_recovery
@@ -4384,7 +4307,7 @@ def test_model_restriction_unblocks_subscription_preview_without_renewing_expiry
     now = datetime.fromisoformat(recovery["deadline_at"]) + timedelta(minutes=1)
     monkeypatch.setattr(controls, "_now", lambda: now)
     with pytest.raises(progress.SubscriptionRefusal) as caught:
-        progress.preview(**args)
+        progress.preview_continuation(**args)
     assert caught.value.diagnostics["refused_model"]["model"] == "spark"
     assert (
         caught.value.diagnostics["refused_model"]["state"]
@@ -4396,32 +4319,28 @@ def test_model_restriction_unblocks_subscription_preview_without_renewing_expiry
         838,
         overlay,
         "Remove unused Spark",
-        actor="operator",
-        request_key="remove-spark",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "remove-spark"),
     )
-    continuation = progress.preview(**args)
+    continuation = progress.preview_continuation(**args)
     assert "spark" not in continuation["policy"]["allowed_models"]
     with Session(database) as db:
         assert controls.task_recovery_grant("task", session=db) == recovery
         assert funding.amendment(db, "task") == grant
         assert controls._recovery_deadline(db, "task") < now
         assert db.get(FactoryReceipt, 838).task_paused
-        assert funding.latest(db, "task", progress.LEASE) is None
+        assert funding.latest(db, "task", progress.CONTINUATION_LEASE) is None
 
 
 def test_progress_failed_latest_review_returns_to_normal_reconciliation(
     database, progress_recovery
 ):
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
 
     args, _ = progress_recovery
-    p = progress.preview(**args)
-    progress.apply(
+    p = progress.preview_continuation(**args)
+    progress.apply_continuation(
         **args,
-        actor="operator",
-        request_key="progress",
-        expected_preview_sha256=p["preview_sha256"],
+        **operator_request(p, "progress"),
     )
     with Session(database) as db, db.begin():
         db.add(
@@ -4434,12 +4353,14 @@ def test_progress_failed_latest_review_returns_to_normal_reconciliation(
                 cost_usd=0.1,
             )
         )
-    assert progress.renew("task") is False
+    assert progress.renew_continuation("task") is False
     with Session(database) as db:
         assert (
             len(
                 db.exec(
-                    select(FactoryAudit).where(FactoryAudit.action == progress.LEASE)
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == progress.CONTINUATION_LEASE
+                    )
                 ).all()
             )
             == 1
@@ -4458,7 +4379,7 @@ def test_progress_failed_latest_review_returns_to_normal_reconciliation(
 def test_progress_refusal_identifies_exact_feed_without_mutation(
     database, progress_recovery, fault, expected
 ):
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
 
     args, raw = progress_recovery
     raw["providers"]["codex"]["observed_at"] = "2026-10-30T02:40:00Z"
@@ -4477,7 +4398,7 @@ def test_progress_refusal_identifies_exact_feed_without_mutation(
         before = row.model_dump()
         audits = len(db.exec(select(FactoryAudit)).all())
     with pytest.raises(progress.SubscriptionRefusal) as caught:
-        progress.preview(**args)
+        progress.preview_continuation(**args)
     detail = caught.value.diagnostics
     refused = detail["refused_model"]
     assert refused["state"] == expected
@@ -4496,7 +4417,7 @@ def test_progress_refusal_identifies_exact_feed_without_mutation(
 
 
 def test_progress_subscription_diagnostic_is_bounded_and_keeps_exact_refusal():
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
 
     policy = {"allowed_models": [f"unknown{i:02}" for i in range(40)]}
     detail = progress._subscription_diagnostics(
@@ -4504,3 +4425,155 @@ def test_progress_subscription_diagnostic_is_bounded_and_keeps_exact_refusal():
     )
     assert len(detail["models"]) == 32 and detail["truncated"]
     assert detail["refused_model"]["model"] == "unknown39"
+
+
+def test_funding_meter_audit_is_single_authority_with_rollback_projection(database):
+    receipt = prepare()
+    update(receipt, 0)
+    update(receipt, 1, 100000)
+    with Session(database) as db:
+        rows = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action.in_(("runtime_meter_bound", "funding_meter_bound"))
+            )
+        ).all()
+        assert {r.action for r in rows} == {
+            "runtime_meter_bound",
+            "funding_meter_bound",
+        }
+        old = next(r for r in rows if r.action == "runtime_meter_bound")
+        canonical = next(r for r in rows if r.action == "funding_meter_bound")
+        projection = json.loads(old.detail_json)
+        assert projection.pop("funding_compatibility_projection") is True
+        assert projection == json.loads(canonical.detail_json)
+        bindings = meter._records(db, ["task"], (meter.BOUND,))
+        assert [r["audit_id"] for r in bindings] == [canonical.id]
+        assert (
+            runtime_meter_evidence.binding(db, receipt["id"])["receipt_id"]
+            == receipt["id"]
+        )
+        assert (
+            meter.objective_totals(db, db.get(FactoryReceipt, 838))["known_list_usd"]
+            == 5
+        )
+        # The old binary's exact-action query still sees one binding and each
+        # usage update once; these rows remain sufficient after reverting code.
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(FactoryAudit.action == meter.UPDATE)
+                ).all()
+            )
+            == 2
+        )
+
+
+def test_historical_meter_evidence_remains_readable(database):
+    receipt = prepare()
+    with Session(database) as db, db.begin():
+        rows = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action.in_(("runtime_meter_bound", "funding_meter_bound"))
+            )
+        ).all()
+        for row in rows:
+            if row.action == "funding_meter_bound":
+                db.delete(row)
+            else:
+                detail = json.loads(row.detail_json)
+                del detail["funding_compatibility_projection"]
+                row.detail_json = json.dumps(detail)
+    assert not update(receipt, 0)["stop"]
+    with Session(database) as db:
+        assert len(meter._records(db, ["task"], (meter.BOUND,))) == 1
+        assert runtime_meter_evidence.binding(db, receipt["id"])["guest_id"] == "guest"
+
+
+def test_canonical_continuation_and_compatibility_rows_commit_together(database):
+    from factory.orchestration import factory_funding as funding
+
+    with pytest.raises(RuntimeError, match="rollback"):
+        with Session(database) as db, db.begin():
+            funding.record_audit(
+                db,
+                "operator",
+                funding.CONTINUATION_LEASE,
+                task_id="task",
+                head_sha="a" * 40,
+            )
+            db.flush()
+            raise RuntimeError("rollback")
+    with Session(database) as db:
+        assert funding.latest(db, "task", funding.CONTINUATION_LEASE) is None
+        assert not db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action.in_(
+                    (funding.CONTINUATION_LEASE, "funding_continuation_lease")
+                )
+            )
+        ).all()
+    with Session(database) as db, db.begin():
+        funding.record_audit(
+            db,
+            "operator",
+            funding.CONTINUATION_REFUSED,
+            task_id="task",
+            reason="progress_execution_failed",
+        )
+    with Session(database) as db:
+        canonical = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "funding_continuation_renewal_refused"
+            )
+        ).one()
+        result = funding.continuation_status(db, "task")
+        assert result["state"] == "refused"
+        assert result["reason"] == "progress_execution_failed"
+        assert result["audit_id"] == canonical.id
+
+
+def test_rollback_reader_retains_continuation_authority_and_replay(
+    database, progress_recovery, monkeypatch
+):
+    from factory.orchestration import factory_funding as progress
+    from factory.orchestration import factory_funding_limits as limits
+
+    args, _ = progress_recovery
+    proposal = progress.preview_continuation(**args)
+    request = {
+        **args,
+        "actor": "operator",
+        "request_key": "rollback-reader",
+        "expected_preview_sha256": proposal["preview_sha256"],
+    }
+    result = progress.apply_continuation(**request)
+
+    def old_latest(db, task_id, action):
+        row = db.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.task_id == task_id, FactoryAudit.action == action)
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+        return (
+            None if row is None else {**json.loads(row.detail_json), "audit_id": row.id}
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(limits, "latest", old_latest)
+        with Session(database) as db:
+            assert (
+                old_latest(db, "task", progress.CONTINUATION_AUTHORIZED)["result"]
+                == result
+            )
+            assert (
+                controls.task_recovery_grant("task", session=db)["deadline_at"]
+                == result["lease"]["deadline_at"]
+            )
+            assert (
+                limits.effective_policy(db, db.get(FactoryReceipt, 838))[
+                    "task_budget_usd"
+                ]
+                == 50
+            )
+    assert progress.apply_continuation(**request) == result
+    assert not progress.renew_continuation("task")

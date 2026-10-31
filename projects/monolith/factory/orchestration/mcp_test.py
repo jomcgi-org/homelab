@@ -1370,7 +1370,7 @@ def test_detail_pages_nodes_and_bounds_attempt_history(monkeypatch):
     monkeypatch.setattr(mcp, "_queue_context", lambda *args: None)
     monkeypatch.setattr(mcp, "_watchdog_detail", lambda *args: None)
     monkeypatch.setattr(
-        "factory.orchestration.factory_progress_continuation.renewal_status",
+        "factory.orchestration.factory_funding.continuation_status",
         lambda session, task: {"reason": "progress_authority_changed", "task_id": task},
     )
     monkeypatch.setattr(
@@ -2587,11 +2587,13 @@ def test_refinement_batch_requires_standing_operator_before_any_read(monkeypatch
 
 
 def test_progress_continuation_requires_standing_human_and_preview(monkeypatch):
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
 
     calls = []
     monkeypatch.setattr(
-        progress, "apply", lambda *a, **kw: calls.append((a, kw)) or {"ok": True}
+        progress,
+        "apply_continuation",
+        lambda *a, **kw: calls.append((a, kw)) or {"ok": True},
     )
 
     async def invoke():
@@ -2684,10 +2686,12 @@ def test_model_restriction_requires_standing_human_and_preview(monkeypatch):
     ],
 )
 def test_progress_mode_cannot_mix_policy_or_omit_identity(monkeypatch, overlay):
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
 
     monkeypatch.setattr(
-        progress, "preview", lambda *a: pytest.fail("Invalid mode reached continuation")
+        progress,
+        "preview_continuation",
+        lambda *a: pytest.fail("Invalid mode reached continuation"),
     )
 
     async def invoke():
@@ -2803,7 +2807,7 @@ def test_refill_adapter_binds_actor_and_requires_preview(monkeypatch):
 
 
 def test_progress_preview_returns_bounded_subscription_refusal(monkeypatch):
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
 
     diagnostics = {
         "refused_model": {
@@ -2818,7 +2822,7 @@ def test_progress_preview_returns_bounded_subscription_refusal(monkeypatch):
             "progress_subscription_evidence_stale", diagnostics
         )
 
-    monkeypatch.setattr(progress, "preview", refuse)
+    monkeypatch.setattr(progress, "preview_continuation", refuse)
     result = _as(
         _principal(),
         lambda: mcp.factory_amend_policy(
