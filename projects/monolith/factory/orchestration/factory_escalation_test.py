@@ -1119,7 +1119,7 @@ def test_a_decision_re_admits_the_work_with_the_operator_direction(db, github, n
     assert context["operator_direction"]["note"].startswith("Console is #6100")
     assert context["operator_direction"]["previous_branch"] == f"factory/{task_id}"
     assert context["operator_direction"]["answering"] == "Which surface is in scope?"
-    assert "operator_direction, when it is present" in node["prompt"]
+    assert "operator_direction, when present" in node["prompt"]
     assert audits(db, "operator_direction_read")[0]["previous_task_id"] == task_id
 
 
