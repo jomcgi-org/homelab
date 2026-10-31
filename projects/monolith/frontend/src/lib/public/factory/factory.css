@@ -166,7 +166,8 @@
   background: transparent;
 }
 
-.factory-page .mark.failed {
+.factory-page .mark.failed,
+.factory-page .mark.escalated {
   border-color: var(--tone-disk);
   background: var(--tone-disk);
 }

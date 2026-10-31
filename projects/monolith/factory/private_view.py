@@ -32,6 +32,7 @@ _RUN_STATE = {
     "admitted": "running",
     "succeeded": "done",
     "failed": "failed",
+    "escalated": "escalated",
     "uncertain": "uncertain",
     "cancelled": "cancelled",
 }

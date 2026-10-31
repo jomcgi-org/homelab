@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from factory.private_view import (
     first_line,
     node_label,
@@ -363,9 +365,40 @@ def test_a_policy_pinned_before_the_envelope_still_shows_its_turn_bound():
     assert shaped["policy"]["max_task_turns_hard"] == 9
 
 
-def test_unknown_run_and_terminal_parent_never_claim_running():
+@pytest.mark.parametrize("receipt_state", [None, "admitted", "escalated"])
+def test_terminal_escalated_attempt_is_not_unknown_execution(receipt_state):
+    from factory.publication import task_summary
+
+    run = {
+        **_run("correct_5", 1, "escalated", 7),
+        "finished_at": "2026-09-10T05:01:00+00:00",
+    }
+    node = shape_node(
+        _node("correct_5"),
+        [run],
+        {7: {"status": "completed", "executing": False}},
+        receipt_state=receipt_state,
+    )
+    assert node["state"] == "escalated"
+    assert node["attempts"][0]["status"] == "escalated"
+    summary = task_summary(
+        {"state": receipt_state or "admitted", "task_paused": True, "nodes": [node]}
+    )
+    assert summary["nodes"] == [{"node_key": "correct_5", "state": "escalated"}]
+    assert summary["state"] == (
+        "escalated" if receipt_state == "escalated" else "paused"
+    )
+
+
+@pytest.mark.parametrize("receipt_state", [None, "admitted", "escalated"])
+def test_unknown_run_and_terminal_parent_never_claim_running(receipt_state):
     assert (
-        shape_node(_node("review"), [_run("review", 1, "unrecognized")], {})["state"]
+        shape_node(
+            _node("review"),
+            [_run("review", 1, "unrecognized")],
+            {},
+            receipt_state=receipt_state,
+        )["state"]
         == "uncertain"
     )
     assert (

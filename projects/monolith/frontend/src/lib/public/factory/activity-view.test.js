@@ -188,6 +188,7 @@ describe("state vocabulary", () => {
   it("calls a pending node queued and leaves the rest alone", () => {
     expect(nodeWord("pending")).toBe("queued");
     expect(nodeWord("retired")).toBe("retired");
+    expect(nodeWord("escalated")).toBe("escalated");
   });
 
   it("calls an admitted attempt running", () => {
@@ -196,6 +197,8 @@ describe("state vocabulary", () => {
     expect(attemptMark("admitted")).toBe("running");
     expect(attemptMark("succeeded")).toBe("done");
     expect(attemptMark("failed")).toBe("failed");
+    expect(attemptWord("escalated")).toBe("escalated");
+    expect(attemptMark("escalated")).toBe("escalated");
   });
 
   it("counts correction nodes as the review rounds", () => {
