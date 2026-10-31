@@ -1033,7 +1033,7 @@ def test_broker_delay_cannot_carry_stale_transport_permission(db, monkeypatch, c
     assert not fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
 
 
-def test_recovery_audits_reach_both_scout_roles_without_granting_retry():
+def test_private_recovery_audits_do_not_enter_publishable_scout_prompts():
     data = current()
     data["review_digest"] = "a" * 64
     data["recovery_events"] = [
@@ -1041,8 +1041,9 @@ def test_recovery_audits_reach_both_scout_roles_without_granting_retry():
     ]
     collect = scout._prompt(data)
     review = scout._prompt(data, collection={"findings": []})
-    assert '"audit_id": 42' in collect and '"audit_id": 42' in review
-    assert "unmatched pauses have unknown duration/outcome" in collect
+    assert '"audit_id": 42' not in collect and '"audit_id": 42' not in review
+    assert "exact-task" not in collect and "exact-task" not in review
+    assert "have unknown duration/outcome" in collect
     assert "unknown-execution fences" in collect
 
 

@@ -1081,7 +1081,10 @@ def build_retro_digest(data: dict, now: datetime | None = None) -> str:
                 "Investigate avoidable paused time, interruptions and repeat causes. Distinguish "
                 "transport/missing output from code rejection and legitimate review/CI/dependency waits. "
                 "Call a pause avoidable only with evidence of an authorized safe recovery. Preserve "
-                "unknown-execution fences, human holds, subscription caps and acceptance.",
+                "unknown-execution fences, human holds, subscription caps and acceptance. "
+                "Use private audit identities for verification only; public findings must "
+                "use aggregate measurements and existing public issue references, not raw "
+                "audit records, private task identities or reasons.",
                 json.dumps(data.get("recovery_events", []), default=str),
             ],
         ),
