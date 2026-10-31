@@ -211,6 +211,10 @@ defmodule Embervm.SessionManager do
     GenServer.call(server, :create_admission_stats, timeout)
   end
 
+  def session_cessation_evidence(server, session_id, expected, principal) do
+    Embervm.OpLog.safe_server_call(server, {:session_cessation_evidence, session_id, expected, principal}, 50_000)
+  end
+
   def residency_stats(server \\ __MODULE__) do
     GenServer.call(server, :residency_stats, 500)
   end
@@ -817,6 +821,20 @@ defmodule Embervm.SessionManager do
   @impl true
   def handle_call(:ping, _from, state) do
     {:reply, :pong, state}
+  end
+
+  def handle_call({:session_cessation_evidence, id, expected, principal}, _from, state) do
+    # This callback serializes against admission and worker completion. A proof
+    # requires absence of *terminal* holders too: they can otherwise authorize
+    # a future workspace restore immediately after this read.
+    result = with {:ok, proof} <- SessionStore.session_cessation_evidence(state.session_store, id, expected, principal),
+                  false <- historical_work_pending?(state, proof) do
+      {:ok, Embervm.SessionCessationEvidence.public(proof, state.clock.())}
+    else
+      true -> {:error, :historical_pending_work, %{}}
+      error -> error
+    end
+    {:reply, result, state}
   end
 
   def handle_call(:residency_stats, _from, state) do
@@ -7425,6 +7443,24 @@ defmodule Embervm.SessionManager do
         }
       _ -> %{available: false}
     end
+  end
+
+  defp historical_work_pending?(state, proof) do
+    id = proof.session_id
+    lineage = proof.lineage_id
+    MapSet.member?(state.inflight_restore_lineages, lineage) or
+      Embervm.LineageFence.held?(lineage, :restore) or
+      Enum.any?(state.create_inflight, fn {_ref, create} ->
+        create.lineage_id == lineage or create.restore_lineage == lineage
+      end) or
+      Enum.any?([state.banking, state.relighting, state.destroy_workers, state.pressure_waits,
+        state.departure_retries], &Map.has_key?(&1, id)) or
+      MapSet.member?(state.destroy_inflight, id) or MapSet.member?(state.draining_sessions, id) or
+      Registry.lookup(state.registry, id) != [] or
+      Enum.any?(NodeCapacity.all(state.capacity_table), fn fact ->
+        Enum.any?(Map.get(fact, :session_vms, []) || [], &(&1.session_id == id or &1.vm_id == proof.vm_id)) or
+          Enum.any?(Map.get(fact, :session_snapshots, []) || [], &(&1.session_id == id))
+      end)
   end
 
   defp residency_rows(state), do: SessionStore.residency_intent(state.session_store, :working)

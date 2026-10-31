@@ -70,6 +70,11 @@ defmodule Embervm.SessionStore do
 
   # -- Client API ------------------------------------------------------------
 
+  def session_cessation_evidence(store, session_id, expected, principal) do
+    Embervm.OpLog.safe_server_call(store, {:session_cessation_evidence, session_id, expected, principal}, 45_000)
+  end
+
+
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     case Keyword.get(opts, :name, __MODULE__) do
@@ -548,6 +553,23 @@ defmodule Embervm.SessionStore do
 
   def handle_call({:record_invoke_started, session_id, dispatch_id}, _from, state) do
     do_record_invoke_started(state, session_id, dispatch_id)
+  end
+
+  def handle_call({:session_cessation_evidence, id, expected, principal}, _from, state) do
+    result = with false <- state.residency_uncertain,
+                  {:ok, proof} <- state.op_log_mod.session_cessation_evidence(state.op_log, id, expected, principal) do
+      hot_owner = :ets.foldl(fn {_sid, row}, found ->
+        found or row.session_id == id or row.lineage_id == proof.lineage_id or row.vm_id == proof.vm_id
+      end, false, state.sessions)
+      intent = Enum.any?(state.residency_intents, fn {_id, row} -> Embervm.SessionCessationEvidence.related_intent?(row, proof) end)
+      if hot_owner or intent,
+        do: {:error, :historical_current_owner, Embervm.SessionCessationEvidence.summary(proof, proof.event_count)},
+        else: {:ok, proof}
+    else
+      true -> {:error, :historical_store_unavailable, %{}}
+      error -> error
+    end
+    {:reply, result, state}
   end
 
   def handle_call({:get, session_id}, _from, state) do

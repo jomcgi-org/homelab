@@ -248,6 +248,15 @@
       "to": "egress-proxy",
       "maturity": "built",
       "evidence": "projects/firecracker/substrate/egress-proxy/cmd/swap.go:801-839"
+    },
+    {
+      "key": "api.read-historical-cessation",
+      "label": "Read exact bounded original-dispatch cessation proof without restoring execution",
+      "view": "logical",
+      "from": "caller",
+      "to": "api",
+      "maturity": "built",
+      "evidence": "projects/embervm/control/lib/embervm/router.ex"
     }
   ],
   "feedback": [
@@ -292,6 +301,12 @@
       "from": "egress-ca-volume",
       "to": "egress-proxy",
       "signal": "Configured certificate and key files from the optional Secret; missing, partial or malformed pairs fail loading"
+    },
+    {
+      "view": "logical",
+      "from": "op-log",
+      "to": "api",
+      "signal": "Complete retained positive parking/eviction history and absence of surviving successor/restore authority"
     }
   ]
 }

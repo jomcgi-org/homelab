@@ -3300,6 +3300,14 @@ def test_historical_cessation_refusal_exposes_only_bounded_code(monkeypatch):
             json={
                 "reason": "history_compacted",
                 "private": "never expose raw body",
+                "diagnostics": {
+                    "history_complete": False,
+                    "event_count": 5,
+                    "event_kind": "session_evicted",
+                    "event_reason": "idle_ttl",
+                    "private": "hidden",
+                    "terminal_reason": "secret with spaces",
+                },
             },
             request=request,
         )
@@ -3316,6 +3324,12 @@ def test_historical_cessation_refusal_exposes_only_bounded_code(monkeypatch):
         )
     assert caught.value.reason == "history_compacted"
     assert str(caught.value) == "history_compacted"
+    assert caught.value.diagnostics == {
+        "history_complete": False,
+        "event_count": 5,
+        "event_kind": "session_evicted",
+        "event_reason": "idle_ttl",
+    }
 
 
 def test_get_session_uses_short_status_timeout_not_invoke_budget(monkeypatch):

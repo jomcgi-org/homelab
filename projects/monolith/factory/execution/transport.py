@@ -378,8 +378,9 @@ PI_WORKLOAD = _resolve_pi_workload()
 class EmberHistoricalCessationUnavailable(EmberVMTransportError):
     """A bounded authority refusal; its code is safe for operator diagnostics."""
 
-    def __init__(self, reason: str):
+    def __init__(self, reason: str, diagnostics: dict | None = None):
         self.reason = reason
+        self.diagnostics = diagnostics or {}
         super().__init__(reason)
 
 
@@ -1498,7 +1499,31 @@ class EmberVmShimTransport:
                     if isinstance(reason, str) and re.fullmatch(
                         r"[a-z_]{1,80}", reason
                     ):
-                        raise EmberHistoricalCessationUnavailable(reason)
+                        diagnostics = body.get("diagnostics")
+                        safe = {}
+                        if isinstance(diagnostics, dict):
+                            for key in (
+                                "history_complete",
+                                "creation_history_complete",
+                            ):
+                                if type(diagnostics.get(key)) is bool:
+                                    safe[key] = diagnostics[key]
+                            count = diagnostics.get("event_count")
+                            if type(count) is int and 0 <= count <= 256:
+                                safe["event_count"] = count
+                            for key in (
+                                "terminal_state",
+                                "preceding_state",
+                                "terminal_reason",
+                                "event_kind",
+                                "event_reason",
+                            ):
+                                value = diagnostics.get(key)
+                                if isinstance(value, str) and re.fullmatch(
+                                    r"[a-z_]{1,80}", value
+                                ):
+                                    safe[key] = value
+                        raise EmberHistoricalCessationUnavailable(reason, safe)
                 response.raise_for_status()
                 return response.json()
         except httpx.HTTPStatusError as exc:

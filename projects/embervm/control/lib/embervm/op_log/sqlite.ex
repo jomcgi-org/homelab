@@ -121,6 +121,7 @@ defmodule Embervm.OpLog.SQLite do
     )
     """,
     "CREATE INDEX IF NOT EXISTS ops_task_id_idx ON ops(task_id)",
+    "CREATE INDEX IF NOT EXISTS ops_kind_seq_idx ON ops(kind, seq)",
     """
     CREATE TABLE IF NOT EXISTS tasks (
       task_id TEXT PRIMARY KEY,
@@ -630,6 +631,11 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   @impl Embervm.OpLog
+  def session_cessation_evidence(server, session_id, expected, principal) do
+    Embervm.OpLog.safe_server_call(server, {:session_cessation_evidence, session_id, expected, principal}, @double_query_call_timeout_ms)
+  end
+
+  @impl Embervm.OpLog
   def load_tasks(server \\ __MODULE__) do
     Embervm.OpLog.safe_server_call(server, :load_tasks, @single_query_call_timeout_ms)
   end
@@ -805,6 +811,18 @@ defmodule Embervm.OpLog.SQLite do
 
   def handle_call({:read_from, seq}, _from, state) do
     {:reply, do_read_from(state.conn, seq), state}
+  end
+
+  def handle_call({:session_cessation_evidence, id, expected, principal}, _from, state) do
+    result = with :ok <- Sqlite3.execute(state.conn, "BEGIN") do
+      try do
+        query = fn sql, params -> cessation_query(state.conn, sql, params) end
+        Embervm.SessionCessationEvidence.read(query, :sqlite, &decode_payload/1, id, expected, principal)
+      after
+        :ok = Sqlite3.execute(state.conn, "ROLLBACK")
+      end
+    end
+    {:reply, result, state}
   end
 
   def handle_call(:load_tasks, _from, state) do
@@ -2714,6 +2732,24 @@ defmodule Embervm.OpLog.SQLite do
   # not silently assume it saw the whole journal. `read_from/2` reads ops STRICTLY
   # after `seq`, so any `seq >= marker` still sees every surviving op; only a
   # `seq < marker` could miss compacted ops, hence the guard. See ADR embervm/002.
+  defp cessation_query(conn, sql, params) do
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql) do
+      try do
+        with :ok <- Sqlite3.bind(stmt, params), do: cessation_rows(conn, stmt, [])
+      after
+        :ok = Sqlite3.release(conn, stmt)
+      end
+    end
+  end
+
+  defp cessation_rows(conn, stmt, rows) do
+    case Sqlite3.step(conn, stmt) do
+      {:row, row} -> cessation_rows(conn, stmt, [row | rows])
+      :done -> {:ok, Enum.reverse(rows)}
+      error -> error
+    end
+  end
+
   defp do_read_from(conn, seq) do
     marker = read_marker(conn)
 
@@ -3817,7 +3853,8 @@ defmodule Embervm.OpLog.SQLite do
          :ok <- migrate_usage_request_count(conn),
          :ok <- migrate_ops_stateful_instance_id(conn),
          :ok <- migrate_volumes_exported_generation(conn),
-         :ok <- migrate_ops_group_instance_id(conn) do
+         :ok <- migrate_ops_group_instance_id(conn),
+         :ok <- Sqlite3.execute(conn, "CREATE INDEX IF NOT EXISTS ops_session_id_seq_idx ON ops(session_id, seq)") do
       :ok
     end
   end

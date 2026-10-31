@@ -304,6 +304,8 @@ defmodule Embervm.OpLog do
   # it saw the whole log. A `seq >= marker` behaves as before.
   @callback read_from(server(), seq :: non_neg_integer()) ::
               {:ok, [Op.t()]} | {:error, {:compacted, non_neg_integer()}} | {:error, term()}
+  @callback session_cessation_evidence(server(), String.t(), map(), String.t() | :admin) ::
+              {:ok, map()} | {:error, atom(), map()}
   @callback load_tasks(server()) :: {:ok, [map()]} | {:error, term()}
   # Loads every session row from the durable `sessions` projection (R2), for the
   # SessionStore's boot/adoption rebuild (Task 5/8): the ETS hot set of sessions
