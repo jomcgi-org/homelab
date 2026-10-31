@@ -2811,6 +2811,14 @@ def test_refill_adapter_binds_actor_and_requires_preview(monkeypatch):
             {"reset_breaker": False, "min_new_issues": None},
         )
     ]
+    calls.clear()
+    assert _as(
+        p,
+        lambda: mcp.factory_configure_refill(
+            "apply", True, "opus", False, 0, "re-arm", "k2", "d2", True, 1
+        ),
+    )["ok"]
+    assert calls[0][1] == {"reset_breaker": True, "min_new_issues": 1}
 
 
 def test_progress_preview_returns_bounded_subscription_refusal(monkeypatch):

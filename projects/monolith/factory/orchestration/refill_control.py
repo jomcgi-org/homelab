@@ -257,14 +257,16 @@ def _plan(
     changed = {**block, "enabled": enabled}
     if enabled:
         changed.update(model=model, max_findings=5)
-    if min_new_issues is not None:
-        changed["min_new_issues"] = min_new_issues
     elif changed["model"] not in policy.get("allowed_models", []):
         # Omitted legacy policies may have an unavailable inert default.
         # Do not persist that default as an explicitly configured model.
         changed.pop("model")
+    if min_new_issues is not None:
+        changed["min_new_issues"] = min_new_issues
     normalize({**policy, "backlog_refill": changed})
-    if changed != block and refill._ledger(db, policy.get("repo", ""))[2]:
+    if (changed != block or reset_breaker) and refill._ledger(
+        db, policy.get("repo", "")
+    )[2]:
         raise ValueError("refill_in_flight")
     job = learning_job(db) if hourly else None
     if hourly:
