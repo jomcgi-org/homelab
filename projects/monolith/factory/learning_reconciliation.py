@@ -3,11 +3,14 @@
 This never changes the unknown turn, settled permit, failed session or job.
 It does not make the old session sendable. Unlike the undelivered quota probe,
 this attempt DID reach a guest and its output remains unknown. Positive fresh
-control-plane cessation and an explicit operator decision are both required.
+control-plane cessation authority and an explicit operator decision are required.
+Pruned projections need a complete journal proof with no surviving restore
+authority; absence alone never establishes cessation.
 """
 
 import asyncio
 import json
+import re
 
 from core.clock import aware
 from shared.invocation_outcomes import terminal_dispatch_cessation
@@ -33,6 +36,87 @@ from factory.orchestration.factory_models import FactoryAudit
 ACTION = "learning_ceased_unknown_acknowledged"
 EFFECT = "exclude_exact_attempt_from_hourly_cadence_guard_only"
 MAX_PROOF_AGE_SECONDS = 30
+
+
+def _historical_cessation(saved, observed, observed_at):
+    """Validate a fresh authority read; its stable facts bind preview to apply."""
+    evidence = observed.get("historical_cessation")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    stamp = evidence.get("observed_at_unix_ms")
+    lineage = evidence.get("lineage_id")
+    sha = evidence.get("evidence_sha256")
+    if (
+        type(evidence.get("schema")) is not int
+        or evidence["schema"] != 1
+        or evidence.get("source") != "retained_control_plane_journal"
+        or any(
+            evidence.get(key) is not True
+            for key in ("complete", "no_successor", "no_pending_restore")
+        )
+        or not isinstance(lineage, str)
+        or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", lineage) is None
+        or lineage != saved["guest_id"]
+        or any(
+            not isinstance(evidence.get(key), str)
+            or re.fullmatch(r"[A-Za-z0-9_./:-]{1,512}", evidence[key]) is None
+            for key in ("node_id", "vm_id")
+        )
+        or not isinstance(sha, str)
+        or re.fullmatch(r"[0-9a-f]{64}", sha) is None
+        or type(stamp) is not int
+        or not 0
+        <= int(observed_at.timestamp() * 1000) - stamp
+        <= MAX_PROOF_AGE_SECONDS * 1000
+        or not 0
+        <= int(controls._now().timestamp() * 1000) - stamp
+        <= MAX_PROOF_AGE_SECONDS * 1000
+    ):
+        raise ValueError("learning_historical_cessation_invalid")
+    # Read time is audited separately. Including it in the proposal would make
+    # every fresh apply disagree with the exact reviewed preview.
+    return {
+        key: evidence[key]
+        for key in (
+            "schema",
+            "source",
+            "lineage_id",
+            "node_id",
+            "vm_id",
+            "evidence_sha256",
+            "complete",
+            "no_successor",
+            "no_pending_restore",
+        )
+    }
+
+
+def _historical_lineage_owner(db, saved, evidence):
+    """Match any retained lineage and refuse another owner of the proven lineage.
+
+    The exact saved guest plus the control plane's original creation establishes
+    lineage. Missing local lineage fields contribute no positive evidence.
+    """
+    lineage = evidence["lineage_id"]
+    agent = db.get(AgentSession, saved["session_id"])
+    if agent is None or any(
+        value is not None and value != lineage
+        for value in (agent.ember_lineage_id, agent.prior_ember_lineage_id)
+    ):
+        raise ValueError("learning_historical_lineage_changed")
+    alias = db.exec(
+        select(AgentSession.id)
+        .where(
+            AgentSession.id != saved["session_id"],
+            or_(
+                AgentSession.ember_lineage_id == lineage,
+                AgentSession.prior_ember_lineage_id == lineage,
+                AgentSession.ember_session_id == lineage,
+            ),
+        )
+        .limit(1)
+    ).first()
+    if alias is not None:
+        raise ValueError("learning_historical_lineage_owned")
 
 
 def proof(db, session_id, seq, permit_id, *, lock=False):
@@ -195,6 +279,9 @@ def resolutions(db, candidates, *, lock=False):
             saved = proposal["proof"]
             if proposal["effect"] != EFFECT or saved["session_id"] not in candidates:
                 continue
+            historical = proposal.get("cessation", {}).get("historical_cessation")
+            if historical is not None:
+                _historical_lineage_owner(db, saved, historical)
             if (
                 proof(
                     db, saved["session_id"], saved["seq"], saved["permit_id"], lock=lock
@@ -277,7 +364,7 @@ def _cessation(saved, observed, observed_at):
         )
     ):
         raise ValueError("learning_cessation_mismatch")
-    return {
+    result = {
         key: observed.get(key)
         for key in (
             "session_id",
@@ -288,6 +375,13 @@ def _cessation(saved, observed, observed_at):
             "state",
         )
     }
+    if "historical_cessation" in observed:
+        if observed["updated_at"] != saved["cp_updated_at"]:
+            raise ValueError("learning_historical_cessation_mismatch")
+        result["historical_cessation"] = _historical_cessation(
+            saved, observed, observed_at
+        )
+    return result
 
 
 def _finish(candidate, observed, observed_at, actor=None, request=None):
@@ -309,6 +403,9 @@ def _finish(candidate, observed, observed_at, actor=None, request=None):
         if current != candidate:
             raise ValueError("learning_identity_changed")
         current["cessation"] = _cessation(saved, observed, observed_at)
+        historical = current["cessation"].get("historical_cessation")
+        if historical is not None:
+            _historical_lineage_owner(db, saved, historical)
         current["preview_sha256"] = digest(current)
         if request is None:
             return {**current, "observed_at": observed_at.isoformat()}
@@ -336,13 +433,20 @@ def _finish(candidate, observed, observed_at, actor=None, request=None):
             request=request,
             proposal=current,
             observed_at=observed_at.isoformat(),
+            authority_observed_at_unix_ms=(
+                observed.get("historical_cessation") or {}
+            ).get("observed_at_unix_ms"),
             result=result,
         )
         return result
 
 
 async def _run(session_id, seq, permit_id, reason, actor=None, request=None):
-    from factory.execution.transport import EmberVmShimTransport
+    from factory.execution.transport import (
+        EmberHistoricalCessationUnavailable,
+        EmberSessionGone,
+        EmberVmShimTransport,
+    )
 
     candidate, replay = await asyncio.to_thread(
         _prepare, session_id, seq, permit_id, reason, actor, request
@@ -350,13 +454,34 @@ async def _run(session_id, seq, permit_id, reason, actor=None, request=None):
     if replay is not None:
         return replay
     try:
-        observed = await asyncio.wait_for(
-            EmberVmShimTransport().get_session(candidate["proof"]["guest_id"]),
-            timeout=5,
-        )
+        transport = EmberVmShimTransport()
+        saved = candidate["proof"]
+        try:
+            observed = await asyncio.wait_for(
+                transport.get_session(saved["guest_id"]),
+                timeout=5,
+            )
+        except EmberSessionGone:
+            # A missing projection only selects the authoritative journal read.
+            # It contributes no positive evidence and never admits recovery.
+            observed = await asyncio.wait_for(
+                transport.get_session_cessation_evidence(
+                    saved["guest_id"],
+                    generation=saved["generation"],
+                    invoke_started_at=saved["invoke_started_at"],
+                    updated_at=saved["cp_updated_at"],
+                ),
+                timeout=5,
+            )
+            if not isinstance(observed, dict) or "historical_cessation" not in observed:
+                raise ValueError("missing authoritative historical proof")
+    except EmberHistoricalCessationUnavailable as exc:
+        raise ValueError(
+            f"learning_historical_cessation_unavailable:{exc.reason}"
+        ) from exc
     except Exception as exc:
-        # Gone, unavailable, timeouts and permission errors are never positive
-        # cessation evidence. No destroy, retry or alternate endpoint is used.
+        # Unavailable history, timeouts and permission errors remain fenced.
+        # Only a typed absent projection can select the bounded journal read.
         raise ValueError("learning_cessation_unavailable") from exc
     return await asyncio.to_thread(
         _finish, candidate, observed, controls._now(), actor, request

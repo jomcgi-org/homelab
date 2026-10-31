@@ -2413,6 +2413,13 @@ def learning_recovery_world(control_world, monkeypatch):
         return deepcopy(observed)
 
     monkeypatch.setattr(EmberVmShimTransport, "get_session", get_session)
+
+    async def no_history(*args, **kwargs):
+        raise RuntimeError("historical evidence unavailable")
+
+    monkeypatch.setattr(
+        EmberVmShimTransport, "get_session_cessation_evidence", no_history
+    )
     return SimpleNamespace(
         engine=engine,
         clock=clock,
@@ -2880,3 +2887,264 @@ async def test_learning_reconciliation_rejects_nonexact_identity(
     with pytest.raises(ValueError):
         await s.recovery.preview(*identity, "reason")
     assert not s.calls
+
+
+@pytest.fixture
+def historical_learning_world(learning_recovery_world, monkeypatch):
+    from copy import deepcopy
+
+    from factory.execution.transport import EmberSessionGone, EmberVmShimTransport
+
+    s = learning_recovery_world
+    s.observed["state"] = "evicted"
+    s.observed["historical_cessation"] = {
+        "schema": 1,
+        "source": "retained_control_plane_journal",
+        "lineage_id": "old-guest",
+        "node_id": "original-node",
+        "vm_id": "original-vm",
+        "evidence_sha256": "e" * 64,
+        "observed_at_unix_ms": int(s.clock[0].timestamp() * 1000),
+        "complete": True,
+        "no_successor": True,
+        "no_pending_restore": True,
+    }
+    s.historical_calls = []
+
+    async def missing(*args, **kwargs):
+        raise EmberSessionGone("projection pruned")
+
+    async def evidence(self, guest_id, **identity):
+        s.historical_calls.append((guest_id, identity))
+        return deepcopy(s.observed)
+
+    monkeypatch.setattr(EmberVmShimTransport, "get_session", missing)
+    monkeypatch.setattr(
+        EmberVmShimTransport, "get_session_cessation_evidence", evidence
+    )
+    return s
+
+
+@pytest.mark.asyncio
+async def test_historical_learning_proof_replays_concurrently_and_preserves_history(
+    historical_learning_world,
+    monkeypatch,
+):
+    import asyncio
+    import json
+
+    from factory.execution.transport import EmberVmShimTransport
+
+    s = historical_learning_world
+    before = _learning_snapshot(s)
+    p = await s.recovery.preview(*s.ids, "exact historical cessation")
+    assert s.historical_calls == [
+        (
+            "old-guest",
+            {
+                "generation": 0,
+                "invoke_started_at": s.observed["invoke_started_at"],
+                "updated_at": s.observed["updated_at"],
+            },
+        )
+    ]
+    s.clock[0] += timedelta(seconds=1)
+    s.observed["historical_cessation"]["observed_at_unix_ms"] += 1000
+    args = (
+        "operator",
+        *s.ids,
+        "exact historical cessation",
+        "stable-historical",
+        p["preview_sha256"],
+    )
+    results = await asyncio.gather(s.recovery.apply(*args), s.recovery.apply(*args))
+    assert results[0] == results[1]
+    assert results[0]["unknown_outcome_preserved"] is True
+    assert _learning_snapshot(s) == before
+    with Session(s.engine) as db:
+        rows = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == s.recovery.ACTION)
+        ).all()
+        assert len(rows) == 1
+        detail = json.loads(rows[0].detail_json)
+        assert (
+            detail["authority_observed_at_unix_ms"]
+            == s.observed["historical_cessation"]["observed_at_unix_ms"]
+        )
+        assert s.recovery.resolutions(db, {s.ids[0]}) == {s.ids[0]}
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("durable replay must precede remote I/O")
+
+    monkeypatch.setattr(EmberVmShimTransport, "get_session", forbidden)
+    assert await s.recovery.apply(*args) == results[0]
+    with pytest.raises(ValueError, match="learning_request_conflict"):
+        await s.recovery.apply(
+            "operator", *s.ids, "changed", "stable-historical", p["preview_sha256"]
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema", True),
+        ("source", "saved_supervisor_observation"),
+        ("complete", False),
+        ("no_successor", 1),
+        ("no_pending_restore", False),
+        ("lineage_id", ""),
+        ("lineage_id", "x" * 129),
+        ("node_id", ""),
+        ("vm_id", None),
+        ("evidence_sha256", "invalid"),
+        ("observed_at_unix_ms", None),
+        ("observed_at_unix_ms", True),
+        ("observed_at_unix_ms", int((NOW - timedelta(seconds=31)).timestamp() * 1000)),
+        ("observed_at_unix_ms", int((NOW + timedelta(seconds=1)).timestamp() * 1000)),
+    ],
+)
+async def test_historical_learning_requires_complete_fresh_authority(
+    historical_learning_world,
+    field,
+    value,
+):
+    s = historical_learning_world
+    s.observed["historical_cessation"][field] = value
+    with pytest.raises(ValueError, match="learning_historical_cessation_invalid"):
+        await s.recovery.preview(*s.ids, "reason")
+    with Session(s.engine) as db:
+        assert not s.recovery.resolutions(db, {s.ids[0]})
+
+
+@pytest.mark.asyncio
+async def test_historical_learning_rejects_changed_journal_between_preview_apply(
+    historical_learning_world,
+):
+    s = historical_learning_world
+    p = await s.recovery.preview(*s.ids, "reason")
+    s.observed["historical_cessation"]["evidence_sha256"] = "f" * 64
+    with pytest.raises(ValueError, match="learning_preview_changed"):
+        await s.recovery.apply(
+            "operator", *s.ids, "reason", "stable", p["preview_sha256"]
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field", ["ember_lineage_id", "prior_ember_lineage_id", "ember_session_id"]
+)
+async def test_historical_learning_rechecks_local_lineage_successor(
+    historical_learning_world,
+    field,
+):
+    from factory.execution.models import AgentSession
+
+    s = historical_learning_world
+    p = await s.recovery.preview(*s.ids, "reason")
+    with Session(s.engine) as db:
+        other = AgentSession(
+            local_session_id="successor",
+            status="failed",
+            model="luna",
+            workspace=".",
+            branch="main",
+        )
+        setattr(other, field, "old-guest")
+        db.add(other)
+        db.commit()
+    expected = (
+        "learning_delivery_or_pending_work"
+        if field == "ember_session_id"
+        else "learning_historical_lineage_owned"
+    )
+    with pytest.raises(ValueError, match=expected):
+        await s.recovery.apply(
+            "operator", *s.ids, "reason", "stable", p["preview_sha256"]
+        )
+
+
+@pytest.mark.asyncio
+async def test_historical_learning_resolution_does_not_hide_later_lineage_owner(
+    historical_learning_world,
+):
+    from factory.execution.models import AgentSession
+
+    s = historical_learning_world
+    p = await s.recovery.preview(*s.ids, "reason")
+    await s.recovery.apply("operator", *s.ids, "reason", "stable", p["preview_sha256"])
+    with Session(s.engine) as db:
+        db.add(
+            AgentSession(
+                local_session_id="successor",
+                status="running",
+                ember_lineage_id="old-guest",
+                model="luna",
+                workspace=".",
+                branch="main",
+            )
+        )
+        db.commit()
+        assert not s.recovery.resolutions(db, {s.ids[0]})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", [PermissionError("denied"), TimeoutError("timeout")]
+)
+async def test_learning_permission_or_timeout_does_not_select_historical_reader(
+    historical_learning_world,
+    monkeypatch,
+    failure,
+):
+    from factory.execution.transport import EmberVmShimTransport
+
+    s = historical_learning_world
+
+    async def blocked(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(EmberVmShimTransport, "get_session", blocked)
+    with pytest.raises(ValueError, match="learning_cessation_unavailable"):
+        await s.recovery.preview(*s.ids, "reason")
+    assert not s.historical_calls
+
+
+@pytest.mark.asyncio
+async def test_historical_learning_refusal_remains_auditable_and_fenced(
+    historical_learning_world,
+    monkeypatch,
+):
+    from factory.execution.transport import (
+        EmberHistoricalCessationUnavailable,
+        EmberVmShimTransport,
+    )
+
+    s = historical_learning_world
+    before = _learning_snapshot(s)
+
+    async def incomplete(*args, **kwargs):
+        raise EmberHistoricalCessationUnavailable("history_compacted")
+
+    monkeypatch.setattr(
+        EmberVmShimTransport, "get_session_cessation_evidence", incomplete
+    )
+    with pytest.raises(
+        ValueError, match="learning_historical_cessation_unavailable:history_compacted"
+    ):
+        await s.recovery.preview(*s.ids, "reason")
+    assert _learning_snapshot(s) == before
+
+
+@pytest.mark.asyncio
+async def test_historical_learning_rejects_conflicting_original_lineage(
+    historical_learning_world,
+):
+    from factory.execution.models import AgentSession
+
+    s = historical_learning_world
+    with Session(s.engine) as db:
+        db.get(AgentSession, s.ids[0]).prior_ember_lineage_id = "different-lineage"
+        db.commit()
+    with pytest.raises(ValueError, match="learning_historical_lineage_changed"):
+        await s.recovery.preview(*s.ids, "reason")

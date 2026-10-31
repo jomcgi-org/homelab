@@ -436,10 +436,24 @@ supervision. The stored identity hash covered the pre-settlement state; it is
 not a signature or a recomputable hash of the now-settled permit.
 
 Historical settlement and a current recovery preview answer different questions.
-`factory_reconcile_learning_execution` still requires a fresh positive response
-for the exact guest, generation and invocation in both preview and apply. A
-missing guest row, an old reason string, or a stored hash cannot satisfy that
-check. This diagnostic does not add a fallback.
+`factory_reconcile_learning_execution` requires fresh positive authority evidence
+for the exact guest, generation and invocation in both preview and apply. When
+the ordinary guest read returns a typed 404/410, it may read EmberVM's bounded
+`cessation-evidence` projection. Permission failures and timeouts do not select
+that path. Missing rows, an old reason string, and saved hashes are never proof.
+
+The historical path accepts only a complete retained original-generation journal
+chain establishing positive parking followed by idle eviction. The control plane
+must prove no surviving lineage holder, retained successor creation, pending
+restore or unresolved residency claim. Compacted or bounded-out history refuses
+recovery. Monolith additionally checks the exact local history and all current
+or prior lineage owners under its control/admission locks. It validates the
+authority's own observation timestamp within thirty seconds, separately from
+the local response time. Preview and apply bind the stable evidence digest;
+fresh observation time is recorded separately in the audit so a new read does
+not invalidate an otherwise identical preview. The acknowledgement changes only
+the cadence guard: unknown results, failed sessions, costs, receipts and holds
+remain unchanged. Native refusal codes identify insufficient historical proof.
 
 For an expired guest, corroboration may remain in EmberVM's durable `ops` journal.
 Terminal session projections become eligible for pruning after seven days,
@@ -449,8 +463,9 @@ not proof that a particular event still exists. An authorized evidence reader
 would need the exact session's creation, invocation and terminal events, their
 sequence/timestamps and generation, and coverage of any later transitions.
 `session_destroying` is intent, not cessation. A terminal event's writer/version
-must establish its teardown semantics. The current MCP surface has no journal
-reader; do not substitute an unapproved database or HTTP path.
+must establish its teardown semantics. The supported reconciliation control uses
+only the authenticated bounded verifier, never a general database or journal
+reader. It exposes no raw journal payloads or session credentials.
 
 Any proposal to accept a durable receipt must first corroborate the saved fields
 against that identity-bound history (or a verified archival snapshot), prove the

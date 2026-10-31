@@ -3221,6 +3221,58 @@ def test_long_invoke_budget_does_not_expand_create_wait(monkeypatch, read_timeou
     assert all(t.connect == transport.SUBMIT_CONNECT_TIMEOUT for t in timeouts)
 
 
+def test_historical_cessation_read_binds_identity_and_management_auth(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"session_id": "s-1"}, request=request)
+
+    _client(monkeypatch, handler)
+    result = asyncio.run(
+        transport.EmberVmShimTransport().get_session_cessation_evidence(
+            "s-1",
+            generation=0,
+            invoke_started_at=1000,
+            updated_at=2000,
+        )
+    )
+    assert result == {"session_id": "s-1"}
+    assert requests[0].method == "GET"
+    assert requests[0].url.path == "/v1/sessions/s-1/cessation-evidence"
+    assert dict(requests[0].url.params) == {
+        "generation": "0",
+        "invoke_started_at": "1000",
+        "updated_at": "2000",
+    }
+    assert requests[0].headers["Authorization"] == "management"
+
+
+@pytest.mark.parametrize("status", [403, 404, 409, 500])
+def test_historical_cessation_read_refusals_never_become_positive_evidence(
+    monkeypatch, status
+):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            status, json={"error": "evidence unavailable"}, request=request
+        )
+
+    _client(monkeypatch, handler)
+    with pytest.raises(transport.EmberVMTransportError):
+        asyncio.run(
+            transport.EmberVmShimTransport().get_session_cessation_evidence(
+                "s-1",
+                generation=0,
+                invoke_started_at=1000,
+                updated_at=2000,
+            )
+        )
+    assert len(requests) == 1
+
+
 def test_get_session_reads_exact_session_with_management_auth(monkeypatch):
     requests = []
 
@@ -3239,6 +3291,31 @@ def test_get_session_reads_exact_session_with_management_auth(monkeypatch):
     assert str(requests[0].url) == "https://ember.test/v1/sessions/s-1"
     assert requests[0].method == "GET"
     assert requests[0].headers["Authorization"] == "management"
+
+
+def test_historical_cessation_refusal_exposes_only_bounded_code(monkeypatch):
+    async def handler(request):
+        return httpx.Response(
+            409,
+            json={
+                "reason": "history_compacted",
+                "private": "never expose raw body",
+            },
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    with pytest.raises(transport.EmberHistoricalCessationUnavailable) as caught:
+        asyncio.run(
+            transport.EmberVmShimTransport().get_session_cessation_evidence(
+                "s-1",
+                generation=0,
+                invoke_started_at=1000,
+                updated_at=2000,
+            )
+        )
+    assert caught.value.reason == "history_compacted"
+    assert str(caught.value) == "history_compacted"
 
 
 def test_get_session_uses_short_status_timeout_not_invoke_budget(monkeypatch):
