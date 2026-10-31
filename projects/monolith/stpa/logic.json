@@ -673,6 +673,10 @@
     {
       "item": "a missing historical guest row being treated as proof that an unknown learning invocation never ran",
       "reason": "A typed missing projection selects only a bounded authenticated journal verifier; incomplete or stale proof and successor ownership refuse acknowledgement, while the failed unknown turn and accounting remain unchanged (projects/monolith/factory/learning_reconciliation.py)."
+    },
+    {
+      "item": "Retire a delivered Claude quota probe binding only after exact positive terminal evidence",
+      "reason": "The bounded leader retry binds the origin audit, sole completed turn and settled permit, receipt provenance, dispatch and original-generation destroyed guest. A fresh authenticated read is rechecked under control/capacity/session/receipt locks; changed identities, aliases, pending work, missing evidence and unknown outcomes refuse. Fence and binding retirement commit with one audit, preserve result/accounting/lineage and observer timestamps, and perform neither DELETE nor inference. Evidence: factory/completed_probe_cleanup.py; factory/execution/guest_cleanup.py."
     }
   ],
   "open_questions": [
