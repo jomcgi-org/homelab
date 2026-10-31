@@ -16,6 +16,8 @@ const SECONDS_PER_HOUR = 3600;
 const SECONDS_PER_MINUTE = 60;
 const MS_PER_DAY = 86_400_000;
 const RECENT_WINDOW_DAYS = 7;
+// Publication runs every two minutes; allow one missed refresh plus edge caching.
+const EXECUTION_SNAPSHOT_MAX_AGE_MS = 5 * 60_000;
 // A prompt or a reply past this many characters is collapsed by default.
 const TEXT_CLIP = 600;
 
@@ -156,7 +158,22 @@ export function stepsOf(task) {
  * for a snapshot written before totals_7d existed.
  */
 export function ledger(activity, now) {
-  const active = activity?.active ?? [];
+  const age =
+    new Date(now).getTime() -
+    new Date(activity?.snapshotted_at ?? "").getTime();
+  const stale =
+    !Number.isFinite(age) || age < 0 || age > EXECUTION_SNAPSHOT_MAX_AGE_MS;
+  const active = (activity?.active ?? []).map((task) =>
+    task.state === "in flight" || (stale && task.state === "executing")
+      ? {
+          ...task,
+          state: "uncertain",
+          nodes: (task.nodes ?? []).map((node) =>
+            node.state === "running" ? { ...node, state: "uncertain" } : node,
+          ),
+        }
+      : task,
+  );
   const live = active.filter((task) => task.state === "executing");
   const waiting = active.filter((task) =>
     ["paused", "waiting", "landing"].includes(task.state),
@@ -178,6 +195,7 @@ export function ledger(activity, now) {
   const totals = activity?.totals_7d;
   if (totals) {
     return {
+      stale,
       live,
       waiting,
       uncertain,
@@ -193,6 +211,7 @@ export function ledger(activity, now) {
     0,
   );
   return {
+    stale,
     live,
     waiting,
     uncertain,

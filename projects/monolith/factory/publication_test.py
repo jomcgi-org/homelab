@@ -1405,7 +1405,7 @@ def test_activity_distinguishes_execution_pause_and_uncertainty_without_private_
     running = {
         "state": "running",
         "node_key": "review_1",
-        "session": {"status": "running", "guest_bound": True},
+        "session": {"status": "running", "guest_bound": True, "executing": True},
     }
     assert activity_state({"state": "admitted", "nodes": [running]}) == "executing"
     assert (
