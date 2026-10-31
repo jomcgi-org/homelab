@@ -2298,6 +2298,24 @@ def test_disable_legacy_refill_keeps_unavailable_default_inert(control_world):
             api.status(db, db.get(FactoryControl, "factory"))["policy"]["enabled"]
             is False
         )
+    # A floor on a disabled legacy block still drops the unavailable default.
+    floor = api.preview(False, "opus", False, 1, "floor", min_new_issues=1)
+    assert "model" not in floor["refill_after"]
+    assert floor["refill_after"]["min_new_issues"] == 1
+
+
+def test_refill_control_reset_refuses_while_a_run_is_in_flight(control_world):
+    import json
+
+    from factory.orchestration import refill_control as api
+
+    engine, _, _ = control_world
+    with Session(engine) as db:
+        repo = json.loads(db.get(FactoryControl, "factory").policy_json)["repo"]
+        refill.record(db, "started", repo=repo, run_id="r1")
+        db.commit()
+    with pytest.raises(ValueError, match="refill_in_flight"):
+        api.preview(True, "astra", False, 0, "re-arm", reset_breaker=True)
 
 
 def test_refill_control_preserves_existing_active_uncertain_and_held_receipts(
