@@ -24,7 +24,6 @@
     tileDerivations,
   } from "$lib/public/factory/model.js";
   import {
-    duration,
     ledger,
     relative,
     taskMark,
@@ -34,14 +33,18 @@
 
   let { data } = $props();
   let sort = $state("date");
+  let board = $state(untrack(() => data.board));
+  let boardUnavailable = $state(untrack(() => data.unavailable.board));
   let quota = $state(untrack(() => data.board.quota));
   let quotaNow = $state(
-    untrack(() => data.board.quota?.sampled_at ?? new Date().toISOString()),
+    untrack(() => data.evaluatedAt ?? new Date().toISOString()),
   );
   let quotaRefreshFailed = $state(false);
   const quotas = $derived(quotaGroups(quota, quotaNow));
 
   $effect(() => {
+    board = data.board;
+    boardUnavailable = data.unavailable.board;
     quota = data.board.quota;
   });
 
@@ -60,10 +63,12 @@
           signal: controller.signal,
         });
         if (!response.ok) throw new Error("quota snapshot unavailable");
-        const board = await response.json();
+        const snapshot = await response.json();
         if (!stopped) {
           quotaNow = new Date().toISOString();
-          quota = board.quota;
+          board = snapshot;
+          boardUnavailable = false;
+          quota = snapshot.quota;
           quotaRefreshFailed = false;
         }
       } catch {
@@ -125,17 +130,12 @@
   const goalData = $derived(
     goalSummary(data.merges.week, data.merges.snapshotted_at),
   );
-  // The lane: what the factory is on now and what it last finished, each a
-  // link into the task walkthrough. The column has room for about a dozen
-  // rows beside the merged list; the ledger holds the rest.
+  // Current work shares the activity ledger's confirmed-execution and freshness
+  // contract. Waiting, uncertain and completed work remain in all activity.
   const LANE_LIVE = 6;
-  const LANE_DONE = 5;
-  const laneNow = $derived(data.evaluatedAt ?? new Date().toISOString());
-  const book = $derived(ledger(data.board, laneNow));
-  const lane = $derived({
-    live: book.live.slice(0, LANE_LIVE),
-    done: book.done.slice(0, LANE_DONE),
-  });
+  const laneNow = $derived(quotaNow);
+  const book = $derived(ledger(board, laneNow));
+  const currentWork = $derived(book.live.slice(0, LANE_LIVE));
   const stats = $derived([
     {
       key: "Live",
@@ -616,11 +616,11 @@
             / Current work
             <a class="win" href="/slop/factory/activity">all activity ›</a>
           </p>
-          {#if data.unavailable.board}
+          {#if boardUnavailable}
             <p class="none">Unavailable right now.</p>
-          {:else if lane.live.length || lane.done.length}
+          {:else if currentWork.length}
             <ol class="lane-list">
-              {#each lane.live as task, index (`${task.issue_number}-${index}`)}
+              {#each currentWork as task, index (`${task.issue_number}-${index}`)}
                 <li>
                   <a href={`/slop/factory/activity/${task.issue_number}`}>
                     <span class="mark {taskMark(task.state)}" aria-hidden="true"
@@ -628,7 +628,7 @@
                     <span class="n num">#{task.issue_number}</span>
                     <span class="t">{task.title}</span>
                     <span class="m"
-                      >{task.phase || task.state} · {relative(
+                      >{task.phase || task.state} · task age {relative(
                         task.admitted_at,
                         laneNow,
                       )}</span
@@ -636,25 +636,9 @@
                   </a>
                 </li>
               {/each}
-              {#each lane.done as task, index (`${task.issue_number}-${index}`)}
-                <li class="done">
-                  <a href={`/slop/factory/activity/${task.issue_number}`}>
-                    <span class="mark {taskMark(task.state)}" aria-hidden="true"
-                    ></span>
-                    <span class="n num">#{task.issue_number}</span>
-                    <span class="t">{task.title}</span>
-                    <span class="m"
-                      >{task.state === "failed" ? "escalated" : task.state} · {duration(
-                        task.admitted_at,
-                        task.finished_at,
-                      )}</span
-                    >
-                  </a>
-                </li>
-              {/each}
             </ol>
           {:else}
-            <p class="none">Nothing in the lane.</p>
+            <p class="none">No confirmed execution right now.</p>
           {/if}
 
           {#if data.unavailable.goals || data.goals.goals.length}
