@@ -196,7 +196,13 @@ sh_test(
 sh_test(
     name = "lint_inputs_test",
     srcs = ["lint-inputs_test.sh"],
-    data = [":test.bzl"],
+    args = ["$(rootpath @multitool//tools/helm)"],
+    data = [
+        ":test.bzl",
+        "//projects/platform/cf-ingress-library:chart",
+        "//projects/shared/helm/homelab-library/chart:chart",
+        "@multitool//tools/helm",
+    ],
 )
 
 sh_test(

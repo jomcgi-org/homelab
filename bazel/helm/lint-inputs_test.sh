@@ -17,6 +17,34 @@
 
 set -o nounset -o pipefail
 
+# Real helm for the malformed-chart case. Under `bazel test` the repo-declared
+# tool arrives as $1 via $(rootpath @multitool//tools/helm); local `bash`
+# runs fall back to helm on PATH. An empty value means "not located yet".
+HELM_ARG="${1:-}"
+shift $# 2>/dev/null || true
+
+locate_helm() {
+	local candidate
+	if [[ -n "${HELM_ARG:-}" && -x "$HELM_ARG" ]]; then
+		printf '%s\n' "$HELM_ARG"
+		return 0
+	fi
+	for candidate in \
+		"${RUNFILES_DIR:-}/_main/external/multitool/tools/helm" \
+		"${RUNFILES_DIR:-}/external/multitool/tools/helm" \
+		"${TEST_SRCDIR:-}/_main/external/multitool/tools/helm"; do
+		if [[ -n "$candidate" && -x "$candidate" ]]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+	if command -v helm >/dev/null 2>&1; then
+		command -v helm
+		return 0
+	fi
+	return 1
+}
+
 BZL_REL="bazel/helm/test.bzl"
 BZL="${HELM_LINT_TEST_BZL:-}"
 if [[ -z "$BZL" ]]; then
@@ -68,11 +96,35 @@ expect_contains() {
 
 expect_absent() {
 	local description="$1" text="$2" file="$3"
-	if grep -Fq -- "$text" "$file"; then
+	if [[ ! -r "$file" ]]; then
+		echo "FAIL: $description, cannot read $file" >&2
+		failures=$((failures + 1))
+		return
+	fi
+	local grep_rc
+	set +e
+	grep -Fq -- "$text" "$file"
+	grep_rc=$?
+	set -e
+	if [[ $grep_rc -eq 0 ]]; then
 		echo "FAIL: $description, unexpectedly found '$text' in $file" >&2
 		failures=$((failures + 1))
-	else
+	elif [[ $grep_rc -eq 1 ]]; then
 		echo "PASS: $description"
+	else
+		echo "FAIL: $description, grep error $grep_rc on $file" >&2
+		failures=$((failures + 1))
+	fi
+}
+
+require_readable() {
+	local description="$1" file="$2"
+	if [[ -r "$file" ]]; then
+		echo "PASS: $description"
+	else
+		echo "FAIL: $description, cannot read $file" >&2
+		failures=$((failures + 1))
+		return 1
 	fi
 }
 
@@ -211,15 +263,116 @@ expect_contains "library inputs keep Chart.yaml" "Chart.yaml" "$CALLS/lib.inputs
 expect_contains "library inputs keep templates" "templates/_helper.tpl" "$CALLS/lib.inputs"
 
 # 7. Both restored library lint targets stay enabled via the macro default.
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+# Resolve each BUILD via Bazel runfiles first, then the source tree. A missing
+# or unreadable BUILD fails closed: grep's nonzero-no-match exit must never
+# mask a read error as a pass.
+resolve_build() {
+	local rel="$1"
+	local candidate
+	for candidate in \
+		"${RUNFILES_DIR:-}/_main/$rel" \
+		"${TEST_SRCDIR:-}/_main/$rel"; do
+		if [[ -n "$candidate" && -r "$candidate" ]]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+	local root
+	root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+	if [[ -r "$root/$rel" ]]; then
+		printf '%s\n' "$root/$rel"
+		return 0
+	fi
+	return 1
+}
 for build in "projects/platform/cf-ingress-library/BUILD" "projects/shared/helm/homelab-library/chart/BUILD"; do
-	if grep -Eq '^[[:space:]]*lint[[:space:]]*=[[:space:]]*False' "$REPO_ROOT/$build"; then
+	build_path="$(resolve_build "$build")" || {
+		echo "FAIL: $build is not readable via runfiles or source tree" >&2
+		failures=$((failures + 1))
+		continue
+	}
+	require_readable "$build is readable" "$build_path" || continue
+	set +e
+	grep -Eq '^[[:space:]]*lint[[:space:]]*=[[:space:]]*False' "$build_path"
+	grep_rc=$?
+	set -e
+	if [[ $grep_rc -eq 0 ]]; then
 		echo "FAIL: $build disables lint" >&2
 		failures=$((failures + 1))
-	else
+	elif [[ $grep_rc -eq 1 ]]; then
 		echo "PASS: $build keeps lint enabled"
+	else
+		echo "FAIL: $build grep error $grep_rc" >&2
+		failures=$((failures + 1))
 	fi
 done
+
+# 8. Declared runfiles are readable, and the repository Helm fails a
+# malformed chart with --strict. This is the end-to-end guard the stub-only
+# nonzero test cannot provide: it proves helm itself rejects bad input.
+for runfiles_rel in \
+	"bazel/helm/test.bzl" \
+	"projects/platform/cf-ingress-library/Chart.yaml" \
+	"projects/shared/helm/homelab-library/chart/Chart.yaml"; do
+	found=""
+	for candidate in \
+		"${RUNFILES_DIR:-}/_main/$runfiles_rel" \
+		"${TEST_SRCDIR:-}/_main/$runfiles_rel"; do
+		if [[ -r "$candidate" ]]; then
+			found="$candidate"
+			break
+		fi
+	done
+	if [[ -n "${RUNFILES_DIR:-}${TEST_SRCDIR:-}" ]]; then
+		if [[ -n "$found" ]]; then
+			echo "PASS: runfile $runfiles_rel is readable"
+		else
+			echo "FAIL: runfile $runfiles_rel missing under Bazel" >&2
+			failures=$((failures + 1))
+		fi
+	else
+		root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+		require_readable "$runfiles_rel is readable" "$root/$runfiles_rel" || true
+	fi
+done
+
+HELM_REAL=""
+if HELM_REAL="$(locate_helm)"; then
+	require_readable "repository helm tool is readable" "$HELM_REAL" || true
+	BAD="$TMP/malformed-chart"
+	mkdir -p "$BAD/templates"
+	printf 'apiVersion: v2\nname: malformed-fixture\ndescription: fixture\nversion: 0.1.0\n' >"$BAD/Chart.yaml"
+	printf '{{ .Values.unclosed\n' >"$BAD/templates/bad.yaml"
+	set +e
+	"$HELM_REAL" lint --strict "$BAD" >"$CALLS/real-helm-malformed.out" 2>&1
+	real_rc=$?
+	set -e
+	if [[ $real_rc -ne 0 ]]; then
+		echo "PASS: real helm lint --strict rejects malformed chart (rc=$real_rc)"
+	else
+		echo "FAIL: real helm lint --strict rejects malformed chart, want nonzero, got $real_rc" >&2
+		failures=$((failures + 1))
+	fi
+	if grep -Eq 'Error|error|failed|parse|template' "$CALLS/real-helm-malformed.out"; then
+		echo "PASS: malformed chart reports a lint error"
+	else
+		echo "FAIL: malformed chart reports no lint error" >&2
+		failures=$((failures + 1))
+	fi
+	# Both real library charts still pass under the real helm.
+	set +e
+	ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+	"$HELM_REAL" lint --strict "$ROOT/projects/platform/cf-ingress-library" >"$CALLS/real-helm-lib-a.out" 2>&1
+	real_lib_a_rc=$?
+	"$HELM_REAL" lint --strict "$ROOT/projects/shared/helm/homelab-library/chart" >"$CALLS/real-helm-lib-b.out" 2>&1
+	real_lib_b_rc=$?
+	set -e
+	expect_status "real helm lint --strict accepts cf-ingress-library" 0 "$real_lib_a_rc"
+	expect_status "real helm lint --strict accepts homelab-library" 0 "$real_lib_b_rc"
+else
+	echo "FAIL: repository helm tool not found (arg, runfiles, or PATH)" >&2
+	failures=$((failures + 1))
+fi
 
 if [[ $failures -ne 0 ]]; then
 	echo "$failures test(s) failed" >&2
