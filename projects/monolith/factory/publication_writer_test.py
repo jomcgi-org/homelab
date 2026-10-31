@@ -372,7 +372,7 @@ def test_writer_publishes_the_board_the_task_and_the_session(session):
     assert board["state"] == "enabled"
     assert [task["issue_number"] for task in board["active"]] == [ISSUE_NUMBER]
     summary = board["active"][0]
-    assert summary["state"] == "in flight"
+    assert summary["state"] == "waiting"
     assert summary["phase"] == NODE_KEY
     assert summary["nodes"] == [{"node_key": NODE_KEY, "state": "done"}]
     assert summary["allowance_turns"] is not None
