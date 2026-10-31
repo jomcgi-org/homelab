@@ -125,7 +125,7 @@ def _allowed(db, control, item):
         or owner.task_paused
         or owner.cancellation_requested
         or owner.generation != policy.get("generation")
-        or detail["policy_digest"] != refill.digest(policy)
+        or detail["policy_digest"] != controls.digest(policy)
         or refill.latest_event(db, "completed", run_id=item["run_id"])
     ):
         return False
@@ -425,7 +425,7 @@ def review(run_id, reviewer_run_id):
             value != collected["collection"]
             or collector.session_id == reviewer.session_id
             or list(Draft202012Validator(refill.REVIEW_SCHEMA).iter_errors(verdict))
-            or verdict["collection_digest"] != refill.digest(value)
+            or verdict["collection_digest"] != controls.digest(value)
             or "\u2014" in json.dumps(verdict, ensure_ascii=False)
             or "<!-- factory-" in json.dumps(verdict)
         ):
@@ -471,8 +471,8 @@ def review(run_id, reviewer_run_id):
             "reviewer_run_id": reviewer.id,
             "collector_session_id": collector.session_id,
             "reviewer_session_id": reviewer.session_id,
-            "collection_digest": refill.digest(value),
-            "review_digest": refill.digest(verdict),
+            "collection_digest": controls.digest(value),
+            "review_digest": controls.digest(verdict),
             "collection": approved,
         }
         prior = refill.latest_event(db, "reviewed", run_id=run_id)
@@ -484,12 +484,12 @@ def review(run_id, reviewer_run_id):
 
 
 def output(repo, run_id, kind, key, title, body, labels):
-    output_id = refill.digest([repo, run_id, kind, key])
+    output_id = controls.digest([repo, run_id, kind, key])
     marker = f"<!-- factory-refill-output:{output_id} -->"
     # Finding identity is server-derived; renaming the model's key cannot
     # turn the same finding into fresh yield. Summaries remain per-run.
     identity = " ".join(title.casefold().split()) if kind == "finding" else key
-    dedup = f"<!-- factory-refill-finding:{refill.digest([repo, kind, identity])} -->"
+    dedup = f"<!-- factory-refill-finding:{controls.digest([repo, kind, identity])} -->"
     return {
         "repo": repo,
         "run_id": run_id,
