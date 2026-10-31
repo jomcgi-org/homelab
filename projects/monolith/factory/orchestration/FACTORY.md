@@ -1397,7 +1397,10 @@ quiescent; unresolved dispatches retain their run fence. Every breaker opening
 owns one needs-human issue titled `factory: backlog refill breaker open`, with
 its triggering summaries. Re-posting policy resets the breaker and streaks,
 including an unchanged post, while retaining output intents and rolling start
-accounting.
+accounting. `factory_configure_refill` keeps the breaker open unless the
+operator passes `reset_breaker: true`, which records the same reset without a
+full policy post or a generation change. Its optional `min_new_issues` sets
+the low-yield floor the same way.
 
 The daily-start limit pauses starts until the rolling 24-hour window has room.
 It resumes without a policy re-post. The board shows off, armed, in flight,

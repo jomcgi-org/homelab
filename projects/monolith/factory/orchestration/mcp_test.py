@@ -2784,7 +2784,9 @@ def test_refill_adapter_binds_actor_and_requires_preview(monkeypatch):
 
     calls = []
     monkeypatch.setattr(
-        refill_control, "apply", lambda *args: calls.append(args) or {"ok": True}
+        refill_control,
+        "apply",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or {"ok": True},
     )
     p = _principal()
     assert (
@@ -2803,7 +2805,12 @@ def test_refill_adapter_binds_actor_and_requires_preview(monkeypatch):
             "apply", True, "astra", True, 0, "reason", "key", "digest"
         ),
     )["ok"]
-    assert calls == [(p.subject, True, "astra", True, 0, "reason", "key", "digest")]
+    assert calls == [
+        (
+            (p.subject, True, "astra", True, 0, "reason", "key", "digest"),
+            {"reset_breaker": False, "min_new_issues": None},
+        )
+    ]
 
 
 def test_progress_preview_returns_bounded_subscription_refusal(monkeypatch):

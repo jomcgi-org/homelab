@@ -2469,13 +2469,17 @@ async def factory_configure_refill(
     reason: Annotated[str, Field(min_length=1, max_length=4000)],
     request_key: str | None = None,
     expected_preview_sha256: str | None = None,
+    reset_breaker: bool = False,
+    min_new_issues: Annotated[MCPInteger, Field(ge=0, le=100)] | None = None,
 ) -> dict:
     """Preview or apply bounded refill and existing learning cadence as an operator.
 
     Read factory_status, preview exact arguments and review the digest. Apply
-    with a stable request key. Changes only refill activation/model/batch size
-    and optionally the existing daily learning job to hourly. Preserves policy
-    generation, receipts, intake selections, holds, budgets and breaker history.
+    with a stable request key. Changes only refill activation/model/batch size,
+    optionally min_new_issues, and optionally the existing daily learning job
+    to hourly. Preserves policy generation, receipts, intake selections, holds,
+    budgets and breaker history. reset_breaker re-arms an open breaker and
+    resets the streaks, as a policy re-post does.
     Fresh subscription evidence is mandatory on enable. In-flight refill or
     held/uncertain learning execution refuses changes. No task is dispatched
     by this operation. Inspect generated, eligible, admitted and executing
@@ -2490,7 +2494,14 @@ async def factory_configure_refill(
     try:
         if operation == "preview":
             return await asyncio.to_thread(
-                refill_control.preview, enabled, model, hourly, expected_version, reason
+                refill_control.preview,
+                enabled,
+                model,
+                hourly,
+                expected_version,
+                reason,
+                reset_breaker=reset_breaker,
+                min_new_issues=min_new_issues,
             )
         if not request_key or not expected_preview_sha256:
             return {"ok": False, "reason": "refill_preview_required"}
@@ -2504,6 +2515,8 @@ async def factory_configure_refill(
             reason,
             request_key,
             expected_preview_sha256,
+            reset_breaker=reset_breaker,
+            min_new_issues=min_new_issues,
         )
     except ValueError as exc:
         return {"ok": False, "reason": str(exc)}

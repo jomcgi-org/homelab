@@ -2040,6 +2040,49 @@ def test_safe_refill_control_minimal_diff_hourly_replay_and_history(control_worl
     assert r["generation"] == before["generation"] and not r["dispatched"]
 
 
+def test_refill_control_reset_breaker_rearms_without_generation_change(
+    control_world,
+):
+    import json
+
+    from factory.orchestration import refill_control as api
+
+    engine, _, _ = control_world
+    with Session(engine) as db:
+        before = json.loads(db.get(FactoryControl, "factory").policy_json)
+        refill.record(
+            db, "breaker_open", repo=before["repo"], reason="low_yield", runs=["old"]
+        )
+        db.commit()
+    args = (True, "opus", False, 0, "re-arm routines")
+    plain = api.preview(*args)
+    p = api.preview(*args, reset_breaker=True, min_new_issues=1)
+    assert p["reset_breaker"] and p["preview_sha256"] != plain["preview_sha256"]
+    assert p["refill_after"]["min_new_issues"] == 1
+    # A digest previewed without the reset cannot apply one.
+    with pytest.raises(ValueError, match="refill_preview_changed"):
+        api.apply(
+            "operator",
+            *args,
+            "wrong",
+            plain["preview_sha256"],
+            reset_breaker=True,
+            min_new_issues=1,
+        )
+    call = ("operator", *args, "rearm", p["preview_sha256"])
+    result = api.apply(*call, reset_breaker=True, min_new_issues=1)
+    assert api.apply(*call, reset_breaker=True, min_new_issues=1) == result
+    with pytest.raises(ValueError, match="refill_request_conflict"):
+        api.apply(*call)
+    with Session(engine) as db:
+        after = json.loads(db.get(FactoryControl, "factory").policy_json)
+        assert after["generation"] == before["generation"]
+        assert after["backlog_refill"]["min_new_issues"] == 1
+        assert refill.state(after, session=db)["breaker"] is None
+        assert not db.exec(select(FactoryReceipt)).all()
+    assert not result["dispatched"]
+
+
 def test_refill_control_checks_both_roles_without_hourly_learning(
     control_world, monkeypatch
 ):
