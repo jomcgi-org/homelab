@@ -35,7 +35,6 @@ _BROWSER_REASON = (
 )
 EXPECTED_DIVERGENCE: dict[str, str] = {
     "helm-3": _TOOLCHAIN_REASON,
-    "go-1.26": _TOOLCHAIN_REASON,
     "nodejs-22": _TOOLCHAIN_REASON,
     "pnpm~10": _TOOLCHAIN_REASON,
     "py3.12-pytest": _TOOLCHAIN_REASON,

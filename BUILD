@@ -47,6 +47,7 @@ gazelle_binary(
         "@gazelle//language/proto",
         "@rules_python_gazelle_plugin//python",
     ],
+    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
 )
 
 gazelle(
@@ -62,6 +63,17 @@ gazelle(
     },
     gazelle = ":gazelle_binary",
     visibility = ["//bazel/tools/format:__pkg__"],
+)
+
+filegroup(
+    name = "gazelle_runtime_inputs",
+    srcs = [
+        "BUILD",
+        "MODULE.bazel",
+        "go.mod",
+        "go.sum",
+    ],
+    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
 )
 
 exports_files(
