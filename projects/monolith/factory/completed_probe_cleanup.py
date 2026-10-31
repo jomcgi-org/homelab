@@ -53,6 +53,7 @@ def _snapshot(db, session_id, *, lock=False):
         or not agent.ember_session_id
         or agent.ember_lineage_id != agent.ember_session_id
         or agent.prior_ember_lineage_id is not None
+        or agent.prior_cli_session_id is not None
         or not agent.result_receipt_fence_id
         or admission.cleanup_pending(db, agent)
         or store.has_unknown_outcome(db, session_id)
