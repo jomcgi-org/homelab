@@ -2314,8 +2314,11 @@ def test_refill_control_reset_refuses_while_a_run_is_in_flight(control_world):
         repo = json.loads(db.get(FactoryControl, "factory").policy_json)["repo"]
         refill.record(db, "started", repo=repo, run_id="r1")
         db.commit()
+    # The block itself is unchanged, so only the reset can trip the guard.
+    args = (False, "opus", False, 0, "re-arm")
+    assert api.preview(*args)["ok"]
     with pytest.raises(ValueError, match="refill_in_flight"):
-        api.preview(True, "astra", False, 0, "re-arm", reset_breaker=True)
+        api.preview(*args, reset_breaker=True)
 
 
 def test_refill_control_preserves_existing_active_uncertain_and_held_receipts(
