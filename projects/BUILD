@@ -2,12 +2,10 @@ load("@aspect_rules_py//py:defs.bzl", "py_library")
 
 filegroup(
     name = "backup_status_application",
-    # CI tests before Gazelle generates temporary enrollment packages. A glob
-    # follows those package boundaries during the later formatting checks.
-    srcs = glob(
-        ["platform-gke/otel-collector/application.yaml"],
-        allow_empty = True,
-    ),
+    # application.yaml lives in the generated platform-gke package, which
+    # exports it above. A glob cannot cross that package boundary, so depend
+    # on the explicit label instead of globbing from this package.
+    srcs = ["//projects/platform-gke/otel-collector:application.yaml"],
     visibility = ["//projects/platform/otel-collector:__pkg__"],
 )
 
