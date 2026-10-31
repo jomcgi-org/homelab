@@ -3,6 +3,7 @@
   import { invalidateAll, replaceState } from "$app/navigation";
   import { SchemeToggle, Seo } from "$lib/public/components";
   import {
+    executionView,
     attemptMark,
     attemptWord,
     money,
@@ -28,7 +29,7 @@
 
   let { data } = $props();
 
-  let now = $state(data.snapshottedAt ?? new Date().toISOString());
+  let now = $state(data.evaluatedAt ?? new Date().toISOString());
   // 1-based, matching the step numbers on screen and in the #step-N fragment.
   let openStep = $state(null);
   // The plan strip and the step list point at each other through the node
@@ -37,7 +38,7 @@
 
   const REFRESH_MS = 60_000;
 
-  const task = $derived(data.task);
+  const task = $derived(executionView(data.task, data.snapshottedAt, now));
   const policy = $derived(data.policy ?? {});
   const steps = $derived(stepsOf(task));
   const plan = $derived(planStrip(task, steps));

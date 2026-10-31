@@ -76,6 +76,9 @@ def shape_node(
         state = _RUN_STATE.get(latest.get("status") or "", "uncertain")
         if state == "running" and receipt_state not in (None, "admitted"):
             state = "uncertain"
+        elif state == "running" and receipt_state == "admitted":
+            if not (sessions.get(latest.get("session_id")) or {}).get("executing"):
+                state = "uncertain"
     shaped_attempts = []
     for run in attempts:
         session_id = run.get("session_id")

@@ -30,7 +30,7 @@
   // Relative times need a clock, and the server has a different one from the
   // browser. Starting from the snapshot the payload carries means SSR and the
   // first client render agree; the effect below then tracks real time.
-  let now = $state(data.board.snapshotted_at ?? new Date().toISOString());
+  let now = $state(data.evaluatedAt ?? new Date().toISOString());
 
   // The filters are the page's URL state, read once from the address on both
   // the server and the client so a shared link renders filtered. Each change

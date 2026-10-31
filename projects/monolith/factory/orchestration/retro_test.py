@@ -1129,3 +1129,24 @@ def test_daily_config_refuses_custom_default_branch(learning_config_db, monkeypa
         "branch",
         "learning_stage",
     ]
+
+
+def test_retro_targets_disruption_with_exact_audits_and_no_inferred_cessation():
+    from factory.orchestration.retro import build_retro_digest
+
+    digest = build_retro_digest(
+        {
+            "recovery_events": [
+                {
+                    "audit_id": 42,
+                    "task_id": "task-a",
+                    "action": "pause_task",
+                    "at": "2026-10-30T00:00:00Z",
+                }
+            ]
+        }
+    )
+    assert "Recovery disruption" in digest
+    assert '"audit_id": 42' in digest
+    assert "unmatched duration/outcome is unknown" in digest
+    assert "unknown-execution fences" in digest
