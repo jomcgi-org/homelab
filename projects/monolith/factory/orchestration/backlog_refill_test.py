@@ -525,6 +525,8 @@ def test_multi_finding_summary_and_breaker_replay(world, github):
     start = publication_start(world)
     with controls._read_session() as db:
         detail = refill._detail(refill._events(db, "started")[0])
+    # A start from before routines keeps its needs-human summary issue.
+    assert detail.pop("routine") == "dead-code"
     value = {
         "summary": "| Project | Evidence |\n| project | source |",
         "findings": [
@@ -1202,13 +1204,13 @@ def test_independent_refill_review_precedes_every_new_issue(reviewed_run):
     assert not state.github[1]
     for _ in range(3):
         state.reconcile()
-    assert len(state.github[1]) == 2
-    finding, summary = state.github[0]
+    # Routine runs publish only findings; the summary stays in the audit.
+    assert len(state.github[1]) == 1
+    (finding,) = state.github[0]
     assert finding["title"] == state.collection["findings"][0]["title"]
     assert "Implementation plan:" in finding["body"]
     assert "Acceptance criteria:" in finding["body"]
     assert "expect every test to pass" in finding["body"]
-    assert "Independent review:" in summary["body"]
     with controls._read_session() as db:
         evidence = refill._detail(
             refill.latest_event(db, "reviewed", run_id=state.start["run_id"])
@@ -1341,8 +1343,7 @@ def test_rejected_refill_findings_settle_as_zero_yield(reviewed_run):
         )
         db.commit()
     state.reconcile()
-    assert len(state.github[1]) == 1
-    assert state.github[1][0]["labels"] == ["needs-human"]
+    assert state.github[1] == []
     with controls._read_session() as db:
         result = refill._detail(
             refill.latest_event(db, "completed", run_id=state.start["run_id"])
@@ -1529,13 +1530,11 @@ def test_maximum_new_collection_and_review_publish_without_truncation(reviewed_r
     state = reviewed_run
     for _ in range(6):
         state.reconcile()
-    assert len(state.github[0]) == 6
-    for original, published in zip(state.collection["findings"], state.github[0][:5]):
+    assert len(state.github[0]) == 5
+    for original, published in zip(state.collection["findings"], state.github[0]):
         assert published["body"].startswith(original["body"])
         for field in ("evidence", "plan", "acceptance"):
             assert field[0] * 3000 in published["body"]
-    assert state.collection["summary"] in state.github[0][-1]["body"]
-    assert state.verdict["summary"] in state.github[0][-1]["body"]
     with controls._read_session() as db:
         completed = refill._detail(
             refill.latest_event(db, "completed", run_id=state.start["run_id"])
@@ -1772,7 +1771,7 @@ def test_exhausted_publication_releases_run_and_late_reconciliation_is_read_only
         writer.advance(detail)
     outcome = writer.advance(detail)
     assert outcome["inconclusive"] and outcome["new_issues"] == 1
-    assert len(attempts) == 3  # Ambiguous finding, healthy finding, summary.
+    assert len(attempts) == 2  # Ambiguous finding, healthy finding.
     with Session(engine) as db:
         db.get(FactoryReceipt, start["receipt_id"]).state = "failed"
         db.commit()
@@ -1791,7 +1790,7 @@ def test_exhausted_publication_releases_run_and_late_reconciliation_is_read_only
         ["agent-ready"],
     )
     assert writer.publish(replay)["status"] == "quarantined"
-    assert len(attempts) == 3
+    assert len(attempts) == 2
     # An operator reset/disable cannot erase the original no-repost fence.
     assert controls.set_control("configure", "operator", policy=policy)["ok"]
     update(world, backlog_refill={"enabled": False})
@@ -1811,7 +1810,7 @@ def test_exhausted_publication_releases_run_and_late_reconciliation_is_read_only
         reconciled = writer._last(db, original["output_id"])
         assert reconciled["status"] == "created" and reconciled["issue_number"] == 999
     worker.tick(policy)
-    assert len(attempts) == 3
+    assert len(attempts) == 2
 
 
 @pytest.mark.parametrize("interruption", ["generation", "pause"])
@@ -3150,3 +3149,27 @@ async def test_historical_learning_rejects_conflicting_original_lineage(
         db.commit()
     with pytest.raises(ValueError, match="learning_historical_lineage_changed"):
         await s.recovery.preview(*s.ids, "reason")
+
+
+def test_routines_rotate_one_sentence_briefs(world):
+    _engine, policy, clock = world
+    seen = []
+    for _ in range(len(refill.ROUTINES) + 1):
+        start = refill.observe(policy, eligible=0, complete=True)
+        assert start["ok"]
+        with controls._read_session() as db:
+            detail = refill._detail(
+                refill.latest_event(db, "started", run_id=start["run_id"])
+            )
+            body = db.get(FactoryReceipt, start["receipt_id"]).body
+        seen.append(detail["routine"])
+        assert refill.ROUTINES[detail["routine"]] in body
+        assert refill.READ_ONLY_BOUNDARY in body
+        refill.settle(start["run_id"], success=True, new_issues=3, summary="ok")
+        with Session(world[0]) as db:
+            db.get(FactoryReceipt, start["receipt_id"]).state = "succeeded"
+            db.commit()
+        clock[0] += timedelta(minutes=normalize(policy)["cooldown_minutes"])
+    assert seen == [*refill.ROUTINES, next(iter(refill.ROUTINES))]
+    # Each routine is a single sentence.
+    assert all(text.count(". ") == 0 for text in refill.ROUTINES.values())
