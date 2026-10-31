@@ -2526,8 +2526,8 @@ async def factory_reconcile_learning_execution(
     Preview exact session, turn and permit identity. Apply the reviewed digest
     with identical arguments and a stable request key. Both phases read fresh
     positive cessation authority and recheck current ownership under lock. A
-    pruned guest needs complete retained journal and successor/restore proof;
-    missing records alone never qualify. Only the
+    pruned guest needs complete retained journal and successor/restore proof.
+    Missing records alone never qualify. Only the
     hourly learning cadence guard may disregard this exact historical attempt.
     Its unknown outcome, failed session and execution fences remain unchanged.
     Does not dispatch, retry, rearm, change cadence, enable refill or clear any
