@@ -128,22 +128,25 @@ swarm:
   # planned non-implement work nodes the planner left to policy, and
   # escalation of investigate_ nodes. codex.implement covers the implement
   # role: planned implement nodes, correction rounds, and escalation of
-  # implement_, integrate_ and correct_ nodes. Both spill from sol below 10
-  # percent Codex remaining. claude.conductor covers the planner, which
+  # implement_, integrate_ and correct_ nodes. Workers/refill reserve 8
+  # percent Codex remaining; implementation keeps its 10 percent reserve.
+  # claude.conductor covers the planner, which
   # spills from opus to sol below 25 percent Claude remaining, so planning
   # never starves Claude review, which pauses at 85 percent used.
   # codex.drainer covers the work-queue drainer (provider_walled and the KG
   # check), judged on the least-used Codex grant: while any grant has room
   # the drainer keeps claiming and the egress sidecar carries each
-  # connection to the roomier grant. Below 25 percent on every grant it
-  # defers claims rather than switching model, so the drainer yields first,
-  # workers next, the planner last. The reviewer and refine roles carry no
-  # floor.
+  # connection to the roomier grant. Below 8 percent on every grant it
+  # defers claims rather than switching model. This shared floor includes
+  # the hourly retrospective and knowledge drainers. Joe approved the worker
+  # and drainer reserves at 8 percent on 2026-10-31; subscription billing,
+  # grant selection and all other role floors stay unchanged.
+  # The reviewer and refine roles carry no floor.
   quotaFloors:
     codex:
-      worker: 10
+      worker: 8
       implement: 10
-      drainer: 25
+      drainer: 8
     claude:
       conductor: 25
 

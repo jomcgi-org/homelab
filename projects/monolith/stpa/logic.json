@@ -663,6 +663,10 @@
       "reason": "Each new role checks its exact offered model against fresh subscription windows without fallback. Durable ownership, policy, pause and deadline gates are checked again after broker I/O. The safe-control preview and apply each observe both generator and Astra quota (projects/monolith/factory/orchestration/backlog_refill.py: quota and _dispatch_allowed; refill_control.py: _observations and _plan)."
     },
     {
+      "item": "the explicitly authorized Codex worker and drainer reserve change implicitly enabling paid fallback or clearing execution holds",
+      "reason": "Joe approved both shared role floors at 8 percent on 2026-10-31. Only swarm.quotaFloors.codex.worker and .drainer change in deploy/values-gke.yaml, reaching model_pool.floor_for through SWARM_QUOTA_FLOORS. The drainer floor covers general and knowledge jobs, including hourly learning; implementation retains 10 percent and other providers retain their floors. Existing grant selection, subscription billing, capacity and daily caps, freshness checks, refill breaker, receipt holds and unknown-execution fences are unchanged (chart/templates/deployment.yaml; factory/orchestration/model_pool.py: availability; drainer.py: provider_walled and claim_drainer_job; backlog_refill.py: quota)."
+    },
+    {
       "item": "native registration feedback being mistaken for caller exposure or execution authority",
       "reason": "Operator-only factory_status reports native source and explicitly unobserved caller visibility for two existing controls. It does not refresh catalogues or mutate authority. The authenticated flow retains separate restriction and continuation previews, exact identity bindings, fresh quota, holds and uncertain-execution guards (factory/orchestration/mcp.py and factory_operator_flow_test.py)."
     },
