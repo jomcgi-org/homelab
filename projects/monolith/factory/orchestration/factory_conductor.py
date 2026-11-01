@@ -264,6 +264,7 @@ DECISION_SCHEMA = {
                 "pause",
                 "request_funding",
                 "request_context",
+                "continue_evidence",
             ]
         },
         "reason": {"type": "string", "minLength": 1, "maxLength": 4000},
@@ -287,6 +288,8 @@ DECISION_SCHEMA = {
         },
         "pr_number": {"type": "integer", "minimum": 1},
         "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "source_run_id": {"type": "integer", "minimum": 1},
+        "evidence_comment_id": {"type": "integer", "minimum": 1},
         # A pause is a decision request, so it leaves with the same shape a
         # refine escalation leaves with: the one question a person must
         # answer, and the two to four concrete things they could decide.
@@ -309,6 +312,19 @@ DECISION_SCHEMA = {
         "gate": factory_gates.GATE_SCHEMA,
     },
     "allOf": [
+        {
+            "if": {"properties": {"action": {"const": "continue_evidence"}}},
+            "then": {
+                "required": [
+                    "node_key",
+                    "source_run_id",
+                    "evidence_comment_id",
+                    "pr_number",
+                    "head_sha",
+                    "expected_version",
+                ]
+            },
+        },
         {
             "if": {"properties": {"action": {"const": "plan"}}},
             "then": {"required": ["edits"]},
@@ -2153,6 +2169,13 @@ def planner_prompt(
         f"Otherwise use plan, add_node, discard_node, finish, settle_external{context_action} or pause. "
         if funding_available
         else f"Only use plan, add_node, discard_node, finish, settle_external{context_action} or pause. "
+    )
+    funding_rule += (
+        "continue_evidence requests one evidence-only next attempt on the existing "
+        "escalated correct_<n> and its unrun review_<n>, within current policy caps. "
+        "Name the exact source_run_id, expected_version, owned PR/head and a new "
+        "evidence_comment_id. It preserves history and requires an existing funding "
+        "direction, fresh evidence and independent review; it grants no source or access changes. "
     )
     budget_rule = (
         "This is a nonrenewable operator recovery envelope. Submit one feasible graph within the recorded bounds, including correction and re-review reserves. "
@@ -4248,6 +4271,20 @@ def _apply_decision(
     from factory.orchestration.factory_controls import finish_task
 
     action = decision["action"]
+    from factory.orchestration.evidence_continuation import recovery_grant
+    from factory.orchestration.factory_controls import _locked_session
+
+    with _locked_session() as (db, _control):
+        evidence_recovery = recovery_grant(db, task["id"])
+    if evidence_recovery and (
+        action not in ("finish", "pause") or decision.get("gate")
+    ):
+        raise ValueError("evidence_continuation_acceptance_only")
+    if action == "continue_evidence":
+        from factory.orchestration import evidence_continuation
+
+        evidence_continuation.apply(task["id"], decision, cause, github_get=github_get)
+        return
     if action == "request_context":
         code, reason = _request_planner_context(task, decision, cause)
         _reject_decision(task["id"], cause, action, code, reason)
@@ -6005,6 +6042,11 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 workflow_status,
             ):
                 return None
+    from factory.orchestration.evidence_continuation import validate_result
+
+    # Read the owned PR before taking database locks. An unavailable read leaves
+    # settlement pending; a known completed attempt retains its measured cost.
+    result = validate_result(pin, result, task=task, github_get=github_get)
     with Session(get_engine()) as db:
         with _locked_session(db):
             if result["status"] == "uncertain":
@@ -6920,8 +6962,13 @@ def reconcile_task(
         )
         return
     from factory.orchestration import factory_funding
+    from factory.orchestration.evidence_continuation import recovery_grant
+    from factory.orchestration.factory_controls import _locked_session
 
-    if factory_funding.renew_continuation(task_id):
+    with _locked_session() as (db, _control):
+        evidence_recovery = recovery_grant(db, task_id)
+
+    if not evidence_recovery and factory_funding.renew_continuation(task_id):
         # Reload the task's effective policy on the next tick. Never dispatch
         # with the policy snapshot from before this audited lease renewal.
         return
@@ -6938,7 +6985,9 @@ def reconcile_task(
             # Legacy reconciler-pause expiry must not mask terminal facts.
             _expire_reconciler_pause(task_id)
         return
-    if factory_funding.reconcile(task, policy, runs, permission):
+    if not evidence_recovery and factory_funding.reconcile(
+        task, policy, runs, permission
+    ):
         return
     if not permission["ok"]:
         if permission["reason"] == "task_deadline":
@@ -6959,6 +7008,11 @@ def reconcile_task(
 
         if terminal_grant(task, policy, runs):
             return
+    if evidence_recovery:
+        from factory.orchestration import evidence_recovery as recovery_owner
+
+        recovery_owner.reconcile(task, policy, graph.load_graph(task_id), runs)
+        return
     if not runs and not is_advisory(task_class_for(task_id)):
         if not factory_gates.adopt_delivery(task):
             _escalate_task(
@@ -7311,16 +7365,19 @@ def _ready_nodes(
     that reported no cost is charged its reservation, and that charge used to
     leave an attempt the node could never dispatch.
     """
+    from factory.orchestration.evidence_continuation import attempt_limit, permits
+
     succeeded = {r["node_key"] for r in runs if r["status"] == "succeeded"}
     escalated = {r["node_key"] for r in runs if r["status"] == "escalated"}
     return [
         n
         for n in nodes
         if (funding_review or not n["node_key"].startswith("conductor_funding_"))
+        and not n.get("evidence_continuation_blocked")
         and n["node_key"] not in succeeded
-        and n["node_key"] not in escalated
+        and (n["node_key"] not in escalated or permits(n, runs))
         and all(dep in succeeded for dep in n["deps"])
-        and graph.attempts_spent(runs, n["node_key"]) < n["max_attempts"]
+        and graph.attempts_spent(runs, n["node_key"]) < attempt_limit(n)
     ]
 
 
@@ -7735,6 +7792,17 @@ def _dispatch_ready(
         attempt = sum(r["node_key"] == node_key for r in runs) + 1
         key = f"factory-node:{task_id}:{node_key}:{attempt}"
         artifact_schema = _schema(node_key, task_id) if refilling else _schema(node_key)
+        from factory.orchestration import evidence_continuation
+
+        try:
+            artifact_schema = evidence_continuation.prepare(
+                task, node, artifact_schema, github_get=github_get
+            )
+        except ValueError as exc:
+            evidence_continuation.block(
+                task_id, node["evidence_continuation"], str(exc)
+            )
+            continue
         context = {
             "repo": task["repo"],
             "branch": branch,

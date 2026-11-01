@@ -223,9 +223,19 @@ def _node_prompt(
             for key in ("dependency_assessment", "browser_evidence")
         )
         or schema.get("x-factory-scout-read-only") is True
+        or schema.get("x-factory-evidence-acceptance") is True
     )
+    evidence_only = schema.get("x-factory-evidence-continuation") is not None
     working = (
-        f"\n\nInspect branch {branch} read-only. Do not modify source, commit or push. "
+        f"\n\nInspect branch {branch} without source changes, commits or pushes. "
+        + (
+            "Only the existing PR body may be updated for verified evidence. "
+            if "verdict" not in schema.get("properties", {})
+            else "Do not modify the PR body; independently review the supplied evidence. "
+        )
+        + "Write the declared transient artifact; independent review still owns acceptance."
+        if evidence_only
+        else f"\n\nInspect branch {branch} read-only. Do not modify source, commit or push. "
         "Write only the declared transient artifact."
         if read_only
         else f"\n\nYour working branch for this attempt is {branch}. Commit and push "

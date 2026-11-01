@@ -2058,14 +2058,22 @@ def allowance_from_graph(
             work_turns_used += 1
     remaining_turns = 0
     remaining_usd = 0.0
+    from factory.orchestration.evidence_continuation import attempt_limit
+
     for node in nodes:
         key = node["node_key"]
         if key in succeeded:
             continue
-        remaining_usd += max(0.0, node["max_cost_usd"] - charged.get(key, 0.0))
+        grant = node.get("evidence_continuation")
+        if grant and key == grant["node_key"]:
+            remaining_usd += node["max_cost_usd"] * max(
+                0, attempt_limit(node) - attempts.get(key, 0)
+            )
+        else:
+            remaining_usd += max(0.0, node["max_cost_usd"] - charged.get(key, 0.0))
         if key.startswith("conductor_"):
             continue
-        remaining_turns += max(0, node["max_attempts"] - attempts.get(key, 0))
+        remaining_turns += max(0, attempt_limit(node) - attempts.get(key, 0))
     if reviewable is None:
         reviewable = any(node["node_key"].startswith("review_") for node in nodes)
     rounds = min(1, max(0, review_rounds_remaining)) if reviewable else 0
@@ -2276,6 +2284,11 @@ def record_allowance(
         # no dollar figure bounds a plan (#7161).
         grant = continuation_grant(task_id, session=db)
         ceiling = grant["work_turn_ceiling"] if grant else task_turn_ceiling(policy)
+        from factory.orchestration.evidence_continuation import recovery_grant
+
+        evidence = recovery_grant(db, task_id)
+        if evidence:
+            ceiling = min(ceiling, evidence["work_turn_ceiling"])
         allowance["turns"] = min(allowance["turns"], ceiling)
         row.allowance_json = dumps(allowance)
         row.updated_at = _now()
@@ -2467,8 +2480,14 @@ def task_recovery_needs_plan(task_id: str, *, session=None) -> bool:
 
 
 def _recovery_deadline(db, task_id):
+    from factory.orchestration.evidence_continuation import recovery_grant
+
+    evidence = recovery_grant(db, task_id)
     grant = task_recovery_grant(task_id, session=db)
     landing = _landing_recovery_deadline(db, task_id)
+    if evidence:
+        deadline = datetime.fromisoformat(evidence["deadline_at"])
+        return min(deadline, landing) if landing else deadline
     if grant is None:
         return landing
     deadline = datetime.fromisoformat(grant["deadline_at"])
@@ -4133,6 +4152,12 @@ def _can_start(
             "conductor_funding_"
         )
         grant = amendment(db, task_id)
+        from factory.orchestration.evidence_continuation import (
+            recovery_grant,
+            recovery_start_refusal,
+        )
+
+        evidence = recovery_grant(db, task_id)
         already_reserved = any(
             s.start_key == start_key and s.status == "reserved"
             for s in _starts(db, task_id)
@@ -4143,7 +4168,11 @@ def _can_start(
         recovery_deadline = _recovery_deadline(db, task_id)
         now = _now()
         if recovery_deadline is not None and now >= recovery_deadline:
-            reason = "task_deadline" if recovery else "landing_recovery_deadline"
+            reason = (
+                "task_deadline" if recovery or evidence else "landing_recovery_deadline"
+            )
+        elif evidence:
+            reason = recovery_start_refusal(db, task_id, start_key)
         elif (
             recovery
             and matched
@@ -4265,6 +4294,9 @@ def authorize_start(
         planner = _planner_key(start_key)
         recovery = task_recovery_grant(task_id, session=db)
         grant = continuation_grant(task_id, session=db)
+        from factory.orchestration.evidence_continuation import recovery_grant
+
+        evidence = recovery_grant(db, task_id)
         matched = _START_KEY.match(start_key)
         node_key = matched.group("node_key") if matched else None
         reason = None
@@ -4272,6 +4304,12 @@ def authorize_start(
         # this is the original single-flight fence, unchanged.
         if sum(s.status == "reserved" for s in starts) >= parallel_limit(policy):
             reason = "start_pending"
+        elif (
+            evidence
+            and budget["planner_turns_used" if planner else "turns_used"]
+            >= evidence["planner_turn_ceiling" if planner else "work_turn_ceiling"]
+        ):
+            reason = "evidence_continuation_turn_limit"
         elif recovery and (
             (
                 planner
