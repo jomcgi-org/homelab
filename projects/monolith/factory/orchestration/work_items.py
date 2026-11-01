@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from core.clock import utc_now as _now
 from core.db import get_engine  # noqa: F401 - for test monkeypatching
 from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError
@@ -45,10 +46,6 @@ _TRANSITIONS = {
 
 class WorkItemError(ValueError):
     """A requested work item mutation violates semantic invariants."""
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def trust_for_github_author(

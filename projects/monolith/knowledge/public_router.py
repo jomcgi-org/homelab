@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 
 from core.clock import as_utc, iso_z
+from core.clock import utc_now as _now
 from core.db import get_session
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from shared.embedding import EmbeddingClient
@@ -70,10 +71,6 @@ _SEARCH_INDEX_NOTE_LIMIT = 20_000
 _SEARCH_INDEX_CACHE_CONTROL = (
     "public, max-age=300, s-maxage=300, stale-while-revalidate=86400"
 )
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _client_key(request: Request) -> str:

@@ -14,8 +14,9 @@ two public chat surfaces.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
+from core.clock import utc_now as _utcnow
 from sqlalchemy import JSON, CheckConstraint, Column
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
@@ -23,10 +24,6 @@ from sqlmodel import Field, SQLModel
 # Postgres uses JSONB (matching the migration); SQLite-backed unit tests fall
 # back to JSON so SQLModel.metadata.create_all() can build the table.
 _JSONB = JSONB().with_variant(JSON(), "sqlite")
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 class ChatSession(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory

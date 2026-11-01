@@ -20,6 +20,7 @@ from typing import Iterator
 from sqlalchemy import or_, update
 from sqlmodel import Session, select
 
+from core.clock import utc_now as _now
 from core.db import get_engine
 from core.jsonio import dumps, loads_or
 from factory.orchestration.factory_models import (
@@ -589,10 +590,6 @@ def factory_background_reserve() -> int:
     delivery take every slot and leave the drainer with none.
     """
     return max(0, int(os.environ.get("FACTORY_BACKGROUND_RESERVE", "2")))
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def digest(value: object) -> str:

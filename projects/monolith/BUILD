@@ -6653,6 +6653,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_grimoire",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -6858,6 +6859,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_grimoire",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -6871,6 +6873,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_grimoire",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -6885,6 +6888,7 @@ py_test(
     deps = [
         ":pkg_core",
         ":pkg_grimoire",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pgvector",
@@ -6900,6 +6904,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_grimoire",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -6913,6 +6918,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_grimoire",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//httpx",
         "@pip//pgvector",
         "@pip//pytest",
@@ -6973,6 +6979,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_grimoire",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -7015,6 +7022,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_ships",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7143,6 +7151,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_hikes",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7154,6 +7163,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_faas",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7265,6 +7275,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_stars",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7298,6 +7309,7 @@ py_test(
     deps = [
         ":pkg_shared",
         ":pkg_stars",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7338,6 +7350,7 @@ py_test(
         ":pkg_core",
         ":pkg_shared",
         ":pkg_stars",
+        "//projects/monolith/shared/testing/sqlite",
         "//projects/monolith/stars/tests:snapshot_fixture",
         "@pip//botocore",
         "@pip//fastapi",
@@ -7400,6 +7413,7 @@ py_test(
         ":pkg_core",
         ":pkg_hikes",
         ":pkg_shared",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -7443,6 +7457,7 @@ py_test(
     imports = ["."],
     deps = [
         ":monolith_public_backend",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -7460,6 +7475,7 @@ py_test(
     imports = ["."],
     deps = [
         ":monolith_public_backend",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -7565,6 +7581,7 @@ py_test(
     deps = [
         ":pkg_hikes",
         ":pkg_shared",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7586,6 +7603,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_dr_jobs",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7704,6 +7722,7 @@ py_test(
     deps = [
         ":pkg_core",
         ":pkg_worldcup",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -7753,6 +7772,7 @@ py_test(
     deps = [
         ":pkg_campsites",
         ":pkg_core",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -7847,6 +7867,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_ships",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7871,6 +7892,7 @@ py_test(
     deps = [
         ":pkg_core",
         ":pkg_ships",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -7894,6 +7916,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -7907,6 +7930,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -7920,6 +7944,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -8022,6 +8047,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -8362,6 +8388,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -8375,6 +8402,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -9052,6 +9080,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_trips",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -9100,6 +9129,7 @@ py_test(
     deps = [
         ":pkg_core",
         ":pkg_trips",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -9115,6 +9145,7 @@ py_test(
     deps = [
         ":pkg_core",
         ":pkg_trips",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",

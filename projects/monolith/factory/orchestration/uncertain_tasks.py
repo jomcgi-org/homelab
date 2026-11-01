@@ -24,9 +24,10 @@ stops emitting, which is the failure the trigger exists to catch.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 from core.clock import aware
+from core.clock import utc_now as _now
 from core.db import get_engine
 from sqlalchemy import distinct, func
 from sqlmodel import Session, select
@@ -38,10 +39,6 @@ logger = logging.getLogger(__name__)
 
 SPAN = "factory.tasks.snapshot"
 UNCERTAIN_STATUS = "uncertain"
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def uncertain_task_snapshot(db: Session, *, now: datetime | None = None) -> dict:

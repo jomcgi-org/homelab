@@ -17,6 +17,7 @@ import os
 
 from sqlmodel import select
 
+from core.clock import utc_now as _now
 from factory.execution.api import (
     factory_attempt_never_posted,
     drain_relay_continuation_enabled,
@@ -103,10 +104,6 @@ _PRECONDITION_KEYS = frozenset(
         "boot_id",
     }
 )
-
-
-def _now():
-    return datetime.now(timezone.utc)
 
 
 def _timestamp(value):

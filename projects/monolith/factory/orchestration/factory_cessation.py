@@ -39,11 +39,12 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from opentelemetry import trace
 from sqlmodel import Session, select
 
+from core.clock import utc_now as _now
 from core.env import flag
 from factory.execution.api import (
     inspect_lost_before_guest_factory_attempt,
@@ -130,10 +131,6 @@ def _span_outcome(span, outcome, reason=None):
 
 def enabled() -> bool:
     return flag("FACTORY_ACTIVE_CESSATION_ENABLED")
-
-
-def _now():
-    return datetime.now(timezone.utc)
 
 
 def _records(db, pin):

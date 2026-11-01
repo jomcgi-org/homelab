@@ -24,35 +24,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
 
 from grimoire.models import Book, Entity, EntitySpell, KnowledgeChunk
 from grimoire_chat import retrieval
+from shared.testing.sqlite import sqlite_session
 
 
 @pytest.fixture(name="session")
 def session_fixture():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    # SQLite can't span schemas, so strip the Postgres-only schema= overrides so
-    # SQLModel.metadata.create_all() lands every table in the default schema.
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
+    with sqlite_session() as session:
+        yield session
 
 
 def _mock_client(vector, model="voyage-4-nano"):

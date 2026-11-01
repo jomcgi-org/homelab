@@ -11,7 +11,7 @@ exact durable dispatch, so historical guest state cannot release a current permi
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import json
 import logging
 import os
@@ -20,7 +20,7 @@ from sqlalchemy import exists, or_, text
 from sqlmodel import Session, select
 
 from core.env import flag
-from core.clock import aware
+from core.clock import aware, utc_now as _now
 from factory.execution import admission
 from factory.execution.constants import (
     KG_NODE_KEY,
@@ -53,10 +53,6 @@ _NO_GUEST_OUTCOMES = frozenset(
     {"delivery_error", "executor_cancelled", "lease_expired"}
 )
 _TERMINAL_SESSION_STATUSES = frozenset({"failed", "warn", "completed", "cancelled"})
-
-
-def _now():
-    return datetime.now(timezone.utc)
 
 
 def _reason(audit, reason):

@@ -9,34 +9,17 @@ from datetime import datetime, timezone
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
 
 from core.db import get_session
 from trips.models import Trip, TripPoint
 from trips.read_router import router as read_router
+from shared.testing.sqlite import sqlite_session
 
 
 @pytest.fixture(name="session")
 def session_fixture():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
+    with sqlite_session() as session:
+        yield session
 
 
 @pytest.fixture(name="client")

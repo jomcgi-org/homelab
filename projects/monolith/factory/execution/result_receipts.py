@@ -8,7 +8,7 @@ restart adoption, capacity release, guest stop, or retry in this module.
 
 import asyncio
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import hashlib
 import hmac
 import json
@@ -21,6 +21,7 @@ from uuid import uuid4
 from sqlalchemy import delete, or_, text, update
 from sqlmodel import Session, select
 
+from core.clock import aware as _aware, utc_now as _now
 from core.env import flag
 from factory.execution import admission
 from factory.execution.constants import INTERRUPTED_TERMINAL_REASONS
@@ -71,14 +72,6 @@ def meter_enrolled(local_session_id: str, model: str) -> bool:
 def required(local_session_id: str, model: str = "") -> bool:
     """Metered factory work cannot bypass receipts through the optional flag."""
     return enabled() or meter_enrolled(local_session_id, model)
-
-
-def _now():
-    return datetime.now(timezone.utc)
-
-
-def _aware(value):
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
 def _sha(value: bytes):

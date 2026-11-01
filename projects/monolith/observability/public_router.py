@@ -11,7 +11,7 @@ from email.utils import format_datetime
 from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session, select
 
-from core.clock import as_utc, iso_z
+from core.clock import as_utc, iso_z, utc_now as _now_utc
 from core.db import get_session
 from observability.factory_goals import (
     goals_payload,
@@ -37,10 +37,6 @@ _GOALS_CACHE_CONTROL = "public, max-age=0, s-maxage=1800, stale-while-revalidate
 # than the retention period silently under-counts merged_refs for any goal
 # older than the window, even though the evidence is still in the table.
 _GOALS_MERGE_WINDOW_DAYS = 90
-
-
-def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _payload(session: Session, now: datetime) -> tuple[dict, datetime | None]:

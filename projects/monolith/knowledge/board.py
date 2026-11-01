@@ -23,7 +23,7 @@ from sqlalchemy import update
 from sqlmodel import Session, select
 
 from core.env import flag
-from core.clock import aware
+from core.clock import aware, utc_now as _now
 from auth.api import Authority, Principal, current_principal
 from core.db import get_engine
 from knowledge.models import AgentBoardMessage
@@ -113,10 +113,6 @@ def resolve_trusted_binding(principal: Principal) -> TrustedAgentBinding | None:
 
 def board_enabled() -> bool:
     return flag(BOARD_ENABLED_ENV)
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _binding_error(
@@ -547,7 +543,6 @@ __all__ = [
     "TrustedAgentBinding",
     "ack_message",
     "active_blocker_topics_for_poll",
-    "board_enabled",
     "mirror_distress",
     "post_message",
     "read_board",

@@ -507,13 +507,11 @@ def knowledge_review_admission(
     import httpx
     from sqlmodel import Session
 
+    from core.clock import utc_now as clock
     from core.db import get_engine
     from core.github import GITHUB_REPO
     from knowledge.review_admission import Limits, run_admission
     from knowledge.review_verifier import GitHubVerifier, httpx_fetcher
-
-    def clock() -> datetime:
-        return datetime.now(timezone.utc)
 
     token = os.environ.get("GITHUB_API_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
     with httpx.Client(timeout=20.0, follow_redirects=True) as client:
