@@ -4917,7 +4917,11 @@ def request_landing_recovery(
         raise ValueError("invalid landing recovery source")
     if reason not in ("merge_conflict", "queue_ejection"):
         raise ValueError("invalid landing recovery reason")
+    from factory.orchestration.factory_landing_release import operator_target
+
     with _locked_session(session) as (db, _control):
+        if operator_target(task_id):
+            return {"ok": False, "reason": "operator_landing_ownership"}
         if review_recovery_held(task_id, session=db):
             return {"ok": False, "reason": "review_only_recovery"}
         row = _receipt(db, task_id)
