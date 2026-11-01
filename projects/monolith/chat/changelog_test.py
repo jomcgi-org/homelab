@@ -18,7 +18,6 @@ from chat.changelog import (
     _summarize_with_llm,
     load_changelog_configs,
     run_changelog_for_config,
-    run_changelog_iteration,
 )
 
 
@@ -389,290 +388,6 @@ class TestSummarizeWithLlm:
         assert "Bob" in call_args
 
 
-# ---------------------------------------------------------------------------
-# run_changelog_iteration
-# ---------------------------------------------------------------------------
-
-
-class TestRunChangelogIteration:
-    @pytest.mark.asyncio
-    async def test_missing_github_token_returns_early(self):
-        """When GITHUB_TOKEN is absent the function exits without error."""
-        bot = MagicMock(spec=discord.Client)
-        mock_llm = AsyncMock()
-        config = _make_config()
-
-        with patch.dict("os.environ", {}, clear=True):
-            os.environ.pop("GITHUB_TOKEN", None)
-            await run_changelog_iteration(bot, mock_llm, config)
-
-        mock_llm.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_no_commits_returns_early(self):
-        """When GitHub returns no commits, no Discord message is sent."""
-        bot = MagicMock(spec=discord.Client)
-        mock_llm = AsyncMock()
-        config = _make_config(channel_id="111")
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = []
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_tok"}):
-            with patch("chat.changelog.httpx.AsyncClient", return_value=mock_client):
-                await run_changelog_iteration(bot, mock_llm, config)
-
-        mock_llm.assert_not_called()
-        bot.get_channel.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_no_matching_commits_returns_early(self):
-        """When commits exist but none match filter, no Discord message is sent."""
-        bot = MagicMock(spec=discord.Client)
-        mock_llm = AsyncMock()
-        config = _make_config(
-            channel_id="111",
-            commit_filter=re.compile(r"^(feat)(\(.+?\))?!?:\s"),
-        )
-
-        commits = [
-            _make_commit("fix: patch null pointer"),
-            _make_commit("chore: update deps"),
-        ]
-        mock_response = MagicMock()
-        mock_response.json.return_value = commits
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_tok"}):
-            with patch("chat.changelog.httpx.AsyncClient", return_value=mock_client):
-                await run_changelog_iteration(bot, mock_llm, config)
-
-        mock_llm.assert_not_called()
-        bot.get_channel.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_no_filter_passes_all_commits(self):
-        """When commit_filter is None, all commits are included."""
-        mock_channel = AsyncMock()
-        bot = MagicMock(spec=discord.Client)
-        bot.get_channel.return_value = mock_channel
-        mock_llm = AsyncMock(return_value="Summary of all commits.")
-        config = _make_config(channel_id="999", commit_filter=None)
-
-        commits = [
-            _make_commit("fix: patch null pointer", "Alice"),
-            _make_commit("chore: update deps", "Bob"),
-        ]
-        mock_response = MagicMock()
-        mock_response.json.return_value = commits
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_tok"}):
-            with patch("chat.changelog.httpx.AsyncClient", return_value=mock_client):
-                await run_changelog_iteration(bot, mock_llm, config)
-
-        mock_llm.assert_called_once()
-        mock_channel.send.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_successful_post_sends_embed(self):
-        """With valid config and matching commits, an embed is posted to Discord."""
-        mock_channel = AsyncMock()
-        bot = MagicMock(spec=discord.Client)
-        bot.get_channel.return_value = mock_channel
-        mock_llm = AsyncMock(return_value="Added a great new feature.")
-        config = _make_config(
-            channel_id="999",
-            commit_filter=re.compile(r"^(feat)(\(.+?\))?!?:\s"),
-        )
-
-        commits = [_make_commit("feat: amazing new feature", "Alice")]
-        mock_response = MagicMock()
-        mock_response.json.return_value = commits
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_tok"}):
-            with patch("chat.changelog.httpx.AsyncClient", return_value=mock_client):
-                await run_changelog_iteration(bot, mock_llm, config)
-
-        bot.get_channel.assert_called_once_with(999)
-        mock_channel.send.assert_called_once()
-        send_kwargs = mock_channel.send.call_args[1]
-        assert "embed" in send_kwargs
-        assert isinstance(send_kwargs["embed"], discord.Embed)
-
-    @pytest.mark.asyncio
-    async def test_channel_not_found_does_not_raise(self):
-        """When bot.get_channel returns None, no error is raised."""
-        bot = MagicMock(spec=discord.Client)
-        bot.get_channel.return_value = None
-        mock_llm = AsyncMock(return_value="Summary text.")
-        config = _make_config(channel_id="888")
-
-        commits = [_make_commit("feat: something cool", "Dave")]
-        mock_response = MagicMock()
-        mock_response.json.return_value = commits
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_tok"}):
-            with patch("chat.changelog.httpx.AsyncClient", return_value=mock_client):
-                await run_changelog_iteration(bot, mock_llm, config)
-
-        bot.get_channel.assert_called_once_with(888)
-
-    @pytest.mark.asyncio
-    async def test_store_message_called_after_successful_send(self):
-        """store_message callback is called with the sent message's ID and content."""
-        sent_msg = MagicMock()
-        sent_msg.id = 12345
-
-        mock_channel = AsyncMock()
-        mock_channel.send = AsyncMock(return_value=sent_msg)
-
-        bot = MagicMock(spec=discord.Client)
-        bot.get_channel.return_value = mock_channel
-        bot.user = MagicMock()
-        bot.user.id = 999
-        bot.user.display_name = "Qwen3"
-
-        mock_llm = AsyncMock(return_value="A great new feature landed.")
-        store_message = AsyncMock()
-        config = _make_config(channel_id="777", embed_title="Test Changelog")
-
-        commits = [_make_commit("feat: cool thing", "Alice")]
-        mock_response = MagicMock()
-        mock_response.json.return_value = commits
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_tok"}):
-            with patch("chat.changelog.httpx.AsyncClient", return_value=mock_client):
-                await run_changelog_iteration(
-                    bot, mock_llm, config, store_message=store_message
-                )
-
-        store_message.assert_called_once()
-        call_args = store_message.call_args[0]
-        assert call_args[0] == "12345"  # discord_message_id
-        assert call_args[1] == "777"  # channel_id
-        assert call_args[2] == "999"  # user_id
-        assert call_args[3] == "Qwen3"  # username
-        assert "A great new feature landed." in call_args[4]  # content includes summary
-
-    @pytest.mark.asyncio
-    async def test_store_message_not_called_when_channel_not_found(self):
-        """store_message is not called when the channel cannot be found."""
-        bot = MagicMock(spec=discord.Client)
-        bot.get_channel.return_value = None
-        bot.user = MagicMock()
-        bot.user.id = 999
-
-        mock_llm = AsyncMock(return_value="Summary.")
-        store_message = AsyncMock()
-        config = _make_config(channel_id="777")
-
-        commits = [_make_commit("feat: thing", "Alice")]
-        mock_response = MagicMock()
-        mock_response.json.return_value = commits
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_tok"}):
-            with patch("chat.changelog.httpx.AsyncClient", return_value=mock_client):
-                await run_changelog_iteration(
-                    bot, mock_llm, config, store_message=store_message
-                )
-
-        store_message.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_roast_chance_triggers_roast_prompt(self):
-        """When random roll is below roast_chance, the roast prompt is used."""
-        mock_channel = AsyncMock()
-        bot = MagicMock(spec=discord.Client)
-        bot.get_channel.return_value = mock_channel
-        mock_llm = AsyncMock(return_value="Roasted.")
-        config = _make_config(channel_id="999", roast_chance=1.0)
-
-        commits = [_make_commit("feat: add thing", "Alice")]
-        mock_response = MagicMock()
-        mock_response.json.return_value = commits
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_tok"}):
-            with patch("chat.changelog.httpx.AsyncClient", return_value=mock_client):
-                await run_changelog_iteration(bot, mock_llm, config)
-
-        prompt_used = mock_llm.call_args[0][0]
-        assert "roasting" in prompt_used
-
-    @pytest.mark.asyncio
-    async def test_roast_chance_zero_uses_normal_prompt(self):
-        """When roast_chance is 0, the configured prompt is always used."""
-        mock_channel = AsyncMock()
-        bot = MagicMock(spec=discord.Client)
-        bot.get_channel.return_value = mock_channel
-        mock_llm = AsyncMock(return_value="Normal changelog.")
-        config = _make_config(channel_id="999", roast_chance=0.0)
-
-        commits = [_make_commit("feat: add thing", "Alice")]
-        mock_response = MagicMock()
-        mock_response.json.return_value = commits
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_tok"}):
-            with patch("chat.changelog.httpx.AsyncClient", return_value=mock_client):
-                await run_changelog_iteration(bot, mock_llm, config)
-
-        prompt_used = mock_llm.call_args[0][0]
-        assert "roasting" not in prompt_used
-        assert "changelog writer" in prompt_used
-
-
 def _configs_json(name="homelab", channel="999"):
     return json.dumps(
         [
@@ -720,7 +435,89 @@ class TestRunChangelogForConfig:
         mock_llm.assert_called_once()
         enqueue.assert_called_once()
         assert enqueue.call_args.args[0] == "999"  # channel_id
-        assert isinstance(enqueue.call_args.args[1], dict)  # serialised embed
+        embed = enqueue.call_args.args[1]
+        assert embed["title"] == "Homelab Changelog"
+        assert embed["description"] == "Added a great new feature."
+        assert embed["color"] == 0x2ECC71
+        assert embed["footer"]["text"] == "1 commit(s)"
+
+    @pytest.mark.asyncio
+    async def test_filter_empty_does_not_enqueue(self):
+        raw = json.loads(_configs_json())
+        raw[0]["commitFilter"] = r"^feat:"
+        client = _http_client([_make_commit("fix: bug", "Alice")])
+        llm = AsyncMock()
+        with (
+            patch.dict(
+                os.environ,
+                {"GITHUB_TOKEN": "test", "CHANGELOG_CONFIGS": json.dumps(raw)},
+            ),
+            patch("chat.changelog.httpx.AsyncClient", return_value=client),
+            patch("chat.changelog._enqueue_changelog") as enqueue,
+        ):
+            await run_changelog_for_config("homelab", llm)
+        llm.assert_not_awaited()
+        enqueue.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_absent_filter_preserves_commits(self):
+        commits = [
+            _make_commit("feat: feature", "Alice"),
+            _make_commit("fix: bug", "Bob"),
+        ]
+        llm = AsyncMock()
+        with (
+            patch.dict(
+                os.environ,
+                {"GITHUB_TOKEN": "test", "CHANGELOG_CONFIGS": _configs_json()},
+            ),
+            patch(
+                "chat.changelog.httpx.AsyncClient", return_value=_http_client(commits)
+            ),
+            patch(
+                "chat.changelog._summarize_with_llm", new_callable=AsyncMock
+            ) as summarize,
+            patch("chat.changelog._enqueue_changelog") as enqueue,
+        ):
+            summarize.return_value = "Both changes"
+            await run_changelog_for_config("homelab", llm)
+        summarize.assert_awaited_once_with(commits, llm, PROMPTS["professional"])
+        enqueue.assert_called_once()
+        assert enqueue.call_args.args[1]["footer"]["text"] == "2 commit(s)"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "chance,draw,prompt",
+        [(1.0, 0.0, "roast"), (0.0, 0.0, "professional"), (0.5, 0.9, "professional")],
+        ids=["selected", "disabled", "not_selected"],
+    )
+    async def test_roast_prompt(self, chance, draw, prompt):
+        raw = json.loads(_configs_json())
+        raw[0]["roastChance"] = chance
+        commits = [_make_commit("feat: feature", "Alice")]
+        llm = AsyncMock()
+        with (
+            patch.dict(
+                os.environ,
+                {"GITHUB_TOKEN": "test", "CHANGELOG_CONFIGS": json.dumps(raw)},
+            ),
+            patch(
+                "chat.changelog.httpx.AsyncClient", return_value=_http_client(commits)
+            ),
+            patch("chat.changelog.random.random", return_value=draw) as random_draw,
+            patch(
+                "chat.changelog._summarize_with_llm", new_callable=AsyncMock
+            ) as summarize,
+            patch("chat.changelog._enqueue_changelog") as enqueue,
+        ):
+            summarize.return_value = "Summary"
+            await run_changelog_for_config("homelab", llm)
+        summarize.assert_awaited_once_with(commits, llm, PROMPTS[prompt])
+        enqueue.assert_called_once()
+        if chance:
+            random_draw.assert_called_once_with()
+        else:
+            random_draw.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_matching_config_does_not_enqueue(self):
@@ -890,10 +687,7 @@ class TestDependencyOnly:
             "missing_patch",
         ],
     )
-    @pytest.mark.parametrize("entrypoint", ["argo", "bot"])
-    async def test_real_pipeline_filters_before_summary_and_delivery(
-        self, mode, entrypoint
-    ):
+    async def test_real_pipeline_filters_before_summary_and_delivery(self, mode):
         import copy
 
         import httpx
@@ -952,9 +746,6 @@ class TestDependencyOnly:
         config = load_changelog_configs(json.dumps(raw))[0]
         assert config.exclude_dependency_only
         llm = AsyncMock(return_value="Summary")
-        bot = MagicMock(spec=discord.Client)
-        channel = AsyncMock()
-        bot.get_channel.return_value = channel
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
             context = AsyncMock()
             context.__aenter__.return_value = client
@@ -966,21 +757,14 @@ class TestDependencyOnly:
                 patch("chat.changelog.httpx.AsyncClient", return_value=context),
                 patch("chat.changelog._enqueue_changelog") as enqueue,
             ):
-                if entrypoint == "argo":
-                    await run_changelog_for_config(config.name, llm)
-                else:
-                    await run_changelog_iteration(bot, llm, config)
+                await run_changelog_for_config(config.name, llm)
         if mode == "pure":
             llm.assert_not_called()
             enqueue.assert_not_called()
-            channel.send.assert_not_called()
         else:
             llm.assert_awaited_once()
             assert commit["commit"]["message"] in llm.call_args.args[0]
-            if entrypoint == "argo":
-                enqueue.assert_called_once()
-            else:
-                channel.send.assert_awaited_once()
+            enqueue.assert_called_once()
         assert len(requests) == (1 if mode == "security" else 2)
         assert requests[0].url.params["sha"] == "main"
 
