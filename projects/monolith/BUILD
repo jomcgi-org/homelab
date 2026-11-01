@@ -1653,6 +1653,7 @@ py_library(
     deps = [
         ":pkg_platform_auth",
         "//projects/monolith/factory/execution/workspace_handoff",
+        "//projects/monolith/factory/orchestration/evidence_continuation",
         "@pip//dbos",
         "@pip//astral",
         "@pip//beautifulsoup4",
