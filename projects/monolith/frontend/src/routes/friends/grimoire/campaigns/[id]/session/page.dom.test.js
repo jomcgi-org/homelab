@@ -995,9 +995,19 @@ describe("sign-in expiry", () => {
     return reload;
   }
 
+  const send = () =>
+    document
+      .querySelector("form.composer")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+  async function poll() {
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+  }
+
   afterEach(() => vi.restoreAllMocks());
 
-  it("keeps the draft and reloads once when a poll is signed out", async () => {
+  it("keeps the draft and reloads once the next poll confirms a 401", async () => {
     vi.useFakeTimers();
     const reload = stubReload();
     const fetch = vi.fn(async () => signedOut());
@@ -1005,18 +1015,58 @@ describe("sign-in expiry", () => {
     await render(pageData("player", []));
     await type("I search the altar.");
 
-    await vi.advanceTimersByTimeAsync(2000);
-    await settle();
+    // One 401 may be transient: the gateway can forward a token just past
+    // its expiry, or a single renewal can fail.
+    await poll();
     expect(statePolls(fetch)).toEqual([[endpoint, { redirect: "manual" }]]);
+    expect(reload).not.toHaveBeenCalled();
+    expect(connection()).toBe("Reconnecting");
+    expect(sessionStorage.getItem(draftKey)).toBe(null);
+
+    await poll();
+    expect(statePolls(fetch)).toHaveLength(2);
     expect(reload).toHaveBeenCalledTimes(1);
     expect(kept()).toMatchObject({
       text: "I search the altar.",
       audience: "table",
+      viewer: { id: "viewer", role: "player" },
     });
-    expect(connection()).not.toBe("Reconnecting");
+  });
+
+  it("does not reload for a 401 that the next poll answers", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    const answers = [signedOut, null, signedOut, null];
+    const fallback = stubFetch(() => pageData("player", []));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url, options) =>
+        url === endpoint && !options?.method && answers.length
+          ? (answers.shift()?.() ?? fallback(url, options))
+          : fallback(url, options),
+      ),
+    );
+    await render(pageData("player", []));
+    await type("I search the altar.");
+
+    await poll();
+    expect(connection()).toBe("Reconnecting");
+    await poll();
+    expect(connection()).toBe("Live");
+    // The good poll started the count again, so a later lone 401 waits too.
+    await poll();
+    expect(connection()).toBe("Reconnecting");
+    await poll();
+    expect(connection()).toBe("Live");
+    expect(reload).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(draftKey)).toBe(null);
+    expect(document.getElementById("message").value).toBe(
+      "I search the altar.",
+    );
   });
 
   it("keeps a DM's private reply when Send meets the login redirect", async () => {
+    vi.useFakeTimers();
     const reload = stubReload();
     const privateAction = event("act", 1, "I pocket the key.", {
       kind: "action",
@@ -1033,19 +1083,57 @@ describe("sign-in expiry", () => {
       .click();
     await tick();
     await type("The key is warm.");
-    document
-      .querySelector("form.composer")
-      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    send();
     await settle();
 
+    // The send did not land; the draft stays and the next poll decides.
+    expect(reload).not.toHaveBeenCalled();
+    expect(connection()).toBe("Reconnecting");
+    expect(document.querySelector(".feed .failure").textContent).toContain(
+      "Retry Send",
+    );
+    expect(document.getElementById("message").value).toBe("The key is warm.");
+
+    await poll();
     expect(reload).toHaveBeenCalledTimes(1);
     expect(kept()).toMatchObject({
       text: "The key is warm.",
       audience: `pc:${pcA}`,
       replyTo: { id: "act", name: "Aria" },
+      viewer: { id: "viewer", role: "dm" },
     });
-    // The reload is the whole response: no send failure, no signed-out notice.
-    expect(document.querySelector(".feed .failure")).toBe(null);
+    expect(document.querySelector(".signed-out")).toBe(null);
+  });
+
+  it("lets a send in flight land before the reload, so it is not sent twice", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    let land;
+    const fetch = vi.fn((url, options) =>
+      options?.method === "POST"
+        ? new Promise((resolve) => (land = resolve))
+        : Promise.resolve(signedOut()),
+    );
+    vi.stubGlobal("fetch", fetch);
+    await render(pageData("player", []));
+    await type("I open the vault.");
+    send();
+    await settle();
+
+    // Two polls confirm the expiry while the send is still in flight.
+    await poll();
+    await poll();
+    expect(reload).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(draftKey)).toBe(null);
+
+    land(json({ id: "posted", seq: 99 }));
+    await settle();
+    expect(document.getElementById("message").value).toBe("");
+    await poll();
+    expect(reload).toHaveBeenCalledTimes(1);
+    // The landed message is not kept, so the reload cannot send it again.
+    expect(sessionStorage.getItem(draftKey)).toBe(null);
+    expect(posted(fetch)).toHaveLength(1);
   });
 
   it("does not reload again within a minute and says the draft is kept", async () => {
@@ -1088,19 +1176,19 @@ describe("sign-in expiry", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url, options) =>
-        url === endpoint && (polls += 1) === 1
+        url === endpoint && (polls += 1) <= 2
           ? signedOut()
           : fallback(url, options),
       ),
     );
     await render(pageData("player", []));
     await type("I search the altar.");
-    await vi.advanceTimersByTimeAsync(2000);
-    await settle();
+    await poll();
+    await poll();
+    expect(connection()).toBe("Signed out");
     expect(kept().text).toBe("I search the altar.");
 
-    await vi.advanceTimersByTimeAsync(2000);
-    await settle();
+    await poll();
     expect(reload).not.toHaveBeenCalled();
     expect(connection()).toBe("Live");
     expect(document.querySelector(".signed-out")).toBe(null);
@@ -1117,6 +1205,7 @@ describe("sign-in expiry", () => {
         text: "Only the DM should read this.",
         audience: `pc:${pcB}`,
         replyTo: { id: "act", name: "Bram" },
+        viewer: { id: "viewer", role: "player" },
       }),
     );
     stubFetch(() => pageData("player", []));
@@ -1143,6 +1232,7 @@ describe("sign-in expiry", () => {
         replyTo: { id: "act", name: "Aria" },
         resolved: true,
         speakerKey: "narrator",
+        viewer: { id: "viewer", role: "dm" },
       }),
     );
     stubFetch(() => pageData("dm", []));
@@ -1154,6 +1244,25 @@ describe("sign-in expiry", () => {
       `pc:${pcA}`,
     );
     expect(document.body.textContent).toContain("Replying privately to Aria");
+  });
+
+  it("drops a draft another account kept in this tab", async () => {
+    sessionStorage.setItem(
+      draftKey,
+      JSON.stringify({
+        text: "The mayor is the cultist.",
+        audience: "dm",
+        speakerKey: npcId,
+        viewer: { id: "someone-else", role: "dm" },
+      }),
+    );
+    stubFetch(() => pageData("player", []));
+    await render(pageData("player", []));
+    await settle();
+
+    expect(document.getElementById("message").value).toBe("");
+    expect(document.body.textContent).not.toContain("cultist");
+    expect(sessionStorage.getItem(draftKey)).toBe(null);
   });
 });
 

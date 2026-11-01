@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   claimReload,
+  expiryCheck,
   keepDraft,
   signInExpired,
   takeDraft,
@@ -9,6 +10,7 @@ import {
 const campaignId = "11111111-1111-4111-8111-111111111111";
 const pcA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const npc = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const dmViewer = { id: "user-dm", role: "dm" };
 
 function memoryStorage() {
   const rows = new Map();
@@ -27,6 +29,20 @@ describe("session sign-in expiry", () => {
     expect(signInExpired({ type: "opaqueredirect", status: 0 })).toBe(true);
     for (const status of [200, 400, 403, 502])
       expect(signInExpired({ type: "basic", status })).toBe(false);
+  });
+
+  it("confirms expiry only with a second signal two seconds after the first", () => {
+    const expiry = expiryCheck();
+    expect(expiry.signal(10_000)).toBe(false);
+    expect(expiry.signal(11_999)).toBe(false);
+    expect(expiry.signal(12_000)).toBe(true);
+    expect(expiry.signal(14_000)).toBe(true);
+    // An answer in between starts the count again.
+    expiry.reset();
+    expect(expiry.signal(16_000)).toBe(false);
+    // A clock that went back restarts the wait instead of confirming early.
+    expect(expiry.signal(5_000)).toBe(false);
+    expect(expiry.signal(7_000)).toBe(true);
   });
 
   it("allows one reload a minute and none without storage", () => {
@@ -54,8 +70,10 @@ describe("session sign-in expiry", () => {
         throw new Error("blocked");
       },
     });
-    expect(keepDraft(campaignId, { text: "Hold the door" })).toBe(false);
-    expect(keepDraft(campaignId, { text: "  " })).toBe(true);
+    expect(keepDraft(campaignId, dmViewer, { text: "Hold the door" })).toBe(
+      false,
+    );
+    expect(keepDraft(campaignId, dmViewer, { text: "  " })).toBe(true);
   });
 
   it("keeps a DM's composer and reads it back once", () => {
@@ -68,25 +86,43 @@ describe("session sign-in expiry", () => {
       speakerKey: npc,
       speakerLabel: "",
     };
-    expect(keepDraft(campaignId, composer)).toBe(true);
+    expect(keepDraft(campaignId, dmViewer, composer)).toBe(true);
     const page = {
       dm: true,
       characters: [{ id: pcA }],
       npcs: [{ id: npc }],
     };
-    expect(takeDraft(campaignId, page)).toEqual(composer);
-    expect(takeDraft(campaignId, page)).toBe(null);
+    expect(takeDraft(campaignId, dmViewer, page)).toEqual(composer);
+    expect(takeDraft(campaignId, dmViewer, page)).toBe(null);
+  });
+
+  it("drops a draft another viewer kept in this tab", () => {
+    vi.stubGlobal("sessionStorage", memoryStorage());
+    const composer = { text: "The mayor is the cultist.", audience: "dm" };
+    const page = { dm: false, characters: [{ id: pcA }] };
+    for (const viewer of [
+      { id: "user-player", role: "player" },
+      { id: "user-dm", role: "player" },
+      { role: "dm" },
+    ]) {
+      keepDraft(campaignId, dmViewer, composer);
+      expect(takeDraft(campaignId, viewer, page)).toBe(null);
+      // The mismatch also clears it, so the DM gets nothing back later.
+      expect(takeDraft(campaignId, dmViewer, page)).toBe(null);
+    }
   });
 
   it("falls back to the DM and the narrator for choices the page lost", () => {
     vi.stubGlobal("sessionStorage", memoryStorage());
-    keepDraft(campaignId, {
+    keepDraft(campaignId, dmViewer, {
       text: "Secret plan",
       audience: `pc:${pcA}`,
       replyTo: { id: "event-1", name: "Aria" },
       speakerKey: npc,
     });
-    expect(takeDraft(campaignId, { dm: true, characters: [] })).toMatchObject({
+    expect(
+      takeDraft(campaignId, dmViewer, { dm: true, characters: [] }),
+    ).toMatchObject({
       text: "Secret plan",
       audience: "dm",
       replyTo: null,
