@@ -149,6 +149,7 @@ def test_status_distinguishes_native_registration_from_caller_catalog(monkeypatc
         "factory_configure_refill",
         "factory_amend_policy",
         "factory_reconcile_learning_execution",
+        "factory_reconcile_settled_retry",
     }
     refill = catalog["tools"]["factory_configure_refill"]
     assert refill["registered"] is True
