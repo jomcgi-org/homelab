@@ -142,7 +142,14 @@ def _observations(enabled, model, hourly):
         observations[model] = _quota(model)
     if (enabled or hourly) and "astra" not in observations:
         # The existing Luna evidence job and Astra evaluation use Codex capacity.
-        observations["astra"] = _quota("astra")
+        try:
+            observations["astra"] = _quota("astra")
+        except ValueError:
+            # Hourly learning needs Codex; the refill review spills to Opus.
+            if hourly:
+                raise
+            if "opus" not in observations:
+                observations["opus"] = _quota("opus")
     return observations
 
 
@@ -238,6 +245,7 @@ def _plan(
         raise ValueError("refill_factory_stopped")
     policy = json.loads(control.policy_json or "{}")
     block = normalize(policy)
+    reviewer = "astra" if "astra" in quota or not enabled else "opus"
     if enabled:
         if (
             control.state != "enabled"
@@ -245,9 +253,9 @@ def _plan(
             or policy.get("repo") not in controls.enabled_repos(policy)
         ):
             raise ValueError("refill_intake_not_enabled")
-        if not {model, "astra"} <= set(policy.get("allowed_models", [])):
+        if not {model, reviewer} <= set(policy.get("allowed_models", [])):
             raise ValueError("refill_model_not_allowed")
-    for required in ({model, "astra"} if enabled else set()) | (
+    for required in ({model, reviewer} if enabled else set()) | (
         {"astra"} if hourly else set()
     ):
         if required not in quota or controls._now() - aware(
@@ -288,7 +296,13 @@ def _plan(
         "preserves_breaker_history": True,
         # An explicit operator re-arm, the same reset a policy re-post records.
         "reset_breaker": reset_breaker,
-        "new_run_review_contract": refill.REVIEW_CONTRACT if enabled else None,
+        "new_run_review_contract": (
+            None
+            if not enabled
+            else refill.REVIEW_CONTRACT
+            if reviewer == "astra"
+            else refill.REVIEW_FALLBACK
+        ),
     }
     proposal["preview_sha256"] = digest(proposal)
     return proposal, job
