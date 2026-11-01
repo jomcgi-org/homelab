@@ -14,6 +14,7 @@ os.environ.pop("STATIC_DIR", None)
 
 # Force an initial import so reload() has something to work with.
 import app.main  # noqa: F401, E402
+from framework import core as framework_core  # noqa: E402
 
 _OTEL_ENDPOINT = "http://collector.example:4318/v1/traces"
 
@@ -60,7 +61,7 @@ class TestOtelInstrumentation:
         mock_instrumentor_class.instrument_app.assert_called_once()
 
     def test_tracer_provider_is_set(self):
-        """_tracer_provider is set to a non-None value after module load."""
+        """The OTel tracer provider is set to a non-None value after module load."""
         fake_modules, _ = _make_otel_fake_modules()
 
         with (
@@ -72,4 +73,4 @@ class TestOtelInstrumentation:
         ):
             importlib.reload(app.main)
 
-        assert app.main._tracer_provider is not None
+        assert framework_core._OTEL_PROVIDER is not None

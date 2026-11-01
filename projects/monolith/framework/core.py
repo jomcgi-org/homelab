@@ -94,8 +94,6 @@ PRIVATE_PROFILE = Profile(
     # opt out, which silently made every private-tier register_health component
     # dead code: the component composes fine and the endpoint that would run it
     # does not exist (the cd component shipped in #4599 and never executed).
-    # A private tier serving this route is already established and tested,
-    # since domain_profile() below has always set it.
     deep_health=True,
     leader_singletons=True,
 )
@@ -112,28 +110,6 @@ PUBLIC_PROFILE = Profile(
     deep_health=True,
     leader_singletons=False,
 )
-
-
-def domain_profile(name: str) -> Profile:
-    """Private-tier profile for a single domain composed standalone.
-
-    A standalone domain binary runs its own leader singletons and exposes an
-    MCP server carrying just its tools (when it registers any), reports traces
-    under its own service name, and serves no static frontend (the SvelteKit
-    bundle belongs to the confined monolith's deployment).
-    """
-    return Profile(
-        tier=Tier.PRIVATE,
-        title=f"Monolith ({name})",
-        service_name=f"monolith-{name}",
-        allowed_secrets=ALL_SECRETS,
-        mcp_enabled=True,
-        otel_enabled=True,
-        static_frontend=False,
-        deep_health=True,
-        leader_singletons=True,
-        leader_lease_key=f"singletons.{name}",
-    )
 
 
 @dataclasses.dataclass(frozen=True)
