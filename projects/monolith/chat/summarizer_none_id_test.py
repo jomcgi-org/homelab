@@ -152,7 +152,7 @@ class TestGenerateSummariesNoneIdHandling:
     @pytest.mark.asyncio
     async def test_no_llm_call_when_all_messages_already_summarised(self, session):
         """No LLM call when high_water_mark covers all existing messages."""
-        msg = _add_message(session, "ch1", "u1", "Alice", "Old content", 5)
+        _add_message(session, "ch1", "u1", "Alice", "Old content", 5)
 
         # Summary already covers message id=5
         session.add(

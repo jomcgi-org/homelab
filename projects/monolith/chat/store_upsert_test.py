@@ -78,7 +78,6 @@ class TestFindUserIdByUsernameOrdering:
 
     def test_returns_correct_user_when_many_messages(self, store, session):
         """find_user_id_by_username works correctly when the user has many messages."""
-        base_time = datetime(2025, 1, 1, tzinfo=timezone.utc)
         for i in range(10):
             session.add(
                 Message(

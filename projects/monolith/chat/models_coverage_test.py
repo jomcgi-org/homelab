@@ -12,8 +12,6 @@ from __future__ import annotations
 
 from datetime import timezone
 
-import pytest
-
 from chat.models import (
     Attachment,
     Blob,

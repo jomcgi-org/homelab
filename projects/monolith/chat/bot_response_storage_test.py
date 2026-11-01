@@ -12,7 +12,6 @@ import pytest
 from pydantic_ai import (
     PartDeltaEvent,
     TextPartDelta,
-    ThinkingPartDelta,
 )
 
 from chat.bot import (
@@ -93,10 +92,6 @@ def _make_store() -> MagicMock:
 
 def _text_delta(content: str) -> PartDeltaEvent:
     return PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=content))
-
-
-def _thinking_delta(content: str) -> PartDeltaEvent:
-    return PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=content))
 
 
 async def _async_iter(events):
