@@ -236,6 +236,18 @@ func TestLightFixtureCloudAndProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	encoded, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("seven-day full light envelope: %d bytes", len(encoded))
+	// Captured before serialization changes at b807b9ac4 with this exact
+	// fixture, fixed clock and all kinds. Boundary is json.Marshal(env),
+	// including data and meta once, not the duplicated MCP transport.
+	const originalBytes = 32564
+	if len(encoded)*2 > originalBytes {
+		t.Fatalf("full envelope %d exceeds half of baseline %d", len(encoded), originalBytes)
+	}
 	r := env.Data.(connector.LightResult)
 	if len(r.Days) != 7 || r.Site == nil || r.Site.ID != "scotland-0001" || r.Site.Truncated || env.Meta.DataVersion == "" || env.Meta.ForecastFetchedAt == nil || !strings.Contains(sourceNames(env.Meta), "MET Norway") {
 		t.Fatal("fixture provenance", r.Site, env.Meta)
@@ -282,7 +294,7 @@ func TestLightFixtureCloudAndProvenance(t *testing.T) {
 		t.Fatal("reach cap", err)
 	}
 	b, err := json.Marshal(env)
-	if err != nil || !strings.Contains(string(b), `"cloud":`) || !strings.Contains(string(b), `"sources":`) {
+	if err != nil || !strings.Contains(string(b), `"cloud_why":`) || !strings.Contains(string(b), `"sources":`) {
 		t.Fatal("serialized response", err)
 	}
 }

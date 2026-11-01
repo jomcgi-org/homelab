@@ -27,6 +27,20 @@ var openAPI []byte
 //go:embed method.md
 var method []byte
 
+// Documentation returns copies of the embedded source documents. Use
+// DocumentationForServer for the bytes published at a configured public URL.
+func Documentation() (spec, methodology []byte) {
+	return bytes.Clone(openAPI), bytes.Clone(method)
+}
+
+// DocumentationForServer returns the documentation published by both HTTP and
+// MCP, with the configured public server URL substituted in the OpenAPI spec.
+func DocumentationForServer(publicBaseURL string) (spec, methodology []byte, err error) {
+	spec, methodology = Documentation()
+	spec, err = specWithServer(spec, publicBaseURL)
+	return spec, methodology, err
+}
+
 // Cache policies, each a pair: Cache-Control for browsers and other shared
 // caches, and Cloudflare-CDN-Cache-Control for the edge. Cloudflare treats
 // s-maxage as proxy-revalidate, which disables the stale directives, so the
@@ -80,7 +94,7 @@ type Handler struct {
 // published OpenAPI document names it as its server so generated clients
 // call the right paths. Empty keeps the document's relative "/".
 func New(svc *connector.Service, m *meter.Meter, log *slog.Logger, publicBaseURL string) (*Handler, error) {
-	spec, err := specWithServer(openAPI, publicBaseURL)
+	spec, methodology, err := DocumentationForServer(publicBaseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +111,7 @@ func New(svc *connector.Service, m *meter.Meter, log *slog.Logger, publicBaseURL
 	h.mux.HandleFunc("/v1/plan", h.methodNotAllowed("GET"))
 	h.mux.HandleFunc("/v1/check", h.methodNotAllowed("POST, OPTIONS"))
 	h.mux.HandleFunc("GET /v1/openapi.json", h.static(spec, "application/json"))
-	h.mux.HandleFunc("GET /v1/method", h.static(method, "text/markdown; charset=utf-8"))
+	h.mux.HandleFunc("GET /v1/method", h.static(methodology, "text/markdown; charset=utf-8"))
 	h.mux.HandleFunc("/v1/", h.notFound)
 	return h, nil
 }
@@ -180,7 +194,7 @@ func (h *Handler) light(w http.ResponseWriter, r *http.Request) {
 		err = &connector.ParamError{Param: "query", Message: "query too large"}
 	}
 	for k, v := range q {
-		if (k != "lat" && k != "lon" && k != "radius_km" && k != "from" && k != "to") || len(v) != 1 {
+		if (k != "lat" && k != "lon" && k != "radius_km" && k != "from" && k != "to" && k != "kinds") || len(v) != 1 {
 			err = &connector.ParamError{Param: k, Message: "unknown or repeated parameter"}
 		}
 	}
@@ -188,6 +202,9 @@ func (h *Handler) light(w http.ResponseWriter, r *http.Request) {
 	p.Lon, err = floatParam(q.Get("lon"), "lon", err)
 	p.RadiusKm, err = floatParam(q.Get("radius_km"), "radius_km", err)
 	p.From, p.To = strParam(q, "from"), strParam(q, "to")
+	if raw, ok := q["kinds"]; ok {
+		p.Kinds = strings.Split(raw[0], ",")
+	}
 	var env *connector.Envelope
 	if err == nil {
 		env, err = h.svc.Light(p)

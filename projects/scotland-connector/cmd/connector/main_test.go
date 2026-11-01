@@ -12,7 +12,92 @@ import (
 	"time"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/fixture"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/mcp"
 )
+
+func TestAppDocumentationMatchesHTTP(t *testing.T) {
+	r2srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("documentation fetched upstream data")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer r2srv.Close()
+	t.Setenv("R2_ENDPOINT", r2srv.URL)
+	t.Setenv("S3_ACCESS_KEY_ID", "fixture-key")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "fixture-secret")
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, baseURL := range []string{"", "https://jomcgi.dev/scotland", "https://jomcgi.dev/scotland/"} {
+		t.Run(baseURL, func(t *testing.T) {
+			t.Setenv("PUBLIC_BASE_URL", baseURL)
+			cfg, err := loadConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err := newApp(cfg, log, r2srv.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, doc := range []struct{ uri, path, mime string }{
+				{"scotland://docs/openapi", "/v1/openapi.json", "application/json"},
+				{"scotland://docs/method", "/v1/method", "text/markdown"},
+			} {
+				rest := httptest.NewRecorder()
+				a.public.ServeHTTP(rest, httptest.NewRequest(http.MethodGet, doc.path, nil))
+				if rest.Code != http.StatusOK {
+					t.Fatalf("HTTP documentation status: %d", rest.Code)
+				}
+				if doc.mime == "application/json" {
+					var spec struct {
+						Servers []struct{ URL string } `json:"servers"`
+					}
+					want := strings.TrimRight(baseURL, "/")
+					if want == "" {
+						want = "/"
+					}
+					if err := json.Unmarshal(rest.Body.Bytes(), &spec); err != nil || len(spec.Servers) != 1 || spec.Servers[0].URL != want {
+						t.Fatalf("HTTP spec server: %+v, error: %v", spec.Servers, err)
+					}
+				}
+				for _, version := range []string{mcp.ModernVersion, mcp.LegacyVersions[0]} {
+					t.Run(doc.uri+"/"+version, func(t *testing.T) {
+						params := map[string]any{"uri": doc.uri}
+						if version == mcp.ModernVersion {
+							params["_meta"] = map[string]any{
+								"io.modelcontextprotocol/protocolVersion":    version,
+								"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+							}
+						}
+						body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "resources/read", "params": params})
+						if err != nil {
+							t.Fatal(err)
+						}
+						req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(string(body)))
+						req.Header.Set("Content-Type", "application/json")
+						req.Header.Set("Accept", "application/json")
+						req.Header.Set("MCP-Protocol-Version", version)
+						if version == mcp.ModernVersion {
+							req.Header.Set("Mcp-Method", "resources/read")
+						}
+						rec := httptest.NewRecorder()
+						a.public.ServeHTTP(rec, req)
+						var rpc struct {
+							Error  json.RawMessage `json:"error"`
+							Result struct {
+								Contents []struct{ URI, MIMEType, Text string } `json:"contents"`
+							} `json:"result"`
+						}
+						if err := json.Unmarshal(rec.Body.Bytes(), &rpc); err != nil || rec.Code != http.StatusOK || len(rpc.Error) != 0 || len(rpc.Result.Contents) != 1 {
+							t.Fatalf("MCP documentation: %d %s, error: %v", rec.Code, rec.Body, err)
+						}
+						content := rpc.Result.Contents[0]
+						if content.URI != doc.uri || content.MIMEType != doc.mime || content.Text != rest.Body.String() {
+							t.Fatalf("HTTP and MCP documentation differ: %s (HTTP %d bytes, MCP %d bytes)", doc.uri, rest.Body.Len(), len(content.Text))
+						}
+					})
+				}
+			}
+		})
+	}
+}
 
 func TestAuroraActivationIsIndependentOfReadiness(t *testing.T) {
 	r2srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

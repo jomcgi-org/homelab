@@ -2,17 +2,92 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/connector"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/httpapi"
 )
 
 // Tool is one MCP tool definition as tools/list returns it.
 type Tool struct {
-	Name        string          `json:"name"`
-	Title       string          `json:"title"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"inputSchema"`
-	Annotations Annotations     `json:"annotations"`
+	Name         string          `json:"name"`
+	Title        string          `json:"title"`
+	Description  string          `json:"description"`
+	InputSchema  json.RawMessage `json:"inputSchema"`
+	OutputSchema json.RawMessage `json:"outputSchema"`
+	Annotations  Annotations     `json:"annotations"`
+}
+
+// Expand only local component references. A missing or cyclic reference is a
+// checked-in contract error, so fail at startup instead of advertising it.
+func toolOutputSchema(name string) json.RawMessage {
+	spec, _ := httpapi.Documentation()
+	var doc struct {
+		Components struct {
+			Schemas map[string]any `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(spec, &doc); err != nil {
+		panic(err)
+	}
+	var expand func(any, map[string]bool) any
+	expand = func(v any, stack map[string]bool) any {
+		switch x := v.(type) {
+		case map[string]any:
+			out := map[string]any{}
+			if ref, ok := x["$ref"].(string); ok {
+				key := strings.TrimPrefix(ref, "#/components/schemas/")
+				target, exists := doc.Components.Schemas[key]
+				if key == ref || !exists || stack[key] {
+					panic(fmt.Sprintf("invalid schema reference %s", ref))
+				}
+				stack[key] = true
+				for k, val := range expand(target, stack).(map[string]any) {
+					out[k] = val
+				}
+				delete(stack, key)
+			}
+			for k, val := range x {
+				if k != "$ref" {
+					out[k] = expand(val, stack)
+				}
+			}
+			return out
+		case []any:
+			out := make([]any, len(x))
+			for i, val := range x {
+				out[i] = expand(val, stack)
+			}
+			return out
+		default:
+			return v
+		}
+	}
+	component := strings.ToUpper(name[:1]) + name[1:] + "Response"
+	root, ok := doc.Components.Schemas[component]
+	if !ok {
+		panic("missing response component: " + component)
+	}
+	b, err := json.Marshal(expand(root, map[string]bool{component: true}))
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+func init() {
+	for i := range Tools {
+		Tools[i].OutputSchema = toolOutputSchema(Tools[i].Name)
+		if Tools[i].Name == "light" {
+			var input map[string]any
+			if err := json.Unmarshal(Tools[i].InputSchema, &input); err != nil {
+				panic(err)
+			}
+			input["properties"].(map[string]any)["kinds"] = map[string]any{"type": []string{"array", "null"}, "items": map[string]any{"type": "string", "enum": []string{"golden", "blue", "civil", "nautical", "astronomical", "darkness", "milky_way"}}, "description": "Omitted, null or empty means all kinds. Duplicates collapse; order and surrounding whitespace are ignored. Invalid or blank entries are errors."}
+			Tools[i].InputSchema, _ = json.Marshal(input)
+		}
+	}
 }
 
 // Annotations are the behaviour hints the Claude directory requires.
@@ -50,7 +125,7 @@ var Tools = []Tool{
 		Description: "Find what to do near a place in Scotland over the next few days: walks that fit the weather and where the night sky will be dark and clear. " +
 			"Use this for open questions: where to walk this weekend, what to do each day of a trip to Skye, the best night this week for stars near Inverness. " +
 			"For each day it returns sunrise, sunset and the moon, then the best walks and stargazing sites that suit it, each with a verdict (go or marginal) and a one-line why; " +
-			"when none suit, a note says why instead, including when the hourly forecast, about two and a half days ahead, does not reach that far yet. " +
+			"when none suit, walk_note or stargazing_note says why, except that a run beyond the hourly forecast horizon is explained once in datasets.<activity>.notes. Date-specific moon advice remains on its day. " +
 			"Walks are Walkhighlands routes that fit a slot of good daylight hours for their estimated time, with the slot (its rain, wind, wet hours and temperatures), a start window and the url for the route. " +
 			"A good hour has at most 2 mm of rain and wind at most 80 km/h by default; pass max_rain_mm_h, max_wind_kmh or min_temp_c to match what the person will put up with, stricter or looser, for example max_rain_mm_h 0 for dry hours (a marginal slot may still hold one bad hour, which check lists hour by hour with what it failed). " +
 			"Stargazing sites are road-accessible spots in the darkest light-pollution zones, judged on clear dark hours and the moon. " +

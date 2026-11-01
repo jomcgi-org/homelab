@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/connector"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/httpapi"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/meter"
 )
 
@@ -69,6 +70,8 @@ type Handler struct {
 	log     *slog.Logger
 	info    ServerInfo
 	origins map[string]bool
+	spec    []byte
+	method  []byte
 }
 
 // Instructions are returned by server/discover and initialize.
@@ -77,21 +80,26 @@ const Instructions = "Read-only answers to Scottish outdoor trip questions from 
 	"and check for a specific plan (a named walk on a date, stargazing at a place on a night). " +
 	"Use aurora for a snapshot-only, near-term aurora heuristic; unsupported times or missing inputs return unknown. " +
 	"Use light for sun, moon, twilight, golden/blue light and Milky Way windows on Europe/London civil dates. " +
-	"Light has no top-level verdict; present the requested events and windows with their coverage and why. " +
-	"Its per-window cloud is nearby-site hourly sample support; unsupported portions, including golden/blue light, stay unknown and missing rows never prove cloud. " +
+	"Light has no top-level verdict; present the requested events and windows with their coverage and the day's cloud_why. " +
+	"Its per-window cloud is nearby-site hourly sample support; omitted window cloud means unknown with zero support. Unsupported portions, including golden/blue light, stay unknown and missing rows never prove cloud. " +
 	"Its nights are separate night suitability assessments, never interval cloud forecasts. " +
 	"For plan, check and aurora, lead with the verdict and why. Every result carries meta.sources: credit them when you present the data."
 
 // New builds the handler. allowedOrigins lists the browser origins accepted;
 // requests without an Origin header (every server-side connector) always pass.
-func New(svc *connector.Service, m *meter.Meter, log *slog.Logger, info ServerInfo, allowedOrigins []string) *Handler {
-	h := &Handler{svc: svc, meter: m, log: log, info: info, origins: map[string]bool{}}
+// publicBaseURL must match HTTP's public URL so documentation is identical.
+func New(svc *connector.Service, m *meter.Meter, log *slog.Logger, info ServerInfo, allowedOrigins []string, publicBaseURL string) (*Handler, error) {
+	spec, method, err := httpapi.DocumentationForServer(publicBaseURL)
+	if err != nil {
+		return nil, err
+	}
+	h := &Handler{svc: svc, meter: m, log: log, info: info, origins: map[string]bool{}, spec: spec, method: method}
 	for _, o := range allowedOrigins {
 		if o = strings.TrimSpace(o); o != "" {
 			h.origins[strings.TrimRight(o, "/")] = true
 		}
 	}
-	return h
+	return h, nil
 }
 
 type request struct {
@@ -326,7 +334,7 @@ func (h *Handler) dispatch(r *http.Request, e era, req request) (any, int, *rpcE
 	case "initialize":
 		return map[string]any{
 			"protocolVersion": e.version,
-			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"capabilities":    capabilities(),
 			"serverInfo":      h.info,
 			"instructions":    Instructions,
 		}, 0, nil
@@ -338,7 +346,7 @@ func (h *Handler) dispatch(r *http.Request, e era, req request) (any, int, *rpcE
 		}
 		return h.result(e, map[string]any{
 			"supportedVersions": []string{ModernVersion},
-			"capabilities":      map[string]any{"tools": map[string]any{}},
+			"capabilities":      capabilities(),
 			"instructions":      Instructions,
 			"ttlMs":             3600000,
 			"cacheScope":        "public",
@@ -352,6 +360,8 @@ func (h *Handler) dispatch(r *http.Request, e era, req request) (any, int, *rpcE
 		return h.result(e, out), 0, nil
 	case "tools/call":
 		return h.toolsCall(r, e, req.Params)
+	case "prompts/list", "prompts/get", "resources/list", "resources/read":
+		return h.documentation(e, req)
 	}
 	return nil, notFound, &rpcError{Code: codeMethodNotFound, Message: "Method not found: " + req.Method}
 }

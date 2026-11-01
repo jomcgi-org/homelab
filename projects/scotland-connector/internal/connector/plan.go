@@ -62,8 +62,44 @@ type PlanDay struct {
 
 // PlanResult is plan's data.
 type PlanResult struct {
-	Query PlanQuery `json:"query"`
-	Days  []PlanDay `json:"days"`
+	Query    PlanQuery               `json:"query"`
+	Days     []PlanDay               `json:"days"`
+	Datasets map[string]PlanCoverage `json:"datasets"`
+}
+
+// Each dataset retains its own published horizon; null never implies coverage.
+type PlanCoverage struct {
+	HourlyUntil *string           `json:"hourly_until"`
+	Notes       []PlanHorizonNote `json:"notes,omitempty"`
+}
+
+type PlanHorizonNote struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	Why  string `json:"why"`
+}
+
+func collapsePlanHorizon(c PlanCoverage, date string, note *string) PlanCoverage {
+	if !strings.HasPrefix(*note, "Beyond the hourly forecast, which reaches ") {
+		return c
+	}
+	// Night explanations append date-specific lunar advice. Collapse only
+	// the horizon sentence and leave that independent advice on its day.
+	why, remainder, split := strings.Cut(*note, ". ")
+	if split {
+		why += "."
+	}
+	if n := len(c.Notes); n > 0 && c.Notes[n-1].Why == why {
+		prev, _ := time.Parse(time.DateOnly, c.Notes[n-1].To)
+		if prev.AddDate(0, 0, 1).Format(time.DateOnly) == date {
+			c.Notes[n-1].To = date
+			*note = remainder
+			return c
+		}
+	}
+	c.Notes = append(c.Notes, PlanHorizonNote{date, date, why})
+	*note = remainder
+	return c
 }
 
 func activities(raw []string) ([]string, error) {
@@ -435,7 +471,17 @@ func (s *Service) Plan(p PlanParams) (*Envelope, error) {
 	if wk != nil {
 		inRange = walksInRange(wk, q)
 	}
-	res := PlanResult{Query: q, Days: []PlanDay{}}
+	res := PlanResult{Query: q, Days: []PlanDay{}, Datasets: map[string]PlanCoverage{}}
+	if has(q.Activities, ActivityWalk) {
+		c := PlanCoverage{}
+		if wk != nil {
+			c.HourlyUntil = timep(wk.HourlyUntil)
+		}
+		res.Datasets[ActivityWalk] = c
+	}
+	if sky != nil {
+		res.Datasets[ActivityStargaze] = PlanCoverage{HourlyUntil: timep(sky.HourlyUntil)}
+	}
 	results := 0
 	for day := from; day <= to; day++ {
 		pd := PlanDay{Date: dayName(day), SkyOut: skyAt(day, q.Lat, q.Lon)}
@@ -451,6 +497,12 @@ func (s *Service) Plan(p PlanParams) (*Envelope, error) {
 			pd.Stargazing, pd.StarNote = planNights(sky, q, day, now)
 			results += len(pd.Stargazing)
 		}
+		if wk != nil {
+			res.Datasets[ActivityWalk] = collapsePlanHorizon(res.Datasets[ActivityWalk], pd.Date, &pd.WalkNote)
+		}
+		if sky != nil {
+			res.Datasets[ActivityStargaze] = collapsePlanHorizon(res.Datasets[ActivityStargaze], pd.Date, &pd.StarNote)
+		}
 		res.Days = append(res.Days, pd)
 	}
 	meta := s.meta(sky, wk, now, sources)
@@ -458,5 +510,5 @@ func (s *Service) Plan(p PlanParams) (*Envelope, error) {
 	if wk != nil {
 		meta.Notes = append(meta.Notes, noteWalkStart)
 	}
-	return &Envelope{Data: res, Meta: meta, ETag: etag("plan", meta.DataVersion, meta.AsOf, canonical(q)), Results: results}, nil
+	return &Envelope{Data: res, Meta: meta, ETag: etag("plan-v2", meta.DataVersion, meta.AsOf, canonical(q)), Results: results}, nil
 }
