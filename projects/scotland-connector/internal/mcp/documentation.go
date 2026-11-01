@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-
-	"github.com/jomcgi/homelab/projects/scotland-connector/internal/httpapi"
 )
 
 func capabilities() map[string]any {
@@ -65,12 +63,11 @@ func (h *Handler) documentation(e era, req request) (any, int, *rpcError) {
 		if strings.TrimSpace(p.URI) == "" {
 			return bad("resources/read needs a URI")
 		}
-		spec, method := httpapi.Documentation()
 		for i, r := range resources {
 			if r.URI == p.URI {
-				text := method
+				text := h.method
 				if i == 1 {
-					text = spec
+					text = h.spec
 				}
 				return h.result(e, map[string]any{"contents": []map[string]any{{"uri": r.URI, "mimeType": r.MIME, "text": string(text)}}}), 0, nil
 			}

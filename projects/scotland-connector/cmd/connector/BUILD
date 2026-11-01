@@ -28,5 +28,8 @@ go_test(
     name = "connector_test",
     srcs = ["main_test.go"],
     embed = [":connector_lib"],
-    deps = ["//projects/scotland-connector/internal/fixture"],
+    deps = [
+        "//projects/scotland-connector/internal/fixture",
+        "//projects/scotland-connector/internal/mcp",
+    ],
 )
