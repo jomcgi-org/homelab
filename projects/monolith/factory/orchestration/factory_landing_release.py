@@ -22,19 +22,11 @@ from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 ACTION = "operator_landing_hold_released"
 SCOPE_ACTION = "operator_scoped_landing_authorized"
 # This operator-approved exception is deliberately not a generic terminal handoff.
-HANDOFF_TARGET = (
-    1045,
-    "t-a4702857-5c95-41cd-aa21-415e10bc9355",
-    "jomcgi-org/homelab",
-    7492,
-)
-HANDOFF_ACCEPTED_HEAD = "7da9676f1bdbae60248de2aefaf911493559f33f"
+HANDOFF_ACCEPTED_HEAD = controls.OPERATOR_DOCS_HANDOFF_ACCEPTED_HEAD
 HANDOFF_REVIEW_SESSION = 24402
 
 
-def operator_target(task_id):
-    """Stage this approved target outside native actions, never outside fencing."""
-    return task_id == HANDOFF_TARGET[1]
+operator_target = controls.operator_landing_target
 
 
 PUBLIC_DOCS = frozenset(
@@ -182,7 +174,8 @@ def _handoff_history(db, row, pr_number, head_sha):
     from factory.orchestration.models import SwarmTask
 
     if (
-        (row.id, row.task_id, row.repo, pr_number) != HANDOFF_TARGET
+        (row.id, row.task_id, row.repo, pr_number)
+        != controls.OPERATOR_DOCS_HANDOFF_TARGET
         or row.state != "succeeded"
         or head_sha == HANDOFF_ACCEPTED_HEAD
     ):
