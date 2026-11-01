@@ -26,6 +26,114 @@ func handler(loaded bool) *Handler {
 	return h
 }
 
+func TestOutlookRESTAndContract(t *testing.T) {
+	h := handler(true)
+	url := "/v1/outlook?lat=57.3&lon=-3.7&from=2027-01-01&to=2027-01-02"
+	rec, body := get(t, h, url)
+	if rec.Code != http.StatusOK || body["data"].(map[string]any)["verdict"] != "unknown" || rec.Header().Get("ETag") == "" {
+		t.Fatal(rec, body)
+	}
+	want, err := fixture.Service(true).Outlook(connector.OutlookParams{Lat: ptr(57.3), Lon: ptr(-3.7), From: ptr("2027-01-01"), To: ptr("2027-01-02")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, _ := json.Marshal(want)
+	gotJSON, _ := json.Marshal(body)
+	var decoded any
+	if err := json.Unmarshal(wantJSON, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, _ = json.Marshal(decoded)
+	if string(wantJSON) != string(gotJSON) {
+		t.Fatal("REST differs from service")
+	}
+	second, _ := get(t, h, url, "If-None-Match", rec.Header().Get("ETag"))
+	if second.Code != http.StatusNotModified {
+		t.Fatal(second)
+	}
+	if rec.Header().Get("Cache-Control") != CacheControl.browser || rec.Header().Get("Cloudflare-CDN-Cache-Control") != CacheControl.edge {
+		t.Fatal(rec.Header())
+	}
+	other, _ := get(t, h, "/v1/outlook?lat=57.3&lon=-3.7&from=2027-01-02&to=2027-01-02")
+	if other.Header().Get("ETag") == rec.Header().Get("ETag") {
+		t.Fatal("query cache collision")
+	}
+	for _, query := range []string{
+		"lat=57.3&lon=-3.7&from=2027-01-01&to=2028-01-01",
+		"lat=57.3&lon=-3.7&radius_km=101",
+		"lat=57.3&lon=-3.7&extra=1",
+		"lat=57.3&lat=57.4&lon=-3.7",
+		"lat=NaN&lon=-3.7",
+	} {
+		r, b := get(t, h, "/v1/outlook?"+query)
+		if r.Code != 400 || b["error"].(map[string]any)["code"] != "invalid_parameter" {
+			t.Fatal(r, b)
+		}
+	}
+	r, _ := get(t, handler(false), url)
+	if r.Code != 200 {
+		t.Fatal(r)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/outlook", nil)
+	r = httptest.NewRecorder()
+	h.ServeHTTP(r, req)
+	if r.Code != 405 || r.Header().Get("Allow") != "GET" {
+		t.Fatal(r)
+	}
+	var spec struct {
+		Paths map[string]struct {
+			Get struct {
+				Parameters []struct {
+					Name, Description string
+					Schema            struct{ Minimum, Maximum, Default float64 }
+				}
+				Responses map[string]any
+			}
+		}
+		Components struct {
+			Schemas map[string]struct {
+				Properties map[string]struct {
+					Properties map[string]struct{ MaxItems int }
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(openAPI, &spec); err != nil {
+		t.Fatal(err)
+	}
+	op, ok := spec.Paths["/v1/outlook"]
+	if !ok || op.Get.Responses["304"] == nil {
+		t.Fatal(op)
+	}
+	for _, p := range op.Get.Parameters {
+		switch p.Name {
+		case "lat":
+			if p.Schema.Minimum != connector.Coverage.MinLat || p.Schema.Maximum != connector.Coverage.MaxLat {
+				t.Fatal(p)
+			}
+		case "lon":
+			if p.Schema.Minimum != connector.Coverage.MinLon || p.Schema.Maximum != connector.Coverage.MaxLon {
+				t.Fatal(p)
+			}
+		case "radius_km":
+			if p.Schema.Maximum != connector.MaxRadiusKm || p.Schema.Default != connector.DefaultRadiusKm {
+				t.Fatal(p)
+			}
+		case "to":
+			for _, n := range []int{connector.OutlookRateFloor, connector.OutlookDailyCap} {
+				if !strings.Contains(p.Description, fmt.Sprint(n)) {
+					t.Fatal(p)
+				}
+			}
+		}
+	}
+	if spec.Components.Schemas["OutlookResponse"].Properties["data"].Properties["days"].MaxItems != connector.OutlookDailyCap {
+		t.Fatal("OpenAPI daily cap drift")
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
 func TestOpenAPIServerIsThePublicBaseURL(t *testing.T) {
 	h, err := New(fixture.Service(true), meter.New(prometheus.NewRegistry()), slog.New(slog.NewTextHandler(io.Discard, nil)), "https://jomcgi.dev/scotland")
 	if err != nil {
@@ -303,7 +411,7 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 		}
 	}
 	sort.Strings(ops)
-	if got := strings.Join(ops, ","); got != "GET /v1/aurora,GET /v1/light,GET /v1/method,GET /v1/openapi.json,GET /v1/plan,POST /v1/check" {
+	if got := strings.Join(ops, ","); got != "GET /v1/aurora,GET /v1/light,GET /v1/method,GET /v1/openapi.json,GET /v1/outlook,GET /v1/plan,POST /v1/check" {
 		t.Errorf("spec operations = %s", got)
 	}
 
