@@ -535,9 +535,7 @@ def test_lease_expired_stale_unbound_rejects_binding_evidence(database, monkeypa
         assert audit.settled_at is None
 
 
-def test_lease_expired_exact_delivery_proof_settles_with_both_flags(
-    database, monkeypatch
-):
+def test_lease_expired_exact_delivery_proof_settles(database, monkeypatch):
     pid = seed(
         database,
         "lease-expired-both-flags",
@@ -556,7 +554,7 @@ def test_lease_expired_exact_delivery_proof_settles_with_both_flags(
         assert audit.settled_at is not None
 
 
-def test_both_flags_do_not_settle_fresh_non_error_legacy_probe(database, monkeypatch):
+def test_fresh_non_error_legacy_probe_is_not_settled(database, monkeypatch):
     pid = seed(
         database,
         "fresh-non-error-both-flags",
@@ -895,7 +893,7 @@ def test_cessation_timestamp_before_failed_turn_does_not_settle(database, monkey
     assert before(database, pid) == original
 
 
-def test_destroyed_with_timestamp_settles_under_general_flag(database, monkeypatch):
+def test_destroyed_with_timestamp_settles(database, monkeypatch):
     pid = seed(database)
     sweep(proof(state="destroyed"))
     assert before(database, pid)[0]["state"] == "settled"
