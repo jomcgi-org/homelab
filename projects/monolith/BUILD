@@ -5944,6 +5944,22 @@ py_test(
 )
 
 py_test(
+    name = "agent_sessions_guest_cleanup_loop_test",
+    srcs = ["factory/execution/guest_cleanup_loop_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_core",
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "agent_sessions_response_lost_test",
     srcs = ["factory/execution/response_lost_test.py"],
     data = ["app/main.py"],
