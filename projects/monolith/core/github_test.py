@@ -30,6 +30,19 @@ def test_github_repo_environment_override(monkeypatch):
     assert _read_github_repo() == "example/alternate-repo"
 
 
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [(None, "Bearer env-token"), ("explicit", "Bearer explicit"), ("", None)],
+)
+def test_github_headers_token_precedence(monkeypatch, token, expected):
+    monkeypatch.setenv("GITHUB_API_TOKEN", "env-token")
+
+    headers = github.github_headers("agent", token)
+
+    assert headers["User-Agent"] == "agent"
+    assert headers.get("Authorization") == expected
+
+
 def test_fetch_issue_states_merged_closing_refs_and_unresolved_alias(monkeypatch):
     monkeypatch.setenv("GITHUB_API_TOKEN", "test-token")
 
