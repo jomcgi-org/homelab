@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,954 @@ from factory.orchestration.factory_models import FactoryReceipt, WorkItem
 from factory.orchestration.turn_artifact import schema_errors
 
 _REAL_OBSERVE_HUMAN_OWNERSHIP = conductor._observe_human_ownership
+
+
+@pytest.fixture
+def evidence_resume(feedback_db, monkeypatch):
+    from factory.execution.models import (
+        AgentSession,
+        AgentCapacityReservation,
+        PendingMessage,
+    )
+    from sqlmodel import SQLModel
+    from factory.orchestration import evidence_continuation as continuation
+    from factory.orchestration import factory_controls as controls, graph
+    from factory.orchestration.models import SwarmNodeRun
+
+    feedback_db = feedback_db.execution_options(
+        schema_translate_map={"swarm": None, "agent_sessions": None}
+    )
+    for module in (conductor, conductor.graph, controls):
+        monkeypatch.setattr(module, "get_engine", lambda: feedback_db)
+    SQLModel.metadata.create_all(
+        feedback_db,
+        tables=[
+            m.__table__
+            for m in (AgentSession, AgentCapacityReservation, PendingMessage)
+        ],
+    )
+    task, policy = feedback_task(
+        max_turns=6, max_task_turns_hard=6, max_planner_turns=10
+    )
+    head = "a" * 40
+    complete_feedback_node(
+        task,
+        policy,
+        "implement_fix",
+        {
+            "status": "complete",
+            "pr_number": 3,
+            "head_sha": head,
+            "summary": "Implemented the existing issue acceptance checks",
+        },
+        head=head,
+    )
+    review = complete_feedback_node(
+        task,
+        policy,
+        "review_initial",
+        {"verdict": "changes_requested", "pr_number": 3, "head_sha": head},
+        head=head,
+        deps=["implement_fix"],
+    )
+    for key, kind, deps in (
+        ("correct_1", "work", ["review_initial"]),
+        ("review_1", "gate", ["correct_1"]),
+    ):
+        assert graph.add_node(
+            task["id"],
+            node_key=key,
+            kind=kind,
+            prompt="Original correction or review",
+            model="opus",
+            deps=deps,
+            max_cost_usd=policy["turn_budget_usd"],
+            side_effects=True,
+            max_attempts=1,
+            turn_timeout_seconds=60,
+            author_kind="engine",
+            author="factory",
+            cause_kind="factory_loop",
+            cause_ref="round:1",
+            stated_reason="Existing round",
+            expected_version=graph.current_version(task["id"]),
+        ).ok
+    source = run_feedback_node(
+        task,
+        "correct_1",
+        {
+            "status": "escalate",
+            "pr_number": 3,
+            "head_sha": head,
+            "reason": "Current-head evidence unavailable",
+        },
+        head=head,
+        status="escalated",
+    )
+    with Session(feedback_db) as db, db.begin():
+        db.add(
+            AgentSession(
+                id=source["session_id"],
+                local_session_id=f"factory:{task['id']}:correct_1:1",
+                workspace="/workspace/src",
+                branch=conductor.delivery_branch(task),
+                repo=task["repo"],
+                workflow_id=source["dispatch_key"],
+                node_key="correct_1",
+                node_attempt=1,
+                status="completed",
+            )
+        )
+        db.get(SwarmNodeRun, source["id"]).finished_at = datetime.now(
+            timezone.utc
+        ) - timedelta(minutes=5)
+        controls._audit(
+            db,
+            "factory",
+            "funding_granted",
+            task_id=task["id"],
+            source_run_id=review["id"],
+            policy_overlay=policy,
+            next_plan="One evidence-only correction and existing independent review",
+            review_due_at=(
+                datetime.now(timezone.utc) + timedelta(minutes=30)
+            ).isoformat(),
+            deadline_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        )
+    pr = {
+        "number": 3,
+        "state": "open",
+        "merged": False,
+        "head": {
+            "sha": head,
+            "ref": conductor.delivery_branch(task),
+            "repo": {"full_name": task["repo"]},
+        },
+        "base": {"ref": "main"},
+    }
+    comment = {
+        "id": 99,
+        "issue_url": f"https://api.github.com/repos/{task['repo']}/issues/3",
+        "body": f"Verified cached evidence at {head}",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    issue = {"state": "open", "labels": []}
+    checks = {
+        "state": "success",
+        "statuses": [{"context": "pr-checks", "state": "success"}],
+    }
+
+    def read(repo, path):
+        assert repo == task["repo"]
+        if path.startswith("git/ref/heads/"):
+            return {"object": {"sha": head}}
+        return {
+            "issues/7": issue,
+            "pulls/3": pr,
+            "issues/comments/99": comment,
+            f"commits/{head}/status": checks,
+        }[path]
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    decision = {
+        "action": "continue_evidence",
+        "reason": "New exact-head evidence resolves the prior evidence blocker",
+        "node_key": "correct_1",
+        "source_run_id": source["id"],
+        "pr_number": 3,
+        "head_sha": head,
+        "evidence_comment_id": 99,
+        "expected_version": graph.current_version(task["id"]),
+    }
+    return SimpleNamespace(
+        task=task,
+        policy=policy,
+        head=head,
+        source=source,
+        decision=decision,
+        read=read,
+        pr=pr,
+        issue=issue,
+        comment=comment,
+        checks=checks,
+        engine=feedback_db,
+        continuation=continuation,
+    )
+
+
+def grant_evidence(s, cause="decision:evidence:1"):
+    s.continuation.apply(s.task["id"], s.decision, cause, github_get=s.read)
+    return next(
+        n
+        for n in conductor.graph.load_graph(s.task["id"])
+        if n["node_key"] == "correct_1"
+    )
+
+
+def evidence_context(s, node):
+    key = node["node_key"]
+    attempt = 2 if key == "correct_1" else 1
+    workflow = f"factory-node:{s.task['id']}:{key}:{attempt}"
+    return {
+        "repo": s.task["repo"],
+        "branch": conductor.delivery_branch(s.task),
+        "workflow_id": workflow,
+        "artifact_path": f".factory/{key}-{attempt}.json",
+        "artifact_schema": s.continuation.prepare(
+            s.task, node, conductor._schema(key), github_get=s.read
+        ),
+        "hydration_branch": "main",
+        "retry_context": "[]",
+    }
+
+
+def test_evidence_continuation_reuses_owner_and_preserves_history(evidence_resume):
+    from factory.orchestration import factory_controls as controls
+
+    s = evidence_resume
+    graph = conductor.graph
+    before = graph.node_runs(s.task["id"])
+    original = graph.load_graph(s.task["id"])
+    assert not conductor._ready_nodes(original, before)
+    node = grant_evidence(s)
+    assert node["max_attempts"] == 1
+    assert graph.node_runs(s.task["id"]) == before
+    assert graph.load_graph(s.task["id"], s.decision["expected_version"]) == original
+    assert [
+        n["node_key"]
+        for n in conductor._ready_nodes(graph.load_graph(s.task["id"]), before)
+    ] == ["correct_1"]
+    allowance = controls.derive_allowance(
+        s.task["id"], s.policy, review_rounds_remaining=0
+    )
+    assert allowance["turns"] == 5
+    context = evidence_context(s, node)
+    key = context["workflow_id"]
+    assert conductor.reserve_node(s.task["id"], "correct_1", key, context)
+    after = graph.node_runs(s.task["id"])
+    new = next(r for r in after if r["node_key"] == "correct_1" and r["attempt"] == 2)
+    assert new["pin"]["max_attempts"] == 2
+    assert new["pin"]["max_cost_usd"] == node["max_cost_usd"]
+    assert "Do not edit source" in new["pin"]["prompt"]
+    assert new["status"] == "admitted"
+    assert next(r for r in after if r["id"] == s.source["id"]) == next(
+        r for r in before if r["id"] == s.source["id"]
+    )
+    assert conductor.reserve_node(s.task["id"], "correct_1", key, context)
+    assert len(graph.node_runs(s.task["id"])) == len(after)
+    grant_evidence(s)  # replay after consumption/restart acknowledges only
+    assert len(graph.node_runs(s.task["id"])) == len(after)
+    assert controls.task_snapshot(s.task["id"])["turns_used"] == 4
+    assert not conductor._ready_nodes(graph.load_graph(s.task["id"]), after)
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ("head", "pr_changed"),
+        ("comment_target", "comment_identity_missing"),
+        ("old_evidence", "evidence_not_new"),
+        ("ci", "ci_not_passed"),
+        ("human", "issue_held"),
+        ("version", "stale_version"),
+        ("run", "escalation_changed"),
+        ("extra_fields", "invalid_request"),
+    ],
+)
+def test_evidence_continuation_refuses_invalid_inputs(evidence_resume, change, reason):
+    s = evidence_resume
+    if change == "head":
+        s.pr["head"]["sha"] = "b" * 40
+    if change == "comment_target":
+        s.comment["issue_url"] = "https://api.github.com/repos/other/repo/issues/3"
+    if change == "old_evidence":
+        s.comment["updated_at"] = "2020-01-01T00:00:00Z"
+    if change == "ci":
+        s.checks["statuses"][0]["state"] = "failure"
+    if change == "human":
+        s.issue["labels"] = [{"name": "human"}]
+    if change == "version":
+        s.decision["expected_version"] -= 1
+    if change == "run":
+        s.decision["source_run_id"] += 100
+    if change == "extra_fields":
+        s.decision["gate"] = {"kind": "external_account"}
+    before = conductor.graph.node_runs(s.task["id"])
+    with pytest.raises(ValueError, match=reason):
+        grant_evidence(s)
+    assert conductor.graph.node_runs(s.task["id"]) == before
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ("paused", "task_paused"),
+        ("unknown", "unresolved_starts"),
+        ("attempt_cap", "attempt_cap"),
+        ("task_cap", "task_cap"),
+        ("review_started", "review_owner_changed"),
+    ],
+)
+def test_evidence_continuation_preserves_caps_and_holds(
+    evidence_resume, change, reason
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit, FactoryStart
+    from factory.orchestration.models import SwarmPlanNode
+
+    s = evidence_resume
+    with Session(s.engine) as db, db.begin():
+        if change == "paused":
+            controls._receipt(db, s.task["id"]).task_paused = True
+        elif change == "unknown":
+            db.exec(
+                select(FactoryStart).where(FactoryStart.task_id == s.task["id"])
+            ).first().status = "uncertain"
+        elif change == "review_started":
+            db.exec(
+                select(SwarmPlanNode).where(
+                    SwarmPlanNode.task_id == s.task["id"],
+                    SwarmPlanNode.node_key == "review_1",
+                )
+            ).one().armed_at = datetime.now(timezone.utc)
+        else:
+            row = db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == "funding_granted")
+            ).one()
+            grant = json.loads(row.detail_json)
+            grant["policy_overlay"][
+                "max_attempts" if change == "attempt_cap" else "max_task_turns_hard"
+            ] = 1 if change == "attempt_cap" else 4
+            row.detail_json = json.dumps(grant)
+    with pytest.raises(ValueError, match=reason):
+        grant_evidence(s)
+
+
+@pytest.mark.parametrize(
+    "change", ["comment", "head", "funding", "direction", "preflight_age"]
+)
+def test_evidence_continuation_rechecks_before_admission(evidence_resume, change):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = evidence_resume
+    node = grant_evidence(s)
+    if change in ("comment", "head"):
+        if change == "comment":
+            s.comment["body"] += " changed"
+        else:
+            s.pr["head"]["sha"] = "b" * 40
+        with pytest.raises(ValueError):
+            evidence_context(s, node)
+        return
+    context = evidence_context(s, node)
+    with Session(s.engine) as db, db.begin():
+        if change == "funding":
+            row = db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == "funding_granted")
+            ).one()
+            controls._audit(
+                db,
+                "factory",
+                "funding_granted",
+                task_id=s.task["id"],
+                **json.loads(row.detail_json),
+            )
+        elif change == "direction":
+            controls._receipt(
+                db, s.task["id"]
+            ).direction_json = '{"note":"Changed scope"}'
+    if change == "preflight_age":
+        context["artifact_schema"][s.continuation.MARKER]["observed_at"] = (
+            "2020-01-01T00:00:00Z"
+        )
+    assert not conductor.reserve_node(
+        s.task["id"], "correct_1", context["workflow_id"], context
+    )
+    assert len(conductor.graph.node_runs(s.task["id"], "correct_1")) == 1
+
+
+def test_evidence_continuation_capacity_denial_consumes_grant(evidence_resume):
+    from factory.orchestration import factory_controls as controls
+
+    s = evidence_resume
+    node = grant_evidence(s)
+    context = evidence_context(s, node)
+    assert conductor.reserve_node(
+        s.task["id"], "correct_1", context["workflow_id"], context
+    )
+    assert conductor.graph.record_outcome(
+        s.task["id"], "correct_1", 2, "failed", 0.0, None, '{"capacity_denied":true}'
+    ).ok
+    assert controls.record_start_outcome(
+        s.task["id"], context["workflow_id"], "failed", "factory", cost_usd=0.0
+    )["ok"]
+    runs = conductor.graph.node_runs(s.task["id"])
+    assert not conductor._ready_nodes(conductor.graph.load_graph(s.task["id"]), runs)
+    assert not conductor.graph.admit_dispatch(
+        s.task["id"], "correct_1", dispatch_key="third", execution_context=context
+    ).ok
+    s.decision["expected_version"] = conductor.graph.current_version(s.task["id"])
+    with pytest.raises(ValueError, match="already_granted"):
+        grant_evidence(s, cause="different")
+
+
+def test_evidence_continuation_does_not_settle_unknown_execution(evidence_resume):
+    s = evidence_resume
+    node = grant_evidence(s)
+    context = evidence_context(s, node)
+    pin = {**context, "node_key": "correct_1"}
+    result = {"status": "uncertain", "head_sha": "b" * 40, "cost_usd": None}
+    assert s.continuation.validate_result(pin, result) is result
+    result = {
+        **result,
+        "status": "succeeded",
+        "value": {"status": "complete", "head_sha": s.head, "pr_number": 3},
+    }
+    failed = s.continuation.validate_result(pin, result)
+    assert failed["status"] == "failed"
+    assert failed["cost_usd"] is None and failed["previous_outcome"] == result
+    result = {**result, "head_sha": s.head}
+    assert s.continuation.validate_result(pin, result) is result
+
+
+def test_evidence_continuation_prompt_has_no_push_requirement(evidence_resume):
+    from factory.orchestration.node_workflows import _node_prompt
+
+    s = evidence_resume
+    schema = evidence_context(s, grant_evidence(s))["artifact_schema"]
+    prompt = _node_prompt(
+        "Evidence only", ".factory/out.json", schema, branch="factory/test"
+    )
+    assert "Commit and push source changes" not in prompt
+    assert "without source changes, commits or pushes" in prompt
+
+
+def test_evidence_continuation_keeps_independent_review_pending_until_delivery(
+    evidence_resume,
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.node_workflows import _node_prompt
+
+    s = evidence_resume
+    node = grant_evidence(s)
+    graph = conductor.graph
+    review = next(
+        n for n in graph.load_graph(s.task["id"]) if n["node_key"] == "review_1"
+    )
+    context = evidence_context(s, review)
+    assert not conductor.reserve_node(
+        s.task["id"], "review_1", context["workflow_id"], context
+    )
+    correction = evidence_context(s, node)
+    assert conductor.reserve_node(
+        s.task["id"], "correct_1", correction["workflow_id"], correction
+    )
+    result = {
+        "status": "succeeded",
+        "head_sha": s.head,
+        "cost_usd": None,
+        "value": {"status": "complete", "head_sha": s.head, "pr_number": 3},
+    }
+    assert graph.record_outcome(
+        s.task["id"], "correct_1", 2, "succeeded", None, s.head, json.dumps(result)
+    ).ok
+    assert controls.record_start_outcome(
+        s.task["id"], correction["workflow_id"], "succeeded", "factory"
+    )["ok"]
+    assert [
+        n["node_key"]
+        for n in conductor._ready_nodes(
+            graph.load_graph(s.task["id"]), graph.node_runs(s.task["id"])
+        )
+    ] == ["review_1"]
+    context = evidence_context(s, review)
+    assert conductor.reserve_node(
+        s.task["id"], "review_1", context["workflow_id"], context
+    )
+    pin = graph.node_runs(s.task["id"], "review_1")[0]["pin"]
+    assert pin["artifact_schema"]["properties"]["head_sha"] == {"const": s.head}
+    prompt = _node_prompt(
+        pin["prompt"],
+        pin["artifact_path"],
+        pin["artifact_schema"],
+        branch=pin["branch"],
+    )
+    assert "Do not modify the PR body" in prompt
+    assert "Only the existing PR body may be updated" not in prompt
+    assert controls.task_snapshot(s.task["id"])["turns_used"] == 5
+    assert graph.node_runs(s.task["id"], "correct_1")[0]["status"] == "escalated"
+
+
+@pytest.mark.parametrize(
+    "change", ["head", "closed", "artifact_head", "artifact_pr", "incomplete"]
+)
+def test_evidence_continuation_rejects_changed_completion(evidence_resume, change):
+    s = evidence_resume
+    node = grant_evidence(s)
+    pin = {**evidence_context(s, node), "node_key": "correct_1"}
+    value = {"status": "complete", "head_sha": s.head, "pr_number": 3}
+    result = {
+        "status": "succeeded",
+        "head_sha": s.head,
+        "cost_usd": 1.5,
+        "value": value,
+    }
+    if change == "head":
+        s.pr["head"]["sha"] = "b" * 40
+    if change == "closed":
+        s.pr["state"] = "closed"
+    if change == "artifact_head":
+        value["head_sha"] = "b" * 40
+    if change == "artifact_pr":
+        value["pr_number"] = 4
+    if change == "incomplete":
+        value["status"] = "needs_work"
+    checked = s.continuation.validate_result(
+        pin, result, task=s.task, github_get=s.read
+    )
+    assert checked["status"] == "failed"
+    assert checked["cost_usd"] == 1.5 and checked["previous_outcome"] == result
+
+
+@pytest.mark.parametrize("value", [None, "invalid", "", 42])
+def test_evidence_continuation_malformed_timestamp_fails_closed(evidence_resume, value):
+    s = evidence_resume
+    s.comment["updated_at"] = value
+    with pytest.raises(ValueError, match="invalid_timestamp"):
+        grant_evidence(s)
+
+
+def test_evidence_continuation_cas_rechecks_changes_during_github_read(evidence_resume):
+    from factory.orchestration import factory_controls as controls
+
+    s = evidence_resume
+
+    def read(repo, path):
+        if path == "issues/comments/99":
+            with controls._locked_session() as (db, control):
+                controls._receipt(db, s.task["id"]).task_paused = True
+                control.version += 1
+        return s.read(repo, path)
+
+    with pytest.raises(ValueError, match="task_paused"):
+        s.continuation.apply(s.task["id"], s.decision, "raced", github_get=read)
+    assert not any(
+        n.get("evidence_continuation") for n in conductor.graph.load_graph(s.task["id"])
+    )
+
+
+def test_evidence_continuation_concurrent_grants_and_admission_are_once(
+    evidence_resume,
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from factory.orchestration.models import SwarmPlanVersion
+
+    s = evidence_resume
+    readers = Barrier(2)
+
+    def read(repo, path):
+        if path == "issues/comments/99":
+            readers.wait(timeout=10)
+        return s.read(repo, path)
+
+    def grant(_):
+        s.continuation.apply(s.task["id"], s.decision, "same-request", github_get=read)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(grant, range(2)))
+    with Session(s.engine) as db:
+        assert (
+            len(
+                db.exec(
+                    select(SwarmPlanVersion).where(
+                        SwarmPlanVersion.task_id == s.task["id"],
+                        SwarmPlanVersion.op == s.continuation.OP,
+                    )
+                ).all()
+            )
+            == 1
+        )
+    node = next(
+        n
+        for n in conductor.graph.load_graph(s.task["id"])
+        if n["node_key"] == "correct_1"
+    )
+    context = evidence_context(s, node)
+
+    def reserve(_):
+        return bool(
+            conductor.reserve_node(
+                s.task["id"], "correct_1", context["workflow_id"], context
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(pool.map(reserve, range(2))) == [True, True]
+    assert len(conductor.graph.node_runs(s.task["id"], "correct_1")) == 2
+
+
+def test_evidence_continuation_stale_block_is_durable_and_idempotent(evidence_resume):
+    s = evidence_resume
+    node = grant_evidence(s)
+    context = evidence_context(s, node)
+    s.continuation.block(s.task["id"], node["evidence_continuation"], "changed_head")
+    revision = conductor.graph.current_version(s.task["id"])
+    s.continuation.block(s.task["id"], node["evidence_continuation"], "changed_head")
+    assert conductor.graph.current_version(s.task["id"]) == revision
+    assert not conductor._ready_nodes(
+        conductor.graph.load_graph(s.task["id"]),
+        conductor.graph.node_runs(s.task["id"]),
+    )
+    assert not conductor.reserve_node(
+        s.task["id"], "correct_1", context["workflow_id"], context
+    )
+
+
+@pytest.fixture
+def evidence_terminal(evidence_resume):
+    from factory.orchestration import (
+        evidence_recovery,
+        factory_controls as controls,
+        factory_decisions,
+    )
+
+    s = evidence_resume
+    with Session(s.engine) as db, db.begin():
+        row = controls._receipt(db, s.task["id"])
+        row.state = "escalated"
+        row.escalation_json = json.dumps(
+            {
+                "reason": "Evidence continuation unavailable",
+                "question": "Recover the same owner?",
+                "options": [
+                    {"key": "defer", "label": "Defer", "effect": "defer", "detail": {}}
+                ],
+            }
+        )
+        task = conductor.graph._lock_task(db, s.task["id"])
+        task.settled_at = datetime.now(timezone.utc)
+        task.start_state = "escalated"
+        s.request = {
+            "receipt_id": row.id,
+            "decision_id": factory_decisions._fields(row)["decision_id"],
+            "deadline_at": (
+                datetime.now(timezone.utc) + timedelta(minutes=30)
+            ).isoformat(),
+            "decision": dict(s.decision),
+        }
+        s.prior = row.model_dump(mode="json")
+    s.recovery = evidence_recovery
+    s.issue["labels"] = [{"name": "needs-human"}]
+    return s
+
+
+def recover_evidence(s):
+    proposal = s.recovery.preview(s.request)["proposal"]
+    result = s.recovery.apply(
+        s.request,
+        actor="operator",
+        request_key="same-owner",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    return proposal, result
+
+
+def test_evidence_continuation_terminal_operator_recovery_keeps_owner_and_accounting(
+    evidence_terminal,
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = evidence_terminal
+    runs = conductor.graph.node_runs(s.task["id"])
+    before = controls.task_snapshot(s.task["id"])
+    proposal, result = recover_evidence(s)
+    after = controls.task_snapshot(s.task["id"])
+    assert result["ok"] and after["state"] == "admitted"
+    assert after["task_id"] == before["task_id"]
+    assert after["policy"] == before["policy"] and after["starts"] == before["starts"]
+    assert after["turns_used"] == before["turns_used"] == 3
+    assert after["allowance"]["turns"] == proposal["work_turn_ceiling"] == 5
+    assert after["deadline_at"] == proposal["deadline_at"]
+    assert conductor.graph.node_runs(s.task["id"]) == runs
+    with Session(s.engine) as db:
+        audit = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == s.recovery.ACTION)
+        ).one()
+        saved = json.loads(audit.detail_json)["proposal"]
+        assert saved["prior_escalation"] == json.loads(s.prior["escalation_json"])
+        assert saved["local"]["task"]["settled_at"] is not None
+        assert controls._receipt(db, s.task["id"]).policy_json == s.prior["policy_json"]
+    assert (
+        s.recovery.apply(
+            s.request,
+            actor="operator",
+            request_key="same-owner",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+        == result
+    )
+    assert s.issue["labels"] == [{"name": "needs-human"}]
+    node = next(
+        n
+        for n in conductor.graph.load_graph(s.task["id"])
+        if n["node_key"] == "correct_1"
+    )
+    context = evidence_context(s, node)
+    assert conductor.reserve_node(
+        s.task["id"], "correct_1", context["workflow_id"], context
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["decision", "deadline", "head", "human", "paused", "control", "direction"],
+)
+def test_evidence_continuation_terminal_preview_changes_refuse(
+    evidence_terminal, change
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = evidence_terminal
+    proposal = s.recovery.preview(s.request)["proposal"]
+    if change == "decision":
+        s.request["decision_id"] = "0" * 64
+    if change == "deadline":
+        s.request["deadline_at"] = (
+            datetime.now(timezone.utc) + timedelta(hours=2)
+        ).isoformat()
+    if change == "head":
+        s.pr["head"]["sha"] = "b" * 40
+    if change == "human":
+        s.issue["labels"].append({"name": "human"})
+    with controls._locked_session() as (db, control):
+        row = controls._receipt(db, s.task["id"])
+        if change == "paused":
+            row.task_paused = True
+        if change == "control":
+            control.version += 1
+        if change == "direction":
+            row.direction_json = '{"note":"new scope"}'
+    with pytest.raises(ValueError):
+        s.recovery.apply(
+            s.request,
+            actor="operator",
+            request_key="same-owner",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+    assert controls.task_snapshot(s.task["id"])["state"] == "escalated"
+
+
+def test_evidence_continuation_terminal_scope_rejects_old_retries_new_funding_and_early_acceptance(
+    evidence_terminal,
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = evidence_terminal
+    proposal, _ = recover_evidence(s)
+    for key in (
+        "correct_1:3",
+        "conductor_funding_99:1",
+        "implement_fix:2",
+        proposal["planner_key"] + ":1",
+    ):
+        refusal = controls.authorize_start(
+            s.task["id"],
+            f"factory-node:{s.task['id']}:{key}",
+            "factory",
+            model="opus",
+            max_cost_usd=1,
+        )
+        assert not refusal["ok"]
+    with pytest.raises(ValueError, match="acceptance_only"):
+        conductor._apply_decision(
+            s.task, s.policy, {"action": "request_funding"}, "old-planner", []
+        )
+
+
+@pytest.mark.parametrize(
+    "change", ["pending", "active_session", "fence", "unknown_permit", "owner"]
+)
+def test_evidence_continuation_rechecks_native_work_and_ownership(
+    evidence_resume, change
+):
+    from factory.execution.models import (
+        AgentSession,
+        AgentCapacityReservation,
+        PendingMessage,
+    )
+    from factory.orchestration import factory_controls as controls
+
+    s = evidence_resume
+    node = grant_evidence(s)
+    context = evidence_context(s, node)
+    with Session(s.engine) as db, db.begin():
+        session = db.get(AgentSession, s.source["session_id"])
+        if change == "pending":
+            db.add(
+                PendingMessage(
+                    session_id=session.id, seq=2, message_text="pending work"
+                )
+            )
+        if change == "active_session":
+            session.status = "running"
+        if change == "fence":
+            session.result_receipt_fence_id = "unsettled"
+        if change == "unknown_permit":
+            db.add(
+                AgentCapacityReservation(
+                    local_session_id=session.local_session_id,
+                    session_id=session.id,
+                    pending_seq=2,
+                    tier="project",
+                    state="uncertain",
+                )
+            )
+        if change == "owner":
+            original = controls._receipt(db, s.task["id"])
+            clone = original.model_dump(exclude={"id"})
+            clone.update(task_id=None, generation=original.generation + 1)
+            db.add(FactoryReceipt(**clone))
+    assert not conductor.reserve_node(
+        s.task["id"], "correct_1", context["workflow_id"], context
+    )
+    assert len(conductor.graph.node_runs(s.task["id"], "correct_1")) == 1
+
+
+@pytest.mark.parametrize("verdict", ["approve", "changes_requested"])
+def test_evidence_continuation_terminal_executes_only_pair_and_one_acceptance(
+    evidence_terminal, monkeypatch, verdict
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.node_workflows import _node_prompt
+
+    s = evidence_terminal
+    proposal, _ = recover_evidence(s)
+    monkeypatch.setattr(conductor, "_slot_budget", lambda: 1)
+    monkeypatch.setattr(conductor, "_reviewer_override", lambda *_: (True, "opus"))
+    monkeypatch.setattr(conductor, "_attempt_escalation", lambda *_: None)
+    monkeypatch.setattr(conductor, "select_model", lambda *_: {"model": "opus"})
+    pauses = []
+    monkeypatch.setattr(
+        conductor, "_pause_refusal", lambda _task, reason: pauses.append(reason)
+    )
+
+    def tick():
+        return s.recovery.reconcile(
+            conductor._task(s.task["id"]),
+            s.policy,
+            conductor.graph.load_graph(s.task["id"]),
+            conductor.graph.node_runs(s.task["id"]),
+        )
+
+    def settle(key, attempt, value):
+        workflow = f"factory-node:{s.task['id']}:{key}:{attempt}"
+        result = {
+            "status": "succeeded",
+            "head_sha": s.head,
+            "cost_usd": None,
+            "value": {"summary": "Verified cached exact-head evidence", **value},
+            "artifact": {
+                "status": "ok",
+                "value": {"summary": "Verified cached exact-head evidence", **value},
+            },
+        }
+        assert conductor.graph.record_outcome(
+            s.task["id"], key, attempt, "succeeded", None, s.head, json.dumps(result)
+        ).ok
+        assert controls.record_start_outcome(
+            s.task["id"], workflow, "succeeded", "factory"
+        )["ok"]
+
+    assert tick()
+    assert conductor.graph.node_runs(s.task["id"], "correct_1")[-1]["attempt"] == 2
+    settle("correct_1", 2, {"status": "complete", "head_sha": s.head, "pr_number": 3})
+    assert tick()
+    assert len(conductor.graph.node_runs(s.task["id"], "review_1")) == 1
+    settle("review_1", 1, {"verdict": verdict, "head_sha": s.head, "pr_number": 3})
+    assert tick()
+    if verdict != "approve":
+        assert pauses and not conductor.graph.node_runs(
+            s.task["id"], proposal["planner_key"]
+        )
+        return
+    final = next(
+        n
+        for n in conductor.graph.load_graph(s.task["id"])
+        if n["node_key"] == proposal["planner_key"]
+    )
+    assert final["max_attempts"] == 1
+    assert tick()
+    run = conductor.graph.node_runs(s.task["id"], proposal["planner_key"])[0]
+    assert run["attempt"] == 1
+    schema = run["pin"]["artifact_schema"]
+    assert schema["properties"]["action"] == {"enum": ["finish", "pause"]}
+    assert "read-only" in _node_prompt(
+        run["pin"]["prompt"],
+        run["pin"]["artifact_path"],
+        schema,
+        branch=run["pin"]["branch"],
+    )
+    settle(
+        proposal["planner_key"],
+        1,
+        {"action": "finish", "reason": "Verified", "pr_number": 3, "head_sha": s.head},
+    )
+    accepted = []
+    monkeypatch.setattr(
+        conductor, "apply_decision", lambda *args: accepted.append(args)
+    )
+    assert tick() and len(accepted) == 1
+    assert controls.task_snapshot(s.task["id"])["turns_used"] == 5
+    assert controls.task_snapshot(s.task["id"])["planner_turns_used"] == 1
+
+
+def test_evidence_continuation_preserves_unknown_historical_spend(evidence_terminal):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    s = evidence_terminal
+    with Session(s.engine) as db, db.begin():
+        run = db.get(SwarmNodeRun, s.source["id"])
+        run.cost_usd = None
+        result = json.loads(run.outcome_json)
+        result["cost_usd"] = None
+        run.outcome_json = json.dumps(result)
+        start = db.exec(
+            select(FactoryStart).where(
+                FactoryStart.task_id == s.task["id"],
+                FactoryStart.start_key == run.dispatch_key,
+            )
+        ).one()
+        start.cost_usd = None
+    before = controls.task_snapshot(s.task["id"])
+    recover_evidence(s)
+    after = controls.task_snapshot(s.task["id"])
+    assert before["starts"] == after["starts"]
+    assert before["committed_cost_usd"] == after["committed_cost_usd"]
+    assert conductor.graph.node_runs(s.task["id"], "correct_1")[0]["cost_usd"] is None
+
+
+def test_evidence_continuation_rejects_intervening_graph_edit(evidence_resume):
+    s = evidence_resume
+    node = grant_evidence(s)
+    context = evidence_context(s, node)
+    assert conductor._add(
+        s.task,
+        s.policy,
+        "investigate_new",
+        "Other work",
+        [],
+        "opus",
+        "other",
+        "Changed plan",
+    ).ok
+    assert not conductor.reserve_node(
+        s.task["id"], "correct_1", context["workflow_id"], context
+    )
 
 
 @pytest.fixture(autouse=True)

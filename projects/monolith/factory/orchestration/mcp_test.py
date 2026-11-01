@@ -1824,6 +1824,8 @@ def test_expired_task_recovery_requires_human_and_reviewed_preview(monkeypatch):
         assert not _as(principal, invoke)["ok"]
     assert calls == []
 
+
+def test_expired_task_recovery_requires_preview():
     async def unpreviewed():
         return await mcp.factory_recover_expired_task(
             "apply", 838, "2026-10-18T23:00:00+00:00", 9, "Recover"
@@ -1832,6 +1834,54 @@ def test_expired_task_recovery_requires_human_and_reviewed_preview(monkeypatch):
     assert (
         _as(_principal(), unpreviewed)["reason"]
         == "task_recovery_requires_preview_and_request_key"
+    )
+
+
+def test_evidence_continuation_requires_standing_operator_and_exact_preview(
+    monkeypatch,
+):
+    from factory.orchestration import evidence_recovery
+
+    calls = []
+    monkeypatch.setattr(
+        evidence_recovery,
+        "apply",
+        lambda *a, **kw: calls.append((a, kw)) or {"ok": True},
+    )
+    arguments = dict(
+        operation="apply",
+        receipt_id=1061,
+        decision_id="a" * 64,
+        node_key="correct_1",
+        source_run_id=123,
+        expected_revision=10,
+        pr_number=7532,
+        head_sha="b" * 40,
+        evidence_comment_id=99,
+        deadline_at="2026-11-01T09:00:00+00:00",
+        reason="Only the same correction and independent review",
+        request_key="once",
+        expected_preview_sha256="c" * 64,
+    )
+
+    async def invoke():
+        return await mcp.factory_continue_evidence(**arguments)
+
+    assert _as(_principal(), invoke)["ok"]
+    assert calls[0][1]["actor"] == "joe"
+    assert calls[0][0][0]["decision"]["expected_version"] == 10
+    calls.clear()
+    for principal in (
+        _principal(groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        assert not _as(principal, invoke)["ok"]
+    assert calls == []
+    arguments.pop("expected_preview_sha256")
+    assert (
+        _as(_principal(), invoke)["reason"]
+        == "evidence_continuation_requires_preview_and_request_key"
     )
     assert calls == []
 

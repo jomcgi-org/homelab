@@ -185,9 +185,16 @@ def load_graph(
 
     with _session(session) as db:
         selected_version = _current_version(db, task_id) if version is None else version
+        from factory.orchestration.evidence_continuation import project
+
         if version is not None and version < _current_version(db, task_id):
-            return _historical_nodes(db, task_id, selected_version)
-        return [
+            return project(
+                db,
+                task_id,
+                _historical_nodes(db, task_id, selected_version),
+                selected_version,
+            )
+        nodes = [
             {
                 "node_key": node.node_key,
                 "kind": node.kind,
@@ -207,6 +214,7 @@ def load_graph(
             }
             for node in _visible_nodes(db, task_id, selected_version)
         ]
+        return project(db, task_id, nodes, selected_version)
 
 
 def _historical_nodes(db: Session, task_id: str, version: int) -> list[dict]:
@@ -1430,7 +1438,20 @@ def admit_dispatch(
             return refuse("node_succeeded")
         if any(run.status not in TERMINAL_RUN_STATUSES for run in runs):
             return refuse("active_attempt")
-        if _spent_attempts(runs) >= node.max_attempts:
+        from factory.orchestration import evidence_continuation
+
+        projected = next(
+            n for n in load_graph(task_id, session=db) if n["node_key"] == node_key
+        )
+        grant = projected.get("evidence_continuation")
+        limit = node.max_attempts
+        if grant:
+            try:
+                evidence_continuation.validate_dispatch(db, task_id, projected, context)
+            except ValueError as exc:
+                return refuse(str(exc))
+            limit = evidence_continuation.attempt_limit(projected)
+        if _spent_attempts(runs) >= limit:
             return refuse("attempts_exhausted")
         for dependency in _node_deps(node):
             if dependency not in live or not any(
@@ -1453,10 +1474,12 @@ def admit_dispatch(
             "task_id": task_id,
             "node_key": node_key,
             "attempt": attempt,
-            "prompt": dispatch_prompt(db, task_id, node_key, node.prompt),
+            "prompt": evidence_continuation.prompt(grant)
+            if grant and node_key == grant["node_key"]
+            else dispatch_prompt(db, task_id, node_key, node.prompt),
             "model": model or node.model,
             "max_cost_usd": reservation,
-            "max_attempts": node.max_attempts + excused,
+            "max_attempts": limit + excused,
             "turn_timeout_seconds": node.turn_timeout_seconds,
             **stepped,
         }
