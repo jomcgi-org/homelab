@@ -4761,9 +4761,17 @@ def test_public_docs_atomic_release_grant_replay_and_queue(
         "oversize",
         "blob",
         "missing",
+        "non_utf8",
+        "unchanged",
+        "size_mismatch",
+        "base_executable",
+        "base_symlink",
+        "base_truncated",
+        "bad_base64",
     ],
 )
 def test_public_docs_rejects_unverified_scope(database, public_docs_delivery, change):
+    import base64
     from factory.orchestration import factory_landing_release as releases
 
     pull, responses = public_docs_delivery
@@ -4771,6 +4779,11 @@ def test_public_docs_rejects_unverified_scope(database, public_docs_delivery, ch
     entry = next(
         e
         for e in responses["git/trees/new/projects/monolith"]["tree"]
+        if e["path"] == "ARCHITECTURE.md"
+    )
+    old_entry = next(
+        e
+        for e in responses["git/trees/old/projects/monolith"]["tree"]
         if e["path"] == "ARCHITECTURE.md"
     )
     blob = responses[f"git/blobs/{files[0]['sha']}"]
@@ -4800,6 +4813,20 @@ def test_public_docs_rejects_unverified_scope(database, public_docs_delivery, ch
         files[0]["sha"] = "f" * 40
     elif change == "missing":
         responses["git/trees/new"]["tree"].clear()
+    elif change == "non_utf8":
+        blob.update(content=base64.b64encode(b"\xff\xfe# x").decode(), size=5)
+    elif change == "unchanged":
+        old_entry["sha"] = files[0]["sha"]
+    elif change == "size_mismatch":
+        blob["size"] = 8
+    elif change == "base_executable":
+        old_entry["mode"] = "100755"
+    elif change == "base_symlink":
+        old_entry["mode"] = "120000"
+    elif change == "base_truncated":
+        responses["git/trees/old"]["truncated"] = True
+    elif change == "bad_base64":
+        blob["content"] += "!"
     with pytest.raises(ValueError, match="landing_public_docs_unverified"):
         releases.preview(838, 7170, "a" * 40, "Publish docs", scope=public_docs_scope())
     with Session(database) as db:
@@ -4807,6 +4834,47 @@ def test_public_docs_rejects_unverified_scope(database, public_docs_delivery, ch
         assert not db.exec(
             select(FactoryAudit).where(FactoryAudit.action == releases.SCOPE_ACTION)
         ).all()
+
+
+@pytest.mark.parametrize("tamper", ["head", "path"])
+def test_public_docs_scoped_refusal_rejects_tampered_proof(
+    database, public_docs_delivery, tamper
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    proposal = releases.preview(
+        838, 7170, "a" * 40, "Publish docs", scope=public_docs_scope()
+    )
+    args = {**operator_request(proposal, "public-docs"), "scope": public_docs_scope()}
+    assert releases.apply(838, 7170, "a" * 40, "Publish docs", **args)["ok"]
+
+    def edit(grant):
+        proof = grant["public_docs"]
+        if tamper == "head":
+            proof["head_sha"] = "c" * 40
+        else:
+            proof["files"][0]["path"] = "AGENTS.md"
+
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        assert releases.scoped_refusal(db, row, 7170, "a" * 40) is None
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        direction = json.loads(row.direction_json)
+        edit(direction["landing_authorization"])
+        row.direction_json = json.dumps(direction)
+        (audit,) = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == releases.SCOPE_ACTION)
+        ).all()
+        detail = json.loads(audit.detail_json)
+        edit(detail["result"]["landing_authorization"])
+        audit.detail_json = json.dumps(detail)
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        assert (
+            releases.scoped_refusal(db, row, 7170, "a" * 40)
+            == "scoped_landing_public_docs_unverified"
+        )
 
 
 @pytest.mark.parametrize(
