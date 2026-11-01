@@ -1483,6 +1483,25 @@ describe("sign-in expiry", () => {
     expect(sessionStorage.getItem(draftKey)).toBe(null);
   });
 
+  it("keeps the same player's draft when a new character reloads the page", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    const assigned = pageData("player", []);
+    stubFetch(() => ({
+      ...assigned,
+      campaign: { ...assigned.campaign, player_character_id: pcB },
+    }));
+    await render(pageData("player", []));
+    await type("I search the altar.");
+
+    await poll();
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(kept()).toMatchObject({
+      text: "I search the altar.",
+      viewer: { id: "viewer", role: "player" },
+    });
+  });
+
   it("retries a send interrupted before the reload with its original request id", async () => {
     vi.useFakeTimers();
     const reload = stubReload();
