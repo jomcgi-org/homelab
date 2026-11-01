@@ -60,6 +60,7 @@ flowchart TD
   end
   bot -- "acl.check" --> acl
   leader-elector -- "agent.reclaim" --> agent-runner
+  mcp-caller -- "agent.reconcile-settled-retry" --> agent-runner
   bot -- "agent.submit" --> agent-runner
   console-caller -- "console.submit" --> agent-runner
   docs-manifest-gen -- "docs.publish" --> public-frontend
@@ -156,6 +157,7 @@ flowchart TD
 |----|----|----|----|----|----|
 | `acl.check` | logical | Authorize a Discord feature action | `bot` → `acl` | built | projects/monolith/chat/acl.py:68 |
 | `agent.reclaim` | logical | Reclaim stale turn claims left by a crashed replica (leader-owned 5s sweep) | `leader-elector` → `agent-runner` | built | projects/monolith/factory/execution/store.py:772 |
+| `agent.reconcile-settled-retry` | logical | Fence exact ceased lineage and fail one unknown factory attempt | `mcp-caller` → `agent-runner` | built | projects/monolith/factory/settled_retry_reconciliation.py |
 | `agent.submit` | logical | Submit a Discord-triggered agent turn to the runner | `bot` → `agent-runner` | built | projects/monolith/chat/bot.py:1172 |
 | `backup-checker.publish` | physical | Publish bounded per-target observation to the named ConfigMap | `backup-checker` → `backup-status` | built | projects/platform/otel-collector/files/backup_check.py:216 |
 | `backup-health.read` | physical | Read the configured backup-status ConfigMap | `private-binary` → `backup-status` | built | projects/monolith/factory/ops_health.py:732 |
@@ -277,8 +279,9 @@ flowchart TD
 | `triggered-by-header.unauthorized-source` | physical | `cf-ingress` → `agent-runner`: X-Auth-Email identity header | unauthorized-source | The header is forwarded by several allowlisted in-cluster senders behind a default-deny ingress NetworkPolicy, but the policy narrows WHO can reach the pod, not whether the value each of those senders sends is itself verified; the only current consumer records it as attribution with no authorization decision resting on it, so the gap is dormant rather than exploitable today, but nothing in the code enforces that boundary if a future authorization check starts keying on the header directly instead of verifying the underlying JWT | low | header-authz-drift | projects/monolith/factory/execution/router.py:546 |
 
 <details>
-<summary><b>Not UCAs</b>: 43 examined and rejected</summary>
+<summary><b>Not UCAs</b>: 44 examined and rejected</summary>
 
+- **An uninvoked retry is mistaken for proof that an earlier missing dispatch never ran**: Explicit operator recovery requires an empty exact first receipt, released observer, unchanged terminal workflow and native ownership. The CP must independently prove positive idled parking and complete journal/successor coverage, then durably fence that original lineage against restore. Digest/CAS and audited intent bind replay; the final lock rechecks local identity and preserves the native turn, settled permit, unknown result, reserved cost and unrelated holds. Partial remote effects remain explicit, never a success or a zero-cost refund. Evidence: projects/monolith/factory/settled_retry_reconciliation.py; factory/execution/reconciliation.py:read_unknown_retry_factory_attempt.
 - **Luna claiming verification_state=verified with no evidence array**: apply_extraction force-downgrades to unverified server-side whenever assertion.evidence is empty, regardless of what the model claimed (projects/monolith/knowledge/extraction.py:364)
 - **Retire a delivered Claude quota probe binding only after exact positive terminal evidence**: The bounded leader retry binds the origin audit, sole completed turn and settled permit, receipt provenance, dispatch and original-generation destroyed guest. A fresh authenticated read is rechecked under control/capacity/session/receipt locks; changed identities, aliases, pending work, missing evidence and unknown outcomes refuse. Fence and binding retirement commit with one audit, preserve result/accounting/lineage and observer timestamps, and perform neither DELETE nor inference. Evidence: factory/completed_probe_cleanup.py; factory/execution/guest_cleanup.py.
 - **a KG-lane dead letter with no operator path back to extraction**: GET /api/knowledge/dead-letter lists raws at MAX_GARDENER_RETRIES; replay deletes the failed provenance row, reopens resolution_failed disputes and re-enqueues extraction (projects/monolith/knowledge/router.py:541)

@@ -1,6 +1,6 @@
 # STPA Control Analysis: embervm
 
-_logic @ a37f9ce · security @ c05e43f66_
+_logic @ 94db62486 · security @ c05e43f66_
 
 _Auto-generated STPA safety model: unsafe states this system can reach and control actions that get it there. Single or multiple lenses: logic (mission failure), security (deliberate attack), governance (data safety)._
 
@@ -18,6 +18,9 @@ Read top-down: Losses are outcomes we must prevent; Hazards are states leading t
 
 ```mermaid
 flowchart TD
+  subgraph control["control"]
+    session-manager["Serialized session lifecycle and recovery admission"]
+  end
   subgraph control_plane["control_plane"]
     dispatcher["Admission, quota gate, placement, dispatch"]
     node-registry["Dial-home registry + reconcile inventory"]
@@ -32,12 +35,15 @@ flowchart TD
   end
   api -- "api.admit_task" --> dispatcher
   caller -- "api.read-historical-cessation" --> api
+  api -- "api.recovery_fence" --> session-manager
   dispatcher -- "dispatcher.quota_gate" --> op-log
+  session-manager -- "session-manager.commit_recovery_fence" --> op-log
   stateful-manager -- "stateful-manager.bless_generation" --> op-log
   stateful-manager -- "stateful-manager.destroy_orphan" --> node-registry
   node-registry -. "reported primed pool inventory (adopt_inventory)" .-> dispatcher
   node-registry -. "reported stateful VM inventory (dial-home NodeStatus), authoritative per invariant 5" .-> stateful-manager
   op-log -. "Complete retained positive parking/eviction history and absence of surviving successor/restore authority" .-> api
+  op-log -. "Fresh durable restore authority: recovery-fenced, unknown lineage, or retained unfenced holder; read errors deny admission" .-> session-manager
 ```
 
 ### Physical view
@@ -88,6 +94,7 @@ flowchart TD
 |----|----|----|----|----|----|
 | `api.admit_task` | logical | Admit task workload | `api` → `dispatcher` | built | projects/embervm/control/lib/embervm/router.ex:33 |
 | `api.read-historical-cessation` | logical | Read exact bounded original-dispatch cessation proof without restoring execution | `caller` → `api` | built | projects/embervm/control/lib/embervm/router.ex |
+| `api.recovery_fence` | logical | Seal exact verified terminal lineage against restoration | `api` → `session-manager` | built | projects/embervm/control/lib/embervm/router.ex |
 | `control-plane.grpc_command` | physical | gRPC lifecycle command (BuildBase, Prime, Assign, Destroy, DeleteVolume, RestoreArtifact) | `control-plane` → `noded` | built | projects/embervm/proto/embervm/node/v1/node.proto:57 |
 | `dispatcher.quota_gate` | logical | Gate quota on admission | `dispatcher` → `op-log` | built | projects/embervm/control/lib/embervm/dispatcher.ex:258 |
 | `egress-proxy.inject_credential` | physical | Inject credential into request | `egress-proxy` → `external-host` | built | projects/embervm/ARCHITECTURE.md:710 |
@@ -96,6 +103,7 @@ flowchart TD
 | `noded.artifact_verb` | physical | Access artifact in store (get, put, delete, list, tag) | `noded` → `s3-store` | built | projects/embervm/proto/embervm/node/v1/node.proto:463 |
 | `noded.refuse_if_silenced` | physical | Refuse local authority if control-plane contact stale | `noded` → `noded` | built | projects/embervm/noded/server/server.go:619 |
 | `noded.vsock_dispatch` | physical | vsock dispatch to guest | `noded` → `guest-vm` | built | projects/embervm/ARCHITECTURE.md:234 |
+| `session-manager.commit_recovery_fence` | logical | Compare-and-set immutable recovery fence and journal audit | `session-manager` → `op-log` | built | projects/embervm/control/lib/embervm/session_recovery_fence.ex |
 | `shotter-chromium.fetch_subresource` | physical | Fetch subresource from rendered page | `shotter-chromium` → `shotter-proxy` | built | projects/embervm/runtimes/shotter/guest-init/cmd/main.go:168 |
 | `shotter-proxy.forward_allowed` | physical | Forward request to allowlisted destination | `shotter-proxy` → `egress-proxy` | built | projects/embervm/runtimes/shotter/guest-init/cmd/proxy.go:391-405 |
 | `stateful-manager.bless_generation` | logical | Issue blessed generation | `stateful-manager` → `op-log` | built | projects/embervm/control/lib/embervm/stateful_manager.ex:676 |
@@ -110,7 +118,7 @@ flowchart TD
 
 - **Built:** task/session/serving/stateful/composite lifecycle managers, admission quota gate (fail-closed per-principal when a budget is configured), generation blessing (CP-issued pre-dispatch and checkpoint-abort self-heal via durable checkpoint_dispatched), delegated generation leases (BlessingLease, bounded and monotonic), orphan-destroy reconcile with an ACTIVATOR-origin adoption guard that runs before the destroy pass, S3 warmth GC that aborts the whole sweep on a partial listing, dial-home registration, brick-local egress credential injection scoped by egressTo, the shotter task-class guest (ADR embervm/035): a warm headless Chromium snapshot base behind an in-guest, image-baked, hard-allowlisted egress proxy, whose readiness is now gated on one real trial capture before /shim/ready flips, the noded gRPC control channel, authenticated by a static bearer token enabled in production (#4693); the inert Cilium ingress policy was removed in #5816 and supplies no network isolation, SigV4-authenticated access to the S3 artifact store enforced by the gateway (enableAuth: true), enabled in production (#4708); the surviving embervm identity is one credential shared by every brick and the control plane, the brick silence timeout (ADR embervm/037) bounding node-local authority (activator wakes, group wakes, blessing-lease self-advance) once control-plane contact goes stale, armed at 21600s in production and dev, the warmth ownership transition guard (#4962): every brick refreshes a .alive claim per warmth segment and startup GC reaps only unclaimed pre-heartbeat directories or claims older than WarmthStaleAfter, principal-artifact envelope encryption and capability-gated restore in noded, reader path unconditional, writer and enforcement armed in production and dev as of 2026-08 (ADR embervm/033, #4691; status updated 2026-08-23 (#5233))
 - **Designed-only:** mTLS/SPIFFE certificate-based mutual transport auth for noded (#4693 delivered bearer-token authentication; the inert policy was removed in #5816), node-local activator for stateful/composite wake beyond cold boot (partially landed, stateful activator currently only cold-boots), audience-scoped guest token, request-scoped GitHub tool mediation replacing host-keyed injection (ADR 055)
-- **Note:** Focused egress CA startup-recovery review for #7187; live recovery remains unverified. Policy-removal corrections retain the #5816 review and unrelated findings retain their earlier evidence. Focused native AGENTS.md context-loading review against a37f9ce with the accompanying runtime diff; this changes worker instructions without changing the modeled platform control actions. Focused historical cessation proof against 434907e17 with this diff: bounded read-only journal snapshot, explicit original identity, complete creation coverage and serialized current ownership checks. Proof assumes the hardcoded one-replica Recreate authority; live recovery is not claimed.
+- **Note:** Focused egress CA startup-recovery review for #7187; live recovery remains unverified. Policy-removal corrections retain the #5816 review and unrelated findings retain their earlier evidence. Focused native AGENTS.md context-loading review against a37f9ce with the accompanying runtime diff; this changes worker instructions without changing the modeled platform control actions. Focused historical cessation proof against 434907e17 with this diff: bounded read-only journal snapshot, explicit original identity, complete creation coverage and serialized current ownership checks. Proof assumes the hardcoded one-replica Recreate authority; live recovery is not claimed. Focused retained-terminal recovery fencing against 94db62486 with this diff: exact interrupted dispatch and positive parked history, fresh complete successor checks, immutable CAS audit and durable restore exclusion; original result and accounting stay unknown.
 </details>
 
 ### Losses
@@ -157,13 +165,14 @@ flowchart TD
 | `warmth-fetch.unauthorized-source` | physical | `s3-store` → `noded`: fetched artifact bytes on RestoreArtifact | unauthorized-source | the gateway now enforces SigV4 (enableAuth: true) and rejects requests signed by no identity, but the embervm identity's access key is one credential shared by every brick and the control plane rather than scoped per principal, lineage, brick, workload, or generation, so an object noded restores as warmth may have been written by any brick holding that shared credential, not necessarily the legitimate owner of the lineage being restored; the finer per-principal binding (envelope encryption plus capability-gated restore) is built and enforced in production and dev (#5233 status update) | medium | store-credential-unscoped | projects/embervm/chart/templates/_noded-pod.tpl:353 |
 
 <details>
-<summary><b>Not UCAs</b>: 18 examined and rejected</summary>
+<summary><b>Not UCAs</b>: 19 examined and rejected</summary>
 
 - **a fleet-wide freeze of new session/serving/stateful placement during a genuine control-plane outage longer than the 6h brick silence bound (ADR embervm/037)**: a deliberate, accepted trade-off (ADR embervm/037 consequences): the gate only refuses NEW work, never banks or destroys anything, so live VMs keep running and held warmth stays intact; normal service resumes immediately once contact returns (noded/server/server.go:608-625), and 6h was sized specifically to exceed a routine control-plane roll
 - **a leaked Chromium CDP target accumulating across shotter invocations**: each invocation restores its own CoW clone that is destroyed after the response, so a leak cannot outlive one clone; within a clone, closeCDPTarget runs on every return path via defer immediately after target creation, including navigation and capture errors (projects/embervm/chart/templates/workload-shotter.yaml, guest-init/cmd/cdp.go:467-481)
 - **a pruned session projection authorizing recovery solely because GET returns404**: The owner-scoped verifier requires positive original parking/parked/evicted history above compaction, complete successor coverage, no surviving lineage or dispatch-capable restore authority, and fails closed on missing or bounded-out evidence. An orphan Prime after manager death cannot register, Assign or invoke; no zero-orphan-resource claim is made (projects/embervm/control/lib/embervm/session_cessation_evidence.ex; projects/embervm/control/lib/embervm/session_manager.ex; projects/embervm/control/test/embervm/session_manager_test.exs).
 - **a redirect or subresource on a mapped page escaping the shotter-proxy allowlist**: the proxy is the only egress path (--proxy-server with loopback-only bypass, no direct-network fallback), so a redirect or a subresource fetch to an unmapped host issues a fresh CONNECT/absolute request through the same proxy, is re-parsed and refused per connection by handleConnection, and is checked by the same resolve() call as any other request, never trusted because it originated from an already-allowed page (projects/embervm/runtimes/shotter/guest-init/cmd/main.go:168-175, guest-init/cmd/proxy.go:293-313,391-405)
 - **a restored clone resuming a page or CDP target left over from a prior invocation**: createCDPTarget opens a fresh about:blank target per invocation specifically so an hours-later restore never inherits a stale page or target (projects/embervm/runtimes/shotter/guest-init/cmd/cdp.go:46-47)
+- **a retained terminal holder restoring after an accepted recovery proof or uncertain fence response**: Preview has no recovery authority. Exact owner-scoped apply repeats bounded journal, projection, successor and pending-work checks under manager serialization, then commits only an immutable recovery fence and audit. Every restoring create reads the durable fence; missing durable holders and read errors refuse, including stale ETS after pruning. Restart/replay tests preserve old invocation data and prove duplicate applies do not append again (projects/embervm/control/lib/embervm/session_recovery_fence.ex; projects/embervm/control/lib/embervm/session_manager.ex; projects/embervm/control/test/embervm/session_recovery_fence_test.exs).
 - **a successful initial CA recovery silently widening destination access or rotating running guests onto a new trust anchor**: normal destinations pass route and credential resolution before requesting a minter; the reserved host serves only the public CA, and a loaded minter is returned without rereading replacement files for the process lifetime (projects/firecracker/substrate/egress-proxy/cmd/main.go:299-310,344-365,414-428; swap.go:816-828)
 - **checkpoint-abort auto-bump producing an unblessed generation**: the resolve-timeout auto-abort lane (blessedGeneration: 0) is the ONLY case that produces it, and StatefulStore correctly quarantines it as a fail-closed signal rather than treating it as a bug (noded/server/stateful.go:605-610)
 - **enabling native Pi repository context also enabling arbitrary extension, skill or prompt-template discovery**: Pi loads checkout guidance from its workspace while retaining --no-extensions, --no-skills and --no-prompt-templates. The factory role prompt still passes through compose_system_prompt and only image-owned extensions are explicitly loaded; the spawn regression asserts these arguments together (projects/embervm/runtimes/claude/shim.py:5779; projects/embervm/runtimes/claude/shim_test.py:9389).

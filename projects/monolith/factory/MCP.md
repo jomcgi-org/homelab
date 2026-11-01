@@ -421,6 +421,26 @@ local regression fixtures, not claims of live continuation or activation.
 
 ### Inspecting historical cessation
 
+`factory_reconcile_settled_retry` previews or applies one exact receipt/session/
+permit recovery with the same stable request key. It covers only an empty first
+response receipt whose observer released ownership, followed by a settled
+uninvoked second dispatch. It does not accept the learning or quota-probe shapes.
+The preview names the permanent side effect: that original guest lineage loses
+restore authority. A fresh authenticated, bounded CP journal proof and complete
+successor/pending-work exclusion are mandatory. Apply uses CP digest/CAS and
+idempotency, then rechecks the local owner under control/pool/session locks.
+It fails the exact factory run/start at its existing reserved unknown cost while
+preserving the native session, turn, permit, result receipt and every other hold.
+It never creates a result, deletes a guest, invokes work or changes quota.
+
+An `outcome_unknown` fence response leaves the factory unresolved and its intent
+durable. Reconcile using identical apply arguments and key. A response followed
+by local CAS refusal reports that phase explicitly; it does not undo the fence
+or settle changed work. Normal factory policy owns subsequent continuation.
+This path shares the single-writer CP authority assumption below and does not
+claim that orphan workspace-upload RPCs ceased; those cannot dispatch work and
+the durable fence prevents their bytes from restoring the retired lineage.
+
 `factory_permit_diagnostics` projects `observation.recorded_cessation` from the
 saved supervisor audit: its identity hash, guest identity, generation, invocation
 timestamps, observation time, terminal state, cessation marker and response hash.

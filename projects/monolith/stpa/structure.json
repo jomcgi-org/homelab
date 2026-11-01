@@ -635,6 +635,15 @@
       "to": "factory-refill",
       "maturity": "built",
       "evidence": "projects/monolith/factory/learning_reconciliation.py"
+    },
+    {
+      "key": "agent.reconcile-settled-retry",
+      "label": "Fence exact ceased lineage and fail one unknown factory attempt",
+      "view": "logical",
+      "from": "mcp-caller",
+      "to": "agent-runner",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/settled_retry_reconciliation.py"
     }
   ],
   "feedback": [

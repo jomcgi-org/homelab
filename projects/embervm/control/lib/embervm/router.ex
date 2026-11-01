@@ -185,6 +185,12 @@ defmodule Embervm.Router do
     handle_session_cessation_evidence(conn, id)
   end
 
+  # Existing management authentication and exact retained owner only. A retired
+  # session capability cannot acquire a recovery fence for its own lineage.
+  post "/v1/sessions/:id/recovery-fence" do
+    handle_session_recovery_fence(conn, id)
+  end
+
   get "/v1/sessions/:id/residency" do
     handle_residency(conn, id, :list)
   end
@@ -2122,6 +2128,24 @@ defmodule Embervm.Router do
       end
     else
       send_json(conn, 400, %{error: "invalid historical cessation identity", retryable: false})
+    end
+  end
+
+  defp handle_session_recovery_fence(conn, session_id) do
+    with {:ok, body, conn} <- read_body(conn, length: 4096, read_length: 4096),
+         {:ok, request} <- Jason.decode(body),
+         true <- Embervm.SessionRecoveryFence.valid_request?(request) do
+      case session_manager().session_recovery_fence(session_manager_server(), session_id, request, conn.assigns.principal) do
+        {:ok, proof} -> send_json(conn, 200, proof)
+        {:error, :historical_not_found, _} -> send_json(conn, 404, %{error: "session not found", retryable: false})
+        {:error, reason, diagnostics} when is_atom(reason) and is_map(diagnostics) ->
+          status = if reason in [:historical_store_unavailable, :recovery_store_unavailable], do: 503, else: 409
+          send_json(conn, status, %{error: "session recovery fence unavailable", reason: to_string(reason), diagnostics: diagnostics, retryable: false})
+        _ -> send_json(conn, 503, %{error: "session recovery fence unavailable", reason: "recovery_store_unavailable", retryable: false})
+      end
+    else
+      {:more, _, conn} -> send_json(conn, 413, %{error: "request too large", retryable: false})
+      _ -> send_json(conn, 400, %{error: "invalid recovery fence request", retryable: false})
     end
   end
 

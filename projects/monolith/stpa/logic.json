@@ -677,6 +677,10 @@
     {
       "item": "Retire a delivered Claude quota probe binding only after exact positive terminal evidence",
       "reason": "The bounded leader retry binds the origin audit, sole completed turn and settled permit, receipt provenance, dispatch and original-generation destroyed guest. A fresh authenticated read is rechecked under control/capacity/session/receipt locks; changed identities, aliases, pending work, missing evidence and unknown outcomes refuse. Fence and binding retirement commit with one audit, preserve result/accounting/lineage and observer timestamps, and perform neither DELETE nor inference. Evidence: factory/completed_probe_cleanup.py; factory/execution/guest_cleanup.py."
+    },
+    {
+      "item": "An uninvoked retry is mistaken for proof that an earlier missing dispatch never ran",
+      "reason": "Explicit operator recovery requires an empty exact first receipt, released observer, unchanged terminal workflow and native ownership. The CP must independently prove positive idled parking and complete journal/successor coverage, then durably fence that original lineage against restore. Digest/CAS and audited intent bind replay; the final lock rechecks local identity and preserves the native turn, settled permit, unknown result, reserved cost and unrelated holds. Partial remote effects remain explicit, never a success or a zero-cost refund. Evidence: projects/monolith/factory/settled_retry_reconciliation.py; factory/execution/reconciliation.py:read_unknown_retry_factory_attempt."
     }
   ],
   "open_questions": [

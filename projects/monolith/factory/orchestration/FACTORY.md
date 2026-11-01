@@ -205,6 +205,25 @@ The deadline-release implementation stays hard-staged off, and agent workloads h
 
 ### Supervised cessation
 
+`factory_reconcile_settled_retry` is an explicit standing-operator recovery for
+one missing first-dispatch response followed by a proven uninvoked second
+dispatch. Preview binds the receipt, session, permit, released observer, terminal
+workflow and exact CP dispatch. Apply records intent before requesting a durable
+restore fence for that original lineage. EmberVM requires complete retained
+journal and successor coverage, positive idled parking, exact interruption and
+node-gone eviction, and no dispatch-capable pending work. A missing record or
+node-gone status alone never qualifies. The fence prevents a retained terminal
+holder from authorizing a later restore, including after a CP restart.
+
+Only a fresh matching applied fence lets the exact factory run/start fail with
+reserved unknown cost. Native session, turn, settled permit and receipt history
+stay unchanged; this is not a fabricated interrupted response or zero-cost
+refund. Existing policy decides continuation and all other holds remain in
+force. A lost fence response remains uncertain: repeat only the identical apply
+and key to reconcile its durable intent. If local ownership changed after the
+fence, settlement refuses and the exact lineage stays fenced. This operation
+does not delete guests, invoke models, adjust quota or authorize public release.
+
 For an attempt whose run and start are both `uncertain` and whose node workflow is terminal, `factory_cessation.py` records a `cessation_intent`, destroys that guest at most twice, then settles run and start failed, the permit `supervised_cessation` and cost unknown in one transaction. The automatic path runs behind `FACTORY_ACTIVE_CESSATION_ENABLED` (default off); `request_cessation` runs the same steps for one operator-reviewed attempt fingerprint, never cancelling the receipt.
 
 ## Validation

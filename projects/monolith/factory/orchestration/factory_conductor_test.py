@@ -25251,3 +25251,710 @@ def test_expired_typed_stop_card_is_not_a_planner_decision(paused_settlement):
     after = controls.task_snapshot(s.task["id"])
     assert after["escalation"] == document
     assert after["task_paused"] is True
+
+
+@pytest.fixture
+def settled_retry_recovery(drained_retry_not_invoked, monkeypatch):
+    """An empty first receipt and uninvoked second dispatch need explicit proof."""
+    from copy import deepcopy
+    from datetime import timedelta
+
+    from sqlalchemy import text
+
+    from factory import settled_retry_reconciliation as recovery
+    from factory.execution import reconciliation
+    from factory.execution.models import AgentResultReceipt
+    from factory.execution.transport import EmberVmShimTransport
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = drained_retry_not_invoked
+    with Session(s.engine) as db:
+        receipt = db.get(AgentResultReceipt, "drain-1")
+        receipt.response_observer_released_at = receipt.received_at
+        receipt.received_at = receipt.result_body = receipt.result_sha256 = None
+        db.add(receipt)
+        db.execute(
+            text(
+                "CREATE TABLE workflow_status (workflow_uuid TEXT PRIMARY KEY,status TEXT)"
+            )
+        )
+        db.execute(
+            text("INSERT INTO workflow_status VALUES (:id,'SUCCESS')"),
+            {"id": s.run["dispatch_key"]},
+        )
+        db.commit()
+    _persist_uncertain_not_invoked(s)
+    with Session(s.engine) as db:
+        local = reconciliation.read_unknown_retry_factory_attempt(
+            db, s.run["pin"], s.sid
+        )
+        assert local is not None
+        receipt_id = db.exec(
+            select(FactoryReceipt.id).where(FactoryReceipt.task_id == s.task["id"])
+        ).one()
+    now = controls._now()
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    first = local["unknown_dispatch"]
+    started = int((now - timedelta(minutes=20)).timestamp() * 1000)
+    s.request = {
+        "actor": "operator",
+        "receipt_id": receipt_id,
+        "session_id": s.sid,
+        "permit_id": local["permit_id"],
+        "reason": "Verify ceased first dispatch",
+        "request_key": "settled-retry-key",
+    }
+    s.view = {
+        "session_id": first["guest_id"],
+        "lineage_id": first["guest_id"],
+        "principal": "monolith",
+        "workload": "claude-runtime",
+        "state": "evicted",
+        "terminal_reason": "node_gone",
+        "generation": 0,
+        "turn_seq": 1,
+        "invoke_started_at": started,
+        "last_invoke_at": started,
+        "updated_at": started + 1000,
+        "inflight_dispatch_id": first["dispatch_id"],
+    }
+    s.cp_calls, s.fenced_keys = [], set()
+    s.cp_effects = 0
+    s.proof_change = lambda proof: proof
+    s.after_remote = lambda: None
+    s.lose_apply_response = False
+
+    def audits(action):
+        with Session(s.engine) as db:
+            return [
+                json.loads(raw)
+                for raw in db.exec(
+                    select(FactoryAudit.detail_json).where(
+                        FactoryAudit.action == action
+                    )
+                ).all()
+            ]
+
+    s.audits = audits
+
+    async def get_session(_self, guest):
+        assert guest == first["guest_id"]
+        s.cp_calls.append(("get", guest))
+        return deepcopy(s.view)
+
+    async def fence(_self, guest, payload):
+        s.cp_calls.append((payload["operation"], deepcopy(payload)))
+        applying = payload["operation"] == "apply"
+        fenced = applying or payload["request_key"] in s.fenced_keys
+        if applying:
+            intent = audits(recovery.INTENT)
+            assert len(intent) == 1, "Remote mutation must follow durable intent"
+            assert (
+                intent[0]["proposal"]["cp_payload"]["request_key"]
+                == payload["request_key"]
+            )
+            if payload["request_key"] not in s.fenced_keys:
+                s.fenced_keys.add(payload["request_key"])
+                s.cp_effects += 1
+        proof = {
+            "schema": 1,
+            **{
+                key: deepcopy(s.view[key])
+                for key in (
+                    "session_id",
+                    "lineage_id",
+                    "principal",
+                    "workload",
+                    "state",
+                    "generation",
+                    "invoke_started_at",
+                    "last_invoke_at",
+                    "updated_at",
+                    "turn_seq",
+                )
+            },
+            "dispatch_id": first["dispatch_id"],
+            "preview_sha256": "a" * 64,
+            "evidence_sha256": "b" * 64,
+            "observed_at_unix_ms": int(now.timestamp() * 1000),
+            "fenced": fenced,
+            "recovery_fence": {
+                "schema": 1,
+                "source": "retained_control_plane_journal",
+                "request_key": payload["request_key"],
+                "reason": recovery.CP_REASON,
+                "node_id": "node-original",
+                "vm_id": "vm-original",
+                "terminal_reason": "node_gone",
+                "lineage_id": guest,
+                "authority_scope": "single_writer_dispatch",
+                "complete": True,
+                "no_successor": True,
+                "no_pending_restore": True,
+                "restore_excluded": fenced,
+            },
+        }
+        if applying:
+            s.after_remote()
+            if s.lose_apply_response:
+                raise TimeoutError(
+                    "response lost after the exact remote fence committed"
+                )
+        return s.proof_change(proof)
+
+    monkeypatch.setattr(EmberVmShimTransport, "get_session", get_session)
+    monkeypatch.setattr(EmberVmShimTransport, "session_recovery_fence", fence)
+    return s
+
+
+def _settled_retry_call(s, operation="preview", digest=None, **changes):
+    import asyncio
+
+    from factory import settled_retry_reconciliation as recovery
+
+    return asyncio.run(
+        recovery.run(
+            operation=operation,
+            expected_preview_sha256=digest,
+            **{**s.request, **changes},
+        )
+    )
+
+
+def _settled_retry_factory_snapshot(s):
+    from factory.orchestration.factory_models import FactoryControl, FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    with Session(s.engine) as db:
+        return {
+            model.__tablename__: [row.model_dump() for row in db.exec(select(model))]
+            for model in (FactoryControl, FactoryReceipt, FactoryStart, SwarmNodeRun)
+        }
+
+
+def test_settled_retry_recovery_preserves_unknown_cost_and_native_history(
+    settled_retry_recovery,
+):
+    from factory import settled_retry_reconciliation as recovery
+    from factory.orchestration import factory_controls as controls
+
+    s = settled_retry_recovery
+    native = s.native_snapshot()
+    factory = _settled_retry_factory_snapshot(s)
+    before = controls.task_snapshot(s.task["id"])
+    preview = _settled_retry_call(s)
+    assert preview["state"] == "preview"
+    assert preview["effects"]["cost"] == "reserved_unknown_cost"
+    assert not preview["effects"]["dispatch"]
+    assert _settled_retry_factory_snapshot(s) == factory
+    assert s.native_snapshot() == native
+    assert not s.audits(recovery.INTENT)
+    result = _settled_retry_call(s, "apply", preview["preview_sha256"])
+    assert result["ok"] and result["state"] == "applied"
+    current = controls.task_snapshot(s.task["id"])
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    assert run["status"] == current["starts"][0]["status"] == "failed"
+    assert run["cost_usd"] is current["starts"][0]["cost_usd"] is None
+    assert run["accounting_basis"] == "reserved_unknown_cost"
+    assert run["accounted_cost_usd"] == s.run["pin"]["max_cost_usd"]
+    assert current["committed_cost_usd"] == before["committed_cost_usd"]
+    assert current["turns_used"] == before["turns_used"]
+    assert current["deadline_at"] == before["deadline_at"]
+    assert current["policy"] == before["policy"]
+    assert current["unresolved_starts"] == 0
+    outcome = json.loads(run["outcome_json"])
+    assert outcome["invocation_phase"] == "unknown_dispatch_ceased_then_not_invoked"
+    assert outcome["cost_basis"] == "unknown" and not outcome["capacity_denied"]
+    assert outcome["previous_outcome"] == s.result
+    assert s.native_snapshot() == native
+    assert native["capacity_reservations"][0]["outcome"] == "not_invoked"
+    assert s.cp_effects == 1
+    assert len(s.audits(recovery.INTENT)) == len(s.audits(recovery.APPLIED)) == 1
+    calls = list(s.cp_calls)
+    settled = _settled_retry_factory_snapshot(s)
+    assert _settled_retry_call(s, "apply", preview["preview_sha256"]) == result
+    assert s.cp_calls == calls and _settled_retry_factory_snapshot(s) == settled
+    assert s.native_snapshot() == native
+
+
+def test_settled_retry_reader_never_becomes_automatic_conductor_proof(
+    settled_retry_recovery,
+):
+    from factory.execution import reconciliation
+
+    s = settled_retry_recovery
+    native = s.native_snapshot()
+    with Session(s.engine) as db:
+        assert reconciliation.read_unknown_retry_factory_attempt(
+            db, s.run["pin"], s.sid
+        )
+        assert (
+            reconciliation.read_not_invoked_factory_attempt(db, s.run["pin"], s.sid)
+            is None
+        )
+        assert (
+            reconciliation.read_interrupted_retry_not_invoked_factory_attempt(
+                db, s.run["pin"], s.sid
+            )
+            is None
+        )
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "uncertain"
+    assert s.native_snapshot() == native and not s.cp_calls
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        "late_result",
+        "held_observer",
+        "missing_first_receipt",
+        "duplicate_first_receipt",
+        "wrong_first_dispatch",
+        "observed_first_response",
+        "active_permit",
+        "result_receipt_fence",
+        "pending",
+        "alias",
+        "dispatch_one",
+        "dispatch_three",
+        "newer_turn",
+        "newer_attempt",
+        "workflow_active",
+        "missing_workflow",
+        "changed_permit",
+        "changed_binding",
+        "changed_policy",
+    ],
+)
+def test_settled_retry_refuses_changed_local_identity(settled_retry_recovery, conflict):
+    from sqlalchemy import text
+
+    from factory import settled_retry_reconciliation as recovery
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from factory.orchestration.factory_models import FactoryControl
+    from factory.orchestration.models import SwarmNodeRun
+
+    s = settled_retry_recovery
+    preview = _settled_retry_call(s)
+    with Session(s.engine) as db:
+        receipt = db.get(AgentResultReceipt, "drain-1")
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == s.sid)).one()
+        permit = db.get(AgentCapacityReservation, s.request["permit_id"])
+        if conflict == "late_result":
+            receipt.result_body, receipt.result_sha256, receipt.received_at = (
+                b"{}",
+                "d" * 64,
+                turn.created_at,
+            )
+        elif conflict == "held_observer":
+            receipt.response_observer_released_at = None
+        elif conflict == "missing_first_receipt":
+            db.delete(receipt)
+        elif conflict == "duplicate_first_receipt":
+            db.add(
+                AgentResultReceipt(
+                    **{
+                        **receipt.model_dump(),
+                        "id": "duplicate-first",
+                        "token_sha256": "e" * 64,
+                    }
+                )
+            )
+        elif conflict == "wrong_first_dispatch":
+            receipt.dispatch_count = 2
+        elif conflict == "observed_first_response":
+            receipt.response_observed_at = receipt.created_at
+        elif conflict == "active_permit":
+            permit.state, permit.outcome = "running", None
+        elif conflict == "result_receipt_fence":
+            agent.result_receipt_fence_id = receipt.id
+        elif conflict == "pending":
+            db.add(PendingMessage(session_id=s.sid, seq=2, message_text="new work"))
+        elif conflict == "alias":
+            db.add(
+                AgentSession(
+                    local_session_id="alias",
+                    workspace="guest",
+                    branch="main",
+                    ember_lineage_id=agent.ember_session_id,
+                )
+            )
+        elif conflict in {"dispatch_one", "dispatch_three"}:
+            usage = json.loads(turn.usage_json)
+            usage["recovery"]["dispatch_count"] = 1 if conflict == "dispatch_one" else 3
+            turn.usage_json = json.dumps(usage)
+        elif conflict == "newer_turn":
+            db.add(AgentTurn(session_id=s.sid, seq=2, prompt="new", result_text="new"))
+        elif conflict == "newer_attempt":
+            run = db.exec(select(SwarmNodeRun)).one()
+            db.add(
+                SwarmNodeRun(
+                    **{
+                        **run.model_dump(),
+                        "id": None,
+                        "attempt": 2,
+                        "dispatch_key": "newer-dispatch",
+                    }
+                )
+            )
+        elif conflict == "workflow_active":
+            db.execute(text("UPDATE workflow_status SET status='PENDING'"))
+        elif conflict == "missing_workflow":
+            db.execute(text("DELETE FROM workflow_status"))
+        elif conflict == "changed_permit":
+            permit.owner = "other-owner"
+        elif conflict == "changed_binding":
+            agent.ember_session_token = "rotated-token"
+        else:
+            db.get(FactoryControl, "factory").version += 1
+        db.commit()
+    native, factory = s.native_snapshot(), _settled_retry_factory_snapshot(s)
+    with pytest.raises(ValueError):
+        _settled_retry_call(s, "apply", preview["preview_sha256"])
+    assert (
+        s.native_snapshot() == native and _settled_retry_factory_snapshot(s) == factory
+    )
+    assert s.cp_effects == 0 and not s.audits(recovery.INTENT)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        None,
+        {},
+        {"state": "running"},
+        {"generation": 1},
+        {"generation": False},
+        {"inflight_dispatch_id": "other-dispatch"},
+        {"session_id": "other-guest"},
+        {"lineage_id": "successor"},
+    ],
+)
+def test_settled_retry_requires_positive_exact_guest(settled_retry_recovery, change):
+    s = settled_retry_recovery
+    s.view = None if change is None else ({**s.view, **change} if change else {})
+    native, factory = s.native_snapshot(), _settled_retry_factory_snapshot(s)
+    with pytest.raises(ValueError):
+        _settled_retry_call(s)
+    assert (
+        s.native_snapshot() == native and _settled_retry_factory_snapshot(s) == factory
+    )
+    assert s.cp_effects == 0
+
+
+@pytest.mark.parametrize(
+    "field,value,nested",
+    [
+        ("observed_at_unix_ms", 0, False),
+        ("observed_at_unix_ms", 2**63, False),
+        ("session_id", "other-guest", False),
+        ("dispatch_id", "other-dispatch", False),
+        ("evidence_sha256", "not-a-digest", False),
+        ("fenced", True, False),
+        ("complete", False, True),
+        ("no_successor", False, True),
+        ("no_pending_restore", False, True),
+        ("source", "guest-says-stopped", True),
+        ("authority_scope", "partial", True),
+        ("schema", True, False),
+        ("schema", True, True),
+        ("turn_seq", True, False),
+        ("generation", False, False),
+        ("principal", "", False),
+        ("last_invoke_at", False, False),
+        ("lineage_id", "other-lineage", True),
+        ("request_key", "other-request", True),
+        ("node_id", "", True),
+        ("vm_id", "", True),
+        ("restore_excluded", True, True),
+    ],
+)
+def test_settled_retry_rejects_incomplete_or_stale_cp_proof(
+    settled_retry_recovery, field, value, nested
+):
+    s = settled_retry_recovery
+
+    def change(proof):
+        (proof["recovery_fence"] if nested else proof)[field] = value
+        return proof
+
+    s.proof_change = change
+    native, factory = s.native_snapshot(), _settled_retry_factory_snapshot(s)
+    with pytest.raises(ValueError, match="cessation_invalid"):
+        _settled_retry_call(s)
+    assert (
+        s.native_snapshot() == native and _settled_retry_factory_snapshot(s) == factory
+    )
+    assert s.cp_effects == 0
+
+
+@pytest.mark.parametrize(
+    "conflict", ["restore_not_excluded", "changed_digest", "stale_evidence"]
+)
+def test_settled_retry_post_fence_proof_must_still_be_fresh_exact_and_exclusive(
+    settled_retry_recovery, conflict
+):
+    from factory import settled_retry_reconciliation as recovery
+
+    s = settled_retry_recovery
+    preview = _settled_retry_call(s)
+
+    def change(proof):
+        if proof["fenced"]:
+            if conflict == "restore_not_excluded":
+                proof["recovery_fence"]["restore_excluded"] = False
+            elif conflict == "changed_digest":
+                proof["evidence_sha256"] = "c" * 64
+            else:
+                proof["observed_at_unix_ms"] = 0
+        return proof
+
+    s.proof_change = change
+    native, factory = s.native_snapshot(), _settled_retry_factory_snapshot(s)
+    blocked = _settled_retry_call(s, "apply", preview["preview_sha256"])
+    assert (
+        blocked["state"] == "blocked" and blocked["factory_settlement"] == "not_applied"
+    )
+    assert blocked["phase"] == "lineage_fence_response_received"
+    assert (
+        s.native_snapshot() == native and _settled_retry_factory_snapshot(s) == factory
+    )
+    assert len(s.audits(recovery.INTENT)) == 1 and not s.audits(recovery.APPLIED)
+    assert s.cp_effects == 1
+
+
+def test_settled_retry_lost_fence_response_replays_same_durable_intent(
+    settled_retry_recovery,
+):
+    from factory import settled_retry_reconciliation as recovery
+    from factory.orchestration.factory_models import FactoryControl
+
+    s = settled_retry_recovery
+    preview = _settled_retry_call(s)
+    native, factory = s.native_snapshot(), _settled_retry_factory_snapshot(s)
+    s.lose_apply_response = True
+    lost = _settled_retry_call(s, "apply", preview["preview_sha256"])
+    assert (
+        lost["state"] == "outcome_unknown"
+        and lost["factory_settlement"] == "not_applied"
+    )
+    assert (
+        s.native_snapshot() == native and _settled_retry_factory_snapshot(s) == factory
+    )
+    assert len(s.audits(recovery.INTENT)) == 1 and not s.audits(recovery.APPLIED)
+    with Session(s.engine) as db:
+        db.get(FactoryControl, "factory").version += 1
+        db.commit()
+    before_calls = len(s.cp_calls)
+    s.lose_apply_response = False
+    assert _settled_retry_call(s, "apply", preview["preview_sha256"])["ok"]
+    assert [entry[0] for entry in s.cp_calls[before_calls:]] == ["apply"]
+    applied_payloads = [entry[1] for entry in s.cp_calls if entry[0] == "apply"]
+    assert applied_payloads[0] == applied_payloads[1]
+    assert s.cp_effects == 1 and len(s.audits(recovery.APPLIED)) == 1
+    assert s.native_snapshot() == native
+
+
+def test_settled_retry_concurrent_apply_has_one_accounting_transition(
+    settled_retry_recovery,
+):
+    import asyncio
+
+    from factory import settled_retry_reconciliation as recovery
+
+    s = settled_retry_recovery
+    preview = _settled_retry_call(s)
+    native = s.native_snapshot()
+
+    async def concurrent():
+        return await asyncio.gather(
+            *(
+                recovery.run(
+                    operation="apply",
+                    expected_preview_sha256=preview["preview_sha256"],
+                    **s.request,
+                )
+                for _ in range(2)
+            )
+        )
+
+    results = asyncio.run(concurrent())
+    assert results[0] == results[1] and results[0]["ok"]
+    assert s.cp_effects == 1
+    assert len(s.audits(recovery.INTENT)) == len(s.audits(recovery.APPLIED)) == 1
+    assert s.native_snapshot() == native
+
+
+def test_settled_retry_changed_identity_after_remote_fence_never_settles(
+    settled_retry_recovery,
+):
+    from factory import settled_retry_reconciliation as recovery
+    from factory.execution.models import PendingMessage
+
+    s = settled_retry_recovery
+    preview = _settled_retry_call(s)
+    factory = _settled_retry_factory_snapshot(s)
+
+    def enqueue():
+        with Session(s.engine) as db:
+            db.add(
+                PendingMessage(
+                    session_id=s.sid, seq=2, message_text="arrived during remote fence"
+                )
+            )
+            db.commit()
+
+    s.after_remote = enqueue
+    blocked = _settled_retry_call(s, "apply", preview["preview_sha256"])
+    assert (
+        blocked["state"] == "blocked" and blocked["factory_settlement"] == "not_applied"
+    )
+    assert _settled_retry_factory_snapshot(s) == factory
+    assert (
+        s.native_snapshot()["pending_messages"][0]["message_text"]
+        == "arrived during remote fence"
+    )
+    assert s.cp_effects == 1 and len(s.audits(recovery.INTENT)) == 1
+    assert not s.audits(recovery.APPLIED)
+
+
+@pytest.mark.parametrize(
+    "change", [{"reason": "different reason"}, {"permit_id": 999}, {"session_id": 999}]
+)
+def test_settled_retry_same_key_cannot_be_rebound(settled_retry_recovery, change):
+    s = settled_retry_recovery
+    preview = _settled_retry_call(s)
+    assert _settled_retry_call(s, "apply", preview["preview_sha256"])["ok"]
+    calls = list(s.cp_calls)
+    with pytest.raises(ValueError, match="request_conflict"):
+        _settled_retry_call(s, "apply", preview["preview_sha256"], **change)
+    assert s.cp_calls == calls
+
+
+@pytest.mark.parametrize("field", ["principal", "last_invoke_at"])
+def test_settled_retry_cp_proof_matches_fresh_guest_identity(
+    settled_retry_recovery, field
+):
+    s = settled_retry_recovery
+
+    def change(proof):
+        proof[field] = "other-principal" if field == "principal" else proof[field] + 1
+        return proof
+
+    s.proof_change = change
+    native, factory = s.native_snapshot(), _settled_retry_factory_snapshot(s)
+    with pytest.raises(ValueError):
+        _settled_retry_call(s)
+    assert (
+        s.native_snapshot() == native and _settled_retry_factory_snapshot(s) == factory
+    )
+    assert s.cp_effects == 0
+
+
+def test_settled_retry_intent_write_failure_cannot_reach_remote_mutation(
+    settled_retry_recovery, monkeypatch
+):
+    from factory import settled_retry_reconciliation as recovery
+    from factory.orchestration import factory_controls as controls
+
+    s = settled_retry_recovery
+    preview = _settled_retry_call(s)
+    native, factory = s.native_snapshot(), _settled_retry_factory_snapshot(s)
+    original = controls._audit
+
+    def fail_intent(db, actor, action, **fields):
+        if action == recovery.INTENT:
+            raise RuntimeError("durable intent unavailable")
+        return original(db, actor, action, **fields)
+
+    monkeypatch.setattr(controls, "_audit", fail_intent)
+    with pytest.raises(RuntimeError, match="durable intent unavailable"):
+        _settled_retry_call(s, "apply", preview["preview_sha256"])
+    assert (
+        s.native_snapshot() == native and _settled_retry_factory_snapshot(s) == factory
+    )
+    assert not s.audits(recovery.INTENT) and s.cp_effects == 0
+
+
+def test_settled_retry_pending_intent_cannot_ignore_a_new_receipt_pause(
+    settled_retry_recovery,
+):
+    s = settled_retry_recovery
+    preview = _settled_retry_call(s)
+    s.lose_apply_response = True
+    assert (
+        _settled_retry_call(s, "apply", preview["preview_sha256"])["state"]
+        == "outcome_unknown"
+    )
+    with Session(s.engine) as db:
+        db.get(FactoryReceipt, s.request["receipt_id"]).task_paused = True
+        db.commit()
+    native, factory, calls = (
+        s.native_snapshot(),
+        _settled_retry_factory_snapshot(s),
+        list(s.cp_calls),
+    )
+    s.lose_apply_response = False
+    with pytest.raises(ValueError, match="pending_identity_changed"):
+        _settled_retry_call(s, "apply", preview["preview_sha256"])
+    assert (
+        s.native_snapshot() == native and _settled_retry_factory_snapshot(s) == factory
+    )
+    assert s.cp_calls == calls and s.cp_effects == 1
+
+
+def test_settled_retry_slow_concurrent_preview_replays_completed_apply(
+    settled_retry_recovery, monkeypatch
+):
+    import asyncio
+
+    from factory import settled_retry_reconciliation as recovery
+    from factory.execution.transport import EmberVmShimTransport
+
+    s = settled_retry_recovery
+    preview = _settled_retry_call(s)
+    native = s.native_snapshot()
+    original = EmberVmShimTransport.session_recovery_fence
+
+    async def concurrent():
+        both_previewing, first_finished = asyncio.Event(), asyncio.Event()
+        previews = 0
+
+        async def delayed(transport, guest, payload):
+            nonlocal previews
+            if payload["operation"] == "preview":
+                previews += 1
+                if previews == 1:
+                    await asyncio.wait_for(both_previewing.wait(), timeout=5)
+                else:
+                    both_previewing.set()
+                    await asyncio.wait_for(first_finished.wait(), timeout=5)
+            return await original(transport, guest, payload)
+
+        monkeypatch.setattr(EmberVmShimTransport, "session_recovery_fence", delayed)
+
+        async def attempt():
+            result = await recovery.run(
+                operation="apply",
+                expected_preview_sha256=preview["preview_sha256"],
+                **s.request,
+            )
+            first_finished.set()
+            return result
+
+        return await asyncio.gather(attempt(), attempt())
+
+    results = asyncio.run(concurrent())
+    assert results[0] == results[1] and results[0]["ok"]
+    assert s.cp_effects == 1
+    assert len(s.audits(recovery.INTENT)) == len(s.audits(recovery.APPLIED)) == 1
+    assert s.native_snapshot() == native

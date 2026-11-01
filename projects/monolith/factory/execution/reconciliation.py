@@ -565,8 +565,100 @@ def read_not_invoked_factory_attempt(db, pin, session_id):
     return _read_not_invoked_factory_attempt(db, pin, session_id)
 
 
+def read_unknown_retry_factory_attempt(db, pin, session_id):
+    """Read one missing first response plus an uninvoked retry, never settle it.
+
+    This is only a local identity check for explicit operator recovery. It is
+    not a cessation proof and must never enter the automatic not-invoked path.
+    The caller additionally needs a fresh, durably restore-fenced CP proof.
+    """
+    return _read_not_invoked_factory_attempt(db, pin, session_id, unknown_retry=True)
+
+
+def _unknown_retry_receipt(db, agent, dispatched):
+    from sqlalchemy import or_
+    from core.clock import aware
+    from factory.execution.constants import exact_dispatch_id
+    from factory.execution.models import AgentResultReceipt
+
+    guest = agent.ember_session_id
+    if not guest or any(
+        value is not None and value != guest
+        for value in (agent.ember_lineage_id, agent.prior_ember_lineage_id)
+    ):
+        return None
+    rows = db.exec(
+        select(AgentResultReceipt)
+        .where(
+            or_(
+                AgentResultReceipt.session_id == agent.id,
+                AgentResultReceipt.local_session_id == agent.local_session_id,
+                AgentResultReceipt.guest_id == guest,
+            )
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+        .limit(2)
+    ).all()
+    if len(rows) != 1:
+        return None
+    row = rows[0]
+    if (
+        row.session_id != agent.id
+        or row.local_session_id != agent.local_session_id
+        or row.seq != 1
+        or row.dispatch_count != 1
+        or row.guest_id != guest
+        or not row.claim_owner
+        or re.fullmatch(r"[0-9a-f]{64}", row.request_sha256 or "") is None
+        or any(
+            value is not None
+            for value in (
+                row.received_at,
+                row.result_sha256,
+                row.result_body,
+                row.response_observed_at,
+            )
+        )
+        or row.response_observer_released_at is None
+        or not aware(row.created_at)
+        <= aware(row.response_observer_released_at)
+        <= aware(dispatched)
+        or db.exec(
+            select(AgentSession.id)
+            .where(
+                AgentSession.id != agent.id,
+                or_(
+                    AgentSession.ember_session_id == guest,
+                    AgentSession.ember_lineage_id == guest,
+                    AgentSession.prior_ember_lineage_id == guest,
+                ),
+            )
+            .limit(1)
+        ).first()
+        is not None
+        or admission.guest_has_cleanup_claim(db, guest)
+    ):
+        return None
+    return {
+        "receipt_id": row.id,
+        "guest_id": guest,
+        "claim_owner": row.claim_owner,
+        "dispatch_count": 1,
+        "request_sha256": row.request_sha256,
+        "dispatch_id": exact_dispatch_id(agent.id, guest, 1, row.claim_owner, 1),
+        "created_at": aware(row.created_at).isoformat(),
+        "observer_released_at": aware(row.response_observer_released_at).isoformat(),
+    }
+
+
 def _read_not_invoked_factory_attempt(
-    db: Session, pin: dict, session_id: int | None, *, after_drain: bool = False
+    db: Session,
+    pin: dict,
+    session_id: int | None,
+    *,
+    after_drain: bool = False,
+    unknown_retry: bool = False,
 ) -> dict | None:
     """Validate the session owner's completed pre-POST failure.
 
@@ -621,7 +713,12 @@ def _read_not_invoked_factory_attempt(
             not isinstance(recovery, dict)
             or recovery.get("invocation_phase") != "not_invoked"
             or type(recovery.get("dispatch_count")) is not int
-            or (not after_drain and recovery["dispatch_count"] != 1)
+            or (
+                not after_drain
+                and not unknown_retry
+                and recovery["dispatch_count"] != 1
+            )
+            or (unknown_retry and recovery["dispatch_count"] != 2)
             or (
                 after_drain
                 and not 2 <= recovery["dispatch_count"] <= store.MAX_PENDING_DISPATCHES
@@ -669,7 +766,12 @@ def _read_not_invoked_factory_attempt(
     ):
         return None
     interrupted = None
-    if after_drain:
+    unknown = None
+    if unknown_retry:
+        unknown = _unknown_retry_receipt(db, agent, dispatched)
+        if unknown is None:
+            return None
+    elif after_drain:
         interrupted = _interrupted_dispatch_receipts(
             db, agent, permit, recovery["dispatch_count"], dispatched
         )
@@ -728,12 +830,19 @@ def _read_not_invoked_factory_attempt(
         "permit_id": permit.id,
         "permit_outcome": permit.outcome,
         "invocation_phase": (
-            "interrupted_then_not_invoked" if after_drain else "not_invoked"
+            "unknown_then_not_invoked"
+            if unknown_retry
+            else "interrupted_then_not_invoked"
+            if after_drain
+            else "not_invoked"
         ),
         # Whether the control plane refused the slot, which the factory reads
         # to decide if this failure spends one of the node's attempts (#6045).
-        "capacity_denied": not after_drain and _capacity_denied_turn(turn),
+        "capacity_denied": not after_drain
+        and not unknown_retry
+        and _capacity_denied_turn(turn),
         **({"interrupted_dispatches": interrupted} if after_drain else {}),
+        **({"unknown_dispatch": unknown} if unknown_retry else {}),
         "cost_usd": None,
     }
 
