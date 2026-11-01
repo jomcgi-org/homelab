@@ -1,6 +1,6 @@
 """Unit tests for KnowledgeStore.list_tasks_daily() and list_tasks_weekly()."""
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import patch
 
 import pytest

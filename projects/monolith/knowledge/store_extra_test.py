@@ -5,8 +5,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
 from knowledge.frontmatter import ParsedFrontmatter
-from knowledge.links import Link
-from knowledge.models import Chunk, Note, NoteLink
+from knowledge.models import Note
 from knowledge.store import KnowledgeStore
 
 

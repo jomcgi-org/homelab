@@ -901,7 +901,7 @@ class Gap(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
     resolved_at: datetime | None = None
     # Soft-delete timestamp for the /private/review audit "delete" action.
     # NULL means live; NOT NULL means the row is hidden from every user-
-    # facing read path (review-queue, list_gaps, get_gap_by_id, graph).
+    # facing read path (review-queue, list_gaps, graph).
     # The ``_researching/<slug>.md`` stub is hard-deleted at soft-delete
     # time and regenerated lazily by ``discover_gaps`` on undelete.
     # Mirrors chart/migrations/20260523120000_review_soft_delete.sql.

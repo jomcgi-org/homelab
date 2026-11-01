@@ -872,10 +872,10 @@ def get_public_note(
         )
 
     # The public service cannot enumerate private notes (it reads only the
-    # public_api views), so invert the sanitiser: keep wikilinks that resolve
-    # to a known public note, strip everything else (private targets and
-    # dangling links) to plain text. The view already excludes private +
-    # deleted rows, so this list is exactly the public note set.
+    # public_api views), so keep wikilinks that resolve to a known public
+    # note and strip everything else (private targets and dangling links)
+    # to plain text. The view already excludes private + deleted rows, so
+    # this list is exactly the public note set.
     # session.exec on a single-column select yields scalar values directly
     # (SQLModel SelectOfScalar), so these are note_id strings, not Row tuples.
     public_ids = list(
