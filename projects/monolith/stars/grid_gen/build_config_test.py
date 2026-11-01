@@ -40,7 +40,7 @@ def _list_attr(target: str, name: str) -> set[str]:
     return set(re.findall(r'^        "([^"]+)",$', match.group("body"), re.MULTILINE))
 
 
-def test_geospatial_dependencies_are_only_on_dedicated_binary():
+def test_raster_dependencies_stay_dedicated_and_point_geometry_is_explicit():
     build = (MONOLITH / "BUILD").read_text()
     backend_sources = _assignment_call(build, "_BACKEND_SRCS")
     stars_package = _named_target(build, "pkg_stars")
@@ -50,9 +50,20 @@ def test_geospatial_dependencies_are_only_on_dedicated_binary():
     assert '"stars/grid_gen/**"' in backend_sources
     assert '"stars/grid_gen/**"' in stars_package
     assert '"stars/grid_gen/**"' in monolith_backend
-    for dependency in ("geopandas", "rasterio", "shapely"):
+    for dependency in ("geopandas", "rasterio"):
         assert f'"@pip//{dependency}"' in generator
         assert build.count(f'"@pip//{dependency}"') == 1
+
+    # Camping materialization uses GEOS point coverage for holes, islands and
+    # edges. Name every permitted consumer instead of allowing GIS wheels to
+    # spread into unrelated package deps. Raster ingestion stays grid-only.
+    shared = _named_target(build, "pkg_shared")
+    camping_test = _named_target(build, "shared_camping_test")
+    for target in (generator, shared, monolith_backend, camping_test):
+        assert '"@pip//shapely"' in target
+    assert build.count('"@pip//shapely"') == 4
+    assert 'data = ["shared/camping_boundaries.json.gz"]' in shared
+    assert '"shared/camping_boundaries.json.gz"' in monolith_backend
 
 
 def test_grid_job_has_an_explicit_minimal_runfiles_closure():
