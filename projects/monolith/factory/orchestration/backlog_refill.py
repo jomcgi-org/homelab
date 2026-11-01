@@ -33,6 +33,9 @@ NODE = "backlog_refill_collect_1"
 REVIEW_NODE = "backlog_refill_review_1"
 NODES = {NODE, REVIEW_NODE}
 REVIEW_CONTRACT = {"version": 1, "model": "astra", "effort": "xhigh", "max_findings": 5}
+# Pinned at start only while Astra's quota is walled, as other pools spill.
+REVIEW_FALLBACK = {**REVIEW_CONTRACT, "model": "opus"}
+REVIEW_CONTRACTS = (REVIEW_CONTRACT, REVIEW_FALLBACK)
 MAX_REVIEW_PROMPT_CHARS = 60000
 PREFIX = "backlog_refill_"
 TERMINAL = {"succeeded", "failed", "cancelled"}
@@ -190,6 +193,14 @@ def observe(
 
     if "backlog_refill" not in policy:
         return {"ok": False, "reason": "disabled"}
+    # Cached broker read, outside the lock; dispatch rechecks fresh quota.
+    contract = (
+        review_contract(policy)
+        if normalize(policy)["enabled"]
+        and type(eligible) is int
+        and eligible < normalize(policy)["min_eligible"]
+        else REVIEW_CONTRACT
+    )
     with controls._locked_session() as (db, control):
         live = json.loads(control.policy_json or "{}")
         repo = policy["repo"]
@@ -301,7 +312,7 @@ def observe(
             receipt_id=row.id,
             generation=policy["generation"],
             policy=block,
-            review_contract=REVIEW_CONTRACT,
+            review_contract=contract,
             routine=routine,
             eligible=eligible,
             policy_digest=digest(policy),
@@ -512,7 +523,7 @@ def dispatch_schema(task_id, node_key, *, session=None):
 def role(start, node_key):
     """An absent contract is historical, never an implicit review approval."""
     contract = start.get("review_contract")
-    if contract is not None and contract != REVIEW_CONTRACT:
+    if contract is not None and contract not in REVIEW_CONTRACTS:
         raise ValueError("invalid refill review contract")
     if node_key == NODE:
         from factory.orchestration.model_pool import effort_for
@@ -552,14 +563,27 @@ def review_brief(value):
     return prompt
 
 
-def quota(model):
+def review_contract(policy):
+    """Astra review, or Opus while Astra is walled and Opus is allowed and free."""
+    if "opus" not in policy.get("allowed_models", []):
+        return REVIEW_CONTRACT
+    for contract in REVIEW_CONTRACTS:
+        try:
+            quota(contract["model"], force=False)
+        except Exception:  # noqa: BLE001 - unavailable evidence tries the next
+            continue
+        return contract
+    return REVIEW_CONTRACT
+
+
+def quota(model, *, force=True):
     """Fresh subscription evidence for exactly one role, with no fallback."""
     from factory.execution import offered_models, provider_quota
     from factory.orchestration import model_pool
 
     if model not in {"astra", "opus"} or model not in offered_models():
         raise ValueError("refill_model_unavailable")
-    raw = provider_quota.fetch_provider_quota_sync(force=True)
+    raw = provider_quota.fetch_provider_quota_sync(force=force)
     views = provider_quota.summarise(raw.get("providers", {}))
     provider = model_pool.QUOTA_PROVIDERS.get(model_pool.family_for(model))
     view = views.get(provider, {})

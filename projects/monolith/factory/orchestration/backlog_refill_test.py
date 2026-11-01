@@ -41,6 +41,14 @@ _REAL_REFILL_QUOTA = refill.quota
 
 @pytest.fixture
 def world(tmp_path, monkeypatch):
+    from factory.execution import provider_quota
+
+    # Start-time reviewer choice reads the broker; tests start unobserved.
+    monkeypatch.setattr(
+        provider_quota,
+        "fetch_provider_quota_sync",
+        lambda *, force=False: {"available": False},
+    )
     engine = create_engine(
         f"sqlite:///{tmp_path / 'refill.db'}",
         connect_args={"check_same_thread": False, "timeout": 10},
@@ -3237,3 +3245,68 @@ def test_routines_rotate_one_sentence_briefs(world):
     assert seen == [*refill.ROUTINES, next(iter(refill.ROUTINES))]
     # Each routine is a single sentence.
     assert all(text.count(". ") == 0 for text in refill.ROUTINES.values())
+
+
+@pytest.mark.parametrize(
+    ("walled", "allowed", "expected"),
+    [
+        (set(), ["opus", "astra"], "astra"),
+        ({"astra"}, ["opus", "astra"], "opus"),
+        ({"astra", "opus"}, ["opus", "astra"], "astra"),
+        ({"astra"}, ["astra"], "astra"),
+    ],
+)
+def test_refill_review_falls_back_to_opus_while_astra_is_walled(
+    world, monkeypatch, walled, allowed, expected
+):
+    import json
+
+    _engine, policy, _clock = world
+
+    def quota(model, *, force=True):
+        assert force is False
+        if model in walled:
+            raise ValueError("refill_subscription_unavailable")
+        return {"provider": model}
+
+    monkeypatch.setattr(refill, "quota", quota)
+    if allowed != policy["allowed_models"]:
+        update(world, allowed_models=allowed)
+        with Session(world[0]) as db:
+            policy = json.loads(db.get(FactoryControl, "factory").policy_json)
+    start = refill.observe(policy, eligible=0, complete=True)
+    assert start["ok"]
+    with controls._read_session() as db:
+        detail = refill._detail(
+            refill.latest_event(db, "started", run_id=start["run_id"])
+        )
+    assert detail["review_contract"]["model"] == expected
+    assert refill.role(detail, refill.REVIEW_NODE) == {
+        "model": expected,
+        "effort": "xhigh",
+    }
+    with pytest.raises(ValueError, match="invalid refill review contract"):
+        refill.role(
+            {**detail, "review_contract": {**detail["review_contract"], "model": "x"}},
+            refill.REVIEW_NODE,
+        )
+
+
+def test_refill_control_accepts_opus_review_evidence_unless_hourly(
+    control_world, monkeypatch
+):
+    from factory.orchestration import refill_control as api
+
+    _engine, _policy, clock = control_world
+
+    def quota(model):
+        if model == "astra":
+            raise ValueError("refill_subscription_unavailable")
+        return {"provider": "claude", "checked_at": clock[0].isoformat()}
+
+    monkeypatch.setattr(api, "_quota", quota)
+    p = api.preview(True, "opus", False, 0, "astra walled")
+    assert p["new_run_review_contract"] == refill.REVIEW_FALLBACK
+    assert set(p["subscription"]) == {"opus"}
+    with pytest.raises(ValueError, match="refill_subscription_unavailable"):
+        api.preview(True, "opus", True, 0, "hourly learning needs codex")

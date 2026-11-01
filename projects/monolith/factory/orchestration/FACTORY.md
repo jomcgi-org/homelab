@@ -1354,9 +1354,11 @@ order: `dead-code`, `finished-flags`, `test-gaps`, `useless-tests` and
 `abstraction-police`. Each routine in `backlog_refill.ROUTINES` is one sentence
 naming the outcome; the collector chooses its own static and dynamic analysis.
 A start without `routine` uses the first. Selecting `opus` through the bounded
-refill control uses the deployed Opus mapping. An independent Astra xhigh session challenges every finding, rejects
-duplicates and unready scope, and supplies executable plans and acceptance checks.
-Each dispatch requires fresh quota for its exact model without fallback.
+refill control uses the deployed Opus mapping. An independent xhigh review
+session challenges every finding, rejects duplicates and unready scope, and
+supplies executable plans and acceptance checks. The review runs on Astra; a
+start pins Opus instead while cached quota walls Astra and policy allows Opus,
+as other pools spill. Each dispatch requires fresh quota for its pinned model.
 New collections contain at most five findings, a 12,000-character summary and
 3,000 characters per finding body. The schema excludes non-whitespace control
 characters and lone Unicode surrogates. Lossless Unicode JSON rendering keeps
