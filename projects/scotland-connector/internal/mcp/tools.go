@@ -33,6 +33,12 @@ func readOnly(title string) Annotations {
 // Tools is the fixed tool list, in a deterministic order.
 var Tools = []Tool{
 	{
+		Name: "outlook", Title: "Compare Scottish stargazing seasons beyond the forecast",
+		Description: "Historical CERRA clear-dark share and absolute-hours rankings from already loaded data, with local moonless nautical darkness. Weather verdict always unknown, even for the best climatology rank. Independent rate and hours winners identify sites. Rate requires 300 historical dark hours per calendar month; unsupported ranks are unknown. Inclusive Europe/London dates in 2000..2100, at most one calendar year; February 29 anniversary clamps to February 28, exclusive. Default today through the day before next anniversary. At most 92 inclusive dates include daily phase/windows and explicitly climatological ranks; longer spans return complete monthly astronomy and explicit omitted daily coverage. Archive totals are not expected hours for a requested month or fresh probabilities.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"lat":{"type":"number","minimum":54.5,"maximum":61},"lon":{"type":"number","minimum":-9,"maximum":-0.5},"radius_km":{"type":"number","minimum":1,"maximum":100,"default":30},"from":{"type":"string","format":"date","maxLength":10,"description":"Inclusive first Europe/London civil date in 2000..2100; today by default. Forecast horizon caps do not apply."},"to":{"type":"string","format":"date","maxLength":10,"description":"Inclusive last civil date, before the next calendar-year anniversary of from (February 29 clamps to February 28). Defaults to the day before that anniversary. Daily detail only for at most 92 inclusive dates; rate ranks require 300 historical dark hours."}},"required":["lat","lon"],"additionalProperties":false}`),
+		Annotations: readOnly("Compare Scottish stargazing seasons beyond the forecast"),
+	},
+	{
 		Name: "light", Title: "Find Scottish light and night-sky windows",
 		Description: "Sunrise, sunset, twilight, golden and blue light, moon rise/set and phase, and Milky Way core above the horizon in nautical darkness at a Scottish point. Local civil dates, up to seven days, at most 13 days ahead. Cloud describes only supporting clear twilight-dark hourly samples at the nearest snapshot site within min(radius_km,30) km. Unsupported portions, including daylight, remain unknown; night suitability is separate. Staged repository delivery pending operational acceptance.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"lat":{"type":"number","minimum":54.5,"maximum":61},"lon":{"type":"number","minimum":-9,"maximum":-0.5},"radius_km":{"type":"number","minimum":1,"maximum":100,"default":30},"from":{"type":"string","format":"date","description":"First Europe/London civil date, today by default, at most 13 days ahead."},"to":{"type":"string","format":"date","description":"Inclusive last civil date, three-day default and seven-day maximum; no later than 13 days ahead."}},"required":["lat","lon"],"additionalProperties":false}`),
@@ -128,6 +134,12 @@ func call(svc *connector.Service, name string, args json.RawMessage) (*connector
 		args = json.RawMessage(`{}`)
 	}
 	switch name {
+	case "outlook":
+		var p connector.OutlookParams
+		if err := strictDecode(args, &p); err != nil {
+			return nil, err
+		}
+		return svc.Outlook(p)
 	case "light":
 		var p connector.LightParams
 		if err := strictDecode(args, &p); err != nil {

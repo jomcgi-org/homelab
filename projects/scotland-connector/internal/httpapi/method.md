@@ -6,6 +6,54 @@ that fit the weather and the night's best stargazing. **check** answers "is
 my plan on": for a named walk on a date, or stargazing at a point on a night,
 a verdict, the timing, the other days that suit it and better options nearby.
 
+## Outlook beyond the forecast
+
+Use `outlook` or `GET /v1/outlook` for seasonal stargazing questions at a
+Scottish point. Inputs are `lat`, `lon`, `radius_km` (1..100, default 30),
+`from` and `to`. Dates are inclusive Europe/London civil dates in 2000..2100.
+The default is today through the day before the next calendar-year
+anniversary, capped at 2100-12-31. The inclusive end must precede that anniversary; February 29
+clamps to February 28, so 2028-02-29 through 2029-02-27 is valid and through
+2029-02-28 is refused. January through December can contain 366 dates in a
+leap year. Year-crossing requests can have 13 month segments. Forecast's
+seven-day and 13-day caps do not apply. Spans of at most 92 inclusive civil
+dates include daily detail. Longer spans explicitly omit all daily detail
+while still calculating monthly geometry for every requested date.
+
+Weather verdict is always **unknown**, including the top historical rank.
+Each month's `why` gives available CERRA figures and explains climatology.
+`rate_winner` and `hours_winner` identify sites and coordinates, selected from
+all nearby sites independently of forecast freshness. Rate uses clear-dark
+hours divided by dark hours only with at least **300 historical dark hours**
+in that calendar month. Insufficient support gives a null rate/rank. Hours
+ranking remains separate; never combine them or hide different winners.
+Tied site scores use distance then ID. Rankings compare returned months;
+equal values share competition rank, with chronological ranking-list ties.
+Daily ranks are explicitly climatological and inherit the month's rank.
+
+Historical fields are pooled whole-month-of-year archive hours, never
+expected hours for one requested month or a freshly measured probability.
+The loaded snapshot carries no archive years or exposure dates. CERRA cloud
+was sampled every three hours and nearest-reindexed hourly, with dark = sun
+below -12 degrees, clear-dark also cloud below 10%. Hourly counts are not
+independent cloud observations. Partial requested months do not prorate
+historical totals. Absent or invalid climatology leaves winners/ranks null.
+
+`calculated_dark_hours`, `calculated_moonless_dark_hours` and daily windows
+describe the rounded requested point, independent of winning sites. Local
+astronomy intersects nautical darkness (sun centre below -12 degrees) with
+topocentric moon centre below -0.833 degrees, an approximate refraction/disc
+allowance. Windows are UTC RFC3339, clipped to Europe/London midnight
+boundaries including 23/25-hour DST dates. Empty windows mean no qualifying
+interval. Phase and illumination are sampled at local noon, with a recorded
+reference time; new, first quarter, full and last quarter are 0, .25, .5, .75.
+No terrain or clear-weather guarantee is implied. Monthly calculated hours
+sum every requested date even with omitted daily detail or absent history.
+One-second numerical solver resolution does not establish ephemeris accuracy.
+CERRA and the local astronomical source are credited in `meta.sources`.
+No upstream calls or new datasets are involved. Cache headers and ETags
+follow plan; `forecast_fetched_at` is null for Outlook.
+
 ## Verdicts
 
 Every walk and night leads with a verdict and a one-line `why` in UK local
