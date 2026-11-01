@@ -23,10 +23,10 @@ func TestSetMmdsEnvDuplicatesAndFailures(t *testing.T) {
 	token := func(s string) string { return "ember.env." + key + "=" + enc(s) }
 	for _, tc := range []struct {
 		name, cmdline, want string
-		failure, malformed  bool
+		failure             bool
 	}{
 		{name: "successful duplicate", cmdline: token(first) + " " + token(last), want: last},
-		{name: "malformed duplicate", cmdline: token(first) + " ember.env." + key + "=%%%", want: first, malformed: true},
+		{name: "malformed duplicate", cmdline: token(first) + " ember.env." + key + "=%%%", want: first},
 		{name: "empty duplicate", cmdline: token(first) + " ember.env." + key + "=", want: first},
 		{name: "valid then NUL duplicate", cmdline: token(first) + " " + token(nul), want: "prior", failure: true},
 		{name: "NUL then valid duplicate", cmdline: token(nul) + " " + token(last), want: last, failure: false},

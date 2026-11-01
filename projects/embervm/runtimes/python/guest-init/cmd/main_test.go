@@ -118,7 +118,7 @@ func TestSetHandlerDiskEnv(t *testing.T) {
 // TestMmdsEnvFromCmdline covers the R4 D-R4.PR-7.1 boot-arg decoder: multiple
 // ember.env.<KEY>= tokens, base64url decoding, an invalid key skipped, a
 // malformed base64 value skipped, an absent prefix ignored, and duplicate keys
-// (last wins, matching valueFromCmdline's convention).
+// (last wins, matching bootenv.Value's convention).
 func TestMmdsEnvFromCmdline(t *testing.T) {
 	pw := base64.RawURLEncoding.EncodeToString([]byte("hunter2"))
 	user := base64.RawURLEncoding.EncodeToString([]byte("app"))

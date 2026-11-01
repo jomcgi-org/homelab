@@ -231,13 +231,13 @@ func servingPortFromCmdline(cmdline string) string {
 // setMmdsEnv reads /proc/cmdline for every `ember.env.<KEY>=<base64url>` token
 // (R4, D-R4.PR-7.1) and sets each decoded value as a process env var named
 // exactly <KEY>. A missing /proc/cmdline, no matching tokens, a KEY that fails
-// isValidEnvKeyName, or a value that fails base64url decoding are each skipped
+// bootenv.ValidKey, or a value that fails base64url decoding are each skipped
 // individually (never fatal): one malformed secret must not block every other
 // one from being delivered, and a stateful guest whose bootstrap genuinely
 // needs the missing var will fail its own readiness loudly downstream, which is
 // the correct place for that failure to surface (not here, where guest-init has
 // no way to know which vars are actually required by the image). Duplicate
-// keys: the last occurrence wins, matching valueFromCmdline's convention.
+// keys: the last occurrence wins, matching bootenv.Value's convention.
 func setMmdsEnv(logger *slog.Logger) {
 	raw, err := os.ReadFile(procCmdlinePath)
 	if err != nil {
