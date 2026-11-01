@@ -2628,6 +2628,17 @@ winning the race.
 
 ### Landing
 
+Receipt1045/task `t-a4702857-5c95-41cd-aa21-415e10bc9355`, PR #7492, has an
+explicitly approved operator landing handoff. Its native actions are quarantined,
+while hold and queue fencing remain active. Only `public_docs` preview/apply with
+an `operator_handoff` exact-head review attestation (reviewer, implementer, durable
+reference, approval and explicit independence) transfers release ownership.
+The server verifies original acceptance, settled/quiescent execution, paths and
+current CI; the standing operator attests the external review. The audited grant
+removes only the landing hold, preserving the accepted `7da9676f` history, other
+holds and accounting. Stale grants never restore native ownership. This is not
+native acceptance of the rebased head or a general terminal-state handoff.
+
 An operator may preview/apply `public_docs` release scope for modifications only
 of the existing monolith `ARCHITECTURE.md` and this `FACTORY.md`. GitHub evidence
 must prove the exact head changes only regular, non-executable, bounded UTF-8

@@ -10,6 +10,8 @@ import hashlib
 import json
 import re
 
+import httpx
+
 from sqlmodel import select
 
 from core.jsonio import dumps
@@ -19,6 +21,22 @@ from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 
 ACTION = "operator_landing_hold_released"
 SCOPE_ACTION = "operator_scoped_landing_authorized"
+# This operator-approved exception is deliberately not a generic terminal handoff.
+HANDOFF_TARGET = (
+    1045,
+    "t-a4702857-5c95-41cd-aa21-415e10bc9355",
+    "jomcgi-org/homelab",
+    7492,
+)
+HANDOFF_ACCEPTED_HEAD = "7da9676f1bdbae60248de2aefaf911493559f33f"
+HANDOFF_REVIEW_SESSION = 24402
+
+
+def operator_target(task_id):
+    """Stage this approved target outside native actions, never outside fencing."""
+    return task_id == HANDOFF_TARGET[1]
+
+
 PUBLIC_DOCS = frozenset(
     {
         "projects/monolith/ARCHITECTURE.md",
@@ -31,15 +49,50 @@ def _scope(value):
     """An operator's explicit assessment, never an automatic classifier."""
     if (
         not isinstance(value, dict)
-        or set(value) != {"classification", "evidence"}
+        or set(value)
+        not in (
+            {"classification", "evidence"},
+            {"classification", "evidence", "operator_handoff"},
+        )
         or value.get("classification")
         not in ("private_internal_reversible", "public_docs")
     ):
         raise ValueError("landing_scope_unsupported")
-    return {
+    result = {
         "classification": value["classification"],
         "evidence": controls._text(value.get("evidence"), "scope evidence", 4000),
     }
+    if "operator_handoff" in value:
+        review = value["operator_handoff"]
+        if (
+            value["classification"] != "public_docs"
+            or not isinstance(review, dict)
+            or set(review)
+            != {
+                "head_sha",
+                "reviewer",
+                "implementer",
+                "reference",
+                "verdict",
+                "independent",
+            }
+            or review.get("verdict") != "approve"
+            or review.get("independent") is not True
+            or not isinstance(review.get("head_sha"), str)
+            or not re.fullmatch(r"[0-9a-f]{40}", review["head_sha"])
+        ):
+            raise ValueError("operator_handoff_review_invalid")
+        review = {
+            **review,
+            **{
+                k: controls._text(review[k], k, 2000)
+                for k in ("reviewer", "implementer", "reference")
+            },
+        }
+        if review["reviewer"] == review["implementer"]:
+            raise ValueError("operator_handoff_review_not_independent")
+        result["operator_handoff"] = review
+    return result
 
 
 def _public_docs(pull):
@@ -125,6 +178,92 @@ def _public_docs(pull):
         reject()
 
 
+def _handoff_history(db, row, pr_number, head_sha):
+    from factory.orchestration.models import SwarmTask
+
+    if (
+        (row.id, row.task_id, row.repo, pr_number) != HANDOFF_TARGET
+        or row.state != "succeeded"
+        or head_sha == HANDOFF_ACCEPTED_HEAD
+    ):
+        raise ValueError("operator_handoff_target_mismatch")
+    task = db.get(SwarmTask, row.task_id)
+    if task is None or task.settled_at is None:
+        raise ValueError("operator_handoff_not_settled")
+    refusal = controls._quiescence_refusal(db, row.task_id)
+    if refusal:
+        raise ValueError("operator_handoff_" + refusal)
+    sessions = db.exec(
+        select(AgentSession).where(
+            AgentSession.local_session_id.startswith(
+                f"factory:{row.task_id}:", autoescape=True
+            )
+        )
+    ).all()
+    if any(
+        session.status not in {"completed", "failed", "warn", "cancelled"}
+        for session in sessions
+    ):
+        raise ValueError("operator_handoff_session_not_terminal")
+    if (
+        db.exec(
+            select(PendingMessage.id)
+            .join(AgentSession)
+            .where(
+                AgentSession.local_session_id.startswith(
+                    f"factory:{row.task_id}:", autoescape=True
+                )
+            )
+        ).first()
+        is not None
+    ):
+        raise ValueError("operator_handoff_pending_execution")
+    event = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.task_id == row.task_id, FactoryAudit.action == "finish_task"
+        )
+        .order_by(FactoryAudit.id.desc())
+    ).first()
+    detail = json.loads(event.detail_json) if event else {}
+    evidence = detail.get("evidence", {})
+    if (
+        detail.get("outcome") != "succeeded"
+        or evidence.get("state") != "ready_for_review"
+        or evidence.get("reviewer_model") != "opus"
+        or evidence.get("head_sha") != HANDOFF_ACCEPTED_HEAD
+        or evidence.get("review_session_id") != HANDOFF_REVIEW_SESSION
+        or evidence.get("pr_url") != f"https://github.com/{row.repo}/pull/{pr_number}"
+    ):
+        raise ValueError("operator_handoff_acceptance_changed")
+    return {
+        "acceptance_audit_id": event.id,
+        "acceptance": evidence,
+        "settled_at": task.settled_at.isoformat(),
+    }
+
+
+def _handoff_ci(repo, head):
+    from factory.orchestration.factory_conductor import (
+        github_get,
+        _required_checks_passed,
+    )
+
+    checks = github_get(repo, f"commits/{head}/status")
+    if checks.get("sha") != head or not _required_checks_passed(checks):
+        raise ValueError("operator_handoff_ci_unverified")
+    return {
+        "sha": head,
+        "statuses": sorted(
+            [
+                {k: status.get(k) for k in ("context", "state", "target_url")}
+                for status in checks["statuses"]
+            ],
+            key=lambda status: status["context"],
+        ),
+    }
+
+
 def _observe(receipt_id, pr_number, head_sha, scope):
     pull = _pull(receipt_id, pr_number, head_sha)
     evidence = (
@@ -132,6 +271,10 @@ def _observe(receipt_id, pr_number, head_sha, scope):
         if scope and _scope(scope)["classification"] == "public_docs"
         else None
     )
+    if scope and _scope(scope).get("operator_handoff"):
+        if scope["operator_handoff"]["head_sha"] != head_sha:
+            raise ValueError("operator_handoff_review_head_changed")
+        evidence["ci"] = _handoff_ci(pull["base"]["repo"]["full_name"], head_sha)
     return pull, evidence
 
 
@@ -175,6 +318,15 @@ def scoped_refusal(db, row, pr_number, head_sha):
                 or any(f["path"] not in PUBLIC_DOCS for f in files)
             ):
                 return "scoped_landing_public_docs_unverified"
+        if grant["scope"].get("operator_handoff"):
+            if (
+                grant["scope"]["operator_handoff"]["head_sha"] != head_sha
+                or json.loads(row.direction_json).get("operator_landing_handoff")
+                != grant
+                or grant.get("handoff_history")
+                != _handoff_history(db, row, pr_number, head_sha)
+            ):
+                return "operator_handoff_evidence_changed"
         for event in db.exec(
             select(FactoryAudit).where(
                 FactoryAudit.task_id == row.task_id,
@@ -309,6 +461,10 @@ def _preview(
     if decision_in_flight(db, row.id):
         raise ValueError("landing_release_decision_in_flight")
     direction = json.loads(row.direction_json or "{}")
+    if direction.get("operator_landing_handoff") and not (scope or {}).get(
+        "operator_handoff"
+    ):
+        raise ValueError("operator_handoff_ownership_preserved")
     policy = controls._effective_policy(db, row)
     identity = {
         **direction,
@@ -368,6 +524,14 @@ def _preview(
         result["operation"] = (
             "release_and_authorize" if controls.landing_held(row) else "authorize"
         )
+    if (scope or {}).get("operator_handoff"):
+        result["handoff_history"] = _handoff_history(db, row, pr_number, head_sha)
+        if (
+            not public_docs_evidence.get("ci")
+            or scope["operator_handoff"]["head_sha"] != head_sha
+        ):
+            raise ValueError("operator_handoff_evidence_missing")
+        result["landing_owner"] = "operator"
     result["preview_sha256"] = hashlib.sha256(dumps(result).encode()).hexdigest()
     return result
 
@@ -472,6 +636,13 @@ def apply(
             )
         if "public_docs" in proposal:
             direction["landing_authorization"]["public_docs"] = proposal["public_docs"]
+        if "handoff_history" in proposal:
+            direction["landing_authorization"]["handoff_history"] = proposal[
+                "handoff_history"
+            ]
+            direction["operator_landing_handoff"] = direction[
+                "landing_authorization"
+            ].copy()
         row.direction_json = dumps(direction)
         release = {"ok": True, "pending": False, "reason": None}
         if proposal["operation"] in ("release", "release_and_authorize"):
@@ -498,6 +669,8 @@ def apply(
             "delivery_accepted": False,
             "preview_sha256": proposal["preview_sha256"],
         }
+        if "handoff_history" in proposal:
+            result["landing_owner"] = "operator"
         if scope is not None:
             result["landing_authorization"] = direction["landing_authorization"]
         controls._audit(
@@ -511,3 +684,39 @@ def apply(
             prior_authorization=prior_authorization,
         )
         return result
+
+
+def operator_queue_refusal(db, control, row, pull):
+    """Retain fencing after handoff without claiming native delivery acceptance."""
+    try:
+        grant = json.loads(row.direction_json or "{}").get("operator_landing_handoff")
+        head = pull.get("head", {}).get("sha")
+        if not grant or grant != json.loads(row.direction_json).get(
+            "landing_authorization"
+        ):
+            return "operator_handoff_missing"
+        if not grant["scope"].get("operator_handoff"):
+            return "operator_handoff_missing"
+        if control.state != "enabled" or not controls.repo_auto_merge_enabled(
+            json.loads(control.policy_json or "{}"), row.repo
+        ):
+            return "automatic_landing_disabled"
+        proof = grant["public_docs"]
+        if proof["base_sha"] != pull.get("base", {}).get("sha"):
+            return "operator_handoff_base_changed"
+        _preview(
+            db,
+            control,
+            row.id,
+            pull["number"],
+            head,
+            grant["reason"],
+            pull,
+            grant["scope"],
+            proof,
+        )
+        if _handoff_ci(row.repo, head) != proof["ci"]:
+            return "operator_handoff_ci_changed"
+    except (KeyError, TypeError, ValueError, httpx.HTTPError) as exc:
+        return "operator_handoff_unverified:" + str(exc)
+    return None

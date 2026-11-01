@@ -1741,6 +1741,15 @@ async def factory_release_landing_hold(
     grant. It never resumes execution or changes accepted delivery history.
     Changed heads require fresh preview/apply and independent review. Other
     holds remain binding. The returned public_docs evidence is server-derived.
+    Only receipt 1045 / PR 7492 supports an operator landing-ownership handoff.
+    Add operator_handoff to public_docs scope with head_sha, reviewer,
+    implementer, reference, verdict="approve" and independent=true. The standing
+    operator attests that external review's authenticity and independence.
+    The server verifies the exact target, original acceptance, settled execution,
+    docs scope and current CI. Apply audits operator ownership without changing
+    native acceptance or accounting. Native actions stay fenced for this target
+    even when its grant becomes stale. The queue still rejects stale evidence,
+    changed heads, renewed holds or unknown execution. No other receipt qualifies.
     Independent exact-head review, required CI and the global merge switch still
     apply. Scope is an operator attestation, not an automatic code classifier.
     """
