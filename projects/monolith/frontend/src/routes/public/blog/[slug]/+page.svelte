@@ -192,7 +192,7 @@
             <SchemeToggle />
           </div>
           <h1 id="landing-title">{data.title}</h1>
-          <p class="landing-hardware">No further quantisation: the NVFP4 release on one 24 GB card</p>
+          <p class="landing-hardware">No further weight quantisation: the NVFP4 release on one 24 GB card</p>
         </header>
         <section class="landing-demo" aria-labelledby="inference-demo">
           <h2 class="sr-only" id="inference-demo">Inference Demo</h2>
