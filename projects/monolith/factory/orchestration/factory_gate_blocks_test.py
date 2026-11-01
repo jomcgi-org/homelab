@@ -306,3 +306,46 @@ def test_multiple_owned_or_unowned_rescopes_require_inspection(other):
     )
     assert rows[-1]["duplicates"] == 1
     assert rows[-1]["errors"] == 1
+
+
+def test_strip_removes_generated_contracts_and_keeps_prose():
+    from factory.orchestration.factory_gate_blocks import strip
+
+    prose = "Human intro\n- [ ] Manual acceptance\n\nHuman end\n"
+    bounded = render("task", "b" * 20, text("bounded"))
+    body = (
+        "Human intro\n- [ ] Manual acceptance\n\n"
+        + legacy()
+        + "\n\n"
+        + bounded
+        + "\n\nHuman end\n"
+    )
+    stripped = strip(body)
+    assert legacy() not in stripped and bounded not in stripped
+    assert " ".join(stripped.split()) == " ".join(prose.split())
+    assert strip(prose) == prose
+    # Ambiguous markers are left alone rather than guessed at.
+    malformed = "<!-- factory-gate:task -->\nno contract here"
+    assert strip(malformed) == malformed
+
+
+def test_identical_gate_rendered_differently_keeps_ticks():
+    # The scope line renders without the echoed suffix now, but the gate and
+    # its identity are unchanged, so a retry must carry the person's ticks.
+    old = render("task", "a" * 20, text("same").replace("- [ ]", "- [x]"))
+    body = "intro\n\n" + old
+    new_text = text("same").replace(
+        "Conductor rescope: same", "Conductor rescope: same, reworded"
+    )
+    updated, count = rewrite(body, render("task", "a" * 20, new_text))
+    assert count == 1
+    assert "- [x] Verify same" in updated and "reworded" in updated
+
+
+def test_identical_gate_from_a_new_task_keeps_ticks_under_the_new_task():
+    old = render("old-task", "a" * 20, text("same").replace("- [ ]", "- [x]"))
+    updated, _count = rewrite(
+        "intro\n\n" + old, render("new-task", "a" * 20, text("same"))
+    )
+    block = blocks(updated)[0]
+    assert block.task == "new-task" and "- [x] Verify same" in block.text

@@ -610,6 +610,94 @@ def test_changed_issue_body_supersedes_card_without_inferring_an_answer(
     assert resolution["effects"] == {"dismissed": True}
 
 
+def _store_hash(task_id, digest):
+    """Overwrite the card's recorded body hash, as an older writer left it."""
+    with controls._locked_session() as (session, _control):
+        row = controls._receipt(session, task_id)
+        document = json.loads(row.escalation_json)
+        document["issue_body_sha256"] = digest
+        row.escalation_json = json.dumps(document)
+
+
+def _gate_body(prose, identity="a" * 20, extra=""):
+    from factory.orchestration import factory_gate_blocks as blocks
+
+    contract = (
+        "Conductor rescope: staged. Deliver repository changes default-off or "
+        "staged. Operational acceptance remains on the issue; do not close it.\n"
+        "- [ ] Verify the rollout" + extra
+    )
+    return prose + "\n\n" + blocks.render("t-1", identity, contract)
+
+
+@pytest.mark.parametrize("stored_rule", ["legacy", "current"])
+def test_factory_gate_rewrite_does_not_supersede_a_paused_card(
+    db, github, notices, monkeypatch, stored_rule
+):
+    """The factory's own rescope changes the body; a person's words do not."""
+    import hashlib
+
+    task_id, _policy = admitted(ISSUE)
+    controls.set_control("pause_task", "test:pause", task_id=task_id)
+    prose = "Acceptance written by a person"
+    body = _gate_body(prose)
+    with controls._locked_session() as (session, _control):
+        controls._receipt(session, task_id).body = body
+    conductor._record_escalation(
+        task_id,
+        {**pause(), "task_id": task_id, "options": pause_options(), "resolved": None},
+    )
+    if stored_rule == "legacy":
+        # A card raised before gate blocks were excluded from the hash.
+        _store_hash(
+            task_id, hashlib.sha256(" ".join(body.split()).encode()).hexdigest()
+        )
+    before = controls.task_snapshot(task_id)
+    old_id = controls.decision_identity(before)
+    rewritten = _gate_body(prose, identity="b" * 20, extra="\n- [ ] Second check")
+    github_batch(monkeypatch, {ISSUE: {"state": "OPEN", "body": rewritten}})
+    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
+
+    conductor.revalidate_escalations()
+
+    after = controls.task_snapshot(task_id)
+    assert controls.decision_identity(after) == old_id
+    assert after["escalation"]["resolved"] is None
+    assert audits(db, "paused_card_superseded") == []
+
+    github_batch(
+        monkeypatch,
+        {ISSUE: {"state": "OPEN", "body": _gate_body("A person rewrote this")}},
+    )
+    conductor._last_escalation_revalidation = None
+    conductor.revalidate_escalations()
+    assert controls.decision_identity(controls.task_snapshot(task_id)) != old_id
+    assert len(audits(db, "paused_card_superseded")) == 1
+
+
+def test_body_edited_back_to_the_admission_text_still_counts_as_changed(
+    db, github, notices, monkeypatch
+):
+    """The recorded copy stands in for a missing or migrated hash, nothing more."""
+    task_id, _policy = admitted(ISSUE)
+    controls.set_control("pause_task", "test:pause", task_id=task_id)
+    with controls._locked_session() as (session, _control):
+        controls._receipt(session, task_id).body = "Admission text"
+    conductor._record_escalation(
+        task_id,
+        {**pause(), "task_id": task_id, "options": pause_options(), "resolved": None},
+    )
+    _store_hash(task_id, controls.issue_body_hash("Edited after admission"))
+    old_id = controls.decision_identity(controls.task_snapshot(task_id))
+    github_batch(monkeypatch, {ISSUE: {"state": "OPEN", "body": "Admission text"}})
+    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
+
+    conductor.revalidate_escalations()
+
+    assert controls.decision_identity(controls.task_snapshot(task_id)) != old_id
+    assert len(audits(db, "paused_card_superseded")) == 1
+
+
 @pytest.mark.parametrize("pinned_generation", [False, True])
 def test_active_paused_body_rewrite_replaces_card_without_answer(
     db, github, notices, monkeypatch, pinned_generation

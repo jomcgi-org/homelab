@@ -54,6 +54,7 @@ from factory.orchestration.factory_controls import (
     OPTION_SCHEMA,
     decision_identity,
     issue_body_hash,
+    issue_body_unchanged,
     is_advisory,
     repo_charter,
     verify_option_list,
@@ -3118,8 +3119,11 @@ def revalidate_escalations() -> dict[str, int]:
                     "generation": row.generation,
                     "control_version": control.version,
                     "active": row.state in ("admitted", "uncertain"),
-                    "body_hash": escalation.get("issue_body_sha256")
-                    or issue_body_hash(row.body),
+                    # The stored hash and the receipt's copy of the body: a hash
+                    # whose rule changed since the card was raised must not read
+                    # an unchanged body as a change.
+                    "stored_hash": escalation.get("issue_body_sha256"),
+                    "recorded_body": row.body,
                     "decision_id": decision_identity(snapshot),
                 }
             )
@@ -3155,9 +3159,8 @@ def revalidate_escalations() -> dict[str, int]:
                         f"GitHub issue closed at {when}; the escalation was "
                         "dismissed automatically."
                     )
-                elif (
-                    state == "open"
-                    and issue_body_hash(issue.get("body")) != card["body_hash"]
+                elif state == "open" and not issue_body_unchanged(
+                    card["stored_hash"], card["recorded_body"], issue.get("body")
                 ):
                     note = (
                         "GitHub issue body changed after the card was raised; "
