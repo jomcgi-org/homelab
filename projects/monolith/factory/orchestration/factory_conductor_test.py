@@ -20397,6 +20397,26 @@ def live_gate():
     }
 
 
+@pytest.mark.parametrize(
+    "scope",
+    [
+        "Repository quickstart and regression coverage",
+        "Repository quickstart and regression coverage.",
+        "Repository quickstart and regression coverage. Deliver repository changes "
+        "default-off or staged. Operational acceptance remains on the issue; do not "
+        "close it.",
+        "Repository quickstart and regression coverage. Deliver repository changes "
+        "default-off or staged. Operational acceptance remains on the issue.",
+    ],
+)
+def test_rescope_text_renders_the_server_suffix_exactly_once(scope):
+    gates = conductor.factory_gates
+    rendered = gates.rescope_text({**live_gate(), "scope": scope})
+    assert rendered == gates.rescope_text(live_gate())
+    assert ".." not in rendered
+    assert rendered.count("Deliver repository changes default-off or staged") == 1
+
+
 @pytest.mark.parametrize("legacy_tasks", [[], ["same", "same"], ["old", "historical"]])
 def test_gate_issue_write_replaces_contract_with_history_and_comment_idempotency(
     feedback_db, monkeypatch, legacy_tasks
