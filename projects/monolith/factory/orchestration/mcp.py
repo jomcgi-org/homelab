@@ -1738,7 +1738,7 @@ async def factory_release_landing_hold(
     regular non-executable files and bounded UTF-8 text. No other public code,
     security, access or agent-instruction files qualify. For an unpaused settled
     delivery this scope atomically releases its landing hold and records the
-    grant; it never resumes execution or changes accepted delivery history.
+    grant. It never resumes execution or changes accepted delivery history.
     Changed heads require fresh preview/apply and independent review. Other
     holds remain binding. The returned public_docs evidence is server-derived.
     Independent exact-head review, required CI and the global merge switch still
