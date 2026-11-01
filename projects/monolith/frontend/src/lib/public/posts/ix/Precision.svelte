@@ -19,7 +19,7 @@
         <span class="name"
           ><b>{x.label}</b><code>{x.flag}</code><span class="status"
             >{x.status}</span
-          ></span
+          ><span class="changes">{x.changes}</span></span
         >
         <span class="cell">
           <span class="bar"
@@ -95,6 +95,11 @@
   }
   .status {
     color: var(--ink-3);
+  }
+  .changes {
+    margin-top: 0.2rem;
+    color: var(--ink-2);
+    font: 0.78rem / 1.4 var(--font-ui);
   }
   .default .status {
     color: var(--ink);
