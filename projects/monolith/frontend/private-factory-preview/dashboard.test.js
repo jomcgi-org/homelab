@@ -33,6 +33,7 @@ afterEach(async () => {
   localStorage.clear();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 const headings = () =>
   [...document.querySelectorAll("h2")].map((node) =>
@@ -271,7 +272,32 @@ test("reads on return to the page, at most every 30 seconds, and stops on unmoun
   visible();
   await settle();
   expect(fetch).toHaveBeenCalledTimes(1);
-  state.mockRestore();
+});
+test("runs one refresh at a time and bounds each with a timeout", async () => {
+  vi.useFakeTimers();
+  let resolve;
+  const fetch = vi.fn(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  vi.stubGlobal("fetch", fetch);
+  await render();
+  await vi.advanceTimersByTimeAsync(60000);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(fetch.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  // The first request is still pending: neither a return to the page nor
+  // the next tick starts a second one.
+  await vi.advanceTimersByTimeAsync(30000);
+  document.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(30000);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  // Once it settles, the next tick reads again.
+  resolve(response(fixtureData("dashboard").dashboard));
+  await settle();
+  await vi.advanceTimersByTimeAsync(60000);
+  expect(fetch).toHaveBeenCalledTimes(2);
 });
 test("task toggle is optimistic, commits success and reverts refusal", async () => {
   let resolve;
