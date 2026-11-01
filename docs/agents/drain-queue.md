@@ -321,10 +321,10 @@ detects truncation; more than 500 distinct revisions inside that window holds
 UNKNOWN. Polls after the window cannot exhaust its coverage budget.
 
 Attempt cohorts use their creation window; terminal outcomes are read as of
-digest collection, allowing attempts near the window's end to finish before
-acceptance. Once the window has ended the verdict is final: ACCEPTED,
-REGRESSED, or INCONCLUSIVE for missing traffic, classification coverage, an
-unmet traffic criterion or an unknown metric. Other deployments inside the
+digest collection. Attempts still unresolved when the window ends hold the
+verdict at WAIT for 24 more hours so they can settle. After that the verdict
+is final: ACCEPTED, REGRESSED, or INCONCLUSIVE for missing traffic,
+classification coverage, an unmet traffic criterion or an unknown metric. Other deployments inside the
 window are reported as confounders beside the verdict and never hold it. A
 final verdict releases the selection; UNKNOWN, for evidence that was
 unavailable this run, holds it until the next run.

@@ -318,12 +318,11 @@ def test_optimizer_ended_window_without_an_answer_is_final():
         ]
         == "INCONCLUSIVE"
     )
-    assert (
-        retro.optimizer_evidence(
-            _experiment_context(post={"attempts": 10, "unknown": 1}), NOW
-        )["status"]
-        == "INCONCLUSIVE"
-    )
+    unsettled = _experiment_context(post={"attempts": 10, "unknown": 1})
+    # Attempts created near the window's end get a day to settle first.
+    assert retro.optimizer_evidence(unsettled, NOW)["status"] == "WAIT"
+    later = NOW + retro.timedelta(hours=retro._OPTIMIZER_SETTLE_HOURS)
+    assert retro.optimizer_evidence(unsettled, later)["status"] == "INCONCLUSIVE"
     short = retro.optimizer_evidence(
         _experiment_context(post={"attempts": 4, "dispatch_failure": 0, "unknown": 0}),
         NOW,

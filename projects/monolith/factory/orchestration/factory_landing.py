@@ -973,13 +973,17 @@ def _recover_delivery(
 
 
 def _record_declined(item: dict, reason: str) -> None:
-    """One audit per distinct refusal, not one per fifteen-second tick."""
+    """One audit per distinct refusal in a recovery round, not one per tick.
+
+    A new recovery request or settlement starts a new round, so the same
+    refusal after it is recorded again rather than hidden behind the old row.
+    """
     from factory.orchestration.factory_controls import _read_session
     from factory.orchestration.factory_models import FactoryAudit
 
     with _read_session() as db:
         last = db.exec(
-            select(FactoryAudit.detail_json)
+            select(FactoryAudit.id, FactoryAudit.detail_json)
             .where(
                 FactoryAudit.task_id == item["task_id"],
                 FactoryAudit.action == "landing_recovery_declined",
@@ -987,7 +991,22 @@ def _record_declined(item: dict, reason: str) -> None:
             .order_by(FactoryAudit.id.desc())
             .limit(1)
         ).first()
-    if last and json.loads(last).get("reason") == reason:
+        round_start = db.exec(
+            select(FactoryAudit.id)
+            .where(
+                FactoryAudit.task_id == item["task_id"],
+                FactoryAudit.action.in_(
+                    ("landing_recovery_requested", "finish_task", "delivery_ready")
+                ),
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(1)
+        ).first()
+    if (
+        last is not None
+        and json.loads(last[1]).get("reason") == reason
+        and (round_start is None or round_start < last[0])
+    ):
         return
     _append(
         item["task_id"],

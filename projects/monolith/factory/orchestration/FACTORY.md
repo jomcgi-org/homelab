@@ -171,7 +171,7 @@ The health loop reports landing/observed-merged work waiting over 30 minutes wit
 
 #### Landing recovery authority
 
-A request-bound engine edit proves a bounded correction round exists. Completion still needs the paired recovery audit and fresh independent review of the delivered head. The landing-recovery deadline is a fixed cap that funding cannot extend.
+A request-bound engine edit proves a bounded correction round exists. Completion still needs the paired recovery audit and fresh independent review of the delivered head. The landing-recovery deadline is a fixed cap that funding cannot extend. A refused request that is neither waiting for capacity nor at `recovery_limit` writes `landing_recovery_declined` with its reason whenever the reason changes or a new recovery round starts; the delivery stays eligible for the next tick.
 
 #### Review publisher
 

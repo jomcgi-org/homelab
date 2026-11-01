@@ -583,6 +583,15 @@ def test_declined_conflict_repair_is_named_once_without_refusing_delivery(
         "task_paused",
         "unresolved_execution",
     ]
+    # A new recovery round makes the same refusal worth recording again.
+    landing._append("t-1", "landing_recovery_requested", pr_number=3)
+    landing._record_declined({"task_id": "t-1", "pr_number": 3}, "unresolved_execution")
+    landing._record_declined({"task_id": "t-1", "pr_number": 3}, "unresolved_execution")
+    assert [row["reason"] for row in audits(db, "landing_recovery_declined")] == [
+        "task_paused",
+        "unresolved_execution",
+        "unresolved_execution",
+    ]
     assert declined[0]["pr_number"] == 3
     assert audits(db, "merge_arm_refused") == []
     assert receipt_state(db, "t-1") == before
