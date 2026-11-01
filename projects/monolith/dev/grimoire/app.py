@@ -1,11 +1,14 @@
 """Loopback-only Grimoire playground with signed synthetic identities.
 
 This entrypoint is launched explicitly by dev/grimoire/run.py. Production module
-registration never imports it or registers its identity endpoints.
+registration never imports it or registers its identity or embedding endpoints.
 """
 
+import hashlib
 import json
+import math
 import os
+import re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,8 +31,30 @@ from grimoire.models import (
 )
 from grimoire.router import router
 from grimoire.sheets import CharacterSheetV1, derive_sheet
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlmodel import Session, SQLModel, select
+
+EMBEDDING_DIM = 1024
+
+
+class EmbeddingRequest(BaseModel):
+    input: list[str]
+
+
+def local_vector(text: str) -> list[float]:
+    """Deterministic stand-in for the voyage model: shared words score closer.
+
+    Each word adds weight to one hashed dimension. The constant first
+    dimension keeps every vector non-zero, so cosine distance stays defined.
+    """
+    vector = [0.0] * EMBEDDING_DIM
+    vector[0] = 0.1
+    for word in re.findall(r"\w+", text.lower()):
+        digest = hashlib.sha256(word.encode()).digest()
+        vector[1 + int.from_bytes(digest[:4], "big") % (EMBEDDING_DIM - 1)] += 1.0
+    norm = math.sqrt(sum(value * value for value in vector))
+    return [value / norm for value in vector]
 
 
 def build_app() -> FastAPI:
@@ -216,6 +241,25 @@ def build_app() -> FastAPI:
     @app.get("/__local/jwks")
     def jwks():
         return {"keys": [public]}
+
+    # run.py points EMBEDDING_URL here, so the real embedding client, the
+    # knowledge search route and the play embedder run without a model.
+    @app.post("/__local/v1/embeddings")
+    def embeddings(body: EmbeddingRequest):
+        return {
+            "data": [
+                {"index": index, "embedding": local_vector(text)}
+                for index, text in enumerate(body.input)
+            ]
+        }
+
+    # Production embeds play state every five minutes; rehearsals run that
+    # same job on demand instead of waiting for the schedule.
+    @app.post("/__local/embed-play", status_code=204)
+    async def embed_play():
+        from grimoire.jobs import grimoire_embed_play
+
+        await grimoire_embed_play(None)
 
     @app.get("/__local", response_class=HTMLResponse)
     def home():

@@ -111,6 +111,8 @@ def main():
                 "GRIMOIRE_AUTH_AUDIENCE": "grimoire-local",
                 "API_BASE": "http://127.0.0.1:8177",
                 "GRIMOIRE_LOCAL_FRONTEND": "http://friends.localhost:4177",
+                # The playground's deterministic embedder; never a live model.
+                "EMBEDDING_URL": "http://127.0.0.1:8177/__local",
                 "GRIMOIRE_INVITATION_LINKS_ENABLED": str(args.join_links).lower(),
                 # Never inherit a live enrollment provider into this fixture.
                 "GRIMOIRE_INVITATION_ENROLLMENT_ENABLED": "false",
