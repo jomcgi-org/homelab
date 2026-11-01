@@ -102,6 +102,25 @@ func TestWinterDaylightBoundsTheTolerance(t *testing.T) {
 	}
 }
 
+// A walk that needs the dark can also hold its slot's one bad hour, and the
+// why names both: 55N 3W on 2026-10-20 has ten complete daylight hours, and
+// a 10.5 h walk fits nine good ones around a gap at 12:00Z.
+func TestDarkWhyKeepsTheBadHour(t *testing.T) {
+	day := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	var hours []string
+	for h := 7; h < 17; h++ {
+		if h != 12 {
+			hours = append(hours, fmt.Sprintf("[%d,9,0,10,40]", day.Add(time.Duration(h)*time.Hour).Unix()))
+		}
+	}
+	ds := mustParse(t, `{"schema_version":1,"generated_at":"2026-10-19T06:30:00+00:00","fetched_at":"2026-10-19T06:20:00+00:00","walks":[{"forecast_fetched_at":"2026-10-19T06:20:00Z","id":"w","name":"W","url":"https://www.walkhighlands.co.uk/w.shtml","lat":55,"lon":-3,"distance_km":30,"ascent_m":1500,"duration_h":10.5,"hours":[`+strings.Join(hours, ",")+`]}]}`)
+	w := &ds.Walks[0]
+	a := w.Assess(ds.DayFor(w, LocalDay(day), day.Add(-12*time.Hour)), ds.HourlyUntil)
+	if a.Verdict != verdict.Marginal || !strings.Contains(a.Why, "in the dark, with one wet or windy hour mid-walk: 9 good hours 08:00 to 18:00") {
+		t.Fatalf("dark with a gap = %+v", a)
+	}
+}
+
 func TestUnknownBeyondTheForecast(t *testing.T) {
 	ds := mustParse(t, snapshot(walkJSON("w", 57, -4, 3, 0, 0, 1)))
 	// The horizon is 06:20Z on the 17th: the 18th has no forecast.
