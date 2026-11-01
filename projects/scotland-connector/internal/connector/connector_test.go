@@ -69,8 +69,9 @@ func TestEntityFreshnessAcrossCheckAndCombinedPlan(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		day := plan.Data.(connector.PlanResult).Days[0]
-		if len(day.Walks) != 0 || len(day.Stargazing) != 0 || day.WalkNote == "" || day.StarNote == "" {
+		result := plan.Data.(connector.PlanResult)
+		day := result.Days[0]
+		if len(day.Walks) != 0 || len(day.Stargazing) != 0 || (day.WalkNote == "" && len(result.Datasets["walk"].Notes) == 0) || (day.StarNote == "" && len(result.Datasets["stargaze"].Notes) == 0) {
 			t.Fatalf("%s: %+v", stamp, day)
 		}
 	}
@@ -164,7 +165,7 @@ func TestPlanVerdicts(t *testing.T) {
 			t.Errorf("tonight %s verdict %s", o.SiteID, o.Verdict)
 		}
 	}
-	if len(after.Walks) != 0 || len(after.Stargazing) != 0 || !strings.Contains(after.StarNote, "Beyond the hourly forecast") || !strings.Contains(after.WalkNote, "hourly forecast reaches only") {
+	if len(after.Walks) != 0 || len(after.Stargazing) != 0 || strings.Contains(after.StarNote, "Beyond the hourly forecast") || !strings.Contains(after.StarNote, "Moon illumination") || len(res.Datasets["stargaze"].Notes) != 1 || !strings.Contains(res.Datasets["stargaze"].Notes[0].Why, "Beyond the hourly forecast") || !strings.Contains(after.WalkNote, "hourly forecast reaches only") {
 		t.Errorf("day 3 = %+v", after)
 	}
 	if env.Results != 1+1+1 {

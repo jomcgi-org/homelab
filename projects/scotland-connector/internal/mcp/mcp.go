@@ -359,7 +359,7 @@ func (h *Handler) dispatch(r *http.Request, e era, req request) (any, int, *rpcE
 	case "initialize":
 		return map[string]any{
 			"protocolVersion": e.version,
-			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"capabilities":    capabilities(),
 			"serverInfo":      h.info,
 			"instructions":    h.instructions(),
 		}, 0, nil
@@ -371,7 +371,7 @@ func (h *Handler) dispatch(r *http.Request, e era, req request) (any, int, *rpcE
 		}
 		return h.result(e, map[string]any{
 			"supportedVersions": []string{ModernVersion},
-			"capabilities":      map[string]any{"tools": map[string]any{}},
+			"capabilities":      capabilities(),
 			"instructions":      h.instructions(),
 			"ttlMs":             3600000,
 			"cacheScope":        "public",
@@ -385,6 +385,8 @@ func (h *Handler) dispatch(r *http.Request, e era, req request) (any, int, *rpcE
 		return h.result(e, out), 0, nil
 	case "tools/call":
 		return h.toolsCall(r, e, req.Params)
+	case "prompts/list", "prompts/get", "resources/list", "resources/read":
+		return h.documentation(e, req)
 	}
 	return nil, notFound, &rpcError{Code: codeMethodNotFound, Message: "Method not found: " + req.Method}
 }
