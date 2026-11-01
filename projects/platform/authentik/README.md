@@ -58,6 +58,16 @@ default. `grimoireLinkEnrollment` gates the separate campaign-link flow;
 `platformManagement` is enabled by default and adds protected profile claims.
 The optional platform enrollment flow was retired in #7075. Its former shared
 Grimoire profile mapping remains management-owned with the same object identity.
+
+`grimoireDiscordSource` (default off, #7461) splices a Discord OAuth source,
+a verified-email enrollment gate and a Grimoire-only sign-in flow into the
+Grimoire blueprint, and points the Grimoire provider at that flow. Every other
+application keeps the shared default login. Enabling it needs the
+`vaults/k8s-homelab/items/grimoire-discord-oauth` item with `client-id` and
+`client-secret` from a Discord application whose redirect is
+`https://auth.jomcgi.dev/source/oauth/callback/discord/`. Discord identities
+match by account id only, never by email, and create external users under the
+`grimoire` path with no group.
 authentik serves discovery per application at
 `/application/o/<slug>/.well-known/openid-configuration`. Ember's browser SSO
 remains intentionally unconfigured under ADR 032.
