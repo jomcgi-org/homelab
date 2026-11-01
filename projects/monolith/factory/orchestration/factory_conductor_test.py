@@ -99,8 +99,9 @@ def paused_settlement(feedback_db, monkeypatch, request):
         "_warn_deadline_tripped",
     ):
         monkeypatch.setattr(conductor, name, lambda *a, **kw: None)
-    # The deadline warning stays stubbed below; paused ownership skips it
-    # before it runs, so it never touches paused unknown work.
+    # The deadline warning is stubbed above. A paused task that is neither
+    # human-owned nor cancelling does reach it in _tick; it only reads starts
+    # and notifies, so it never settles paused unknown work.
     for module, name in (
         (dependency_gate, "tick"),
         (factory_pr_lifecycle, "reconcile_tick"),
@@ -17907,8 +17908,8 @@ def test_expired_task_with_reserved_work_is_left_alone_until_it_settles(
     Receipt 461 on 2026-09-19 (#6227): past its deadline, six capacity refusals
     behind it, and a node still dispatched on a reserved start. A tick must
     leave that shape exactly as it found it, holding the lane slot: the
-    funding bound is reached only once nothing is in flight, and the deadline
-    backstop refuses any task with a reserved start even when opted in. Once
+    funding bound is reached only once nothing is in flight, and elapsed time
+    alone never settles a reserved start. Once
     the running attempt settles and the receipt drops to zero unresolved
     starts with nothing running, the very next tick finishes it through the
     same bound and the queued receipt takes the slot.
@@ -17927,8 +17928,7 @@ def test_expired_task_with_reserved_work_is_left_alone_until_it_settles(
     from factory.orchestration.models import SwarmTask
 
     monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
-    # A reserved start is refused by the deadline warning either way: elapsed
-    # time alone never settles it.
+    # Elapsed time alone never settles a reserved start.
     now = datetime(2026, 9, 20, 12, tzinfo=timezone.utc)
     monkeypatch.setattr(controls, "_now", lambda: now)
     task, policy = feedback_task(
@@ -22669,7 +22669,7 @@ def test_active_cessation_destroys_the_recorded_guest_then_settles_on_absence(
     """The 617/623/633 release: record, destroy, observe gone, settle once.
 
     A destroyed guest normally reads back 200 "destroyed" until op-log
-    compaction rather than 404 (values-gke.yaml, factoryDeadlineBackstop), so
+    compaction rather than 404, so
     both readings count as the same gone sample and both need the full
     sampled window.
     """
