@@ -637,6 +637,12 @@ def prepare(task, node, schema, *, github_get):
         result["properties"]["action"] = {"enum": ["finish", "pause"]}
         for key in ("pr_number", "head_sha"):
             result["properties"][key] = {"const": node["evidence_acceptance"][key]}
+        result.setdefault("allOf", []).append(
+            {
+                "if": {"properties": {"action": {"const": "finish"}}},
+                "then": {"required": ["head_sha"]},
+            }
+        )
         return result
     grant = node.get("evidence_continuation")
     if grant is None:

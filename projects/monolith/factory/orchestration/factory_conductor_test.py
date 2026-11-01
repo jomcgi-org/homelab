@@ -906,6 +906,9 @@ def test_evidence_continuation_terminal_executes_only_pair_and_one_acceptance(
     schema = run["pin"]["artifact_schema"]
     assert schema["properties"]["action"] == {"enum": ["finish", "pause"]}
     assert schema["properties"]["head_sha"] == {"const": s.head}
+    finish = {"action": "finish", "reason": "Verified", "pr_number": 3}
+    assert schema_errors(finish, schema)
+    assert not schema_errors({**finish, "head_sha": s.head}, schema)
     assert "read-only" in _node_prompt(
         run["pin"]["prompt"],
         run["pin"]["artifact_path"],
