@@ -22,9 +22,10 @@ graph LR
 One Go binary, `cmd/connector`, in its own `scotland-connector` namespace.
 It serves two surfaces on port 8080 and nothing else:
 
-- `GET /v1/plan`, `POST /v1/check`, `/v1/openapi.json` (the published
+- `GET /v1/plan`, `GET /v1/outlook`, `GET /v1/light`, `GET /v1/aurora`,
+  `POST /v1/check`, `/v1/openapi.json` (the published
   contract) and `/v1/method`.
-- `POST /mcp`: tools `plan` and `check`.
+- `POST /mcp`: tools `plan`, `check`, `outlook`, `light` and `aurora`.
 
 Health (`/healthz`), readiness (`/readyz`) and Prometheus metrics
 (`/metrics`) are on an admin listener, port 9090, that no Service or route
@@ -34,6 +35,66 @@ Both surfaces call the same `internal/connector` functions, which validate
 parameters, apply the caps, query the dataset and wrap the answer in the
 provenance envelope. `internal/httpapi` and `internal/mcp` only translate
 transport.
+
+## Outlook beyond the forecast
+
+`outlook` and `GET /v1/outlook` compare already loaded CERRA climatology
+within the requested 1..100 km radius, default 30 km. They use every radius
+candidate independently of forecast freshness, hourly counts and forecast
+shortlists. Each requested month segment names its rate winner and its
+absolute-clear-dark-hours winner, including coordinates and distance.
+Site-score ties use distance then ID. Weather verdicts at response, month
+and date level are always `unknown`; explanations name available month figures.
+Missing/invalid climatology leaves winners and ranks null. Astronomy remains
+available without any loaded sites.
+
+The historical arrays count whole calendar months of the loaded archive,
+pooled across years. The existing CERRA backfill nearest-reindexes native
+three-hour cloud samples hourly, counts sun below -12 degrees as dark, and
+also requires cloud below 10% for clear-dark. `history-map.json` carries no
+archive years or exposure dates, so the response states that they are
+unavailable. These totals are never a typical single month's expected hours,
+independent hourly observations, a fresh probability or a weather forecast.
+Partial requested months retain whole historical totals without prorating.
+
+Rate ranking requires **300 historical dark hours per calendar month** at
+each candidate. A lower count leaves the rate winner/rank unknown; absolute
+hours can still be shown with a null share. Separate rate and hours rankings
+compare the returned month segments, including partial segments. Equal values
+share competition rank; ranking-list ties retain chronological order. Daily
+climatology ranks inherit their month's ranks and never distinguish weather
+between dates within that month.
+
+Dates are inclusive Europe/London civil dates in 2000..2100, with no seven-day
+or 13-day forecast cap. The default starts today and ends the day before its
+next calendar-year anniversary, capped at 2100-12-31. The exclusive anniversary clamps February 29
+to February 28: 2028-02-29 through 2029-02-27 is valid, through 2029-02-28 is
+refused. January 1 through December 31 covers 365 or 366 dates. Year-crossing
+spans may produce 13 month segments. At most 92 inclusive dates get daily
+phase/windows; longer spans return no daily rows and explicit omitted detail
+coverage. Every requested date still contributes to monthly astronomy.
+
+All geometry describes the rounded requested point, independent of either
+historical winner. Moonless dark windows intersect sun centre below -12
+degrees with topocentric moon centre below -0.833 degrees (approximate
+refraction/disc allowance), using Light's lower-level bounded curve and
+interval helpers. They are clipped to local midnight boundaries, including
+23/25-hour DST dates. Empty windows cover zero darkness, moon always up and
+absent qualifying crossings. Phase/illumination use local noon with its UTC
+reference time; new/first/full/last quarter are 0/.25/.5/.75. No terrain is
+modelled. One-second solver resolution is distinct from ephemeris accuracy.
+Monthly calculated dark/moonless hours sum the requested dates, independently
+of historical support. All calculation stays in memory with at most 366 civil
+dates and no new dependency, producer, R2 object or request-time fetch.
+Responses credit CERRA and the local astronomical implementation. Outlook
+uses plan's cache headers and an ETag over snapshot version, as-of hour and
+canonical query, without asserting forecast freshness.
+
+**Why.** Choosing a season needs historical support and the requested dates'
+moon geometry. A summer ratio can win with almost no dark-hour exposure.
+The 300-hour floor keeps unsupported rates unknown. Separate rate and hours
+winners preserve their disagreement, while calculated moonless hours remain
+independent of cloud climatology. Existing loaded arrays supply the history.
 
 ## Light: staged repository delivery
 

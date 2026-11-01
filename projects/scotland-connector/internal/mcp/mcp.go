@@ -75,6 +75,7 @@ type Handler struct {
 const Instructions = "Read-only answers to Scottish outdoor trip questions from forecast and climatology data and local astronomy. " +
 	"Use plan for open questions (where and when to walk or stargaze near a place over the next few days) " +
 	"and check for a specific plan (a named walk on a date, stargazing at a place on a night). " +
+	"Use outlook beyond the forecast for up to one calendar year of historical CERRA seasons and local moonless nautical darkness. Weather is always unknown; present separate climatology rate and absolute-hours rankings, their identified sites, and any disagreement. A rate rank needs 300 historical dark hours per calendar month. Historical archive totals are not expected hours for one trip or fresh weather probabilities. Daily phase and windows cover at most 92 inclusive dates; longer spans retain monthly astronomy with explicit omitted daily coverage. " +
 	"Use aurora for a snapshot-only, near-term aurora heuristic; unsupported times or missing inputs return unknown. " +
 	"Use light for sun, moon, twilight, golden/blue light and Milky Way windows on Europe/London civil dates. " +
 	"Light has no top-level verdict; present the requested events and windows with their coverage and why. " +

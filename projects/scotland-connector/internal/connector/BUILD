@@ -7,6 +7,7 @@ go_library(
         "check.go",
         "connector.go",
         "light.go",
+        "outlook.go",
         "plan.go",
         "trip.go",
     ],
@@ -29,6 +30,7 @@ go_test(
         "diversity_test.go",
         "light_solver_test.go",
         "light_test.go",
+        "outlook_test.go",
     ],
     embed = [":connector"],
     deps = [

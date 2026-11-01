@@ -1,11 +1,11 @@
 ---
 name: scotland-trips
-description: Plan or check walks and stargazing in Scotland with the scotland MCP tools. Use when someone asks where to walk, whether a named walk or night is on, which day suits a hill, or where to see the stars anywhere in Scotland.
+description: Plan or check walks and stargazing in Scotland, or compare stargazing seasons beyond the forecast using historical climatology and local astronomy.
 ---
 
 # Scottish walks and stargazing
 
-The `scotland` MCP server has two tools. `check` answers each item with a
+The `scotland` MCP server includes trip planning and seasonal outlook. `check` answers each item with a
 verdict (`go`, `marginal`, `no` or `unknown`) and a one-line `why` in UK
 local time; `plan` lists only `go` and `marginal` options, and a day's
 `walk_note` or `stargazing_note` says why it has none. Lead with the verdict
@@ -27,6 +27,37 @@ Dates are UK calendar dates (`YYYY-MM-DD`). A stargazing date is the evening
 the night starts. A plan covers today and the next two days unless you pass
 `from` and `to`: up to 7 days, starting up to 13 days ahead. For "this
 weekend", pass that Saturday and Sunday.
+
+## outlook beyond the forecast
+
+Use `outlook` for "best month for stars on Skye" or "moonless dates next
+March". Pass a Scottish `lat`/`lon`, optional `radius_km` (1..100, default
+30), and inclusive Europe/London `from`/`to` dates in 2000..2100. It defaults
+to today through the day before next year's anniversary, with a one-calendar-year
+maximum; defaults stop at 2100-12-31. February 29's anniversary clamps to February 28 and is exclusive;
+2028-02-29 through 2029-02-27 is valid. No forecast horizon caps apply.
+At most 92 inclusive dates return daily moon phase, moonless windows and
+climatology ranks. Longer spans explicitly omit daily detail while keeping
+all monthly calculated totals.
+
+Weather is always `unknown`. Say "historically" when quoting CERRA's
+whole archive month-of-year totals. Its native three-hour cloud samples
+were nearest-reindexed hourly; the snapshot does not identify archive years.
+Never call these totals expected hours for one trip or a fresh probability.
+Rate ranking needs at least 300 historical dark hours in each calendar month;
+null means unsupported, including a summer month with too little darkness.
+Present rate and absolute-hours rankings separately and name different
+winning sites when they disagree. Daily ranks inherit their month's
+climatology and do not distinguish one date's weather from another's.
+
+Moonless windows and calculated hours describe the requested point, independent
+of either historical winning site: sun below -12 degrees and topocentric
+moon below -0.833 degrees, without terrain. UTC windows are clipped to local
+civil dates, including DST. Phase is sampled at local noon, with 0=new,
+.25=first quarter, .5=full and .75=last quarter. Missing history leaves ranks
+unknown while astronomy can still be shown. Credit CERRA and the local
+astronomical source from `meta.sources`. Use plan/check nearer the trip to
+assess the available hourly weather.
 
 ## Match the weather to the person
 
