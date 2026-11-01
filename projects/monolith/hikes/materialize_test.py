@@ -1,7 +1,9 @@
 """Unit tests for hikes.materialize: the connector's walks.json snapshot."""
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
@@ -75,6 +77,31 @@ def test_payload_without_hours_has_null_fetched_at():
     payload = materialize.build_payload([_walk("a")], [], None, NOW)
     assert payload["fetched_at"] is None
     assert payload["walks"][0]["hours"] == []
+
+
+def test_camping_membership_survives_actual_snapshot_serialization():
+    payload = materialize.build_payload(
+        [
+            _walk("shore", latitude=56.084, longitude=-4.548),
+            _walk("park", latitude=57.17, longitude=-3.67),
+            _walk("outside", latitude=55.95, longitude=-3.2),
+        ],
+        [],
+        None,
+        NOW,
+    )
+    rows = {w["id"]: w for w in json.loads(json.dumps(payload))["walks"]}
+    assert rows["shore"]["camping_membership"]["zones"] == ["East Loch Lomond"]
+    assert rows["park"]["camping_membership"] == {"zones": [], "parks": ["Cairngorms"]}
+    assert rows["outside"]["camping_membership"] == {"zones": [], "parks": []}
+    fixture = Path(
+        os.environ.get(
+            "CAMPING_WALKS_FIXTURE",
+            Path(__file__).resolve().parents[2]
+            / "scotland-connector/internal/store/testdata/camping-walks.json",
+        )
+    )
+    assert json.loads(fixture.read_bytes()) == payload
 
 
 def test_entity_timestamp_serializes_identically_for_sqlite_and_postgres():

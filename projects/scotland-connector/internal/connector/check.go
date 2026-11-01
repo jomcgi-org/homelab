@@ -330,7 +330,7 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 	}
 	var sky *stars.Dataset
 	var wk *walks.Dataset
-	sources := []Source{sourceMET}
+	sources := []Source{sourceMET, sourceCampingZones, sourceNationalParks}
 	walk, stargaze := false, false
 	for _, cp := range plans {
 		walk = walk || cp.item.Activity == ActivityWalk

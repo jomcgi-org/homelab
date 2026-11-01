@@ -47,6 +47,7 @@ def test_uncapped_materialization_preserves_public_bytes_and_two_queries(monkeyp
         assert value == enabled[key]
     payload = json.loads(enabled["connector-sites.json"]["Body"])
     for site in payload["sites"]:
+        assert site["camping_membership"] == {"zones": [], "parks": ["Cairngorms"]}
         if site["id"].startswith("site-"):
             hours = site["best_hours"]
             assert len(hours) == site["clear_twilight_hours"] > 25
@@ -178,6 +179,20 @@ def test_connector_fixture_is_actual_producer_bytes():
         json.loads(fixture.read_bytes()), separators=(",", ":")
     ).encode()
     assert canonical == writes["connector-sites.json"]
+
+
+def test_boundary_failure_prevents_partial_publication(monkeypatch):
+    from stars import materialize
+    from stars.tests.snapshot_fixture import run
+
+    def missing(*args):
+        raise FileNotFoundError("producer boundary resource missing")
+
+    monkeypatch.setattr(materialize, "membership", missing)
+    writes = []
+    with pytest.raises(FileNotFoundError):
+        run(enabled=True, sink=writes.append)
+    assert writes == []
 
 
 @pytest.mark.parametrize("setting", [None, "", "   "])

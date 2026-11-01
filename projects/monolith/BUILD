@@ -503,6 +503,7 @@ py_library(
             "shared/testing/**/*.py",
         ],
     ),
+    data = ["shared/camping_boundaries.json.gz"],
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
@@ -521,6 +522,7 @@ py_library(
         "@pip//pydantic",
         "@pip//python_multipart",
         "@pip//pyyaml",
+        "@pip//shapely",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
         "@pip//tzdata",
@@ -6115,6 +6117,17 @@ py_test(
 )
 
 py_test(
+    name = "shared_camping_test",
+    srcs = ["shared/camping_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        "@pip//pytest",
+        "@pip//shapely",
+    ],
+)
+
+py_test(
     name = "knowledge_chunker_test",
     srcs = ["knowledge/chunker_test.py"],
     imports = ["."],
@@ -7406,6 +7419,8 @@ py_test(
 py_test(
     name = "hikes_materialize_test",
     srcs = ["hikes/materialize_test.py"],
+    data = ["//projects/scotland-connector/internal/store:camping_walks_fixture"],
+    env = {"CAMPING_WALKS_FIXTURE": "$(rootpath //projects/scotland-connector/internal/store:camping_walks_fixture)"},
     imports = ["."],
     deps = [
         ":pkg_core",

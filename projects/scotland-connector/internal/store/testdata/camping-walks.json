@@ -1,0 +1,55 @@
+{
+  "schema_version": 2,
+  "generated_at": "2026-10-20T12:30:00+00:00",
+  "fetched_at": null,
+  "walks": [
+    {
+      "id": "outside",
+      "name": "Walk outside",
+      "url": "https://www.walkhighlands.co.uk/area/outside.shtml",
+      "lat": 55.95,
+      "lon": -3.2,
+      "camping_membership": {
+        "zones": [],
+        "parks": []
+      },
+      "distance_km": 10.0,
+      "ascent_m": 500,
+      "duration_h": 4.0,
+      "hours": [],
+      "forecast_fetched_at": null
+    },
+    {
+      "id": "park",
+      "name": "Walk park",
+      "url": "https://www.walkhighlands.co.uk/area/park.shtml",
+      "lat": 57.17,
+      "lon": -3.67,
+      "camping_membership": {
+        "zones": [],
+        "parks": ["Cairngorms"]
+      },
+      "distance_km": 10.0,
+      "ascent_m": 500,
+      "duration_h": 4.0,
+      "hours": [],
+      "forecast_fetched_at": null
+    },
+    {
+      "id": "shore",
+      "name": "Walk shore",
+      "url": "https://www.walkhighlands.co.uk/area/shore.shtml",
+      "lat": 56.084,
+      "lon": -4.548,
+      "camping_membership": {
+        "zones": ["East Loch Lomond"],
+        "parks": ["Loch Lomond and The Trossachs"]
+      },
+      "distance_km": 10.0,
+      "ascent_m": 500,
+      "duration_h": 4.0,
+      "hours": [],
+      "forecast_fetched_at": null
+    }
+  ]
+}

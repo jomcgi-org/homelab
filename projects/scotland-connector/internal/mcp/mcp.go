@@ -80,7 +80,8 @@ const Instructions = "Read-only answers to Scottish outdoor trip questions from 
 	"Light has no top-level verdict; present the requested events and windows with their coverage and why. " +
 	"Its per-window cloud is nearby-site hourly sample support; unsupported portions, including golden/blue light, stay unknown and missing rows never prove cloud. " +
 	"Its nights are separate night suitability assessments, never interval cloud forecasts. " +
-	"For plan, check and aurora, lead with the verdict and why. Every result carries meta.sources: credit them when you present the data."
+	"For plan, check and aurora, lead with the verdict and why. Every result carries meta.sources: credit them when you present the data. " +
+	"Plan and check include camping guidance for each matched walk start or stars site on the requested date. It does not classify a whole route or the caller's nearby coordinate. Unknown membership requires checking the official map; National Park membership alone is not a camping restriction."
 
 // New builds the handler. allowedOrigins lists the browser origins accepted;
 // requests without an Origin header (every server-side connector) always pass.

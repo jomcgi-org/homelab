@@ -1,5 +1,29 @@
 # Scotland connector architecture
 
+## Camping at a walk start or stars site
+
+Why: camping restrictions depend on fixed boundaries and the requested date.
+The monolith materializers classify each walk start and stars site once with
+packaged boundary data. Snapshots add only `camping_membership.zones` and
+`camping_membership.parks`; connector requests perform no boundary downloads
+or polygon work. Both plan and check return `camping` on each matched option,
+identifying its point and requested UK civil date. This does not classify a
+route, a nearby caller coordinate or all land in a National Park.
+
+The inclusive season is centralized in `internal/connector/camping.go` with
+the primary byelaws reference. Other known points receive paraphrased Access
+Code guidance. Missing or incomplete membership stays unknown and directs
+the caller to the official map. Old consumers ignore the additive fields and
+old producers remain readable. Weather freshness, hour-list caps and
+publication keys are unchanged. The uncapped stars snapshot remains opt-in
+and is not enabled here.
+
+Producer preparation, provenance and OGL attribution years are documented in
+`projects/monolith/shared/camping-data.md`. Geometry ships with producer
+runfiles only. Offline tests cover sourced points, topology, serialized
+membership, season edges and both response paths. No new operational
+acceptance is required by this repository feature.
+
 A public, read-only, free API and MCP endpoint for planning and checking
 Scottish trips: which walks fit the weather and where the night sky will be
 dark and clear, each with a go, marginal, no or unknown verdict.

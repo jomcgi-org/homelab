@@ -411,7 +411,7 @@ func (s *Service) Plan(p PlanParams) (*Envelope, error) {
 	}
 	var sky *stars.Dataset
 	var wk *walks.Dataset
-	sources := []Source{sourceMET}
+	sources := []Source{sourceMET, sourceCampingZones, sourceNationalParks}
 	walksMissing := false
 	if has(q.Activities, ActivityWalk) {
 		if wk = s.walks(); wk != nil {

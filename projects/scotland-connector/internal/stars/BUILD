@@ -12,6 +12,7 @@ go_library(
     visibility = ["//projects/scotland-connector:__subpackages__"],
     deps = [
         "//projects/scotland-connector/internal/astro",
+        "//projects/scotland-connector/internal/camping",
         "//projects/scotland-connector/internal/verdict",
     ],
 )

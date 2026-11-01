@@ -83,6 +83,7 @@ type WalkFacts struct {
 // WalkOption is one walk on one day.
 type WalkOption struct {
 	WalkFacts
+	Camping     CampingNote     `json:"camping"`
 	FromPointKm *float64        `json:"from_point_km,omitempty"`
 	Verdict     verdict.Verdict `json:"verdict"`
 	Why         string          `json:"why"`
@@ -108,6 +109,7 @@ type SiteFacts struct {
 // NightOption is one dark-sky site on one night.
 type NightOption struct {
 	SiteFacts
+	Camping      CampingNote     `json:"camping"`
 	FromPointKm  float64         `json:"from_point_km"`
 	Verdict      verdict.Verdict `json:"verdict"`
 	Why          string          `json:"why"`
@@ -212,6 +214,7 @@ func walkOption(ds *walks.Dataset, w *walks.Walk, day int32, now time.Time, ask 
 	d := ds.DayWithin(w, day, now, ask.lim)
 	a := w.Assess(d, ds.HourlyUntil)
 	o := WalkOption{WalkFacts: walkFacts(w), Verdict: a.Verdict, Why: a.Why}
+	o.Camping = campingNote("Walk start: "+w.Name+" ("+w.ID+")", day, w.Camping)
 	good := 0.0
 	if a.Verdict == verdict.Go || a.Verdict == verdict.Marginal {
 		o.StartFrom, o.StartBy, o.Slot = timep(a.StartFrom), timep(a.StartBy), slotOut(&d, ask.hours)
@@ -304,6 +307,7 @@ func nightOption(ds *stars.Dataset, w *stars.Window, night int32, now time.Time)
 	n := &w.Nights[0]
 	a := ds.AssessNight(w.Site, n, night, now, w.Climate)
 	o := NightOption{
+		Camping:   campingNote("Stars site: "+w.Site.ID, night, w.Site.Camping),
 		SiteFacts: siteFacts(w.Site, w.Climate), FromPointKm: round(w.DistanceKm, 1),
 		Verdict: a.Verdict, Why: a.Why, ClearDark: n.ClearDark, MoonlessDark: n.MoonlessDark,
 	}
