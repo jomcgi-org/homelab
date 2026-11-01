@@ -2130,7 +2130,7 @@ defmodule Embervm.SessionManager do
   # demand once for this create, keep the cause in the placement-miss log, and
   # deny with the retryable capacity reason the router already maps to 429.
   defp create_failure_reason(state, create, {:node_pressure, rejects}) do
-    _ = safe(fn -> state.note_denial_fun.(create.workload, create.need_mib) end)
+    _ = Embervm.SafeCall.run(fn -> state.note_denial_fun.(create.workload, create.need_mib) end)
     note_placement_miss(create.workload, {:node_pressure, rejects})
     :no_capacity
   end
@@ -2394,7 +2394,7 @@ defmodule Embervm.SessionManager do
       {:ok, channel} ->
         case safe_prime(state, channel, snapshot_ref, entry, lineage_id) do
           {:ok, %PrimeResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" ->
-            _ = safe(fn -> append_primed(state, workload, vm_id, node_id) end)
+            _ = Embervm.SafeCall.run(fn -> append_primed(state, workload, vm_id, node_id) end)
             :ok = reserve_session_vm(state, vm_id)
             shadow_claim(node_id, vm_id, workload, entry)
             {:ok, vm_id}
@@ -2404,7 +2404,7 @@ defmodule Embervm.SessionManager do
             # only that channel identity; do not retry this uncertain Prime.
             # Server refusals such as memory pressure keep the healthy channel.
             if Embervm.NodeChannel.transport_dead?(other) do
-              _ = safe(fn -> state.invalidate_channel_fun.(node_id, channel) end)
+              _ = Embervm.SafeCall.run(fn -> state.invalidate_channel_fun.(node_id, channel) end)
             end
 
             Logger.warning("embervm prime failed",
@@ -2451,16 +2451,6 @@ defmodule Embervm.SessionManager do
   defp append_primed(state, workload, vm_id, node_id) do
     op = PrimedOp.build(state.tenant, workload, vm_id, node_id, :session)
     state.op_log_mod.append(state.op_log, op)
-  end
-
-  defp safe(fun) do
-    try do
-      fun.()
-    rescue
-      _ -> :error
-    catch
-      _, _ -> :error
-    end
   end
 
   # Append session_created (mints id + token), then start the session process. The
@@ -3559,7 +3549,7 @@ defmodule Embervm.SessionManager do
                              "ember.generation" => generation
                            }
                          } do
-          with {:ok, channel} <- safe_channel(channel_fun, dial_key),
+          with {:ok, channel} <- Embervm.NodeChannel.safe_dial(channel_fun, dial_key),
                {:ok, %BankResponse{snapshot_ref: ref, size_bytes: size}} when is_binary(ref) and ref != "" <-
                  safe_bank(bank_fun, channel, workload, session_id, vm_id) do
             Tracer.set_attributes(%{"ember.snapshot_bytes" => size})
@@ -3851,20 +3841,6 @@ defmodule Embervm.SessionManager do
     kind, reason -> {:error, {:bank_raised, {kind, reason}}}
   end
 
-  # Acquiring a node channel is a GenServer.call that EXITS (not returns) if the
-  # NodeChannel is down or the dial times out. An exit thrown in a bank/relight
-  # worker's `with` head would kill the worker BEFORE it sends {:bank_done}/
-  # {:relight_done}, hanging every parked caller forever and leaking the per-node
-  # bank slot (the node could then never bank again). Trap it into an {:error, _}
-  # value so the worker always reports an outcome the manager can clean up.
-  defp safe_channel(channel_fun, node_id) do
-    channel_fun.(node_id)
-  rescue
-    e -> {:error, {:channel_raised, e}}
-  catch
-    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
-  end
-
   # -- relight-on-invoke (Task 8) --------------------------------------------
 
   # First invoke on a banked/parked session: apply the wake-rate limit, then either
@@ -3883,8 +3859,8 @@ defmodule Embervm.SessionManager do
         GenServer.reply(from, {:error, {:gone, "persistence_disabled"}})
         state
 
-      wake_allowed?(state, principal) ->
-        state = record_wake(state, principal)
+      Embervm.WakeLimit.allowed?(state, principal) ->
+        state = Embervm.WakeLimit.record(state, principal)
         state = park_relighting(state, session.session_id, from, req)
         begin_wake(state, session)
 
@@ -4170,7 +4146,7 @@ defmodule Embervm.SessionManager do
 
   defp export_workspace(state, dial_id, req, attempts) do
     result = try do
-      with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+      with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_id) do
         state.export_artifact_fun.(channel, req)
       end
     rescue
@@ -4424,7 +4400,7 @@ defmodule Embervm.SessionManager do
               # unification PR-B0b); the durable row keeps the NODE name (session.
               # node_id), which adoption/drain read node-scoped. On the single-instance
               # fleet dial_id == node_id, so this is inert there.
-              with {:ok, channel} <- safe_channel(channel_fun, dial_id),
+              with {:ok, channel} <- Embervm.NodeChannel.safe_dial(channel_fun, dial_id),
                    {:ok, %RelightResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" <-
                      safe_relight(relight_fun, channel, session) do
                 Inflight.settle(dial_id, claim_ref, table: state.inflight_table)
@@ -4587,65 +4563,10 @@ defmodule Embervm.SessionManager do
       expected_fingerprint: Map.get(ctx, :expected_fingerprint, "")}
     # Stamp the vendor from the NODE (a node-scoped fact shared across its instances),
     # but DIAL the specific owning/target instance (dial_id): the restore must land on
-    # the same co-located instance the relight then dials (PR-B0b), mirroring
-    # ServingManager.safe_restore_artifact.
-    req = Embervm.RestoreVendor.stamp(state.capacity_table, node_id, req)
-    brick = restore_brick(state.capacity_table, dial_id, node_id)
-
-    with {:ok, req} <- Embervm.RestoreCapability.stamp(req, brick, ctx),
-         {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
-      # The `artifact_restore` span (Task 11): a child span around the
-      # RestoreArtifact RPC (the restore-on-miss read path). Identity up front,
-      # bytes-moved/skipped stamped from the response.
-      Tracer.with_span "embervm.artifact_restore",
-                       %{
-                         attributes: %{
-                           "ember.workload" => ref.workload,
-                           "ember.artifact_kind" => artifact_kind_string(ref.kind),
-                           "ember.artifact_ref" => ref.ref
-                         }
-                       } do
-        result =
-          try do
-            state.restore_artifact_fun.(channel, req)
-          rescue
-            e -> {:error, {:restore_artifact_raised, e}}
-          catch
-            kind, reason -> {:error, {:restore_artifact_raised, {kind, reason}}}
-          end
-
-        stamp_restore_span(result)
-        result
-      end
-    end
+    # the same co-located instance the relight then dials (PR-B0b). A session restore
+    # never invalidates the channel.
+    Embervm.ArtifactRestore.run(state, dial_id, node_id, req, ctx, artifact_kind_string(ref.kind), fn _dial_id, _channel -> :ok end)
   end
-
-  defp restore_brick(table, dial_id, node_id) do
-    case Enum.find(NodeCapacity.all(table), &(Map.get(&1, :instance_id) == dial_id)) do
-      nil when dial_id == node_id ->
-        case NodeCapacity.fetch(table, node_id) do
-          {:ok, brick} -> brick
-          :error -> %{node_id: node_id, pod_uid: ""}
-        end
-
-      nil ->
-        %{node_id: node_id, pod_uid: ""}
-
-      brick ->
-        brick
-    end
-  end
-
-  # Stamp bytes-moved/skipped onto the current `artifact_restore` span from a
-  # successful RestoreArtifact response. A failure leaves only the identity attrs.
-  defp stamp_restore_span({:ok, resp}) do
-    Tracer.set_attributes(%{
-      "ember.bytes_moved" => Map.get(resp, :bytes_moved, 0),
-      "ember.skipped" => Map.get(resp, :skipped, false)
-    })
-  end
-
-  defp stamp_restore_span(_other), do: :ok
 
   # Append the audit-only :artifact_restored op (no projection table; the log
   # itself is the record). Best-effort: an append failure must never fail the
@@ -5075,34 +4996,6 @@ defmodule Embervm.SessionManager do
 
   defp clear_pressure_wait(state, session_id) do
     %{state | pressure_waits: Map.delete(state.pressure_waits, session_id)}
-  end
-
-  # -- wake-rate limit (Task 8) ----------------------------------------------
-
-  # A sliding-window per-principal relight count: allowed while the count of relight
-  # timestamps within the window is below wake_max. wake_max <= 0 disables the limit
-  # entirely (never rate-limit), matching "0 = off" config idioms; a positive limit
-  # is enforced.
-  defp wake_allowed?(%{wake_max: max}, _principal) when not is_integer(max) or max <= 0, do: true
-
-  defp wake_allowed?(state, principal) do
-    now = state.clock.()
-    recent = recent_wakes(state, principal, now)
-    length(recent) < state.wake_max
-  end
-
-  defp record_wake(state, principal) do
-    now = state.clock.()
-    recent = recent_wakes(state, principal, now)
-    %{state | wake_events: Map.put(state.wake_events, principal, [now | recent])}
-  end
-
-  defp recent_wakes(state, principal, now) do
-    cutoff = now - state.wake_window_ms
-
-    state.wake_events
-    |> Map.get(principal, [])
-    |> Enum.filter(&(&1 > cutoff))
   end
 
   # -- adoption (Task 8) -----------------------------------------------------
@@ -6397,7 +6290,7 @@ defmodule Embervm.SessionManager do
     artifact = %ArtifactRef{kind: :ARTIFACT_KIND_SESSION, workload: workload, ref: snapshot_ref}
     req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
 
-    with {:ok, channel} <- safe_channel(channel_fun, node_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(channel_fun, node_id) do
       try do
         evict_artifact_fun.(channel, req)
       rescue
@@ -6859,7 +6752,7 @@ defmodule Embervm.SessionManager do
   # gate; the legacy path discards this and proceeds as today.
   defp destroy_exact_vm(state, intent) do
     with true <- Embervm.SessionStopProof.valid_intent?(intent),
-         {:ok, channel} <- safe_channel(state.channel_fun, intent["instance_id"]) do
+         {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, intent["instance_id"]) do
       request = %Embervm.Node.V1.DestroyRequest{
         vm_id: intent["vm_id"], operation_id: intent["operation_id"],
         expected_boot_id: intent["boot_id"], expected_session_id: intent["session_id"]
@@ -6893,7 +6786,7 @@ defmodule Embervm.SessionManager do
         _ -> residency_teardown_dial(state, session_id, node_id, vm_id)
       end
 
-    channel = if is_binary(dial_key), do: safe_channel(state.channel_fun, dial_key), else: {:error, :unresolved_teardown_owner}
+    channel = if is_binary(dial_key), do: Embervm.NodeChannel.safe_dial(state.channel_fun, dial_key), else: {:error, :unresolved_teardown_owner}
     case channel do
       {:ok, channel} ->
         opts = state.session_opts
@@ -7103,7 +6996,7 @@ defmodule Embervm.SessionManager do
 
       dial_id ->
         result =
-          with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+          with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_id) do
             try do
               state.delete_session_volume_fun.(channel, req)
             rescue
@@ -7210,7 +7103,7 @@ defmodule Embervm.SessionManager do
     req = %ArchiveVolumeRequest{trace: %Trace{workload: workload}, workload: workload, lineage_id: lineage_id}
 
     result =
-      with {:ok, channel} <- safe_channel(state.channel_fun, instance_id) do
+      with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, instance_id) do
         try do
           state.archive_volume_fun.(channel, req)
         rescue
@@ -7260,7 +7153,7 @@ defmodule Embervm.SessionManager do
 
         dial_id ->
           result =
-            with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+            with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_id) do
               try do
                 state.archive_volume_fun.(channel, req)
               rescue
@@ -7353,7 +7246,7 @@ defmodule Embervm.SessionManager do
       lineage_id: lineage_id
     }
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_id) do
       try do
         state.retire_volume_fun.(channel, req)
       rescue
@@ -7721,7 +7614,7 @@ defmodule Embervm.SessionManager do
             {:relight, _} ->
               cond do
                 length(Enum.uniq_by(active, &get_in(&1, ["restore", "claim_id"]))) >= state.residency_restore_limit -> state
-                not wake_allowed?(state, session.principal) -> state
+                not Embervm.WakeLimit.allowed?(state, session.principal) -> state
                 true -> start_residency_wake(state, session, intent)
               end
             _ -> state
@@ -7784,7 +7677,7 @@ defmodule Embervm.SessionManager do
                   outcome = run_residency_wake(state, session, brick, entry, rejoin, restore_plan)
                   send(owner, {:residency_wake_done, admitted["id"], admitted["attempt_epoch"], restore, outcome})
                 end)
-                state |> record_wake(session.principal) |> Map.put(:residency_last_principal, session.principal)
+                state |> Embervm.WakeLimit.record(session.principal) |> Map.put(:residency_last_principal, session.principal)
               _ -> finish_residency_wake(state, admitted["id"], admitted["attempt_epoch"], restore, {:not_started, :session_changed})
             end
           _ ->
@@ -7853,7 +7746,7 @@ defmodule Embervm.SessionManager do
       _ -> :ok
     end
     with :ok <- restored,
-         {:ok, channel} <- safe_channel(state.channel_fun, dial_id),
+         {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_id),
          {:ok, %RelightResponse{vm_id: vm_id}} <- safe_relight(state.relight_fun, channel, session) do
       {:ok, brick.node_id, vm_id, 0, dial_id}
     end

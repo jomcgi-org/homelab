@@ -143,6 +143,22 @@ defmodule Embervm.NodeChannel do
     String.contains?(m, "connection is closed") or String.contains?(m, "connection closed")
   end
 
+  @doc """
+  Acquire a channel through `channel_fun.(key)` (an injected `get/1`), trapping a
+  raise or a throw/exit into `{:error, {:channel_raised, _}}`. `get/1` is a
+  GenServer.call that EXITS (not returns) if this holder is down or the dial times
+  out; an exit in a worker's `with` head would kill the worker before it reports an
+  outcome, hanging its parked callers. Pure: no call to this GenServer itself.
+  """
+  @spec safe_dial((term() -> {:ok, term()} | {:error, term()}), term()) :: {:ok, term()} | {:error, term()}
+  def safe_dial(channel_fun, key) do
+    channel_fun.(key)
+  rescue
+    e -> {:error, {:channel_raised, e}}
+  catch
+    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
+  end
+
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true

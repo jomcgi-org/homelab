@@ -79,6 +79,7 @@ defmodule Embervm.GroupStore do
 
   use GenServer
 
+  alias Embervm.InstanceTable
   alias Embervm.OpLog.Op
   alias Embervm.GroupState
 
@@ -566,15 +567,8 @@ defmodule Embervm.GroupStore do
   end
 
   def handle_call({:touch_active, instance_id, ts}, _from, state) do
-    case fetch(state, instance_id) do
-      {:ok, instance} ->
-        updated = %{instance | last_active_at: ts, updated_at: ts}
-        :ets.insert(state.instances, {instance_id, updated})
-        {:reply, {:ok, updated}, state}
-
-      {:error, _} ->
-        {:reply, :error, state}
-    end
+    reply = InstanceTable.update(state.instances, instance_id, &%{&1 | last_active_at: ts, updated_at: ts})
+    {:reply, reply, state}
   end
 
   def handle_call({:get, instance_id}, _from, state) do
@@ -586,22 +580,11 @@ defmodule Embervm.GroupStore do
   end
 
   def handle_call(:all, _from, state) do
-    all = :ets.foldl(fn {_id, instance}, acc -> [instance | acc] end, [], state.instances)
-    {:reply, all, state}
+    {:reply, InstanceTable.all(state.instances), state}
   end
 
   def handle_call({:list, workload}, _from, state) do
-    items =
-      :ets.foldl(
-        fn {_id, instance}, acc ->
-          if instance.workload == workload, do: [instance | acc], else: acc
-        end,
-        [],
-        state.instances
-      )
-      |> Enum.sort_by(& &1.created_at, :desc)
-
-    {:reply, items, state}
+    {:reply, InstanceTable.list(state.instances, workload), state}
   end
 
   def handle_call({:entry_endpoint, workload}, _from, state) do
@@ -1150,12 +1133,7 @@ defmodule Embervm.GroupStore do
     )
   end
 
-  defp fetch(state, instance_id) do
-    case :ets.lookup(state.instances, instance_id) do
-      [{^instance_id, instance}] -> {:ok, instance}
-      [] -> {:error, {:not_found, instance_id}}
-    end
-  end
+  defp fetch(state, instance_id), do: InstanceTable.fetch(state.instances, instance_id)
 
   defp fetch_member(state, instance_id, member_name) do
     case :ets.lookup(state.members, {instance_id, member_name}) do

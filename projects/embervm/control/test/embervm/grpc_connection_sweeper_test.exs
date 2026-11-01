@@ -16,18 +16,9 @@ defmodule Embervm.GrpcConnectionSweeperTest do
       GenServer.call(supervisor, {:set_children, children})
     end
 
-    def reset_terminated(supervisor) do
-      GenServer.call(supervisor, :reset_terminated)
-    end
-
     @impl true
     def handle_call({:set_children, children}, _from, {_old, terminated}) do
       {:reply, :ok, {children, terminated}}
-    end
-
-    @impl true
-    def handle_call(:reset_terminated, _from, {children, _terminated}) do
-      {:reply, :ok, {children, []}}
     end
 
     @impl true

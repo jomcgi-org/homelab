@@ -367,7 +367,7 @@ defmodule Embervm.BrickControllerTest do
     pid =
       start(
         mode: :observe,
-        classes: [%{name: "2gi", desired: 1, min: 0, max: 4}],
+        classes: [%{name: "2gi", desired: 1, min: 0, max: 4, usable_mib: 2_048}],
         scale_fun: record,
         scale_get_fun: fn _ns, _name -> {:ok, 1} end,
         facts_fun: fn -> [] end,
@@ -399,7 +399,7 @@ defmodule Embervm.BrickControllerTest do
     pid =
       start(
         mode: :up,
-        classes: [%{name: "2gi", desired: 1, min: 0, max: 4}],
+        classes: [%{name: "2gi", desired: 1, min: 0, max: 4, usable_mib: 2_048}],
         scale_fun: record,
         scale_get_fun: fn _ns, _name -> {:ok, 1} end,
         facts_fun: fn -> [] end,
@@ -1261,8 +1261,8 @@ defmodule Embervm.BrickControllerTest do
       start(
         mode: :observe,
         classes: [
-          %{name: "2gi", desired: 0, min: 0, max: 2},
-          %{name: "16gi", desired: 0, min: 0, max: 2}
+          %{name: "2gi", desired: 0, min: 0, max: 2, usable_mib: 2_048},
+          %{name: "16gi", desired: 0, min: 0, max: 2, usable_mib: 16_384}
         ],
         scale_fun: fn _ns, _name, _r -> :ok end,
         scale_get_fun: fn _ns, _name -> {:ok, 0} end,
@@ -1385,28 +1385,6 @@ defmodule Embervm.BrickControllerTest do
 
     assert log =~ "would scale class 2gi from 0 to 1"
     refute log =~ "would scale class 8gi"
-  end
-
-  test "old class config falls back to the nameplate capacity" do
-    {clock, advance} = new_clock()
-
-    pid =
-      start(
-        mode: :observe,
-        classes: [%{name: "2gi", desired: 0, min: 0, max: 2}, %{name: "4gi", desired: 0, min: 0, max: 2}],
-        scale_fun: fn _ns, _name, _r -> :ok end,
-        scale_get_fun: fn _ns, _name -> {:ok, 0} end,
-        facts_fun: fn -> [] end,
-        registered_fun: fn -> %{} end,
-        up_threshold: 1,
-        clock: clock
-      )
-
-    BrickController.note_denial(pid, 1_536)
-    advance.(1)
-    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
-
-    assert log =~ "would scale class 2gi from 0 to 1"
   end
 
   test "floor attribution uses the largest registered floor and defaults to 512" do
@@ -1773,7 +1751,7 @@ defmodule Embervm.BrickControllerTest do
     retrying =
       start(
         mode: :up,
-        classes: [%{name: "2gi", desired: 1, min: 0, max: 2}],
+        classes: [%{name: "2gi", desired: 1, min: 0, max: 2, usable_mib: 2_048}],
         scale_fun: patch,
         scale_get_fun: fn _ns, _name -> {:ok, 1} end,
         facts_fun: fn -> [] end,

@@ -1174,7 +1174,7 @@ defmodule Embervm.GroupSweeper do
       member_name: member.member_name
     }
 
-    with {:ok, channel} <- safe_channel(state, dial_for_group(state, instance)) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_for_group(state, instance)) do
       try do
         state.stop_group_member_fun.(channel, req)
       rescue
@@ -1200,7 +1200,7 @@ defmodule Embervm.GroupSweeper do
 
     dial_id = dial_for_group(state, instance)
 
-    with {:ok, channel} <- safe_channel(state, dial_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_id) do
       try do
         case state.stop_group_member_fun.(channel, req) do
           {:ok, %{teardown_confirmed: true}} ->
@@ -1237,7 +1237,7 @@ defmodule Embervm.GroupSweeper do
   defp delete_network(state, instance) do
     req = %DeleteGroupNetworkRequest{trace: %Trace{workload: nil}, group_instance_id: instance.instance_id}
 
-    with {:ok, channel} <- safe_channel(state, dial_for_group(state, instance)) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_for_group(state, instance)) do
       try do
         state.delete_group_network_fun.(channel, req)
       rescue
@@ -1253,7 +1253,7 @@ defmodule Embervm.GroupSweeper do
   defp evict_snapshot(state, instance, ref) do
     req = %EvictSnapshotRequest{trace: %Trace{workload: nil}, snapshot_ref: ref}
 
-    with {:ok, channel} <- safe_channel(state, dial_for_group(state, instance)) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_for_group(state, instance)) do
       try do
         state.evict_snapshot_fun.(channel, req)
       rescue
@@ -1275,7 +1275,7 @@ defmodule Embervm.GroupSweeper do
     artifact = %ArtifactRef{kind: :ARTIFACT_KIND_GROUP_SET, workload: workload, ref: set_id}
     req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
 
-    with {:ok, channel} <- safe_channel(state, dial_for_group(state, instance)) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_for_group(state, instance)) do
       try do
         state.evict_artifact_fun.(channel, req)
       rescue
@@ -1356,14 +1356,6 @@ defmodule Embervm.GroupSweeper do
 
   # -- daemon + bank seams -------------------------------------------------
 
-  defp safe_channel(state, node_id) do
-    state.channel_fun.(node_id)
-  rescue
-    e -> {:error, {:channel_raised, e}}
-  catch
-    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
-  end
-
   # The channel key for a group teardown dial (StopGroupMember / DeleteGroupNetwork /
   # EvictSnapshot / EvictArtifact): the OWNING instance on the group's node reporting
   # this group_instance_id (live group_member_vms or banked group_bundle_sets), else
@@ -1396,71 +1388,18 @@ defmodule Embervm.GroupSweeper do
     Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req, timeout: 15_000)
   end
 
-  # Production scrape: identical to StatefulSweeper's (GET /stats?format=json over the
-  # shared Finch pool, parse tcp.<prefix>.downstream_cx_{active,total}). Composite
-  # entry listeners are named group-<port> but share the tcp.* stat namespace, so the
-  # SAME parser keeps both stateful (state-<port>) and group (group-<port>) prefixes.
-  defp default_scrape(url) do
-    req = Finch.build(:get, url)
-
-    case Finch.request(req, Embervm.Finch, receive_timeout: 3_000) do
-      {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
-        parse_stats(body)
-
-      {:ok, %Finch.Response{status: status}} ->
-        {:error, {:stats_status, status}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @tcp_stat_prefix "tcp."
-  @cx_active_suffix ".downstream_cx_active"
-  @cx_total_suffix ".downstream_cx_total"
+  # Production scrape: the same GET /stats?format=json and tcp.* parse as
+  # StatefulSweeper's. Composite entry listeners are named group-<port> but share the
+  # tcp.* stat namespace, so the parser keeps both state-<port> and group-<port>.
+  defp default_scrape(url), do: Embervm.EnvoyStats.scrape(url, &parse_stats/1)
 
   @doc """
-  Parse an Envoy `/stats?format=json` body into `%{stat_prefix => %{active: n, total:
-  n}}`, keeping only `tcp.<prefix>.downstream_cx_{active,total}` counters (identical
-  to `StatefulSweeper.parse_stats/1`; the group entry listener shares the tcp.* stat
-  namespace). `@doc false` so the parse path is exercised directly in tests.
+  Parse an Envoy `/stats?format=json` body (`Embervm.EnvoyStats.parse_tcp_stats/1`).
+  `@doc false` so the parse path is exercised directly in tests.
   """
   @doc false
   @spec parse_stats(binary()) :: {:ok, %{optional(String.t()) => %{active: integer(), total: integer()}}} | {:error, term()}
-  def parse_stats(body) do
-    case Jason.decode(body) do
-      {:ok, %{"stats" => stats}} when is_list(stats) ->
-        reading = Enum.reduce(stats, %{}, fn stat, acc -> fold_tcp_stat(stat, acc) end)
-        {:ok, reading}
-
-      _ ->
-        {:error, :unparseable_stats}
-    end
-  rescue
-    e -> {:error, {:stats_parse_raised, e}}
-  end
-
-  defp fold_tcp_stat(%{"name" => @tcp_stat_prefix <> rest, "value" => value}, acc) when is_integer(value) do
-    cond do
-      String.ends_with?(rest, @cx_active_suffix) ->
-        prefix = String.replace_suffix(rest, @cx_active_suffix, "")
-        put_field(acc, prefix, :active, value)
-
-      String.ends_with?(rest, @cx_total_suffix) ->
-        prefix = String.replace_suffix(rest, @cx_total_suffix, "")
-        put_field(acc, prefix, :total, value)
-
-      true ->
-        acc
-    end
-  end
-
-  defp fold_tcp_stat(_stat, acc), do: acc
-
-  defp put_field(acc, prefix, field, value) do
-    entry = Map.get(acc, prefix, %{active: 0, total: 0})
-    Map.put(acc, prefix, Map.put(entry, field, value))
-  end
+  def parse_stats(body), do: Embervm.EnvoyStats.parse_tcp_stats(body)
 
   defp schedule(msg, interval_ms) when interval_ms > 0 do
     Process.send_after(self(), msg, interval_ms)

@@ -82,9 +82,6 @@ defmodule Embervm.GroupWakeManager do
   use GenServer
   require Logger
 
-  # Tracer.with_span/set_attributes are OpenTelemetry.Tracer MACROS, required (not
-  # aliased as a runtime dep). Matches the stateful/serving/session manager idiom.
-  require OpenTelemetry.Tracer, as: Tracer
   import Bitwise
 
   alias Embervm.{EndpointPublisher, GroupManager, GroupState, GroupStore, NodeCapacity, WorkloadCatalog}
@@ -315,8 +312,8 @@ defmodule Embervm.GroupWakeManager do
 
       # First miss: apply the per-workload wake-rate limit, then park + kick ONE
       # wake worker.
-      wake_allowed?(state, principal) ->
-        state = record_wake(state, principal)
+      Embervm.WakeLimit.allowed?(state, principal) ->
+        state = Embervm.WakeLimit.record(state, principal)
         state = %{state | waking: Map.put(state.waking, workload, [{from, principal}])}
         {:noreply, start_wake(state, workload)}
 
@@ -587,7 +584,7 @@ defmodule Embervm.GroupWakeManager do
 
     ctx = %{principal: wake_principal(workload), lineage: instance_id, generation: 0}
 
-    case safe_restore_artifact(state, dial_id, node_id, req, ctx) do
+    case Embervm.ArtifactRestore.run(state, dial_id, node_id, req, ctx, "group_set", state.invalidate_fun) do
       {:ok, resp} ->
         record_restore(state, workload, set_id, resp)
         :ok
@@ -601,102 +598,6 @@ defmodule Embervm.GroupWakeManager do
 
         :error
     end
-  end
-
-  # Dial the restore on `dial_id` (the boot's instance, Step 4) but stamp the vendor
-  # off `node_id` (the node-name anchor RestoreVendor can resolve). Transport-death
-  # invalidation is keyed on `dial_id` (the channel we actually dialled).
-  defp safe_restore_artifact(
-         state,
-         dial_id,
-         node_id,
-         %RestoreArtifactRequest{artifact: ref} = req,
-         ctx
-       ) do
-    req = Embervm.RestoreVendor.stamp(state.capacity_table, node_id, req)
-    brick = restore_brick(state.capacity_table, dial_id, node_id)
-
-    with {:ok, req} <- Embervm.RestoreCapability.stamp(req, brick, ctx),
-         {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
-      # The `artifact_restore` span (Task 11): a child span around the
-      # RestoreArtifact RPC (the restore-on-miss read path). A group set is always
-      # kind GROUP_SET; bytes-moved/skipped stamped from the response.
-      Tracer.with_span "embervm.artifact_restore",
-                       %{
-                         attributes: %{
-                           "ember.workload" => ref.workload,
-                           "ember.artifact_kind" => "group_set",
-                           "ember.artifact_ref" => ref.ref
-                         }
-                       } do
-        result = restore_rpc(state, dial_id, channel, req)
-        stamp_restore_span(result)
-        result
-      end
-    end
-  end
-
-  defp restore_brick(table, dial_id, node_id) do
-    case Enum.find(NodeCapacity.all(table), &(Map.get(&1, :instance_id) == dial_id)) do
-      nil when dial_id == node_id ->
-        case NodeCapacity.fetch(table, node_id) do
-          {:ok, brick} -> brick
-          :error -> %{node_id: node_id, pod_uid: ""}
-        end
-
-      nil ->
-        %{node_id: node_id, pod_uid: ""}
-
-      brick ->
-        brick
-    end
-  end
-
-  # The RestoreArtifact RPC with transport-death channel invalidation. Extracted so
-  # the `artifact_restore` span wraps exactly the call and its result. Invalidates by
-  # `dial_id` (the instance the channel was dialled on, Step 4).
-  defp restore_rpc(state, dial_id, channel, req) do
-    try do
-      case state.restore_artifact_fun.(channel, req) do
-        {:error, reason} = err ->
-          if Embervm.NodeChannel.transport_dead?(reason) do
-            _ = state.invalidate_fun.(dial_id, channel)
-          end
-
-          err
-
-        other ->
-          other
-      end
-    rescue
-      e -> {:error, {:restore_artifact_raised, e}}
-    catch
-      :exit, reason ->
-        _ = state.invalidate_fun.(dial_id, channel)
-        {:error, {:restore_artifact_raised, {:exit, reason}}}
-
-      kind, reason ->
-        {:error, {:restore_artifact_raised, {kind, reason}}}
-    end
-  end
-
-  # Stamp bytes-moved/skipped onto the current `artifact_restore` span from a
-  # successful RestoreArtifact response. A failure leaves only the identity attrs.
-  defp stamp_restore_span({:ok, resp}) do
-    Tracer.set_attributes(%{
-      "ember.bytes_moved" => Map.get(resp, :bytes_moved, 0),
-      "ember.skipped" => Map.get(resp, :skipped, false)
-    })
-  end
-
-  defp stamp_restore_span(_other), do: :ok
-
-  defp safe_channel(channel_fun, node_id) do
-    channel_fun.(node_id)
-  rescue
-    e -> {:error, {:channel_raised, e}}
-  catch
-    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
   end
 
   # Append the audit-only :artifact_restored op (no projection table). Best-effort:
@@ -983,7 +884,7 @@ defmodule Embervm.GroupWakeManager do
         group_instance_id
       )
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_id) do
       try do
         case state.stop_group_member_fun.(channel, req) do
           {:ok, %{teardown_confirmed: true}} ->
@@ -1259,29 +1160,6 @@ defmodule Embervm.GroupWakeManager do
     {waiters, state} = pop_waiters(state, workload)
     reply_all(waiters, {:error, {:wake_failed, :wake_stuck}})
     state
-  end
-
-  # -- wake-rate limit -------------------------------------------------------
-
-  defp wake_allowed?(%{wake_max: max}, _principal) when not is_integer(max) or max <= 0, do: true
-
-  defp wake_allowed?(state, principal) do
-    now = state.clock.()
-    length(recent_wakes(state, principal, now)) < state.wake_max
-  end
-
-  defp record_wake(state, principal) do
-    now = state.clock.()
-    recent = recent_wakes(state, principal, now)
-    %{state | wake_events: Map.put(state.wake_events, principal, [now | recent])}
-  end
-
-  defp recent_wakes(state, principal, now) do
-    cutoff = now - state.wake_window_ms
-
-    state.wake_events
-    |> Map.get(principal, [])
-    |> Enum.filter(&(&1 > cutoff))
   end
 
   # -- catalog helpers -------------------------------------------------------

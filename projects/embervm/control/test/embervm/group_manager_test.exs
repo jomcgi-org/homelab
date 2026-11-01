@@ -379,7 +379,7 @@ defmodule Embervm.GroupManagerTest do
     assert {:error, _reason} = GroupManager.create_group(ctx.mgr)
 
     # The dead shared channel was dropped (node "node-4", channel :ch), so the next
-    # safe_channel/2 re-dials instead of every member start wedging on a dead
+    # NodeChannel.safe_dial/2 re-dials instead of every member start wedging on a dead
     # ConnectionProcess until the control plane restarts (D-R2.7.2).
     assert_receive {:invalidated, "node-4", :ch}, 1_000
   end
