@@ -51,7 +51,7 @@ test("the 4090 demo opens before the article and its navigation, preserving auth
   expect(target.querySelectorAll("h1")).toHaveLength(1);
   expect(target.querySelector("h1").textContent).toBe(data.title);
   expect(target.querySelector(".landing-hardware").textContent).toContain(
-    "Quantisation isn't always the answer",
+    "No further weight quantisation: the NVFP4 release on one 24 GB card",
   );
   expect(target.querySelectorAll(".landing-header nav")).toHaveLength(1);
   expect(target.querySelector(".landing-header .trail")).toBeNull();
