@@ -1637,6 +1637,23 @@ runtime `targetRevision` is cluster state and, on the hub, that a point-in-time
 health wait stands in for a settling window until a development stage exists
 there (ADR platform/009).
 
+A frontend deploy replaces its hashed JS chunks, but Cloudflare keeps serving
+cached page HTML for up to an hour (plus stale-while-revalidate), and during a
+rolling update a page from one pod can request chunks from another. A page that
+fails to load a chunk reloads once with a unique `_fresh` query, which misses
+the edge cache and returns HTML for the current build. A session-storage guard
+stops a second reload within 30 seconds, and the marker is removed from the
+address bar on arrival.
+(see: /projects/monolith/frontend/src/app.html)
+(see: /projects/monolith/frontend/src/hooks.client.js)
+
+**Why.** Before this, visitors got SvelteKit's 500 page until the edge copy
+expired. Purging Cloudflare on each rollout would also fix cached HTML, but it
+needs a zone API credential in the cluster and still leaves rollout skew;
+publishing every build's chunks to persistent storage removes both, at the
+cost of an asset bucket and upload step. The reload costs affected visitors one
+extra page load and needs neither.
+
 The two document manifests are build outputs, not committed files. The
 `:repo_docs_manifest` genrule writes the repo-docs NDJSON (the docfix path
 allowlist `knowledge/repo_docs.py` loads), which the backend, jobs and domain
