@@ -29,6 +29,7 @@ from datetime import datetime
 
 from sqlmodel import Session, delete
 
+from core.s3 import path_style_client
 from stars.grid_ingest import replace_grid
 from stars.models import SiteMonthClimatology
 
@@ -40,27 +41,10 @@ def _s3_client():
 
     Production uses the chart's monolith-r2-s3 credentials and region auto.
     Historical credential/region defaults and scheme-less HTTP normalization
-    remain for legacy/test compatibility; they are not R2 configuration.
+    remain in core.s3 for legacy/test compatibility; they are not R2
+    configuration.
     """
-    import boto3
-    from botocore.config import Config
-
-    endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "")
-    # The chart supplies HTTPS for R2. Retain HTTP prefixing only for
-    # scheme-less legacy/test endpoints; preserve explicit schemes.
-    if not endpoint.startswith(("http://", "https://")):
-        endpoint = "http://" + endpoint
-    # Scheme is guaranteed by the guard above; the inline nosemgrep clears the
-    # pre-commit hook (boto3-endpoint-url-missing-scheme). Bare nosemgrep: this
-    # line has no other rule matches.
-    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),
-        aws_secret_access_key=os.environ.get("S3_SECRET_ACCESS_KEY", "duckdb"),
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-        config=Config(s3={"addressing_style": "path"}),
-    )
+    return path_style_client(os.environ.get("SEAWEEDFS_S3_ENDPOINT", ""))
 
 
 def _fetch_grid() -> list[dict] | None:
