@@ -52,16 +52,28 @@ describe("loadDashboard", () => {
     expect(dashboard.factory.state).toBe("enabled");
   });
 
-  it("is null when nothing answers or the aggregate reports an error", async () => {
+  it("is null only when nothing answers", async () => {
     const down = vi.fn(async () => jsonResponse({}, false));
     expect(await loadDashboard(down, "http://b")).toEqual({ dashboard: null });
+    const erroredBoth = vi.fn(async (url) =>
+      url.endsWith("/api/home/dashboard")
+        ? jsonResponse({ error: "broken" })
+        : jsonResponse({}, false),
+    );
+    expect(await loadDashboard(erroredBoth, "http://b")).toEqual({
+      dashboard: null,
+    });
+  });
+
+  it("treats an aggregate that answers {error} as that one source down", async () => {
     const errored = vi.fn(async (url) =>
       url.endsWith("/api/home/dashboard")
         ? jsonResponse({ error: "broken" })
         : jsonResponse(board),
     );
-    expect(await loadDashboard(errored, "http://b")).toEqual({
-      dashboard: null,
-    });
+    const { dashboard } = await loadDashboard(errored, "http://b");
+    expect(dashboard.error).toBeUndefined();
+    expect(dashboard.today).toBeUndefined();
+    expect(dashboard.factory.waiting).toHaveLength(1);
   });
 });

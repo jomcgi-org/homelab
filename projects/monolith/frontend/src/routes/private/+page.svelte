@@ -15,13 +15,25 @@
   // svelte-ignore state_referenced_locally
   let dash = $state(data.dashboard);
 
+  // A refresh replaces only the sections it brings. The read fails soft per
+  // source, so a tick with the factory down carries no factory and a tick
+  // with the home aggregate down carries only the factory; either keeps the
+  // last good reading of what it lacks rather than blanking it.
+  function mergeRead(previous, next) {
+    if (!next || typeof next !== "object" || next.error) return previous;
+    const fresh = Object.fromEntries(
+      Object.entries(next).filter(([, value]) => value != null),
+    );
+    return { ...(previous ?? {}), ...fresh };
+  }
+
   $effect(() => {
     const id = setInterval(async () => {
+      if (document.visibilityState !== "visible") return;
       try {
         const res = await fetch("/dashboard-data");
         if (!res.ok) return;
-        const json = await res.json();
-        if (json && !json.error) dash = json;
+        dash = mergeRead(dash, await res.json());
       } catch {
         // keep the last good snapshot
       }
@@ -55,11 +67,14 @@
   // decisions the factory stopped for, workloads the cluster reports
   // unhealthy, open PRs whose CI is red. One list, each row a place to go.
   let needs = $derived([
-    ...waiting.map((item) => ({
-      key: `decision:${item.receipt_id}`,
+    ...waiting.map((item, index) => ({
+      key: `decision:${item.receipt_id ?? item.work_item_id ?? `i${index}`}`,
       kind: "decision",
       href: "/factory/escalations",
-      title: `#${item.issue_number} ${item.title}`,
+      title:
+        item.issue_number != null
+          ? `#${item.issue_number} ${item.title}`
+          : item.title || "untitled decision",
       detail: item.question,
     })),
     ...unhealthyKinds.flatMap(([kind, rows]) =>
@@ -311,8 +326,9 @@
               <a href="/factory">
                 <span
                   class="pulse-dot"
-                  class:pulse-dot--ok={factory?.ok && factory.inFlight > 0}
-                  class:pulse-dot--unknown={factory == null || !factory.ok}
+                  class:pulse-dot--ok={factory?.ok &&
+                    factory.state === "enabled"}
+                  class:pulse-dot--bad={factory != null && !factory.ok}
                 ></span>
                 {factoryLine}
               </a>

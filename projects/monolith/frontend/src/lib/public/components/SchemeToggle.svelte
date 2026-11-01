@@ -9,16 +9,22 @@
   // The scheme currently painted, whichever source decided it.
   let dark = $state(false);
 
-  // The sheet colours of app.html's theme-color metas, so the browser's own
-  // chrome follows a hand-picked scheme rather than the OS one.
-  const SHEET = { light: "#ffffff", dark: "#181a20" };
+  // The switch sits on a .td surface, so once the scheme is stamped the
+  // sheet colour the page now paints is readable from it; the theme-color
+  // metas in app.html take that value so the browser's own chrome follows
+  // a hand-picked scheme rather than the OS one.
+  let button = $state(null);
 
   function apply(next) {
     const root = document.documentElement;
     root.dataset.theme = next;
     dark = next === "dark";
-    for (const meta of document.querySelectorAll('meta[name="theme-color"]'))
-      meta.setAttribute("content", SHEET[next]);
+    const sheet = button
+      ? getComputedStyle(button).getPropertyValue("--sheet").trim()
+      : "";
+    if (sheet)
+      for (const meta of document.querySelectorAll('meta[name="theme-color"]'))
+        meta.setAttribute("content", sheet);
     try {
       localStorage.setItem(KEY, next);
     } catch {
@@ -65,6 +71,7 @@
 <SchemePreference />
 
 <button
+  bind:this={button}
   class="scheme"
   type="button"
   onclick={flip}

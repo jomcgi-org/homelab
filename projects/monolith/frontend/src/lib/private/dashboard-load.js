@@ -22,14 +22,17 @@ async function readJson(fetch, url, timeout) {
  * summary attached, or null when neither source answered.
  */
 export async function loadDashboard(fetch, apiBase) {
-  const [home, board] = await Promise.all([
+  const [aggregate, board] = await Promise.all([
     readJson(fetch, `${apiBase}/api/home/dashboard`, HOME_TIMEOUT_MS),
     readJson(fetch, `${apiBase}/api/agents/factory`, FACTORY_TIMEOUT_MS),
   ]);
+  // A 200 that carries {error} is the aggregate saying it has nothing, the
+  // same as a 503 from it: that source is down, the other still counts.
+  const home =
+    aggregate && typeof aggregate === "object" && !aggregate.error
+      ? aggregate
+      : null;
   const factory = summarizeBoard(board);
   if (home == null && factory == null) return { dashboard: null };
-  if (home != null && typeof home === "object" && home.error) {
-    return { dashboard: null };
-  }
   return { dashboard: { ...(home ?? {}), factory } };
 }
