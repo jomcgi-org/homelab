@@ -30,7 +30,7 @@
           here.searchParams.delete("_fresh");
           history.replaceState(history.state, "", here);
         }
-        window.__freshReload = (error) => {
+        window.__freshReload = (error, target = location.href) => {
           if (!chunkError.test(String(error?.message ?? error))) return false;
           try {
             const last = Number(sessionStorage.getItem("fresh-reload"));
@@ -39,7 +39,7 @@
           } catch {
             return false; // No loop guard without storage, so no reload.
           }
-          const url = new URL(location.href);
+          const url = new URL(target, location.href);
           url.searchParams.set("_fresh", Date.now().toString(36));
           location.replace(url);
           return true;

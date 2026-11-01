@@ -77,3 +77,13 @@ test("handleError reloads for a missing chunk and keeps the default otherwise", 
   });
   expect(log).toHaveBeenCalledWith(other);
 });
+
+test("a failed client navigation reloads the page being opened", () => {
+  boot();
+  const event = { url: new URL("/blog/other?x=1", location.href) };
+  handleError({ error: chunkError, event, message: "Internal Error" });
+  const url = new URL(replace.mock.calls[0][0]);
+  expect(url.pathname).toBe("/blog/other");
+  expect(url.searchParams.get("x")).toBe("1");
+  expect(url.searchParams.get("_fresh")).toBeTruthy();
+});
