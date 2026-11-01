@@ -223,6 +223,31 @@ describe("inventory proxy", () => {
   });
 });
 
+describe("knowledge search proxy", () => {
+  const base = `http://backend.test/api/grimoire/campaigns/${campaignId}/entities`;
+
+  it.each([
+    ["q=Mar", `${base}?q=Mar&limit=30`],
+    ["q=Mar&type=npc", `${base}?q=Mar&limit=30&type=npc`],
+    ["q=Mar&type=location", `${base}?q=Mar&limit=30`],
+    [
+      `q=Mar&notGrantedTo=${pcA}`,
+      `${base}?q=Mar&limit=30&not_granted_to=${pcA}`,
+    ],
+  ])("searches %s with a small page", async (query, path) => {
+    const fetch = vi.fn(async () => new Response('{"items":[]}'));
+    const response = await GET({
+      fetch,
+      cookies: { get: () => "token" },
+      params: { id: campaignId },
+      url: new URL(`https://friends.jomcgi.dev/state?${query}`),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([path]);
+  });
+});
+
 describe("narration audience payload", () => {
   const eventsPath = `http://backend.test/api/grimoire/campaigns/${campaignId}/sessions/${sessionId}/events`;
 

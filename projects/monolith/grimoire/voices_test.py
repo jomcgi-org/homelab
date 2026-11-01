@@ -249,6 +249,26 @@ def test_members_can_get_voices_with_viewer_specific_keys(setup, viewer):
     ) in keys
     if viewer != "dm":
         assert raw_key.casefold() not in response.text.casefold()
+        assert all("speaker_name" not in row for row in response.json())
+    else:
+        names = {row["speaker_key"]: row["speaker_name"] for row in response.json()}
+        assert names == {"narrator": None, raw_key: h.rows["private"].name}
+
+
+def test_dm_voice_names_skip_npcs_outside_the_campaign(setup):
+    client, h = setup
+    # A stale row keyed to another campaign's NPC: the key is already stored,
+    # but its name must not reach this campaign's DM.
+    foreign = h.rows["foreign"]
+    h.session.add(
+        CampaignVoice(campaign_id=h.rows["campaign"].id, speaker_key=foreign.id)
+    )
+    h.session.commit()
+    response = client.get(path(h), headers=h.headers("dm"))
+    assert response.status_code == 200, response.text
+    assert foreign.name.casefold() not in response.text.casefold()
+    row = next(row for row in response.json() if row["speaker_key"] == foreign.id)
+    assert row["speaker_name"] is None
 
 
 @pytest.mark.parametrize("viewer", ["player_a", "player_b", "no_character"])

@@ -138,9 +138,11 @@ from grimoire.visibility import (
     visible_entities_query,
 )
 from grimoire.voices import (
+    DmVoiceView,
     VoiceRequest,
     VoiceView,
     delete_voice,
+    dm_voice_views,
     speaker_ref,
     upsert_voice,
     validate_speaker_key,
@@ -414,19 +416,24 @@ def get_campaign(
     return _get_campaign_or_404(session, campaign_id)
 
 
-@router.get("/campaigns/{campaign_id}/voices", response_model=list[VoiceView])
+@router.get(
+    "/campaigns/{campaign_id}/voices",
+    response_model=list[DmVoiceView] | list[VoiceView],
+)
 def list_campaign_voices(
     campaign_id: str,
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
-) -> list[VoiceView]:
+) -> list[DmVoiceView] | list[VoiceView]:
     member = _get_member_or_404(session, campaign_id, email)
     rows = session.exec(
         select(CampaignVoice)
         .where(CampaignVoice.campaign_id == campaign_id)
         .order_by(CampaignVoice.speaker_key)
     ).all()
-    return [voice_view(row, dm=member.role == "dm") for row in rows]
+    if member.role == "dm":
+        return dm_voice_views(session, campaign_id, rows)
+    return [voice_view(row, dm=False) for row in rows]
 
 
 @router.put("/campaigns/{campaign_id}/voices/{speaker_key}", response_model=VoiceView)

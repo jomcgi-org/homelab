@@ -70,6 +70,8 @@ export async function GET({ fetch, cookies, params, url }) {
       });
       if (url.searchParams.get("notGrantedTo"))
         query.set("not_granted_to", url.searchParams.get("notGrantedTo"));
+      // The voice preset NPC search; any other type value is ignored.
+      if (url.searchParams.get("type") === "npc") query.set("type", "npc");
       return json(
         await grimoireJson(
           fetch,

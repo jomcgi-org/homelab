@@ -107,7 +107,10 @@ infrastructure. Players receive opaque references for NPC entity keys in both
 the voice map and narration bodies, so hidden NPC ids stay private. Free labels
 and voice hints are visible to every admitted member: the DM uses an NPC entity
 key for a hidden identity and avoids identifying text in hints. DMs retain raw
-keys. Server-generated audio is tracked separately in #6629.
+keys, and the DM map adds `speaker_name` for NPC keys still visible to the DM.
+The DM speaker pickers list saved presets from it and find other NPCs by name
+search; the session poll requests no NPC list. Server-generated audio is
+tracked separately in #6629.
 
 The browser queues only events already received in the session feed, in sequence
 order with one utterance in flight. Initial history is marked handled without

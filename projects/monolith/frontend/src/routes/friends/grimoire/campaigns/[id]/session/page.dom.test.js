@@ -10,6 +10,8 @@ const sessionId = "33333333-3333-4333-8333-333333333333";
 const pcA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const pcB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const endpoint = `/grimoire/campaigns/${campaignId}/session/state`;
+const npcId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const npcSearchHit = "DDDDDDDD-DDDD-4DDD-8DDD-DDDDDDDDDDDD";
 
 function event(id, seq, text, overrides = {}) {
   return {
@@ -51,16 +53,7 @@ function pageData(role, events, { journal = null, session } = {}) {
     voices: [],
     user: { id: "viewer" },
     ...(role === "dm"
-      ? {
-          members: [{ id: "member-a", player_character_id: pcA }],
-          npcs: [
-            {
-              id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-              name: "NPC_CANARY",
-              entity_type: "npc",
-            },
-          ],
-        }
+      ? { members: [{ id: "member-a", player_character_id: pcA }] }
       : {}),
   };
 }
@@ -79,6 +72,10 @@ function stubFetch(nextState) {
       return json([]);
     if (String(url).includes("?entity="))
       return json({ id: "entity-mara", name: "Mara", entity_type: "npc" });
+    if (String(url).includes("?q="))
+      return json({
+        items: [{ id: npcSearchHit, name: "Mara", entity_type: "npc" }],
+      });
     if (options.method === "POST") return json({ id: "posted", seq: 99 });
     return json(nextState());
   });
@@ -339,23 +336,39 @@ describe("session read-aloud controls and voice composer", () => {
   }
 
   it("renders the DM speaker picker and editor, sends NPC and free-label narration including replies", async () => {
-    const data = pageData("dm", [
-      event("action", 1, "Hello", {
-        kind: "action",
-        audience: "dm",
-        author_member_id: "member-a",
-      }),
-    ]);
+    const preset = (key, name) => ({
+      speaker_key: key,
+      speaker_name: name,
+      voice_hint: { lang: null, names: [] },
+      rate: 1,
+      pitch: 1,
+    });
+    const data = {
+      ...pageData("dm", [
+        event("action", 1, "Hello", {
+          kind: "action",
+          audience: "dm",
+          author_member_id: "member-a",
+        }),
+      ]),
+      voices: [
+        preset("Old Salt", null),
+        preset("narrator", null),
+        preset(npcId, "NPC_CANARY"),
+      ],
+    };
     const fetch = stubFetch(() => data);
     await render(data);
+    // Only saved presets are speakers: the NPC by name, then free labels.
     const select = document.querySelector('[aria-label="Narration speaker"]');
     expect([...select.options].map((option) => option.text)).toEqual([
       "Narrator",
       "NPC_CANARY",
+      "Old Salt",
       "Free label",
     ]);
     expect(document.querySelector(".voice-presets")).not.toBeNull();
-    await choose(select, data.npcs[0].id);
+    await choose(select, npcId);
     document.querySelector("#message").value = "The captain speaks.";
     document
       .querySelector("#message")
@@ -366,7 +379,7 @@ describe("session read-aloud controls and voice composer", () => {
     await settle();
     expect(posted(fetch)[0]).toMatchObject({
       kind: "narration",
-      speakerKey: data.npcs[0].id,
+      speakerKey: npcId,
     });
     const replyButton = [...document.querySelectorAll("button")].find(
       (button) => button.textContent.includes("Reply privately to Aria"),
@@ -563,6 +576,43 @@ describe("session read-aloud controls and voice composer", () => {
       speakerKey: "narrator",
     });
   });
+
+  it("finds an NPC by name to give it a preset", async () => {
+    const data = pageData("dm", []);
+    const fetch = stubFetch(() => data);
+    await render(data);
+    const select = document.querySelector('[aria-label="Preset speaker"]');
+    expect([...select.options].map((option) => option.text)).toEqual([
+      "Narrator",
+      "Find an NPC",
+      "Free label",
+    ]);
+    await choose(select, "npc:find");
+    expect(document.querySelector('[aria-label="Language hint"]')).toBeNull();
+    const name = document.querySelector('[aria-label="NPC name"]');
+    name.value = " Mar ";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    document
+      .querySelector(".voice-presets form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(fetch).toHaveBeenCalledWith(`${endpoint}?q=Mar&type=npc`);
+    [...document.querySelectorAll('[aria-label="Matching NPCs"] button')]
+      .find((button) => button.textContent === "Mara")
+      .click();
+    await settle();
+    expect(select.value).toBe(npcSearchHit.toLowerCase());
+    expect(select.selectedOptions[0].text).toBe("Mara");
+    document
+      .querySelector(".voice-presets form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(posted(fetch)[0]).toMatchObject({
+      operation: "saveVoice",
+      speakerKey: npcSearchHit.toLowerCase(),
+    });
+  });
 });
 
 describe("voice preset editor across state polls", () => {
@@ -708,8 +758,6 @@ describe("private session events from server projections", () => {
         });
       if (path.endsWith("/characters")) return json(viewer.pcs);
       if (path.endsWith("/voices")) return json([]);
-      if (path.endsWith("/entities"))
-        return json({ items: [], next_cursor: null });
       if (path.endsWith("/sheets")) return json({ versions: [] });
       if (path.endsWith("/sessions"))
         return json([{ id: sessionId, status: "active" }]);
