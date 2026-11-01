@@ -1469,6 +1469,29 @@ describe("sign-in expiry", () => {
     expect(document.body.textContent).toContain("Replying privately to Aria");
   });
 
+  it("restores a DM's free-label speaker", async () => {
+    sessionStorage.setItem(
+      draftKey,
+      JSON.stringify({
+        text: "Halt, who goes there?",
+        audience: "table",
+        speakerKey: "label:custom",
+        speakerLabel: "Captain North",
+        viewer: { id: "viewer", role: "dm" },
+      }),
+    );
+    stubFetch(() => pageData("dm", []));
+    await render(pageData("dm", []));
+    await settle();
+
+    expect(
+      document.querySelector('select[aria-label="Narration speaker"]').value,
+    ).toBe("label:custom");
+    expect(
+      document.querySelector('input[aria-label="Speaker label"]').value,
+    ).toBe("Captain North");
+  });
+
   it("drops a draft another account kept in this tab", async () => {
     sessionStorage.setItem(
       draftKey,

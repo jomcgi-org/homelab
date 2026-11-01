@@ -90,10 +90,30 @@ describe("session sign-in expiry", () => {
     const page = {
       dm: true,
       characters: [{ id: pcA }],
-      npcs: [{ id: npc }],
+      speakers: ["narrator", npc, "label:custom"],
     };
     expect(takeDraft(campaignId, dmViewer, page)).toEqual(composer);
     expect(takeDraft(campaignId, dmViewer, page)).toBe(null);
+  });
+
+  it("restores a free-label speaker the page still offers", () => {
+    vi.stubGlobal("sessionStorage", memoryStorage());
+    keepDraft(campaignId, dmViewer, {
+      text: "Halt, who goes there?",
+      audience: "table",
+      speakerKey: "label:custom",
+      speakerLabel: "Captain North",
+    });
+    expect(
+      takeDraft(campaignId, dmViewer, {
+        dm: true,
+        characters: [],
+        speakers: ["narrator", "label:custom"],
+      }),
+    ).toMatchObject({
+      speakerKey: "label:custom",
+      speakerLabel: "Captain North",
+    });
   });
 
   it("drops a draft another viewer kept in this tab", () => {
