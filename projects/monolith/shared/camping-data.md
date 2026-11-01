@@ -4,6 +4,9 @@
 It contains four LLTNP camping-management zones and two National Parks.
 Materializers use Shapely `covers`: polygon and hole edges count as inside,
 hole interiors stay outside, and multipolygon islands are retained.
+Shapely is a declared shared runtime dependency for these point checks;
+GeoPandas and Rasterio remain isolated to the offline grid generator. The
+grid build-config test enumerates the permitted Shapely consumers.
 Missing coordinates produce unknown membership. Missing or unreadable data
 aborts publication; it never produces a verified-outside result.
 
