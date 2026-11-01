@@ -9567,6 +9567,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
+        ":pkg_factory",
         ":pkg_swarm",
         "@pip//pytest",
         "@pip//sqlalchemy",
