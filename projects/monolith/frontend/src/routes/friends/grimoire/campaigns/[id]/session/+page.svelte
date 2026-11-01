@@ -324,7 +324,7 @@
     const kept = takeDraft(state.campaign.id, viewer(), {
       dm,
       characters: state.characters,
-      npcs: state.npcs,
+      speakers: ["narrator", ...speakers.map((row) => row.key), FREE_LABEL],
     });
     if (kept) {
       draft = kept.text;

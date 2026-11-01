@@ -75,8 +75,13 @@ export function dropDraft(campaignId) {
 
 // Reads and clears the kept composer. A draft another viewer kept is
 // dropped. A restored choice never widens the audience: a recipient the page
-// no longer offers falls back to the DM.
-export function takeDraft(campaignId, viewer, { dm, characters, npcs = [] }) {
+// no longer offers falls back to the DM, and a speaker it no longer offers
+// falls back to the narrator.
+export function takeDraft(
+  campaignId,
+  viewer,
+  { dm, characters, speakers = ["narrator"] },
+) {
   let saved;
   try {
     const store = storage();
@@ -96,7 +101,6 @@ export function takeDraft(campaignId, viewer, { dm, characters, npcs = [] }) {
   if (dm) audiences.push(...characters.map((row) => `pc:${row.id}`));
   const audience = audiences.includes(saved.audience) ? saved.audience : "dm";
   const reply = saved.replyTo;
-  const speakers = ["narrator", "custom", ...npcs.map((npc) => npc.id)];
   return {
     text: saved.text.slice(0, 8000),
     audience,
