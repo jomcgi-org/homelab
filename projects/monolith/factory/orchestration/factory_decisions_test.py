@@ -739,9 +739,7 @@ def test_an_unknown_option_or_receipt_is_refused(db, github):
 def test_chat_posts_the_question_and_requeues_the_refine(db, github):
     configure()
     receipt_id = escalate(db)
-    result = decisions.request_chat(
-        receipt_id, "Does this cover the friends tier?", "joe@example.test"
-    )
+    result = durable_chat(db, receipt_id, "Does this cover the friends tier?")
     assert result["requeued"] is True
     assert "Operator asks: Does this cover the friends tier?" in github.bodies()
     with Session(db) as session:
@@ -757,21 +755,22 @@ def test_chat_posts_the_question_and_requeues_the_refine(db, github):
 def test_chat_twice_asks_twice_and_a_retry_asks_once(db, github):
     configure()
     receipt_id = escalate(db)
-    decisions.request_chat(receipt_id, "First question", "joe@example.test")
+    durable_chat(db, receipt_id, "First question", key="first")
     # The receipt is back in the queue, so the second ask is a new question on
     # the same escalation rather than a repeat of the first.
-    decisions.request_chat(receipt_id, "Second question", "joe@example.test")
+    durable_chat(db, receipt_id, "Second question", key="second")
     assert len(github.comments) == 2
     assert len(escalation(db, receipt_id)["chat"]) == 2
 
 
 def test_chat_needs_a_note_and_refuses_a_decided_escalation(db, github):
     receipt_id = escalate(db, "close")
-    assert decisions.request_chat(receipt_id, "   ", "joe@example.test")["ok"] is False
+    with pytest.raises(ValueError, match="non-empty note"):
+        durable_chat(db, receipt_id, "   ")
     decisions.apply_decision(receipt_id, "close", "joe@example.test")
-    with pytest.raises(decisions.DecisionError) as raised:
-        decisions.request_chat(receipt_id, "too late", "joe@example.test")
-    assert raised.value.status == 409
+    refused = durable_chat(db, receipt_id, "too late")
+    assert refused["state"] == "refused"
+    assert refused["status"] == 409
 
 
 def test_a_receipt_with_no_escalation_cannot_be_decided(db, github):
@@ -812,6 +811,16 @@ def durable_answer(
 ):
     return decisions.request_decision(
         receipt_id, identity, option, actor, request_key=key
+    )
+
+
+def durable_chat(db, receipt_id, note, actor="joe@example.test", *, key="chat-1"):
+    with Session(db) as session:
+        identity = decisions._fields(session.get(FactoryReceipt, receipt_id))[
+            "decision_id"
+        ]
+    return decisions.request_decision(
+        receipt_id, identity, "chat", actor, request_key=key, note=note, action="chat"
     )
 
 
@@ -962,8 +971,7 @@ def test_partial_external_effect_is_durably_unknown(db, github, monkeypatch):
     assert len(github.comments) == 1
     assert durable_answer(receipt_id, identity) == result
     assert durable_answer(receipt_id, identity, key="new")["state"] == "refused"
-    with pytest.raises(decisions.DecisionError):
-        decisions.request_chat(receipt_id, "try again", "browser")
+    assert durable_chat(db, receipt_id, "try again", "browser")["state"] == "refused"
     assert len(github.comments) == 1
 
 
@@ -1266,7 +1274,7 @@ def test_fresh_context_without_chat_has_an_actionable_decision_id(db, github):
     assert len(github.comments) == 1
 
 
-def test_legacy_operator_paths_trigger_receipt_knowledge_maintenance(
+def test_legacy_decision_path_triggers_receipt_knowledge_maintenance(
     db, github, monkeypatch
 ):
     from factory.orchestration import conductor_context as context
@@ -1280,9 +1288,8 @@ def test_legacy_operator_paths_trigger_receipt_knowledge_maintenance(
         lambda target: maintained.append(target) or {"status": "queued"},
     )
 
-    assert decisions.request_chat(receipt_id, "Which tier?", "operator")["ok"]
     assert decisions.apply_decision(receipt_id, "close", "operator")["applied"]
-    assert maintained == [receipt_id, receipt_id]
+    assert maintained == [receipt_id]
 
 
 def test_pending_question_survives_fresh_context_with_current_queue_state(
@@ -1634,9 +1641,7 @@ def test_a_failed_split_is_audited(db, github):
 def test_deciding_after_a_chat_cancels_the_re_brief(db, github):
     configure()
     receipt_id = escalate(db, "close")
-    assert decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")[
-        "requeued"
-    ]
+    assert durable_chat(db, receipt_id, "Which tier?")["requeued"]
     with Session(db) as session:
         assert session.get(FactoryReceipt, receipt_id).state == "queued"
     decisions.apply_decision(receipt_id, "close", "joe@example.test")
@@ -1664,7 +1669,7 @@ def test_a_chat_the_lane_cannot_take_says_so(db, github):
     # discoverable-only and intake is what would have found it.
     configure(intake_enabled=False, issues=(ISSUE + 99,))
     receipt_id = escalate(db)
-    result = decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")
+    result = durable_chat(db, receipt_id, "Which tier?")
     assert result["requeued"] is False
     assert "neither in the policy allowlist" in result["blocked_by"]
     assert "Operator asks: Which tier?" in github.bodies()
@@ -1688,9 +1693,7 @@ def test_rebrief_of_previous_batch_cannot_poison_next_batch_queue(db, github):
         assert not controls.admission_eligible(
             policy, ISSUE, "factory:intake", task_class="refine", repo=REPO
         )
-    result = decisions.request_chat(
-        receipt_id, "Revisit the earlier brief", "joe@example.test"
-    )
+    result = durable_chat(db, receipt_id, "Revisit the earlier brief")
     assert result["requeued"] is False
     assert "admission will not select it" in result["blocked_by"]
     with Session(db) as session:
@@ -1706,12 +1709,12 @@ def test_rebrief_of_previous_batch_cannot_poison_next_batch_queue(db, github):
 def test_a_generation_the_policy_has_moved_past_blocks_the_re_brief(db, github):
     configure(generation=4)
     receipt_id = escalate(db)
-    with pytest.raises(decisions.DecisionError) as raised:
-        decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")
-    assert raised.value.status == 409
-    assert "receipt generation 0" in raised.value.reason
-    assert "policy is on generation 4" in raised.value.reason
-    assert "no issue changes were made" in raised.value.reason
+    result = durable_chat(db, receipt_id, "Which tier?")
+    assert result["state"] == "refused"
+    assert result["status"] == 409
+    assert "receipt generation 0" in result["reason"]
+    assert "policy is on generation 4" in result["reason"]
+    assert "no issue changes were made" in result["reason"]
     assert github.writes == []
 
 
@@ -1933,7 +1936,7 @@ def test_a_dismissed_escalation_can_still_be_asked_about(db, github):
     receipt_id = escalate(db)
     decisions.apply_decision(receipt_id, "escape:dismiss", "joe@example.test")
 
-    result = decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")
+    result = durable_chat(db, receipt_id, "Which tier?")
 
     assert result["requeued"] is True
     assert "Operator asks: Which tier?" in github.bodies()
@@ -1948,9 +1951,9 @@ def test_a_real_decision_is_still_the_last_word(db, github):
     with pytest.raises(decisions.DecisionError) as raised:
         decisions.apply_decision(receipt_id, "escape:dismiss", "joe@example.test")
     assert raised.value.status == 409
-    with pytest.raises(decisions.DecisionError) as chat:
-        decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")
-    assert chat.value.status == 409
+    refused = durable_chat(db, receipt_id, "Which tier?")
+    assert refused["state"] == "refused"
+    assert refused["status"] == 409
 
 
 def test_a_dismiss_repeated_returns_the_first_one_rather_than_a_second(db, github):
@@ -3045,10 +3048,7 @@ def test_the_issue_reference_must_be_this_issue():
     assert not handoff.references_issue("Refs ##7", REPO, 7)
 
 
-@pytest.mark.parametrize("durable", [False, True])
-def test_explicit_held_readmission_consumes_current_queue_authority(
-    db, github, durable
-):
+def test_explicit_held_readmission_consumes_current_queue_authority(db, github):
     from factory.orchestration.factory_intake import (
         admit_next,
         operator_readmission_queued,
@@ -3059,20 +3059,15 @@ def test_explicit_held_readmission_consumes_current_queue_authority(
     with Session(db) as session, session.begin():
         row = session.get(FactoryReceipt, receipt_id)
         row.direction_json = json.dumps({"landing_hold": {"reason": "leave unmerged"}})
-    if durable:
-        result = decisions.request_decision(
-            receipt_id,
-            current_decision_id(),
-            "chat",
-            "operator",
-            request_key="continue-held",
-            note="Continue under the existing hold",
-            action="chat",
-        )
-    else:
-        result = decisions.request_chat(
-            receipt_id, "Continue under the existing hold", "operator"
-        )
+    result = decisions.request_decision(
+        receipt_id,
+        current_decision_id(),
+        "chat",
+        "operator",
+        request_key="continue-held",
+        note="Continue under the existing hold",
+        action="chat",
+    )
     assert result["requeued"] is True
     with Session(db) as session:
         assert operator_readmission_queued(session, receipt_id)
@@ -3086,14 +3081,11 @@ def test_explicit_held_readmission_consumes_current_queue_authority(
         assert not operator_readmission_queued(session, receipt_id)
 
 
-@pytest.mark.parametrize("durable", [False, True])
 @pytest.mark.parametrize(
     "conflict",
     [None, "conductor_model", "worker_model", "reviewer_model", "empty_pool"],
 )
-def test_model_restriction_survives_same_receipt_readmission(
-    db, github, durable, conflict
-):
+def test_model_restriction_survives_same_receipt_readmission(db, github, conflict):
     receipt_id = escalate(db, "deliver", state="escalated", task_class="bug-fix")
     configure(issues=())
     restriction = {
@@ -3123,20 +3115,15 @@ def test_model_restriction_survives_same_receipt_readmission(
                 policy["model_pools"]["worker"] = ["spark", "luna"]
         history = [task.model_dump() for task in session.exec(select(SwarmTask)).all()]
     assert controls.set_control("configure", "operator", policy=policy)["ok"]
-    if durable:
-        result = decisions.request_decision(
-            receipt_id,
-            current_decision_id(),
-            "chat",
-            "operator",
-            request_key="continue-restricted",
-            note="Continue with existing restrictions",
-            action="chat",
-        )
-    else:
-        result = decisions.request_chat(
-            receipt_id, "Continue with existing restrictions", "operator"
-        )
+    result = decisions.request_decision(
+        receipt_id,
+        current_decision_id(),
+        "chat",
+        "operator",
+        request_key="continue-restricted",
+        note="Continue with existing restrictions",
+        action="chat",
+    )
     assert result["requeued"] is True
     with Session(db) as session:
         row = session.get(FactoryReceipt, receipt_id)

@@ -695,19 +695,6 @@ def defer_drainer_job(
 
 
 @DBOS.step()
-def update_drainer_job_payload(
-    name: str, payload: dict, *, expected_holder: str | None = None
-) -> bool:
-    from agent.api import update_job_payload
-
-    return update_job_payload(
-        name,
-        payload,
-        **({"expected_holder": expected_holder} if expected_holder is not None else {}),
-    )
-
-
-@DBOS.step()
 def increment_kg_job_attempt(name: str, *, expected_holder: str | None = None) -> int:
     """Increment attempts on the current persisted payload and return the count."""
     from agent.api import lock_claim

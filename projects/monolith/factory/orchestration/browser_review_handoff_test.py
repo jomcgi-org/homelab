@@ -9,14 +9,15 @@ from unittest.mock import patch, AsyncMock
 import httpx
 
 from factory.execution import transport
+from factory.execution.workspace_handoff import WorkspaceHandoff
+from factory.orchestration import browser_evidence_test as evidence_case
 from factory.orchestration.browser_evidence import EvidenceError
-from factory.orchestration.browser_evidence_test import BrowserEvidenceTest
-from factory.orchestration.browser_review_handoff import advance_browser_review
+from factory.orchestration.browser_review_handoff import prepare_browser_review
 
 
 class BrowserReviewHandoffTest(unittest.TestCase):
     def setUp(self):
-        fixture = BrowserEvidenceTest()
+        fixture = evidence_case.BrowserEvidenceTest()
         fixture.setUp()
         self.value = fixture.value
         self.provenance, self.producer = fixture.provenance, fixture.producer
@@ -106,34 +107,25 @@ class BrowserReviewHandoffTest(unittest.TestCase):
             },
         )
 
-    def dispatch(self, key, prompt, model, repo, branch, **kwargs):
-        context = kwargs["workspace_handoff"]
+    def restore(self, context):
         restored = asyncio.run(
             transport.EmberVmShimTransport().create_session(
                 restore_from=context.lineage_id,
-                model=model,
+                model="sol",
                 expected_workspace_fingerprint=context.expected_fingerprint,
             )
         )
         self.assertNotEqual(restored.session_id, context.producer_ember_session_id)
         self.assertTrue(restored.restored)
-        self.assertIn("Independently review", prompt)
-        self.assertEqual(branch, self.provenance.head_sha)
-        self.starts.append((key, context))
-        return 43
+        self.starts.append(context)
 
     def advance(self):
-        return asyncio.run(
-            advance_browser_review(
+        result = asyncio.run(
+            prepare_browser_review(
                 json.dumps(self.value).encode(),
                 expected_provenance=self.provenance,
                 expected_producer=self.producer,
-                task_id="task42",
-                reviewer_node="review_browser",
-                reviewer_attempt=1,
-                workflow_id="workflow42",
                 model="sol",
-                dispatch=self.dispatch,
                 preflight_files={
                     "projects/monolith/frontend/factory-preview/browser_handoff_check.py": "1"
                     * 64,
@@ -144,6 +136,9 @@ class BrowserReviewHandoffTest(unittest.TestCase):
                 },
             )
         )
+        if result["status"] == "prepared":
+            self.restore(WorkspaceHandoff.from_json(result["workspace_handoff"]))
+        return result
 
     def test_pending_export_then_exact_independent_restore(self):
         self.assertEqual(self.advance()["reason"], "export_requested")
@@ -152,7 +147,7 @@ class BrowserReviewHandoffTest(unittest.TestCase):
         self.assertEqual(self.starts, [])
         self.complete()
         result = self.advance()
-        self.assertEqual(result["status"], "review_queued")
+        self.assertEqual(result["status"], "prepared")
         self.assertEqual(len(self.starts), 1)
         self.assertEqual(
             self.created,

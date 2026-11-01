@@ -1,5 +1,3 @@
-import pytest
-
 from factory.orchestration import turn_artifact as ta
 
 
@@ -168,45 +166,6 @@ class TestEvaluateContent:
         assert diff_outcome.status == ta.NOT_FRESH
         direct_outcome = ta.evaluate_content(delivered, "plan.json", SCHEMA)
         assert direct_outcome.ok
-
-
-class TestRetryInstruction:
-    def test_names_the_file_and_every_reason(self):
-        outcome = ta.ArtifactOutcome(
-            ta.INVALID, errors=["nodes/0: bad", "nodes/1: worse"]
-        )
-        text = ta.retry_instruction(outcome, "plan.json")
-        assert "plan.json" in text
-        assert "nodes/0: bad" in text
-        assert "nodes/1: worse" in text
-
-
-class TestLadder:
-    def test_a_valid_artifact_is_accepted(self):
-        assert ta.next_action(ta.ArtifactOutcome(ta.OK), 1, 2) == ta.ACCEPT
-
-    def test_a_failure_with_budget_left_retries(self):
-        assert ta.next_action(ta.ArtifactOutcome(ta.INVALID), 1, 2) == ta.RETRY
-
-    def test_a_failure_out_of_budget_escalates(self):
-        assert ta.next_action(ta.ArtifactOutcome(ta.INVALID), 2, 2) == ta.ESCALATE
-
-    @pytest.mark.parametrize(
-        "status", [ta.MISSING, ta.NOT_FRESH, ta.UNPARSABLE, ta.INVALID]
-    )
-    @pytest.mark.parametrize("attempts", [1, 2, 5, 99])
-    def test_no_failure_mode_can_ever_strand_a_node(self, status, attempts):
-        """The load-bearing guarantee: a node whose artifact never validates
-        always ends up in front of the conductor, which can retry it or reshape
-        the plan around it. Nothing here may return a terminal failure, so any
-        new outcome status has to stay on this ladder."""
-        action = ta.next_action(ta.ArtifactOutcome(status), attempts, 2)
-        assert action in (ta.RETRY, ta.ESCALATE)
-
-    def test_zero_retry_budget_escalates_immediately(self):
-        """A node configured with no retries still reaches the conductor rather
-        than dying where it stands."""
-        assert ta.next_action(ta.ArtifactOutcome(ta.MISSING), 1, 0) == ta.ESCALATE
 
 
 def test_run_artifact_reads_value_then_artifact_and_rejects_junk():

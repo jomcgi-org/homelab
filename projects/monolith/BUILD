@@ -2356,6 +2356,9 @@ py_test(
         "factory/orchestration/browser_evidence_test.py",
         "factory/orchestration/browser_review_handoff_test.py",
     ],
+    # browser_evidence_test.py is imported as a fixture module here; its
+    # own tests run in factory_browser_evidence_test.
+    env = {"PYTEST_ADDOPTS": "--ignore=projects/monolith/factory/orchestration/browser_evidence_test.py"},
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -2371,6 +2374,9 @@ py_test(
         "factory/orchestration/browser_evidence_test.py",
         "factory/orchestration/browser_review_dispatch_test.py",
     ],
+    # browser_evidence_test.py is imported as a fixture module here; its
+    # own tests run in factory_browser_evidence_test.
+    env = {"PYTEST_ADDOPTS": "--ignore=projects/monolith/factory/orchestration/browser_evidence_test.py"},
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",

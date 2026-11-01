@@ -266,6 +266,13 @@ def receipt_of(db, task_id=None, receipt_id=None):
         ).one()
 
 
+def durable_chat(db, receipt_id, note, actor="joe@x.test", *, key="chat-1"):
+    identity = decisions._fields(receipt_of(db, receipt_id=receipt_id))["decision_id"]
+    return decisions.request_decision(
+        receipt_id, identity, "chat", actor, request_key=key, note=note, action="chat"
+    )
+
+
 def set_escalation_surface(db, receipt_id, branch, pr_number=21):
     with Session(db) as session:
         row = session.get(FactoryReceipt, receipt_id)
@@ -1259,12 +1266,12 @@ def test_the_chat_action_asks_on_the_issue_and_re_admits_with_the_note(
 ):
     task_id, _policy = escalate(db, github, notices)
     receipt_id = receipt_of(db, task_id).id
-    result = decisions.request_chat(
-        receipt_id, "Use the existing client, do not write a second one.", "joe@x.test"
+    result = durable_chat(
+        db, receipt_id, "Use the existing client, do not write a second one."
     )
     assert result["requeued"] is True
     assert "Operator asks: Use the existing client" in github.bodies()
-    assert "Re-admitted to the delivery lane" in github.bodies()
+    assert "Requested another brief" in github.bodies()
     row = receipt_of(db, receipt_id=receipt_id)
     assert row.state == "queued" and row.task_id is None
     direction = json.loads(row.direction_json)
@@ -1283,7 +1290,7 @@ def test_deciding_after_a_chat_keeps_the_delivery_on_its_direction(db, github, n
     """
     task_id, _policy = escalate(db, github, notices)
     receipt_id = receipt_of(db, task_id).id
-    assert decisions.request_chat(receipt_id, "Which client?", "joe@x.test")["requeued"]
+    assert durable_chat(db, receipt_id, "Which client?")["requeued"]
     result = decisions.apply_decision(
         receipt_id, "continue-narrowed", "joe@example.test", "Use the existing one."
     )
@@ -1311,7 +1318,7 @@ def test_an_ending_decision_after_a_chat_cancels_rather_than_succeeding(
 ):
     task_id, _policy = escalate(db, github, notices)
     receipt_id = receipt_of(db, task_id).id
-    assert decisions.request_chat(receipt_id, "Which client?", "joe@x.test")["requeued"]
+    assert durable_chat(db, receipt_id, "Which client?")["requeued"]
     decisions.apply_decision(receipt_id, "close-superseded", "joe@example.test")
     row = receipt_of(db, receipt_id=receipt_id)
     assert row.state == "cancelled"

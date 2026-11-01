@@ -13,11 +13,9 @@ from factory.execution.constants import (
 from factory.orchestration import config
 from factory.orchestration.budget import effective_budget
 from factory.orchestration.policy import (
-    implementer_prompt,  # noqa: F401 - retained for policy seam compatibility
     implementer_prompt_parts,
     next_action,
     parse_review_verdict,
-    reviewer_prompt,  # noqa: F401 - retained for policy seam compatibility
     reviewer_prompt_parts,
     work_branch,
 )

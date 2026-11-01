@@ -1885,7 +1885,19 @@ def test_a_re_brief_replaces_the_options_the_operator_sent_back(db, monkeypatch)
         lambda *_args, **_kwargs: {"id": 1},
         raising=False,
     )
-    assert decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")["ok"]
+    with Session(db) as session:
+        identity = decisions._fields(session.get(FactoryReceipt, receipt_id))[
+            "decision_id"
+        ]
+    assert decisions.request_decision(
+        receipt_id,
+        identity,
+        "chat",
+        "joe@example.test",
+        request_key="chat-1",
+        note="Which tier?",
+        action="chat",
+    )["ok"]
 
     # The lane briefs it again and settles onto the same receipt.
     admitted = admit_next("scheduler")

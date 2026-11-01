@@ -25,7 +25,7 @@ import random
 import re
 import threading
 import zlib
-from typing import Awaitable, Callable, NamedTuple, Protocol
+from typing import Awaitable, Callable, NamedTuple
 
 import httpx
 from opentelemetry import trace
@@ -221,11 +221,6 @@ def _capacity_denial_reason(exc: httpx.HTTPStatusError) -> str | None:
         return None
     reason = body.get("reason")
     return reason if reason in _CAPACITY_DENIAL_REASONS else None
-
-
-def _capacity_denial(exc: httpx.HTTPStatusError) -> bool:
-    """True when a 429 says the workload is at capacity, not merely busy."""
-    return _capacity_denial_reason(exc) is not None
 
 
 def _capacity_event(name: str, attributes: dict) -> None:
@@ -876,36 +871,6 @@ class EmberSession(NamedTuple):
     restored: bool = False
     workspace_lost: bool = False
     workspace_fingerprint: str | None = None
-
-
-class ShimTransport(Protocol):
-    async def deliver(
-        self,
-        ember: EmberSession | None,
-        cli_session_id: str | None,
-        message: str,
-        model: str | None = None,
-        restore_from: str | None = None,
-        on_create: Callable[[EmberSession, str | None], Awaitable[None]] | None = None,
-        repo: str | None = None,
-        branch: str | None = None,
-        progress_token: str | None = None,
-        system_prompt: str | None = None,
-        reasoning: bool = False,
-        artifact_path: str | None = None,
-        agent_session_id: int | None = None,
-        turn_seq: int | None = None,
-        claim_owner: str | None = None,
-        dispatch_count: int = 0,
-        admission_check: Callable[[], Awaitable[None]] | None = None,
-        receipt_claim_owner: str | None = None,
-        invocation_record: dict | None = None,
-        residency: dict | None = None,
-        expected_workspace_fingerprint: str | None = None,
-        workspace_handoff: dict | None = None,
-        push_format: dict | None = None,
-        capture_evidence_ttl_seconds: int | None = None,
-    ) -> tuple[Turn, EmberSession]: ...
 
 
 # Read timeout for invoke calls: the OUTER (wall-clock) bound on turn duration.
