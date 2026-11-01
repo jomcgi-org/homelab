@@ -3,7 +3,7 @@ package main
 // resolver_test.go covers hf2ociResolver.Resolve() — the adapter between
 // hf2oci's copy.PermanentError and the controller's PermanentError type.
 //
-// This is the only file in the operator that imports tools/hf2oci. The critical
+// This is the only file in the operator that imports bazel/tools/hf2oci. The critical
 // behaviour is the error-type mapping: 4xx non-retryable HF errors must be
 // promoted to controller.PermanentError so the controller can avoid infinite
 // retry loops. All other errors must pass through as-is.

@@ -68,12 +68,3 @@ func TestParse(t *testing.T) {
 		})
 	}
 }
-
-func TestIsHFRef(t *testing.T) {
-	if !IsHFRef("hf.co/org/model") {
-		t.Error("expected hf.co/org/model to be an HF ref")
-	}
-	if IsHFRef("ghcr.io/org/image") {
-		t.Error("expected ghcr.io/org/image to not be an HF ref")
-	}
-}

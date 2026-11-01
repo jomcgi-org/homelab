@@ -44,8 +44,3 @@ func Parse(volumeName string) (repo string, file string, ok bool) {
 
 	return repo, file, true
 }
-
-// IsHFRef returns true if the volume name is an hf.co reference.
-func IsHFRef(volumeName string) bool {
-	return strings.HasPrefix(volumeName, prefix)
-}
