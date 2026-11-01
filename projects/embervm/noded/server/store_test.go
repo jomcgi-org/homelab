@@ -2903,6 +2903,21 @@ func TestRestoreSessionWorkspacePendingRetirementFailureAndCancellation(t *testi
 	})
 }
 
+// snapshot lists the live unexportable entries sorted by artifact.
+func (u *unexportableSet) snapshot() []unexportableArtifact {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.purgeExpiredLocked(u.now())
+	out := make([]unexportableArtifact, 0, len(u.entries))
+	for _, entry := range u.entries {
+		out = append(out, entry)
+	}
+	slices.SortFunc(out, func(a, b unexportableArtifact) int {
+		return strings.Compare(a.Artifact, b.Artifact)
+	})
+	return out
+}
+
 func TestRunExportJob404WrapRefusalIsTerminalAndRetiresWorkspace(t *testing.T) {
 	fs := newFakeStore()
 	fs.dataKeyErr = &WrapRejectedError{StatusCode: 404, Reason: "unknown_artifact"}

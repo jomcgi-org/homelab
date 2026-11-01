@@ -215,10 +215,6 @@ type quotaReporter struct {
 	inFlight   bool
 }
 
-func newQuotaReporter(rawURL string, logger *slog.Logger) *quotaReporter {
-	return newQuotaReporterWithClient(rawURL, logger, brokerHTTPClient(nil, 5*time.Second))
-}
-
 func newQuotaReporterWithClient(rawURL string, logger *slog.Logger, client *http.Client) *quotaReporter {
 	brokerURL := normalizeBrokerURL(rawURL)
 	if brokerURL == "" {

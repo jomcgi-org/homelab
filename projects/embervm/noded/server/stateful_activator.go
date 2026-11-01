@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"strconv"
-	"sync"
 	"time"
 
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
@@ -41,11 +40,8 @@ const (
 type statefulActivator struct {
 	server *Server
 
-	mu           sync.Mutex
+	parkLedger
 	flights      map[string]*statefulActivatorFlight
-	boots        int
-	parked       map[string]int
-	wakes        []time.Time
 	lastParkMs   map[string]uint64
 	lastParkAtMs map[string]int64
 	lastParkSeq  map[string]uint64
@@ -54,8 +50,8 @@ type statefulActivator struct {
 func newStatefulActivator(s *Server) *statefulActivator {
 	return &statefulActivator{
 		server:       s,
+		parkLedger:   parkLedger{parked: make(map[string]int)},
 		flights:      make(map[string]*statefulActivatorFlight),
-		parked:       make(map[string]int),
 		lastParkMs:   make(map[string]uint64),
 		lastParkAtMs: make(map[string]int64),
 		lastParkSeq:  make(map[string]uint64),
@@ -215,32 +211,6 @@ func (a *statefulActivator) join(workload string) (*statefulActivatorFlight, boo
 	a.boots++
 	a.parked[workload]++
 	return f, true, true
-}
-
-func (a *statefulActivator) allowWakeLocked(now time.Time) bool {
-	cutoff := now.Add(-activatorWakeWindow)
-	kept := a.wakes[:0]
-	for _, woke := range a.wakes {
-		if woke.After(cutoff) {
-			kept = append(kept, woke)
-		}
-	}
-	a.wakes = kept
-	if len(a.wakes) >= activatorWakeMax {
-		return false
-	}
-	a.wakes = append(a.wakes, now)
-	return true
-}
-
-func (a *statefulActivator) unpark(workload string) {
-	a.mu.Lock()
-	if a.parked[workload] <= 1 {
-		delete(a.parked, workload)
-	} else {
-		a.parked[workload]--
-	}
-	a.mu.Unlock()
 }
 
 func (a *statefulActivator) complete(workload string, flight *statefulActivatorFlight, entry *statefulEntry, err error) {

@@ -26,9 +26,6 @@ const (
 	// image already uses, so when a real disk lands here BOTH become disk-backed
 	// with no further guest change.
 	defaultSessionRoot = "/session"
-	// A warm base is captured without volume boot args. On the normal no-handler
-	// layout, the resumed shim discovers the attached volume through this node.
-	defaultVolumeDevice = "/dev/vdb"
 	// The trust record's read-only master. It cannot live at its final path: a
 	// bind mount over /home/runtime would hide it, so the image bakes it here and
 	// this init seeds a copy into the writable HOME.
