@@ -17,6 +17,7 @@ def evidence_resume(feedback_db, monkeypatch):
     from factory.execution.models import (
         AgentSession,
         AgentCapacityReservation,
+        AgentTurn,
         PendingMessage,
     )
     from sqlmodel import SQLModel
@@ -33,7 +34,7 @@ def evidence_resume(feedback_db, monkeypatch):
         feedback_db,
         tables=[
             m.__table__
-            for m in (AgentSession, AgentCapacityReservation, PendingMessage)
+            for m in (AgentSession, AgentCapacityReservation, AgentTurn, PendingMessage)
         ],
     )
     task, policy = feedback_task(
@@ -106,6 +107,7 @@ def evidence_resume(feedback_db, monkeypatch):
                 node_key="correct_1",
                 node_attempt=1,
                 status="completed",
+                last_turn_at=datetime.now(timezone.utc) - timedelta(minutes=6),
             )
         )
         db.get(SwarmNodeRun, source["id"]).finished_at = datetime.now(
@@ -826,7 +828,7 @@ def test_evidence_continuation_rechecks_native_work_and_ownership(
     assert len(conductor.graph.node_runs(s.task["id"], "correct_1")) == 1
 
 
-@pytest.mark.parametrize("verdict", ["approve", "changes_requested"])
+@pytest.mark.parametrize("verdict", ["approve", "changes_requested", "draft"])
 def test_evidence_continuation_terminal_executes_only_pair_and_one_acceptance(
     evidence_terminal, monkeypatch, verdict
 ):
@@ -839,6 +841,7 @@ def test_evidence_continuation_terminal_executes_only_pair_and_one_acceptance(
     monkeypatch.setattr(conductor, "_reviewer_override", lambda *_: (True, "opus"))
     monkeypatch.setattr(conductor, "_attempt_escalation", lambda *_: None)
     monkeypatch.setattr(conductor, "select_model", lambda *_: {"model": "opus"})
+    real_pause = conductor._pause_refusal
     pauses = []
     monkeypatch.setattr(
         conductor, "_pause_refusal", lambda _task, reason: pauses.append(reason)
@@ -876,9 +879,17 @@ def test_evidence_continuation_terminal_executes_only_pair_and_one_acceptance(
     settle("correct_1", 2, {"status": "complete", "head_sha": s.head, "pr_number": 3})
     assert tick()
     assert len(conductor.graph.node_runs(s.task["id"], "review_1")) == 1
-    settle("review_1", 1, {"verdict": verdict, "head_sha": s.head, "pr_number": 3})
+    settle(
+        "review_1",
+        1,
+        {
+            "verdict": "approve" if verdict == "draft" else verdict,
+            "head_sha": s.head,
+            "pr_number": 3,
+        },
+    )
     assert tick()
-    if verdict != "approve":
+    if verdict == "changes_requested":
         assert pauses and not conductor.graph.node_runs(
             s.task["id"], proposal["planner_key"]
         )
@@ -894,6 +905,7 @@ def test_evidence_continuation_terminal_executes_only_pair_and_one_acceptance(
     assert run["attempt"] == 1
     schema = run["pin"]["artifact_schema"]
     assert schema["properties"]["action"] == {"enum": ["finish", "pause"]}
+    assert schema["properties"]["head_sha"] == {"const": s.head}
     assert "read-only" in _node_prompt(
         run["pin"]["prompt"],
         run["pin"]["artifact_path"],
@@ -905,6 +917,28 @@ def test_evidence_continuation_terminal_executes_only_pair_and_one_acceptance(
         1,
         {"action": "finish", "reason": "Verified", "pr_number": 3, "head_sha": s.head},
     )
+    if verdict == "draft":
+        from factory.orchestration.factory_models import FactoryAudit
+
+        monkeypatch.setattr(conductor, "_pause_refusal", real_pause)
+        s.pr["draft"] = True
+        before = conductor.graph.node_runs(s.task["id"])
+        assert tick()
+        assert controls.task_snapshot(s.task["id"])["task_paused"]
+        with Session(s.engine) as db:
+            rejection = db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.task_id == s.task["id"],
+                    FactoryAudit.action == "conductor_rejected",
+                )
+            ).one()
+            assert (
+                "delivery PR does not match"
+                in json.loads(rejection.detail_json)["reason"]
+            )
+        assert tick()
+        assert conductor.graph.node_runs(s.task["id"]) == before
+        return
     accepted = []
     monkeypatch.setattr(
         conductor, "apply_decision", lambda *args: accepted.append(args)
@@ -958,6 +992,250 @@ def test_evidence_continuation_rejects_intervening_graph_edit(evidence_resume):
     assert not conductor.reserve_node(
         s.task["id"], "correct_1", context["workflow_id"], context
     )
+
+
+def test_evidence_continuation_native_schema_reaches_real_preview_and_apply(
+    evidence_terminal,
+):
+    import asyncio
+    from auth.dependencies import reset_current_principal, set_current_principal
+    from auth.principal import Authority, Principal, PrincipalKind
+    from fastmcp import Client
+    from factory.orchestration import mcp
+
+    s = evidence_terminal
+    arguments = {
+        "operation": "preview",
+        "receipt_id": s.request["receipt_id"],
+        "decision_id": s.request["decision_id"],
+        "deadline_at": s.request["deadline_at"],
+        **{
+            k: v
+            for k, v in s.decision.items()
+            if k not in ("action", "expected_version")
+        },
+        "expected_revision": s.decision["expected_version"],
+    }
+    assert arguments["decision_id"].startswith("decision:")
+
+    async def native():
+        async with Client(mcp.mcp) as client:
+            preview = (
+                await client.call_tool("factory_continue_evidence", arguments)
+            ).structured_content
+            assert preview["ok"]
+            apply = {
+                **arguments,
+                "operation": "apply",
+                "request_key": "native-once",
+                "expected_preview_sha256": preview["proposal"]["preview_sha256"],
+            }
+            result = (
+                await client.call_tool("factory_continue_evidence", apply)
+            ).structured_content
+            assert result["ok"] and result["task_id"] == s.task["id"]
+            assert (
+                await client.call_tool("factory_continue_evidence", apply)
+            ).structured_content == result
+
+    principal = Principal(
+        subject="operator",
+        actor=(),
+        scope=(),
+        groups=("operators",),
+        email=None,
+        kind=PrincipalKind.HUMAN,
+        authority=Authority.STANDING,
+    )
+    token = set_current_principal(principal)
+    try:
+        asyncio.run(native())
+    finally:
+        reset_current_principal(token)
+
+
+def test_evidence_continuation_refuses_native_unknown_turn_even_with_settled_permit(
+    evidence_resume,
+):
+    from factory.execution.models import (
+        AgentSession,
+        AgentTurn,
+        AgentCapacityReservation,
+    )
+    from shared.invocation_outcomes import UNKNOWN_INVOCATION
+
+    s = evidence_resume
+    with Session(s.engine) as db, db.begin():
+        session = db.get(AgentSession, s.source["session_id"])
+        session.status = "failed"
+        db.add(
+            AgentTurn(
+                session_id=session.id,
+                seq=1,
+                prompt="old work",
+                result_text="unknown",
+                stop_reason=UNKNOWN_INVOCATION,
+            )
+        )
+        db.add(
+            AgentCapacityReservation(
+                local_session_id=session.local_session_id,
+                session_id=session.id,
+                pending_seq=1,
+                tier="project",
+                state="settled",
+                settled_at=datetime.now(timezone.utc),
+            )
+        )
+    with pytest.raises(ValueError, match="unknown_invocation"):
+        grant_evidence(s)
+
+
+@pytest.mark.parametrize("changed", ["decision", "verified"])
+def test_evidence_continuation_final_acceptance_is_bound_to_granted_head(
+    evidence_terminal, monkeypatch, changed
+):
+    s = evidence_terminal
+    recover_evidence(s)
+    decision = {
+        "action": "finish",
+        "pr_number": 3,
+        "head_sha": "b" * 40 if changed == "decision" else s.head,
+    }
+    monkeypatch.setattr(
+        conductor, "verify_delivery", lambda *a, **kw: {"head_sha": "b" * 40}
+    )
+    with pytest.raises(
+        ValueError, match="evidence_continuation_delivery_(identity|head)_changed"
+    ):
+        conductor._apply_decision(
+            conductor._task(s.task["id"]), s.policy, decision, "final", []
+        )
+
+
+def test_evidence_continuation_dispatch_refusal_cannot_request_more_funding(
+    evidence_terminal, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls, factory_funding
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = evidence_terminal
+    recover_evidence(s)
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    monkeypatch.setattr(conductor, "_slot_budget", lambda: 1)
+    monkeypatch.setattr(conductor, "_attempt_escalation", lambda *_: None)
+    reserve = conductor.reserve_node
+
+    def changed_authority(*args, **kwargs):
+        with controls._locked_session() as (db, _control):
+            controls._receipt(
+                db, s.task["id"]
+            ).direction_json = '{"note":"changed scope"}'
+        return reserve(*args, **kwargs)
+
+    monkeypatch.setattr(conductor, "reserve_node", changed_authority)
+    task = conductor._task(s.task["id"])
+    nodes, runs = (
+        conductor.graph.load_graph(s.task["id"]),
+        conductor.graph.node_runs(s.task["id"]),
+    )
+    assert not conductor._dispatch_ready(
+        task, nodes, runs, 1, fan_out=False, parallel=1, policy=s.policy
+    )
+    assert controls.task_snapshot(s.task["id"])["task_paused"]
+    assert not factory_funding.request(task, "must not renew", progress=True)
+    assert not factory_funding.renew_continuation(task["id"])
+    assert conductor.graph.node_runs(s.task["id"]) == runs
+    assert not any(
+        n["node_key"].startswith("conductor_funding_")
+        for n in conductor.graph.load_graph(s.task["id"])
+    )
+    with Session(s.engine) as db:
+        assert not db.exec(
+            select(FactoryAudit.id).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "funding_review_requested",
+            )
+        ).all()
+
+
+def test_evidence_continuation_start_fence_uses_only_shared_models(
+    evidence_terminal, monkeypatch
+):
+    import builtins
+
+    s = evidence_terminal
+    proposal, _ = recover_evidence(s)
+    original = builtins.__import__
+
+    def restricted(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "factory.orchestration.graph" or (
+            name == "factory.orchestration" and "graph" in fromlist
+        ):
+            raise ImportError("graph is absent from the pruned controls consumer")
+        return original(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", restricted)
+    with Session(s.engine) as db:
+        assert (
+            s.continuation.recovery_start_refusal(
+                db,
+                s.task["id"],
+                f"factory-node:{s.task['id']}:{proposal['planner_key']}:1",
+            )
+            == "evidence_continuation_acceptance_not_ready"
+        )
+
+
+def test_evidence_continuation_terminal_concurrent_apply_and_expired_replay(
+    evidence_terminal, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.models import SwarmPlanVersion
+
+    s = evidence_terminal
+    proposal = s.recovery.preview(s.request)["proposal"]
+    barrier = Barrier(2)
+
+    def read(repo, path):
+        if path == "issues/comments/99":
+            barrier.wait(timeout=10)
+        return s.read(repo, path)
+
+    monkeypatch.setattr(conductor, "github_get", read)
+
+    def apply(_):
+        return s.recovery.apply(
+            s.request,
+            actor="operator",
+            request_key="concurrent",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(apply, range(2)))
+    assert results[0] == results[1]
+    with Session(s.engine) as db:
+        assert (
+            len(
+                db.exec(
+                    select(SwarmPlanVersion).where(
+                        SwarmPlanVersion.task_id == s.task["id"],
+                        SwarmPlanVersion.op == s.continuation.OP,
+                    )
+                ).all()
+            )
+            == 1
+        )
+    monkeypatch.setattr(
+        controls,
+        "_now",
+        lambda: datetime.fromisoformat(proposal["deadline_at"]) + timedelta(seconds=1),
+    )
+    assert controls.can_start(s.task["id"])["reason"] == "task_deadline"
+    assert apply(0) == results[0]  # No remote read and no renewed lease on replay.
 
 
 @pytest.fixture(autouse=True)

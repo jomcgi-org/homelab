@@ -4280,6 +4280,15 @@ def _apply_decision(
         action not in ("finish", "pause") or decision.get("gate")
     ):
         raise ValueError("evidence_continuation_acceptance_only")
+    if (
+        evidence_recovery
+        and action == "finish"
+        and any(
+            decision.get(key) != evidence_recovery["grant"][key]
+            for key in ("pr_number", "head_sha")
+        )
+    ):
+        raise ValueError("evidence_continuation_delivery_identity_changed")
     if action == "continue_evidence":
         from factory.orchestration import evidence_continuation
 
@@ -4438,6 +4447,11 @@ def _apply_decision(
             judgment=task_class_for(task["id"]) in JUDGMENT_CLASSES,
             issue_number=task.get("issue_number"),
         )
+        if (
+            evidence_recovery
+            and evidence.get("head_sha") != evidence_recovery["grant"]["head_sha"]
+        ):
+            raise ValueError("evidence_continuation_delivery_head_changed")
         result = finish_task(task["id"], "succeeded", ACTOR, evidence=evidence)
         if not result["ok"]:
             _reject_decision(
@@ -7994,11 +8008,20 @@ def _dispatch_ready(
                 break
         if dispatched == 0:
             from factory.orchestration import factory_funding
+            from factory.orchestration.evidence_continuation import recovery_grant
             from factory.orchestration.factory_controls import (
                 pause_nonrenewable_recovery,
             )
 
-            if pause_nonrenewable_recovery(
+            with Session(get_engine()) as db:
+                evidence_recovery = recovery_grant(db, task_id)
+
+            if evidence_recovery:
+                _pause_refusal(
+                    task,
+                    "Evidence continuation dispatch refused; no additional work or funding authorized",
+                )
+            elif pause_nonrenewable_recovery(
                 task_id,
                 f"Ready dispatch of {node_key} was refused within the operator envelope: "
                 f"{getattr(reservation, 'refusal_code', 'reservation_refused')}",

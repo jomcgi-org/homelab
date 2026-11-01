@@ -55,22 +55,26 @@ def recovery_start_refusal(db, task_id, start_key):
     if start_key not in allowed:
         return "evidence_continuation_scope_exhausted"
     if start_key.endswith(f":{grant['planner_key']}:1"):
-        from factory.orchestration import graph
+        from factory.orchestration.models import SwarmNodeRun
 
-        runs = graph.node_runs(task_id, session=db)
+        runs = db.exec(
+            select(SwarmNodeRun).where(SwarmNodeRun.task_id == task_id)
+        ).all()
         for key, attempt in (
             (pair["node_key"], pair["next_attempt"]),
             (pair["review_key"], 1),
         ):
-            matching = [
-                r for r in runs if r["node_key"] == key and r["attempt"] == attempt
-            ]
-            if len(matching) != 1 or matching[0]["status"] != "succeeded":
+            matching = [r for r in runs if r.node_key == key and r.attempt == attempt]
+            if (
+                len(matching) != 1
+                or matching[0].status != "succeeded"
+                or matching[0].head_sha != pair["head_sha"]
+            ):
                 return "evidence_continuation_acceptance_not_ready"
             if (
                 key == pair["review_key"]
                 and (
-                    json.loads(matching[0]["outcome_json"] or "{}").get("value") or {}
+                    json.loads(matching[0].outcome_json or "{}").get("value") or {}
                 ).get("verdict")
                 != "approve"
             ):
@@ -163,12 +167,16 @@ def attempt_limit(node):
 
 
 def quiescence(db, task_id):
+    from factory.orchestration import graph
     from sqlalchemy import or_
+    from sqlalchemy.exc import DBAPIError
     from factory.execution.models import (
         AgentSession,
         AgentCapacityReservation,
+        AgentTurn,
         PendingMessage,
     )
+    from shared.invocation_outcomes import UNKNOWN_INVOCATION
     from factory.orchestration.factory_models import FactoryReceipt, same_work
 
     refusal = controls._quiescence_refusal(db, task_id)
@@ -189,19 +197,49 @@ def quiescence(db, task_id):
     ).all()
     _require(not any(same_work(other, row) for other in others), "work_owner_changed")
     prefix = f"factory:{task_id}:"
-    sessions = db.exec(
-        select(AgentSession)
-        .where(
-            or_(
-                AgentSession.local_session_id.startswith(prefix, autoescape=True),
-                AgentSession.workflow_id.startswith(
-                    f"factory-node:{task_id}:", autoescape=True
-                ),
-            )
-        )
-        .with_for_update()
-    ).all()
+    # Execution persistence holds pool→session before updating a task. We
+    # already hold control→task, so never wait for its session lock. A savepoint
+    # keeps a NOWAIT refusal from aborting the surrounding admission transaction.
+    try:
+        with db.begin_nested():
+            sessions = db.exec(
+                select(AgentSession)
+                .where(
+                    or_(
+                        AgentSession.local_session_id.startswith(
+                            prefix, autoescape=True
+                        ),
+                        AgentSession.workflow_id.startswith(
+                            f"factory-node:{task_id}:", autoescape=True
+                        ),
+                    )
+                )
+                .with_for_update(nowait=True)
+            ).all()
+    except DBAPIError as exc:
+        if getattr(exc.orig, "sqlstate", getattr(exc.orig, "pgcode", None)) == "55P03":
+            raise ValueError("evidence_continuation_session_busy") from exc
+        raise
     ids = [s.id for s in sessions]
+    _require(
+        db.exec(
+            select(AgentTurn.id).where(
+                AgentTurn.session_id.in_(ids),
+                AgentTurn.stop_reason == UNKNOWN_INVOCATION,
+            )
+        ).first()
+        is None,
+        "unknown_invocation",
+    )
+    runs = graph.node_runs(task_id, session=db)
+    for session in sessions:
+        owned = [r for r in runs if r.get("session_id") == session.id]
+        _require(
+            len(owned) == 1
+            and owned[0]["finished_at"] is not None
+            and _aware(session.last_turn_at) <= _aware(owned[0]["finished_at"]),
+            "newer_session_work",
+        )
     _require(
         all(
             s.status in ("completed", "failed", "warn", "cancelled")
@@ -233,6 +271,18 @@ def quiescence(db, task_id):
         "unsettled_permit",
     )
     return sessions
+
+
+def session_identity(session):
+    return {
+        "id": session.id,
+        "local_session_id": session.local_session_id,
+        "workflow_id": session.workflow_id,
+        "node_key": session.node_key,
+        "node_attempt": session.node_attempt,
+        "status": session.status,
+        "last_turn_at": _aware(session.last_turn_at).isoformat(),
+    }
 
 
 def block(task_id, grant, reason):
@@ -383,6 +433,7 @@ def _local(db, control, task_id, decision, *, terminal=False):
         "node": node,
         "review": review,
         "source": latest,
+        "source_session": session_identity(source_session),
         "nodes": nodes,
         "runs": runs,
         "attempt_limit": limit,
@@ -522,6 +573,7 @@ def make_grant(local, decision, evidence, cause):
             for n in (local["node"], local["review"])
         },
         "source_run_id": decision["source_run_id"],
+        "source_session": local["source_session"],
         "next_attempt": local["source"]["attempt"] + 1,
         "attempt_limit": local["attempt_limit"],
         "pr_number": decision["pr_number"],
@@ -583,6 +635,8 @@ def prepare(task, node, schema, *, github_get):
         result = copy.deepcopy(schema)
         result["x-factory-evidence-acceptance"] = True
         result["properties"]["action"] = {"enum": ["finish", "pause"]}
+        for key in ("pr_number", "head_sha"):
+            result["properties"][key] = {"const": node["evidence_acceptance"][key]}
         return result
     grant = node.get("evidence_continuation")
     if grant is None:
@@ -606,7 +660,11 @@ def validate_dispatch(db, task_id, node, context):
     from factory.orchestration import graph
 
     grant = node["evidence_continuation"]
-    quiescence(db, task_id)
+    sessions = quiescence(db, task_id)
+    _require(
+        any(session_identity(s) == grant["source_session"] for s in sessions),
+        "source_session_changed",
+    )
     _require(
         graph.current_version(task_id, session=db) == grant["graph_revision"],
         "graph_changed",
