@@ -1578,29 +1578,6 @@ def finish_unknown_pending_in_session(
     return True
 
 
-def finish_unknown_pending_sync(
-    session_id: int,
-    turn_seq: int,
-    claim_owner: str,
-    dispatch_count: int,
-    cause: str,
-) -> bool:
-    with Session(get_engine()) as session:
-        row = _lock_session(session, session_id)
-        pending = get_pending_message(session, session_id, turn_seq)
-        if (
-            row is None
-            or _bound_zero_turn_cleanup_pending(row)
-            or pending is None
-            or pending.claimed_by_replica != claim_owner
-            or pending.dispatch_count != dispatch_count
-        ):
-            return False
-        _finish_unknown_locked(session, row, pending, cause)
-        session.commit()
-        return True
-
-
 def create_voice_ui_companion(
     session: Session,
     companion_id: str,

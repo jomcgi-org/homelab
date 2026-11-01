@@ -282,8 +282,6 @@ REVIEWER_ROUTING_ACTIONS = (
     "review_waiting",
     "quota_guard_unknown",
 )
-# One review node that cannot start yet, audited against its task.
-REVIEW_NODE_WAITING_ACTION = "review_node_waiting"
 # ADR agents/038 decision 5. A class carries a verification mode and a floor on
 # the implementer tier, and judgment work never routes to the cheap lane.
 # DEFAULT_TASK_CLASS is re-exported from factory_models, which owns it because

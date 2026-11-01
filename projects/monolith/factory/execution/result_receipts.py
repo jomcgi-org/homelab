@@ -457,6 +457,35 @@ def _bound_observer_transaction(db: Session) -> None:
         db.execute(text("SET LOCAL statement_timeout = '3s'"))
 
 
+def _locked_receipt(db: Session, receipt_id: str) -> dict | None:
+    # The no-op UPDATE takes the receipt row lock before the metadata read.
+    db.execute(
+        update(AgentResultReceipt)
+        .where(AgentResultReceipt.id == receipt_id)
+        .values(created_at=AgentResultReceipt.created_at)
+    )
+    return _receipt_metadata(db, receipt_id)
+
+
+def _locked_observer_receipt(
+    db: Session,
+    receipt_id: str,
+    session_id: int,
+    claim_owner: str,
+    dispatch_count: int,
+    guest_id: str,
+):
+    from factory.execution import store
+
+    _bound_observer_transaction(db)
+    agent = store._lock_session(db, session_id)
+    receipt = _locked_receipt(db, receipt_id)
+    if receipt is None:
+        return None
+    _check_identity(receipt, session_id, claim_owner, dispatch_count, guest_id)
+    return agent, receipt
+
+
 def read_active_result(
     receipt_id: str,
     session_id: int,
@@ -539,12 +568,7 @@ def validate_active_result(
     commits, settles admission or changes the original turn history.
     """
     # Lock after execution rows. Capture and retention never lock those rows.
-    db.execute(
-        update(AgentResultReceipt)
-        .where(AgentResultReceipt.id == receipt_id)
-        .values(created_at=AgentResultReceipt.created_at)
-    )
-    receipt = _receipt_metadata(db, receipt_id)
+    receipt = _locked_receipt(db, receipt_id)
     if receipt is None:
         raise ReceiptRejected(409, "receipt_unavailable")
     _check_identity(receipt, session_id, claim_owner, dispatch_count, guest_id)
@@ -587,20 +611,13 @@ def mark_response_observed(
     clear another guest or receipt's fence. Missing retained evidence returns
     False and never clears a fence.
     """
-    from factory.execution import store
-
     with Session(get_engine()) as db, db.begin():
-        _bound_observer_transaction(db)
-        agent = store._lock_session(db, session_id)
-        db.execute(
-            update(AgentResultReceipt)
-            .where(AgentResultReceipt.id == receipt_id)
-            .values(created_at=AgentResultReceipt.created_at)
+        locked = _locked_observer_receipt(
+            db, receipt_id, session_id, claim_owner, dispatch_count, guest_id
         )
-        receipt = _receipt_metadata(db, receipt_id)
-        if receipt is None:
+        if locked is None:
             return False
-        _check_identity(receipt, session_id, claim_owner, dispatch_count, guest_id)
+        agent, receipt = locked
         if receipt["response_observed_at"] is None:
             db.execute(
                 update(AgentResultReceipt)
@@ -637,20 +654,13 @@ def mark_response_observer_released(
     local session, guest, receipt, turn, owner, and dispatch is released.
     Workflow and drainer sessions keep their existing cleanup ownership.
     """
-    from factory.execution import store
-
     with Session(get_engine()) as db, db.begin():
-        _bound_observer_transaction(db)
-        agent = store._lock_session(db, session_id)
-        db.execute(
-            update(AgentResultReceipt)
-            .where(AgentResultReceipt.id == receipt_id)
-            .values(created_at=AgentResultReceipt.created_at)
+        locked = _locked_observer_receipt(
+            db, receipt_id, session_id, claim_owner, dispatch_count, guest_id
         )
-        receipt = _receipt_metadata(db, receipt_id)
-        if receipt is None:
+        if locked is None:
             return False
-        _check_identity(receipt, session_id, claim_owner, dispatch_count, guest_id)
+        agent, receipt = locked
         if receipt["response_observer_released_at"] is None:
             db.execute(
                 update(AgentResultReceipt)
@@ -694,20 +704,13 @@ def release_unobserved_fence(
     here observed a response, and the reconciliation and lease owners read that
     stamp as evidence about the response, not about this release.
     """
-    from factory.execution import store
-
     with Session(get_engine()) as db, db.begin():
-        _bound_observer_transaction(db)
-        agent = store._lock_session(db, session_id)
-        db.execute(
-            update(AgentResultReceipt)
-            .where(AgentResultReceipt.id == receipt_id)
-            .values(created_at=AgentResultReceipt.created_at)
+        locked = _locked_observer_receipt(
+            db, receipt_id, session_id, claim_owner, dispatch_count, guest_id
         )
-        receipt = _receipt_metadata(db, receipt_id)
-        if receipt is None:
+        if locked is None:
             return False
-        _check_identity(receipt, session_id, claim_owner, dispatch_count, guest_id)
+        agent, receipt = locked
         if (
             receipt["received_at"] is None
             or receipt["response_observed_at"] is not None
@@ -765,12 +768,7 @@ def release_ownerless_fence_locked(db: Session, agent, receipt_id: str) -> bool:
         or agent.result_receipt_fence_id != receipt_id
     ):
         return False
-    db.execute(
-        update(AgentResultReceipt)
-        .where(AgentResultReceipt.id == receipt_id)
-        .values(created_at=AgentResultReceipt.created_at)
-    )
-    receipt = _receipt_metadata(db, receipt_id)
+    receipt = _locked_receipt(db, receipt_id)
     if receipt is not None and (
         receipt["session_id"] != agent.id
         or agent.local_session_id != receipt["local_session_id"]
@@ -809,12 +807,7 @@ def release_abandoned_fence_locked(db: Session, agent, receipt_id: str) -> bool:
         or agent.result_receipt_fence_id != receipt_id
     ):
         return False
-    db.execute(
-        update(AgentResultReceipt)
-        .where(AgentResultReceipt.id == receipt_id)
-        .values(created_at=AgentResultReceipt.created_at)
-    )
-    receipt = _receipt_metadata(db, receipt_id)
+    receipt = _locked_receipt(db, receipt_id)
     if receipt is not None and (
         receipt["session_id"] != agent.id
         or agent.local_session_id != receipt["local_session_id"]

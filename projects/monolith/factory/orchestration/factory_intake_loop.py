@@ -31,7 +31,6 @@ from factory.orchestration.factory_controls import (
 )
 from factory.orchestration.factory_intake import (
     INTAKE_ACTOR,
-    admission_eligible,
     ceiling_below_lanes,
     lane_of,
     open_lanes,

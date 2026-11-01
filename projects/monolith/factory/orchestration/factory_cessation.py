@@ -54,8 +54,7 @@ from factory.execution.api import (
 from factory.orchestration import factory_controls as controls
 from factory.orchestration import factory_supervision as supervisor
 from factory.orchestration import graph
-from factory.orchestration.factory_models import FactoryAudit, FactoryStart
-from factory.orchestration.models import SwarmNodeRun
+from factory.orchestration.factory_models import FactoryAudit
 from factory.orchestration.tracing import set_attributes, tracer
 
 ACTOR = "factory:active-cessation"
@@ -175,54 +174,19 @@ def _intent(records):
 def _locked_stranded(db, control, pin, session_id):
     """Lock the exact uncertain run, start and session identity.
 
-    The run and start checks mirror factory_supervision._locked_attempt, but
-    both ledgers must already read "uncertain": a reserved or dispatched
-    attempt is still owned by its node workflow, and this path never races
-    live work.
+    This shares factory_supervision's run and start lock, but both ledgers
+    must already read "uncertain": a reserved or dispatched attempt is still
+    owned by its node workflow, and this path never races live work.
     """
     if control.state == "disabled":
         raise ValueError("factory_disabled")
-    run = db.exec(
-        select(SwarmNodeRun)
-        .where(
-            SwarmNodeRun.task_id == pin["task_id"],
-            SwarmNodeRun.node_key == pin["node_key"],
-            SwarmNodeRun.attempt == pin["attempt"],
-        )
-        .execution_options(populate_existing=True)
-    ).one_or_none()
-    if (
-        run is None
-        or json.loads(run.pin_json or "null") != pin
-        or run.dispatch_key != pin["workflow_id"]
-        or run.session_id not in (None, session_id)
-        or run.status != "uncertain"
-        or db.exec(
-            select(SwarmNodeRun.id).where(
-                SwarmNodeRun.task_id == pin["task_id"],
-                SwarmNodeRun.node_key == pin["node_key"],
-                SwarmNodeRun.attempt > pin["attempt"],
-            )
-        ).first()
-        is not None
-    ):
-        raise ValueError("factory_run_changed")
-    start = db.exec(
-        select(FactoryStart)
-        .where(
-            FactoryStart.task_id == pin["task_id"],
-            FactoryStart.start_key == pin["workflow_id"],
-        )
-        .execution_options(populate_existing=True)
-    ).one_or_none()
-    if (
-        start is None
-        or start.status != "uncertain"
-        or start.session_id not in (None, session_id)
-        or start.model != pin["model"]
-        or start.max_cost_usd != pin["max_cost_usd"]
-    ):
-        raise ValueError("factory_start_changed")
+    run = supervisor._lock_pinned_run_and_start(
+        db,
+        pin,
+        session_id,
+        run_statuses=("uncertain",),
+        start_statuses=("uncertain",),
+    )
     return read_stranded_factory_attempt(db, pin, session_id), run
 
 
