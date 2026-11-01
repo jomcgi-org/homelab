@@ -60,7 +60,7 @@ grimoire.venv/bin/python projects/monolith/dev/grimoire/run.py --rehearse --join
 ```
 
 The opt-in flag enables links only in this disposable frontend and backend.
-The default table and its 29 session checks keep links disabled. Enrollment
+The default table and its 33 session checks keep links disabled. Enrollment
 stays disabled in both modes, and the launcher clears inherited provider token
 and flow settings. These checks use signed local identities and never enroll a
 real account.
@@ -149,6 +149,34 @@ The other item stays visible in the feed, journal and new pins. Original
 projections remain in the DM audit; player responses omit removed items.
 Inspect `grouped-reveal.png` and `grouped-reveal-retracted.png`.
 
+Four checks cover combat, handouts, inventory and player search. The DM orders
+Elowen, Bram and a hidden monster, sorts by initiative and advances turns. Only
+the active player sees the turn banner. Both players see `???` for the monster,
+and its label never reaches their pages or state payloads. Each player's order
+carries only their own character id. The DM then ends the encounter. The DM
+sends a text handout to the table and a private one to Elowen. Bram never
+receives the private one; Elowen pins it to her notes. Give item turns the table
+handout into a party-pool item that both players see in the Inventory tab. A
+hidden party item and its id stay out of player pages, item lists, change
+history and state. Those views must still carry the public item, so a failed or
+empty response cannot pass. Each of these player phone views must fit without
+sideways scrolling.
+
+The launcher points `EMBEDDING_URL` at `/__local/v1/embeddings`, a deterministic
+word-hash stand-in for the voyage model. The real embedding client, knowledge
+search route and pgvector query run against it. Production embeds play state on
+the five-minute `grimoire-embed-play` schedule; the rehearsal runs that job
+through `POST /__local/embed-play`. Before that run, the DM grants Bram full
+knowledge of Harbourmaster Ilsa. Bram's search for Mara returns his partial
+reveal, and his search for Ilsa's secret finds it. The DM then retracts the Ilsa
+grant; with no further embedder run, the secret is gone from his search response
+and page. A DM-only narration canary and Elowen's private handout never appear
+in his results. The DM and Elowen searches return their own canaries as positive
+controls. Vector search has no score threshold, so a canary query still returns
+the nearest visible hits. Inspect
+`dm-initiative.png`, `bram-your-turn.png`, `elowen-handouts.png`,
+`dm-inventory.png`, `bram-inventory.png` and `bram-knowledge-search.png`.
+
 The Notes tab supports private and party notes, markdown, editing, deletion,
 pinning, and explicit per-note DM sharing. Feed events can be pinned as private
 notes using only their visible projection, with a link back to the source event.
@@ -177,10 +205,11 @@ while confirming players cannot open the matrix.
 
 The launcher serves its own ephemeral JWKS and signs local ID tokens. The
 normal backend signature, issuer, audience and campaign checks still run.
-These identity endpoints live only in this development entrypoint, outside the
-production source globs. Local runs require no model, Authentik or cluster
-credentials. Fixtures use model schema creation; production migration and real
-OIDC enrollment checks remain separate from this simulated rehearsal.
+These identity and embedding endpoints live only in this development
+entrypoint, outside the production source globs. Local runs require no model,
+Authentik or cluster credentials. Fixtures use model schema creation;
+production migration and real OIDC enrollment checks remain separate from this
+simulated rehearsal.
 
 A reviewed local snapshot is included in [evidence/report.json](evidence/report.json),
 with provenance and screenshot checks in [evidence/review.json](evidence/review.json).

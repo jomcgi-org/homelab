@@ -109,10 +109,14 @@ GATE_PROMPT = (
     "the would-be pause artifact so the server can continue it. Use kind "
     "`parameter` (`reversible`, concrete `value`) for a missing name, count, "
     "threshold or similar default. Use `live_validation` (`reversible`) with "
-    "a repository-only default-off or staged `scope` and `live_checks` when "
-    "repository work can proceed but operational acceptance remains this "
-    "runner cannot perform; carry it on ordinary plan and add_node decisions "
-    "too. Use `delivery_target` to adopt an existing open PR for this issue, "
+    "a repository-only default-off or staged `scope` when repository work can "
+    "proceed but operational acceptance remains. Each `live_checks` entry is "
+    "one check the factory can run after rollout and settle within 72 hours: "
+    "a verify_deployment result, a status or audit read, a log query. Never a "
+    "multi-day observation, a backlog triage or a person's judgement; the "
+    "smallest live check is a verified rollout of the delivered revision. "
+    "Carry it on ordinary plan and add_node decisions too. "
+    "Use `delivery_target` to adopt an existing open PR for this issue, "
     "and `repository_delivered` when the repository scope is already merged "
     "and only live checks remain. Classify real spending, production "
     "deletion or external-account effects as such. Every gate declares "
@@ -167,9 +171,35 @@ def guidance(task: dict) -> str:
     return "\n".join(parts)
 
 
+_SCOPE_TAILS = (
+    "Operational acceptance remains on the issue; do not close it",
+    "Operational acceptance remains on the issue",
+    "Deliver repository changes default-off or staged",
+)
+
+
+def _scope_sentence(scope: str) -> str:
+    """The planner's scope without the server's own suffix echoed back into it.
+
+    Planners copy the previous contract from the issue, suffix included, so
+    the rendered line read "...do not close it.. Deliver repository changes
+    default-off or staged. Operational acceptance remains on the issue; do
+    not close it." twice over.
+    """
+    text = scope.strip()
+    while True:
+        text = text.rstrip(" .")
+        for tail in _SCOPE_TAILS:
+            if text.endswith(tail):
+                text = text[: -len(tail)]
+                break
+        else:
+            return text
+
+
 def rescope_text(gate: dict) -> str:
     return (
-        f"Conductor rescope: {gate['scope']}. Deliver repository changes default-off "
+        f"Conductor rescope: {_scope_sentence(gate['scope'])}. Deliver repository changes default-off "
         "or staged. Operational acceptance remains on the issue; do not close it.\n"
         + "\n".join(f"- [ ] {check}" for check in gate["live_checks"])
     )

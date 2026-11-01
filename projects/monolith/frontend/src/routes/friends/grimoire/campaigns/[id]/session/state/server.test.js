@@ -223,6 +223,31 @@ describe("inventory proxy", () => {
   });
 });
 
+describe("knowledge search proxy", () => {
+  const base = `http://backend.test/api/grimoire/campaigns/${campaignId}/entities`;
+
+  it.each([
+    ["q=Mar", `${base}?q=Mar&limit=30`],
+    ["q=Mar&type=npc", `${base}?q=Mar&limit=30&type=npc`],
+    ["q=Mar&type=location", `${base}?q=Mar&limit=30`],
+    [
+      `q=Mar&notGrantedTo=${pcA}`,
+      `${base}?q=Mar&limit=30&not_granted_to=${pcA}`,
+    ],
+  ])("searches %s with a small page", async (query, path) => {
+    const fetch = vi.fn(async () => new Response('{"items":[]}'));
+    const response = await GET({
+      fetch,
+      cookies: { get: () => "token" },
+      params: { id: campaignId },
+      url: new URL(`https://friends.jomcgi.dev/state?${query}`),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([path]);
+  });
+});
+
 describe("narration audience payload", () => {
   const eventsPath = `http://backend.test/api/grimoire/campaigns/${campaignId}/sessions/${sessionId}/events`;
 
@@ -622,5 +647,60 @@ describe("initiative operations", () => {
     const { result, fetch } = await call(input);
     expect(result.status).toBe(400);
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+// The session page renews the sign-in on a 401, so only an authentication
+// failure may use it. A membership denial stays an ordinary error.
+describe("sign-in status", () => {
+  const backend = (status) =>
+    vi.fn(
+      async () =>
+        new Response(JSON.stringify({ detail: `backend ${status}` }), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+
+  const read = (fetch, token) =>
+    GET({
+      fetch,
+      cookies: { get: () => token },
+      params: { id: campaignId },
+      url: new URL("https://friends.jomcgi.dev/state?inventory=items"),
+    });
+
+  const write = (fetch, token) =>
+    POST({
+      fetch,
+      cookies: { get: () => token },
+      params: { id: campaignId },
+      request: new Request("https://friends.jomcgi.dev/state", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId, operation: "roll", formula: "d20" }),
+      }),
+    });
+
+  it.each([
+    ["read", read],
+    ["write", write],
+  ])("answers a %s without a token with 401", async (_, call) => {
+    const fetch = backend(200);
+    const response = await call(fetch, undefined);
+    expect(response.status).toBe(401);
+    expect((await response.json()).error).toContain("session has expired");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["read", read, 401, 401],
+    ["write", write, 401, 401],
+    ["read", read, 403, 400],
+    ["write", write, 403, 400],
+  ])("maps a %s rejected with %i to %i", async (_, call, upstream, status) => {
+    const response = await call(backend(upstream), "token");
+    expect(response.status).toBe(status);
+    expect((await response.json()).error).toBe(`backend ${upstream}`);
   });
 });

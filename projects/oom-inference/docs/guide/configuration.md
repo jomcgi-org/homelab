@@ -73,10 +73,10 @@ When to change them:
 
 ## Context length
 
-| Flag              | Default     | What it does                                                                                                                                                           |
-| ----------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--max-context`   | `32768`     | Longest sequence (prompt plus output) the KV cache is sized for. Longer means more KV memory and more prefix checkpoints in host memory. Tested up to about 95k tokens |
-| `--prefill-chunk` | the model's | Prompt tokens per prefill chunk; bounds prefill activation memory                                                                                                      |
+| Flag              | Default     | What it does                                                                                                                                                                                         |
+| ----------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--max-context`   | `32768`     | Longest sequence (prompt plus output) the KV cache is sized for. Longer means more KV memory and more prefix checkpoints in host memory. Tested up to 262,144 tokens (a 255k-token prompt on a 4090) |
+| `--prefill-chunk` | the model's | Prompt tokens per prefill chunk; bounds prefill activation memory                                                                                                                                    |
 
 ## Concurrent requests
 

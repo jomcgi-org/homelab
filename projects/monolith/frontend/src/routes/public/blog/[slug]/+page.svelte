@@ -1,7 +1,7 @@
 <script>
   import { landingResults } from "$lib/public/posts/landing-results.js";
-  import Interactive from "$lib/public/posts/ix/Interactive.svelte";
-  import { splitInteractive } from "$lib/public/posts/ix/split.js";
+  import { figures } from "$lib/public/posts/ix/index.js";
+  import { splitFigures } from "$lib/public/posts/ix/split.js";
   import { replaceState } from "$app/navigation";
   import { page } from "$app/state";
   import { Seo } from "$lib/public/components";
@@ -353,9 +353,12 @@
             replayBoundary >= 0}
           {#if !hasLanding || !section.startsWith('<h2 id="inference-demo"')}
             <section class="edition post-body prose">
-              {#each splitInteractive(showReplay ? section.slice(0, replayBoundary) : section) as part}
-                {#if part.ix}
-                  <Interactive name={part.ix} fallback={part.fallback} />
+              {#each splitFigures(showReplay ? section.slice(0, replayBoundary) : section) as part}
+                {@const Figure = part.ix && figures[part.ix]}
+                {#if Figure}
+                  <Figure />
+                {:else if part.ix}
+                  {@html part.fallback}
                 {:else}
                   {@html part.html}
                 {/if}

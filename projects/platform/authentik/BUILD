@@ -71,6 +71,13 @@ filegroup(
 )
 
 py_test(
+    name = "grimoire_refresh_test",
+    srcs = ["grimoire_refresh_test.py"],
+    data = ["blueprints/grimoire-auth.yaml"],
+    deps = ["@pip//pyyaml"],
+)
+
+py_test(
     name = "grimoire_join_enrollment_test",
     srcs = ["grimoire_join_enrollment_test.py"],
     data = [

@@ -265,6 +265,7 @@ defmodule Embervm.OpLog.Postgres do
       created_at BIGINT NOT NULL,
       stop_intent_json TEXT,
       stop_completion_json TEXT,
+      recovery_fence_json TEXT,
       invoke_started_at BIGINT,
       last_invoke_at BIGINT,
       expires_at BIGINT,
@@ -296,6 +297,7 @@ defmodule Embervm.OpLog.Postgres do
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS inflight_dispatch_id TEXT",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS stop_intent_json TEXT",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS stop_completion_json TEXT",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS recovery_fence_json TEXT",
     "UPDATE sessions SET invoke_started_at=last_invoke_at WHERE invoke_started_at IS NULL AND last_invoke_at IS NOT NULL",
     """
     CREATE UNIQUE INDEX IF NOT EXISTS sessions_idem_idx
@@ -484,6 +486,28 @@ defmodule Embervm.OpLog.Postgres do
   @impl Embervm.OpLog
   def session_cessation_evidence(server, session_id, expected, principal) do
     Embervm.OpLog.safe_server_call(server, {:session_cessation_evidence, session_id, expected, principal}, @double_query_call_timeout_ms)
+  end
+
+  @impl Embervm.OpLog
+  def session_recovery_fence(server, session_id, request, principal, now) do
+    case Embervm.OpLog.safe_server_call(server, {:session_recovery_fence, session_id, request, principal, now}, @double_query_call_timeout_ms) do
+      {:ok, _} = result -> result
+      {:error, _, _} = result -> result
+      _ -> {:error, :recovery_store_unavailable, %{}}
+    end
+  catch
+    :exit, _ -> {:error, :recovery_store_unavailable, %{}}
+  end
+
+  @impl Embervm.OpLog
+  def session_restore_allowed(server, lineage) do
+    case Embervm.OpLog.safe_server_call(server, {:session_restore_allowed, lineage}, @single_query_call_timeout_ms) do
+      :ok -> :ok
+      {:error, reason} = result when reason in [:recovery_fenced, :unknown_lineage] -> result
+      _ -> {:error, :recovery_store_unavailable}
+    end
+  catch
+    :exit, _ -> {:error, :recovery_store_unavailable}
   end
 
   @impl Embervm.OpLog
@@ -730,6 +754,54 @@ defmodule Embervm.OpLog.Postgres do
     end)
   end
 
+  def handle_call({:session_recovery_fence, id, request, principal, now}, _from, state) do
+    reply_connection_call(state, :session_recovery_fence, fn ->
+      case state.transaction_fun.(state.conn, fn conn ->
+        query = fn sql, params ->
+          case state.query_fun.(conn, sql, params) do
+            {:ok, %Postgrex.Result{rows: rows}} -> {:ok, rows}
+            error -> error
+          end
+        end
+        access = if request["operation"] == "apply", do: "READ WRITE", else: "READ ONLY"
+        append = fn
+          %Op{kind: :session_recovery_fenced} = op ->
+            with {:ok, seq} <- insert_op(conn, op),
+                 :ok <- project(conn, op, seq) do
+              {:ok, seq}
+            else
+              _ -> Postgrex.rollback(conn, {:error, :recovery_store_unavailable, %{}})
+            end
+          _ -> Postgrex.rollback(conn, {:error, :recovery_store_unavailable, %{}})
+        end
+        result = with {:ok, _} <- query.("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, #{access}", []) do
+          Embervm.SessionRecoveryFence.run(query, :postgres, &decode_payload/1, id, request, principal, now, append)
+        end
+        case result do
+          {:ok, _} = ok -> ok
+          {:error, _, _} = error -> Postgrex.rollback(conn, error)
+          _ -> Postgrex.rollback(conn, {:error, :recovery_store_unavailable, %{}})
+        end
+      end) do
+        {:ok, result} -> result
+        {:error, {:error, _, _} = error} -> error
+        _ -> {:error, :recovery_store_unavailable, %{}}
+      end
+    end)
+  end
+
+  def handle_call({:session_restore_allowed, lineage}, _from, state) do
+    reply_connection_call(state, :session_restore_allowed, fn ->
+      sql = "SELECT COUNT(*), COUNT(recovery_fence_json) FROM sessions WHERE COALESCE(lineage_id, session_id) = $1"
+      case state.query_fun.(state.conn, sql, [lineage]) do
+        {:ok, %Postgrex.Result{rows: [[0, 0]]}} -> {:error, :unknown_lineage}
+        {:ok, %Postgrex.Result{rows: [[count, fenced]]}} when count > 0 and fenced > 0 -> {:error, :recovery_fenced}
+        {:ok, %Postgrex.Result{rows: [[count, 0]]}} when count > 0 -> :ok
+        _ -> {:error, :recovery_store_unavailable}
+      end
+    end)
+  end
+
   def handle_call(:load_tasks, _from, state) do
     reply_connection_call(state, :load_tasks, fn ->
       do_load_tasks(state.conn, state.query_fun)
@@ -947,6 +1019,7 @@ defmodule Embervm.OpLog.Postgres do
     :residency_changed,
     :session_created,
     :session_invoke_started,
+    :session_recovery_fenced,
     :session_invoked,
     :session_brick_gone,
     :session_banked,
@@ -1121,6 +1194,11 @@ defmodule Embervm.OpLog.Postgres do
   defp project(conn, %Op{kind: :residency_changed} = op, _seq) do
     project_residency(conn, op.payload[:residency_intent])
   end
+
+  # Recovery seals only future restore authority. The old lifecycle and its
+  # invocation/accounting timestamps remain immutable.
+  defp project(conn, %Op{kind: :session_recovery_fenced} = op, _seq),
+    do: project_recovery_fence(conn, op)
 
   defp project(conn, %Op{kind: :session_created} = op, _seq) do
     payload = op.payload
@@ -2223,6 +2301,33 @@ defmodule Embervm.OpLog.Postgres do
     }
   end
 
+  defp project_recovery_fence(conn, op) do
+    fence = op.payload[:recovery_fence]
+    if is_map(fence) and fence["schema"] == 1 and fence["session_id"] == op.session_id and
+         fence["principal"] == op.principal and fence["workload"] == op.workload and
+         fence["lineage_id"] == op.session_id and fence["generation"] == 0 and
+         fence["terminal_reason"] in ["idle_ttl", "node_gone"] and
+         Enum.all?(["session_id", "principal", "workload", "dispatch_id", "request_key",
+           "reason", "preview_sha256", "evidence_sha256"], &(is_binary(fence[&1]) and fence[&1] != "")) do
+      params = Enum.map(["session_id", "lineage_id", "principal", "workload", "generation",
+        "invoke_started_at", "updated_at", "dispatch_id", "terminal_reason"], &fence[&1])
+      case Postgrex.query(conn, "SELECT recovery_fence_json FROM sessions WHERE session_id=$1 AND COALESCE(lineage_id, session_id)=$2 AND principal=$3 AND workload=$4 AND generation=$5 AND invoke_started_at=$6 AND updated_at=$7 AND inflight_dispatch_id=$8 AND terminal_reason=$9 AND state='evicted' FOR UPDATE", params) do
+          {:ok, %Postgrex.Result{rows: [[nil]]}} ->
+            case exec_changes(conn, "UPDATE sessions SET recovery_fence_json=$10 WHERE session_id=$1 AND COALESCE(lineage_id, session_id)=$2 AND principal=$3 AND workload=$4 AND generation=$5 AND invoke_started_at=$6 AND updated_at=$7 AND inflight_dispatch_id=$8 AND terminal_reason=$9 AND state='evicted' AND recovery_fence_json IS NULL", params ++ [Jason.encode!(fence)]) do
+              {:ok, 1} -> :ok
+              _ -> {:error, :recovery_fence_identity_mismatch}
+            end
+          {:ok, %Postgrex.Result{rows: [[existing]]}} ->
+            if Jason.decode!(existing) == fence, do: :ok, else: {:error, :recovery_fence_identity_mismatch}
+          _ -> {:error, :recovery_fence_identity_mismatch}
+        end
+    else
+      {:error, :recovery_fence_identity_mismatch}
+    end
+  rescue
+    _ -> {:error, :recovery_fence_identity_mismatch}
+  end
+
   defp encode_turn_interruption(nil), do: nil
   defp encode_turn_interruption(value), do: Embervm.SessionStopProof.encode(value)
 
@@ -2232,7 +2337,7 @@ defmodule Embervm.OpLog.Postgres do
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
            token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
            COALESCE(lineage_id, session_id), idempotency_key, stop_intent_json, stop_completion_json,
-           turn_seq, interrupted_turn_json, inflight_dispatch_id
+           turn_seq, interrupted_turn_json, inflight_dispatch_id, recovery_fence_json
     FROM sessions
     """
 
@@ -2269,7 +2374,8 @@ defmodule Embervm.OpLog.Postgres do
           stop_completion_json,
           turn_seq,
           interrupted_turn_json,
-          inflight_dispatch_id
+          inflight_dispatch_id,
+          recovery_fence_json
         ]) do
     %{
       session_id: session_id,
@@ -2298,7 +2404,8 @@ defmodule Embervm.OpLog.Postgres do
       stop_completion: Embervm.SessionStopProof.decode(stop_completion_json),
       turn_seq: turn_seq,
       interrupted_turn: Embervm.SessionStopProof.decode(interrupted_turn_json),
-      inflight_dispatch_id: inflight_dispatch_id
+      inflight_dispatch_id: inflight_dispatch_id,
+      recovery_fence: Embervm.SessionStopProof.decode(recovery_fence_json)
     }
   end
 

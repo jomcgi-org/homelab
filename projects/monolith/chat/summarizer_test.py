@@ -75,6 +75,11 @@ class TestGenerateSummaries:
         assert summary.summary == "Alice deployed the app successfully."
         assert summary.last_message_id == 2
 
+        prompt = mock_llm.await_args.args[0]
+        assert "Alice" in prompt
+        assert "I deployed the app" in prompt
+        assert "It went smoothly" in prompt
+
     @pytest.mark.asyncio
     async def test_updates_existing_summary(self, session):
         """Subsequent runs update the existing summary with new messages."""
@@ -92,7 +97,7 @@ class TestGenerateSummaries:
         )
         session.commit()
 
-        _make_message(session, "ch1", "u1", "Alice", "New message", 2)
+        _make_message(session, "ch1", "u1", "Alice", "Brand new infrastructure idea", 2)
 
         mock_llm = AsyncMock(return_value="Alice said old and new things.")
 
@@ -116,6 +121,10 @@ class TestGenerateSummaries:
             ).first()
             is None
         )
+
+        prompt = mock_llm.await_args.args[0]
+        assert "Alice said old things." in prompt
+        assert "Brand new infrastructure idea" in prompt
 
     @pytest.mark.asyncio
     async def test_skips_when_no_new_messages(self, session):

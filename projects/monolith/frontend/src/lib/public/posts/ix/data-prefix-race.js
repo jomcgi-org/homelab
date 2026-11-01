@@ -23,9 +23,3 @@ export const runs = [
 ];
 
 export const REUSED = "Both reuse 32,531 of about 32,549 prompt tokens";
-export const SPEED = 4;
-
-// Progress of a run at clock time t (seconds of real engine time), 0..1.
-export function progress(run, t) {
-  return Math.max(0, Math.min(1, t / run.seconds));
-}

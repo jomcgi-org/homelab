@@ -68,7 +68,7 @@ class BrowserEvidenceTest(unittest.TestCase):
             expected_producer=self.producer,
         )
 
-    def test_matching_capture_and_export(self):
+    def test_matching_completed_export(self):
         validate_export(self.handoff, self.export)
         self.assertEqual(self.handoff.provenance, self.provenance)
         self.assertEqual(self.handoff.producer.turn, 2)

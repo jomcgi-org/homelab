@@ -41,14 +41,20 @@ An improvement issue needs only the evidence necessary to judge it:
 
 - Goal and observed problem, with a current source or reproducible baseline.
 - Hypothesis and smallest useful change, including deletion when appropriate.
-- Success measure and a bounded evaluation window or sample.
+- Success measure over the 72 hours before and after the verified rollout,
+  with its source named. A different window states its reason on the issue.
 - Regression checks and a rollback or stop condition.
 
 Use normal independent review, required checks and authorized landing. The
 delivery owner records the result against the baseline and the live revision
-when deployment matters. If measurement needs more time, leave a linked
-acceptance item with its owner and observation trigger. A merged PR establishes
-delivery, not proof that the hypothesis worked.
+when deployment matters. A merged PR establishes delivery. The window verdict
+records whether the measure moved as predicted, with confounders named beside
+it.
+
+A verdict is final once its window ends and its attempts settle: accepted,
+regressed or inconclusive. Record an inconclusive window once; nobody extends
+or restarts it by hand. The retro optimizer releases its selection on a final
+verdict (`docs/agents/drain-queue.md`).
 
 Retain improvements supported by evidence. Revert or revise changes that fail
 their condition within existing authority. Repeated failures need a different

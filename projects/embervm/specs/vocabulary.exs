@@ -142,6 +142,11 @@
         # ADR 006 protocol 2). Invoke lifecycle edges remain outside the focused
         # bank/relight and lineage-handoff protocols.
         ~w(session_invoke_started session_invoked)a ++
+        # Explicit historical-dispatch recovery adds a durable restore-admission
+        # fence without changing session lifecycle or generation. Operator proof,
+        # CAS/replay and the fence projection are covered by recovery regression
+        # tests, not the focused bank/relight or lineage-handoff TLA protocols.
+        ~w(session_recovery_fenced)a ++
         # Durable admission-only session demand, outside the VM adoption and
         # bank/relight generation protocols. admission.tla maps its physical
         # claims to the existing reserved-memory invariant; no prompt is queued.

@@ -1,132 +1,108 @@
 <script>
-  import { onMount } from "svelte";
   import Fig from "./Fig.svelte";
   import {
     ARRIVE_MS,
     PIECE_RECORDS,
+    STAGE_MS,
+    STAGE_RECORDS,
     idleBefore,
     results,
     simulate,
   } from "./data-copy-queue.js";
 
-  let mode = $state("all");
-  const run = $derived(simulate(mode));
   const SPAN = 50; // ms shown
-  const X0 = 74;
-  // Drawn at 1:1 pixels: the viewBox follows the rendered width.
-  let width = $state(360);
+  const X0 = 96;
+  // Drawn at 1:1 pixels once the page measures it; 640 until then.
+  let width = $state(640);
   const VBW = $derived(Math.max(300, Math.round(width)));
   const W = $derived(VBW - X0 - 8);
   const x = (ms) => X0 + (Math.min(ms, SPAN) / SPAN) * W;
+  const waitLabel = (wait) =>
+    wait >= 1 ? `waits ${Math.round(wait)} ms` : "waits under 1 ms";
 
-  // Reveal the timeline left to right on each switch, unless motion is off.
-  let shown = $state(SPAN);
-  let reduced = true;
-  let frame;
-  onMount(() => {
-    reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-    return () => cancelAnimationFrame(frame);
+  // The two ways to submit a layer's stage-ahead, one above the other.
+  const panels = [
+    { mode: "all", title: "All at once", top: 18 },
+    { mode: "trickle", title: `${PIECE_RECORDS} at a time`, top: 118 },
+  ].map((p) => {
+    const run = simulate(p.mode);
+    return { ...p, run, fetch: run.blocks.find((b) => b.kind === "fetch") };
   });
-  function choose(next) {
-    mode = next;
-    cancelAnimationFrame(frame);
-    if (reduced) return;
-    const t0 = performance.now();
-    shown = 0;
-    const step = (now) => {
-      shown = Math.min(SPAN, ((now - t0) / 1800) * SPAN);
-      if (shown < SPAN) frame = requestAnimationFrame(step);
-    };
-    frame = requestAnimationFrame(step);
-  }
-  const fetch = $derived(run.blocks.find((b) => b.kind === "fetch"));
-  const clipId = `cq-${Math.random().toString(36).slice(2)}`;
-  const waitLabel = $derived(
-    run.wait >= 1 ? `${Math.round(run.wait)} ms` : "under 1 ms",
-  );
 </script>
 
 <Fig title="Prefetch in small batches so urgent copies don't wait">
-  {#snippet controls()}
-    <div class="seg" role="group" aria-label="How the stage-ahead is submitted">
-      <button
-        type="button"
-        aria-pressed={mode === "all"}
-        onclick={() => choose("all")}>All at once</button
-      >
-      <button
-        type="button"
-        aria-pressed={mode === "trickle"}
-        onclick={() => choose("trickle")}>{PIECE_RECORDS} at a time</button
-      >
-    </div>
-  {/snippet}
-
   <div class="plot" bind:clientWidth={width}>
     <svg
-      viewBox={`0 0 ${VBW} 132`}
+      viewBox={`0 0 ${VBW} 232`}
       role="img"
-      aria-label={`Copy engine timeline: the current layer's copies wait ${waitLabel}.`}
+      aria-label={panels
+        .map((p) => `${p.title}: this layer's copies ${waitLabel(p.run.wait)}`)
+        .join("; ")}
     >
-      <defs>
-        <clipPath id={clipId}
-          ><rect x="0" y="0" width={x(shown)} height="132" /></clipPath
+      {#each panels as p}
+        <text x="0" y={p.top} class="title"
+          >{p.title}
+          <tspan class="wait">· this layer {waitLabel(p.run.wait)}</tspan></text
         >
-      </defs>
-      <text x="0" y="34" class="lane">copy engine</text>
-      <text x="0" y="82" class="lane">GPU</text>
-      <rect x={X0} y="20" width={W} height="22" class="track" />
-      <rect x={X0} y="68" width={W} height="22" class="track" />
-      <g clip-path={`url(#${clipId})`}>
-        {#each run.blocks as b}
+        <text x="0" y={p.top + 24} class="lane">copy engine</text>
+        <text x="0" y={p.top + 56} class="lane">GPU</text>
+        <rect x={X0} y={p.top + 10} width={W} height="20" class="track" />
+        {#each p.run.blocks as b}
           <rect
             x={x(b.start)}
-            y="20"
+            y={p.top + 10}
             width={Math.max(
-              0.6,
+              0.8,
               x(b.end) -
                 x(b.start) -
-                (b.kind === "stage" && mode === "trickle" ? 0.6 : 0),
+                (b.kind === "stage" && p.mode === "trickle" ? 0.8 : 0),
             )}
-            height="22"
+            height="20"
             class={b.kind}
           />
         {/each}
         <rect
           x={x(0)}
-          y="68"
+          y={p.top + 42}
           width={x(ARRIVE_MS) - x(0)}
-          height="22"
+          height="20"
           class="busy"
         />
         <rect
           x={x(ARRIVE_MS)}
-          y="68"
-          width={Math.max(0.8, x(fetch.end) - x(ARRIVE_MS))}
-          height="22"
+          y={p.top + 42}
+          width={Math.max(0.8, x(p.fetch.end) - x(ARRIVE_MS))}
+          height="20"
           class="idle"
         />
         <rect
-          x={x(fetch.end)}
-          y="68"
-          width={x(SPAN) - x(fetch.end)}
-          height="22"
+          x={x(p.fetch.end)}
+          y={p.top + 42}
+          width={x(SPAN) - x(p.fetch.end)}
+          height="20"
           class="busy"
         />
-      </g>
-      <line x1={x(ARRIVE_MS)} x2={x(ARRIVE_MS)} y1="12" y2="96" class="need" />
-      <text x={x(ARRIVE_MS) + 3} y="11" class="tick">needs its experts</text>
-      {#each [0, 10, 20, 30, 40, 50] as ms}
-        <text x={x(ms)} y="112" class="tick" text-anchor="middle">{ms}</text>
+        <line
+          x1={x(ARRIVE_MS)}
+          x2={x(ARRIVE_MS)}
+          y1={p.top + 6}
+          y2={p.top + 66}
+          class="need"
+        />
       {/each}
-      <text x={X0 + W} y="128" class="tick" text-anchor="end">ms</text>
+      {#each [0, 10, 20, 30, 40, 50] as ms}
+        <text x={x(ms)} y="212" class="tick" text-anchor="middle">{ms}</text>
+      {/each}
+      <text x={X0 + W} y="228" class="tick" text-anchor="end">ms</text>
     </svg>
   </div>
 
   <div class="key">
     <span class="k stage">next layer's stage-ahead</span>
     <span class="k fetch">copies this layer needs now</span>
+    <span class="k busy">GPU computing</span>
     <span class="k idle">GPU idle</span>
+    <span class="k need">this layer needs its experts</span>
   </div>
 
   <div class="results" aria-label="Measured, warm prefill">
@@ -141,6 +117,11 @@
       <span class="num">{idleBefore.idle} of {idleBefore.total} s</span>
     </div>
   </div>
+
+  {#snippet note()}
+    A layer's stage-ahead is about {STAGE_RECORDS} records, 1.2 GB and {STAGE_MS}
+    ms of copy-engine time. Timelines are schematic; prefill times are measured, warm.
+  {/snippet}
 </Fig>
 
 <style>
@@ -153,13 +134,22 @@
     height: auto;
     font-family: var(--font-code);
   }
+  .title {
+    fill: var(--ink);
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .wait {
+    fill: var(--ink-2);
+    font-weight: 400;
+  }
   .lane {
     fill: var(--ink-2);
-    font-size: 11px;
+    font-size: 12px;
   }
   .tick {
     fill: var(--ink-2);
-    font-size: 10px;
+    font-size: 11px;
   }
   .track {
     fill: var(--band);
@@ -203,8 +193,16 @@
   .k.fetch::before {
     background: var(--tone-hot);
   }
+  .k.busy::before {
+    background: var(--tone-gpu);
+  }
   .k.idle::before {
     background: var(--tone-disk);
+  }
+  .k.need::before {
+    width: 0;
+    height: 0.75rem;
+    border-left: 1px dashed var(--ink);
   }
   .results {
     display: grid;

@@ -142,6 +142,48 @@ def blocks(body: str) -> list[Block]:
     return result
 
 
+def strip(body: str) -> str:
+    """The issue text with every generated contract removed.
+
+    Unrecognized marker content is left in place: hashing the whole body is
+    the conservative reading when the boundaries are ambiguous.
+    """
+    if not re.search(r"<!--\s*/?factory-gate:", body):
+        return body
+    try:
+        found = blocks(body)
+    except ValueError:
+        return body
+    updated = body
+    for block in reversed(found):
+        updated = updated[: block.start] + updated[block.end :]
+    return updated
+
+
+def _rendered(replacement: str | None) -> Block | None:
+    """The one block a rendered replacement holds, or None when it is not one."""
+    if not replacement:
+        return None
+    try:
+        found = blocks(replacement)
+    except ValueError:
+        return None
+    return found[0] if len(found) == 1 else None
+
+
+def _carry_ticks(old_text: str, new_text: str) -> str:
+    """Tick every item in the new text that was ticked in the old one."""
+    ticked = {
+        line[6:]: line
+        for line in old_text.split("\n")
+        if line.startswith("- [x] ") or line.startswith("- [X] ")
+    }
+    return "\n".join(
+        ticked[line[6:]] if line.startswith("- [ ] ") and line[6:] in ticked else line
+        for line in new_text.split("\n")
+    )
+
+
 def rewrite(body: str, replacement: str | None = None) -> tuple[str, int]:
     """Collapse all generated contracts, preserving every byte outside them.
 
@@ -157,10 +199,14 @@ def rewrite(body: str, replacement: str | None = None) -> tuple[str, int]:
         return (body + "\n\n" + replacement if replacement else body), 0
     newest = found[-1]
     current = replacement or render(newest.task, newest.identity, newest.text)
-    unchecked = re.sub(r"(?m)^- \[[xX]\] ", "- [ ] ", newest.text)
-    if replacement == render(newest.task, newest.identity, unchecked):
-        # A retry of the same contract must retain human completion ticks.
-        current = render(newest.task, newest.identity, newest.text)
+    replaced = _rendered(replacement)
+    if replaced is not None and replaced.identity == newest.identity:
+        # A retry of the same contract, however its scope line is rendered
+        # now and whichever task writes it, must retain human completion ticks.
+        current = render(
+            replaced.task, newest.identity, _carry_ticks(newest.text, replaced.text)
+        )
+    updated = body
     updated = body
     for block in reversed(found):
         updated = (

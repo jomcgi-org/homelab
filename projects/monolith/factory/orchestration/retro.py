@@ -740,15 +740,25 @@ WHERE source = 'deployment-observation' AND scope = 'environment:homelab'
   AND extra->>'writeback_commit' = :writeback
 ORDER BY observed_at, note_id LIMIT 1
 """
-_OPTIMIZER_OBSERVATION_LIMIT = 5000
+# Distinct revisions deployed inside the window, not every poll of them: the
+# polls ran past 5000 in a 72-hour window and saturated the old row bound,
+# which held one experiment UNKNOWN for a week while the job explained the
+# saturation to itself daily.
+_OPTIMIZER_OBSERVATION_LIMIT = 500
+# Attempts created near the end of the window may still be running when it
+# ends. A task deadline is 12 hours plus a 2-hour backstop, so 24 hours lets
+# every one of them settle before unresolved attempts make a verdict final.
+_OPTIMIZER_SETTLE_HOURS = 24
 _OPTIMIZER_OBSERVATIONS = """
-SELECT note_id, observed_at, status, extra
+SELECT extra->>'deployed_revision' AS deployed_revision, count(*) AS polls,
+       min(observed_at) AS first_observed_at
 FROM knowledge.notes
 WHERE source = 'deployment-observation' AND scope = 'environment:homelab'
   AND verification_state = 'verified' AND deleted_at IS NULL
   AND observed_at >= :since AND observed_at < :as_of
   AND extra->>'app' = :app
-ORDER BY observed_at, note_id LIMIT :limit
+GROUP BY extra->>'deployed_revision'
+ORDER BY min(observed_at), extra->>'deployed_revision' LIMIT :limit
 """
 _OPTIMIZER_COUNTS = """
 WITH attempts AS (
@@ -854,7 +864,7 @@ def _load_optimizer(session, now) -> dict:
     context["observation_coverage"] = {
         "start": deployed.isoformat(),
         "end": end.isoformat(),
-        "rows_observed": len(observations),
+        "revisions_observed": len(observations),
         "limit": _OPTIMIZER_OBSERVATION_LIMIT,
         "complete": len(observations) <= _OPTIMIZER_OBSERVATION_LIMIT,
     }
@@ -871,12 +881,9 @@ def _load_optimizer(session, now) -> dict:
     }
     context["overlapping_revisions"] = sorted(
         {
-            row["extra"].get("deployed_revision")
+            row["deployed_revision"]
             for row in observations
-            if deployed
-            <= _utc_time(row["observed_at"])
-            < min(now, deployed + timedelta(hours=72))
-            and row["extra"].get("deployed_revision") not in (None, revision)
+            if row["deployed_revision"] not in (None, revision)
         }
     )
     for name, start, end in (
@@ -917,21 +924,29 @@ def optimizer_evidence(context: dict, now: datetime) -> dict:
             reason="Live rollout verifier has not confirmed sync and health",
         )
         return result
-    if context.get("overlapping_revisions"):
-        result["reason"] = (
-            "Other deployments overlap the observation; isolate or review attribution"
-        )
-        return result
     deployed = _utc_time(context["deployment"].get("observed_at"))
     if deployed is None or now < deployed + timedelta(hours=72):
         result.update(
             status="WAIT", reason="72h strictly post-deployment observation incomplete"
         )
         return result
+    # The window has ended, so a later run cannot add traffic to its cohort.
+    # Every verdict below is final except the settle WAIT for attempts still
+    # running; holding the selection on a question the window cannot answer
+    # kept the loop on one experiment for four weeks. Other deployments inside the window are named beside the
+    # verdict; on a repository that ships several times a day they would
+    # otherwise block every verdict.
+    result["confounders"] = {
+        "overlapping_revisions": list(context.get("overlapping_revisions") or [])
+    }
+
+    def inconclusive(reason: str) -> dict:
+        result.update(status="INCONCLUSIVE", reason=reason)
+        return result
+
     metric = (context.get("experiment") or {}).get("metric")
     if metric not in OPTIMIZER_METRICS:
-        result["reason"] = "Unknown experiment metric"
-        return result
+        return inconclusive("Unknown experiment metric")
     denominator = (
         "funding_attempts"
         if metric == "funding_execution_failure"
@@ -941,17 +956,20 @@ def optimizer_evidence(context: dict, now: datetime) -> dict:
     )
     baseline, post = context.get("baseline") or {}, context.get("post") or {}
     if not baseline.get(denominator) or not post.get(denominator):
-        result["reason"] = "No comparable traffic; zero denominator is UNKNOWN"
-        return result
+        return inconclusive("No comparable traffic; a zero denominator cannot answer")
     unknown_key = (
         "funding_unknown" if metric == "funding_execution_failure" else "unknown"
     )
     if baseline.get(unknown_key) or post.get(unknown_key):
-        result["reason"] = "Unresolved or unclassified attempts prevent acceptance"
-        return result
+        if now < deployed + timedelta(hours=72 + _OPTIMIZER_SETTLE_HOURS):
+            result.update(
+                status="WAIT",
+                reason="Attempts from the ended window are still settling",
+            )
+            return result
+        return inconclusive("Unresolved or unclassified attempts prevent a verdict")
     if metric not in baseline or metric not in post:
-        result["reason"] = "Target metric coverage is missing"
-        return result
+        return inconclusive("Target metric coverage is missing")
     before = baseline[metric] / baseline[denominator]
     after = post.get(metric, 0) / post[denominator]
     result["rates"] = {"baseline": before, "post": after, "denominator": denominator}
@@ -964,13 +982,17 @@ def optimizer_evidence(context: dict, now: datetime) -> dict:
         # Traffic sufficiency is an explicit experiment criterion, not a
         # hardcoded significance claim. Missing criterion holds the selection.
         minimum = (context.get("experiment") or {}).get("minimum_attempts")
-        if type(minimum) is not int or minimum < 1 or post[denominator] < minimum:
-            result["reason"] = "Missing or unmet explicit traffic criterion"
-        else:
-            result.update(
-                status="ACCEPTED",
-                reason="Observation criterion met; descriptive association only, no causal or mature-outcome claim",
+        if type(minimum) is not int or minimum < 1:
+            return inconclusive("Missing explicit traffic criterion")
+        if post[denominator] < minimum:
+            return inconclusive(
+                f"Traffic criterion unmet: {post[denominator]} of {minimum} "
+                f"{denominator} in the ended window"
             )
+        result.update(
+            status="ACCEPTED",
+            reason="Observation criterion met; descriptive association only, no causal or mature-outcome claim",
+        )
     return result
 
 
@@ -981,7 +1003,7 @@ def _optimizer(data, now):
     evidence.pop("observations", None)
     return [
         json.dumps(evidence, default=str, sort_keys=True)[:12000],
-        "Do not launch another experiment while status is WAIT or UNKNOWN. Costs distinguish settled observed cost from unknown reservation exposure. This section does not establish seven-day mature outcomes.",
+        "WAIT holds the current selection. ACCEPTED, REGRESSED and INCONCLUSIVE are final for this experiment: record the verdict once on the program issue, then this run may select the next experiment. UNKNOWN means evidence was unavailable this run; retry next run and file a fix when the same cause repeats. Post an observation comment only when the status or a counted figure changed since the last observation; an unchanged verdict is not new evidence. Name confounders beside the verdict, never as a reason to hold it. Costs distinguish settled observed cost from unknown reservation exposure. This section does not establish seven-day mature outcomes.",
     ]
 
 

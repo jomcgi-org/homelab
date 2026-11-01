@@ -4498,6 +4498,68 @@ defmodule Embervm.SessionManagerTest do
     refute_receive {:pool_release, "vm-late-restore"}, 30
   end
 
+  test "an exact recovery fence excludes restore before and after projection pruning" do
+    {:ok, clock} = Agent.start_link(fn -> 100 end)
+    ctx = start_stack(store_clock: fn -> Agent.get(clock, & &1) end, prime_fun: fake_prime_fun("vm-recovery"))
+    original = create_persistence_session(ctx)
+    id = original.session_id
+    Agent.update(clock, fn _ -> 200 end)
+    assert {:ok, _} = SessionStore.record_invoke_started(ctx.store, id, "dispatch-recovery")
+    Agent.update(clock, fn _ -> 300 end)
+    assert {:ok, _} = SessionStore.record_invoke(ctx.store, id, nil,
+      %{"terminal_reason" => "interrupted_for_drain", "dispatch_id" => "dispatch-recovery", "session_id" => "cli-original", "transcript_path" => "/private/transcript"})
+    Agent.update(clock, fn _ -> 400 end)
+    park_session(ctx, original)
+    Agent.update(clock, fn _ -> 600 end)
+    assert {:ok, _} = SessionStore.transition(ctx.store, id, :evict, :session_evicted, %{reason: :node_gone}, %{})
+    request = %{"operation" => "preview", "generation" => 0, "invoke_started_at" => 200, "updated_at" => 600,
+      "dispatch_id" => "dispatch-recovery", "reason" => "factory_unknown_dispatch_recovery", "request_key" => "exact-recovery"}
+    assert {:ok, preview} = SessionManager.session_recovery_fence(ctx.mgr, id, request, "p1")
+    apply = Map.merge(request, %{"operation" => "apply", "expected_preview_sha256" => preview.preview_sha256})
+    assert {:ok, %{fenced: true}} = SessionManager.session_recovery_fence(ctx.mgr, id, apply, "p1")
+    assert {:error, {:denied, :lineage_recovery_fenced}} = SessionManager.create(ctx.mgr, "wl-persist", "p1", id)
+    assert {:ok, _} = SQLite.compact(ctx.op_log, 600 + 8 * 86_400_000)
+    assert {:ok, _} = SessionStore.get(ctx.store, id)
+    assert {:error, {:denied, :unknown_lineage}} = SessionManager.create(ctx.mgr, "wl-persist", "p1", id)
+  end
+
+  test "a restoring create admitted after preview prevents the recovery fence commit" do
+    parent = self()
+    {:ok, clock} = Agent.start_link(fn -> 100 end)
+    {:ok, primes} = Agent.start_link(fn -> 0 end)
+    ctx = start_stack(store_clock: fn -> Agent.get(clock, & &1) end,
+      prime_fun: fn _channel, _request ->
+        case Agent.get_and_update(primes, fn count -> {count, count + 1} end) do
+          0 -> {:ok, %PrimeResponse{vm_id: "vm-original"}}
+          _ ->
+            send(parent, {:restore_prime, self()})
+            receive do :finish -> {:ok, %PrimeResponse{vm_id: "vm-successor"}} end
+        end
+      end)
+    original = create_persistence_session(ctx)
+    id = original.session_id
+    Agent.update(clock, fn _ -> 200 end)
+    assert {:ok, _} = SessionStore.record_invoke_started(ctx.store, id, "dispatch-recovery")
+    Agent.update(clock, fn _ -> 300 end)
+    assert {:ok, _} = SessionStore.record_invoke(ctx.store, id, nil,
+      %{"terminal_reason" => "interrupted_for_drain", "dispatch_id" => "dispatch-recovery", "session_id" => "cli-original", "transcript_path" => "/private/transcript"})
+    Agent.update(clock, fn _ -> 400 end)
+    park_session(ctx, original)
+    Agent.update(clock, fn _ -> 600 end)
+    assert {:ok, _} = SessionStore.transition(ctx.store, id, :evict, :session_evicted, %{reason: :node_gone}, %{})
+    request = %{"operation" => "preview", "generation" => 0, "invoke_started_at" => 200, "updated_at" => 600,
+      "dispatch_id" => "dispatch-recovery", "reason" => "factory_unknown_dispatch_recovery", "request_key" => "exact-recovery"}
+    assert {:ok, preview} = SessionManager.session_recovery_fence(ctx.mgr, id, request, "p1")
+    caller = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-persist", "p1", id) end)
+    assert_receive {:restore_prime, worker}
+    apply = Map.merge(request, %{"operation" => "apply", "expected_preview_sha256" => preview.preview_sha256})
+    assert {:error, :recovery_pending_work, _} = SessionManager.session_recovery_fence(ctx.mgr, id, apply, "p1")
+    assert {:ok, %{recovery_fence: nil}} = SessionStore.get(ctx.store, id)
+    send(worker, :finish)
+    assert {:ok, _} = Task.await(caller)
+    assert {:error, :historical_successor, _} = SessionManager.session_recovery_fence(ctx.mgr, id, apply, "p1")
+  end
+
   test "a restoring create is allowed once no restore of that lineage is in flight" do
     ctx = start_stack(prime_fun: fake_prime_fun("vm-inflight-cleared"), channel_fun: fake_channel_fun())
     original = create_persistence_session(ctx)

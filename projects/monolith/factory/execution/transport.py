@@ -1425,6 +1425,32 @@ class EmberVmShimTransport:
         except httpx.TransportError as exc:
             raise EmberVMTransportError(str(exc)) from exc
 
+    async def session_recovery_fence(
+        self, ember_session_id: str, payload: dict
+    ) -> dict:
+        """Preview or durably fence restore of one journal-proven ceased lineage.
+
+        Uses existing management authentication, never a session token. The CP
+        owns identity, history, successor checks and CAS/idempotency. An apply
+        transport error can follow a committed fence and must remain uncertain.
+        """
+        if not EMBERVM_URL or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,128}", ember_session_id
+        ):
+            raise EmberVMTransportError("recovery fence unavailable")
+        timeout = httpx.Timeout(55, connect=SUBMIT_CONNECT_TIMEOUT)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    f"{EMBERVM_URL}/v1/sessions/{ember_session_id}/recovery-fence",
+                    headers=auth_headers(),
+                    json=payload,
+                )
+                response.raise_for_status()
+                return response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise EmberVMTransportError("recovery fence unavailable") from exc
+
     async def get_session_cessation_evidence(
         self,
         ember_session_id: str,

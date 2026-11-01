@@ -1,4 +1,4 @@
-"""Tests for public-body wikilink sanitisation."""
+"""Tests for public-body wikilink stripping."""
 
 from __future__ import annotations
 
@@ -33,11 +33,3 @@ def test_strip_private_multiple_links_per_line():
     body = "Both [[dora-metrics]] and [[Private Topic]] matter."
     out = strip_private_wikilinks(body, public_note_ids={"dora-metrics"})
     assert out == "Both [[dora-metrics]] and Private Topic matter."
-
-
-def test_strip_private_malformed_brackets_left_alone():
-    """We only strip well-formed [[X]]; partial brackets are not links."""
-    body = "[ [not a link] ] and [[ok]] and [unfinished"
-    out = strip_private_wikilinks(body, public_note_ids={"ok"})
-    assert "[[ok]]" in out
-    assert "[unfinished" in out

@@ -6456,3 +6456,24 @@ def test_merge_control_validates_inherited_repo_landing(db, policy, landing_mode
                 controls.repos_map(json.loads(row.policy_json))["owner/repo"]["landing"]
                 == "merge_queue"
             )
+
+
+def test_issue_body_hash_ignores_the_factorys_own_gate_contracts():
+    from factory.orchestration import factory_gate_blocks as blocks
+
+    contract = (
+        "Conductor rescope: staged. Deliver repository changes default-off or "
+        "staged. Operational acceptance remains on the issue; do not close it.\n"
+        "- [ ] Verify the rollout"
+    )
+    prose = "Acceptance written by a person"
+    first = prose + "\n\n" + blocks.render("t-1", "a" * 20, contract)
+    rewritten = (
+        prose + "\n\n" + blocks.render("t-1", "b" * 20, contract + "\n- [ ] Second")
+    )
+    assert controls.issue_body_hash(prose) == controls.issue_body_hash(first)
+    assert controls.issue_body_hash(first) == controls.issue_body_hash(rewritten)
+    assert controls.issue_body_hash(first) != controls.issue_body_hash(
+        "Acceptance rewritten by a person\n\n"
+        + blocks.render("t-1", "a" * 20, contract)
+    )

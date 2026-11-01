@@ -63,12 +63,11 @@ export async function sessionState(
     ]);
     journal = { mine: sessionJournal(mine), party: sessionJournal(party) };
   }
+  // NPC names for the DM's speaker pickers ride on the voices view; the
+  // poll never pages the NPC corpus.
   const dmData =
     campaign.role === "dm"
-      ? {
-          members: await grimoireJson(fetch, cookies, `${base}/members`),
-          npcs: await campaignNpcs(fetch, cookies, base),
-        }
+      ? { members: await grimoireJson(fetch, cookies, `${base}/members`) }
       : {};
   return {
     campaign,
@@ -94,25 +93,6 @@ const journalSections = [
   "rolls",
   "open_threads",
 ];
-
-async function campaignNpcs(fetch, cookies, base) {
-  const npcs = [];
-  let cursor = null;
-  do {
-    const query = new URLSearchParams({ type: "npc", limit: "500" });
-    if (cursor) query.set("cursor", cursor);
-    const page = await grimoireJson(
-      fetch,
-      cookies,
-      `${base}/entities?${query}`,
-    );
-    npcs.push(
-      ...(page.items || []).filter((entity) => entity.entity_type === "npc"),
-    );
-    cursor = page.next_cursor;
-  } while (cursor);
-  return npcs;
-}
 
 function sessionJournal(view) {
   return {

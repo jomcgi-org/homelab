@@ -35,16 +35,17 @@ test("the recording's token counts match the server's", () => {
   expect(tokens).toBe(turn.usage.completion_tokens);
 });
 
-test("prefill scans the crate's files as pages", async () => {
+test("prefill fills the crate's files in place as pages", async () => {
   const view = await render();
-  const headings = [...view.querySelectorAll(".page-heading")].map(
-    (h) => h.textContent,
-  );
-  expect(headings).toContain("src/cache.rs");
-  expect(new Set(headings)).toEqual(
+  const pages = [...view.querySelectorAll(".document-pages li")];
+  expect(pages).toHaveLength(recording.document.pages);
+  const files = pages.map((page) => page.getAttribute("title"));
+  expect(files).toContain("src/cache.rs");
+  expect(new Set(files)).toEqual(
     new Set(recording.document.sections.map((s) => s.label)),
   );
-  expect(headings).toHaveLength(recording.document.pages);
+  await seek(turn.metrics.ttftMs - 1);
+  expect(view.querySelector(".scan-section").textContent).toBe(files.at(-1));
 });
 
 test("decode streams the code with copied text tinted and one bar per step", async () => {

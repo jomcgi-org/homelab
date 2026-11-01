@@ -97,7 +97,8 @@ describe("knowledge search BFF", () => {
     const expired = await GET(
       event(fetch, "?q=clue", { cookies: { get: () => undefined } }),
     );
-    expect(expired.status).toBe(502);
+    // A missing token is a lapsed sign-in, the same 401 the backend gives.
+    expect(expired.status).toBe(401);
     expect(await expired.json()).toHaveProperty("error");
     expect(fetch).not.toHaveBeenCalled();
   });

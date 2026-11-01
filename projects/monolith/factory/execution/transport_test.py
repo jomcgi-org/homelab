@@ -3248,6 +3248,58 @@ def test_historical_cessation_read_binds_identity_and_management_auth(monkeypatc
     assert requests[0].headers["Authorization"] == "management"
 
 
+@pytest.mark.parametrize("operation", ["preview", "apply"])
+def test_recovery_fence_binds_exact_body_and_management_auth(monkeypatch, operation):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200, json={"fenced": operation == "apply"}, request=request
+        )
+
+    _client(monkeypatch, handler)
+    body = {
+        "operation": operation,
+        "request_key": "one-exact-key",
+        "dispatch_id": "a" * 64,
+        "expected_preview_sha256": "b" * 64,
+    }
+    result = asyncio.run(
+        transport.EmberVmShimTransport().session_recovery_fence("s-1", body)
+    )
+    assert result == {"fenced": operation == "apply"}
+    assert len(requests) == 1
+    assert requests[0].method == "POST"
+    assert requests[0].url.path == "/v1/sessions/s-1/recovery-fence"
+    assert requests[0].headers["Authorization"] == "management"
+    assert json.loads(requests[0].content) == body
+
+
+@pytest.mark.parametrize("failure", [403, 404, 409, 500, "lost_response"])
+def test_recovery_fence_never_retries_or_turns_a_refusal_into_proof(
+    monkeypatch, failure
+):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        if failure == "lost_response":
+            raise httpx.ReadTimeout("ambiguous write", request=request)
+        return httpx.Response(
+            failure, json={"secret": "do-not-expose"}, request=request
+        )
+
+    _client(monkeypatch, handler)
+    with pytest.raises(EmberVMTransportError, match="^recovery fence unavailable$"):
+        asyncio.run(
+            transport.EmberVmShimTransport().session_recovery_fence(
+                "s-1", {"operation": "apply"}
+            )
+        )
+    assert len(requests) == 1
+
+
 @pytest.mark.parametrize("status", [403, 404, 409, 500])
 def test_historical_cessation_read_refusals_never_become_positive_evidence(
     monkeypatch, status

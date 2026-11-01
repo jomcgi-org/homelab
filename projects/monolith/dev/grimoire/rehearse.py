@@ -59,6 +59,19 @@ def close_reveal(page):
     expect(page.get_by_role("dialog", name="Reveal to your players")).to_have_count(0)
 
 
+def assert_fits(page):
+    """A view must not scroll sideways."""
+    widths = page.evaluate("[document.documentElement.scrollWidth, innerWidth]")
+    assert widths[0] <= widths[1], f"{page.url} scrolls sideways: {widths}"
+
+
+def state_text(page, query=""):
+    """Fetch a seat's state view; a failed response would pass privacy checks."""
+    response = page.request.get(page.url + "/state" + query)
+    assert response.ok, f"{page.url}/state{query}: {response.status}"
+    return response.text()
+
+
 def open_campaign_players(page, article):
     # The lobby's controlled details can be reset during hydration. Wait until
     # navigation has settled, then open it only if it is currently closed.
@@ -230,12 +243,9 @@ def main():
                 time.monotonic() - reveal_sent
             )
             assert report["timings"]["reveal_propagation_seconds"] < 3
-            a_payload = a.request.get(a.url + "/state").text()
+            a_payload = state_text(a)
             assert "DM_ONLY_INNKEEPER_SECRET" not in a_payload
-            assert (
-                "Mara recognizes the seal."
-                not in b.request.get(b.url + "/state").text()
-            )
+            assert "Mara recognizes the seal." not in state_text(b)
             report["checks"].append(
                 "Partial grant reveal reaches only its recipient without the DM canary"
             )
@@ -292,9 +302,7 @@ def main():
             expect(
                 a.get_by_text("DM_ONLY_INNKEEPER_SECRET", exact=False)
             ).to_have_count(0)
-            assert (
-                "DM_ONLY_INNKEEPER_SECRET" not in a.request.get(a.url + "/state").text()
-            )
+            assert "DM_ONLY_INNKEEPER_SECRET" not in state_text(a)
             dm.bring_to_front()
             dm.get_by_role("button", name="Mara, the innkeeper npc", exact=True).click()
             dm.get_by_role("button", name="Retract from Bram", exact=True).click()
@@ -313,7 +321,7 @@ def main():
             b.bring_to_front()
             expect(b.get_by_text(scene, exact=True)).to_be_visible(timeout=5000)
             expect(b.get_by_text(secret, exact=True)).to_have_count(0)
-            payload = b.request.get(b.url + "/state").text()
+            payload = state_text(b)
             assert secret not in payload, "Player A secret leaked into B's response"
             report["checks"].append(
                 "Targeted message appears for A and is absent from B's page and payload"
@@ -329,7 +337,7 @@ def main():
             b.bring_to_front()
             b.reload()
             expect(b.get_by_text(action, exact=True)).to_have_count(0)
-            assert action not in b.request.get(b.url + "/state").text()
+            assert action not in state_text(b)
             expect(
                 b.get_by_role("button", name="End session", exact=True)
             ).to_have_count(0)
@@ -346,7 +354,7 @@ def main():
             a.bring_to_front()
             expect(a.get_by_text(reply, exact=True)).to_be_visible(timeout=5000)
             expect(a.get_by_text("Resolved", exact=True)).to_be_visible()
-            assert reply not in b.request.get(b.url + "/state").text()
+            assert reply not in state_text(b)
             report["checks"].append(
                 "DM replies privately to the sender and resolves the waiting action"
             )
@@ -409,7 +417,7 @@ def main():
             dm.bring_to_front()
             expect(dm.get_by_text(roll_secret, exact=False)).to_be_visible(timeout=5000)
             b.bring_to_front()
-            assert roll_secret not in b.request.get(b.url + "/state").text()
+            assert roll_secret not in state_text(b)
             b.get_by_text("Roll dice", exact=True).click()
             b.get_by_label("Dice formula", exact=True).fill("2d6+3")
             public_label = f"B_PUBLIC_ROLL_{stamp}"
@@ -526,7 +534,7 @@ def main():
             dm.get_by_label("Send to").select_option("table")
             dm.get_by_role("button", name="Send", exact=True).click()
             expect(dm.get_by_text(mobile_scene, exact=True)).to_be_visible()
-            assert dm.evaluate("document.documentElement.scrollWidth <= innerWidth")
+            assert_fits(dm)
             dm.screenshot(
                 path=str(args.output / "dm-phone-controls.png"), full_page=True
             )
@@ -536,9 +544,7 @@ def main():
             )
             for role, page in zip(["dm", "elowen", "bram"], pages):
                 page.bring_to_front()
-                assert page.evaluate(
-                    "document.documentElement.scrollWidth <= innerWidth"
-                ), role
+                assert_fits(page)
                 page.screenshot(path=str(args.output / f"{role}.png"), full_page=True)
             report["checks"].append(
                 "DM desktop and player phone views have no horizontal overflow"
@@ -552,10 +558,7 @@ def main():
             expect(
                 a.get_by_text("Knowledge retracted: Mara, the innkeeper.", exact=True)
             ).to_be_visible(timeout=5000)
-            assert (
-                "Mara recognizes the seal."
-                not in a.request.get(a.url + "/state").text()
-            )
+            assert "Mara recognizes the seal." not in state_text(a)
             dm.bring_to_front()
             dm.get_by_role("button", name="Mara, the innkeeper npc", exact=True).click()
             dm.get_by_label("Knowledge scope").select_option("partial")
@@ -586,13 +589,9 @@ def main():
             expect(
                 a.get_by_role("heading", name=note_title, exact=True)
             ).to_be_visible()
+            assert note_title in state_text(a, "?notes=character")
             for viewer in (dm, b):
-                assert (
-                    note_title
-                    not in viewer.request.get(
-                        viewer.url + "/state?notes=character"
-                    ).text()
-                )
+                assert note_title not in state_text(viewer, "?notes=character")
             a.get_by_role("button", name=f"Edit {note_title}", exact=True).click()
             a.get_by_label("Share this note with the DM").check()
             a.get_by_role("button", name="Save note", exact=True).click()
@@ -601,9 +600,8 @@ def main():
             expect(
                 dm.get_by_role("heading", name=note_title, exact=True)
             ).to_be_visible(timeout=6000)
-            assert (
-                note_title not in b.request.get(b.url + "/state?notes=character").text()
-            )
+            assert note_title in state_text(dm, "?notes=character")
+            assert note_title not in state_text(b, "?notes=character")
             a.bring_to_front()
             a.get_by_role("button", name="Party notes", exact=True).click()
             party_title = f"PARTY_NOTE_{stamp}"
@@ -638,13 +636,14 @@ def main():
                 expect(
                     viewer.get_by_role("heading", name=party_title, exact=True)
                 ).to_be_visible(timeout=6000)
+            assert party_title in state_text(b, "?notes=party")
             a.bring_to_front()
             a.screenshot(path=str(args.output / "party-notes.png"), full_page=True)
             a.get_by_role("button", name=f"Delete {party_title}", exact=True).click()
             expect(
                 a.get_by_role("heading", name=party_title, exact=True)
             ).to_have_count(0)
-            assert party_title not in b.request.get(b.url + "/state?notes=party").text()
+            assert party_title not in state_text(b, "?notes=party")
             a.get_by_role("button", name="My notes", exact=True).click()
             a.get_by_label("Note title", exact=True).fill("An unsaved note")
             a.get_by_role("button", name="Story", exact=True).click()
@@ -669,14 +668,11 @@ def main():
                     "Mara opens the inn to the party.", exact=False
                 )
             ).to_be_visible()
-            assert (
-                "DM_ONLY_INNKEEPER_SECRET"
-                not in a.request.get(a.url + "/state?notes=character").text()
-            )
-            assert (
-                "Mara, the innkeeper"
-                not in dm.request.get(dm.url + "/state?notes=character").text()
-            )
+            a_notes = state_text(a, "?notes=character")
+            assert "Mara opens the inn to the party." in a_notes
+            assert "DM_ONLY_INNKEEPER_SECRET" not in a_notes
+            dm_notes = state_text(dm, "?notes=character")
+            assert note_title in dm_notes and "Mara, the innkeeper" not in dm_notes
             a.screenshot(path=str(args.output / "pinned-notes.png"), full_page=True)
             a.get_by_role("region", name="Campaign notes").get_by_role(
                 "button", name="Mara, the innkeeper", exact=True
@@ -782,10 +778,7 @@ def main():
                 == "Mara remembers our promise."
             )
             assert "Mara opens the inn to the party." not in json.dumps(a_state)
-            assert (
-                "Mara remembers our promise."
-                not in b.request.get(b.url + "/state").text()
-            )
+            assert "Mara remembers our promise." not in state_text(b)
             matrix.bring_to_front()
             matrix.get_by_role(
                 "button", name="Edit Mara, the innkeeper for Elowen", exact=True
@@ -798,10 +791,7 @@ def main():
             expect(
                 matrix.get_by_role("region", name="Edit character knowledge")
             ).to_have_count(0)
-            assert (
-                "Mara remembers our promise."
-                not in a.request.get(a.url + "/state").text()
-            )
+            assert "Mara remembers our promise." not in state_text(a)
             matrix.get_by_role(
                 "button", name="Edit Mara, the innkeeper for Elowen", exact=True
             ).click()
@@ -871,7 +861,7 @@ def main():
             ]
             assert len(grouped) == 1 and len(grouped[0]["body"]["reveals"]) == 2
             assert "DM_ONLY_BATCH_SECRET" not in json.dumps(grouped)
-            assert "BATCH_Mapmaker Tessa" not in b.request.get(b.url + "/state").text()
+            assert "BATCH_Mapmaker Tessa" not in state_text(b)
             assert abs(a.evaluate("window.scrollY") - reading_position) <= 2
             expect(a.get_by_role("button", name="Story", exact=True)).to_be_focused()
             report["checks"].append(
@@ -921,6 +911,312 @@ def main():
             )
             report["checks"].append(
                 "Grouped reveal renders and pins both items; retracting one hides its projection while preserving the other"
+            )
+            # Combat: both PCs and a hidden monster. Each player sees only their
+            # own turn, and the monster stays masked in pages and payloads.
+            bram_id = next(
+                pc["id"]
+                for pc in current["characters"]
+                if pc["character_name"] == "Bram"
+            )
+            monster = f"HIDDEN_MONSTER_{stamp}"
+            dm.bring_to_front()
+            dm.get_by_text("Initiative order", exact=True).click()
+            order = dm.get_by_role("region", name="Initiative order")
+            for label, character, score in (
+                ("", "Bram", "12"),
+                (monster, "", "15"),
+                ("", "Elowen", "18"),
+            ):
+                order.get_by_role("button", name="Add row", exact=True).click()
+                row = order.get_by_role("listitem").last
+                if character:
+                    row.get_by_label("Character").select_option(label=character)
+                else:
+                    row.get_by_label("Name", exact=True).fill(label)
+                    row.get_by_label("Hidden", exact=True).check()
+                row.get_by_label("Initiative", exact=True).fill(score)
+            order.get_by_role("button", name="Sort by initiative", exact=True).click()
+            order.get_by_role("button", name="Save order", exact=True).click()
+            expect(
+                order.get_by_text("Initiative order saved.", exact=True)
+            ).to_be_visible()
+            dm_turn = dm.get_by_role("region", name="Turn order")
+            expect(dm_turn.get_by_text(monster, exact=True)).to_be_visible()
+            dm.screenshot(path=str(args.output / "dm-initiative.png"), full_page=True)
+
+            def turn_banner(viewer):
+                return viewer.get_by_role("status").filter(has_text="Your turn")
+
+            def active_turn(viewer):
+                return viewer.get_by_role("region", name="Turn order").locator(
+                    "[aria-current=step]"
+                )
+
+            a.bring_to_front()
+            expect(turn_banner(a)).to_be_visible(timeout=5000)
+            expect(active_turn(a)).to_contain_text("Elowen")
+            b.bring_to_front()
+            expect(active_turn(b)).to_contain_text("Elowen", timeout=5000)
+            expect(turn_banner(b)).to_have_count(0)
+            dm.bring_to_front()
+            order.get_by_role("button", name="Next turn", exact=True).click()
+            expect(active_turn(dm)).to_contain_text(monster)
+            for viewer in (a, b):
+                viewer.bring_to_front()
+                expect(active_turn(viewer)).to_contain_text("???", timeout=5000)
+                expect(turn_banner(viewer)).to_have_count(0)
+            dm.bring_to_front()
+            order.get_by_role("button", name="Next turn", exact=True).click()
+            expect(active_turn(dm)).to_contain_text("Bram")
+            b.bring_to_front()
+            expect(turn_banner(b)).to_be_visible(timeout=5000)
+            assert_fits(b)
+            b.screenshot(path=str(args.output / "bram-your-turn.png"), full_page=True)
+            a.bring_to_front()
+            expect(active_turn(a)).to_contain_text("Bram", timeout=5000)
+            expect(turn_banner(a)).to_have_count(0)
+            for viewer, own in ((a, elowen_id), (b, bram_id)):
+                payload = viewer.request.get(viewer.url + "/state")
+                assert monster not in payload.text()
+                entries = payload.json()["initiative"]["entries"]
+                assert [entry["label"] for entry in entries] == [
+                    "Elowen",
+                    "???",
+                    "Bram",
+                ]
+                assert {entry["player_character_id"] for entry in entries} == {
+                    own,
+                    None,
+                }
+                expect(viewer.get_by_text(monster)).to_have_count(0)
+            dm.bring_to_front()
+            dm.once("dialog", lambda dialog: dialog.accept())
+            order.get_by_role("button", name="End encounter", exact=True).click()
+            expect(dm_turn).to_have_count(0)
+            for viewer in (a, b):
+                viewer.bring_to_front()
+                expect(viewer.get_by_role("region", name="Turn order")).to_have_count(
+                    0, timeout=5000
+                )
+                expect(
+                    viewer.get_by_text("The encounter has ended.", exact=True)
+                ).to_be_visible()
+            dm.bring_to_front()
+            dm.get_by_text("Initiative order", exact=True).click()
+            report["checks"].append(
+                "Initiative orders both PCs and a hidden monster; only the active player sees their turn banner, the monster stays masked in pages and payloads, and the DM ends the encounter"
+            )
+            # Handouts: one for the table and one for Elowen only.
+            dm.get_by_text("Send a handout", exact=True).click()
+            composer = dm.get_by_role("form", name="Send a handout")
+            public_title = f"Wanted poster {stamp}"
+            private_title = f"ELOWEN_LETTER_{stamp}"
+            private_text = f"Meet me at the mill at midnight, {stamp}."
+            for title, text, recipient in (
+                (public_title, "**Reward:** fifty gold for the smuggler.", None),
+                (private_title, private_text, "Elowen"),
+            ):
+                composer.get_by_label("Handout title", exact=True).fill(title)
+                composer.get_by_label("Handout text", exact=True).fill(text)
+                if recipient:
+                    composer.get_by_label("Everyone at the table", exact=True).uncheck()
+                    composer.get_by_label(recipient, exact=True).check()
+                composer.get_by_role("button", name="Send handout", exact=True).click()
+                expect(
+                    composer.get_by_label("Handout title", exact=True)
+                ).to_have_value("")
+            dm.get_by_text("Send a handout", exact=True).click()
+            a.bring_to_front()
+            for title in (public_title, private_title):
+                expect(a.get_by_role("heading", name=title, exact=True)).to_be_visible(
+                    timeout=5000
+                )
+            expect(a.get_by_text(private_text, exact=True)).to_be_visible()
+            assert_fits(a)
+            a.screenshot(path=str(args.output / "elowen-handouts.png"), full_page=True)
+            b.bring_to_front()
+            expect(
+                b.get_by_role("heading", name=public_title, exact=True)
+            ).to_be_visible(timeout=5000)
+            expect(
+                b.get_by_role("heading", name=private_title, exact=True)
+            ).to_have_count(0)
+            b_payload = state_text(b)
+            assert private_title not in b_payload and private_text not in b_payload
+            a.bring_to_front()
+            a.get_by_role(
+                "button", name=f"Pin {private_title} to my notes", exact=True
+            ).click()
+            expect(
+                a.get_by_role("heading", name=f"{private_title} · Pinned", exact=True)
+            ).to_be_visible()
+            expect(
+                a.get_by_role("region", name="Campaign notes").get_by_text(
+                    private_text, exact=False
+                )
+            ).to_be_visible()
+            assert_fits(a)
+            assert private_title in state_text(a, "?notes=character")
+            for viewer in (dm, b):
+                assert private_title not in state_text(viewer, "?notes=character")
+            a.get_by_role("button", name="Story", exact=True).click()
+            report["checks"].append(
+                "Handouts reach the table and one PC; Bram never receives Elowen's handout in page or payload, and Elowen pins it to private notes"
+            )
+            # Inventory: Give item turns the table handout into a party item.
+            dm.bring_to_front()
+            dm.get_by_role(
+                "button", name=f"Give item from {public_title}", exact=True
+            ).click()
+            give = dm.locator("form").filter(
+                has=dm.get_by_role("heading", name="Give item", exact=True)
+            )
+            expect(give.get_by_label("Item name", exact=True)).to_have_value(
+                public_title
+            )
+            expect(give.get_by_label("Give to")).to_have_value("party")
+            give.get_by_role("button", name=f"Give {public_title}", exact=True).click()
+            dm_pool = dm.get_by_role("region", name="Party pool")
+            expect(dm_pool.get_by_role("heading", name=public_title)).to_be_visible()
+            hidden_item = f"HIDDEN_ITEM_{stamp}"
+            give.get_by_label("Item name", exact=True).fill(hidden_item)
+            give.get_by_label("Hidden from party", exact=True).check()
+            give.get_by_role("button", name=f"Give {hidden_item}", exact=True).click()
+            expect(dm_pool.get_by_role("heading", name=hidden_item)).to_be_visible()
+            dm.screenshot(path=str(args.output / "dm-inventory.png"), full_page=True)
+            item_ids = {
+                item["name"]: item["id"]
+                for item in dm.request.get(dm.url + "/state?inventory=items").json()
+            }
+            public_id, hidden_id = item_ids[public_title], item_ids[hidden_item]
+            for viewer in (a, b):
+                viewer.bring_to_front()
+                viewer.get_by_role("button", name="Inventory", exact=True).click()
+                expect(
+                    viewer.get_by_role("region", name="Party pool").get_by_role(
+                        "heading", name=public_title
+                    )
+                ).to_be_visible(timeout=6000)
+                expect(viewer.get_by_text(hidden_item)).to_have_count(0)
+                assert_fits(viewer)
+                # Each view must carry the public item, so its absence checks
+                # cannot pass on an empty or failed response.
+                for query, shown in (
+                    ("?inventory=items", (public_title, public_id)),
+                    ("?inventory=changes", (public_id,)),
+                    ("", (public_title,)),
+                ):
+                    payload = state_text(viewer, query)
+                    assert all(value in payload for value in shown), query
+                    assert hidden_item not in payload and hidden_id not in payload
+            b.screenshot(path=str(args.output / "bram-inventory.png"), full_page=True)
+            for viewer in (a, b, dm):
+                viewer.get_by_role("button", name="Story", exact=True).click()
+            report["checks"].append(
+                "Give item turns a handout into a party-pool item both players see; a hidden party item never reaches player pages or payloads"
+            )
+            # Knowledge search: run the play embedder on demand, then search
+            # as a player. DM-only and other-PC text must stay out of results.
+            dm.bring_to_front()
+            dm_canary = f"DM_ONLY_SEARCH_{stamp}"
+            dm.get_by_label("Send to").select_option("dm")
+            dm.get_by_label("Set the scene", exact=True).fill(
+                f"{dm_canary}: Mara pays the smugglers."
+            )
+            dm.get_by_role("button", name="Send", exact=True).click()
+            expect(
+                dm.get_by_text(f"{dm_canary}: Mara pays the smugglers.", exact=True)
+            ).to_be_visible()
+            dm.get_by_label("Send to").select_option("table")
+            # Bram holds Ilsa's full knowledge only until the retraction below.
+            ilsa_secret = "HARBOUR_LEDGER_SECRET"
+            drawer = dm.get_by_role("dialog", name="Reveal to your players")
+
+            def choose_ilsa():
+                open_reveal(dm)
+                drawer.get_by_label("Find knowledge").fill("Ilsa")
+                drawer.get_by_role(
+                    "button", name="Search knowledge", exact=True
+                ).click()
+                drawer.get_by_role(
+                    "button", name="Harbourmaster Ilsa npc", exact=True
+                ).click()
+
+            choose_ilsa()
+            drawer.get_by_label("Bram", exact=True).check()
+            drawer.get_by_label("Knowledge scope").select_option("full")
+            drawer.get_by_role("button", name="Preview knowledge", exact=True).click()
+            drawer.get_by_role("button", name="Share knowledge", exact=True).click()
+            expect(drawer.get_by_text("Knowledge shared.", exact=True)).to_be_visible()
+            close_reveal(dm)
+            embedded = dm.request.post(
+                "http://friends.localhost:8177/__local/embed-play"
+            )
+            assert embedded.status == 204, embedded.status
+
+            def search(viewer, query):
+                response = viewer.request.get(
+                    viewer.url.rsplit("/", 1)[0] + "/knowledge/search",
+                    params={"q": query},
+                )
+                assert response.ok, response.status
+                return response.text()
+
+            # Positive controls: the DM note and Elowen's handout are indexed.
+            assert dm_canary in search(dm, dm_canary)
+            assert private_text in search(a, private_text)
+            b.bring_to_front()
+            finder = b.get_by_role("region", name="Character knowledge search")
+
+            def find(query):
+                """Search through Bram's page and wait for this response to render."""
+                finder.get_by_label("Search what your character knows").fill(query)
+                with b.expect_response(
+                    lambda response: "/knowledge/search" in response.url
+                ) as found:
+                    finder.get_by_role(
+                        "button", name="Search knowledge", exact=True
+                    ).click()
+                assert found.value.ok, found.value.status
+                count = len(found.value.json())
+                # Submitting clears the previous status, so this count is new.
+                expect(
+                    finder.get_by_role("status", name="Knowledge search status")
+                ).to_have_text(f"{count} result{'' if count == 1 else 's'} found.")
+                return found.value.text()
+
+            hits = find("Mara")
+            assert "Mara opens the inn to the party." in hits and dm_canary not in hits
+            expect(
+                finder.get_by_text("Mara opens the inn to the party.").first
+            ).to_be_visible()
+            assert_fits(b)
+            b.screenshot(
+                path=str(args.output / "bram-knowledge-search.png"), full_page=True
+            )
+            assert dm_canary not in find(dm_canary)
+            expect(b.get_by_text(dm_canary)).to_have_count(0)
+            assert ilsa_secret in find(ilsa_secret)
+            expect(finder.get_by_text(ilsa_secret, exact=False).first).to_be_visible()
+            dm.bring_to_front()
+            choose_ilsa()
+            drawer.get_by_role("button", name="Retract from Bram", exact=True).click()
+            expect(
+                drawer.get_by_text("Knowledge retracted.", exact=True)
+            ).to_be_visible()
+            close_reveal(dm)
+            b.bring_to_front()
+            expect(
+                b.get_by_text("Knowledge retracted: Harbourmaster Ilsa.", exact=True)
+            ).to_be_visible(timeout=5000)
+            # No embedder run since the grant: retraction alone removes it.
+            assert ilsa_secret not in find(ilsa_secret)
+            expect(b.get_by_text(ilsa_secret, exact=False)).to_have_count(0)
+            for query in (private_text, private_title):
+                assert query not in search(b, query)
+            report["checks"].append(
+                "Player knowledge search finds granted knowledge and a full reveal after the play embedder runs; retracting that grant removes it without re-embedding; DM-only and other-PC text stays out of results"
             )
             dm.bring_to_front()
             dm.on("dialog", lambda dialog: dialog.accept())

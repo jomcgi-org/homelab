@@ -1,4 +1,4 @@
-"""Public-body wikilink sanitisation."""
+"""Public-body wikilink stripping for the public_api view boundary."""
 
 from __future__ import annotations
 
@@ -20,9 +20,9 @@ def strip_private_wikilinks(body: str, public_note_ids: Iterable[str]) -> str:
     """Strip every wikilink whose target is NOT a known public note.
 
     The public service cannot enumerate private notes (it reads only the
-    public_api views), so keep wikilinks that resolve to a public note and
-    strip everything else (private targets and dangling links to
-    non-existent notes) to plain display text.
+    public_api views, the confidentiality boundary). Keep wikilinks that
+    resolve to a public note, strip everything else (private targets and
+    dangling links to non-existent notes) to plain display text.
     """
     public = {_slugify(nid) for nid in public_note_ids}
 

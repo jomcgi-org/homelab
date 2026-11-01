@@ -313,18 +313,21 @@ The observation records revision provenance, not historical application health.
 The first matching revision observation is the measurement boundary; current
 sync and health must also verify. Compare the immediately preceding 72h with
 `[boundary, boundary + 72h)`, never the overlapping rolling daily digest.
-The reader finds that exact deployment first, then loads only polls inside the
-fixed post-deployment window. `observation_coverage` states the UTC bounds,
-observed row count, limit and completeness. An extra sentinel row detects
-truncation; more than 5,000 polls inside that window holds UNKNOWN. Polls after
-the window cannot exhaust its coverage budget. This repairs collection only:
-an old cohort with insufficient traffic or overlapping deployments remains
-inconclusive, and waiting longer cannot change its admission denominator.
+The reader finds that exact deployment first, then counts the distinct
+revisions deployed inside the fixed post-deployment window, one row per
+revision however many polls observed it. `observation_coverage` states the
+UTC bounds, revisions observed, limit and completeness. An extra sentinel row
+detects truncation; more than 500 distinct revisions inside that window holds
+UNKNOWN. Polls after the window cannot exhaust its coverage budget.
 
 Attempt cohorts use their creation window; terminal outcomes are read as of
-digest collection, allowing attempts near the window's end to finish before
-acceptance. Further deployments during observation make attribution UNKNOWN. Missing
-traffic, classification coverage or a traffic criterion also holds the choice.
+digest collection. Attempts still unresolved when the window ends hold the
+verdict at WAIT for 24 more hours so they can settle. After that the verdict
+is final: ACCEPTED, REGRESSED, or INCONCLUSIVE for missing traffic,
+classification coverage, an unmet traffic criterion or an unknown metric.
+Other deployments inside the window are reported as confounders beside the
+verdict and never hold it. A final verdict releases the selection; UNKNOWN,
+for evidence that was unavailable this run, holds it until the next run.
 A worse target rate reports REGRESSED; a met observation criterion reports
 ACCEPTED as a descriptive association, without a causal savings claim.
 

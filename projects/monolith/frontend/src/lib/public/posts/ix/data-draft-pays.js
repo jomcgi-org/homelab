@@ -4,7 +4,7 @@
 // draft tokens plus the model's own next token.
 export const DRAFT_TOKENS = 7;
 export const STEP_MS = { low: 110, high: 125 };
-const ONE_TOKEN_MS = 25;
+export const ONE_TOKEN_MS = 25;
 export const ONE_TOKEN_RATE = 1000 / ONE_TOKEN_MS;
 
 // Tokens per second of one draft step that keeps `kept` tokens (arithmetic).
@@ -30,18 +30,15 @@ export const breakEven = {
   high: STEP_MS.high / ONE_TOKEN_MS - 1,
 };
 
-// Measured (same section, max-perf config, warm medians).
+// Prompt lookup, measured (same section, max-perf config, warm medians): share
+// of draft tokens kept on file edits, and output change by workload.
+export const lookupKept = { low: 0.92, high: 0.95 };
 export const lookupOutcome = {
-  kept: "92–95%",
-  perStep: "about 7",
   edits: "+22 to +40%",
   tests: "level",
   prose: "−2 to −9%",
 };
 
 // MTP catch-up across lookup steps ("Why keep residuals across lookup steps"):
-// the blog demo, warm, medians of 12 and 10 requests.
-export const catchUp = {
-  off: { kept: 76, rate: 43.4 },
-  on: { kept: 83, rate: 45.6 },
-};
+// share of the head's drafts kept, the blog demo, warm, medians.
+export const catchUp = { before: 76, after: 83 };

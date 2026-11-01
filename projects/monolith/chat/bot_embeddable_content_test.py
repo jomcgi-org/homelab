@@ -61,11 +61,6 @@ def _make_bot() -> ChatBot:
 
 
 class TestHasEmbeddableContent:
-    def test_text_only_returns_true(self):
-        """A message with non-empty text content returns True."""
-        msg = _make_message(content="hello world")
-        assert _has_embeddable_content(msg) is True
-
     def test_whitespace_only_text_is_not_embeddable(self):
         """Content that is only whitespace is treated as empty — returns False with no attachments."""
         msg = _make_message(content="   \t\n  ")

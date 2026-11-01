@@ -75,6 +75,18 @@ defmodule Embervm.SessionStore do
     Embervm.OpLog.safe_server_call(store, {:session_cessation_evidence, session_id, expected, principal}, 45_000)
   end
 
+  def preview_recovery_fence(store, id, request, principal, now) do
+    Embervm.OpLog.safe_server_call(store, {:preview_recovery_fence, id, request, principal, now}, 45_000)
+  end
+
+  def apply_recovery_fence(store, id, request, principal, now, preview) do
+    Embervm.OpLog.safe_server_call(store, {:apply_recovery_fence, id, request, principal, now, preview}, 45_000)
+  end
+
+  def session_restore_allowed(store, lineage) do
+    Embervm.OpLog.safe_server_call(store, {:session_restore_allowed, lineage}, 45_000)
+  end
+
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -459,6 +471,7 @@ defmodule Embervm.SessionStore do
       idempotency_key: Map.get(row, :idempotency_key),
       stop_intent: Map.get(row, :stop_intent),
       stop_completion: Map.get(row, :stop_completion),
+      recovery_fence: Map.get(row, :recovery_fence),
       turn_seq: Map.get(row, :turn_seq, 0),
       interrupted_turn: Map.get(row, :interrupted_turn)
     }
@@ -571,6 +584,56 @@ defmodule Embervm.SessionStore do
       error -> error
     end
     {:reply, result, state}
+  end
+
+  def handle_call({:session_restore_allowed, lineage}, _from, state) do
+    # Always read the durable projection. A fence append can commit after its
+    # caller times out; unchanged ETS must never reopen restoration in that case.
+    {:reply, state.op_log_mod.session_restore_allowed(state.op_log, lineage), state}
+  end
+
+  def handle_call({:preview_recovery_fence, id, request, principal, now}, _from, state) do
+    result = with false <- state.residency_uncertain,
+      {:ok, proof} <- state.op_log_mod.session_recovery_fence(state.op_log, id,
+        Embervm.SessionRecoveryFence.preview_request(request), principal, now),
+      :ok <- recovery_hot_check(state, proof) do
+      {:ok, proof}
+    else
+      true -> {:error, :recovery_store_unavailable, %{}}
+      error -> error
+    end
+    {:reply, result, state}
+  end
+
+  def handle_call({:apply_recovery_fence, id, request, principal, now, preview}, _from, state) do
+    result = with false <- state.residency_uncertain,
+      true <- request["operation"] == "apply" and id == preview.session_id and principal == preview.principal,
+      :ok <- recovery_hot_check(state, preview),
+      {:ok, proof} <- state.op_log_mod.session_recovery_fence(state.op_log, id, request, principal, now) do
+      # Only the extra audit field changes. Preserve all lifecycle/result data.
+      case :ets.lookup(state.sessions, id) do
+        [{^id, row}] -> :ets.insert(state.sessions, {id, Map.put(row, :recovery_fence, proof.recovery_fence)})
+        _ -> :ok
+      end
+      {:ok, proof}
+    else
+      value when is_boolean(value) -> {:error, :recovery_store_unavailable, %{}}
+      error -> error
+    end
+    {:reply, result, state}
+  end
+
+  defp recovery_hot_check(state, proof) do
+    owners = :ets.foldl(fn {_sid, row}, found ->
+      if row.session_id == proof.session_id or row.lineage_id == proof.lineage_id or row.vm_id == proof.vm_id,
+        do: [row | found], else: found
+    end, [], state.sessions)
+    aliases = Enum.any?(state.residency_intents, fn {_id, row} -> Embervm.SessionCessationEvidence.related_intent?(row, proof) end)
+    case owners do
+      [row] -> if not aliases and Embervm.SessionRecoveryFence.hot_owner?(row, proof),
+        do: :ok, else: {:error, :recovery_owner_changed, %{}}
+      _ -> {:error, :recovery_owner_changed, %{}}
+    end
   end
 
   def handle_call({:get, session_id}, _from, state) do
@@ -820,6 +883,7 @@ defmodule Embervm.SessionStore do
       terminal_reason: nil,
       stop_intent: nil,
       stop_completion: nil,
+      recovery_fence: nil,
       turn_seq: 0,
       interrupted_turn: nil,
       idempotency_key: idempotency_key

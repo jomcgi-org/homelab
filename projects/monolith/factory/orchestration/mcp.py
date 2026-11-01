@@ -765,6 +765,7 @@ async def _control_catalog() -> dict:
         "factory_configure_refill",
         "factory_amend_policy",
         "factory_reconcile_learning_execution",
+        "factory_reconcile_settled_retry",
     ):
         tool = await mcp.get_tool(name)
         if tool is None:
@@ -1719,6 +1720,24 @@ async def factory_release_landing_hold(
     head. Public-facing, security-boundary or destructive changes do not qualify.
     This explicit scoped mode never releases a hold or resumes execution.
     Legacy releases remain historical authority and do not become scoped grants.
+    Alternatively, classification="public_docs" with explicit operator evidence
+    authorizes only modifications of the existing monolith ARCHITECTURE.md and
+    factory/orchestration/FACTORY.md. The server verifies exact GitHub paths,
+    regular non-executable files and bounded UTF-8 text. No other public code,
+    security, access or agent-instruction files qualify. For an unpaused settled
+    delivery this scope atomically releases its landing hold and records the
+    grant. It never resumes execution or changes accepted delivery history.
+    Changed heads require fresh preview/apply and independent review. Other
+    holds remain binding. The returned public_docs evidence is server-derived.
+    Only receipt 1045 / PR 7492 supports an operator landing-ownership handoff.
+    Add operator_handoff to public_docs scope with head_sha, reviewer,
+    implementer, reference, verdict="approve" and independent=true. The standing
+    operator attests that external review's authenticity and independence.
+    The server verifies the exact target, original acceptance, settled execution,
+    docs scope and current CI. Apply audits operator ownership without changing
+    native acceptance or accounting. Native actions stay fenced for this target
+    even when its grant becomes stale. The queue still rejects stale evidence,
+    changed heads, renewed holds or unknown execution. No other receipt qualifies.
     Independent exact-head review, required CI and the global merge switch still
     apply. Scope is an operator attestation, not an automatic code classifier.
     """
@@ -2506,6 +2525,49 @@ async def factory_configure_refill(
             min_new_issues=min_new_issues,
         )
     except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
+async def factory_reconcile_settled_retry(
+    operation: Literal["preview", "apply"],
+    receipt_id: Annotated[MCPInteger, Field(ge=1)],
+    session_id: Annotated[MCPInteger, Field(ge=1)],
+    permit_id: Annotated[MCPInteger, Field(ge=1)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    request_key: Annotated[str, Field(min_length=1, max_length=128)],
+    expected_preview_sha256: str | None = None,
+) -> dict:
+    """Reconcile one unknown first dispatch plus a proven uninvoked retry.
+
+    Standing operators preview the exact receipt/session/permit and stable key.
+    Apply the reviewed digest with identical arguments. The private control
+    plane must prove positive cessation, complete journal/successor coverage,
+    and durably exclude restoring this exact lineage. Only then can the exact
+    factory run/start fail with reserved unknown cost. Historical native results,
+    turn, permit accounting and unrelated holds stay unchanged. No inference,
+    guest deletion, quota change or direct retry. Existing factory policy decides
+    continuation. Replay identical apply after an uncertain fence response.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from factory import settled_retry_reconciliation
+    from factory.execution.transport import EmberVMTransportError
+
+    try:
+        return await settled_retry_reconciliation.run(
+            operation,
+            principal.subject,
+            receipt_id,
+            session_id,
+            permit_id,
+            reason,
+            request_key,
+            expected_preview_sha256,
+        )
+    except (ValueError, EmberVMTransportError) as exc:
         return {"ok": False, "reason": str(exc)}
 
 

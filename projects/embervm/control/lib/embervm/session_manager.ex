@@ -215,6 +215,10 @@ defmodule Embervm.SessionManager do
     Embervm.OpLog.safe_server_call(server, {:session_cessation_evidence, session_id, expected, principal}, 50_000)
   end
 
+  def session_recovery_fence(server, id, request, principal) do
+    Embervm.OpLog.safe_server_call(server, {:session_recovery_fence, id, request, principal}, 100_000)
+  end
+
   def residency_stats(server \\ __MODULE__) do
     GenServer.call(server, :residency_stats, 500)
   end
@@ -832,6 +836,29 @@ defmodule Embervm.SessionManager do
       {:ok, Embervm.SessionCessationEvidence.public(proof, state.clock.())}
     else
       true -> {:error, :historical_pending_work, %{}}
+      error -> error
+    end
+    {:reply, result, state}
+  end
+
+  def handle_call({:session_recovery_fence, id, request, principal}, _from, state) do
+    # One manager callback excludes restore admission and worker completions
+    # across the fresh preview, transient checks and durable compare-and-set.
+    result = with true <- Embervm.SessionRecoveryFence.valid_request?(request),
+      {:ok, preview} <- SessionStore.preview_recovery_fence(state.session_store, id, request, principal, state.clock.()),
+      false <- historical_work_pending?(state, preview),
+      :ok <- check_workspace_export_not_pending(state, preview.lineage_id) do
+      applied = if request["operation"] == "apply",
+        do: SessionStore.apply_recovery_fence(state.session_store, id, request, principal, state.clock.(), preview),
+        else: {:ok, preview}
+      case applied do
+        {:ok, proof} -> {:ok, Embervm.SessionRecoveryFence.public(proof, state.clock.())}
+        error -> error
+      end
+    else
+      false -> {:error, :recovery_invalid_request, %{}}
+      true -> {:error, :recovery_pending_work, %{}}
+      {:error, :workspace_export_pending} -> {:error, :recovery_pending_export, %{}}
       error -> error
     end
     {:reply, result, state}
@@ -1636,6 +1663,17 @@ defmodule Embervm.SessionManager do
   defp validate_restore_lineage(_state, nil, _workload, _principal), do: {:ok, nil}
 
   defp validate_restore_lineage(state, restore_lineage, workload, principal) do
+    with {:ok, holder} <- validate_restore_holder(state, restore_lineage, workload, principal) do
+      case SessionStore.session_restore_allowed(state.session_store, restore_lineage) do
+        :ok -> if is_nil(Map.get(holder, :recovery_fence)), do: {:ok, holder}, else: {:error, :lineage_recovery_fenced}
+        {:error, :recovery_fenced} -> {:error, :lineage_recovery_fenced}
+        {:error, :unknown_lineage} -> {:error, :unknown_lineage}
+        _ -> {:error, :lineage_recovery_store_unavailable}
+      end
+    end
+  end
+
+  defp validate_restore_holder(state, restore_lineage, workload, principal) do
     case SessionStore.get_latest_by_lineage(state.session_store, restore_lineage) do
       :error ->
         {:error, :unknown_lineage}

@@ -4134,19 +4134,6 @@ py_test(
 )
 
 py_test(
-    name = "chat_summarizer_prompts_test",
-    srcs = ["chat/summarizer_prompts_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "chat_vision_timeout_test",
     srcs = ["chat/vision_timeout_test.py"],
     imports = ["."],
@@ -5037,6 +5024,11 @@ bdd_test(
     srcs = ["knowledge/exact_search_postgres_test.py"],
 )
 
+bdd_test(
+    name = "knowledge_store_search_postgres_test",
+    srcs = ["knowledge/store_search_postgres_test.py"],
+)
+
 py_test(
     name = "knowledge_freshness_test",
     srcs = ["knowledge/freshness_test.py"],
@@ -5919,6 +5911,22 @@ py_test(
 )
 
 py_test(
+    name = "agent_sessions_guest_cleanup_loop_test",
+    srcs = ["factory/execution/guest_cleanup_loop_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_core",
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "agent_sessions_response_lost_test",
     srcs = ["factory/execution/response_lost_test.py"],
     data = ["app/main.py"],
@@ -6187,7 +6195,6 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
-        "@pip//pgvector",
         "@pip//pydantic",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -7925,20 +7932,6 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_gap_set_class_test",
-    srcs = ["knowledge/gap_set_class_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "//projects/monolith/shared/testing/sqlite",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "knowledge_store_gap_queries_test",
     srcs = ["knowledge/store_gap_queries_test.py"],
     imports = ["."],
@@ -8285,7 +8278,6 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
-        "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -9561,6 +9553,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
+        ":pkg_factory",
         ":pkg_swarm",
         "@pip//pytest",
         "@pip//sqlalchemy",

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import types
 
 import pytest
@@ -10,10 +9,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.links import Link
-from knowledge.models import Chunk, Note, NoteLink
 from knowledge.store import KnowledgeStore, _resolve_edge_targets
-
-_PG_URL = os.environ.get("TEST_POSTGRES_URL")
 
 
 @pytest.fixture(name="session")
@@ -36,25 +32,6 @@ def session_fixture():
     for table in SQLModel.metadata.tables.values():
         if table.name in original_schemas:
             table.schema = original_schemas[table.name]
-
-
-@pytest.fixture(name="pg_session")
-def pg_session_fixture():
-    """Real Postgres session with pgvector for search tests.
-
-    Set TEST_POSTGRES_URL to enable (e.g. ``postgresql://user:pass@host/db``).
-    """
-    if _PG_URL is None:
-        pytest.skip("TEST_POSTGRES_URL not set — skipping Postgres tests")
-    engine = create_engine(_PG_URL)
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as session:
-        yield session
-    with Session(engine) as session:
-        session.execute(Chunk.__table__.delete())
-        session.execute(NoteLink.__table__.delete())
-        session.execute(Note.__table__.delete())
-        session.commit()
 
 
 @pytest.fixture
@@ -320,196 +297,3 @@ class TestResolveEdgeTargets:
         rows = [_make_row("link", "n1"), _make_row("link", "n2")]
         result = _resolve_edge_targets(session, rows)
         assert result == set()
-
-
-# ---------------------------------------------------------------------------
-# search_notes_with_context — edges (Postgres only)
-# ---------------------------------------------------------------------------
-
-
-class TestSearchNotesWithContextEdges:
-    """Verify the ``edges`` key in search_notes_with_context results.
-
-    Requires pgvector (Postgres). Tests are skipped when TEST_POSTGRES_URL
-    is unset, matching the pattern used by TestSearchNotesWithContext in
-    store_test.py.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, pg_session):
-        self.session = pg_session
-        self.store = KnowledgeStore(session=pg_session)
-
-    def test_search_result_includes_edges_key(self):
-        """Every search result must have an 'edges' key."""
-        _upsert(self.store, note_id="n1", path="a.md", title="Alpha", n_chunks=1)
-        results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)
-        assert len(results) == 1
-        assert "edges" in results[0]
-
-    def test_edges_is_list(self):
-        """The 'edges' value is always a list (not None, not dict)."""
-        _upsert(self.store, note_id="n1", path="a.md", title="Alpha", n_chunks=1)
-        results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)
-        assert isinstance(results[0]["edges"], list)
-
-    def test_empty_edges_when_note_has_no_links(self):
-        """A note with no links or edges produces edges=[]."""
-        _upsert(
-            self.store,
-            note_id="n1",
-            path="a.md",
-            title="Alpha",
-            n_chunks=1,
-            links=[],
-        )
-        results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)
-        assert results[0]["edges"] == []
-
-    def test_edges_contain_wikilink_data(self):
-        """Wikilinks appear in edges with kind='link' and edge_type=None."""
-        _upsert(
-            self.store,
-            note_id="n1",
-            path="a.md",
-            title="Alpha",
-            n_chunks=1,
-            links=[Link(target="n2", display="Beta")],
-        )
-        results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)
-        assert len(results) == 1
-        edges = results[0]["edges"]
-        assert len(edges) == 1
-        assert edges[0]["target_id"] == "n2"
-        assert edges[0]["target_title"] == "Beta"
-        assert edges[0]["kind"] == "link"
-        assert edges[0]["edge_type"] is None
-
-    def test_edges_contain_frontmatter_edge_data(self):
-        """Typed frontmatter edges appear in edges with kind='edge' and edge_type set."""
-        _upsert(
-            self.store,
-            note_id="n1",
-            path="a.md",
-            title="Alpha",
-            n_chunks=1,
-            metadata=_meta(
-                title="Alpha",
-                edges={"refines": ["parent-id"]},
-                verification_state="verified",
-            ),
-        )
-        results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)
-        assert len(results) == 1
-        edges = results[0]["edges"]
-        assert len(edges) == 1
-        assert edges[0]["target_id"] == "parent-id"
-        assert edges[0]["kind"] == "edge"
-        assert edges[0]["edge_type"] == "refines"
-
-    def test_edges_dict_keys_for_link_kind(self):
-        """Wikilink (kind='link') edge dicts have exactly 4 keys."""
-        _upsert(
-            self.store,
-            note_id="n1",
-            path="a.md",
-            title="Alpha",
-            n_chunks=1,
-            links=[Link(target="x", display="X")],
-        )
-        results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)
-        edge = results[0]["edges"][0]
-        assert set(edge.keys()) == {"target_id", "target_title", "kind", "edge_type"}
-
-    def test_edges_dict_keys_for_edge_kind(self):
-        """Typed edge (kind='edge') dicts have 5 keys, including resolved_note_id."""
-        _upsert(
-            self.store,
-            note_id="n1",
-            path="a.md",
-            title="Alpha",
-            n_chunks=1,
-            metadata=_meta(
-                title="Alpha",
-                edges={"related": ["some-target"]},
-                verification_state="verified",
-            ),
-        )
-        results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)
-        edge = results[0]["edges"][0]
-        assert set(edge.keys()) == {
-            "target_id",
-            "target_title",
-            "kind",
-            "edge_type",
-            "resolved_note_id",
-        }
-
-    def test_edge_resolved_note_id_when_target_exists(self):
-        """resolved_note_id equals target_id when the target note is in the DB."""
-        # Insert both source and target notes.
-        _upsert(
-            self.store,
-            note_id="n1",
-            path="a.md",
-            title="Alpha",
-            n_chunks=1,
-            metadata=_meta(
-                title="Alpha",
-                edges={"refines": ["n2"]},
-                verification_state="verified",
-            ),
-        )
-        _upsert(self.store, note_id="n2", path="b.md", title="Beta", n_chunks=1)
-
-        results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)
-        n1 = next(r for r in results if r["note_id"] == "n1")
-        edges = [e for e in n1["edges"] if e["kind"] == "edge"]
-        assert len(edges) == 1
-        assert edges[0]["target_id"] == "n2"
-        assert edges[0]["resolved_note_id"] == "n2"
-
-    def test_edge_resolved_note_id_none_when_target_missing(self):
-        """resolved_note_id is None when the target note does not exist."""
-        _upsert(
-            self.store,
-            note_id="n1",
-            path="a.md",
-            title="Alpha",
-            n_chunks=1,
-            metadata=_meta(
-                title="Alpha",
-                edges={"related": ["ghost-note"]},
-                verification_state="verified",
-            ),
-        )
-
-        results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)
-        assert len(results) == 1
-        edges = [e for e in results[0]["edges"] if e["kind"] == "edge"]
-        assert len(edges) == 1
-        assert edges[0]["target_id"] == "ghost-note"
-        assert edges[0]["resolved_note_id"] is None
-
-    def test_edges_independent_per_note(self):
-        """Each result only includes edges belonging to that note."""
-        _upsert(
-            self.store,
-            note_id="n1",
-            path="a.md",
-            title="Alpha",
-            n_chunks=1,
-            links=[Link(target="link-a", display=None)],
-        )
-        _upsert(
-            self.store,
-            note_id="n2",
-            path="b.md",
-            title="Beta",
-            n_chunks=1,
-            links=[Link(target="link-b", display=None)],
-        )
-        results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)
-        by_id = {r["note_id"]: r for r in results}
-        assert by_id["n1"]["edges"][0]["target_id"] == "link-a"
-        assert by_id["n2"]["edges"][0]["target_id"] == "link-b"

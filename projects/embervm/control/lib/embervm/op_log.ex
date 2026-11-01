@@ -101,6 +101,7 @@ defmodule Embervm.OpLog do
     :residency_changed,
     :session_created,
     :session_invoke_started,
+    :session_recovery_fenced,
     :session_invoked,
     :session_brick_gone,
     :session_banked,
@@ -306,6 +307,10 @@ defmodule Embervm.OpLog do
               {:ok, [Op.t()]} | {:error, {:compacted, non_neg_integer()}} | {:error, term()}
   @callback session_cessation_evidence(server(), String.t(), map(), String.t() | :admin) ::
               {:ok, map()} | {:error, atom(), map()}
+  @callback session_recovery_fence(server(), String.t(), map(), String.t(), integer()) ::
+              {:ok, map()} | {:error, atom(), map()}
+  @callback session_restore_allowed(server(), String.t()) ::
+              :ok | {:error, :recovery_fenced | :unknown_lineage | :recovery_store_unavailable}
   @callback load_tasks(server()) :: {:ok, [map()]} | {:error, term()}
   # Loads every session row from the durable `sessions` projection (R2), for the
   # SessionStore's boot/adoption rebuild (Task 5/8): the ETS hot set of sessions

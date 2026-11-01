@@ -2,6 +2,14 @@
   import { onMount, untrack, tick } from "svelte";
   import { sheetRolls } from "$lib/grimoire/sheet-rolls.js";
   import { composeMessage } from "$lib/grimoire/session-compose.js";
+  import {
+    claimReload,
+    dropDraft,
+    expiryCheck,
+    keepDraft,
+    signInExpired,
+    takeDraft,
+  } from "$lib/grimoire/session-expiry.js";
   import HandoutCard from "$lib/grimoire/HandoutCard.svelte";
   import HandoutComposer from "$lib/grimoire/HandoutComposer.svelte";
   import RevealPanel from "$lib/grimoire/RevealPanel.svelte";
@@ -12,6 +20,7 @@
   import KnowledgeDrawer from "$lib/grimoire/KnowledgeDrawer.svelte";
   import KnowledgeSearch from "$lib/grimoire/KnowledgeSearch.svelte";
   import ReadAloud from "$lib/grimoire/ReadAloud.svelte";
+  import { FREE_LABEL, presetSpeakers } from "$lib/grimoire/read-aloud.js";
   import VoicePresets from "$lib/grimoire/VoicePresets.svelte";
   import TurnStrip from "$lib/grimoire/TurnStrip.svelte";
   import YourTurnBanner from "$lib/grimoire/YourTurnBanner.svelte";
@@ -39,6 +48,7 @@
   let failure = $state("");
   let pendingMessage = null;
   let connection = $state("Live");
+  let signedOut = $state("");
   $effect(() => {
     state = data;
     draft = "";
@@ -66,6 +76,12 @@
   });
   let turnEntries = $derived(turnOrder?.entries || []);
   let ownCharacterIds = $derived(state.characters.map((row) => row.id));
+  let speakers = $derived(presetSpeakers(state.voices || []));
+  // A deleted preset leaves the picker; fall back rather than keep its key.
+  $effect(() => {
+    const options = ["narrator", ...speakers.map((row) => row.key), FREE_LABEL];
+    if (!options.includes(speakerKey)) speakerKey = "narrator";
+  });
   const endpoint = () =>
     `/grimoire/campaigns/${state.campaign.id}/session/state`;
 
@@ -103,6 +119,52 @@
     activeTab = "inventory";
   }
 
+  const composer = () => ({
+    text: draft,
+    audience,
+    replyTo,
+    resolved,
+    speakerKey,
+    speakerLabel,
+    pending: pendingMessage,
+  });
+
+  const viewer = () => ({ id: state.user?.id, role: state.campaign.role });
+  // Another account signing in on this browser changes who the poll answers
+  // for. Panels keep their own state, so only a full load is safe.
+  const identity = (view) =>
+    [
+      view.user?.id,
+      view.campaign?.role,
+      view.campaign?.player_character_id,
+    ].join("|");
+  const expiry = expiryCheck();
+
+  // Only a full page load can pass the login again, so keep the composer and
+  // reload. If this tab reloaded within the last minute, stop and ask instead.
+  // While a send is in flight, wait for the next poll: a message that landed
+  // must not come back as a draft and be sent twice.
+  function expired() {
+    if (busy) return;
+    const kept = keepDraft(state.campaign.id, viewer(), composer());
+    if (claimReload()) return location.reload();
+    connection = "Signed out";
+    signedOut = kept
+      ? "Signed out. Reload to continue; your draft is kept."
+      : "Signed out. Copy your draft, then reload to continue.";
+  }
+
+  // A 401 or login redirect shows Reconnecting until a later one confirms it.
+  function signInSignal() {
+    if (!signedOut) connection = "Reconnecting";
+    if (expiry.signal()) expired();
+  }
+
+  // While signed out, keep the stored composer current for a manual reload.
+  $effect(() => {
+    if (signedOut) keepDraft(state.campaign.id, viewer(), composer());
+  });
+
   async function refresh() {
     try {
       const response = await fetch(
@@ -110,15 +172,34 @@
           (data.selectedSessionId
             ? `?${new URLSearchParams({ session: data.selectedSessionId })}`
             : ""),
+        { redirect: "manual" },
       );
+      if (signInExpired(response)) return signInSignal();
+      expiry.reset();
       const next = await response.json();
       if (!response.ok) throw new Error(next.error);
+      if (identity(next) !== identity(state)) {
+        // Wait for an in-flight send, as on expiry. The same account (a new
+        // character or role) keeps its draft; another account never gets it.
+        if (busy) return;
+        if (next.user?.id === state.user?.id)
+          keepDraft(state.campaign.id, viewer(), composer());
+        else dropDraft(state.campaign.id);
+        return location.reload();
+      }
       state = next;
       connection = "Live";
+      if (signedOut) {
+        signedOut = "";
+        dropDraft(state.campaign.id);
+      }
     } catch {
-      connection = "Reconnecting";
+      if (!signedOut) connection = "Reconnecting";
     }
   }
+
+  const interrupted =
+    "Connection interrupted. Your draft is saved. Retry Send to confirm this message.";
 
   async function act(input) {
     if (busy) return;
@@ -127,9 +208,18 @@
     try {
       const response = await fetch(endpoint(), {
         method: "POST",
+        redirect: "manual",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ sessionId: state.session?.id, ...input }),
       });
+      // Nothing was saved. busy is still set, so a confirmed expiry waits for
+      // the next poll.
+      if (signInExpired(response)) {
+        signInSignal();
+        if (!signedOut) failure = interrupted;
+        return;
+      }
+      expiry.reset();
       const result = await response.json();
       if (!response.ok) throw new Error(result.error);
       if (
@@ -146,7 +236,7 @@
     } catch (error) {
       failure =
         error instanceof TypeError
-          ? "Connection interrupted. Your draft is saved. Retry Send to confirm this message."
+          ? interrupted
           : error.message || "Could not send. Your draft is saved; try again.";
     } finally {
       busy = false;
@@ -161,7 +251,7 @@
       audience,
       replyTo,
       resolved,
-      speakerKey: speakerKey === "custom" ? speakerLabel.trim() : speakerKey,
+      speakerKey: speakerKey === FREE_LABEL ? speakerLabel.trim() : speakerKey,
     });
     const signature = JSON.stringify({
       sessionId: state.session?.id,
@@ -249,6 +339,20 @@
   }
 
   onMount(() => {
+    const kept = takeDraft(state.campaign.id, viewer(), {
+      dm,
+      characters: state.characters,
+      speakers: ["narrator", ...speakers.map((row) => row.key), FREE_LABEL],
+    });
+    if (kept) {
+      draft = kept.text;
+      audience = kept.audience;
+      replyTo = kept.replyTo;
+      resolved = kept.resolved;
+      speakerKey = kept.speakerKey;
+      speakerLabel = kept.speakerLabel;
+      pendingMessage = kept.pending;
+    }
     let stopped = false;
     let timer;
     async function poll() {
@@ -510,6 +614,13 @@
         </article>
       {/each}
       {#if failure}<p role="alert" class="failure">{failure}</p>{/if}
+      {#if signedOut}<p role="alert" class="failure signed-out">
+          {signedOut}<button
+            type="button"
+            class="secondary"
+            onclick={() => location.reload()}>Reload</button
+          >
+        </p>{/if}
       {#if playing}
         <form onsubmit={post} class="composer">
           {#if dm}
@@ -519,13 +630,13 @@
                 bind:value={speakerKey}
               >
                 <option value="narrator">Narrator</option>
-                {#each state.npcs || [] as npc}<option value={npc.id}
-                    >{npc.name}</option
+                {#each speakers as speaker}<option value={speaker.key}
+                    >{speaker.name}</option
                   >{/each}
-                <option value="custom">Free label</option>
+                <option value={FREE_LABEL}>Free label</option>
               </select></label
             >
-            {#if speakerKey === "custom"}<label
+            {#if speakerKey === FREE_LABEL}<label
                 >Speaker label <input
                   aria-label="Speaker label"
                   bind:value={speakerLabel}
@@ -582,7 +693,7 @@
         </form>
         {#if dm}<VoicePresets
             presets={state.voices || []}
-            npcs={state.npcs || []}
+            endpoint={endpoint()}
             {act}
             {busy}
           />{/if}
@@ -605,7 +716,7 @@
                 ><option value="attacks">Attacks</option></select
               >
             {/if}
-            <div role="radiogroup" aria-label="Roll mode">
+            <div class="roll-mode" role="radiogroup" aria-label="Roll mode">
               <label
                 ><input
                   type="radio"
@@ -920,7 +1031,18 @@
     gap: 8px;
     margin: 4px 0 16px;
   }
-  input {
+  .roll-mode {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+  }
+  .roll-mode label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 44px;
+  }
+  input:not([type="checkbox"]):not([type="radio"]) {
     font: inherit;
     color: inherit;
     padding: 12px;
@@ -958,9 +1080,6 @@
     gap: 8px;
     align-items: center;
     margin-top: 12px;
-  }
-  .resolve-choice input {
-    width: auto;
   }
   textarea {
     display: block;
@@ -1015,6 +1134,13 @@
     padding: 14px;
     border: 1px solid var(--tone-disk);
     color: var(--tone-disk);
+  }
+  .signed-out {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
   }
   a {
     color: var(--grim-accent);

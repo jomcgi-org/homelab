@@ -14,7 +14,7 @@ const API_BASE = process.env.API_BASE || "http://localhost:8000";
 // entirely off the internet: the gateway only ever routes to the frontend, and
 // the backend is reachable only by the frontend in-cluster (mirrors the
 // ships/stars +server.js proxies). The backend's public_api views remain the
-// confidentiality boundary regardless.
+// confidentiality boundary.
 export async function GET({ params, fetch, setHeaders }) {
   const res = await fetch(
     `${API_BASE}/api/knowledge/public/notes/${encodeURIComponent(params.id)}`,

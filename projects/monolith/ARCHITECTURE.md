@@ -363,6 +363,10 @@ Factory receipts retain issue/branch ownership while paused or landing-held.
 See [authoritative records](factory/orchestration/FACTORY.md#authoritative-records-and-context)
 and [cadence ownership](factory/orchestration/FACTORY.md#cadence-and-singleton-ownership).
 
+**Why.** Work item pointer comments link each GitHub-sourced work item to its
+durable factory record. They exist only for display and reference and are never
+read back, so issue-side changes cannot steer factory state through them.
+
 ### Funding consolidation
 
 **Why.** The eight funding, judgement, reservation, watchdog, continuation,
@@ -371,7 +375,9 @@ Task grants, exact-artifact continuations, reservation verdicts and opt-in meter
 outcomes now share `factory_funding.decide`; its judge call is a bounded step.
 The existing adapters retain authentication, exact-dispatch revalidation, stop
 ownership, unknown-outcome charges and lease deadlines. Historical operator
-holds remain binding. See [Funding](factory/orchestration/FACTORY.md#funding).
+holds remain binding. Unresolved attempts wait for their existing owner, legacy
+dollar-threshold audits rearm from the current turn count, and an unresolved
+funding escalation or budget proposal cannot request a second judge. See [Funding](factory/orchestration/FACTORY.md#funding).
 
 **Why.** Canonical `funding_*` audit events commit with marked legacy projections
 so old binaries still enforce continuation leases and meter trips on rollback.
@@ -382,6 +388,15 @@ meaningful assertions; source/test reductions are measurements under the revised
 acceptance, not numeric gates. Required CI and independent exact-head review
 remain mandatory. Rollback is reverting the PR.
 
+**Why.** `FACTORY_CONDUCTOR_FUNDING_ENABLED` stages judge-reviewed funding.
+`FACTORY_MERIT_JUDGE_ENABLED` adds criteria and server-read evidence to the same
+judge path, and doubt steers to an operator card under a pinned turn ceiling.
+`FACTORY_RESERVATION_REVIEW_ENABLED` reviews the running invocation's lease. Two
+continuation contracts remain: the legacy final correction pair behind
+`FACTORY_AUTONOMOUS_CONTINUATION_ENABLED`, which cannot renew itself, and an
+operator two-hour lease for one paused recovered task. The switch contract is in
+[Funding](factory/orchestration/FACTORY.md#funding).
+
 ### Factory acceptance
 
 Repository delivery and operational acceptance are separate. These rows move from
@@ -391,6 +406,7 @@ See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-check
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Escalation cards survive the factory's own gate writes, declined landing recovery is named, and optimizer verdicts are final once the window ends and its attempts settle | section 4; evidence on the issue | #7495 | repository delivery; 72-hour before and after counts remain on the issue |
 | Per-sweep intake decisions, private backlog age and digest evidence | section 4; repository-only Conductor rescope | #7459 | staged repository delivery; rollout, first-sweep distribution and credential-backed follow-up remain on the issue |
 | One funding decision owns continuation, steering and stop while accounting retains reservations and unknown outcomes | Funding consolidation; repository acceptance in #7454 | #7454 | policy tests consolidated, task grant, progress and continuation decisions unified, allocation recovery folded into funding, shadow and reservation dollar-ceiling paths retired; reservation and meter decisions share the funding resolver; canonical funding audits retain rollback projections; reduction percentages are measurements |
 | Optional queue-driven inventory refill, default-off with durable advisory execution and bounded issue publication | section 4, recorded Conductor rescope and cap decision | #7376 | repository-only; operational checklist remains on the issue; no shipped policy enablement |
@@ -404,6 +420,10 @@ See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-check
 | One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5784 (open child #5788) | roles (#5785) and staged MCP mutation enforcement (#5789) delivered; #5786, #5787 and #5804 closed not planned; continuity enablement is #6561 |
 | One factory conversation spans web, Discord, and voice for the same conductor | The factory conductor | #5788 | not started |
 | Execution profiles (implement, investigate, debug, research) become policy dimensions beside difficulty and risk | The factory conductor | #5784 | not started; conductor and planner on Astra since generation 11 |
+| Trusted `factory/dependency-evidence` gate with App-pinned identity, exact-head assessments and invalidation | PR #6806, staged rollout | [#6799](https://github.com/jomcgi-org/homelab/issues/6799) | repository-only; 7-item live checklist on [the issue](https://github.com/jomcgi-org/homelab/issues/6799#issuecomment-6545691566); #7186 owns the Renovate switches and schedule activation |
+| Post-guest proof settles bound zero-turn attempts with read-only live evidence per item | The factory conductor, staged flag | [#6559](https://github.com/jomcgi-org/homelab/issues/6559) | repository delivery merged, default-off; 6-item live validation plus runbook detail on [the issue](https://github.com/jomcgi-org/homelab/issues/6559#issuecomment-6545695108) |
+| Trusted `factory/review` check publisher with session-distinct approval and dedicated token | PR #6213 | [#3835](https://github.com/jomcgi-org/homelab/issues/3835) | repository-only; 4-item activation checklist on [the issue](https://github.com/jomcgi-org/homelab/issues/3835#issuecomment-6545692966) |
+| Fail-closed push-format validation for source guests, staged repository-only | The factory conductor, staged flag | [#7458](https://github.com/jomcgi-org/homelab/issues/7458) | repository-only; PR #7473 merged 2026-10-31; hypothesis, 14-day window and stop conditions on the issue; trial pending |
 
 ### Intake and planning rationale
 
@@ -411,6 +431,26 @@ See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-check
 ownership, dependencies and receipt history. Bounded, default-off execution and
 duplicate-post fences protect uncertain publication (#7376).
 See [refill](factory/orchestration/FACTORY.md#queue-driven-backlog-refill).
+
+**Why.** The dated #7366 inventory brief gave way to five rotating one-sentence
+maintenance routines. The collector picks its own analysis, while the independent
+review, durable publication and breakers are unchanged. A routine run no
+longer opens a needs-human summary issue; the summary stays in its settled audit,
+and starts recorded before routines keep theirs. `factory_configure_refill`
+preserved an open low-yield breaker and only a full policy re-post cleared it,
+which is board-only and, with active work, forces a generation advance. The
+opt-in `reset_breaker` records the same reset and `min_new_issues` sets the
+floor, so neither needs the full post (#7376, #7489).
+
+**Why.** The static planner charter grew to about 1,800 words, mostly restating
+mechanics the server already enforces and explains through its schema, refusal
+codes and `decision_feedback`. Outcome-level prompts with guardrails and exit
+criteria are preferred, restoring a line only after repeated failure. The charter
+keeps authority, untrusted-data scoping, exit criteria and the defaults the server
+cannot infer, at about 560 words. The cut is measured against the prior 14 days
+by planner refusal rate, planner rounds per task, first-pass review rejection
+and planner input tokens (#7489). See
+[charter content](factory/orchestration/FACTORY.md#operating-rules).
 
 **Why.** Native registration and client visibility are separate observations.
 Stale discovery cannot justify another control route or access change.
@@ -423,6 +463,16 @@ EmberVM verifier may instead establish the exact positive terminal journal chain
 complete retained successor coverage and no remaining restore authority. Monolith
 binds that proof to local lineage ownership, preview digest and audited replay;
 incomplete history remains fenced. See [learning reconciliation](factory/orchestration/FACTORY.md#settled-learning-execution).
+
+**Why.** A second dispatch settled as uninvoked does not establish the first
+dispatch's missing result. A retained terminal EmberVM row can still authorize
+workspace restoration, so current absence of successors is insufficient.
+Explicit settled-retry recovery combines an immutable, journaled lineage fence
+with positive parking evidence and complete successor checks, then rechecks the
+exact local owner before failing only the factory attempt at unknown cost. The
+private management boundary is unchanged. Native history and accounting remain
+intact; partial remote effects are reconciled through a durable request intent.
+See [supervised cessation](factory/orchestration/FACTORY.md#supervised-cessation).
 
 **Why.** Outcome comparisons need complete receipt cohorts and attempt accounting.
 Missing evidence must remain unknown; priced turns and ledger bounds answer
@@ -455,6 +505,21 @@ must survive migration (#7372). See [intake](factory/orchestration/FACTORY.md#au
 **Why.** Repository identity belongs to work and receipts. A second repository
 must not replace homelab's policy, freeze inherited limits or start work merely
 by being added (#6463). See [repositories](factory/orchestration/FACTORY.md#serving-more-than-one-repository).
+
+**Why.** Planner prompts are static-first so the byte-identical prefix stays
+cacheable across rounds and tasks; whether the cache hits is measured through
+`cache_read_tokens`, never assumed.
+
+**Why.** Reasoning effort pins by role, with Planner and review nodes at
+`xhigh` and `role_effort` overrides; the Astra coding policy makes new workers
+and implementers prefer Astra at `medium`, never downgrades a failed Astra
+attempt to Sol, and leaves Opus as the independent reviewer. The Opus review
+floor is a capability constraint with the judgment floor ignoring quota
+(#6461, #6992).
+
+**Why.** A GitOps policy change is a one-shot guarded migration that bumps the
+version and writes an audit row; rollback uses the normal policy control, and
+the historical migration is never rerun or rewritten (#6983).
 
 ### Capacity and delivery rationale
 
@@ -496,7 +561,8 @@ rejected reviews from completing recovery. See [recovery](factory/orchestration/
 
 **Why.** A guest's read-only prompt cannot attenuate its shared GitHub credential.
 Review-only recovery needs a tool-free provider boundary, dedicated configuration
-and preserved holds. See [review-only recovery](factory/orchestration/FACTORY.md#explicit-review-only-recovery).
+and preserved holds. It sends immutable base and head evidence to a tool-free
+reviewer through one fixed provider endpoint, with no guest or session. See [review-only recovery](factory/orchestration/FACTORY.md#explicit-review-only-recovery).
 
 **Why.** Escalations need decisions a person can select, rather than many threads
 to reinterpret. Server-side, idempotent effects avoid another guest turn; browser
@@ -513,6 +579,7 @@ historical attribution and observation remain on #7165. See [pause questions](fa
 **Why.** Advisory work consumes no delivery review, so one concurrency bound
 rationed the wrong resource. Review independence survives a cheaper opinion;
 judgment floors and unknown quota evidence still constrain routing (#6002).
+Reviewer independence is a property of the session, never the model.
 See [reviewer fallback](factory/orchestration/FACTORY.md#reviewer-fallback-while-the-claude-window-is-spent).
 
 **Why.** One-node planning spent nine starts on five pieces of work in #5981;
@@ -520,7 +587,23 @@ five starts were planner turns.
 Mechanical correction loops add no new planning information; lost re-review
 verdicts supply no fresh findings (#5419). See [execution](factory/orchestration/FACTORY.md#execution-and-evidence).
 
+**Why.** An exhausted implementation opens a verification handoff instead of
+another retry: Joe chose option 3 on #6296 on 2026-10-01 to remove the person
+from this loop without assuming an infrastructure-dead attempt never reached a
+model. `attempts_spent` and `NO_MODEL_POST_PHASES` stay unchanged (#6296).
+
+**Why.** The 2026-09-13 MVP decision keeps four operating rules: human-equivalent
+review, one line per task, cost per accepted PR, and shared planner and
+implementation starts (#5956).
+
 ### Execution and recovery rationale
+
+**Why.** Sixteen of the thirty-one resolved cards in the newest fifty were
+dismissed because the issue body changed. Four came minutes after the card, on
+issues already carrying the factory's own gate blocks, so the hash excludes
+those blocks. An optimizer window that has ended cannot gain traffic, so once
+its attempts settle the verdict is final and releases the selection; one
+experiment had held the loop for four weeks (#7495). See [automatic pause questions](factory/orchestration/FACTORY.md#automatic-pause-questions).
 
 **Why.** KG admission needs a fresh permitting grant; a stale pool can block
 the traffic that refreshes it. Inference-free usage refresh and a bounded probe
@@ -532,7 +615,7 @@ See [probe cleanup](factory/orchestration/FACTORY.md#quota-evidence-and-probe-cl
 
 **Why.** Charging an unpriced completion at its ceiling is conservative, but
 recorded Codex tokens are priceable. Charging those ceilings overstated spend;
-cheap planning also needs its own turn bound (#7161). See [accounting](factory/orchestration/FACTORY.md#execution-and-evidence).
+cheap planning also needs its own turn bound (#7161). See [accounting](factory/orchestration/FACTORY.md#funding).
 
 **Why.** Fixed turn caps stranded valid plans and overfunded trivial ones.
 Reserving every possible review round repeated that failure; refusals must name
@@ -551,8 +634,10 @@ fences can then strand it indefinitely; elapsed time or a missing binding alone
 cannot prove no delivery (#6285). See [execution](factory/orchestration/FACTORY.md#execution-and-evidence).
 
 **Why.** Zero local turns do not prove no guest ran. Bound-zero-turn recovery
-must retain the cost ceiling and exclude late writers until exact remote proof
-and conditional cleanup agree (#6559). See [settlement](factory/orchestration/FACTORY.md#bound-zero-turn-settlement-runbook).
+requires a terminal owning workflow, a run and start still active and unpriced,
+and a session owning one bound guest with zero turns and one matching running or
+uncertain permit. It must retain the cost ceiling and exclude late writers until
+exact remote proof and conditional cleanup agree (#6559). See [settlement](factory/orchestration/FACTORY.md#bound-zero-turn-settlement-runbook).
 
 **Why.** Eleven cessations coincided with promotions (#6670): observer cleanup
 outlived drain, and DBOS teardown preceded handoff. The attempted POST identity
@@ -581,6 +666,54 @@ incorrectly inside replay (062). See [cadence](factory/orchestration/FACTORY.md#
 evaluation to retain useful changes and retire failed ones. The
 [evolution contract](../../docs/agents/evolution.md) preserves pinned limits and
 holds. See [evolution](factory/orchestration/FACTORY.md#factory-evolution-follows-delivery-authority).
+
+**Why.** A launched factory exits the process after orderly shutdown instead of
+destroying and relaunching DBOS in process: surviving workflow threads can race
+recovery, and teardown reordering leaves the lease shorter than the rollout
+drain. A normal rollout still fences admission on SIGTERM and drains native
+executor handoffs (#6798).
+
+**Why.** The DBOS application version pins to the node workflow source, so a
+deploy that leaves those functions alone recovers in-flight nodes natively.
+Every checkpoint-sequence change is gated with `DBOS.patch`, retired only once
+no pre-patch workflow can still be PENDING (#6659).
+
+**Why.** A replica lost mid-invoke holds the turn with stop reason
+`response_lost` under a durable dispatch-exact hold; DBOS recovery brings the
+node back and the next dispatch poll finishes the attempt from that receipt.
+Response loss, timeouts and unknown invocations keep the uncertain path, and
+a separate control-plane result cache stays unplanned (#5938, #4322).
+
+**Why.** A receipt still inside its acceptance window with nothing committed
+keeps its guest fenced, because until that body arrives the guest is the only
+path to the turn. See [guest reuse](factory/orchestration/FACTORY.md#guest-reuse-cleanup).
+
+**Why.** A guest that answers its turn with a provider error before doing any
+work settles permit, attempt and start in one transaction under the
+`provider_error_before_work` proof; any tool activity before the error keeps
+the attempt on the uncertain path (#6468).
+
+**Why.** The lost-before-session sweep settles an aged reserved start with no
+session, permit, receipt, cost or outcome as failed at zero cost, and only when
+the owning workflow is proven `ERROR`, `CANCELLED` or absent. The terminal graph
+transition fences a delayed submitter, and elapsed time or a missing binding
+alone cannot refund an attempt with contradictory execution evidence (#6285).
+
+**Why.** A drained factory turn has a separate settlement path behind
+`FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED`, staged off in chart defaults;
+sessions 8410 and 8416 stay unchanged by that delivery, with remediation and
+final acceptance on #6271.
+
+**Why.** `factory_cessation.py` closes the unknown-hold gap for an attempt
+whose run and start are both `uncertain` and whose node workflow is terminal;
+the automatic path runs more than two hours past the task deadline behind
+`FACTORY_ACTIVE_CESSATION_ENABLED`, and `request_cessation` runs the same steps
+for one exact attempt on an operator reviewed fingerprint (#6025, #6288).
+
+**Why.** `FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED` carries a brick-drain relay
+through to an owner in the node workflow, with continuation retirement and
+stop supervision; a stranded state otherwise needs the control-plane root
+cause on #6091 (#6256).
 
 
 ## 5. Chat
@@ -1514,6 +1647,23 @@ runtime `targetRevision` is cluster state and, on the hub, that a point-in-time
 health wait stands in for a settling window until a development stage exists
 there (ADR platform/009).
 
+A frontend deploy replaces its hashed JS chunks, but Cloudflare keeps serving
+cached page HTML for up to an hour (plus stale-while-revalidate), and during a
+rolling update a page from one pod can request chunks from another. A page that
+fails to load a chunk reloads once with a unique `_fresh` query, which misses
+the edge cache and returns HTML for the current build. A session-storage guard
+stops a second reload within 30 seconds, and the marker is removed from the
+address bar on arrival.
+(see: /projects/monolith/frontend/src/app.html)
+(see: /projects/monolith/frontend/src/hooks.client.js)
+
+**Why.** Before this, visitors got SvelteKit's 500 page until the edge copy
+expired. Purging Cloudflare on each rollout would also fix cached HTML, but it
+needs a zone API credential in the cluster and still leaves rollout skew;
+publishing every build's chunks to persistent storage removes both, at the
+cost of an asset bucket and upload step. The reload costs affected visitors one
+extra page load and needs neither.
+
 The two document manifests are build outputs, not committed files. The
 `:repo_docs_manifest` genrule writes the repo-docs NDJSON (the docfix path
 allowlist `knowledge/repo_docs.py` loads), which the backend, jobs and domain
@@ -1667,7 +1817,7 @@ Every dependency success waits for exact-head `pr-checks`; each target is
 revalidated immediately before publication, including durable approval, with a
 60-second collection budget.
 
-Activation still requires the operator checklist in `FACTORY.md`, including
+Activation still requires the operator checklist on [issue #6799](https://github.com/jomcgi-org/homelab/issues/6799#issuecomment-6545691566), including
 App-pinned ruleset enforcement on both PR and merge-group commits and resolving
 the BuildBuddy credential boundary (#7005). Tick-time checks and revocation
 cannot guarantee atomic freshness when an advisory appears after a successful
@@ -1707,7 +1857,7 @@ result transaction appends only newly observed paths to the factory audit under
 the task lock. This preserves workflow checkpoint ordering and keeps evidence
 after a worker corrects its tree. Image tools use repository pins and generator
 sources; CI's formatter remains unchanged. The staged experiment and live
-acceptance are recorded in `factory/orchestration/FACTORY.md`.
+acceptance are recorded on [issue #7458](https://github.com/jomcgi-org/homelab/issues/7458).
 
 **Why.** The September policy removed Astra to conserve Codex quota before a
 reset. On 2026-10-17 both grants had substantial headroom and Joe chose to use

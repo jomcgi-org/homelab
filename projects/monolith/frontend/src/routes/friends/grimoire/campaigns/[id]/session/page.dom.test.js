@@ -10,6 +10,8 @@ const sessionId = "33333333-3333-4333-8333-333333333333";
 const pcA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const pcB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const endpoint = `/grimoire/campaigns/${campaignId}/session/state`;
+const npcId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const npcSearchHit = "DDDDDDDD-DDDD-4DDD-8DDD-DDDDDDDDDDDD";
 
 function event(id, seq, text, overrides = {}) {
   return {
@@ -51,16 +53,7 @@ function pageData(role, events, { journal = null, session } = {}) {
     voices: [],
     user: { id: "viewer" },
     ...(role === "dm"
-      ? {
-          members: [{ id: "member-a", player_character_id: pcA }],
-          npcs: [
-            {
-              id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-              name: "NPC_CANARY",
-              entity_type: "npc",
-            },
-          ],
-        }
+      ? { members: [{ id: "member-a", player_character_id: pcA }] }
       : {}),
   };
 }
@@ -79,6 +72,10 @@ function stubFetch(nextState) {
       return json([]);
     if (String(url).includes("?entity="))
       return json({ id: "entity-mara", name: "Mara", entity_type: "npc" });
+    if (String(url).includes("?q="))
+      return json({
+        items: [{ id: npcSearchHit, name: "Mara", entity_type: "npc" }],
+      });
     if (options.method === "POST") return json({ id: "posted", seq: 99 });
     return json(nextState());
   });
@@ -111,6 +108,7 @@ afterEach(async () => {
   instance = undefined;
   document.body.innerHTML = "";
   localStorage.clear();
+  sessionStorage.clear();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   vi.useRealTimers();
@@ -338,23 +336,39 @@ describe("session read-aloud controls and voice composer", () => {
   }
 
   it("renders the DM speaker picker and editor, sends NPC and free-label narration including replies", async () => {
-    const data = pageData("dm", [
-      event("action", 1, "Hello", {
-        kind: "action",
-        audience: "dm",
-        author_member_id: "member-a",
-      }),
-    ]);
+    const preset = (key, name) => ({
+      speaker_key: key,
+      speaker_name: name,
+      voice_hint: { lang: null, names: [] },
+      rate: 1,
+      pitch: 1,
+    });
+    const data = {
+      ...pageData("dm", [
+        event("action", 1, "Hello", {
+          kind: "action",
+          audience: "dm",
+          author_member_id: "member-a",
+        }),
+      ]),
+      voices: [
+        preset("Old Salt", null),
+        preset("narrator", null),
+        preset(npcId, "NPC_CANARY"),
+      ],
+    };
     const fetch = stubFetch(() => data);
     await render(data);
+    // Only saved presets are speakers: the NPC by name, then free labels.
     const select = document.querySelector('[aria-label="Narration speaker"]');
     expect([...select.options].map((option) => option.text)).toEqual([
       "Narrator",
       "NPC_CANARY",
+      "Old Salt",
       "Free label",
     ]);
     expect(document.querySelector(".voice-presets")).not.toBeNull();
-    await choose(select, data.npcs[0].id);
+    await choose(select, npcId);
     document.querySelector("#message").value = "The captain speaks.";
     document
       .querySelector("#message")
@@ -365,14 +379,14 @@ describe("session read-aloud controls and voice composer", () => {
     await settle();
     expect(posted(fetch)[0]).toMatchObject({
       kind: "narration",
-      speakerKey: data.npcs[0].id,
+      speakerKey: npcId,
     });
     const replyButton = [...document.querySelectorAll("button")].find(
       (button) => button.textContent.includes("Reply privately to Aria"),
     );
     replyButton.click();
     await settle();
-    await choose(select, "custom");
+    await choose(select, "label:custom");
     const label = document.querySelector('[aria-label="Speaker label"]');
     label.value = "Captain North";
     label.dispatchEvent(new Event("input", { bubbles: true }));
@@ -562,6 +576,235 @@ describe("session read-aloud controls and voice composer", () => {
       speakerKey: "narrator",
     });
   });
+
+  it("finds an NPC by name to give it a preset", async () => {
+    const data = pageData("dm", []);
+    const fetch = stubFetch(() => data);
+    await render(data);
+    const select = document.querySelector('[aria-label="Preset speaker"]');
+    expect([...select.options].map((option) => option.text)).toEqual([
+      "Narrator",
+      "Find an NPC",
+      "Free label",
+    ]);
+    await choose(select, "npc:find");
+    expect(document.querySelector('[aria-label="Language hint"]')).toBeNull();
+    const name = document.querySelector('[aria-label="NPC name"]');
+    name.value = " Mar ";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    document
+      .querySelector(".voice-presets form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(fetch).toHaveBeenCalledWith(`${endpoint}?q=Mar&type=npc`);
+    [...document.querySelectorAll('[aria-label="Matching NPCs"] button')]
+      .find((button) => button.textContent === "Mara")
+      .click();
+    await settle();
+    expect(select.value).toBe(npcSearchHit.toLowerCase());
+    expect(select.selectedOptions[0].text).toBe("Mara");
+    document
+      .querySelector(".voice-presets form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(posted(fetch)[0]).toMatchObject({
+      operation: "saveVoice",
+      speakerKey: npcSearchHit.toLowerCase(),
+    });
+  });
+
+  it("says when the NPC search shows only part of the matches and marks same-named NPCs", async () => {
+    const data = pageData("dm", []);
+    const fetch = stubFetch(() => data);
+    const routed = fetch.getMockImplementation();
+    fetch.mockImplementation(async (url, options) =>
+      String(url).includes("?q=")
+        ? json({
+            items: [
+              {
+                id: npcSearchHit,
+                name: "Mara",
+                entity_type: "npc",
+                source_type: "extracted",
+                source_book: "system-reference-doc-5-1",
+              },
+              {
+                id: npcId,
+                name: "mara",
+                entity_type: "npc",
+                source_type: "homebrew",
+                source_book: null,
+              },
+              {
+                id: pcB,
+                name: "Marabel",
+                entity_type: "npc",
+                source_type: "extracted",
+                source_book: "monster-manual",
+              },
+            ],
+            total: 42,
+            next_cursor: "30",
+          })
+        : routed(url, options),
+    );
+    await render(data);
+    await choose(
+      document.querySelector('[aria-label="Preset speaker"]'),
+      "npc:find",
+    );
+    const name = document.querySelector('[aria-label="NPC name"]');
+    name.value = "Mar";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    document
+      .querySelector(".voice-presets form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    const text = (node) => node.textContent.replace(/\s+/g, " ").trim();
+    expect(
+      [...document.querySelectorAll('[aria-label="Matching NPCs"] button')].map(
+        text,
+      ),
+    ).toEqual([
+      "Mara (system-reference-doc-5-1)",
+      "mara (Homebrew)",
+      "Marabel",
+    ]);
+    expect(text(document.querySelector(".voice-presets"))).toContain(
+      "Showing 3 of 42. Type more of the name.",
+    );
+  });
+
+  it("keeps unavailable NPCs out of narration, lets the DM delete them, and keeps a 'custom' preset apart from Free label", async () => {
+    const stale = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    const preset = (key, name) => ({
+      speaker_key: key,
+      speaker_name: name,
+      voice_hint: { lang: "en-GB", names: [] },
+      rate: 1,
+      pitch: 1,
+    });
+    const data = {
+      ...pageData("dm", []),
+      voices: [
+        preset(stale, null),
+        preset("custom", null),
+        preset(npcId, "NPC_CANARY"),
+      ],
+    };
+    const fetch = stubFetch(() => data);
+    await render(data);
+    const narration = document.querySelector(
+      '[aria-label="Narration speaker"]',
+    );
+    expect(
+      [...narration.options].map((option) => [option.value, option.text]),
+    ).toEqual([
+      ["narrator", "Narrator"],
+      [npcId, "NPC_CANARY"],
+      ["custom", "custom"],
+      ["label:custom", "Free label"],
+    ]);
+    // The saved "custom" label is a speaker, not the Free label field.
+    await choose(narration, "custom");
+    expect(document.querySelector('[aria-label="Speaker label"]')).toBeNull();
+    document.querySelector("#message").value = "Who goes there?";
+    document
+      .querySelector("#message")
+      .dispatchEvent(new Event("input", { bubbles: true }));
+    document
+      .querySelector(".composer")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(posted(fetch)[0]).toMatchObject({
+      kind: "narration",
+      speakerKey: "custom",
+    });
+
+    expect(document.body.textContent).not.toContain(stale);
+    const saved = [
+      ...document.querySelectorAll('[aria-label="Saved voice presets"] button'),
+    ];
+    expect(saved.map((button) => button.textContent)).toEqual([
+      "Unavailable NPC",
+      "custom",
+      "NPC_CANARY",
+    ]);
+    saved[0].click();
+    await settle();
+    const editor = document.querySelector('[aria-label="Preset speaker"]');
+    expect(editor.value).toBe(stale);
+    expect(editor.selectedOptions[0].text).toBe("Unavailable NPC");
+    expect(document.querySelector('[aria-label="Language hint"]')).toBeNull();
+    const buttons = [...document.querySelectorAll(".voice-presets button")];
+    expect(buttons.some((button) => button.textContent === "Save voice")).toBe(
+      false,
+    );
+    buttons.find((button) => button.textContent === "Delete voice").click();
+    await settle();
+    expect(posted(fetch)[1]).toMatchObject({
+      operation: "deleteVoice",
+      speakerKey: stale,
+    });
+
+    saved[1].click();
+    await settle();
+    expect(editor.value).toBe("custom");
+    expect(document.querySelector('[aria-label="Preset label"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Language hint"]').value).toBe(
+      "en-GB",
+    );
+  });
+
+  it("falls back to the narrator in both pickers when the chosen preset is deleted", async () => {
+    vi.useFakeTimers();
+    const preset = (key, name) => ({
+      speaker_key: key,
+      speaker_name: name,
+      voice_hint: { lang: null, names: [] },
+      rate: 1,
+      pitch: 1,
+    });
+    let current = {
+      ...pageData("dm", []),
+      voices: [preset(npcId, "NPC_CANARY"), preset("Old Salt", null)],
+    };
+    const fetch = stubFetch(() => current);
+    await render(current);
+    const narration = document.querySelector(
+      '[aria-label="Narration speaker"]',
+    );
+    const editor = document.querySelector('[aria-label="Preset speaker"]');
+    await choose(narration, npcId);
+    [...document.querySelectorAll('[aria-label="Saved voice presets"] button')]
+      .find((button) => button.textContent === "Old Salt")
+      .click();
+    await settle();
+    expect(editor.value).toBe("Old Salt");
+    current = { ...current, voices: [] };
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(narration.value).toBe("narrator");
+    expect(editor.value).toBe("narrator");
+    document.querySelector("#message").value = "The door creaks.";
+    document
+      .querySelector("#message")
+      .dispatchEvent(new Event("input", { bubbles: true }));
+    document
+      .querySelector(".composer")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    document
+      .querySelector(".voice-presets form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(posted(fetch)).toMatchObject([
+      { kind: "narration", speakerKey: "narrator" },
+      { operation: "saveVoice", speakerKey: "narrator" },
+    ]);
+  });
 });
 
 describe("voice preset editor across state polls", () => {
@@ -630,6 +873,37 @@ describe("private session events from server projections", () => {
         'section[aria-label="Character knowledge search"]',
       ),
     ).toBeNull();
+  });
+
+  it("keeps a player's knowledge search query and results across session polls", async () => {
+    const hit = {
+      type: "event",
+      id: "hit",
+      preview: "Mara keeps the harbour ledger.",
+      source: { session_id: sessionId, seq: 7 },
+    };
+    const poll = stubFetch(() => pageData("player", []));
+    const fetch = vi.fn(async (url, options) =>
+      String(url).includes("/knowledge/search")
+        ? json([hit])
+        : poll(url, options),
+    );
+    vi.stubGlobal("fetch", fetch);
+    vi.useFakeTimers();
+    await render(pageData("player", []));
+    const input = document.querySelector('input[type="search"]');
+    input.value = "ledger";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    document
+      .querySelector('form[role="search"]')
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(document.body.textContent).toContain(hit.preview);
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(statePolls(fetch)).toHaveLength(1);
+    expect(input.value).toBe("ledger");
+    expect(document.body.textContent).toContain(hit.preview);
   });
 
   it("renders a sequence anchor and keeps a historical search target during polling", async () => {
@@ -707,8 +981,6 @@ describe("private session events from server projections", () => {
         });
       if (path.endsWith("/characters")) return json(viewer.pcs);
       if (path.endsWith("/voices")) return json([]);
-      if (path.endsWith("/entities"))
-        return json({ items: [], next_cursor: null });
       if (path.endsWith("/sheets")) return json({ versions: [] });
       if (path.endsWith("/sessions"))
         return json([{ id: sessionId, status: "active" }]);
@@ -910,6 +1182,409 @@ describe("session feed polling", () => {
     expect(document.querySelector('[role="status"]').textContent).toBe(
       "Reconnecting",
     );
+  });
+});
+
+describe("sign-in expiry", () => {
+  const draftKey = `grimoire-draft:${campaignId}`;
+  const signedOut = () =>
+    new Response(JSON.stringify({ error: "Your session has expired." }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    });
+  // What fetch returns for a manual redirect: no status, no body.
+  const loginRedirect = () => ({
+    type: "opaqueredirect",
+    status: 0,
+    ok: false,
+    json: async () => {
+      throw new SyntaxError("No body");
+    },
+  });
+  const kept = () => JSON.parse(sessionStorage.getItem(draftKey));
+  const connection = () =>
+    document.querySelector('[role="status"]').textContent;
+
+  async function type(text) {
+    const textarea = document.getElementById("message");
+    textarea.value = text;
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+  }
+
+  function stubReload() {
+    const reload = vi.fn();
+    vi.spyOn(window.location, "reload").mockImplementation(reload);
+    return reload;
+  }
+
+  const send = () =>
+    document
+      .querySelector("form.composer")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+  async function poll() {
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("keeps the draft and reloads once the next poll confirms a 401", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    const fetch = vi.fn(async () => signedOut());
+    vi.stubGlobal("fetch", fetch);
+    await render(pageData("player", []));
+    await type("I search the altar.");
+
+    // One 401 may be transient: the gateway can forward a token just past
+    // its expiry, or a single renewal can fail.
+    await poll();
+    expect(statePolls(fetch)).toEqual([[endpoint, { redirect: "manual" }]]);
+    expect(reload).not.toHaveBeenCalled();
+    expect(connection()).toBe("Reconnecting");
+    expect(sessionStorage.getItem(draftKey)).toBe(null);
+
+    await poll();
+    expect(statePolls(fetch)).toHaveLength(2);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(kept()).toMatchObject({
+      text: "I search the altar.",
+      audience: "table",
+      viewer: { id: "viewer", role: "player" },
+    });
+  });
+
+  it("does not reload for a 401 that the next poll answers", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    const answers = [signedOut, null, signedOut, null];
+    const fallback = stubFetch(() => pageData("player", []));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url, options) =>
+        url === endpoint && !options?.method && answers.length
+          ? (answers.shift()?.() ?? fallback(url, options))
+          : fallback(url, options),
+      ),
+    );
+    await render(pageData("player", []));
+    await type("I search the altar.");
+
+    await poll();
+    expect(connection()).toBe("Reconnecting");
+    await poll();
+    expect(connection()).toBe("Live");
+    // The good poll started the count again, so a later lone 401 waits too.
+    await poll();
+    expect(connection()).toBe("Reconnecting");
+    await poll();
+    expect(connection()).toBe("Live");
+    expect(reload).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(draftKey)).toBe(null);
+    expect(document.getElementById("message").value).toBe(
+      "I search the altar.",
+    );
+  });
+
+  it("keeps a DM's private reply when Send meets the login redirect", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    const privateAction = event("act", 1, "I pocket the key.", {
+      kind: "action",
+      audience: "dm",
+      author_member_id: "member-a",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => loginRedirect()),
+    );
+    await render(pageData("dm", [privateAction]));
+    [...document.querySelectorAll("button")]
+      .find((button) => button.textContent.trim() === "Reply privately to Aria")
+      .click();
+    await tick();
+    await type("The key is warm.");
+    send();
+    await settle();
+
+    // The send did not land; the draft stays and the next poll decides.
+    expect(reload).not.toHaveBeenCalled();
+    expect(connection()).toBe("Reconnecting");
+    expect(document.querySelector(".feed .failure").textContent).toContain(
+      "Retry Send",
+    );
+    expect(document.getElementById("message").value).toBe("The key is warm.");
+
+    await poll();
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(kept()).toMatchObject({
+      text: "The key is warm.",
+      audience: `pc:${pcA}`,
+      replyTo: { id: "act", name: "Aria" },
+      viewer: { id: "viewer", role: "dm" },
+    });
+    expect(document.querySelector(".signed-out")).toBe(null);
+  });
+
+  it("lets a send in flight land before the reload, so it is not sent twice", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    let land;
+    const fetch = vi.fn((url, options) =>
+      options?.method === "POST"
+        ? new Promise((resolve) => (land = resolve))
+        : Promise.resolve(signedOut()),
+    );
+    vi.stubGlobal("fetch", fetch);
+    await render(pageData("player", []));
+    await type("I open the vault.");
+    send();
+    await settle();
+
+    // Two polls confirm the expiry while the send is still in flight.
+    await poll();
+    await poll();
+    expect(reload).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(draftKey)).toBe(null);
+
+    land(json({ id: "posted", seq: 99 }));
+    await settle();
+    expect(document.getElementById("message").value).toBe("");
+    await poll();
+    expect(reload).toHaveBeenCalledTimes(1);
+    // The landed message is not kept, so the reload cannot send it again.
+    expect(sessionStorage.getItem(draftKey)).toBe(null);
+    expect(posted(fetch)).toHaveLength(1);
+  });
+
+  it("does not reload again within a minute and says the draft is kept", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    sessionStorage.setItem("grimoire-sign-in-reload", String(Date.now()));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => signedOut()),
+    );
+    await render(pageData("player", []));
+    await type("I search the altar.");
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(reload).not.toHaveBeenCalled();
+    expect(connection()).toBe("Signed out");
+    const alert = document.querySelector(".signed-out");
+    expect(alert.getAttribute("role")).toBe("alert");
+    expect(alert.textContent).toContain(
+      "Signed out. Reload to continue; your draft is kept.",
+    );
+    // Text typed after the notice is kept for a manual reload too.
+    await type("I search the altar twice.");
+    expect(kept().text).toBe("I search the altar twice.");
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settle();
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the notice and the kept copy when a later poll succeeds", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    sessionStorage.setItem("grimoire-sign-in-reload", String(Date.now()));
+    let polls = 0;
+    const fallback = stubFetch(() => pageData("player", []));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url, options) =>
+        url === endpoint && (polls += 1) <= 2
+          ? signedOut()
+          : fallback(url, options),
+      ),
+    );
+    await render(pageData("player", []));
+    await type("I search the altar.");
+    await poll();
+    await poll();
+    expect(connection()).toBe("Signed out");
+    expect(kept().text).toBe("I search the altar.");
+
+    await poll();
+    expect(reload).not.toHaveBeenCalled();
+    expect(connection()).toBe("Live");
+    expect(document.querySelector(".signed-out")).toBe(null);
+    expect(document.getElementById("message").value).toBe(
+      "I search the altar.",
+    );
+    expect(sessionStorage.getItem(draftKey)).toBe(null);
+  });
+
+  it("restores the kept draft once and never widens its audience", async () => {
+    sessionStorage.setItem(
+      draftKey,
+      JSON.stringify({
+        text: "Only the DM should read this.",
+        audience: `pc:${pcB}`,
+        replyTo: { id: "act", name: "Bram" },
+        viewer: { id: "viewer", role: "player" },
+      }),
+    );
+    stubFetch(() => pageData("player", []));
+    await render(pageData("player", []));
+    await settle();
+
+    expect(document.getElementById("message").value).toBe(
+      "Only the DM should read this.",
+    );
+    // A player has no per-character audience, so the DM is the fallback.
+    expect(document.querySelector('select[aria-label="Send to"]').value).toBe(
+      "dm",
+    );
+    expect(document.body.textContent).not.toContain("Replying privately");
+    expect(sessionStorage.getItem(draftKey)).toBe(null);
+  });
+
+  it("restores a DM's private reply to the same character", async () => {
+    sessionStorage.setItem(
+      draftKey,
+      JSON.stringify({
+        text: "The key is warm.",
+        audience: `pc:${pcA}`,
+        replyTo: { id: "act", name: "Aria" },
+        resolved: true,
+        speakerKey: "narrator",
+        viewer: { id: "viewer", role: "dm" },
+      }),
+    );
+    stubFetch(() => pageData("dm", []));
+    await render(pageData("dm", []));
+    await settle();
+
+    expect(document.getElementById("message").value).toBe("The key is warm.");
+    expect(document.querySelector('select[aria-label="Send to"]').value).toBe(
+      `pc:${pcA}`,
+    );
+    expect(document.body.textContent).toContain("Replying privately to Aria");
+  });
+
+  it("reloads instead of showing another account's poll in this tab", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    const other = { ...pageData("player", []), user: { id: "someone-else" } };
+    stubFetch(() => other);
+    await render(pageData("player", []));
+    await type("My own draft.");
+
+    await poll();
+    expect(reload).toHaveBeenCalledTimes(1);
+    // The other account never gets this viewer's draft.
+    expect(sessionStorage.getItem(draftKey)).toBe(null);
+  });
+
+  it("keeps the same player's draft when a new character reloads the page", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    const assigned = pageData("player", []);
+    stubFetch(() => ({
+      ...assigned,
+      campaign: { ...assigned.campaign, player_character_id: pcB },
+    }));
+    await render(pageData("player", []));
+    await type("I search the altar.");
+
+    await poll();
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(kept()).toMatchObject({
+      text: "I search the altar.",
+      viewer: { id: "viewer", role: "player" },
+    });
+  });
+
+  it("retries a send interrupted before the reload with its original request id", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    let failPost = true;
+    let expired = false;
+    const fallback = stubFetch(() => pageData("player", []));
+    const fetch = vi.fn(async (url, options = {}) => {
+      if (url === endpoint && options.method === "POST" && failPost) {
+        failPost = false;
+        throw new TypeError("Failed to fetch");
+      }
+      if (url === endpoint && !options.method && expired) return signedOut();
+      return fallback(url, options);
+    });
+    vi.stubGlobal("fetch", fetch);
+    await render(pageData("player", []));
+    await type("I open the door.");
+    send();
+    await settle();
+    const first = posted(fetch)[0].requestId;
+
+    expired = true;
+    await poll();
+    await poll();
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(kept().pending.id).toBe(first);
+
+    // The reloaded page sends the restored draft under the same request id,
+    // so a message that did land is not posted twice.
+    await unmount(instance);
+    instance = undefined;
+    document.body.innerHTML = "";
+    expired = false;
+    await render(pageData("player", []));
+    await settle();
+    send();
+    await settle();
+    expect(posted(fetch).at(-1)).toMatchObject({
+      text: "I open the door.",
+      requestId: first,
+    });
+  });
+
+  it("restores a DM's free-label speaker", async () => {
+    sessionStorage.setItem(
+      draftKey,
+      JSON.stringify({
+        text: "Halt, who goes there?",
+        audience: "table",
+        speakerKey: "label:custom",
+        speakerLabel: "Captain North",
+        viewer: { id: "viewer", role: "dm" },
+      }),
+    );
+    stubFetch(() => pageData("dm", []));
+    await render(pageData("dm", []));
+    await settle();
+
+    expect(
+      document.querySelector('select[aria-label="Narration speaker"]').value,
+    ).toBe("label:custom");
+    expect(
+      document.querySelector('input[aria-label="Speaker label"]').value,
+    ).toBe("Captain North");
+  });
+
+  it("drops a draft another account kept in this tab", async () => {
+    sessionStorage.setItem(
+      draftKey,
+      JSON.stringify({
+        text: "The mayor is the cultist.",
+        audience: "dm",
+        speakerKey: npcId,
+        viewer: { id: "someone-else", role: "dm" },
+      }),
+    );
+    stubFetch(() => pageData("player", []));
+    await render(pageData("player", []));
+    await settle();
+
+    expect(document.getElementById("message").value).toBe("");
+    expect(document.body.textContent).not.toContain("cultist");
+    expect(sessionStorage.getItem(draftKey)).toBe(null);
   });
 });
 

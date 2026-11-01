@@ -1,6 +1,7 @@
-"""Local handoff integration: real HTTP adapter, simulated control plane/queue."""
+"""Local handoff preparation: real HTTP adapter, simulated control plane."""
 
 import asyncio
+import hashlib
 from dataclasses import asdict
 import json
 import unittest
@@ -32,8 +33,15 @@ class BrowserReviewHandoffTest(unittest.TestCase):
         self.receipt = {"status": "unknown"}
         self.generation = 3
         self.requested = 0
-        self.starts = []
         self.created = []
+        self.requests = []
+        self.state = "destroyed"
+        self.preflight_files = {
+            "projects/monolith/frontend/factory-preview/browser_handoff_check.py": "1"
+            * 64,
+            "projects/monolith/frontend/factory-preview/sheet_check.py": "2" * 64,
+            "projects/monolith/factory/orchestration/browser_evidence.py": "3" * 64,
+        }
         self.restore_ok = True
         self.lineage_override = None
         original_client = httpx.AsyncClient
@@ -67,13 +75,14 @@ class BrowserReviewHandoffTest(unittest.TestCase):
         }
 
     def handle(self, request):
+        self.requests.append((request.method, request.url.path))
         path = request.url.path
         if request.method == "GET":
             return httpx.Response(
                 200,
                 json={
                     **self.identity(),
-                    "state": "destroyed",
+                    "state": self.state,
                     "workspace_export": self.receipt,
                 },
             )
@@ -107,48 +116,121 @@ class BrowserReviewHandoffTest(unittest.TestCase):
             },
         )
 
-    def restore(self, context):
-        restored = asyncio.run(
-            transport.EmberVmShimTransport().create_session(
-                restore_from=context.lineage_id,
-                model="sol",
-                expected_workspace_fingerprint=context.expected_fingerprint,
-            )
-        )
-        self.assertNotEqual(restored.session_id, context.producer_ember_session_id)
-        self.assertTrue(restored.restored)
-        self.starts.append(context)
-
-    def advance(self):
-        result = asyncio.run(
+    def prepare(self):
+        return asyncio.run(
             prepare_browser_review(
                 json.dumps(self.value).encode(),
                 expected_provenance=self.provenance,
                 expected_producer=self.producer,
                 model="sol",
-                preflight_files={
-                    "projects/monolith/frontend/factory-preview/browser_handoff_check.py": "1"
-                    * 64,
-                    "projects/monolith/frontend/factory-preview/sheet_check.py": "2"
-                    * 64,
-                    "projects/monolith/factory/orchestration/browser_evidence.py": "3"
-                    * 64,
-                },
+                preflight_files=self.preflight_files,
             )
         )
-        if result["status"] == "prepared":
-            self.restore(WorkspaceHandoff.from_json(result["workspace_handoff"]))
-        return result
 
-    def test_pending_export_then_exact_independent_restore(self):
-        self.assertEqual(self.advance()["reason"], "export_requested")
-        self.assertEqual(self.advance()["reason"], "export_pending")
+    def test_pending_export_then_prepared_handoff_never_creates_session(self):
+        self.assertEqual(
+            self.prepare(), {"status": "pending", "reason": "export_requested"}
+        )
+        self.assertEqual(
+            self.prepare(), {"status": "pending", "reason": "export_pending"}
+        )
         self.assertEqual(self.requested, 1)
-        self.assertEqual(self.starts, [])
+        self.assertEqual(self.created, [])
         self.complete()
-        result = self.advance()
+        result = self.prepare()
         self.assertEqual(result["status"], "prepared")
-        self.assertEqual(len(self.starts), 1)
+        self.assertEqual(result["workspace_export"], self.receipt)
+        self.assertEqual(result["raw_capture"], json.dumps(self.value))
+        self.assertEqual(result["expected_provenance"], asdict(self.provenance))
+        self.assertEqual(result["expected_producer"], asdict(self.producer))
+        self.assertEqual(
+            result["evidence_retention"],
+            {"status": "retained", "policy": {"lineage_id": self.producer.lineage_id}},
+        )
+        digest = hashlib.sha256(
+            json.dumps(self.value, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        payload = {
+            "version": 1,
+            "handoff": self.value,
+            "expected_workspace_fingerprint": "e" * 64,
+            "preflight": {
+                "harness_sha": self.provenance.harness_sha,
+                "files": self.preflight_files,
+            },
+        }
+        self.assertEqual(
+            WorkspaceHandoff.from_json(result["workspace_handoff"]),
+            WorkspaceHandoff(
+                lineage_id=self.producer.lineage_id,
+                expected_fingerprint="e" * 64,
+                producer_ember_session_id=self.producer.session_id,
+                handoff_sha256=digest,
+                preflight_json=json.dumps(
+                    payload, sort_keys=True, separators=(",", ":")
+                ),
+            ),
+        )
+        self.assertEqual(self.created, [])
+        self.assertEqual(
+            [
+                path.rsplit("/", 1)[-1]
+                for method, path in self.requests
+                if method == "POST"
+            ],
+            [
+                "workspace-export",
+                "evidence-retention",
+            ],
+        )
+
+    def test_nonterminal_producer_never_creates_session(self):
+        self.state = "running"
+        self.assertEqual(
+            self.prepare(), {"status": "pending", "reason": "producer_not_terminal"}
+        )
+        self.assertEqual(self.created, [])
+        self.assertEqual(self.requested, 0)
+
+    def test_failed_export_never_dispatches(self):
+        self.receipt = {
+            **self.identity(),
+            "status": "failed",
+            "reason": "export_failed",
+        }
+        with self.assertRaises(EvidenceError):
+            self.prepare()
+        self.assertEqual(self.created, [])
+        self.assertEqual(self.requested, 0)
+
+    def test_wrong_lineage_and_stale_generation(self):
+        self.complete()
+        self.generation += 1
+        with self.assertRaises(EvidenceError):
+            self.prepare()
+        self.lineage_override = "wrong-lineage"
+        with self.assertRaises(EvidenceError):
+            self.prepare()
+        self.assertEqual(self.created, [])
+
+    def test_stale_capture_rejected_before_network(self):
+        self.value["provenance"]["head_sha"] = "0" * 40
+        with self.assertRaises(EvidenceError):
+            self.prepare()
+        self.assertEqual(self.requested, 0)
+        self.assertEqual(self.created, [])
+        self.assertEqual(self.requests, [])
+
+    def test_restore_mismatch_never_binds_review(self):
+        self.restore_ok = False
+        with self.assertRaises(transport.EmberVMTransportError):
+            asyncio.run(
+                transport.EmberVmShimTransport().create_session(
+                    restore_from=self.producer.lineage_id,
+                    model="sol",
+                    expected_workspace_fingerprint="e" * 64,
+                )
+            )
         self.assertEqual(
             self.created,
             [
@@ -158,41 +240,6 @@ class BrowserReviewHandoffTest(unittest.TestCase):
                 }
             ],
         )
-
-    def test_failed_export_never_dispatches(self):
-        self.receipt = {
-            **self.identity(),
-            "status": "failed",
-            "reason": "export_failed",
-        }
-        with self.assertRaises(EvidenceError):
-            self.advance()
-        self.assertEqual(self.starts, [])
-        self.assertEqual(self.requested, 0)
-
-    def test_wrong_lineage_and_stale_generation(self):
-        self.complete()
-        self.generation += 1
-        with self.assertRaises(EvidenceError):
-            self.advance()
-        self.lineage_override = "wrong-lineage"
-        with self.assertRaises(EvidenceError):
-            self.advance()
-        self.assertEqual(self.starts, [])
-
-    def test_stale_capture_rejected_before_network(self):
-        self.value["provenance"]["head_sha"] = "0" * 40
-        with self.assertRaises(EvidenceError):
-            self.advance()
-        self.assertEqual(self.requested, 0)
-        self.assertEqual(self.starts, [])
-
-    def test_restore_mismatch_never_binds_review(self):
-        self.complete()
-        self.restore_ok = False
-        with self.assertRaises(transport.EmberVMTransportError):
-            self.advance()
-        self.assertEqual(self.starts, [])
 
     def test_existing_binding_cannot_substitute_another_lineage(self):
         client = transport.EmberVmShimTransport()

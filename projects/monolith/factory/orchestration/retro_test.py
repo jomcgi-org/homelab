@@ -309,28 +309,46 @@ def test_optimizer_waits_for_rollout_and_strict_post_window():
     )
 
 
-def test_optimizer_keeps_missing_traffic_and_coverage_unknown():
+def test_optimizer_ended_window_without_an_answer_is_final():
+    # An ended cohort never gains traffic, so holding the selection on it only
+    # freezes the loop: the verdict is INCONCLUSIVE and releases the slot.
     assert (
         retro.optimizer_evidence(_experiment_context(post={"attempts": 0}), NOW)[
             "status"
         ]
-        == "UNKNOWN"
+        == "INCONCLUSIVE"
     )
-    assert (
-        retro.optimizer_evidence(
-            _experiment_context(post={"attempts": 10, "unknown": 1}), NOW
-        )["status"]
-        == "UNKNOWN"
+    unsettled = _experiment_context(post={"attempts": 10, "unknown": 1})
+    # Attempts created near the window's end get a day to settle first.
+    assert retro.optimizer_evidence(unsettled, NOW)["status"] == "WAIT"
+    later = NOW + retro.timedelta(hours=retro._OPTIMIZER_SETTLE_HOURS)
+    assert retro.optimizer_evidence(unsettled, later)["status"] == "INCONCLUSIVE"
+    short = retro.optimizer_evidence(
+        _experiment_context(post={"attempts": 4, "dispatch_failure": 0, "unknown": 0}),
+        NOW,
     )
-    assert (
-        retro.optimizer_evidence(
-            _experiment_context(overlapping_revisions=["0.2.0"]), NOW
-        )["status"]
-        == "UNKNOWN"
-    )
+    assert short["status"] == "INCONCLUSIVE"
+    assert "4 of 10 attempts" in short["reason"]
     context = _experiment_context()
     context["experiment"].pop("minimum_attempts")
-    assert retro.optimizer_evidence(context, NOW)["status"] == "UNKNOWN"
+    assert retro.optimizer_evidence(context, NOW)["status"] == "INCONCLUSIVE"
+    context["experiment"]["metric"] = "not-a-metric"
+    assert retro.optimizer_evidence(context, NOW)["status"] == "INCONCLUSIVE"
+
+
+def test_optimizer_names_overlapping_deployments_without_holding_the_verdict():
+    verdict = retro.optimizer_evidence(
+        _experiment_context(overlapping_revisions=["0.2.0"]), NOW
+    )
+    assert verdict["status"] == "ACCEPTED"
+    assert verdict["confounders"] == {"overlapping_revisions": ["0.2.0"]}
+    # Unavailable evidence stays UNKNOWN: the next run can still read it.
+    assert (
+        retro.optimizer_evidence(_experiment_context(error="GitHub unavailable"), NOW)[
+            "status"
+        ]
+        == "UNKNOWN"
+    )
 
 
 def test_optimizer_reports_observed_acceptance_or_regression_with_counts():
@@ -374,7 +392,9 @@ def test_optimizer_loader_bounds_windows_at_proven_deployment(monkeypatch):
 
     def rows(_session, sql, params):
         observed.append((sql, params))
-        if sql in (retro._OPTIMIZER_BOUNDARY, retro._OPTIMIZER_OBSERVATIONS):
+        if sql == retro._OPTIMIZER_OBSERVATIONS:
+            return [{"deployed_revision": "0.1.0", "polls": 1}]
+        if sql == retro._OPTIMIZER_BOUNDARY:
             return [
                 {
                     "note_id": "deployment-example",
@@ -470,8 +490,13 @@ def test_optimizer_loader_ignores_deployments_after_completed_window(monkeypatch
         retro, "_verify_optimizer_rollout", lambda *_: {"verdict": "verified"}
     )
 
-    def rows(_session, sql, _params):
-        if sql in (retro._OPTIMIZER_BOUNDARY, retro._OPTIMIZER_OBSERVATIONS):
+    def rows(_session, sql, params):
+        if sql == retro._OPTIMIZER_OBSERVATIONS:
+            # The query itself bounds the window, so a revision deployed an
+            # hour after it closed never reaches the loader.
+            assert params["as_of"] == boundary + retro.timedelta(hours=72)
+            return [{"deployed_revision": "0.1.0", "polls": 2}]
+        if sql == retro._OPTIMIZER_BOUNDARY:
             return [
                 {
                     "note_id": "deployed",
@@ -483,11 +508,7 @@ def test_optimizer_loader_ignores_deployments_after_completed_window(monkeypatch
                         "newest_freight_version": "0.1.0",
                         "writeback_commit": "a" * 40,
                     },
-                },
-                {
-                    "observed_at": boundary + retro.timedelta(hours=73),
-                    "extra": {"deployed_revision": "0.2.0"},
-                },
+                }
             ]
         return [{"attempts": 10}]
 
@@ -532,6 +553,8 @@ def test_optimizer_old_window_coverage_is_independent_of_later_polls(monkeypatch
                 "app": "monolith",
                 "expected_revision": "0.1.0",
                 "writeback_commit": "a" * 40,
+                "metric": "dispatch_failure",
+                "minimum_attempts": 10,
             },
             "merged_at": (boundary - retro.timedelta(days=1)).isoformat(),
             "contains_merge": True,
@@ -547,18 +570,23 @@ def test_optimizer_old_window_coverage_is_independent_of_later_polls(monkeypatch
             return [{"note_id": "deployed", "observed_at": boundary}]
         if sql == retro._OPTIMIZER_OBSERVATIONS:
             assert params["since"] == boundary and params["as_of"] == end
-            # Exactly the limit is complete. The extra sentinel detects overflow.
+            # One row per distinct revision, however many polls observed it.
             return [
-                {"observed_at": boundary, "extra": {"deployed_revision": "0.2.0"}}
-            ] * 5000
-        return [{"attempts": 10}]
+                {"deployed_revision": "0.1.0", "polls": 5000},
+                {"deployed_revision": "0.2.0", "polls": 5000},
+            ]
+        return [{"attempts": 10, "dispatch_failure": 2, "unknown": 0}]
 
     monkeypatch.setattr(retro, "_rows", rows)
     loaded = retro._load_optimizer(object(), NOW)
     assert loaded["observation_coverage"]["complete"] is True
+    assert loaded["observation_coverage"]["revisions_observed"] == 2
     assert loaded["post"]["end"] == end.isoformat()
     assert loaded["overlapping_revisions"] == ["0.2.0"]
-    assert retro.optimizer_evidence(loaded, NOW)["status"] == "UNKNOWN"
+    # The overlapping revision is reported, and the verdict is still given.
+    verdict = retro.optimizer_evidence(loaded, NOW)
+    assert verdict["status"] == "ACCEPTED"
+    assert verdict["confounders"]["overlapping_revisions"] == ["0.2.0"]
 
 
 def test_optimizer_sql_selects_exact_boundary_before_bounded_history():
@@ -624,7 +652,9 @@ def test_optimizer_sql_selects_exact_boundary_before_bounded_history():
                 "limit": retro._OPTIMIZER_OBSERVATION_LIMIT + 1,
             },
         ).fetchall()
-        assert [row[0] for row in rows] == ["deployed", "overlap"]
+        # 5001 polls of the later revision sit outside the window; the two
+        # inside collapse to one row per revision in first-seen order.
+        assert [(row[0], row[1]) for row in rows] == [("0.1.0", 1), ("0.2.0", 1)]
 
 
 # Learning deliberately stays inside this existing workflow/test target.

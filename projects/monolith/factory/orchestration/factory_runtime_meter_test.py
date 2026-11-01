@@ -3617,9 +3617,7 @@ def test_scoped_landing_grant_preview_apply_replay(database, scoped_delivery):
 def test_scoped_landing_rejects_other_scope(database, scoped_delivery, classification):
     from factory.orchestration import factory_landing_release as releases
 
-    with pytest.raises(
-        ValueError, match="landing_scope_not_private_internal_reversible"
-    ):
+    with pytest.raises(ValueError, match="landing_scope_unsupported"):
         releases.preview(
             838,
             7170,
@@ -4577,3 +4575,894 @@ def test_rollback_reader_retains_continuation_authority_and_replay(
             )
     assert progress.apply_continuation(**request) == result
     assert not progress.renew_continuation("task")
+
+
+@pytest.fixture
+def public_docs_delivery(database, scoped_delivery, monkeypatch):
+    import base64
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import factory_landing_release as releases
+
+    pull = scoped_delivery
+    pull["base"]["sha"] = "b" * 40
+    pull["changed_files"] = 2
+    paths = sorted(releases.PUBLIC_DOCS)
+    files = [
+        dict(filename=p, status="modified", sha=str(i + 1) * 40)
+        for i, p in enumerate(paths)
+    ]
+    responses = {f"compare/{'b' * 40}...{'a' * 40}": {"files": files}}
+    for revision, prefix in (("b" * 40, "old"), ("a" * 40, "new")):
+        responses[f"git/commits/{revision}"] = {"tree": {"sha": prefix}}
+        for i, path in enumerate(paths):
+            parts = path.split("/")
+            for depth, part in enumerate(parts):
+                tree_sha = prefix + "/" + "/".join(parts[:depth]) if depth else prefix
+                tree = responses.setdefault(
+                    f"git/trees/{tree_sha}", {"truncated": False, "tree": []}
+                )
+                if any(e["path"] == part for e in tree["tree"]):
+                    continue
+                is_file = depth == len(parts) - 1
+                sha = (
+                    (str(i + 1) * 40 if prefix == "new" else str(i + 3) * 40)
+                    if is_file
+                    else prefix + "/" + "/".join(parts[: depth + 1])
+                )
+                tree["tree"].append(
+                    dict(
+                        path=part,
+                        mode="100644" if is_file else "040000",
+                        type="blob" if is_file else "tree",
+                        sha=sha,
+                    )
+                )
+    for f in files:
+        responses[f"git/blobs/{f['sha']}"] = {
+            "encoding": "base64",
+            "size": 7,
+            "content": base64.b64encode(b"# Docs\n").decode(),
+        }
+
+    def github_get(repo, suffix):
+        assert repo == "org/repo"
+        return pull if suffix == "pulls/7170" else responses[suffix]
+
+    monkeypatch.setattr(conductor, "github_get", github_get)
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        direction = json.loads(row.direction_json)
+        direction["landing_hold"] = {"actor": "operator", "reason": "review first"}
+        row.direction_json = json.dumps(direction)
+    return pull, responses
+
+
+def public_docs_scope():
+    return {
+        "classification": "public_docs",
+        "evidence": "Operator approves public documentation publication at this exact head.",
+    }
+
+
+@pytest.mark.parametrize("queue_change", ["review", "head", "hold"])
+def test_public_docs_atomic_release_grant_replay_and_queue(
+    database, public_docs_delivery, monkeypatch, queue_change
+):
+    from factory import review_publisher
+    from factory.orchestration import factory_landing as landing
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, _ = public_docs_delivery
+    pull["node_id"] = "PR_7170"
+    with Session(database) as db:
+        before = db.get(FactoryReceipt, 838).model_dump()
+        assert (
+            releases.scoped_refusal(db, db.get(FactoryReceipt, 838), 7170, "a" * 40)
+            == "landing_receipt_held"
+        )
+    proposal = releases.preview(
+        838, 7170, "a" * 40, "Publish docs", scope=public_docs_scope()
+    )
+    assert proposal["operation"] == "release_and_authorize"
+    assert {f["path"] for f in proposal["public_docs"]["files"]} == releases.PUBLIC_DOCS
+    args = {**operator_request(proposal, "public-docs"), "scope": public_docs_scope()}
+    result = releases.apply(838, 7170, "a" * 40, "Publish docs", **args)
+    assert result["ok"] and not result["delivery_accepted"]
+    assert releases.apply(838, 7170, "a" * 40, "Publish docs", **args) == result
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        after = row.model_dump()
+        assert {
+            k: v for k, v in before.items() if k not in ("direction_json", "updated_at")
+        } == {
+            k: v for k, v in after.items() if k not in ("direction_json", "updated_at")
+        }
+        direction = json.loads(row.direction_json)
+        assert "landing_hold" not in direction
+        assert direction["conductor_gates"] and direction["nonrenewable_recovery"]
+        assert releases.scoped_refusal(db, row, 7170, "a" * 40) is None
+        assert releases.scoped_refusal(db, row, 7170, "b" * 40)
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == releases.SCOPE_ACTION
+                    )
+                ).all()
+            )
+            == 1
+        )
+    # The actual queue fence consumes the same audited grant and still requires
+    # the existing native independent review. It never races a separate release.
+    monkeypatch.setattr(landing, "github_get", lambda *_: pull)
+    monkeypatch.setattr(landing, "_queued_ids", lambda *_: {"PR_7170"})
+    monkeypatch.setattr(
+        review_publisher,
+        "collect",
+        lambda task: review_publisher.ReviewEvidence(
+            task_id=task,
+            repo="org/repo",
+            pr_number=7170,
+            branch="factory/task",
+            head_sha=pull["head"]["sha"],
+            review_run_id=1,
+            review_session_id=2,
+            policy_version=0,
+            details_url="https://example.test/review",
+        ),
+    )
+    actions = []
+    monkeypatch.setattr(landing, "github_graphql", lambda *args: actions.append(args))
+    item = {
+        "task_id": "task",
+        "pr_number": 7170,
+        "head_sha": "a" * 40,
+        "armed": 0,
+        "ejected": 0,
+        "merged": False,
+    }
+    assert not landing._enforce_landing_hold("org/repo", item)
+    assert not landing._fence_ungranted_queue_entry("org/repo", item)
+    assert actions == []
+    # An exact-head grant is not an independent-review substitute.
+    if queue_change == "review":
+        monkeypatch.setattr(
+            review_publisher,
+            "collect",
+            lambda task: review_publisher.Refusal(task, "review_missing"),
+        )
+    if queue_change == "head":
+        pull["head"]["sha"] = "c" * 40
+    elif queue_change == "hold":
+        with Session(database) as db, db.begin():
+            row = db.get(FactoryReceipt, 838)
+            direction = json.loads(row.direction_json)
+            direction["landing_hold"] = {"actor": "operator", "reason": "new hold"}
+            row.direction_json = json.dumps(direction)
+    queued = iter([{"PR_7170"}, set()])
+    monkeypatch.setattr(landing, "_queued_ids", lambda *_: next(queued))
+    assert landing._fence_ungranted_queue_entry("org/repo", item)
+    assert len(actions) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "code",
+        "agent_instructions",
+        "rename",
+        "added",
+        "count",
+        "duplicate",
+        "truncated",
+        "symlink",
+        "executable",
+        "binary",
+        "oversize",
+        "blob",
+        "missing",
+        "non_utf8",
+        "unchanged",
+        "size_mismatch",
+        "base_executable",
+        "base_symlink",
+        "base_truncated",
+        "bad_base64",
+    ],
+)
+def test_public_docs_rejects_unverified_scope(database, public_docs_delivery, change):
+    import base64
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, responses = public_docs_delivery
+    files = responses[f"compare/{'b' * 40}...{'a' * 40}"]["files"]
+    entry = next(
+        e
+        for e in responses["git/trees/new/projects/monolith"]["tree"]
+        if e["path"] == "ARCHITECTURE.md"
+    )
+    old_entry = next(
+        e
+        for e in responses["git/trees/old/projects/monolith"]["tree"]
+        if e["path"] == "ARCHITECTURE.md"
+    )
+    blob = responses[f"git/blobs/{files[0]['sha']}"]
+    if change == "code":
+        files[0]["filename"] = "projects/monolith/main.py"
+    elif change == "agent_instructions":
+        files[0]["filename"] = "AGENTS.md"
+    elif change == "rename":
+        files[0]["previous_filename"] = "other.md"
+    elif change == "added":
+        files[0]["status"] = "added"
+    elif change == "count":
+        pull["changed_files"] = 3
+    elif change == "duplicate":
+        files[1] = files[0]
+    elif change == "truncated":
+        responses["git/trees/new"]["truncated"] = True
+    elif change == "symlink":
+        entry["mode"] = "120000"
+    elif change == "executable":
+        entry["mode"] = "100755"
+    elif change == "binary":
+        blob.update(content="AA==", size=1)
+    elif change == "oversize":
+        blob["size"] = 512 * 1024 + 1
+    elif change == "blob":
+        files[0]["sha"] = "f" * 40
+    elif change == "missing":
+        responses["git/trees/new"]["tree"].clear()
+    elif change == "non_utf8":
+        blob.update(content=base64.b64encode(b"\xff\xfe# x").decode(), size=5)
+    elif change == "unchanged":
+        old_entry["sha"] = files[0]["sha"]
+    elif change == "size_mismatch":
+        blob["size"] = 8
+    elif change == "base_executable":
+        old_entry["mode"] = "100755"
+    elif change == "base_symlink":
+        old_entry["mode"] = "120000"
+    elif change == "base_truncated":
+        responses["git/trees/old"]["truncated"] = True
+    elif change == "bad_base64":
+        blob["content"] += "!"
+    with pytest.raises(ValueError, match="landing_public_docs_unverified"):
+        releases.preview(838, 7170, "a" * 40, "Publish docs", scope=public_docs_scope())
+    with Session(database) as db:
+        assert controls.landing_held(db.get(FactoryReceipt, 838))
+        assert not db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == releases.SCOPE_ACTION)
+        ).all()
+
+
+@pytest.mark.parametrize("tamper", ["head", "path"])
+def test_public_docs_scoped_refusal_rejects_tampered_proof(
+    database, public_docs_delivery, tamper
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    proposal = releases.preview(
+        838, 7170, "a" * 40, "Publish docs", scope=public_docs_scope()
+    )
+    args = {**operator_request(proposal, "public-docs"), "scope": public_docs_scope()}
+    assert releases.apply(838, 7170, "a" * 40, "Publish docs", **args)["ok"]
+
+    def edit(grant):
+        proof = grant["public_docs"]
+        if tamper == "head":
+            proof["head_sha"] = "c" * 40
+        else:
+            proof["files"][0]["path"] = "AGENTS.md"
+
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        assert releases.scoped_refusal(db, row, 7170, "a" * 40) is None
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        direction = json.loads(row.direction_json)
+        edit(direction["landing_authorization"])
+        row.direction_json = json.dumps(direction)
+        (audit,) = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == releases.SCOPE_ACTION)
+        ).all()
+        detail = json.loads(audit.detail_json)
+        edit(detail["result"]["landing_authorization"])
+        audit.detail_json = json.dumps(detail)
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        assert (
+            releases.scoped_refusal(db, row, 7170, "a" * 40)
+            == "scoped_landing_public_docs_unverified"
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["head", "base", "receipt", "live", "unknown", "hold", "scope", "unauthorized"],
+)
+def test_public_docs_apply_stale_or_unsafe_refuses_without_release(
+    database, public_docs_delivery, change
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, responses = public_docs_delivery
+    proposal = releases.preview(
+        838, 7170, "a" * 40, "Publish docs", scope=public_docs_scope()
+    )
+    if change in ("head", "base"):
+        part = pull[change]
+        old = part["sha"]
+        part["sha"] = "c" * 40
+        responses[f"git/commits/{'c' * 40}"] = responses[f"git/commits/{old}"]
+        responses[f"compare/{pull['base']['sha']}...{pull['head']['sha']}"] = responses[
+            f"compare/{'b' * 40}...{'a' * 40}"
+        ]
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        if change == "receipt":
+            row.repo = "other/repo"
+        elif change in ("live", "unknown"):
+            if change == "live":
+                db.add(
+                    SwarmNodeRun(
+                        task_id="task",
+                        node_key="live",
+                        attempt=1,
+                        dispatch_key="live",
+                        status="running",
+                    )
+                )
+            else:
+                db.exec(select(FactoryStart)).one().status = "uncertain"
+        elif change == "hold":
+            direction = json.loads(row.direction_json)
+            direction["landing_hold"]["reason"] = "new operator hold"
+            row.direction_json = json.dumps(direction)
+    scope = public_docs_scope()
+    if change == "scope":
+        scope["classification"] = "public_code"
+    if change == "unauthorized":
+        scope["evidence"] = ""
+    # A receipt identity change is rejected before reads can use the other repo.
+    with pytest.raises((ValueError, AssertionError)):
+        releases.apply(
+            838,
+            7170,
+            "a" * 40,
+            "Publish docs",
+            **operator_request(proposal, "stale-docs"),
+            scope=scope,
+        )
+    with Session(database) as db:
+        assert controls.landing_held(db.get(FactoryReceipt, 838))
+        assert not db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == releases.SCOPE_ACTION)
+        ).all()
+
+
+def test_public_docs_audit_failure_rolls_back_hold_and_grant(
+    database, public_docs_delivery, monkeypatch
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    proposal = releases.preview(
+        838, 7170, "a" * 40, "Publish docs", scope=public_docs_scope()
+    )
+    with Session(database) as db:
+        before = db.get(FactoryReceipt, 838).direction_json
+        version = db.get(FactoryControl, "factory").version
+
+    def fail_audit(*args, **kwargs):
+        raise RuntimeError("audit failed")
+
+    monkeypatch.setattr(controls, "_audit", fail_audit)
+    with pytest.raises(RuntimeError, match="audit failed"):
+        releases.apply(
+            838,
+            7170,
+            "a" * 40,
+            "Publish docs",
+            **operator_request(proposal, "atomic-docs"),
+            scope=public_docs_scope(),
+        )
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).direction_json == before
+        assert db.get(FactoryControl, "factory").version == version
+
+
+@pytest.fixture
+def operator_docs_handoff(database, public_docs_delivery, monkeypatch):
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, responses = public_docs_delivery
+    pull["node_id"] = "PR_7170"
+    monkeypatch.setattr(
+        controls, "OPERATOR_DOCS_HANDOFF_TARGET", (838, "task", "org/repo", 7170)
+    )
+    responses[f"commits/{'a' * 40}/status"] = {
+        "sha": "a" * 40,
+        "statuses": [
+            {
+                "context": "pr-checks",
+                "state": "success",
+                "target_url": "https://ci.test/1",
+            }
+        ],
+    }
+    evidence = dict(
+        state="ready_for_review",
+        head_sha=releases.HANDOFF_ACCEPTED_HEAD,
+        pr_url="https://github.com/org/repo/pull/7170",
+        review_session_id=24402,
+        reviewer_model="opus",
+    )
+    with Session(database) as db, db.begin():
+        db.get(SwarmTask, "task").settled_at = datetime.now(timezone.utc)
+        for session in db.exec(select(AgentSession)).all():
+            session.status = "completed"
+        control = db.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json)
+        policy["auto_merge"] = True
+        control.policy_json = json.dumps(policy)
+        controls._audit(
+            db,
+            "factory",
+            "finish_task",
+            task_id="task",
+            outcome="succeeded",
+            evidence=evidence,
+        )
+    scope = {
+        **public_docs_scope(),
+        "operator_handoff": {
+            "head_sha": "a" * 40,
+            "reviewer": "independent-reviewer",
+            "implementer": "delivery-owner",
+            "reference": "cloud-review:exact-head:approved",
+            "verdict": "approve",
+            "independent": True,
+        },
+    }
+    return pull, responses, scope
+
+
+def test_operator_handoff_replay_preserves_acceptance_and_owns_queue(
+    database, operator_docs_handoff, monkeypatch
+):
+    from factory.orchestration import (
+        factory_landing_release as releases,
+        factory_landing as landing,
+    )
+    from factory import review_publisher
+
+    pull, _, scope = operator_docs_handoff
+    proposal = releases.preview(838, 7170, "a" * 40, "Approved handoff", scope=scope)
+    args = {**operator_request(proposal, "handoff"), "scope": scope}
+    result = releases.apply(838, 7170, "a" * 40, "Approved handoff", **args)
+    assert result["landing_owner"] == "operator" and not result["delivery_accepted"]
+    assert releases.apply(838, 7170, "a" * 40, "Approved handoff", **args) == result
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        assert row.state == "succeeded"
+        direction = json.loads(row.direction_json)
+        assert "landing_hold" not in direction
+        assert direction["nonrenewable_recovery"] and direction["conductor_gates"]
+        events = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "finish_task")
+        ).all()
+        assert len(events) == 1
+        assert (
+            json.loads(events[0].detail_json)["evidence"]["head_sha"]
+            == releases.HANDOFF_ACCEPTED_HEAD
+        )
+        assert releases.scoped_refusal(db, row, 7170, "a" * 40) is None
+        assert db.exec(select(FactoryStart)).one().cost_usd == 4
+    monkeypatch.setattr(landing, "github_get", lambda *_: pull)
+    monkeypatch.setattr(landing, "_queued_ids", lambda *_: {"PR_7170"})
+    monkeypatch.setattr(
+        landing, "github_graphql", lambda *_: pytest.fail("valid handoff dequeued")
+    )
+    monkeypatch.setattr(
+        review_publisher, "collect", lambda *_: pytest.fail("native review used")
+    )
+    item = dict(
+        task_id="task",
+        pr_number=7170,
+        head_sha="a" * 40,
+        armed=0,
+        ejected=0,
+        merged=False,
+    )
+    assert not landing._enforce_landing_hold("org/repo", item)
+    assert not landing._fence_ungranted_queue_entry("org/repo", item)
+    for name in (
+        "_publish_review_gate",
+        "_arm",
+        "_record_merged",
+        "_close_issue",
+        "_recover_refused",
+    ):
+        monkeypatch.setattr(landing, name, lambda *_: pytest.fail("native mutation"))
+    monkeypatch.setattr(landing, "_deliveries", lambda *a, **kw: [item])
+    # The independent recovery scan must itself be suppressed or per-item guarded.
+    monkeypatch.setattr(landing, "_recover_refused", lambda *_: None)
+    landing.landing_tick({"repo": "org/repo", "auto_merge": True})
+    assert controls.request_landing_recovery(
+        "task", 7170, "a" * 40, "merge_queue", "operator"
+    ) == {"ok": False, "reason": "operator_landing_ownership"}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "head",
+        "base",
+        "ci",
+        "ci_unknown",
+        "hold",
+        "live",
+        "unknown",
+        "audit",
+        "ownership",
+        "history",
+        "paused",
+    ],
+)
+def test_operator_handoff_queue_fails_closed(
+    database, operator_docs_handoff, monkeypatch, change
+):
+    import httpx
+    from factory.orchestration import (
+        factory_landing_release as releases,
+        factory_landing as landing,
+    )
+
+    pull, responses, scope = operator_docs_handoff
+    proposal = releases.preview(838, 7170, "a" * 40, "Approved", scope=scope)
+    releases.apply(
+        838,
+        7170,
+        "a" * 40,
+        "Approved",
+        scope=scope,
+        **operator_request(proposal, "handoff"),
+    )
+    if change == "head":
+        pull["head"]["sha"] = "c" * 40
+    if change == "base":
+        pull["base"]["sha"] = "c" * 40
+    if change == "ci":
+        responses[f"commits/{'a' * 40}/status"]["statuses"][0]["state"] = "failure"
+    if change == "ci_unknown":
+        monkeypatch.setattr(
+            releases,
+            "_handoff_ci",
+            lambda *_: (_ for _ in ()).throw(httpx.ReadTimeout("unknown")),
+        )
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        direction = json.loads(row.direction_json)
+        if change == "hold":
+            direction["landing_hold"] = {"actor": "operator"}
+        if change == "ownership":
+            direction.pop("operator_landing_handoff")
+        if change == "paused":
+            row.task_paused = True
+        if change == "live":
+            db.add(
+                SwarmNodeRun(
+                    task_id="task", node_key="live", attempt=1, status="running"
+                )
+            )
+        if change == "unknown":
+            db.exec(select(FactoryStart)).one().status = "uncertain"
+        if change == "audit":
+            db.delete(
+                db.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == releases.SCOPE_ACTION
+                    )
+                ).one()
+            )
+        if change == "history":
+            db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == "finish_task")
+            ).one().detail_json = "{}"
+        row.direction_json = json.dumps(direction)
+    actions = []
+    queued = iter([{"PR_7170"}, set()])
+    monkeypatch.setattr(landing, "github_get", lambda *_: pull)
+    monkeypatch.setattr(landing, "_queued_ids", lambda *_: next(queued))
+    monkeypatch.setattr(landing, "github_graphql", lambda *a: actions.append(a))
+    item = dict(
+        task_id="task",
+        pr_number=7170,
+        head_sha="a" * 40,
+        armed=0,
+        ejected=0,
+        merged=False,
+    )
+    assert landing._fence_ungranted_queue_entry("org/repo", item)
+    assert len(actions) == 1
+    assert releases.operator_target(
+        "task"
+    )  # Invalid grants never restore native ownership.
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "target",
+        "acceptance",
+        "unsettled",
+        "review",
+        "independence",
+        "reference",
+        "review_head",
+        "ci",
+        "live",
+        "unknown",
+    ],
+)
+def test_operator_handoff_preview_refuses(
+    database, operator_docs_handoff, monkeypatch, change
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    _, responses, scope = operator_docs_handoff
+    if change == "target":
+        monkeypatch.setattr(
+            controls, "OPERATOR_DOCS_HANDOFF_TARGET", (1045, "task", "org/repo", 7170)
+        )
+    if change == "review":
+        scope["operator_handoff"]["verdict"] = "reject"
+    if change == "independence":
+        scope["operator_handoff"]["independent"] = False
+    if change == "reference":
+        scope["operator_handoff"]["reference"] = ""
+    if change == "review_head":
+        scope["operator_handoff"]["head_sha"] = "c" * 40
+    if change == "ci":
+        responses[f"commits/{'a' * 40}/status"]["statuses"][0]["state"] = "pending"
+    with Session(database) as db, db.begin():
+        if change == "acceptance":
+            db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == "finish_task")
+            ).one().detail_json = "{}"
+        if change == "unsettled":
+            db.get(SwarmTask, "task").settled_at = None
+        if change == "live":
+            db.add(
+                SwarmNodeRun(
+                    task_id="task", node_key="live", attempt=1, status="running"
+                )
+            )
+        if change == "unknown":
+            db.exec(select(FactoryStart)).one().status = "uncertain"
+    with pytest.raises(ValueError):
+        releases.preview(838, 7170, "a" * 40, "Approved", scope=scope)
+    with Session(database) as db:
+        assert "landing_hold" in json.loads(db.get(FactoryReceipt, 838).direction_json)
+
+
+@pytest.mark.parametrize("change", ["ci", "history", "head", "review", "base"])
+def test_operator_handoff_apply_rechecks_preview(
+    database, operator_docs_handoff, change
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, responses, scope = operator_docs_handoff
+    proposal = releases.preview(838, 7170, "a" * 40, "Approved", scope=scope)
+    if change == "ci":
+        responses[f"commits/{'a' * 40}/status"]["statuses"][0]["target_url"] = (
+            "https://ci.test/replaced"
+        )
+    if change == "head":
+        pull["head"]["sha"] = "c" * 40
+    if change == "base":
+        pull["base"]["sha"] = "c" * 40
+    if change == "review":
+        scope["operator_handoff"]["reference"] = "a different review"
+    if change == "history":
+        with Session(database) as db, db.begin():
+            db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == "finish_task")
+            ).one().detail_json = "{}"
+    with pytest.raises((ValueError, KeyError)):
+        releases.apply(
+            838,
+            7170,
+            "a" * 40,
+            "Approved",
+            scope=scope,
+            **operator_request(proposal, "handoff"),
+        )
+    with Session(database) as db:
+        direction = json.loads(db.get(FactoryReceipt, 838).direction_json)
+        assert (
+            "landing_hold" in direction and "operator_landing_handoff" not in direction
+        )
+
+
+def test_operator_handoff_audit_rollback(database, operator_docs_handoff, monkeypatch):
+    from factory.orchestration import factory_landing_release as releases
+
+    _, _, scope = operator_docs_handoff
+    proposal = releases.preview(838, 7170, "a" * 40, "Approved", scope=scope)
+    monkeypatch.setattr(
+        controls,
+        "_audit",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("audit unavailable")),
+    )
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        releases.apply(
+            838,
+            7170,
+            "a" * 40,
+            "Approved",
+            scope=scope,
+            **operator_request(proposal, "handoff"),
+        )
+    with Session(database) as db:
+        direction = json.loads(db.get(FactoryReceipt, 838).direction_json)
+        assert (
+            "landing_hold" in direction and "operator_landing_handoff" not in direction
+        )
+        assert db.get(FactoryControl, "factory").version == proposal["expected_version"]
+
+
+def test_operator_handoff_quarantines_stale_native_snapshots(
+    database, operator_docs_handoff, monkeypatch
+):
+    from factory.orchestration import factory_landing as landing
+    from factory import review_publisher
+
+    pull, _, _ = operator_docs_handoff
+    item = dict(
+        task_id="task",
+        pr_number=7170,
+        head_sha="a" * 40,
+        armed=1,
+        ejected=0,
+        merged=True,
+        closed=False,
+    )
+    monkeypatch.setattr(
+        landing, "github_write", lambda *a, **kw: pytest.fail("native write")
+    )
+    monkeypatch.setattr(
+        landing, "github_graphql", lambda *a, **kw: pytest.fail("native GraphQL")
+    )
+    monkeypatch.setattr(
+        review_publisher, "publish", lambda *a, **kw: pytest.fail("native publish")
+    )
+    # Before transfer as well as after invalidation, native actions are prohibited.
+    assert not landing._publish_review_gate(item)
+    landing._arm("org/repo", item)
+    assert not landing._record_merged("org/repo", item, pull)
+    landing._close_issue("org/repo", item)
+    landing._observe("org/repo", item)
+    assert not landing._verify_rollout("org/repo", item)
+    landing._recover_conflict_without_arming("org/repo", item)
+    monkeypatch.setattr(landing, "_deliveries", lambda *a, **kw: [item])
+    landing._recover_refused({"repo": "org/repo"})
+
+
+def test_operator_handoff_old_receipt_remains_observable(
+    database, operator_docs_handoff
+):
+    from factory.orchestration import factory_landing as landing
+
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        row.updated_at = datetime.now(timezone.utc) - timedelta(days=90)
+        direction = json.loads(row.direction_json)
+        direction.pop("landing_hold")
+        row.direction_json = json.dumps(direction)
+    items = landing._deliveries({"repo": "org/repo"}, include_refused=True)
+    assert [item["task_id"] for item in items] == ["task"]
+
+
+def test_operator_handoff_fence_ignores_stale_pr_snapshot(
+    database, operator_docs_handoff, monkeypatch
+):
+    from factory.orchestration import (
+        factory_landing as landing,
+        factory_landing_release as releases,
+    )
+
+    pull, _, scope = operator_docs_handoff
+    proposal = releases.preview(838, 7170, "a" * 40, "Approved", scope=scope)
+    releases.apply(
+        838,
+        7170,
+        "a" * 40,
+        "Approved",
+        scope=scope,
+        **operator_request(proposal, "handoff"),
+    )
+    stale = {**pull, "head": {**pull["head"], "sha": "c" * 40}}
+    monkeypatch.setattr(landing, "github_get", lambda *_: pull)
+    monkeypatch.setattr(landing, "_queued_ids", lambda *_: {"PR_7170"})
+    monkeypatch.setattr(
+        landing,
+        "github_graphql",
+        lambda *_: pytest.fail("fresh grant dequeued by old snapshot"),
+    )
+    item = dict(task_id="task", pr_number=7170, head_sha="c" * 40, armed=0)
+    assert not landing._fence_ungranted_queue_entry("org/repo", item, stale)
+
+
+@pytest.mark.parametrize("state", ["succeeded", "uncertain", "admitted", "cancelled"])
+def test_operator_handoff_observes_canonical_pr_despite_changed_history(
+    database, operator_docs_handoff, state
+):
+    from factory.orchestration import factory_landing as landing
+
+    with Session(database) as db, db.begin():
+        db.get(FactoryReceipt, 838).state = state
+        event = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "finish_task")
+        ).one()
+        detail = json.loads(event.detail_json)
+        detail["evidence"]["pr_url"] = "https://github.com/org/repo/pull/9999"
+        event.detail_json = json.dumps(detail)
+    items = landing._deliveries({"repo": "org/repo"}, include_refused=True)
+    assert [item["pr_number"] for item in items] == [7170]
+
+
+def test_operator_handoff_apply_serializes_with_inflight_hold_fence(
+    database, operator_docs_handoff, monkeypatch
+):
+    from threading import Event
+    from factory.orchestration import (
+        factory_landing as landing,
+        factory_landing_release as releases,
+    )
+
+    pull, _, scope = operator_docs_handoff
+    proposal = releases.preview(838, 7170, "a" * 40, "Approved", scope=scope)
+    entered, finish, observed = Event(), Event(), Event()
+    actions = []
+
+    def hold_read(*_):
+        entered.set()
+        assert finish.wait(5)
+        return pull
+
+    monkeypatch.setattr(landing, "github_get", hold_read)
+    queues = iter([{"PR_7170"}, set()])
+    monkeypatch.setattr(landing, "_queued_ids", lambda *_: next(queues))
+    monkeypatch.setattr(
+        landing, "github_graphql", lambda *_: actions.append("dequeued")
+    )
+    original = releases._observe
+
+    def observe(*a):
+        result = original(*a)
+        observed.set()
+        return result
+
+    monkeypatch.setattr(releases, "_observe", observe)
+    item = dict(task_id="task", pr_number=7170)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fencing = pool.submit(landing._enforce_landing_hold, "org/repo", item)
+        assert entered.wait(5)
+        applying = pool.submit(
+            releases.apply,
+            838,
+            7170,
+            "a" * 40,
+            "Approved",
+            scope=scope,
+            **operator_request(proposal, "handoff"),
+        )
+        assert observed.wait(5)
+        assert not applying.done()
+        finish.set()
+        assert fencing.result(timeout=5)
+        assert applying.result(timeout=5)["landing_owner"] == "operator"
+    assert actions == ["dequeued"]
+    # A tick starting after apply sees no hold and performs no stale cleanup.
+    assert not landing._enforce_landing_hold("org/repo", item)

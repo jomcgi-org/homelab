@@ -17,11 +17,9 @@ artifact, and ``evaluate_content`` imposes no freshness constraint. Diff
 recovery remains a fallback for turns without a direct delivery and can only
 recover added files safely.
 
-The outcome is never a dead end. A turn that fails validation is retryable with
-the reasons fed back to the agent, and when retries run out the node escalates
-to the conductor, which can retry it again or reshape the plan around it.
-Nothing calls ``evaluate_content`` yet; the conductor (#5419) will be its first
-caller.
+``evaluate_content`` is the primary whole-file channel used by
+``node_workflows``. The node pin's attempt policy and the conductor own retry
+and escalation.
 """
 
 from __future__ import annotations

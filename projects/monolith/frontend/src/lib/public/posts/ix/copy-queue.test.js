@@ -1,7 +1,4 @@
-// @vitest-environment happy-dom
 import { expect, test } from "vitest";
-import { flushSync, mount, unmount } from "svelte";
-import CopyQueue from "./CopyQueue.svelte";
 import {
   PIECE_RECORDS,
   RECORD_MS,
@@ -27,19 +24,4 @@ test("trickle: the wait is at most one piece and every record is still copied", 
       .reduce((n, b) => n + (b.end - b.start) / RECORD_MS, 0);
     expect(staged).toBeCloseTo(STAGE_RECORDS);
   }
-});
-
-test("the figure renders and switches mode", () => {
-  const target = document.createElement("div");
-  document.body.append(target);
-  const c = mount(CopyQueue, { target });
-  flushSync();
-  const label = () => target.querySelector("svg").getAttribute("aria-label");
-  expect(label()).toContain("41 ms");
-  [...target.querySelectorAll("button")]
-    .find((b) => b.textContent.includes("at a time"))
-    .click();
-  flushSync();
-  expect(label()).toContain("under 1 ms");
-  unmount(c);
 });

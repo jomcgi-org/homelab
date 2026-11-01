@@ -560,6 +560,44 @@ def test_conflict_repair_without_merging_keeps_cap_and_accounting(db, monkeypatc
         assert accounting["committed_cost_usd"] == 2.5
 
 
+def test_declined_conflict_repair_is_named_once_without_refusing_delivery(
+    db, monkeypatch
+):
+    delivered(db, "t-1", 11, 3)
+    policy = {**POLICY, "auto_merge": False}
+    with controls._locked_session() as (session, control):
+        control.policy_json = json.dumps(policy)
+    calls = github(monkeypatch, pulls={3: {**pull(3), "mergeable": False}})
+    # Two refusals request_landing_recovery really returns, the first twice.
+    reasons = iter(["task_paused", "task_paused", "unresolved_execution"])
+    monkeypatch.setattr(
+        landing,
+        "request_landing_recovery",
+        lambda *a, **kw: {"ok": False, "reason": next(reasons)},
+    )
+    before = receipt_state(db, "t-1")
+    for _ in range(3):
+        landing.landing_tick(policy)
+    declined = audits(db, "landing_recovery_declined")
+    assert [row["reason"] for row in declined] == [
+        "task_paused",
+        "unresolved_execution",
+    ]
+    # A new recovery round makes the same refusal worth recording again.
+    landing._append("t-1", "landing_recovery_requested", pr_number=3)
+    landing._record_declined({"task_id": "t-1", "pr_number": 3}, "unresolved_execution")
+    landing._record_declined({"task_id": "t-1", "pr_number": 3}, "unresolved_execution")
+    assert [row["reason"] for row in audits(db, "landing_recovery_declined")] == [
+        "task_paused",
+        "unresolved_execution",
+        "unresolved_execution",
+    ]
+    assert declined[0]["pr_number"] == 3
+    assert audits(db, "merge_arm_refused") == []
+    assert receipt_state(db, "t-1") == before
+    assert calls["write"] == calls["graphql"] == []
+
+
 def test_missing_publisher_token_refuses_to_arm_when_enabled(db, monkeypatch):
     from factory import review_publisher
 
@@ -3077,6 +3115,7 @@ def test_historical_conflict_refusal_cannot_accept_wrong_merged_head(
         "destructive",
         "empty_evidence",
         "bool_version",
+        "public_docs_missing_proof",
     ],
 )
 def test_scoped_grant_fails_closed(db, monkeypatch, change):
@@ -3098,6 +3137,8 @@ def test_scoped_grant_fails_closed(db, monkeypatch, change):
                 session.delete(event)
         elif change in ("public", "security", "destructive"):
             grant["scope"]["classification"] = change
+        elif change == "public_docs_missing_proof":
+            grant["scope"]["classification"] = "public_docs"
         elif change == "empty_evidence":
             grant["scope"]["evidence"] = ""
         elif change == "bool_version":
