@@ -78,7 +78,7 @@ FACTORY_BRANCH_PREFIX = "factory/"
 _PR_URL = re.compile(r"/pull/([0-9]+)$")
 # Multi-row actions: a delivery can be armed, ejected and armed again, so the
 # counts are the state and a one-row-per-action fence would freeze it.
-_REPEATABLE = ("merge_armed", "merge_ejected")
+_REPEATABLE = ("merge_armed", "merge_ejected", "landing_recovery_declined")
 _ARM_AUTO_MERGE = """
 mutation ArmAutoMerge($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
   enablePullRequestAutoMerge(
@@ -964,7 +964,37 @@ def _recover_delivery(
     if result.get("reason") == "recovery_limit":
         _refuse(item, "landing_recovery_exhausted")
         _notify_stuck(item["task_id"], item["pr_number"])
+    elif not result.get("ok") and not result.get("pending"):
+        # An approved head with a conflict that nothing repairs is the stuck
+        # state a person has to read off the board, so name the refusal there
+        # without refusing the delivery: the next tick retries it.
+        _record_declined(item, str(result.get("reason")))
     return result
+
+
+def _record_declined(item: dict, reason: str) -> None:
+    """One audit per distinct refusal, not one per fifteen-second tick."""
+    from factory.orchestration.factory_controls import _read_session
+    from factory.orchestration.factory_models import FactoryAudit
+
+    with _read_session() as db:
+        last = db.exec(
+            select(FactoryAudit.detail_json)
+            .where(
+                FactoryAudit.task_id == item["task_id"],
+                FactoryAudit.action == "landing_recovery_declined",
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(1)
+        ).first()
+    if last and json.loads(last).get("reason") == reason:
+        return
+    _append(
+        item["task_id"],
+        "landing_recovery_declined",
+        pr_number=item["pr_number"],
+        reason=reason,
+    )
 
 
 def _recover_refused(policy: dict) -> None:
