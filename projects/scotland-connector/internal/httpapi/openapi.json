@@ -16,7 +16,7 @@
         "operationId": "light",
         "security": [],
         "summary": "Light and night-sky windows at a Scottish point",
-        "description": "Staged repository delivery pending operational acceptance. Astronomy is computed without upstream calls and remains available without a snapshot. Europe/London civil dates, today by default, three-day default span, seven-day maximum and no later than 13 days ahead. Windows are clipped to each civil date. Cloud verdicts describe supporting nearby-site clear twilight-dark hourly samples only. Missing observations, including golden/blue light, stay unknown. Night suitability is reported separately. Anonymous, cookie-free responses use plan's bounded browser and Cloudflare cache policies, including ETag validation; forecasts prevent permanent caching.",
+        "description": "Astronomy is computed without upstream calls and remains available without a snapshot. Europe/London civil dates, today by default, three-day default span, seven-day maximum and no later than 13 days ahead. Windows are clipped to each civil date. Cloud verdicts describe supporting nearby-site clear twilight-dark hourly samples only. Missing observations, including golden/blue light, stay unknown. Night suitability is reported separately. Anonymous, cookie-free responses use plan's bounded browser and Cloudflare cache policies, including ETag validation; forecasts prevent permanent caching.",
         "parameters": [
           {
             "name": "lat",
@@ -1099,6 +1099,10 @@
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Other walks walk_name matched, best first."
+                  },
+                  "match_note": {
+                    "type": "string",
+                    "description": "Set when walk_name matched several walks equally well, so the walk checked is the one with the shortest name."
                   }
                 }
               }

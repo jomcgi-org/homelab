@@ -100,8 +100,7 @@ starting within 20 km, nearest first.
 ## Light windows
 
 `light` (REST `GET /v1/light`) computes light at the supplied coordinates,
-even when no forecast snapshot is available. This is staged repository
-delivery; operational acceptance remains on #7367.
+even when no forecast snapshot is available.
 
 `from` and `to` are inclusive Europe/London civil dates. Today through two
 days later is the default, with at most seven dates and nothing later than

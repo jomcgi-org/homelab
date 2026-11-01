@@ -34,13 +34,13 @@ func readOnly(title string) Annotations {
 var Tools = []Tool{
 	{
 		Name: "light", Title: "Find Scottish light and night-sky windows",
-		Description: "Sunrise, sunset, twilight, golden and blue light, moon rise/set and phase, and Milky Way core above the horizon in nautical darkness at a Scottish point. Local civil dates, up to seven days, at most 13 days ahead. Cloud describes only supporting clear twilight-dark hourly samples at the nearest snapshot site within min(radius_km,30) km. Unsupported portions, including daylight, remain unknown; night suitability is separate. Staged repository delivery pending operational acceptance.",
+		Description: "Sunrise, sunset, twilight, golden and blue light, moon rise/set and phase, and Milky Way core above the horizon in nautical darkness at a Scottish point. Local civil dates, up to seven days, at most 13 days ahead. Cloud describes only supporting clear twilight-dark hourly samples at the nearest snapshot site within min(radius_km,30) km. Unsupported portions, including daylight, remain unknown; night suitability is separate.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"lat":{"type":"number","minimum":54.5,"maximum":61},"lon":{"type":"number","minimum":-9,"maximum":-0.5},"radius_km":{"type":"number","minimum":1,"maximum":100,"default":30},"from":{"type":"string","format":"date","description":"First Europe/London civil date, today by default, at most 13 days ahead."},"to":{"type":"string","format":"date","description":"Inclusive last civil date, three-day default and seven-day maximum; no later than 13 days ahead."}},"required":["lat","lon"],"additionalProperties":false}`),
 		Annotations: readOnly("Find Scottish light and night-sky windows"),
 	},
 	{
 		Name: "aurora", Title: "Check near-term Scottish aurora conditions",
-		Description: "Read-only, snapshot-only aurora heuristic at one RFC3339 instant near a supported site. Returns go, marginal, no or unknown with NOAA, MET cloud, solar darkness and northern terrain evidence. NOAA supports only its exact published forecast instant, never a multi-day forecast or calibrated sighting probability. Missing, stale or unsupported inputs remain unknown. Staged/default-off until operational acceptance.",
+		Description: "Read-only, snapshot-only aurora heuristic at one RFC3339 instant near a supported site. Returns go, marginal, no or unknown with NOAA, MET cloud, solar darkness and northern terrain evidence. NOAA supports only its exact published forecast instant, never a multi-day forecast or calibrated sighting probability. Missing, stale or unsupported inputs remain unknown.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"lat":{"type":"number","minimum":54.5,"maximum":61},"lon":{"type":"number","minimum":-9,"maximum":-0.5},"at":{"type":"string","format":"date-time","maxLength":40}},"required":["lat","lon","at"],"additionalProperties":false}`),
 		Annotations: readOnly("Check near-term Scottish aurora conditions"),
 	},
@@ -53,7 +53,7 @@ var Tools = []Tool{
 			"when none suit, a note says why instead, including when the hourly forecast, about two and a half days ahead, does not reach that far yet. " +
 			"Walks are Walkhighlands routes that fit a slot of good daylight hours for their estimated time, with the slot (its rain, wind, wet hours and temperatures), a start window and the url for the route. " +
 			"A good hour has at most 2 mm of rain and wind at most 80 km/h by default; pass max_rain_mm_h, max_wind_kmh or min_temp_c to match what the person will put up with, stricter or looser, for example max_rain_mm_h 0 for dry hours (a marginal slot may still hold one bad hour, which check lists hour by hour with what it failed). " +
-			"Stargazing sites are road-accessible spots in the darkest light-pollution zones, judged on clear dark hours and the moon. " +
+			"Stargazing sites are road-accessible spots in the darkest light-pollution zones, judged on clear dark hours and the moon; a site's clear_sky_odds is climatology, its historical share of clear dark hours in that calendar month. " +
 			"Walk weather is at the walk's start, not on summits. Give lat and lon in decimal degrees for the place the person means. Scotland only.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
@@ -85,9 +85,9 @@ var Tools = []Tool{
 		Description: "Check whether a plan is on: a named walk on a date, or stargazing at a place on a night, or several at once (a walk then stargazing the same day). " +
 			"Use this when someone already has a plan: is Ben Nevis on for Saturday, if not Saturday then when, does a walk in Glencoe then stargazing on Rannoch Moor work on Friday. " +
 			"For each item it returns a verdict (go, marginal, no, or unknown beyond the hourly forecast, about two and a half days ahead) with a one-line why, " +
-			"the timing (for a walk: its slot hour by hour with rain, wind, temperature, cloud, low cloud and fog, the window to start in, sunrise and sunset; for a night: the clear window at the best dark-sky site near the point and the moon), " +
+			"the timing (for a walk: its slot hour by hour with rain, wind, temperature, cloud, low cloud and fog, the window to start in, sunrise and sunset; for a night: the clear window at the best dark-sky site near the point and the moon; clear_sky_odds is that month's historical share of clear dark hours), " +
 			"the other forecast days that suit it, and better options nearby the same day (for a walk, walks of similar length). " +
-			"Walks are found by walk_name (words from the Walkhighlands name, for example \"Ben Nevis\") or walk_id from plan. " +
+			"Walks are found by walk_name (words from the Walkhighlands name, for example \"Ben Nevis\") or walk_id from plan; when several walks match equally, match_note says the shortest name was checked and also_matched lists others. " +
 			"max_rain_mm_h, max_wind_kmh and min_temp_c change what counts as a good walking hour, as in plan. " +
 			"Walk weather is at the walk's start, not on summits. Scotland only.",
 		InputSchema: json.RawMessage(`{

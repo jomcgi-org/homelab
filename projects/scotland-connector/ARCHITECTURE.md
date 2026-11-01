@@ -24,7 +24,8 @@ It serves two surfaces on port 8080 and nothing else:
 
 - `GET /v1/plan`, `POST /v1/check`, `/v1/openapi.json` (the published
   contract) and `/v1/method`.
-- `POST /mcp`: tools `plan` and `check`.
+- `POST /mcp`: tools `plan`, `check` and `light`, and `aurora` when its
+  snapshot store is enabled.
 
 Health (`/healthz`), readiness (`/readyz`) and Prometheus metrics
 (`/metrics`) are on an admin listener, port 9090, that no Service or route
@@ -430,6 +431,15 @@ walk's finish beyond sunset; the existing explicit dark-shoulder allowance
 remains separate.
 Only a tightening limit makes a day "limited" for the dark-credit rule:
 loosening rules no daylight out.
+A walk the 80% rule fits is still `marginal`, "Fits only by starting or
+finishing in the dark", when the time it needs beyond its slot is longer than
+the daylight left before and after the slot. When that daylight is enough but
+the slot ends too early, the walk starts at sunrise rather than before it.
+**Why.** The 80% rule tolerates hours of poor weather. In November an 8 h
+slot can fill the day, so the tolerance was spent on darkness: on 2026-11-02
+An Teallach (10 h) and Ben Nevis (9 h) were `go` with starts before sunrise
+and nothing in the why to say so. The doable-day rule itself is unchanged, so the
+hikes app and the connector still agree on which days are doable.
 `internal/walks` buckets those hours into UK days at load time and applies
 the hikes app's doable-day rule (`projects/monolith/hikes/router.py`); its
 tests replay the hikes router's cases. A separate `WalkStore` loads the
@@ -541,9 +551,16 @@ single JSON object:
 
 Tool argument errors come back as `isError` results so the model can
 correct itself; unknown argument names are rejected rather than ignored.
-Every tool has a title and `readOnlyHint: true`.
+Every tool has a title and `readOnlyHint: true`. `tools/list` and the
+instructions leave `aurora` out while its store is disabled
+(`AURORA_ENABLED`); a call naming it still answers, for clients holding an
+older list.
 
-**Why.** The tool surface is two read-only functions. An SDK would add a
+**Why.** A disabled aurora store answers every call `unknown`. Listing it
+spent assistants' calls on the most-asked winter question and invited them
+to relay `unknown` as if it were evidence.
+
+**Why.** The tool surface is a few read-only functions. An SDK would add a
 dependency, version churn and session machinery to a server whose whole
 point is to need none, and the stateless revision is what lets any replica
 answer any request.
@@ -763,4 +780,4 @@ this table when the work ships or the issue closes without it.
 | Slot rule slides past a second gap                | #7275  | not started |
 | Directory listings                                | #7255  | staged      |
 | Near-term aurora, independent snapshot and terrain preprocessing | #7256 | staged off, live acceptance pending |
-| Light windows and scoped cloud sample support | #7367 | staged draft, live acceptance pending |
+| Light windows and scoped cloud sample support | #7367 | deployed, live acceptance pending |

@@ -43,6 +43,9 @@ type CheckWalk struct {
 	WalkOption
 	// AlsoMatched lists other walks walk_name matched, best first.
 	AlsoMatched []string `json:"also_matched,omitempty"`
+	// MatchNote says when walk_name matched several walks equally well, so
+	// the walk checked is a tie-break ("ben" is Ben Ledi only by its length).
+	MatchNote string `json:"match_note,omitempty"`
 }
 
 // CheckNight is checked stargazing: the best dark-sky site near the point.
@@ -149,6 +152,7 @@ func (s *Service) checkWalk(ds *walks.Dataset, cp checkPlan, now time.Time, lim 
 	r := CheckResultItem{Activity: ActivityWalk, Date: cp.item.Date}
 	var w *walks.Walk
 	var also []string
+	var note string
 	if cp.item.WalkID != "" {
 		if w = ds.ByID(cp.item.WalkID); w == nil {
 			r.Error = "No walk has walk_id " + cp.item.WalkID + "."
@@ -164,11 +168,23 @@ func (s *Service) checkWalk(ds *walks.Dataset, cp checkPlan, now time.Time, lim 
 		for _, h := range hits[1:min(len(hits), 4)] {
 			also = append(also, h.Name)
 		}
+		// Named sorts by score, then shorter name: walks tied on score are
+		// told apart only by length, unless the name is the query itself.
+		best, tied := w.Match(cp.name), 1
+		for _, h := range hits[1:] {
+			if h.Match(cp.name) != best {
+				break
+			}
+			tied++
+		}
+		if tied > 1 && walks.Normalize(w.Name) != cp.name {
+			note = fmt.Sprintf("%d walks match %q equally well; this is the one with the shortest name. Use more words from the name, or walk_id, to check another.", tied, cp.item.WalkName)
+		}
 	}
 	// A check is the close look, so its slot comes back hour by hour.
 	o, _ := walkOption(ds, w, cp.day, now, walkAsk{lim: lim, hours: true})
 	r.Verdict, r.Why = o.Verdict, o.Why
-	r.Walk = &CheckWalk{WalkOption: o, AlsoMatched: also}
+	r.Walk = &CheckWalk{WalkOption: o, AlsoMatched: also, MatchNote: note}
 	sky := skyAt(cp.day, w.Lat, w.Lon)
 	r.Sky = &sky
 	today := walks.LocalDay(now)
