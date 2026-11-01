@@ -17,7 +17,7 @@ import os
 import re
 from typing import Iterator
 
-from sqlalchemy import or_, update
+from sqlalchemy import func, or_, update
 from sqlmodel import Session, select
 
 from core.db import get_engine
@@ -2430,31 +2430,35 @@ def task_recovery_grant(task_id: str, *, session=None) -> dict | None:
             .order_by(FactoryAudit.id.desc())
             .limit(1)
         ).first()
-        if event is None:
-            return None
-        original = json.loads(event.detail_json)["proposal"]
-        from factory.orchestration.factory_funding_limits import latest
+        return _task_recovery_proposal(db, task_id, event)
 
-        authorization = latest(db, task_id, "progress_continuation_authorized")
-        lease = latest(db, task_id, "progress_continuation_lease")
-        if (
-            authorization
-            and lease
-            and lease["original_recovery_audit_id"] == event.id
-            and authorization["proposal"]["original_recovery"]["audit_id"] == event.id
-        ):
-            return {
-                **original,
-                **{
-                    key: lease[key]
-                    for key in (
-                        "deadline_at",
-                        "work_turn_ceiling",
-                        "planner_turn_ceiling",
-                    )
-                },
-            }
-        return original
+
+def _task_recovery_proposal(db, task_id, event):
+    if event is None:
+        return None
+    original = json.loads(event.detail_json)["proposal"]
+    from factory.orchestration.factory_funding_limits import latest
+
+    authorization = latest(db, task_id, "progress_continuation_authorized")
+    lease = latest(db, task_id, "progress_continuation_lease")
+    if (
+        authorization
+        and lease
+        and lease["original_recovery_audit_id"] == event.id
+        and authorization["proposal"]["original_recovery"]["audit_id"] == event.id
+    ):
+        return {
+            **original,
+            **{
+                key: lease[key]
+                for key in (
+                    "deadline_at",
+                    "work_turn_ceiling",
+                    "planner_turn_ceiling",
+                )
+            },
+        }
+    return original
 
 
 def _recovery_plan_accepted(db, task_id, recovery):
@@ -2480,18 +2484,31 @@ def task_recovery_needs_plan(task_id: str, *, session=None) -> bool:
 
 
 def _recovery_deadline(db, task_id):
-    from factory.orchestration.evidence_continuation import recovery_grant
+    from factory.orchestration.evidence_continuation import RECOVERY
 
-    evidence = recovery_grant(db, task_id)
-    grant = task_recovery_grant(task_id, session=db)
+    # Read both bounded audit identities together. A separate grant lookup
+    # for every historical receipt would regress the status work baseline.
+    latest_ids = (
+        select(func.max(FactoryAudit.id))
+        .where(
+            FactoryAudit.task_id == task_id,
+            FactoryAudit.action.in_((TASK_RECOVERY_ACTION, RECOVERY)),
+        )
+        .group_by(FactoryAudit.action)
+    )
+    events = db.exec(select(FactoryAudit).where(FactoryAudit.id.in_(latest_ids))).all()
+    deadlines = []
+    for event in events:
+        grant = (
+            _task_recovery_proposal(db, task_id, event)
+            if event.action == TASK_RECOVERY_ACTION
+            else json.loads(event.detail_json)["proposal"]
+        )
+        deadlines.append(datetime.fromisoformat(grant["deadline_at"]))
     landing = _landing_recovery_deadline(db, task_id)
-    if evidence:
-        deadline = datetime.fromisoformat(evidence["deadline_at"])
-        return min(deadline, landing) if landing else deadline
-    if grant is None:
-        return landing
-    deadline = datetime.fromisoformat(grant["deadline_at"])
-    return min(deadline, landing) if landing else deadline
+    if landing:
+        deadlines.append(landing)
+    return min(deadlines) if deadlines else None
 
 
 def review_recovery_held(task_id: str, *, session=None) -> bool:
