@@ -71,16 +71,49 @@ type Handler struct {
 	origins map[string]bool
 }
 
-// Instructions are returned by server/discover and initialize.
-const Instructions = "Read-only answers to Scottish outdoor trip questions from forecast and climatology data and local astronomy. " +
-	"Use plan for open questions (where and when to walk or stargaze near a place over the next few days) " +
-	"and check for a specific plan (a named walk on a date, stargazing at a place on a night). " +
-	"Use aurora for a snapshot-only, near-term aurora heuristic; unsupported times or missing inputs return unknown. " +
-	"Use light for sun, moon, twilight, golden/blue light and Milky Way windows on Europe/London civil dates. " +
-	"Light has no top-level verdict; present the requested events and windows with their coverage and why. " +
-	"Its per-window cloud is nearby-site hourly sample support; unsupported portions, including golden/blue light, stay unknown and missing rows never prove cloud. " +
-	"Its nights are separate night suitability assessments, never interval cloud forecasts. " +
-	"For plan, check and aurora, lead with the verdict and why. Every result carries meta.sources: credit them when you present the data."
+// Instructions are returned by server/discover and initialize when the
+// aurora tool is served; InstructionsWithoutAurora when it is not.
+const (
+	instructionsHead = "Read-only answers to Scottish outdoor trip questions from forecast and climatology data and local astronomy. " +
+		"Use plan for open questions (where and when to walk or stargaze near a place over the next few days) " +
+		"and check for a specific plan (a named walk on a date, stargazing at a place on a night). "
+	instructionsAurora = "Use aurora for a snapshot-only, near-term aurora heuristic; unsupported times or missing inputs return unknown. "
+	instructionsLight  = "Use light for sun, moon, twilight, golden/blue light and Milky Way windows on Europe/London civil dates. " +
+		"Light has no top-level verdict; present the requested events and windows with their coverage and why. " +
+		"Its per-window cloud is nearby-site hourly sample support; unsupported portions, including golden/blue light, stay unknown and missing rows never prove cloud. " +
+		"Its nights are separate night suitability assessments, never interval cloud forecasts. "
+	instructionsSources = "Every result carries meta.sources: credit them when you present the data."
+
+	Instructions              = instructionsHead + instructionsAurora + instructionsLight + "For plan, check and aurora, lead with the verdict and why. " + instructionsSources
+	InstructionsWithoutAurora = instructionsHead + instructionsLight + "For plan and check, lead with the verdict and why. " + instructionsSources
+)
+
+// aurora reports whether this deployment serves the aurora tool: only when
+// its snapshot store is enabled. A disabled store would answer every call
+// unknown, so listing it would only spend assistants' calls.
+func (h *Handler) aurora() bool { return h.svc.AuroraData != nil }
+
+// tools is the tool list this deployment serves. tools/call still answers a
+// client holding an older list that names aurora.
+func (h *Handler) tools() []Tool {
+	if h.aurora() {
+		return Tools
+	}
+	out := make([]Tool, 0, len(Tools))
+	for _, t := range Tools {
+		if t.Name != "aurora" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func (h *Handler) instructions() string {
+	if h.aurora() {
+		return Instructions
+	}
+	return InstructionsWithoutAurora
+}
 
 // New builds the handler. allowedOrigins lists the browser origins accepted;
 // requests without an Origin header (every server-side connector) always pass.
@@ -328,7 +361,7 @@ func (h *Handler) dispatch(r *http.Request, e era, req request) (any, int, *rpcE
 			"protocolVersion": e.version,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      h.info,
-			"instructions":    Instructions,
+			"instructions":    h.instructions(),
 		}, 0, nil
 	case "ping":
 		return h.result(e, map[string]any{}), 0, nil
@@ -339,12 +372,12 @@ func (h *Handler) dispatch(r *http.Request, e era, req request) (any, int, *rpcE
 		return h.result(e, map[string]any{
 			"supportedVersions": []string{ModernVersion},
 			"capabilities":      map[string]any{"tools": map[string]any{}},
-			"instructions":      Instructions,
+			"instructions":      h.instructions(),
 			"ttlMs":             3600000,
 			"cacheScope":        "public",
 		}), 0, nil
 	case "tools/list":
-		out := map[string]any{"tools": Tools}
+		out := map[string]any{"tools": h.tools()}
 		if e.modern {
 			out["ttlMs"] = 3600000
 			out["cacheScope"] = "public"

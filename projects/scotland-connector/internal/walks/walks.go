@@ -441,7 +441,13 @@ type Day struct {
 	// what made the slot's one bad hour bad (see Test.Fails), empty when the
 	// hour is not in the data.
 	DarkLateOnly bool
-	GapFails     []string
+	// NeedsDark reports that a walk the 80% rule fits cannot be placed
+	// inside the day's remaining daylight: the time it needs beyond its slot
+	// is longer than the daylight left either side of it, so some of the walk
+	// is in the dark. Rise is the day's sunrise, zero when not computed.
+	NeedsDark bool
+	Rise      time.Time
+	GapFails  []string
 	// GapRainMM is the bad hour's rain when the data has the hour, else NaN.
 	GapRainMM float32
 	// Test is the good-hour test the day was assessed with.
@@ -500,6 +506,24 @@ func (w *Walk) limitedEdges(d *Day, from time.Time) {
 	case !early:
 		d.DarkLateOnly = true
 	}
+}
+
+// needsDark reports whether the time a walk needs beyond its slot (the 80%
+// rule's weather tolerance) is more than the daylight left before and after
+// the slot. The tolerance is for hours of poor weather. A 10 h walk in an 8 h
+// November slot that fills the day is still doable under the hikes rule, and
+// only by walking in the dark.
+func (w *Walk) needsDark(b *Run, rise, set, from time.Time) bool {
+	extra := time.Duration(w.DurationH*float64(time.Hour)) - b.End.Sub(b.Start)
+	if extra <= 0 {
+		return false
+	}
+	earliest := rise
+	if from.After(earliest) {
+		earliest = from
+	}
+	daylight := max(b.Start.Sub(earliest), 0) + max(set.Sub(b.End), 0)
+	return daylight < extra
 }
 
 // Limits change what counts as a good hour from the default test (at most
@@ -663,9 +687,13 @@ func (w *Walk) dayAt(day int32, cutoff int64, until time.Time, coverage Coverage
 	// borrow elapsed daylight. Keep the weather tolerance, but a walk not
 	// using dark credit must finish by sunset after the cutoff moves it.
 	if d.Doable && float64(d.Best.GoodHours) >= w.required-requirementEpsilon {
-		_, set, ok := astro.SunTimes(time.Unix(int64(day)*86400, 0), w.Lat, w.Lon)
+		rise, set, ok := astro.SunTimes(time.Unix(int64(day)*86400, 0), w.Lat, w.Lon)
 		if ok && time.Unix(cutoff, 0).Add(time.Duration(w.DurationH*float64(time.Hour))).After(set) {
 			d.Doable = false
+		}
+		if ok && d.Doable {
+			d.Rise = rise
+			d.NeedsDark = w.needsDark(d.Best, rise, set, time.Unix(cutoff, 0))
 		}
 	}
 	d.All = all

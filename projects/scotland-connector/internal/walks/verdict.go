@@ -70,7 +70,7 @@ func (w *Walk) outcome(d Day) outcome {
 	}
 	b := d.Best
 	switch {
-	case float64(b.GoodHours) < w.required-requirementEpsilon:
+	case float64(b.GoodHours) < w.required-requirementEpsilon, d.NeedsDark:
 		return darkShoulder
 	case int(b.End.Sub(b.Start)/time.Hour) > b.GoodHours:
 		return badHourInside
@@ -138,6 +138,15 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) (a Assessment) {
 		a.StartFrom = a.StartBy
 		if o == darkShoulder && d.DarkLateOnly {
 			a.StartFrom, a.StartBy = b.Start, b.Start
+		}
+		// A walk that fits in daylight starts at sunrise rather than in the
+		// dark, and spends its tolerance after the slot instead.
+		if o != darkShoulder && !d.Rise.IsZero() && a.StartFrom.Before(d.Rise) {
+			rise := d.Rise.Truncate(time.Minute)
+			if rise.Before(d.Rise) {
+				rise = rise.Add(time.Minute)
+			}
+			a.StartFrom, a.StartBy = rise, rise
 		}
 	}
 	// A walk that needs more than the slot starts before it, but never
