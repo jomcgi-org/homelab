@@ -1,12 +1,12 @@
 // Invented walks. The clock is fixed by the tests, never production.
 export const now = "2026-10-19T12:00:00Z";
-export const days = ["2026-10-19", "2026-10-20", "2026-10-21"];
+const days = ["2026-10-19", "2026-10-20", "2026-10-21"];
 const regions = [
   ["Fort William", 56.83, -5.25],
   ["Cairngorms", 57.12, -3.63],
   ["Galloway", 55.02, -4.08],
 ];
-export const walks = Array.from({ length: 9 }, (_, index) => {
+const walks = Array.from({ length: 9 }, (_, index) => {
   const [region, lat, lon] = regions[index % 3];
   return {
     uuid: `walk-${index + 1}`,

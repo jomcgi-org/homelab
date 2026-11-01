@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import pytest
 
-from shared.testing.markers import covers_route
-
 
 class TestShotterToolDiscoverability:
     """The shotter MCP tool is registered and discoverable."""
@@ -281,7 +279,6 @@ class TestEmberVMDispatch:
     @pytest.fixture(autouse=True)
     def _mock_embervm(self, monkeypatch):
         """Mock the EmberVM HTTP client for hermetic testing."""
-        from shotter import client as shotter_client
 
         class _FakeResponse:
             status_code = 200

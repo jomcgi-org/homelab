@@ -18,7 +18,17 @@ from sqlmodel.pool import StaticPool
 os.environ.pop("STATIC_DIR", None)
 
 from core.db import get_session  # noqa: E402
-from app.main import _start_singletons, _stop_singletons, app  # noqa: E402
+from app.main import app  # noqa: E402
+from app.modules_private import ALL_MODULES  # noqa: E402
+from framework import (  # noqa: E402
+    PRIVATE_PROFILE,
+    build_private_lifespan,
+    log_task_exception,
+    start_leader_singletons,
+    stop_leader_singletons,
+)
+
+lifespan = build_private_lifespan(PRIVATE_PROFILE, ALL_MODULES)
 
 
 class _AwaitableTask(MagicMock):
@@ -198,13 +208,6 @@ def test_no_frontend_mount_when_static_dir_missing():
     )
 
 
-def test_api_routes_still_work_without_static_dir(client):
-    """/healthz responds even when the static frontend directory is absent."""
-    response = client.get("/healthz")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok", "chart_version": None}
-
-
 def test_unknown_path_returns_404_without_static_dir(client):
     """Without a catch-all static mount, an unknown path returns 404."""
     response = client.get("/nonexistent-page.html")
@@ -246,7 +249,7 @@ async def test_lifespan_creates_background_tasks_on_startup():
             patches[0],
             patches[1],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
     # Ships, pending-message sweep, titles, KG feed, receipt retention, cd probe, quota refresh.
     assert len(created_tasks) == 8
@@ -271,8 +274,8 @@ async def test_lifespan_cancels_all_tasks_on_shutdown():
             patches[0],
             patches[1],
         ):
-            await _start_singletons(app)
-            await _stop_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
+            await stop_leader_singletons(app, ALL_MODULES)
 
     # Ships, pending-message sweep, titles, KG feed, receipt retention, cd probe, quota refresh.
     assert len(mock_tasks) == 8
@@ -299,40 +302,36 @@ async def test_lifespan_no_tasks_cancelled_before_shutdown():
             patches[0],
             patches[1],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
             # Ships, pending-message sweep, titles, KG feed, retention, cd probe, quota refresh.
             assert len(mock_tasks) == 8
             for task in mock_tasks:
                 task.cancel.assert_not_called()
-            await _stop_singletons(app)
+            await stop_leader_singletons(app, ALL_MODULES)
 
-    # After _stop_singletons, every task must have been cancelled
+    # After stop_leader_singletons, every task must have been cancelled
     for task in mock_tasks:
         task.cancel.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
-# _log_task_exception() — background-task error callback
+# log_task_exception(): background-task error callback
 # ---------------------------------------------------------------------------
 
 
 def test_log_task_exception_does_not_log_when_task_cancelled():
-    """_log_task_exception silently ignores cancelled tasks."""
-    from app.main import _log_task_exception
-
+    """log_task_exception silently ignores cancelled tasks."""
     mock_task = MagicMock()
     mock_task.cancelled.return_value = True
 
     with patch("framework.core.logger") as mock_logger:
-        _log_task_exception(mock_task)
+        log_task_exception(mock_task)
 
     mock_logger.error.assert_not_called()
 
 
 def test_log_task_exception_logs_error_when_exception_present():
-    """_log_task_exception logs an error (with exc_info) when the task raised."""
-    from app.main import _log_task_exception
-
+    """log_task_exception logs an error (with exc_info) when the task raised."""
     exc = ValueError("boom")
     mock_task = MagicMock()
     mock_task.cancelled.return_value = False
@@ -340,7 +339,7 @@ def test_log_task_exception_logs_error_when_exception_present():
     mock_task.get_name.return_value = "my-task"
 
     with patch("framework.core.logger") as mock_logger:
-        _log_task_exception(mock_task)
+        log_task_exception(mock_task)
 
     mock_logger.error.assert_called_once()
     call_kwargs = mock_logger.error.call_args[1]
@@ -348,23 +347,19 @@ def test_log_task_exception_logs_error_when_exception_present():
 
 
 def test_log_task_exception_does_not_log_when_task_succeeded():
-    """_log_task_exception is silent for tasks that finished without an exception."""
-    from app.main import _log_task_exception
-
+    """log_task_exception is silent for tasks that finished without an exception."""
     mock_task = MagicMock()
     mock_task.cancelled.return_value = False
     mock_task.exception.return_value = None
 
     with patch("framework.core.logger") as mock_logger:
-        _log_task_exception(mock_task)
+        log_task_exception(mock_task)
 
     mock_logger.error.assert_not_called()
 
 
 def test_log_task_exception_includes_task_name_in_error_message():
-    """_log_task_exception includes the task name in the logged error message."""
-    from app.main import _log_task_exception
-
+    """log_task_exception includes the task name in the logged error message."""
     exc = RuntimeError("task failed")
     mock_task = MagicMock()
     mock_task.cancelled.return_value = False
@@ -372,7 +367,7 @@ def test_log_task_exception_includes_task_name_in_error_message():
     mock_task.get_name.return_value = "important-task"
 
     with patch("framework.core.logger") as mock_logger:
-        _log_task_exception(mock_task)
+        log_task_exception(mock_task)
 
     call_args = mock_logger.error.call_args[0]
     # The format string is the first arg; the task name is the second
@@ -387,7 +382,6 @@ def test_log_task_exception_includes_task_name_in_error_message():
 @pytest.mark.asyncio
 async def test_lifespan_logs_monolith_started_on_startup():
     """Lifespan logs 'Monolith started' after background tasks are created."""
-    from app.main import lifespan
 
     def capture_create_task(coro, **kwargs):
         if hasattr(coro, "close"):
@@ -413,7 +407,6 @@ async def test_lifespan_logs_monolith_started_on_startup():
 @pytest.mark.asyncio
 async def test_lifespan_logs_shutting_down_on_exit():
     """Lifespan logs 'Monolith shutting down' when the context exits."""
-    from app.main import lifespan
 
     def capture_create_task(coro, **kwargs):
         if hasattr(coro, "close"):
@@ -455,9 +448,7 @@ def _lifespan_patches_with_discord(mock_bot):
 
 @pytest.mark.asyncio
 async def test_lifespan_registers_done_callback_on_bot_task_when_token_set():
-    """When DISCORD_BOT_TOKEN is set, bot_task.add_done_callback(_log_task_exception) is called."""
-    from app.main import lifespan, _log_task_exception
-
+    """When DISCORD_BOT_TOKEN is set, bot_task.add_done_callback(log_task_exception) is called."""
     mock_bot = MagicMock()
     mock_bot.close = AsyncMock()
 
@@ -484,7 +475,7 @@ async def test_lifespan_registers_done_callback_on_bot_task_when_token_set():
                 async with lifespan(app):
                     pass
 
-    bot_task_mock.add_done_callback.assert_called_once_with(_log_task_exception)
+    bot_task_mock.add_done_callback.assert_called_once_with(log_task_exception)
 
 
 @pytest.mark.asyncio
@@ -508,7 +499,7 @@ async def test_lifespan_logs_discord_bot_starting_when_token_set():
                 patches[2],
             ):
                 with patch("chat.leader.logger") as mock_logger:
-                    await _start_singletons(app)
+                    await start_leader_singletons(app, ALL_MODULES)
 
     logged_messages = [str(c) for c in mock_logger.info.call_args_list]
     assert any("Discord bot starting" in m for m in logged_messages), (
@@ -540,7 +531,7 @@ async def test_lifespan_creates_discord_and_service_tasks_when_token_set():
                 patches[1],
                 patches[2],
             ):
-                await _start_singletons(app)
+                await start_leader_singletons(app, ALL_MODULES)
 
     # Bot, outbox, scheduled tasks, lock sweep, and eight service loops.
     assert len(created_tasks) == 12
@@ -549,8 +540,6 @@ async def test_lifespan_creates_discord_and_service_tasks_when_token_set():
 @pytest.mark.asyncio
 async def test_lifespan_does_not_log_discord_bot_starting_when_token_absent():
     """When DISCORD_BOT_TOKEN is absent, 'Discord bot starting' is NOT logged."""
-    from app.main import lifespan
-
     env_without_token = {
         k: v for k, v in os.environ.items() if k != "DISCORD_BOT_TOKEN"
     }

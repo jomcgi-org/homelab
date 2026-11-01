@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from auth.api import Authority, Principal, PrincipalKind, anonymous_principal
 from sqlalchemy.dialects import postgresql
-from sqlmodel import Session, select
 
 from knowledge.mcp import (
     get_daily_tasks,
@@ -19,7 +18,6 @@ from knowledge.mcp import (
     search_tasks,
     update_task,
 )
-from knowledge.models import Note
 
 FAKE_EMBEDDING = [0.1] * 1024
 DEFAULT_SCOPES = (
@@ -131,16 +129,6 @@ async def test_grant_kg_burst_returns_created_grant():
 
     assert result == granted
     grant_sync.assert_called_once_with(500, 7_200, "standing:operator@example.com")
-
-
-def _get_note_row(engine, note_id: str) -> Note:
-    """Fetch the raw Note ORM row (carries columns get_note_by_id omits)."""
-    with Session(engine) as session:
-        # test helper: intentionally reads any row (including soft-deleted).
-        stmt = select(Note).where(
-            Note.note_id == note_id
-        )  # nosemgrep: sqlmodel-select-missing-deleted-at-filter
-        return session.exec(stmt).one()
 
 
 class TestSearchKnowledge:
@@ -923,13 +911,6 @@ class TestGetWeeklyTasks:
 # ---------------------------------------------------------------------------
 # Gardener decomposition tool tests (ADR 006 Phase 4c)
 # ---------------------------------------------------------------------------
-
-
-def _result(value):
-    """Wrap a value as a SQLModel exec(...) result whose .first() returns it."""
-    r = MagicMock()
-    r.first.return_value = value
-    return r
 
 
 @pytest.mark.asyncio

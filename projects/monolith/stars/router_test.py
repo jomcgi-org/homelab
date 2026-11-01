@@ -19,14 +19,13 @@ from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
 
 from core.db import get_session
 from shared.forecast_freshness import top_of_hour
 import stars.router as stars_router
 from stars.models import Site, SiteHour, SiteMonthClimatology
 from stars.router import _HISTORY_CACHE_CONTROL, _SITES_CACHE_CONTROL, router
+from shared.testing.sqlite import sqlite_session
 
 CUTOFF = top_of_hour(datetime.now(timezone.utc))
 FETCHED = CUTOFF - timedelta(minutes=10)
@@ -341,26 +340,8 @@ def test_serialized_sites_keep_empty_success_and_legacy_visibility(client, sessi
 
 @pytest.fixture(name="session")
 def session_fixture():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    # SQLite can't span schemas, so strip the Postgres-only schema= overrides so
-    # SQLModel.metadata.create_all() lands every table in the default schema.
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
+    with sqlite_session() as session:
+        yield session
 
 
 @pytest.fixture(name="client")

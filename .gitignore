@@ -12,21 +12,13 @@ MODULE.bazel.lock
 # Symlinks created by Bazel into the output tree
 /bazel-*
 
-# Root-level Go build output. The egress-proxy binary is rebuilt by its branch.
-/cmd
-
 # Stray binary from running `go build ./cmd/...` at the repo root, which names
 # its output after the package directory. Anchored: a bare `cmd` would match the
 # many legitimate cmd/ package directories under projects/.
 /cmd
 
-# CI-local tool symlinks (from buildbuddy.yaml format check)
-.ci-tools/
-
-
 node_modules/
 dist/
-.wrangler/
 /controls-preview-evidence/
 
 
@@ -35,9 +27,7 @@ __pycache__
 *.sqlite
 *.sqlite.db
 
-.astro
 .playwright-mcp
-websites/hikes.jomcgi.dev/test-results/
 
 # Rendered manifests - ArgoCD renders at deploy time, no need to commit
 **/manifests/

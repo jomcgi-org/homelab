@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from datetime import datetime, timedelta, timezone
 from html import escape
 
 import httpx
 from core.clock import aware
-from core.github import GITHUB_API, GITHUB_REPO
+from core.github import GITHUB_API, GITHUB_REPO, github_headers
 from sqlalchemy import func, or_, text, update
 from sqlmodel import Session, select
 
@@ -41,14 +40,7 @@ _PROPOSALS = {
 
 def github_request(method: str, path: str, *, params=None, payload=None) -> object:
     """One bounded network seam for both reconciliation and creation."""
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "monolith-kg-audit",
-    }
-    token = os.environ.get("GITHUB_API_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    headers = github_headers("monolith-kg-audit")
     with (
         httpx.Client(timeout=httpx.Timeout(20.0, connect=5.0)) as client,
         client.stream(

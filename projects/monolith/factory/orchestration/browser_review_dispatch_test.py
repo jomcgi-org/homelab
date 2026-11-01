@@ -7,14 +7,14 @@ from dataclasses import asdict, replace
 from unittest.mock import patch
 
 from factory.execution.workspace_handoff import WorkspaceHandoff
+from factory.orchestration import browser_evidence_test as evidence_case
 from factory.orchestration import browser_review_dispatch as dispatch
 from factory.orchestration.browser_evidence import EvidenceError
-from factory.orchestration.browser_evidence_test import BrowserEvidenceTest
 
 
 class BrowserReviewDispatchTest(unittest.TestCase):
     def setUp(self):
-        fixture = BrowserEvidenceTest()
+        fixture = evidence_case.BrowserEvidenceTest()
         fixture.setUp()
         self.value, self.producer, self.provenance = (
             fixture.value,

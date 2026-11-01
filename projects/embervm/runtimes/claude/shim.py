@@ -3600,6 +3600,45 @@ class ClaudeProcess:
         return {"terminal_reason": reason, "killed": timed_out, "timeout": timed_out}
 
 
+def _read_queued_json(adapter, timeout, runner):
+    """Read one JSONL event from an adapter's stdout pump queue."""
+    with adapter.process_lock:
+        output_queue = adapter._stdout_queue
+    if output_queue is None:
+        return None
+    try:
+        raw = output_queue.get(timeout=timeout)
+    except queue.Empty as exc:
+        raise TimeoutError from exc
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("%s emitted invalid JSON: %s" % (runner, exc)) from exc
+
+
+def _interrupt_turn(adapter, send_abort, timeout):
+    """Send a turn abort and wait for the turn; kill the CLI if either fails."""
+    try:
+        send_abort()
+    except Exception:
+        adapter._close_process(kill=True)
+        return {
+            "terminal_reason": "user_interrupt",
+            "killed": False,
+            "timeout": False,
+        }
+    timed_out = not adapter._turn_done.wait(timeout=timeout)
+    if timed_out:
+        adapter._close_process(kill=True)
+    return {
+        "terminal_reason": "user_interrupt",
+        "killed": timed_out,
+        "timeout": timed_out,
+    }
+
+
 class CodexProcess:
     """Own one long-lived Codex app-server process and bind threads lazily."""
 
@@ -3891,20 +3930,7 @@ url = %s
         sys.stderr.flush()
 
     def _read_event(self, timeout):
-        with self.process_lock:
-            output_queue = self._stdout_queue
-        if output_queue is None:
-            return None
-        try:
-            raw = output_queue.get(timeout=timeout)
-        except queue.Empty as exc:
-            raise TimeoutError from exc
-        if raw is None:
-            return None
-        try:
-            return json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise RuntimeError("codex emitted invalid JSON: %s" % exc) from exc
+        return _read_queued_json(self, timeout, "codex")
 
     def _resume(self, session_id, system_prompt=None):
         params = {
@@ -4410,13 +4436,6 @@ url = %s
                         pass
                 self._turn_done.set()
 
-    @staticmethod
-    def _reap_process(process):
-        try:
-            process.wait()
-        finally:
-            _managed_child_pids.discard(process.pid)
-
     def interrupt(self, timeout=INTERRUPT_TIMEOUT):
         with self.process_lock:
             process = self.process
@@ -4433,7 +4452,8 @@ url = %s
                 "killed": False,
                 "timeout": False,
             }
-        try:
+
+        def send_abort():
             with self._write_lock:
                 self._rpc_id += 1
                 request_id = self._rpc_id
@@ -4445,21 +4465,8 @@ url = %s
                     "params": {"threadId": thread_id, "turnId": turn_id},
                 }
             )
-        except Exception:
-            self._close_process(kill=True)
-            return {
-                "terminal_reason": "user_interrupt",
-                "killed": False,
-                "timeout": False,
-            }
-        timed_out = not self._turn_done.wait(timeout=timeout)
-        if timed_out:
-            self._close_process(kill=True)
-        return {
-            "terminal_reason": "user_interrupt",
-            "killed": timed_out,
-            "timeout": timed_out,
-        }
+
+        return _interrupt_turn(self, send_abort, timeout)
 
     def _close_process(self, kill=False):
         with self.process_lock:
@@ -5682,7 +5689,6 @@ class PiProcess:
         self._in_flight = False
         self._model = None
         self._system_prompt = None
-        self._session_file = None
         # Spawn-time workspace identity, read by the manager's remediation to
         # detect a volume mount hiding the tmpfs workspace this process was
         # spawned against. Same contract as ClaudeProcess.
@@ -5874,20 +5880,7 @@ class PiProcess:
             output_queue.put(None)
 
     def _read_event(self, timeout):
-        with self.process_lock:
-            output_queue = self._stdout_queue
-        if output_queue is None:
-            return None
-        try:
-            raw = output_queue.get(timeout=timeout)
-        except queue.Empty as exc:
-            raise TimeoutError from exc
-        if raw is None:
-            return None
-        try:
-            return json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise RuntimeError("pi emitted invalid JSON: %s" % exc) from exc
+        return _read_queued_json(self, timeout, "pi")
 
     def _send(self, command):
         with self._write_lock:
@@ -5919,12 +5912,9 @@ class PiProcess:
 
     def _state(self):
         data = self._command({"type": "get_state"})
-        session_file = data.get("sessionFile")
         session_id = data.get("sessionId")
         if isinstance(session_id, str) and session_id:
             self.session_id = session_id
-        if isinstance(session_file, str) and session_file:
-            self._session_file = session_file
         model = data.get("model")
         if isinstance(model, dict):
             model_id = model.get("id")
@@ -6439,23 +6429,7 @@ class PiProcess:
                 "timeout": False,
             }
         self._in_flight = False
-        try:
-            self._send({"type": "abort"})
-        except Exception:
-            self._close_process(kill=True)
-            return {
-                "terminal_reason": "user_interrupt",
-                "killed": False,
-                "timeout": False,
-            }
-        timed_out = not self._turn_done.wait(timeout=timeout)
-        if timed_out:
-            self._close_process(kill=True)
-        return {
-            "terminal_reason": "user_interrupt",
-            "killed": timed_out,
-            "timeout": timed_out,
-        }
+        return _interrupt_turn(self, lambda: self._send({"type": "abort"}), timeout)
 
     def _close_process(self, kill=False):
         with self.process_lock:
@@ -6876,7 +6850,7 @@ class ProcessManager:
             return False
         # Base build safety depends on the noded placeholder volume staying blank
         # (zero-filled, no filesystem). Guest-init in guest init forbids mounting a
-        # placeholder during base build (volume_linux.go:97-100). If the placeholder
+        # placeholder during base build (volume_linux.go:94-97). If the placeholder
         # gains a superblock this probe would misfire and skip the build liveness check.
         volume_has_ext4 = _volume_has_ext4()
         if self._prewarm_clis and not volume_has_ext4:

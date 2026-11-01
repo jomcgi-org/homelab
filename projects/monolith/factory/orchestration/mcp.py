@@ -150,19 +150,6 @@ async def factory_verify_synthetics(
     return await asyncio.to_thread(_synthetics_payload, body, principal, dry_run)
 
 
-def _page(items: list[dict], offset: int, limit: int) -> tuple[list[dict], dict]:
-    page = items[offset : offset + limit]
-    next_offset = offset + limit if offset + limit < len(items) else None
-    return page, {
-        "offset": offset,
-        "limit": limit,
-        "returned": len(page),
-        "total": len(items),
-        "next_offset": next_offset,
-        "truncated": next_offset is not None,
-    }
-
-
 def _evidence_summary(evidence: object) -> dict | None:
     """Bound task evidence to stable operator-facing fields."""
     if not isinstance(evidence, dict):

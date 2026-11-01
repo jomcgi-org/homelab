@@ -175,6 +175,26 @@ def _node_deps(node: SwarmPlanNode) -> list[str]:
     return deps
 
 
+def _node_fields(node: SwarmPlanNode) -> dict:
+    return {
+        "node_key": node.node_key,
+        "kind": node.kind,
+        "prompt": node.prompt,
+        "model": node.model,
+        "effort": node.effort,
+        "deps": _node_deps(node),
+        "max_cost_usd": node.max_cost_usd,
+        "side_effects": node.side_effects,
+        "max_attempts": node.max_attempts,
+        "turn_timeout_seconds": node.turn_timeout_seconds,
+        "created_in_version": node.created_in_version,
+        "discarded_in_version": node.discarded_in_version,
+        "cancelled_in_version": node.cancelled_in_version,
+        "armed_at": node.armed_at,
+        "base_artifact_sha": node.base_artifact_sha,
+    }
+
+
 def load_graph(
     task_id: str,
     version: int | None = None,
@@ -188,24 +208,7 @@ def load_graph(
         if version is not None and version < _current_version(db, task_id):
             return _historical_nodes(db, task_id, selected_version)
         return [
-            {
-                "node_key": node.node_key,
-                "kind": node.kind,
-                "prompt": node.prompt,
-                "model": node.model,
-                "effort": node.effort,
-                "deps": _node_deps(node),
-                "max_cost_usd": node.max_cost_usd,
-                "side_effects": node.side_effects,
-                "max_attempts": node.max_attempts,
-                "turn_timeout_seconds": node.turn_timeout_seconds,
-                "created_in_version": node.created_in_version,
-                "discarded_in_version": node.discarded_in_version,
-                "cancelled_in_version": node.cancelled_in_version,
-                "armed_at": node.armed_at,
-                "base_artifact_sha": node.base_artifact_sha,
-            }
-            for node in _visible_nodes(db, task_id, selected_version)
+            _node_fields(node) for node in _visible_nodes(db, task_id, selected_version)
         ]
 
 
@@ -232,23 +235,7 @@ def _historical_nodes(db: Session, task_id: str, version: int) -> list[dict]:
     )
     incarnations: dict[tuple[str, int], dict] = {}
     for node in rows:
-        incarnations[(node.node_key, node.created_in_version)] = {
-            "node_key": node.node_key,
-            "kind": node.kind,
-            "prompt": node.prompt,
-            "model": node.model,
-            "effort": node.effort,
-            "deps": _node_deps(node),
-            "max_cost_usd": node.max_cost_usd,
-            "side_effects": node.side_effects,
-            "max_attempts": node.max_attempts,
-            "turn_timeout_seconds": node.turn_timeout_seconds,
-            "created_in_version": node.created_in_version,
-            "discarded_in_version": node.discarded_in_version,
-            "cancelled_in_version": node.cancelled_in_version,
-            "armed_at": node.armed_at,
-            "base_artifact_sha": node.base_artifact_sha,
-        }
+        incarnations[(node.node_key, node.created_in_version)] = _node_fields(node)
     for change in changes:
         if change.op != "add_node":
             continue

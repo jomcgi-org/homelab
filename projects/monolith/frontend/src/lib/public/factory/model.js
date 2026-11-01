@@ -335,7 +335,7 @@ export function snapshotFreshness(
 const quotaNumber = (value) =>
   typeof value === "number" && Number.isFinite(value);
 
-export function quotaDuration(seconds) {
+function quotaDuration(seconds) {
   if (!quotaNumber(seconds) || seconds < 0) return "unknown";
   if (seconds >= 86400)
     return `${(seconds / 86400).toFixed(1).replace(/\.0$/, "")}d`;

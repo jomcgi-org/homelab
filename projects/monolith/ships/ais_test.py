@@ -12,8 +12,6 @@ import json
 import math
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from ships.ais import (
     PriorPosition,
     haversine_distance,

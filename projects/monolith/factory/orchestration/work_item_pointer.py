@@ -20,7 +20,7 @@ in its own locked transaction, then the loop continues to the next item.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 import logging
 import os
 
@@ -29,7 +29,7 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from core.env import flag
-from core.clock import aware
+from core.clock import aware, utc_now as _now
 from factory.orchestration.factory_controls import _audit, _locked_session
 from factory.orchestration.factory_models import FactoryAudit, WorkItem, WorkItemEvent
 
@@ -73,10 +73,6 @@ def _github():
     from factory.orchestration.factory_landing import github_write
 
     return github_write
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _comment_id(response: object) -> int:

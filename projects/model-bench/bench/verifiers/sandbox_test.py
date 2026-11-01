@@ -2,7 +2,7 @@ import os
 
 import pytest  # noqa: F401
 
-from bench.verifiers.sandbox import run_sandboxed, SandboxResult
+from bench.verifiers.sandbox import run_sandboxed
 
 
 def test_scrubs_cluster_and_token_env(tmp_path, monkeypatch):

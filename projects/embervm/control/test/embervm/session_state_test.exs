@@ -110,10 +110,9 @@ defmodule Embervm.SessionStateTest do
     assert SessionState.transition(:relighting, :parked_abort) == {:ok, :parked}
   end
 
-  test "parked is not terminal and does not accept terminal operations" do
+  test "parked is not terminal" do
     refute SessionState.terminal?(:parked)
     refute :parked in SessionState.terminal_states()
-    assert_raise FunctionClauseError, fn -> SessionState.terminal_op_kind(:parked) end
   end
 
   test "no event leaves a terminal state (terminals are absorbing)" do
@@ -130,12 +129,5 @@ defmodule Embervm.SessionStateTest do
     end
 
     assert MapSet.new(SessionState.terminal_states()) == expected
-  end
-
-  test "terminal_op_kind/1 maps each terminal state to its op kind" do
-    assert SessionState.terminal_op_kind(:expired) == :session_expired
-    assert SessionState.terminal_op_kind(:evicted) == :session_evicted
-    assert SessionState.terminal_op_kind(:destroyed) == :session_destroyed
-    assert SessionState.terminal_op_kind(:failed) == :session_failed
   end
 end

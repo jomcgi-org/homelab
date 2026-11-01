@@ -6486,7 +6486,17 @@ def uncertain_factory(queued_factory, monkeypatch):
         pending.partial_text = "Unpublished partial implementation"
         db.add_all([agent, pending])
         db.commit()
-    store.finish_unknown_pending_sync(s.sid, 1, owner, 1, "executor_cancelled")
+        assert store.finish_unknown_pending_in_session(
+            db,
+            s.sid,
+            1,
+            owner,
+            1,
+            "executor_cancelled",
+            expected_guest_id="s-exact-factory",
+            expected_workflow_id=s.run["pin"]["workflow_id"],
+        )
+        db.commit()
     with Session(s.engine) as db:
         # The moment the failure was recorded. Every control-plane stamp this
         # attempt produced is ordered against this, not against the claim.
@@ -7391,9 +7401,6 @@ def test_bound_zero_turn_fence_rejects_late_result_and_release(
         "late delivery error",
         "lost-bound-executor",
         dispatch_count=1,
-    )
-    assert not store.finish_unknown_pending_sync(
-        s.sid, 1, "lost-bound-executor", 1, "late_unknown"
     )
     with Session(s.engine) as db:
         assert not store.finish_unknown_pending_in_session(
@@ -24640,7 +24647,6 @@ def test_capture_and_implementation_do_not_create_source_fan_in(monkeypatch):
     ]
     monkeypatch.setattr(factory_controls, "parallel_limit", lambda policy: 4)
     assert conductor.fan_out_wave("task", nodes, [], 4) == []
-    assert conductor._pending_fan_ins("task", nodes, [], 4) == 0
     assert conductor._planned_fan_ins("task", {}, nodes) == 0
     assert conductor._dispatch_branch("task", capture, nodes, [], 4) == "factory/task"
     assert (

@@ -582,10 +582,6 @@ async def _notify_terminal(
     )
 
 
-def _get_pending_message_sync(session_id: int, turn_seq: int):
-    return store.get_pending_message_sync(session_id, turn_seq)
-
-
 def _claim_pending_message_sync(
     session_id: int, claim_owner: str | None = None
 ) -> int | None:
@@ -688,12 +684,6 @@ def _mark_turn_error_sync(
         invocation_not_attempted=invocation_not_attempted,
         dispatch_count=dispatch_count,
     )
-
-
-def _mark_turn_interrupted_sync(
-    session_id: int, turn_seq: int, claim_owner: str | None = None
-) -> None:
-    store.mark_turn_interrupted_sync(session_id, turn_seq, claim_owner)
 
 
 def _clear_ember_session_sync(session_id: int) -> None:
@@ -1041,7 +1031,7 @@ async def _execute_pending_message(session_id: int) -> None:
             return
 
         row = await asyncio.to_thread(
-            _get_pending_message_sync, session_id, claimed_seq
+            store.get_pending_message_sync, session_id, claimed_seq
         )
         if not row:
             return
@@ -1269,7 +1259,10 @@ async def _execute_pending_message(session_id: int) -> None:
                 )
             else:
                 await asyncio.to_thread(
-                    _mark_turn_interrupted_sync, session_id, claimed_seq, claim_owner
+                    store.mark_turn_interrupted_sync,
+                    session_id,
+                    claimed_seq,
+                    claim_owner,
                 )
                 await asyncio.to_thread(
                     _release_pending_message_claim_sync,

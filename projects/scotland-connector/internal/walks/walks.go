@@ -68,11 +68,6 @@ func LocalDay(t time.Time) int32 {
 	return int32(time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix() / 86400)
 }
 
-// DayName formats a LocalDay as YYYY-MM-DD.
-func DayName(day int32) string {
-	return time.Unix(int64(day)*86400, 0).UTC().Format("2006-01-02")
-}
-
 // Hour is one daylight hour at the walk's start point. In a version 1
 // snapshot only good hours are present; in version 2 every daylight hour is.
 // The version 2 fields are NaN when unknown.

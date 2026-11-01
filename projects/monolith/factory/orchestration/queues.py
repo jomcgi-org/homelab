@@ -13,7 +13,6 @@ def get_queues():
 
         _queues = (
             Queue("codex", concurrency=config.codex_concurrency()),
-            Queue("merge", concurrency=1),
             Queue("drainer", concurrency=DRAINER_WORKER_COUNT),
         )
     return _queues
@@ -23,16 +22,8 @@ def codex_queue():
     return get_queues()[0]
 
 
-def merge_queue():
-    return get_queues()[1]
-
-
 def drainer_queue():
-    return get_queues()[2]
-
-
-# The merge queue remains unused. See FACTORY.md, "Review publisher", for the
-# disabled publisher and the external safeguards required before activation.
+    return get_queues()[1]
 
 
 def _prepare_drainer_workers_once(

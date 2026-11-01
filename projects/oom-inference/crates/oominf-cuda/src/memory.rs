@@ -78,10 +78,6 @@ impl Memory for Gpu {
         Ok(Dev(self.stream.alloc_zeros::<f32>(n)?))
     }
 
-    fn fill_zero(&self, buf: &mut Buf) -> Result<()> {
-        Ok(self.stream.memset_zeros(&mut buf.0)?)
-    }
-
     fn upload_f32(&self, host: &[f32]) -> Result<Buf> {
         Ok(Dev(self.htod_new(host)?))
     }

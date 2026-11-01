@@ -1,6 +1,6 @@
 export const START_POLL_INTERVAL_MS = 1000;
-export const START_POLL_BACKOFF_AFTER = 10;
-export const START_POLL_MAX_INTERVAL_MS = 8000;
+const START_POLL_BACKOFF_AFTER = 10;
+const START_POLL_MAX_INTERVAL_MS = 8000;
 
 const TERMINAL_KINDS = new Set([
   "session",

@@ -143,16 +143,6 @@ export const NOTES_PAGE_CACHE_CONTROL = `public, s-maxage=${ONE_HOUR}, stale-whi
 // browsers and Cloudflare may refresh it every five minutes in the background.
 export const SEARCH_INDEX_CACHE_CONTROL = `public, max-age=300, s-maxage=300, stale-while-revalidate=${ONE_DAY}`;
 
-// /slop/factory/merges: the snapshot refreshes periodically, so keep browsers
-// revalidating while Cloudflare serves a 30-minute fresh response and one day
-// of stale data during background refreshes.
-export const MERGES_CACHE_CONTROL = `public, max-age=0, s-maxage=1800, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
-
-// /slop/factory/goals: orchestrator-declared goals move on declaration, not on
-// a snapshot cadence, so the proxy keeps the same 30-minute shared freshness
-// as the merges snapshot. Same shape as MERGES_CACHE_CONTROL above.
-export const FACTORY_GOALS_CACHE_CONTROL = `public, max-age=0, s-maxage=1800, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
-
 // /docs pages: the manifest is baked into the build, so doc content changes only
 // on deploy. The build-versioned page ETag busts revalidation on every deploy,
 // so a long edge cache is safe: 1h fresh, 1d background refresh, 1y serve-stale
@@ -225,11 +215,6 @@ export const STARS_HISTORY_CACHE_CONTROL =
 // Mirrors _CACHE in projects/monolith/trips/read_router.py, keep in sync.
 export const TRIPS_CACHE_CONTROL =
   "public, max-age=60, s-maxage=300, stale-while-revalidate=3600";
-
-// /slop/factory/data/activity: public aggregate agent activity, refreshed every
-// 5 min. Moved out of /slop/factory/activity when that path became a page.
-// Mirrors _ACTIVITY_CACHE_CONTROL in agent_sessions/public_router.py.
-export const AGENT_ACTIVITY_CACHE_CONTROL = "public, max-age=300, s-maxage=300";
 
 // /slop/factory/activity pages: the factory board, one task, one session. The
 // lane moves on the order of a turn, so a minute of freshness is the most a

@@ -20,6 +20,9 @@ import (
 )
 
 const (
+	ext4MagicOffset = 1024 + 0x38
+	ext4UUIDOffset  = 1024 + 0x68
+	ext4HeaderSize  = 0x48c
 	testRootfsUUIDA = "550e8400-e29b-41d4-a716-446655440000"
 	testRootfsUUIDB = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
 )
@@ -57,37 +60,6 @@ func writeRootfs(t *testing.T, dir, name string, age time.Duration) string {
 		t.Fatalf("chtimes %s: %v", path, err)
 	}
 	return path
-}
-
-func TestExt4UUID_Happy(t *testing.T) {
-	path := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
-	got, err := ext4UUID(path)
-	if err != nil {
-		t.Fatalf("ext4UUID: %v", err)
-	}
-	if got != testRootfsUUIDA {
-		t.Fatalf("ext4UUID = %q, want %q", got, testRootfsUUIDA)
-	}
-}
-
-func TestExt4UUID_ShortFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "short.ext4")
-	if err := os.WriteFile(path, make([]byte, ext4MagicOffset), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ext4UUID(path); err == nil {
-		t.Fatal("ext4UUID accepted a short file")
-	}
-}
-
-func TestExt4UUID_BadMagic(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "not-ext4.img")
-	if err := os.WriteFile(path, make([]byte, 0x48c), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ext4UUID(path); err == nil || !strings.Contains(err.Error(), "magic") {
-		t.Fatalf("ext4UUID bad magic error = %v", err)
-	}
 }
 
 func TestWriteAndReadBaseRootfsID(t *testing.T) {

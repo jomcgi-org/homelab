@@ -1,10 +1,6 @@
 #include <metal_stdlib>
 using namespace metal;
 
-kernel void embedding(device const ushort* w [[buffer(0)]], device float* out [[buffer(1)]], constant uint* p [[buffer(2)]], uint i [[thread_position_in_grid]]) {
-    out[i] = as_type<float>(uint(w[p[0]*p[1]+i]) << 16);
-}
-
 inline float bf16(ushort value) { return as_type<float>(uint(value) << 16); }
 inline float e4m3(uchar value) {
     uint e = (value >> 3) & 15, m = value & 7;

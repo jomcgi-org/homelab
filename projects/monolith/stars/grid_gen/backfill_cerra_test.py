@@ -23,7 +23,6 @@ from types import ModuleType
 from unittest.mock import MagicMock
 
 import numpy as np
-import pytest
 
 # ---------------------------------------------------------------------------
 # Mock xarray before importing backfill_cerra
@@ -34,8 +33,6 @@ sys.modules.setdefault("xarray", _xarray_stub)
 # cfgrib is only used inside load_cube via xarray's engine kwarg, but importing
 # xarray itself (even mocked) can trigger cfgrib probing on some platforms.
 sys.modules.setdefault("cfgrib", MagicMock(spec=ModuleType("cfgrib")))
-
-import backfill_cerra  # noqa: E402 (must be after sys.modules stubs)
 
 from backfill_cerra import (  # noqa: E402
     CLEAR_CLOUD_MAX_PCT,

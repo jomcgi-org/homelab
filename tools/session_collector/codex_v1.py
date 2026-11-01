@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
-from .models import Block, Session, Turn
+from .models import Block, Session, Turn, read_jsonl_records, token_count
 from .redact import Redactor
 
 FORMAT_VERSION = "codex-v2"
@@ -26,20 +25,8 @@ USAGE_FIELDS = (
 )
 
 
-def _token_count(value: object) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
-
-
 def parse(path: Path) -> Session:
-    records: list[dict[str, Any]] = []
-    with path.open(encoding="utf-8", errors="replace") as stream:
-        for line in stream:
-            try:
-                value = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(value, dict):
-                records.append(value)
+    records = read_jsonl_records(path)
 
     timestamps = [
         r["timestamp"] for r in records if isinstance(r.get("timestamp"), str)
@@ -79,7 +66,7 @@ def parse(path: Path) -> Session:
             if not isinstance(total_usage, dict):
                 total_usage = {}
             usage_totals = {
-                target: _token_count(total_usage.get(source))
+                target: token_count(total_usage.get(source))
                 for source, target in USAGE_FIELDS
             }
             continue

@@ -361,7 +361,8 @@ def test_stale_pending_reaper_then_enqueue(monkeypatch):
             if status == "PENDING":
                 # From _reap_stale_drain_cycles: return one stale workflow
                 return [_FakeWorkflow("stale-wf-1", 1000)]
-            # From _has_live_drain_cycle (status is a list): no live workflows
+            # From queues._prepare_drainer_workers_once (status is a list):
+            # no live workflows
             return []
 
         def list_workflow_steps(self, workflow_id, load_output=False):
@@ -829,7 +830,8 @@ def test_old_updated_at_with_recent_step_not_reaped(monkeypatch):
                         now_ms - (4000 * 1000),  # 4000 seconds old
                     )
                 ]
-            # From _has_live_drain_cycle (status is a list): no live workflows
+            # From queues._prepare_drainer_workers_once (status is a list):
+            # no live workflows
             return []
 
         def list_workflow_steps(self, workflow_id, load_output=False):

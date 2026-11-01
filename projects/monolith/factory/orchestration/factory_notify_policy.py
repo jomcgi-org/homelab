@@ -28,12 +28,12 @@ advisory work, not authority) and the self-releasing kinds above.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from sqlmodel import select
 
 from core.env import flag
-from core.clock import aware
+from core.clock import aware, utc_now as _now
 from factory.orchestration import factory_controls as controls
 
 logger = logging.getLogger(__name__)
@@ -72,10 +72,6 @@ def pages(kind: str) -> bool:
     if kind in SELF_RELEASING_KINDS:
         return not automatic_release()
     return True
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _latest(db, action):

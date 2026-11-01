@@ -49,7 +49,7 @@ def session(tmp_path):
 def _patch_fastapi(session):
     """Point the CLI's httpx calls at the FastAPI TestClient.
 
-    FastAPI's TestClient is httpx-compatible, so we patch knowledge._client
+    FastAPI's TestClient is httpx-compatible, so we patch api.client
     to return it directly. We also patch get_cf_token to avoid reading real
     cloudflared files. Authentication is deliberately not overridden here, so
     tests can exercise the CLI's actual tokenless application request.
@@ -66,8 +66,8 @@ def _patch_fastapi(session):
         yield test_client
 
     with (
-        patch("tools.cli.knowledge_cmd._client", _fake_client),
-        patch("tools.cli.knowledge_cmd.get_cf_token", return_value="fake-token"),
+        patch("tools.cli.api.client", _fake_client),
+        patch("tools.cli.api.get_cf_token", return_value="fake-token"),
     ):
         yield
 

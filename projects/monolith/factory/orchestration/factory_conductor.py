@@ -1309,16 +1309,6 @@ def fan_out_wave(
     return wave[:limit] if len(wave) >= 2 else []
 
 
-def _pending_fan_ins(
-    task_id: str, nodes: list[dict], runs: list[dict], limit: int
-) -> int:
-    """Fan-in nodes this graph still owes: one for a wave nothing covers yet."""
-    wave = fan_out_wave(task_id, nodes, runs, limit)
-    if not wave or all(_covering_integrate(key, nodes) is not None for key in wave):
-        return 0
-    return 1
-
-
 def _dispatch_branch(
     task_id: str,
     node_key: str,

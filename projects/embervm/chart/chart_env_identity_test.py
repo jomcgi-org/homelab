@@ -1484,7 +1484,6 @@ def test_dev_does_not_render_production_only_workloads(renders):
     def find_workload_names(rendered: str) -> set[str]:
         return {name for kind, name, _ in _docs(rendered) if kind == "Workload"}
 
-    prod_workloads = find_workload_names(renders["prod"])
     dev_workloads = find_workload_names(renders["dev"])
 
     # These should be in production but NOT in dev. Listed in

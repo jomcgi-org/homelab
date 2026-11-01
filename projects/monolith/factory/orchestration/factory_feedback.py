@@ -337,10 +337,6 @@ def store_class_route(task_class: str, feedback: dict, *, session: Session) -> N
 
 
 __all__ = [
-    "ADVISORY_TIER",
-    "APPROVAL_FLOOR",
-    "DELIVERY_TIER",
-    "WINDOW_SIZE",
     "empty_feedback",
     "feedback_for_class",
     "record_first_pass",

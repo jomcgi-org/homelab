@@ -17,7 +17,6 @@ import (
 	"github.com/jomcgi/homelab/bazel/tools/hf2oci/pkg/gguf"
 	"github.com/jomcgi/homelab/bazel/tools/hf2oci/pkg/hf"
 	"github.com/jomcgi/homelab/bazel/tools/hf2oci/pkg/oci"
-	"github.com/jomcgi/homelab/bazel/tools/hf2oci/pkg/ociref"
 )
 
 const (
@@ -264,26 +263,6 @@ func Copy(ctx context.Context, opts Options) (*Result, error) {
 		FileCount: rm.fileCount,
 		TotalSize: rm.totalSize,
 	}, nil
-}
-
-// DeriveTag returns the OCI tag to use. If tag is non-empty it is returned as-is;
-// otherwise it is derived from revision as "rev-{revision[:12]}".
-func DeriveTag(tag, revision string) string {
-	return ociref.DeriveTag(tag, revision)
-}
-
-// deriveRepoName converts a HuggingFace repo name to an OCI repo path,
-// preserving the org/model structure for cleaner registry organization.
-// e.g. "NousResearch/Hermes-4.3-Llama-3-36B-AWQ" → "nousresearch/hermes-4.3-llama-3-36b-awq"
-func deriveRepoName(repo string) string {
-	return ociref.DeriveRepoName(repo)
-}
-
-// deriveVariantTag flattens a HuggingFace repo name into a valid OCI tag.
-// Used for derivative models to encode the variant identity in the tag.
-// e.g. "Emilio407/nllb-200-distilled-1.3B-4bit" → "emilio407-nllb-200-distilled-1.3b-4bit"
-func deriveVariantTag(repo string) string {
-	return ociref.DeriveVariantTag(repo)
 }
 
 // buildSplitGGUFLayers handles the GGUF split path: probes the file header

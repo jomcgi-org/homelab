@@ -803,8 +803,8 @@ def test_scout_transport_rejects_generic_nodes_changed_models_and_retries(
     assert scout.tick(data["policy"])["ok"]
     attach_task(engine)
     seed_run(engine, key, model=model, pin_model=pin_model, attempt=attempt)
-    assert not scout.transport_allowed("t-scout", key, attempt)
-    assert scout.transport_allowed("ordinary-task", key, attempt)
+    assert not fence.transport_allowed("t-scout", key, attempt)
+    assert fence.transport_allowed("ordinary-task", key, attempt)
 
 
 @pytest.mark.parametrize("action", [scout.SETTLED, service.ATTEMPT])
@@ -824,7 +824,7 @@ def test_settlement_waiting_for_unresolved_starts_fences_all_transport(db, actio
         )
         session.commit()
     assert scout.dispatch_allowed("t-scout")["reason"] == "scout_already_settled"
-    assert not scout.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
+    assert not fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
 
 
 @pytest.mark.parametrize("entrypoint", ["request", "reconcile"])
@@ -937,8 +937,8 @@ def test_missing_claim_cannot_reclassify_scout_as_ordinary_transport(db):
         session.commit()
     assert scout.owns_task("t-scout")
     assert not scout.is_scout("t-scout")
-    assert not scout.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
-    assert not scout.transport_allowed("t-scout", "conductor_funding_1", 1)
+    assert not fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
+    assert not fence.transport_allowed("t-scout", "conductor_funding_1", 1)
 
 
 @pytest.mark.parametrize(

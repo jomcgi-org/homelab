@@ -6,18 +6,20 @@ Raw markdown content is stored content-addressed at
 file-based ``_raw/`` drop that relied on the (now offline) gardener move phase
 to mirror files into Postgres.
 
-The S3 client mirrors stars.grid._s3_client / chat.store._blob_s3_put: dummy
-creds (SeaweedFS auth is disabled cluster-wide, but boto3 needs some value),
-path-style addressing (SeaweedFS only supports it), and a scheme prefixed onto
-the scheme-less endpoint the chart injects. When ``SEAWEEDFS_S3_ENDPOINT`` is
-unset/empty (tests, local dev) the helpers no-op with a logged warning rather
-than guessing a cluster URL.
+The S3 client comes from core.s3: dummy creds (SeaweedFS auth is disabled
+cluster-wide, but boto3 needs some value), path-style addressing (SeaweedFS
+only supports it), and a scheme prefixed onto the scheme-less endpoint the
+chart injects. When ``SEAWEEDFS_S3_ENDPOINT`` is unset/empty (tests, local
+dev) the helpers no-op with a logged warning rather than guessing a cluster
+URL.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+
+from core.s3 import path_style_client
 
 logger = logging.getLogger("monolith.knowledge.raw_store")
 
@@ -33,29 +35,13 @@ def _s3_client():
     """boto3 S3 client pointed at the SeaweedFS S3 gateway, or None.
 
     Returns None (logging a warning) when ``SEAWEEDFS_S3_ENDPOINT`` is
-    unset/empty so tests and local dev no-op cleanly. Mirrors
-    stars.grid._s3_client: dummy creds, path-style addressing, scheme prefixed
-    onto the scheme-less host:port the chart injects.
+    unset/empty so tests and local dev no-op cleanly.
     """
-    import boto3
-    from botocore.config import Config
-
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "")
     if not endpoint:
         logger.warning("knowledge raw S3 not configured; skipping S3 access")
         return None
-    if not endpoint.startswith(("http://", "https://")):
-        endpoint = "http://" + endpoint
-    # Scheme guaranteed by the guard above; the inline nosemgrep
-    # suppresses boto3-endpoint-url-missing-scheme for Semgrep scans.
-    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),
-        aws_secret_access_key=os.environ.get("S3_SECRET_ACCESS_KEY", "duckdb"),
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-        config=Config(s3={"addressing_style": "path"}),
-    )
+    return path_style_client(endpoint)
 
 
 def upload_raw(content_hash: str, content: str) -> None:

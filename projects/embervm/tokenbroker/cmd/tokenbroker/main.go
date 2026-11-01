@@ -70,7 +70,7 @@ type server struct {
 const (
 	forceRefreshCooldown = 60 * time.Second
 	// loginStartWaitTimeout is coupled to the 10-second client-side proxy budget in
-	// projects/monolith/frontend/src/routes/private/agents/codex-login/start/+server.js.
+	// projects/monolith/frontend/src/routes/private/factory/execution/codex-login/start/+server.js.
 	// Do not raise either timeout in isolation. Preserve headroom for monolith latency.
 	loginStartWaitTimeout = 5 * time.Second
 	// x509SourceTimeout is coupled to the chart's liveness probe, which kills the

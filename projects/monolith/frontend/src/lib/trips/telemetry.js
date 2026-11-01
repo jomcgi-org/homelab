@@ -6,25 +6,12 @@
 // unit testable without a Svelte render harness.
 
 import { sunAltitude, sunsetTime } from "./sun.js";
+import { haversineKm } from "./trip.js";
 
 function takenMs(p) {
   if (!p?.taken_at) return null;
   const t = new Date(p.taken_at).getTime();
   return Number.isNaN(t) ? null : t;
-}
-
-// Great-circle distance in km between two {lat,lng} points (haversine).
-function haversineKm(a, b) {
-  if (a?.lat == null || b?.lat == null) return 0;
-  const R = 6371;
-  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
-  const dLon = ((b.lng - a.lng) * Math.PI) / 180;
-  const s =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((a.lat * Math.PI) / 180) *
-      Math.cos((b.lat * Math.PI) / 180) *
-      Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
 }
 
 // Interpolate {lat, lng, elevation} for a photo from the day's GPS track by
@@ -181,7 +168,7 @@ export function formatCoord(val, isLat) {
 }
 
 // Wall-clock HH:MM + AM/PM in the trip's IANA zone, for the big TIME readout.
-export function formatClock(iso, tz) {
+function formatClock(iso, tz) {
   if (!iso) return { time: "--:--", period: "" };
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return { time: "--:--", period: "" };

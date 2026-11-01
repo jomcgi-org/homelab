@@ -651,17 +651,7 @@ func (s *Server) commitCheckpoint(ctx context.Context, e *statefulEntry, token s
 	s.statefulVMs.remove(e.vmID)
 	s.servingNet.ReleaseTap(ctx, e.ip)
 	s.volumes.Detach(e.workload)
-	if prior, ok := s.statefulBundles.byWorkload(e.workload); ok && prior.snapshotRef != ref.ID {
-		_ = s.statefulDriver.RemoveStatefulBundle(prior.snapshotRef)
-		s.statefulBundles.remove(prior.snapshotRef)
-	}
-	s.statefulBundles.add(statefulBundleEntry{
-		snapshotRef:     ref.ID,
-		workload:        e.workload,
-		generation:      e.generation,
-		sizeBytes:       ref.SizeBytes,
-		createdAtUnixMs: time.Now().UnixMilli(),
-	})
+	s.recordStatefulBundle(e, ref)
 	// Persist the workload binding beside the committed bundle (#38 F1), same as
 	// the direct-bank path.
 	s.writeStatefulWorkloadSidecar(ref.ID, e.workload)
@@ -788,26 +778,7 @@ func (s *Server) stopStatefulBank(ctx context.Context, vmID string) (*nodev1.Sto
 		s.statefulVMs.allowTeardownRetry(vmID)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: reap banked stateful vm %q: %v", vmID, err)
 	}
-	// Evict any PRIOR bundle for this workload BEFORE recording the new one: at
-	// most one banked bundle per workload, so the old bundle would otherwise be
-	// an orphan a relight could never reach (byWorkload lookups always resolve
-	// the newest add, but the stale bundle's disk bytes would leak with no
-	// eviction path). Best-effort: a disk error removing the old bundle must
-	// not block recording the new (successfully banked) one. Keyed off the live
-	// entry's workload (e.workload), the authoritative fact, not the request
-	// trace, so the one-bundle-per-workload eviction cannot misfire on a trace
-	// that disagrees with the VM's actual workload.
-	if prior, ok := s.statefulBundles.byWorkload(e.workload); ok && prior.snapshotRef != ref.ID {
-		_ = s.statefulDriver.RemoveStatefulBundle(prior.snapshotRef)
-		s.statefulBundles.remove(prior.snapshotRef)
-	}
-	s.statefulBundles.add(statefulBundleEntry{
-		snapshotRef:     ref.ID,
-		workload:        e.workload,
-		generation:      e.generation,
-		sizeBytes:       ref.SizeBytes,
-		createdAtUnixMs: time.Now().UnixMilli(),
-	})
+	s.recordStatefulBundle(e, ref)
 	// Persist the workload binding beside the bundle so a boot-scan reconciliation
 	// (which knows only the opaque ref) can recover it and compose the remote (S3)
 	// prefix at eviction time (#38 F1). Written after the driver published the
@@ -827,6 +798,29 @@ func (s *Server) stopStatefulBank(ctx context.Context, vmID string) (*nodev1.Sto
 		BundleSchemaVersion: ref.BundleSchemaVersion,
 		RootfsIdentity:      ref.RootfsIdentity,
 	}, nil
+}
+
+// recordStatefulBundle records ref as e's banked bundle. It evicts any PRIOR
+// bundle for this workload first: at most one banked bundle per workload, so the
+// old bundle would otherwise be an orphan a relight could never reach
+// (byWorkload lookups always resolve the newest add, but the stale bundle's disk
+// bytes would leak with no eviction path). Best-effort: a disk error removing the
+// old bundle must not block recording the new (successfully banked) one. Keyed
+// off the live entry's workload (e.workload), the authoritative fact, not the
+// request trace, so the one-bundle-per-workload eviction cannot misfire on a
+// trace that disagrees with the VM's actual workload.
+func (s *Server) recordStatefulBundle(e *statefulEntry, ref substrate.SnapshotRef) {
+	if prior, ok := s.statefulBundles.byWorkload(e.workload); ok && prior.snapshotRef != ref.ID {
+		_ = s.statefulDriver.RemoveStatefulBundle(prior.snapshotRef)
+		s.statefulBundles.remove(prior.snapshotRef)
+	}
+	s.statefulBundles.add(statefulBundleEntry{
+		snapshotRef:     ref.ID,
+		workload:        e.workload,
+		generation:      e.generation,
+		sizeBytes:       ref.SizeBytes,
+		createdAtUnixMs: time.Now().UnixMilli(),
+	})
 }
 
 // stopStatefulDestroy tears a stateful VM down with no snapshot, releases its

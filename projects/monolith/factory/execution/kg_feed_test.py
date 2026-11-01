@@ -212,7 +212,7 @@ def test_render_caps_turns_preserves_rationale_and_elides_middle():
         for seq in range(1, 25)
     ]
 
-    rendered = kg_feed.render_session_raw(row, turns)
+    rendered, _, _ = kg_feed._render_session_raw(row, turns)
 
     assert len(rendered) <= kg_feed.DOCUMENT_CAP
     assert "truncated: true" in rendered
@@ -242,7 +242,7 @@ def test_render_redacts_planted_secret_and_uses_prompt_title():
         result_text=f"token={secret}",
     )
 
-    rendered = kg_feed.render_session_raw(row, [turn])
+    rendered, _, _ = kg_feed._render_session_raw(row, [turn])
 
     assert secret not in rendered
     assert rendered.count("[REDACTED:openai_key]") == 1

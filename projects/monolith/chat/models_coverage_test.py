@@ -1,8 +1,8 @@
 """Coverage tests for MessageLock and ChannelSummary models, plus max_length constraints.
 
 Fills gaps identified in the coverage review:
-- MessageLock: completed default (False), claimed_at UTC default, column names,
-  discord_message_id as primary key.
+- MessageLock: claimed_at UTC default, column names, discord_message_id as
+  primary key.
 - ChannelSummary: message_count default (0), updated_at UTC default, columns,
   channel_id unique constraint.
 - Blob.sha256 and Attachment.blob_sha256 max_length=64 constraints.
@@ -11,8 +11,6 @@ Fills gaps identified in the coverage review:
 from __future__ import annotations
 
 from datetime import timezone
-
-import pytest
 
 from chat.models import (
     Attachment,

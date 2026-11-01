@@ -270,7 +270,10 @@ const (
 	ext4HeaderSize  = 0x48c
 )
 
-func ext4RootfsIdentity(path string) (string, error) {
+// Ext4UUID reads the filesystem UUID from an ext4 superblock. The UUID is the
+// identity used to derive the metadata checksum seed, so hashing the rootfs file
+// would not provide the identity a restored guest kernel has cached.
+func Ext4UUID(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("open ext4 rootfs %q: %w", path, err)
@@ -285,6 +288,9 @@ func ext4RootfsIdentity(path string) (string, error) {
 	}
 	magic := make([]byte, 2)
 	if _, err := f.ReadAt(magic, ext4MagicOffset); err != nil {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
 		return "", fmt.Errorf("read ext4 magic from %q: %w", path, err)
 	}
 	if got := binary.LittleEndian.Uint16(magic); got != 0xEF53 {
@@ -292,6 +298,9 @@ func ext4RootfsIdentity(path string) (string, error) {
 	}
 	uuid := make([]byte, 16)
 	if _, err := f.ReadAt(uuid, ext4UUIDOffset); err != nil {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
 		return "", fmt.Errorf("read ext4 UUID from %q: %w", path, err)
 	}
 	hexUUID := hex.EncodeToString(uuid)
@@ -335,7 +344,7 @@ func instanceSnapshotResources(inst *instance) []JailResource {
 
 func (d *Driver) stampBundleMetadata(inst *instance, dir, class, ref string) (substrate.BundleMetadata, error) {
 	rootfsPath := rootfsPathFromResources(instanceSnapshotResources(inst))
-	identity, err := ext4RootfsIdentity(rootfsPath)
+	identity, err := Ext4UUID(rootfsPath)
 	if err != nil {
 		wrapped := fmt.Errorf("driver: stamp %s bundle %q rootfs identity: %w", class, ref, err)
 		if d.cfg.EnforceBundleRootfsIdentity {
@@ -380,7 +389,7 @@ func (d *Driver) verifyBundleMetadata(dir, class, ref string, resources []JailRe
 	}
 	var actual string
 	if err == nil {
-		actual, err = ext4RootfsIdentity(rootfsPath)
+		actual, err = Ext4UUID(rootfsPath)
 	}
 	if err == nil && actual != meta.RootfsIdentity {
 		err = fmt.Errorf("rootfs identity mismatch: got %q want %q", actual, meta.RootfsIdentity)
@@ -706,8 +715,8 @@ func (d *Driver) bootArgsFor(cb coldBootSpec) string {
 	// datastore), and the cmdline is a few small secrets only (length + charset
 	// limits on the kernel command line rule out anything bulk). A real MMDS
 	// service remains the migration path if this channel outgrows small secrets.
-	// SECURITY: do not log mmdsEnv values anywhere in this package; only key
-	// names are safe to log (see mmdsEnvKeyNames below).
+	// SECURITY: never log mmdsEnv values anywhere in this package; only key
+	// names are safe to log.
 	if len(cb.mmdsEnv) > 0 {
 		args += " " + mmdsEnvBootArgs(cb.mmdsEnv)
 	}
@@ -751,21 +760,6 @@ func mmdsEnvBootArgs(mmdsEnv map[string]string) string {
 		tokens = append(tokens, fmt.Sprintf("ember.env.%s=%s", k, encoded))
 	}
 	return strings.Join(tokens, " ")
-}
-
-// mmdsEnvKeyNames returns the sorted key names of mmdsEnv for logging. It NEVER
-// returns values: mmds_env carries first-boot secrets (e.g. a Postgres
-// password), and the boot-args tradeoff already puts the value on the guest's
-// /proc/cmdline (D-R4.PR-7.1) -- the daemon's own logs must not compound that by
-// also persisting the plaintext value. Callers log only this, never cb.mmdsEnv
-// directly.
-func mmdsEnvKeyNames(mmdsEnv map[string]string) []string {
-	keys := make([]string, 0, len(mmdsEnv))
-	for k := range mmdsEnv {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 // handlerDiskDevice is the guest block-device path Firecracker assigns to the
@@ -1267,6 +1261,17 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 	if coldBootRootfsPath == "" {
 		coldBootRootfsPath = d.cfg.RootfsPath
 	}
+	cold := coldBootSpec{
+		workload:        spec.Workload,
+		rootfsPath:      coldBootRootfsPath,
+		vcpus:           orDefault(spec.ColdBootVCPUs, d.cfg.VCPUs),
+		memMib:          orDefault(spec.ColdBootMemMib, d.cfg.MemMib),
+		trackDirtyPages: trackDirtyPages,
+		nic:             spec.NIC,
+		volumeDiskPath:  spec.VolumeDiskPath,
+		volumeMount:     spec.VolumeMount,
+		harnessInit:     spec.ColdBootHarnessInit,
+	}
 
 	// Warm-base start: restore the new thread from a base bundle for an instant
 	// ready start, skipping boot + harness init.
@@ -1299,17 +1304,7 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 		// disarmed bases remain usable: they take the normal cold-boot path below,
 		// which attaches the requested volume from scratch.
 		if spec.VolumeDiskPath != "" && (!d.cfg.WarmRestoreWithVolume || !capturedDevices.Has("volume")) {
-			return d.coldBoot(ctx, threadID, coldBootSpec{
-				workload:        spec.Workload,
-				rootfsPath:      coldBootRootfsPath,
-				vcpus:           orDefault(spec.ColdBootVCPUs, d.cfg.VCPUs),
-				memMib:          orDefault(spec.ColdBootMemMib, d.cfg.MemMib),
-				trackDirtyPages: trackDirtyPages,
-				nic:             spec.NIC,
-				volumeDiskPath:  spec.VolumeDiskPath,
-				volumeMount:     spec.VolumeMount,
-				harnessInit:     spec.ColdBootHarnessInit,
-			})
+			return d.coldBoot(ctx, threadID, cold)
 		}
 		if spec.VolumeDiskPath != "" {
 			return d.loadPatchAndResumeWithDiff(ctx, spec.Workload, threadID, snap, d.baseMemfile(ref.ID), "api.sock", spec.VolumeDiskPath, true, trackDirtyPages, false)
@@ -1320,17 +1315,7 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 		return d.loadInto(ctx, spec.Workload, threadID, snap, d.baseMemfile(ref.ID), "api.sock")
 	}
 
-	return d.coldBoot(ctx, threadID, coldBootSpec{
-		workload:        spec.Workload,
-		rootfsPath:      coldBootRootfsPath,
-		vcpus:           orDefault(spec.ColdBootVCPUs, d.cfg.VCPUs),
-		memMib:          orDefault(spec.ColdBootMemMib, d.cfg.MemMib),
-		trackDirtyPages: trackDirtyPages,
-		nic:             spec.NIC,
-		volumeDiskPath:  spec.VolumeDiskPath,
-		volumeMount:     spec.VolumeMount,
-		harnessInit:     spec.ColdBootHarnessInit,
-	})
+	return d.coldBoot(ctx, threadID, cold)
 }
 
 // coldBootSpec parameterises a cold boot. The task cold-boot path (Claim) fills it

@@ -22,7 +22,7 @@ from grimoire.play_embeddings import (
     audience_columns,
     collect_play_inputs,
     event_text,
-    sync_event_embeddings,
+    sync_events_embeddings,
 )
 from grimoire.router import _lock_consent_member
 from grimoire.session_events import require_transcript_enabled, transcript_enabled
@@ -283,7 +283,7 @@ def test_redacted_or_empty_utterance_is_never_collected_and_stale_vectors_are_de
     ).all()
     h.session.add_all([retention_vector(row, kind) for kind in ("transcript", "event")])
     h.session.commit()
-    sync_event_embeddings(h.session, row)
+    sync_events_embeddings(h.session, [row])
     h.session.commit()
     assert not h.session.exec(
         select(Embedding).where(Embedding.embeddable_id == row.id)

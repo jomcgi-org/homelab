@@ -1,7 +1,7 @@
 """Tests for chat model validation edge cases not covered elsewhere.
 
 Covers gaps identified in:
-- UserChannelSummary model structure (table name, schema, columns, unique constraint)
+- UserChannelSummary model structure (table name, unique constraint, primary key)
 - Message._parse_embedding validator with valid JSON that is not a list[float]
   (JSON number, JSON object, JSON array of strings)
 - Message.created_at default factory produces a timezone-aware UTC timestamp
@@ -25,13 +25,6 @@ class TestUserChannelSummaryModelStructure:
         """UserChannelSummary maps to the user_channel_summaries table."""
         assert UserChannelSummary.__tablename__ == "user_channel_summaries"
 
-    def test_schema(self):
-        """UserChannelSummary uses the 'chat' schema."""
-        # __table_args__ is a tuple when extra kwargs are present; the last element is a dict
-        table_args = UserChannelSummary.__table_args__
-        schema_dict = table_args[-1] if isinstance(table_args, tuple) else table_args
-        assert schema_dict.get("schema") == "chat"
-
     def test_unique_constraint_on_channel_id_and_user_id(self):
         """UserChannelSummary declares a UniqueConstraint on (channel_id, user_id)."""
         from sqlalchemy import UniqueConstraint
@@ -47,17 +40,6 @@ class TestUserChannelSummaryModelStructure:
         pk_cols = [c for c in UserChannelSummary.__table__.columns if c.primary_key]
         assert len(pk_cols) == 1
         assert pk_cols[0].name == "id"
-
-    def test_id_defaults_to_none_before_persistence(self):
-        """UserChannelSummary.id is None before the row is committed."""
-        summary = UserChannelSummary(
-            channel_id="ch1",
-            user_id="u1",
-            username="Alice",
-            summary="test",
-            last_message_id=1,
-        )
-        assert summary.id is None
 
 
 # ---------------------------------------------------------------------------

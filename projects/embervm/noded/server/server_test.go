@@ -3059,7 +3059,7 @@ func TestAbandonedDispatchClearedByNextOperation(t *testing.T) {
 					t.Fatal("successor could not take the guard")
 				}
 				if action == "assign-ended" {
-					e.endInFlight()
+					e.endSessionAssign("", false)
 				}
 			case "bank-guard":
 				if _, ok := srv.sessionVMs.beginInFlight(vmID); !ok {

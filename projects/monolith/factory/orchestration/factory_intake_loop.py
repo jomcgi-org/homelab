@@ -31,7 +31,6 @@ from factory.orchestration.factory_controls import (
 )
 from factory.orchestration.factory_intake import (
     INTAKE_ACTOR,
-    admission_eligible,
     ceiling_below_lanes,
     lane_of,
     open_lanes,
@@ -1396,8 +1395,6 @@ def _refill_observation(policy, eligible, complete, lanes, observed_at):
 
 # Re-exported so a caller reading the loop finds the board's view of it here.
 __all__ = [
-    "ACTOR",
-    "CLASS_LABELS",
     "derive_task_class",
     "github_list",
     "intake_state",

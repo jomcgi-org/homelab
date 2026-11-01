@@ -11,7 +11,6 @@ go_library(
         "@io_opentelemetry_go_otel_exporters_otlp_otlptrace_otlptracegrpc//:otlptracegrpc",
         "@io_opentelemetry_go_otel_sdk//resource",
         "@io_opentelemetry_go_otel_sdk//trace",
-        "@io_opentelemetry_go_otel_trace//:trace",
     ],
 )
 
@@ -22,6 +21,5 @@ go_test(
     deps = [
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
-        "@io_opentelemetry_go_otel//:otel",
     ],
 )

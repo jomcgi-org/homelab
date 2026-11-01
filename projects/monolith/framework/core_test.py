@@ -27,10 +27,8 @@ from framework import (
     PRIVATE_PROFILE,
     PUBLIC_PROFILE,
     Module,
-    Tier,
     build_app,
     build_private_lifespan,
-    domain_profile,
     register_leader_tasks,
     start_leader_singletons,
     stop_leader_singletons,
@@ -783,14 +781,6 @@ def test_public_tier_has_no_lifespan_side_effects_or_mcp():
     app = build_app(PUBLIC_PROFILE, [_routed_module("m", "m")])
     mounts = [r for r in app.routes if getattr(r, "path", "") == "/mcp"]
     assert not mounts
-
-
-def test_domain_profile_shape():
-    profile = domain_profile("hikes")
-    assert profile.tier is Tier.PRIVATE
-    assert profile.service_name == "monolith-hikes"
-    assert profile.static_frontend is False
-    assert profile.leader_singletons is True
 
 
 # ---------------------------------------------------------------------------

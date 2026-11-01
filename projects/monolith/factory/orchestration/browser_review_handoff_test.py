@@ -11,14 +11,14 @@ import httpx
 
 from factory.execution import transport
 from factory.execution.workspace_handoff import WorkspaceHandoff
+from factory.orchestration import browser_evidence_test as evidence_case
 from factory.orchestration.browser_evidence import EvidenceError
-from factory.orchestration.browser_evidence_test import BrowserEvidenceTest
 from factory.orchestration.browser_review_handoff import prepare_browser_review
 
 
 class BrowserReviewHandoffTest(unittest.TestCase):
     def setUp(self):
-        fixture = BrowserEvidenceTest()
+        fixture = evidence_case.BrowserEvidenceTest()
         fixture.setUp()
         self.value = fixture.value
         self.provenance, self.producer = fixture.provenance, fixture.producer
