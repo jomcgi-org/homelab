@@ -324,10 +324,10 @@ Attempt cohorts use their creation window; terminal outcomes are read as of
 digest collection. Attempts still unresolved when the window ends hold the
 verdict at WAIT for 24 more hours so they can settle. After that the verdict
 is final: ACCEPTED, REGRESSED, or INCONCLUSIVE for missing traffic,
-classification coverage, an unmet traffic criterion or an unknown metric. Other deployments inside the
-window are reported as confounders beside the verdict and never hold it. A
-final verdict releases the selection; UNKNOWN, for evidence that was
-unavailable this run, holds it until the next run.
+classification coverage, an unmet traffic criterion or an unknown metric.
+Other deployments inside the window are reported as confounders beside the
+verdict and never hold it. A final verdict releases the selection; UNKNOWN,
+for evidence that was unavailable this run, holds it until the next run.
 A worse target rate reports REGRESSED; a met observation criterion reports
 ACCEPTED as a descriptive association, without a causal savings claim.
 

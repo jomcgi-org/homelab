@@ -973,7 +973,7 @@ def _recover_delivery(
 
 
 def _record_declined(item: dict, reason: str) -> None:
-    """One audit per distinct refusal in a recovery round, not one per tick.
+    """One audit per change of refusal reason in a recovery round, not one per tick.
 
     A new recovery request or settlement starts a new round, so the same
     refusal after it is recorded again rather than hidden behind the old row.
