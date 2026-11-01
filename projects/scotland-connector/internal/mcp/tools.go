@@ -125,7 +125,7 @@ var Tools = []Tool{
 		Description: "Find what to do near a place in Scotland over the next few days: walks that fit the weather and where the night sky will be dark and clear. " +
 			"Use this for open questions: where to walk this weekend, what to do each day of a trip to Skye, the best night this week for stars near Inverness. " +
 			"For each day it returns sunrise, sunset and the moon, then the best walks and stargazing sites that suit it, each with a verdict (go or marginal) and a one-line why; " +
-			"when none suit, a note says why instead, including when the hourly forecast, about two and a half days ahead, does not reach that far yet. " +
+			"when none suit, walk_note or stargazing_note says why, except that a run beyond the hourly forecast horizon is explained once in datasets.<activity>.notes. Date-specific moon advice remains on its day. " +
 			"Walks are Walkhighlands routes that fit a slot of good daylight hours for their estimated time, with the slot (its rain, wind, wet hours and temperatures), a start window and the url for the route. " +
 			"A good hour has at most 2 mm of rain and wind at most 80 km/h by default; pass max_rain_mm_h, max_wind_kmh or min_temp_c to match what the person will put up with, stricter or looser, for example max_rain_mm_h 0 for dry hours (a marginal slot may still hold one bad hour, which check lists hour by hour with what it failed). " +
 			"Stargazing sites are road-accessible spots in the darkest light-pollution zones, judged on clear dark hours and the moon. " +

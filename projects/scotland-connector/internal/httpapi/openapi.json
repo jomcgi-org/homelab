@@ -177,7 +177,7 @@
       "get": {
         "operationId": "plan",
         "summary": "What to do near a place over the next few days",
-        "description": "For each day from `from` to `to`: sunrise, sunset and the moon at the point, then the walks that fit the weather and the night's best stargazing within radius_km, each with a go or marginal verdict and a one-line why; when none suit, walk_note or stargazing_note says why. Walks are Walkhighlands routes whose start is within the radius and whose best good-weather slot fits their estimated time (80% of it in good hours, two hours of credit for walks over seven hours); go before marginal, then the longest slot, then the nearest. Stargazing sites are road-accessible points in the darkest light-pollution zones, ranked by clear dark hours weighted by the moon. Walk weather is forecast at each walk's start, not on summits.",
+        "description": "For each day from `from` to `to`: sunrise, sunset and the moon at the point, then the walks that fit the weather and the night's best stargazing within radius_km, each with a go or marginal verdict and a one-line why; when none suit, walk_note or stargazing_note says why, except that a run beyond the hourly forecast horizon is explained once in datasets.<activity>.notes. Date-specific moon advice remains on its day. Walks are Walkhighlands routes whose start is within the radius and whose best good-weather slot fits their estimated time (80% of it in good hours, two hours of credit for walks over seven hours); go before marginal, then the longest slot, then the nearest. Stargazing sites are road-accessible points in the darkest light-pollution zones, ranked by clear dark hours weighted by the moon. Walk weather is forecast at each walk's start, not on summits.",
         "parameters": [
           {
             "name": "lat",
@@ -772,7 +772,7 @@
           },
           "walk_note": {
             "type": "string",
-            "description": "Why walks is empty."
+            "description": "Why walks is empty on this day. A run beyond the hourly forecast horizon is explained once in datasets.walk.notes; walk_note may be absent for those days."
           },
           "stargazing": {
             "type": "array",
@@ -781,7 +781,7 @@
           },
           "stargazing_note": {
             "type": "string",
-            "description": "Why stargazing is empty."
+            "description": "Why stargazing is empty on this day, including date-specific moon advice. A run beyond the hourly forecast horizon is explained once in datasets.stargaze.notes; stargazing_note may contain only moon advice or be absent for those days."
           }
         }
       },

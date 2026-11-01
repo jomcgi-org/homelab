@@ -17,8 +17,12 @@ import (
 )
 
 func handler() *Handler {
-	return New(fixture.Service(true), meter.New(prometheus.NewRegistry()), slog.New(slog.NewTextHandler(io.Discard, nil)),
-		ServerInfo{Name: "scotland-connector", Version: "test"}, []string{"https://claude.ai"})
+	h, err := New(fixture.Service(true), meter.New(prometheus.NewRegistry()), slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ServerInfo{Name: "scotland-connector", Version: "test"}, []string{"https://claude.ai"}, "")
+	if err != nil {
+		panic(err)
+	}
+	return h
 }
 
 type reply struct {
@@ -402,7 +406,7 @@ func TestDiscoveryInstructionsIncludeLightScope(t *testing.T) {
 			if !ok || instructions != Instructions {
 				t.Fatalf("instructions missing or inconsistent: %v", r.Result["instructions"])
 			}
-			for _, guidance := range []string{"Use light", "no top-level verdict", "cloud", "nearby-site hourly sample support", "nights", "interval cloud forecasts", "For plan, check and aurora", "meta.sources"} {
+			for _, guidance := range []string{"Use light", "no top-level verdict", "cloud_why", "omitted window cloud means unknown with zero support", "nearby-site hourly sample support", "nights", "interval cloud forecasts", "For plan, check and aurora", "meta.sources"} {
 				if !strings.Contains(instructions, guidance) {
 					t.Errorf("discovery instructions omit %q", guidance)
 				}

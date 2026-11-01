@@ -27,10 +27,18 @@ var openAPI []byte
 //go:embed method.md
 var method []byte
 
-// Documentation returns the same embedded bytes served by HTTP. Each caller
-// receives a copy so another surface cannot mutate the shared documents.
+// Documentation returns copies of the embedded source documents. Use
+// DocumentationForServer for the bytes published at a configured public URL.
 func Documentation() (spec, methodology []byte) {
 	return bytes.Clone(openAPI), bytes.Clone(method)
+}
+
+// DocumentationForServer returns the documentation published by both HTTP and
+// MCP, with the configured public server URL substituted in the OpenAPI spec.
+func DocumentationForServer(publicBaseURL string) (spec, methodology []byte, err error) {
+	spec, methodology = Documentation()
+	spec, err = specWithServer(spec, publicBaseURL)
+	return spec, methodology, err
 }
 
 // Cache policies, each a pair: Cache-Control for browsers and other shared
@@ -86,7 +94,7 @@ type Handler struct {
 // published OpenAPI document names it as its server so generated clients
 // call the right paths. Empty keeps the document's relative "/".
 func New(svc *connector.Service, m *meter.Meter, log *slog.Logger, publicBaseURL string) (*Handler, error) {
-	spec, err := specWithServer(openAPI, publicBaseURL)
+	spec, methodology, err := DocumentationForServer(publicBaseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +111,7 @@ func New(svc *connector.Service, m *meter.Meter, log *slog.Logger, publicBaseURL
 	h.mux.HandleFunc("/v1/plan", h.methodNotAllowed("GET"))
 	h.mux.HandleFunc("/v1/check", h.methodNotAllowed("POST, OPTIONS"))
 	h.mux.HandleFunc("GET /v1/openapi.json", h.static(spec, "application/json"))
-	h.mux.HandleFunc("GET /v1/method", h.static(method, "text/markdown; charset=utf-8"))
+	h.mux.HandleFunc("GET /v1/method", h.static(methodology, "text/markdown; charset=utf-8"))
 	h.mux.HandleFunc("/v1/", h.notFound)
 	return h, nil
 }

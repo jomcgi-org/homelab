@@ -549,8 +549,9 @@ Every advertised tool expands its output schema from the embedded OpenAPI
 response component at startup, including aurora while its data source is
 disabled. Unknown or cyclic references fail startup. Prompts and resources
 use the existing stateless dispatcher. Method and spec resources reuse the
-HTTP package's embedded bytes without fetching data; the MCP spec keeps its
-relative server URL. HTTP alone substitutes its configured public URL.
+HTTP package's documentation helper without fetching data. HTTP and MCP
+serve identical bytes, including the configured public server URL in both
+OpenAPI documents. An unset URL keeps the relative `/`.
 
 `internal/mcp` implements Streamable HTTP by hand, with every response a
 single JSON object:

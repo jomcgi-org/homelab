@@ -20,7 +20,9 @@ MET Norway's forecast is hourly for about two and a half days, and the
 connector counts 48 hours from each fetch as hourly. Days further out, up to
 13 days ahead, come back **unknown**; for nights the `why` quotes how often
 the site has been clear in that month. A plan lists only go and marginal
-options; a day with none says why in `walk_note` or `stargazing_note`.
+options; a day with none says why in `walk_note` or `stargazing_note`, except
+that a run beyond the hourly horizon is explained once in
+`datasets.<activity>.notes`.
 
 Plan records each requested dataset's published horizon in
 `datasets.walk.hourly_until` and `datasets.stargaze.hourly_until`. These can
@@ -203,9 +205,9 @@ Unknown names, missing required arguments and unknown argument keys are errors.
 Resources `scotland://docs/method` (`text/markdown`) and
 `scotland://docs/openapi` (`application/json`) serve the embedded `method.md`
 and `openapi.json`. Use `resources/list` and `resources/read`. Unknown URIs
-return resource-not-found; no URI triggers a network request. HTTP uses
-these same source bytes, with its configured public server URL substituted
-in the HTTP spec when set. MCP retains the spec's relative server URL.
+return resource-not-found; no URI triggers a network request. HTTP and MCP
+serve identical documentation bytes, with the configured public server URL
+substituted in both OpenAPI documents. An unset URL keeps the relative `/`.
 
 ## Stargazing
 
