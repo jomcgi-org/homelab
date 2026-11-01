@@ -9,6 +9,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/bootenv"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -23,8 +25,8 @@ func TestValueFromCmdline(t *testing.T) {
 		{"not a prefix match", "other.ember.volume_dev=/dev/vdb", volumeDevCmdlineKey, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := valueFromCmdline(tc.cmdline, tc.key); got != tc.want {
-				t.Fatalf("valueFromCmdline(%q, %q) = %q, want %q", tc.cmdline, tc.key, got, tc.want)
+			if got := bootenv.Value(tc.cmdline, tc.key); got != tc.want {
+				t.Fatalf("bootenv.Value(%q, %q) = %q, want %q", tc.cmdline, tc.key, got, tc.want)
 			}
 		})
 	}
@@ -37,8 +39,8 @@ func TestIsValidEnvKeyName(t *testing.T) {
 	}{
 		{"EMBER_CLAUDE_WORKSPACE", true}, {"A1", true}, {"", false}, {"bad-key", false}, {"bad.key", false},
 	} {
-		if got := isValidEnvKeyName(tc.key); got != tc.want {
-			t.Errorf("isValidEnvKeyName(%q) = %v, want %v", tc.key, got, tc.want)
+		if got := bootenv.ValidKey(tc.key); got != tc.want {
+			t.Errorf("bootenv.ValidKey(%q) = %v, want %v", tc.key, got, tc.want)
 		}
 	}
 }
