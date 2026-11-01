@@ -649,12 +649,12 @@
           "start_from": {
             "type": ["string", "null"],
             "format": "date-time",
-            "description": "Earliest start that keeps the walk in the slot; null unless it fits."
+            "description": "Earliest start that keeps the walk in the slot; null unless it fits. A walk longer than its slot gets one start (start_from equals start_by): before the slot so it finishes at the slot end, or at sunrise when that would be dark, so it runs past the slot end."
           },
           "start_by": {
             "type": ["string", "null"],
             "format": "date-time",
-            "description": "Latest start that finishes inside the slot; null unless it fits."
+            "description": "Latest start that finishes inside the slot; null unless it fits. Equals start_from for a walk longer than its slot."
           },
           "slot": {
             "oneOf": [
@@ -1102,7 +1102,7 @@
                   },
                   "match_note": {
                     "type": "string",
-                    "description": "Set when walk_name matched several walks equally well, so the walk checked is the one with the shortest name."
+                    "description": "Set when walk_name matched several routes equally well, so the walk checked is a tie-break; also_matched lists others."
                   }
                 }
               }

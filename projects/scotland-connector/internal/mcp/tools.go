@@ -87,7 +87,7 @@ var Tools = []Tool{
 			"For each item it returns a verdict (go, marginal, no, or unknown beyond the hourly forecast, about two and a half days ahead) with a one-line why, " +
 			"the timing (for a walk: its slot hour by hour with rain, wind, temperature, cloud, low cloud and fog, the window to start in, sunrise and sunset; for a night: the clear window at the best dark-sky site near the point and the moon; clear_sky_odds is that month's historical share of clear dark hours), " +
 			"the other forecast days that suit it, and better options nearby the same day (for a walk, walks of similar length). " +
-			"Walks are found by walk_name (words from the Walkhighlands name, for example \"Ben Nevis\") or walk_id from plan; when several walks match equally, match_note says the shortest name was checked and also_matched lists others. " +
+			"Walks are found by walk_name (words from the Walkhighlands name, for example \"Ben Nevis\") or walk_id from plan; when several walks match equally, match_note says which was checked and also_matched lists others. " +
 			"max_rain_mm_h, max_wind_kmh and min_temp_c change what counts as a good walking hour, as in plan. " +
 			"Walk weather is at the walk's start, not on summits. Scotland only.",
 		InputSchema: json.RawMessage(`{

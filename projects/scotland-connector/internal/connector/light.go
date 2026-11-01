@@ -448,5 +448,5 @@ func (s *Service) Light(p LightParams) (*Envelope, error) {
 	if site != nil && !site.ForecastFetchedAt.IsZero() && !site.ForecastFetchedAt.After(now) && site.Horizon(ds.HourlyUntil).After(now) {
 		freshness = "fresh"
 	}
-	return &Envelope{Data: res, Meta: meta, ETag: etag("light-v1", meta.DataVersion, meta.AsOf, freshness, canonical(query)), Results: len(res.Days)}, nil
+	return &Envelope{Data: res, Meta: meta, ETag: etag("light-v2", meta.DataVersion, meta.AsOf, freshness, canonical(query)), Results: len(res.Days)}, nil
 }

@@ -22,8 +22,8 @@ graph LR
 One Go binary, `cmd/connector`, in its own `scotland-connector` namespace.
 It serves two surfaces on port 8080 and nothing else:
 
-- `GET /v1/plan`, `POST /v1/check`, `/v1/openapi.json` (the published
-  contract) and `/v1/method`.
+- `GET /v1/plan`, `POST /v1/check`, `GET /v1/light`, `GET /v1/aurora`,
+  `/v1/openapi.json` (the published contract) and `/v1/method`.
 - `POST /mcp`: tools `plan`, `check` and `light`, and `aurora` when its
   snapshot store is enabled.
 
@@ -36,7 +36,7 @@ parameters, apply the caps, query the dataset and wrap the answer in the
 provenance envelope. `internal/httpapi` and `internal/mcp` only translate
 transport.
 
-## Light: staged repository delivery
+## Light
 
 `light` and `GET /v1/light` answer the astronomical part without a snapshot.
 Inputs are `lat`, `lon`, `radius_km`, `from` and `to`. Coordinates use the
@@ -156,10 +156,10 @@ Every iteration computes a complete seven-day answer against the dense fixture
 (35340 sites, 3000 walks); fixture setup is outside timing. No response cache
 is on this service path.
 
-Repository delivery is staged in an unmerged draft under the operator landing
-hold. #7367 stays open for separately authorized release and acceptance of
-published REST/MCP/spec behavior, actual Cloudflare cache/query isolation and
-honest published cloud coverage. This change authorizes no live operation.
+`light` is deployed: `GET /scotland/v1/light` and the MCP tool answered on
+2026-11-01. #7367 stays open for acceptance of the published REST/MCP/spec
+behavior, actual Cloudflare cache/query isolation and honest published cloud
+coverage.
 
 ## Tools: plan and check
 

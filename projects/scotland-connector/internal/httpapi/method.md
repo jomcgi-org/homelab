@@ -72,7 +72,9 @@ in the past.
   and no slot long enough has appeared yet.
 
 `start_from` and `start_by` bound the start time that keeps the walk inside
-the slot. The slot carries its highest wind, total rain, wettest hour
+the slot. A walk longer than its slot gets one start: before the slot, so it
+finishes at the slot's end, or at sunrise when that would be dark, so it runs
+past the slot's end. A walk that needs the dark either way is `marginal`. The slot carries its highest wind, total rain, wettest hour
 (`max_rain_mm_h`), `wet_hours` (good hours with at least 0.1 mm of rain) and
 temperature range across its good hours, so an agent can tell a dry, calm
 slot from a drizzly, breezy one. A check also returns the checked walk's slot

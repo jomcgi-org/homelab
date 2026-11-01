@@ -43,8 +43,8 @@ type CheckWalk struct {
 	WalkOption
 	// AlsoMatched lists other walks walk_name matched, best first.
 	AlsoMatched []string `json:"also_matched,omitempty"`
-	// MatchNote says when walk_name matched several walks equally well, so
-	// the walk checked is a tie-break ("ben" is Ben Ledi only by its length).
+	// MatchNote says when walk_name matched several routes equally well, so
+	// the walk checked is a tie-break ("ben" checked Ben Ledi among dozens).
 	MatchNote string `json:"match_note,omitempty"`
 }
 
@@ -165,20 +165,26 @@ func (s *Service) checkWalk(ds *walks.Dataset, cp checkPlan, now time.Time, lim 
 			return r
 		}
 		w = hits[0]
-		for _, h := range hits[1:min(len(hits), 4)] {
-			also = append(also, h.Name)
-		}
-		// Named sorts by score, then shorter name: walks tied on score are
-		// told apart only by length, unless the name is the query itself.
+		// The corpus can hold one route twice under two ids: a hit with the
+		// checked walk's URL, or one already listed, is the same route.
+		// Named sorts by score, then shorter name, then id, so routes tied
+		// on score are a tie-break unless the name is the query itself.
 		best, tied := w.Match(cp.name), 1
+		seen := map[string]bool{w.URL: true}
 		for _, h := range hits[1:] {
-			if h.Match(cp.name) != best {
-				break
+			if seen[h.URL] {
+				continue
 			}
-			tied++
+			seen[h.URL] = true
+			if len(also) < 3 {
+				also = append(also, h.Name)
+			}
+			if h.Match(cp.name) == best {
+				tied++
+			}
 		}
 		if tied > 1 && walks.Normalize(w.Name) != cp.name {
-			note = fmt.Sprintf("%d walks match %q equally well; this is the one with the shortest name. Use more words from the name, or walk_id, to check another.", tied, cp.item.WalkName)
+			note = fmt.Sprintf("%d walks match %q equally well; %s was checked. Use more words from the name, or a walk_id from plan, to check another.", tied, cp.item.WalkName, w.Name)
 		}
 	}
 	// A check is the close look, so its slot comes back hour by hour.

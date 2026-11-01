@@ -458,5 +458,5 @@ func (s *Service) Plan(p PlanParams) (*Envelope, error) {
 	if wk != nil {
 		meta.Notes = append(meta.Notes, noteWalkStart)
 	}
-	return &Envelope{Data: res, Meta: meta, ETag: etag("plan", meta.DataVersion, meta.AsOf, canonical(q)), Results: results}, nil
+	return &Envelope{Data: res, Meta: meta, ETag: etag("plan-v2", meta.DataVersion, meta.AsOf, canonical(q)), Results: results}, nil
 }
