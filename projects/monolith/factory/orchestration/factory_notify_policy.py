@@ -17,7 +17,7 @@ What pages:
 - ``landing``: a pull request left for a person to merge.
 - ``rollout``: a merged delivery still blocked on rollout after 60 minutes.
 - ``intervention`` and ``deadline``, but only while nothing will release the
-  slot on its own. With active cessation or the deadline backstop on, the
+  slot on its own. With active cessation on, the
   factory settles these without a person (every one of the 24 intervention
   pages in the week to 2026-10-01 was settled automatically), so they digest.
 
@@ -58,9 +58,8 @@ def enabled() -> bool:
 def automatic_release() -> bool:
     """Whether a stranded attempt is settled without a person."""
     from factory.orchestration import factory_cessation
-    from factory.orchestration.factory_conductor import _deadline_backstop_enabled
 
-    return factory_cessation.enabled() or _deadline_backstop_enabled()
+    return factory_cessation.enabled()
 
 
 def pages(kind: str) -> bool:

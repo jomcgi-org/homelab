@@ -59,9 +59,9 @@ from factory.orchestration.models import SwarmNodeRun
 from factory.orchestration.tracing import set_attributes, tracer
 
 ACTOR = "factory:active-cessation"
-# Matches FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS and the reconciler pause TTL,
-# so every evidence-waiting proof has had the same two hours of ticks to
-# settle the attempt before anything goes and destroys its guest.
+# Matches the reconciler pause TTL, so every evidence-waiting proof has had
+# the same two hours of ticks to settle the attempt before anything goes and
+# destroys its guest.
 GRACE_SECONDS = 7200
 # Two DELETEs, spaced by one observation interval. A destroy the control
 # plane accepted normally reads back terminal on the next observation; a

@@ -99,7 +99,8 @@ def paused_settlement(feedback_db, monkeypatch, request):
         "_warn_deadline_tripped",
     ):
         monkeypatch.setattr(conductor, name, lambda *a, **kw: None)
-    # Keep the real deadline backstop, which must never release paused unknown work.
+    # The deadline warning stays stubbed below; paused ownership skips it
+    # before it runs, so it never touches paused unknown work.
     for module, name in (
         (dependency_gate, "tick"),
         (factory_pr_lifecycle, "reconcile_tick"),
@@ -892,7 +893,7 @@ def test_operator_cancel_paused_task_next_tick_releases_slot_and_preserves_cance
     for name in (
         "github_get",
         "_watch_progress",
-        "_expire_task_deadline",
+        "_warn_deadline_tripped",
     ):
         monkeypatch.setattr(
             conductor,
@@ -1846,7 +1847,7 @@ def test_tick_admits_into_quiescent_waiting_slots(
         "observe_reviewer_routing",
         "_watch_progress",
         "_supervise_cessation",
-        "_expire_task_deadline",
+        "_warn_deadline_tripped",
         "ingest_eligible",
     ):
         monkeypatch.setattr(conductor, name, lambda *a, **kw: None)
@@ -2043,7 +2044,7 @@ def test_tick_gates_only_the_automatic_sessionless_sweep(
     monkeypatch.setattr(work_item_pointer, "sync_pointers", lambda **_kwargs: None)
     swept = []
     reconciled = []
-    deadlines = []
+    warnings = []
     monkeypatch.setattr(
         conductor,
         "_sweep_sessionless_starts",
@@ -2056,15 +2057,63 @@ def test_tick_gates_only_the_automatic_sessionless_sweep(
     )
     monkeypatch.setattr(
         conductor,
-        "_expire_task_deadline",
-        lambda current: deadlines.append(current["task_id"]),
+        "_warn_deadline_tripped",
+        lambda current: warnings.append(current["task_id"]),
     )
 
     conductor.tick()
 
     assert swept == expected
     assert reconciled == ["t-1"]
-    assert deadlines == ["t-1"]
+    assert warnings == ["t-1"]
+
+
+def test_tick_still_warns_after_a_reconciliation_failure(monkeypatch):
+    """A task whose reconcile raises every tick must still reach the warning."""
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing,
+        factory_pr_lifecycle,
+        factory_problem_issues,
+        work_item_pointer,
+    )
+
+    policy = {"max_tasks": 1}
+    task = {"task_id": "t-1", "policy": policy}
+    monkeypatch.setattr(
+        controls,
+        "conductor_status",
+        lambda: {"state": "paused", "policy": policy, "active_tasks": [task]},
+    )
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    monkeypatch.setattr(conductor, "revalidate_escalations", lambda: None)
+    monkeypatch.setattr(conductor, "observe_reviewer_routing", lambda _policy: None)
+    monkeypatch.setattr(factory_pr_lifecycle, "reconcile_tick", lambda _policy: None)
+    monkeypatch.setattr(factory_landing, "landing_tick", lambda _policy: None)
+    monkeypatch.setattr(
+        factory_problem_issues, "problem_issues_tick", lambda _policy: None
+    )
+    monkeypatch.setattr(work_item_pointer, "sync_pointers", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        conductor, "_sweep_sessionless_starts", lambda _current, _dbos: None
+    )
+
+    def reconcile(task_id, _policy, _dbos):
+        raise ValueError("temporary outcome reconciliation failure")
+
+    monkeypatch.setattr(conductor, "reconcile_task", reconcile)
+    monkeypatch.setattr(conductor, "_supervise_cessation", lambda *_a, **_k: None)
+    warnings = []
+    monkeypatch.setattr(
+        conductor,
+        "_warn_deadline_tripped",
+        lambda current: warnings.append(current["task_id"]),
+    )
+
+    conductor.tick()
+
+    assert warnings == ["t-1"]
 
 
 def test_tick_syncs_work_item_pointers_while_paused(monkeypatch):
@@ -17878,9 +17927,8 @@ def test_expired_task_with_reserved_work_is_left_alone_until_it_settles(
     from factory.orchestration.models import SwarmTask
 
     monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
-    # Opting in changes nothing while the release is staged off, and a reserved
-    # start is refused by the backstop either way.
-    monkeypatch.setenv("FACTORY_DEADLINE_BACKSTOP_ENABLED", "true")
+    # A reserved start is refused by the deadline warning either way: elapsed
+    # time alone never settles it.
     now = datetime(2026, 9, 20, 12, tzinfo=timezone.utc)
     monkeypatch.setattr(controls, "_now", lambda: now)
     task, policy = feedback_task(
@@ -19647,13 +19695,13 @@ def test_recovery_supersedes_completed_conductor_finish(
     )["ok"]
 
 
-def _wedged_backstop_task(queued_factory, monkeypatch):
+def _warned_deadline_task(queued_factory, monkeypatch, *, cessation):
     """A task past its deadline with one uncertain start and nothing running.
 
     The shape that wedged the delivery lane on 2026-09-14: the guest ran, its
-    start never settled, and no cessation proof can release it.
+    start never settled, and elapsed time alone cannot release it.
     """
-    from datetime import datetime, timedelta, timezone
+    from agent import api as notify_module
     from sqlmodel import Session, select
     from factory.orchestration import factory_controls as controls
     from factory.orchestration.factory_models import FactoryStart
@@ -19661,7 +19709,10 @@ def _wedged_backstop_task(queued_factory, monkeypatch):
     s = queued_factory
     for module in (controls,):
         monkeypatch.setattr(module, "get_engine", lambda: s.engine)
-    monkeypatch.setenv("FACTORY_DEADLINE_BACKSTOP_ENABLED", "true")
+    monkeypatch.setenv(
+        "FACTORY_ACTIVE_CESSATION_ENABLED", "true" if cessation else "false"
+    )
+    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "false")
     with Session(s.engine) as db:
         start = db.exec(select(FactoryStart)).first()
         start.status = "uncertain"
@@ -19673,67 +19724,80 @@ def _wedged_backstop_task(queued_factory, monkeypatch):
         "repo": s.task["repo"],
         "issue_number": s.task.get("issue_number"),
         "limits": {"deadline_expired": True},
-        "deadline_at": (
-            datetime.now(timezone.utc)
-            - timedelta(seconds=conductor.FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS + 60)
-        ).isoformat(),
     }
-    # GitHub and Discord are the only outward effects; neither is under test.
-    monkeypatch.setattr(conductor, "_post_decision_card", lambda *a, **kw: "card-url")
-    monkeypatch.setattr(conductor, "_notify_escalation", lambda *a, **kw: None)
-    monkeypatch.setattr(conductor, "_warn_deadline_tripped", lambda task: None)
-    monkeypatch.setattr(
-        "factory.orchestration.factory_landing.github_write", lambda *a, **kw: {}
-    )
-    return s, task, start_key
+    notices = []
+
+    async def notify(text, *, level):
+        notices.append((text, level))
+
+    monkeypatch.setattr(notify_module, "notify", notify)
+    return s, task, start_key, notices
 
 
-def test_the_deadline_backstop_stays_staged_off_and_retains_unknown_work(
-    queued_factory, monkeypatch
-):
-    """Even an environment opt-in cannot turn elapsed time into cessation."""
+def _warned_deadline_snapshot(s, start_key):
     from sqlmodel import Session, select
+    from factory.execution.models import AgentCapacityReservation
     from factory.orchestration.factory_models import FactoryReceipt, FactoryStart
-
-    s, task, start_key = _wedged_backstop_task(queued_factory, monkeypatch)
-
-    assert conductor._expire_task_deadline(task) is False
 
     with Session(s.engine) as db:
         start = db.exec(
             select(FactoryStart).where(FactoryStart.start_key == start_key)
         ).one()
-        assert start.status == "uncertain"
-        assert start.cost_usd is None
         receipt = db.exec(
             select(FactoryReceipt).where(FactoryReceipt.task_id == s.task["id"])
         ).one()
-        assert receipt.state == "admitted"
+        permits = db.exec(select(AgentCapacityReservation)).all()
+        return (
+            start.status,
+            start.cost_usd,
+            receipt.state,
+            [permit.state for permit in permits],
+        )
 
 
-def test_the_staged_deadline_backstop_never_changes_repeated_unknown_observations(
-    queued_factory, monkeypatch
+@pytest.mark.parametrize("cessation", [True, False])
+def test_the_past_deadline_warning_notifies_once_and_releases_nothing(
+    queued_factory, monkeypatch, cessation
 ):
-    from factory.orchestration import factory_controls as controls
+    """Elapsed time alone never settles the stranded start or its holds."""
+    from factory.orchestration.factory_models import FactoryAudit
 
-    _s, task, _key = _wedged_backstop_task(queued_factory, monkeypatch)
-    before = controls.task_snapshot(task["task_id"])
+    s, task, start_key, notices = _warned_deadline_task(
+        queued_factory, monkeypatch, cessation=cessation
+    )
+    before = _warned_deadline_snapshot(s, start_key)
+    for _ in range(3):
+        conductor._warn_deadline_tripped(task)
 
-    assert conductor._expire_task_deadline(task) is False
-    assert conductor._expire_task_deadline(task) is False
-    after = controls.task_snapshot(task["task_id"])
-    assert after["starts"] == before["starts"]
-    assert after["committed_cost_usd"] == before["committed_cost_usd"]
+    assert len(notices) == 1
+    (text, level) = notices[0]
+    assert level == "warn"
+    if cessation:
+        assert "Active cessation" in text
+    else:
+        assert "Nothing will release the lane slot on its own." in text
+    # Repeated reconciliation changes nothing it has no proof for.
+    assert _warned_deadline_snapshot(s, start_key) == before
+    assert before[0] == "uncertain"
+    assert before[2] == "admitted"
+    with Session(s.engine) as db:
+        rows = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "deadline_tripped_notified",
+            )
+        ).all()
+        assert len(rows) == 1
 
 
-def test_the_deadline_backstop_leaves_a_reserved_start_alone(
-    queued_factory, monkeypatch
-):
-    """A reserved start is live work, so nothing is released and nothing posts."""
+def test_the_past_deadline_warning_skips_a_reserved_start(queued_factory, monkeypatch):
+    """A reserved start is live work, so nothing notifies and nothing posts."""
     from sqlmodel import Session, select
-    from factory.orchestration.factory_models import FactoryReceipt, FactoryStart
+    from factory.orchestration.factory_models import FactoryAudit, FactoryStart
 
-    s, task, start_key = _wedged_backstop_task(queued_factory, monkeypatch)
+    s, task, start_key, notices = _warned_deadline_task(
+        queued_factory, monkeypatch, cessation=True
+    )
     with Session(s.engine) as db:
         start = db.exec(
             select(FactoryStart).where(FactoryStart.start_key == start_key)
@@ -19742,24 +19806,52 @@ def test_the_deadline_backstop_leaves_a_reserved_start_alone(
         db.add(start)
         db.commit()
 
-    assert conductor._expire_task_deadline(task) is False
+    conductor._warn_deadline_tripped(task)
 
+    assert notices == []
     with Session(s.engine) as db:
+        assert (
+            db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.task_id == s.task["id"],
+                    FactoryAudit.action == "deadline_tripped_notified",
+                )
+            ).all()
+            == []
+        )
         start = db.exec(
             select(FactoryStart).where(FactoryStart.start_key == start_key)
         ).one()
         assert start.status == "reserved"
-        receipt = db.exec(
-            select(FactoryReceipt).where(FactoryReceipt.task_id == s.task["id"])
-        ).one()
-        assert receipt.state != "escalated"
 
 
-@pytest.mark.parametrize(
-    "model, expected, refine_expected",
-    [("astra", 0.5, 0.5), ("spark", 0.5, 0.5), ("opus", 6.0, 4.0)],
-)
-@pytest.mark.parametrize("refine", [False, True])
+def test_the_past_deadline_warning_needs_an_expired_deadline(
+    queued_factory, monkeypatch
+):
+    """A task still inside its deadline never reaches the notice."""
+    from sqlmodel import Session, select
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s, task, _key, notices = _warned_deadline_task(
+        queued_factory, monkeypatch, cessation=False
+    )
+    task["limits"] = {"deadline_expired": False}
+
+    conductor._warn_deadline_tripped(task)
+
+    assert notices == []
+    with Session(s.engine) as db:
+        assert (
+            db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.task_id == s.task["id"],
+                    FactoryAudit.action == "deadline_tripped_notified",
+                )
+            ).all()
+            == []
+        )
+
+
 def test_planner_node_pricing(feedback_db, model, expected, refine_expected, refine):
     # A Claude planner reserves 1.5x the turn budget for xhigh; refine does not.
     expected = refine_expected if refine else expected
@@ -22707,7 +22799,7 @@ def test_a_live_reading_between_gone_samples_restarts_the_window(
 
 
 def test_active_cessation_releases_a_paused_task(bound_zero_turn_factory, monkeypatch):
-    """617/619/623/633 are all paused: _expire_task_deadline skips them."""
+    """617/619/623/633 are all paused: only supervised cessation releases them."""
     import factory.orchestration.factory_landing as landing
     from factory.orchestration import factory_controls as controls
     from factory.orchestration.factory_models import FactoryReceipt
@@ -22723,8 +22815,13 @@ def test_active_cessation_releases_a_paused_task(bound_zero_turn_factory, monkey
     monkeypatch.setattr(landing, "github_write", lambda *args: None)
     monkeypatch.setattr(conductor, "_post_decision_card", lambda *args: None)
     monkeypatch.setattr(conductor, "_notify_escalation", lambda *args: None)
-    # The old backstop refuses every paused task, so this is the only release.
-    assert not conductor._expire_task_deadline(s.cessation_task)
+    # Elapsed time alone releases nothing, so the task is still admitted here;
+    # supervised cessation below is the only release.
+    with Session(s.engine) as db:
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == s.task["id"])
+        ).one()
+        assert receipt.state == "admitted"
 
     conductor._supervise_cessation(s.cessation_task, s.dbos)
     assert s.destroys == [s.precondition["session_id"]]
@@ -23471,8 +23568,8 @@ def test_human_handoff_tick_keeps_cessation_supervision_without_deadline_escalat
     )
     monkeypatch.setattr(
         conductor,
-        "_expire_task_deadline",
-        lambda _: pytest.fail("human work must not expire into escalation"),
+        "_warn_deadline_tripped",
+        lambda _: pytest.fail("human work must not warn into escalation"),
     )
     monkeypatch.setattr(conductor, "ingest_eligible", lambda _: None)
     monkeypatch.setattr(intake, "admit_next", lambda *_, **__: {"ok": False})
