@@ -1,4 +1,4 @@
-"""Unit tests for knowledge_cmd internals: _client(), timeout, and non-404 errors.
+"""Unit tests for the CLI HTTP layer: client(), timeout, and non-404 errors.
 
 These tests do NOT use the FastAPI integration stack — they exercise the CLI
 layer in isolation using mocked httpx responses. This keeps them fast and
@@ -14,7 +14,7 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
-import tools.cli.knowledge_cmd as knowledge_cmd
+from tools.cli import api
 from tools.cli.main import app
 
 
@@ -24,33 +24,33 @@ def runner():
 
 
 # ---------------------------------------------------------------------------
-# _client() helper
+# api.client() helper
 # ---------------------------------------------------------------------------
 
 
 class TestClientHelper:
     def test_uses_cf_token_as_cookie(self):
-        """_client() injects the CF token as the CF_Authorization cookie."""
-        with patch("tools.cli.knowledge_cmd.get_cf_token", return_value="test-token"):
-            client = knowledge_cmd._client()
+        """client() injects the CF token as the CF_Authorization cookie."""
+        with patch("tools.cli.api.get_cf_token", return_value="test-token"):
+            client = api.client()
             try:
                 assert client.cookies.get("CF_Authorization") == "test-token"
             finally:
                 client.close()
 
     def test_sets_correct_base_url(self):
-        """_client() sets the base URL to the private homelab domain."""
-        with patch("tools.cli.knowledge_cmd.get_cf_token", return_value="test-token"):
-            client = knowledge_cmd._client()
+        """client() sets the base URL to the private homelab domain."""
+        with patch("tools.cli.api.get_cf_token", return_value="test-token"):
+            client = api.client()
             try:
                 assert "private.jomcgi.dev" in str(client.base_url)
             finally:
                 client.close()
 
     def test_sets_30_second_timeout(self):
-        """_client() configures a 30-second read timeout."""
-        with patch("tools.cli.knowledge_cmd.get_cf_token", return_value="test-token"):
-            client = knowledge_cmd._client()
+        """client() configures a 30-second read timeout."""
+        with patch("tools.cli.api.get_cf_token", return_value="test-token"):
+            client = api.client()
             try:
                 assert client.timeout.read == 30.0
             finally:
@@ -58,19 +58,17 @@ class TestClientHelper:
 
     def test_different_tokens_produce_different_cookies(self):
         """Each unique token returned by get_cf_token() appears in the cookie jar."""
-        with patch(
-            "tools.cli.knowledge_cmd.get_cf_token", return_value="unique-token-xyz"
-        ):
-            client = knowledge_cmd._client()
+        with patch("tools.cli.api.get_cf_token", return_value="unique-token-xyz"):
+            client = api.client()
             try:
                 assert client.cookies.get("CF_Authorization") == "unique-token-xyz"
             finally:
                 client.close()
 
     def test_follow_redirects_is_false(self):
-        """_client() disables automatic redirect following so 3xx responses are surfaced."""
-        with patch("tools.cli.knowledge_cmd.get_cf_token", return_value="test-token"):
-            client = knowledge_cmd._client()
+        """client() disables automatic redirect following so 3xx responses are surfaced."""
+        with patch("tools.cli.api.get_cf_token", return_value="test-token"):
+            client = api.client()
             try:
                 assert client.follow_redirects is False
             finally:
@@ -78,16 +76,16 @@ class TestClientHelper:
 
 
 # ---------------------------------------------------------------------------
-# Helpers: mock _client() as a context manager
+# Helpers: mock api.client() as a context manager
 #
-# knowledge_cmd commands use:  `with _client() as client:`
-# so patching _client with a plain function that returns a @contextmanager
+# api.request() uses:  `with client() as http:`
+# so patching client with a plain function that returns a @contextmanager
 # correctly intercepts both the call and the `with` block.
 # ---------------------------------------------------------------------------
 
 
 def _make_timeout_client() -> object:
-    """Return a _client replacement that raises TimeoutException on every request."""
+    """Return a client() replacement that raises TimeoutException on every request."""
     mock_client = MagicMock()
     mock_client.get.side_effect = httpx.TimeoutException("timed out")
     mock_client.post.side_effect = httpx.TimeoutException("timed out")
@@ -103,7 +101,7 @@ def _make_timeout_client() -> object:
 
 
 def _make_error_client(status_code: int) -> object:
-    """Return a _client replacement that returns an HTTP error response."""
+    """Return a client() replacement that returns an HTTP error response."""
     mock_resp = MagicMock()
     mock_resp.status_code = status_code
     mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
@@ -133,25 +131,25 @@ def _make_error_client(status_code: int) -> object:
 class TestTimeoutHandling:
     def test_search_timeout_exits_nonzero(self, runner):
         """Network timeout during `knowledge search` results in a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_timeout_client()):
+        with patch("tools.cli.api.client", _make_timeout_client()):
             result = runner.invoke(app, ["knowledge", "search", "query"])
         assert result.exit_code != 0
 
     def test_note_timeout_exits_nonzero(self, runner):
         """Network timeout during `knowledge note` results in a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_timeout_client()):
+        with patch("tools.cli.api.client", _make_timeout_client()):
             result = runner.invoke(app, ["knowledge", "note", "n1"])
         assert result.exit_code != 0
 
     def test_dead_letters_timeout_exits_nonzero(self, runner):
         """Network timeout during `knowledge dead-letters` results in a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_timeout_client()):
+        with patch("tools.cli.api.client", _make_timeout_client()):
             result = runner.invoke(app, ["knowledge", "dead-letters"])
         assert result.exit_code != 0
 
     def test_replay_timeout_exits_nonzero(self, runner):
         """Network timeout during `knowledge replay` results in a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_timeout_client()):
+        with patch("tools.cli.api.client", _make_timeout_client()):
             result = runner.invoke(app, ["knowledge", "replay", "1"])
         assert result.exit_code != 0
 
@@ -167,19 +165,19 @@ class TestTimeoutHandling:
 class TestReplayNon404ErrorHandling:
     def test_replay_500_exits_nonzero(self, runner):
         """500 Internal Server Error from replay propagates as a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_error_client(500)):
+        with patch("tools.cli.api.client", _make_error_client(500)):
             result = runner.invoke(app, ["knowledge", "replay", "1"])
         assert result.exit_code != 0
 
     def test_replay_403_exits_nonzero(self, runner):
         """403 Forbidden from replay propagates as a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_error_client(403)):
+        with patch("tools.cli.api.client", _make_error_client(403)):
             result = runner.invoke(app, ["knowledge", "replay", "1"])
         assert result.exit_code != 0
 
     def test_replay_503_exits_nonzero(self, runner):
         """503 Service Unavailable from replay propagates as a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_error_client(503)):
+        with patch("tools.cli.api.client", _make_error_client(503)):
             result = runner.invoke(app, ["knowledge", "replay", "1"])
         assert result.exit_code != 0
 
@@ -201,7 +199,7 @@ class TestReplayNon404ErrorHandling:
         def _factory():
             return _ctx()
 
-        with patch("tools.cli.knowledge_cmd._client", _factory):
+        with patch("tools.cli.api.client", _factory):
             result = runner.invoke(app, ["knowledge", "replay", "42"])
 
         assert result.exit_code == 1
@@ -210,9 +208,9 @@ class TestReplayNon404ErrorHandling:
 
 
 # ---------------------------------------------------------------------------
-# _request() wrapper
+# api.request() wrapper
 #
-# _request() calls _client() as a context manager.  On a non-redirect response
+# request() calls client() as a context manager.  On a non-redirect response
 # it returns immediately.  On a 3xx (is_redirect=True) it calls clear_cf_token()
 # and retries with a fresh client.  All kwargs are forwarded to the underlying
 # httpx method.
@@ -220,7 +218,7 @@ class TestReplayNon404ErrorHandling:
 
 
 def _make_single_response_client(is_redirect: bool = False) -> object:
-    """Return a _client factory whose HTTP methods return one fixed response."""
+    """Return a client() factory whose HTTP methods return one fixed response."""
     mock_resp = MagicMock()
     mock_resp.is_redirect = is_redirect
     mock_client = MagicMock()
@@ -238,7 +236,7 @@ def _make_single_response_client(is_redirect: bool = False) -> object:
 
 
 def _make_redirect_then_ok_client():
-    """Return a _client factory: first call returns 3xx, second returns 200."""
+    """Return a client() factory: first call returns 3xx, second returns 200."""
     responses = [
         MagicMock(is_redirect=True),
         MagicMock(is_redirect=False),
@@ -262,7 +260,7 @@ def _make_redirect_then_ok_client():
 
 
 class TestRequest:
-    """Tests for _request() — the HTTP wrapper with auto re-auth on 3xx."""
+    """Tests for request(): the HTTP wrapper with auto re-auth on 3xx."""
 
     def test_non_redirect_response_returned_as_is(self):
         """A 2xx response is returned directly without calling clear_cf_token."""
@@ -270,10 +268,10 @@ class TestRequest:
             is_redirect=False
         )
         with (
-            patch("tools.cli.knowledge_cmd._client", factory),
-            patch("tools.cli.knowledge_cmd.clear_cf_token") as mock_clear,
+            patch("tools.cli.api.client", factory),
+            patch("tools.cli.api.clear_cf_token") as mock_clear,
         ):
-            result = knowledge_cmd._request("get", "/api/knowledge/search")
+            result = api.request("get", "/api/knowledge/search")
 
         assert result is mock_resp
         mock_clear.assert_not_called()
@@ -282,10 +280,10 @@ class TestRequest:
         """A 3xx response causes clear_cf_token() to be called before retrying."""
         factory, responses = _make_redirect_then_ok_client()
         with (
-            patch("tools.cli.knowledge_cmd._client", factory),
-            patch("tools.cli.knowledge_cmd.clear_cf_token") as mock_clear,
+            patch("tools.cli.api.client", factory),
+            patch("tools.cli.api.clear_cf_token") as mock_clear,
         ):
-            knowledge_cmd._request("get", "/api/knowledge/search")
+            api.request("get", "/api/knowledge/search")
 
         mock_clear.assert_called_once()
 
@@ -293,10 +291,10 @@ class TestRequest:
         """After a 3xx, the response from the retry request is returned."""
         factory, responses = _make_redirect_then_ok_client()
         with (
-            patch("tools.cli.knowledge_cmd._client", factory),
-            patch("tools.cli.knowledge_cmd.clear_cf_token"),
+            patch("tools.cli.api.client", factory),
+            patch("tools.cli.api.clear_cf_token"),
         ):
-            result = knowledge_cmd._request("get", "/api/knowledge/search")
+            result = api.request("get", "/api/knowledge/search")
 
         # The second (non-redirect) response should be returned
         assert result is responses[1]
@@ -308,10 +306,10 @@ class TestRequest:
         )
         params = {"q": "test query", "limit": 5}
         with (
-            patch("tools.cli.knowledge_cmd._client", factory),
-            patch("tools.cli.knowledge_cmd.clear_cf_token"),
+            patch("tools.cli.api.client", factory),
+            patch("tools.cli.api.clear_cf_token"),
         ):
-            knowledge_cmd._request("get", "/api/knowledge/search", params=params)
+            api.request("get", "/api/knowledge/search", params=params)
 
         mock_client.get.assert_called_once_with("/api/knowledge/search", params=params)
 
@@ -322,12 +320,10 @@ class TestRequest:
         )
         json_body = {"key": "value"}
         with (
-            patch("tools.cli.knowledge_cmd._client", factory),
-            patch("tools.cli.knowledge_cmd.clear_cf_token"),
+            patch("tools.cli.api.client", factory),
+            patch("tools.cli.api.clear_cf_token"),
         ):
-            knowledge_cmd._request(
-                "post", "/api/knowledge/dead-letter/1/replay", json=json_body
-            )
+            api.request("post", "/api/knowledge/dead-letter/1/replay", json=json_body)
 
         mock_client.post.assert_called_once_with(
             "/api/knowledge/dead-letter/1/replay", json=json_body

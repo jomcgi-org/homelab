@@ -30,7 +30,7 @@ def runner():
 
 
 def _make_client_returning(data: dict):
-    """Build a _client() context-manager replacement that returns *data* for any GET."""
+    """Build a client() context-manager replacement that returns *data* for any GET."""
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.raise_for_status.return_value = None
@@ -71,7 +71,7 @@ class TestNoteEmptyContentBranch:
     def test_absent_content_does_not_print_content_line(self, runner):
         """When the API response has no 'content' key, 'Content:' is not printed."""
         with patch(
-            "tools.cli.knowledge_cmd._client",
+            "tools.cli.api.client",
             _make_client_returning(_NOTE_NO_CONTENT),
         ):
             result = runner.invoke(app, ["knowledge", "note", "n1"])
@@ -82,7 +82,7 @@ class TestNoteEmptyContentBranch:
     def test_absent_content_still_prints_title_and_type(self, runner):
         """Title and type are still printed even when content is absent."""
         with patch(
-            "tools.cli.knowledge_cmd._client",
+            "tools.cli.api.client",
             _make_client_returning(_NOTE_NO_CONTENT),
         ):
             result = runner.invoke(app, ["knowledge", "note", "n1"])
@@ -94,7 +94,7 @@ class TestNoteEmptyContentBranch:
     def test_empty_string_content_does_not_print_content_line(self, runner):
         """When content is an empty string, 'Content:' is not printed."""
         with patch(
-            "tools.cli.knowledge_cmd._client",
+            "tools.cli.api.client",
             _make_client_returning(_NOTE_EMPTY_CONTENT),
         ):
             result = runner.invoke(app, ["knowledge", "note", "n1"])
@@ -106,7 +106,7 @@ class TestNoteEmptyContentBranch:
         """No file is written to TMPDIR when content is empty."""
         with (
             patch(
-                "tools.cli.knowledge_cmd._client",
+                "tools.cli.api.client",
                 _make_client_returning(_NOTE_EMPTY_CONTENT),
             ),
             patch("tools.cli.output.TMPDIR", tmp_path / "notes"),
@@ -122,7 +122,7 @@ class TestNoteEmptyContentBranch:
     def test_empty_string_content_exits_zero(self, runner):
         """note() with empty content is not an error — exit code is 0."""
         with patch(
-            "tools.cli.knowledge_cmd._client",
+            "tools.cli.api.client",
             _make_client_returning(_NOTE_EMPTY_CONTENT),
         ):
             result = runner.invoke(app, ["knowledge", "note", "n1"])
@@ -137,7 +137,7 @@ class TestNoteEmptyContentBranch:
         }
         with (
             patch(
-                "tools.cli.knowledge_cmd._client",
+                "tools.cli.api.client",
                 _make_client_returning(note_with_content),
             ),
             patch("tools.cli.output.TMPDIR", tmp_path / "notes"),

@@ -789,7 +789,6 @@ def _aggregate_agentic_group(
 
 def _load_newest_cells(results_root: Path) -> tuple[list[ResultCell], int, int]:
     """Current-harness cells, newest per (model, task), plus stale/superseded counts."""
-    cells: list[ResultCell] = []
     stale = 0
     superseded = 0
     # Keep only the NEWEST cell per (model, task). A cell's cache key includes the fixture

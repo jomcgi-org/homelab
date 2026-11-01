@@ -6,6 +6,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 exports_files(
     [
         "__init__.py",
+        "api.py",
         "auth.py",
         "knowledge_cmd.py",
         "main.py",
@@ -21,6 +22,7 @@ py_library(
     name = "cli",
     srcs = [
         "__init__.py",
+        "api.py",
         "auth.py",
         "knowledge_cmd.py",
         "main.py",

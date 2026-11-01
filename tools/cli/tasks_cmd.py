@@ -5,43 +5,16 @@ from __future__ import annotations
 import json
 from typing import Annotated, Optional
 
-import httpx
 import typer
 
-from tools.cli.auth import clear_cf_token, get_cf_token
+from tools.cli.api import request as _request
 from tools.cli.output import task_line
-
-API_BASE = "https://private.jomcgi.dev"
 
 tasks_app = typer.Typer(
     name="tasks",
     help="List, search, and manage knowledge-graph tasks.",
     invoke_without_command=True,
 )
-
-
-def _client() -> httpx.Client:
-    token = get_cf_token()
-    return httpx.Client(
-        base_url=API_BASE,
-        cookies={"CF_Authorization": token},
-        follow_redirects=False,
-        timeout=30.0,
-    )
-
-
-def _request(method: str, path: str, **kwargs) -> httpx.Response:
-    """Make a request with automatic re-auth on 3xx (expired CF token)."""
-    with _client() as client:
-        resp = getattr(client, method)(path, **kwargs)
-
-    if resp.is_redirect:
-        typer.echo("Token expired, re-authenticating...", err=True)
-        clear_cf_token()
-        with _client() as client:
-            resp = getattr(client, method)(path, **kwargs)
-
-    return resp
 
 
 def _print_tasks(tasks: list[dict]) -> None:
@@ -62,6 +35,25 @@ def _print_tasks(tasks: list[dict]) -> None:
         )
 
 
+def _show_tasks(path: str, json_output: bool, **kwargs) -> None:
+    """GET *path* and print its tasks as JSON or one line each."""
+    resp = _request("get", path, **kwargs)
+    resp.raise_for_status()
+
+    data = resp.json()
+    if json_output:
+        typer.echo(json.dumps(data, indent=2))
+        return
+
+    _print_tasks(data.get("tasks", []))
+
+
+def _set_status(note_id: str, status: str, message: str) -> None:
+    resp = _request("patch", f"/api/knowledge/tasks/{note_id}", json={"status": status})
+    resp.raise_for_status()
+    typer.echo(message)
+
+
 @tasks_app.callback()
 def list_tasks(
     ctx: typer.Context,
@@ -80,15 +72,7 @@ def list_tasks(
     if status:
         params["status"] = status
 
-    resp = _request("get", "/api/knowledge/tasks", params=params)
-    resp.raise_for_status()
-
-    data = resp.json()
-    if json_output:
-        typer.echo(json.dumps(data, indent=2))
-        return
-
-    _print_tasks(data.get("tasks", []))
+    _show_tasks("/api/knowledge/tasks", json_output, params=params)
 
 
 @tasks_app.command()
@@ -99,15 +83,7 @@ def search(
     ] = False,
 ) -> None:
     """Search tasks by keyword or natural language."""
-    resp = _request("get", "/api/knowledge/tasks", params={"q": query})
-    resp.raise_for_status()
-
-    data = resp.json()
-    if json_output:
-        typer.echo(json.dumps(data, indent=2))
-        return
-
-    _print_tasks(data.get("tasks", []))
+    _show_tasks("/api/knowledge/tasks", json_output, params={"q": query})
 
 
 @tasks_app.command()
@@ -115,9 +91,7 @@ def done(
     note_id: Annotated[str, typer.Argument(help="Note ID of the task")],
 ) -> None:
     """Mark a task as done."""
-    resp = _request("patch", f"/api/knowledge/tasks/{note_id}", json={"status": "done"})
-    resp.raise_for_status()
-    typer.echo(f"Marked {note_id} as done.")
+    _set_status(note_id, "done", f"Marked {note_id} as done.")
 
 
 @tasks_app.command()
@@ -125,11 +99,7 @@ def cancel(
     note_id: Annotated[str, typer.Argument(help="Note ID of the task")],
 ) -> None:
     """Cancel a task."""
-    resp = _request(
-        "patch", f"/api/knowledge/tasks/{note_id}", json={"status": "cancelled"}
-    )
-    resp.raise_for_status()
-    typer.echo(f"Cancelled {note_id}.")
+    _set_status(note_id, "cancelled", f"Cancelled {note_id}.")
 
 
 @tasks_app.command()
@@ -137,11 +107,7 @@ def block(
     note_id: Annotated[str, typer.Argument(help="Note ID of the task")],
 ) -> None:
     """Mark a task as blocked."""
-    resp = _request(
-        "patch", f"/api/knowledge/tasks/{note_id}", json={"status": "blocked"}
-    )
-    resp.raise_for_status()
-    typer.echo(f"Marked {note_id} as blocked.")
+    _set_status(note_id, "blocked", f"Marked {note_id} as blocked.")
 
 
 @tasks_app.command()
@@ -149,11 +115,7 @@ def activate(
     note_id: Annotated[str, typer.Argument(help="Note ID of the task")],
 ) -> None:
     """Mark a task as active."""
-    resp = _request(
-        "patch", f"/api/knowledge/tasks/{note_id}", json={"status": "active"}
-    )
-    resp.raise_for_status()
-    typer.echo(f"Marked {note_id} as active.")
+    _set_status(note_id, "active", f"Marked {note_id} as active.")
 
 
 @tasks_app.command()
@@ -183,15 +145,7 @@ def daily(
     ] = False,
 ) -> None:
     """Show daily task summary."""
-    resp = _request("get", "/api/knowledge/tasks/daily")
-    resp.raise_for_status()
-
-    data = resp.json()
-    if json_output:
-        typer.echo(json.dumps(data, indent=2))
-        return
-
-    _print_tasks(data.get("tasks", []))
+    _show_tasks("/api/knowledge/tasks/daily", json_output)
 
 
 @tasks_app.command()
@@ -201,12 +155,4 @@ def weekly(
     ] = False,
 ) -> None:
     """Show weekly task summary."""
-    resp = _request("get", "/api/knowledge/tasks/weekly")
-    resp.raise_for_status()
-
-    data = resp.json()
-    if json_output:
-        typer.echo(json.dumps(data, indent=2))
-        return
-
-    _print_tasks(data.get("tasks", []))
+    _show_tasks("/api/knowledge/tasks/weekly", json_output)
