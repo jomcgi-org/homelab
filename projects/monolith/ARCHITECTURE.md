@@ -591,9 +591,9 @@ implementation starts (#5956).
 **Why.** Sixteen of the thirty-one resolved cards in the newest fifty were
 dismissed because the issue body changed. Four came minutes after the card, on
 issues already carrying the factory's own gate blocks, so the hash excludes
-those blocks. An optimizer window that has ended cannot gain traffic, so its
-verdict is final and releases the selection; one experiment had held the loop
-for four weeks (#7495). See [automatic pause questions](factory/orchestration/FACTORY.md#automatic-pause-questions).
+those blocks. An optimizer window that has ended cannot gain traffic, so once
+its attempts settle the verdict is final and releases the selection; one
+experiment had held the loop for four weeks (#7495). See [automatic pause questions](factory/orchestration/FACTORY.md#automatic-pause-questions).
 
 **Why.** KG admission needs a fresh permitting grant; a stale pool can block
 the traffic that refreshes it. Inference-free usage refresh and a bounded probe

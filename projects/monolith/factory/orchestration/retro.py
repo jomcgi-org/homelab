@@ -745,6 +745,10 @@ ORDER BY observed_at, note_id LIMIT 1
 # which held one experiment UNKNOWN for a week while the job explained the
 # saturation to itself daily.
 _OPTIMIZER_OBSERVATION_LIMIT = 500
+# Attempts created near the end of the window may still be running when it
+# ends. A task deadline is 12 hours plus a 2-hour backstop, so 24 hours lets
+# every one of them settle before unresolved attempts make a verdict final.
+_OPTIMIZER_SETTLE_HOURS = 24
 _OPTIMIZER_OBSERVATIONS = """
 SELECT extra->>'deployed_revision' AS deployed_revision, count(*) AS polls,
        min(observed_at) AS first_observed_at
@@ -957,6 +961,12 @@ def optimizer_evidence(context: dict, now: datetime) -> dict:
         "funding_unknown" if metric == "funding_execution_failure" else "unknown"
     )
     if baseline.get(unknown_key) or post.get(unknown_key):
+        if now < deployed + timedelta(hours=72 + _OPTIMIZER_SETTLE_HOURS):
+            result.update(
+                status="WAIT",
+                reason="Attempts from the ended window are still settling",
+            )
+            return result
         return inconclusive("Unresolved or unclassified attempts prevent a verdict")
     if metric not in baseline or metric not in post:
         return inconclusive("Target metric coverage is missing")
