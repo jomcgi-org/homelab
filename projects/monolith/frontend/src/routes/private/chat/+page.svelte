@@ -1,6 +1,6 @@
 <script>
   import rough from "roughjs";
-  import { marked } from "marked";
+  import Markdown from "$lib/public/factory/Markdown.svelte";
   import { createGraphState } from "./graph-layout.js";
 
   /** Strip YAML frontmatter and the auto-generated LINKS section from note markdown. */
@@ -730,7 +730,7 @@
               >{msg.role === "user" ? "you" : "spark"}</span
             >
             {#if msg.role === "assistant"}
-              <span class="chat-text">{@html marked(msg.content)}</span>
+              <div class="chat-text"><Markdown text={msg.content} /></div>
             {:else}
               <span class="chat-text">{msg.content}</span>
             {/if}
@@ -820,7 +820,7 @@
           {/each}
         </div>
         <div class="drawer-content">
-          {@html marked(cleanNoteContent(drawerNote.content))}
+          <Markdown text={cleanNoteContent(drawerNote.content)} />
         </div>
         {#if drawerNote.edges?.length > 0}
           <div class="drawer-edges">
@@ -862,6 +862,7 @@
     height: 100%;
   }
   .chat-panel {
+    box-sizing: border-box;
     width: 35%;
     min-width: 380px;
     max-width: 600px;
@@ -921,9 +922,7 @@
   .chat-msg--user .chat-text {
     white-space: pre-wrap;
   }
-  .chat-text :global(h1),
-  .chat-text :global(h2),
-  .chat-text :global(h3) {
+  .chat-text :global(.md-h) {
     font-size: 13px;
     font-weight: 700;
     margin: 6px 0 3px 0;
@@ -938,6 +937,15 @@
   }
   .chat-text :global(li) {
     margin: 2px 0;
+  }
+  .chat-text :global(ul),
+  .drawer-content :global(ul) {
+    list-style-type: disc;
+  }
+  .chat-text :global(a),
+  .drawer-content :global(a) {
+    color: var(--accent-ink);
+    text-decoration: underline;
   }
   .chat-text :global(code) {
     background: var(--band);
@@ -982,6 +990,7 @@
   }
   .chat-input-bar input {
     flex: 1;
+    min-width: 0;
     padding: 12px;
     font-family: var(--font-code);
     font-size: 13px;
@@ -1064,6 +1073,7 @@
     }
   }
   .note-drawer {
+    box-sizing: border-box;
     position: fixed;
     right: 0;
     top: 0;
@@ -1124,15 +1134,15 @@
     font-size: 0.75rem;
   }
   .drawer-content {
+    overflow-wrap: anywhere;
     font-size: 0.85rem;
     line-height: 1.6;
     border-top: 1px solid var(--line);
     padding-top: 1rem;
   }
-  .drawer-content :global(h1),
-  .drawer-content :global(h2),
-  .drawer-content :global(h3) {
+  .drawer-content :global(.md-h) {
     font-size: 0.95rem;
+    font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.03em;
     margin: 1rem 0 0.5rem 0;
@@ -1218,5 +1228,22 @@
     padding: 2rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
+  }
+  @media (max-width: 700px) {
+    .explorer-body {
+      flex-direction: column;
+    }
+    .chat-panel {
+      width: 100%;
+      min-width: 0;
+      max-width: none;
+      height: 60%;
+      border-right: 0;
+      border-bottom: 1px solid var(--stroke);
+    }
+    .note-drawer {
+      width: 100%;
+      padding: 1rem;
+    }
   }
 </style>

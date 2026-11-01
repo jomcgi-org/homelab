@@ -57,6 +57,30 @@ build_test(
 
 vite_bin.vite_binary(name = "vite")
 
+js_run_binary(
+    name = "chat_fixture_preview",
+    srcs = [
+        "chat-preview/index.html",
+        "chat-preview/main.js",
+        "chat-preview/vite.config.js",
+        "test/chat-fixtures.js",
+        ":src",
+    ],
+    args = [
+        "build",
+        "--config",
+        "chat-preview/vite.config.js",
+    ],
+    chdir = package_name(),
+    out_dirs = ["chat-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "chat_fixture_preview_build_test",
+    targets = [":chat_fixture_preview"],
+)
+
 # The frontend package now owns a fixture-harness README. Keep it in the
 # same indexed documentation closure as every other repository package.
 filegroup(
@@ -303,6 +327,7 @@ js_library(
         "test/hikes/fixtures.js",
         "test/ships-fixtures.js",
         "test/ships-map-double.js",
+        "test/chat-fixtures.js",
         # Resolved by the $env/dynamic/private alias in vitest.config.js; same
         # rationale: lives outside src/ so it never reaches the app bundle.
         "test/env-dynamic-private-stub.js",
