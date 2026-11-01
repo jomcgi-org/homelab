@@ -192,7 +192,14 @@ def build_app() -> FastAPI:
                     occupation="Keeps the Lantern Inn",
                 )
             )
-            batch_people = [
+            # The batch reveal uses Tessa and Orrin. Ilsa's secret is
+            # searchable only while a full grant reveals it.
+            secrets = {
+                "Mapmaker Tessa": "DM_ONLY_BATCH_SECRET",
+                "Ferryman Orrin": "DM_ONLY_BATCH_SECRET",
+                "Harbourmaster Ilsa": "HARBOUR_LEDGER_SECRET",
+            }
+            npcs = [
                 Entity(
                     entity_type="npc",
                     name=name,
@@ -200,14 +207,14 @@ def build_app() -> FastAPI:
                     is_global=False,
                     created_in_session=history.id,
                 )
-                for name in ("Mapmaker Tessa", "Ferryman Orrin")
+                for name in secrets
             ]
-            session.add_all(batch_people)
+            session.add_all(npcs)
             session.flush()
             session.add_all(
                 [
-                    EntityNpc(entity_id=person.id, description="DM_ONLY_BATCH_SECRET")
-                    for person in batch_people
+                    EntityNpc(entity_id=person.id, description=secrets[person.name])
+                    for person in npcs
                 ]
             )
             session.add_all(

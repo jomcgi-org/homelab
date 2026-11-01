@@ -158,18 +158,22 @@ sends a text handout to the table and a private one to Elowen. Bram never
 receives the private one; Elowen pins it to her notes. Give item turns the table
 handout into a party-pool item that both players see in the Inventory tab. A
 hidden party item and its id stay out of player pages, item lists, change
-history and state. Each of these player phone views must fit without sideways
-scrolling.
+history and state. Those views must still carry the public item, so a failed or
+empty response cannot pass. Each of these player phone views must fit without
+sideways scrolling.
 
 The launcher points `EMBEDDING_URL` at `/__local/v1/embeddings`, a deterministic
 word-hash stand-in for the voyage model. The real embedding client, knowledge
 search route and pgvector query run against it. Production embeds play state on
 the five-minute `grimoire-embed-play` schedule; the rehearsal runs that job
-through `POST /__local/embed-play`. Bram's search for Mara returns his partial
-reveal. A DM-only narration canary, the retracted innkeeper secret and Elowen's
-private handout never appear in his results. The DM and Elowen searches return
-their own canaries as positive controls. Vector search has no score threshold,
-so a canary query still returns the nearest visible hits. Inspect
+through `POST /__local/embed-play`. Before that run, the DM grants Bram full
+knowledge of Harbourmaster Ilsa. Bram's search for Mara returns his partial
+reveal, and his search for Ilsa's secret finds it. The DM then retracts the Ilsa
+grant; with no further embedder run, the secret is gone from his search response
+and page. A DM-only narration canary and Elowen's private handout never appear
+in his results. The DM and Elowen searches return their own canaries as positive
+controls. Vector search has no score threshold, so a canary query still returns
+the nearest visible hits. Inspect
 `dm-initiative.png`, `bram-your-turn.png`, `elowen-handouts.png`,
 `dm-inventory.png`, `bram-inventory.png` and `bram-knowledge-search.png`.
 
