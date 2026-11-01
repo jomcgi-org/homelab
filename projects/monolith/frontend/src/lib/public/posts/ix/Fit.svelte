@@ -3,104 +3,77 @@
   import { capacities, totalGb, weights, widthPct } from "./data-fit.js";
 
   const total = totalGb();
-  let selected = $state("experts");
-  const part = $derived(weights.find((w) => w.key === selected));
+  // VRAM alone, and VRAM plus host RAM, marked on the weights bar itself.
+  const marks = capacities.filter((c) => c.key !== "ram");
 </script>
 
 <Fig title="134 GB of weights against 88 GB of memory">
-  <div class="rows">
-    <div class="row">
-      <div class="label">Weights <b>{total} GB</b></div>
-      <div class="track" role="group" aria-label="Weights by part">
-        {#each weights as w}
-          <button
-            type="button"
-            class={`seg-part ${w.tone}`}
-            class:on={w.key === selected}
-            style={`width:${widthPct(w.gb)}%`}
-            aria-pressed={w.key === selected}
-            aria-label={`${w.label}, ${w.gb} GB`}
-            onclick={() => (selected = w.key)}
-            onmouseenter={() => (selected = w.key)}
-            onfocus={() => (selected = w.key)}
-          ></button>
-        {/each}
-      </div>
+  <div class="chart">
+    <div
+      class="bar"
+      role="img"
+      aria-label={`${total} GB of weights: ${weights.map((w) => `${w.label} ${w.gb} GB`).join(", ")}. VRAM holds 24 GB; VRAM and host RAM together hold 88 GB.`}
+    >
+      {#each weights as w}
+        <span class={`part ${w.tone}`} style={`width:${widthPct(w.gb)}%`}
+        ></span>
+      {/each}
+      {#each marks as c}
+        <span class="mark" style={`left:${widthPct(c.gb)}%`}>
+          <span class="mark-label">{c.label} {c.gb} GB</span>
+        </span>
+      {/each}
     </div>
-    {#each capacities as c}
-      <div class="row">
-        <div class="label">{c.label} <b>{c.gb} GB</b></div>
-        <div class="track">
-          <span class="cap" style={`width:${widthPct(c.gb)}%`}></span>
-        </div>
+    <div class="scale" aria-hidden="true">
+      <span>0</span><span>{total} GB</span>
+    </div>
+  </div>
+
+  <div class="key">
+    {#each weights as w}
+      <div class={`key-row ${w.tone}`}>
+        <i></i>
+        <span class="name">{w.label} <b>{w.gb} GB</b></span>
+        <span class="where">{w.where}</span>
       </div>
     {/each}
-  </div>
-
-  <div class="legend">
-    {#each weights as w}
-      <button
-        type="button"
-        class={w.tone}
-        aria-pressed={w.key === selected}
-        onclick={() => (selected = w.key)}><i></i>{w.label} {w.gb} GB</button
-      >
-    {/each}
-  </div>
-
-  <div class="readout" aria-live="polite">
-    <span class="name">{part.label}, {part.gb} GB.</span>
-    {part.where}
   </div>
 </Fig>
 
 <style>
-  .rows {
-    display: grid;
-    gap: 0.6rem;
+  .chart {
+    padding-top: 1.4rem;
   }
-  .row {
-    display: grid;
-    grid-template-columns: 9.5rem minmax(0, 1fr);
-    gap: 0.75rem;
-    align-items: center;
-  }
-  .label {
-    color: var(--ink-2);
-    font: 0.7rem var(--font-code);
-  }
-  .label b {
-    color: var(--ink);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-  }
-  .track {
+  .bar {
+    position: relative;
     display: flex;
-    height: 1.6rem;
-    min-width: 0;
+    height: 1.8rem;
   }
-  .seg-part {
+  .part {
     height: 100%;
-    min-width: 0;
-    padding: 0;
-    border: 0;
     border-right: 1px solid var(--sheet);
     background: var(--t);
-    opacity: 0.45;
-    cursor: pointer;
   }
-  .seg-part.on {
-    opacity: 1;
+  .mark {
+    position: absolute;
+    top: -1.4rem;
+    bottom: -0.3rem;
+    border-left: 1.5px solid var(--ink);
   }
-  .seg-part:focus-visible,
-  .legend button:focus-visible {
-    outline: 2px solid var(--accent-ink);
-    outline-offset: 2px;
+  .mark-label {
+    position: absolute;
+    top: 0;
+    left: 0.35rem;
+    white-space: nowrap;
+    color: var(--ink);
+    font: 0.68rem var(--font-code);
   }
-  .cap {
-    height: 100%;
-    border: 1.5px solid var(--ink);
-    box-sizing: border-box;
+  .scale {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 0.4rem;
+    color: var(--ink-2);
+    font: 0.65rem var(--font-code);
   }
   .gpu {
     --t: var(--tone-gpu);
@@ -114,47 +87,42 @@
   .cache {
     --t: var(--tone-cache);
   }
-  .legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.25rem 1rem;
-    margin-top: 0.75rem;
+  .key {
+    display: grid;
+    gap: 0.55rem;
+    margin-top: 1rem;
   }
-  .legend button {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    min-height: 2rem;
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--ink-2);
-    font: 0.7rem var(--font-code);
-    cursor: pointer;
+  .key-row {
+    display: grid;
+    grid-template-columns: 0.65rem 12rem minmax(0, 1fr);
+    gap: 0.6rem;
+    align-items: baseline;
   }
-  .legend button[aria-pressed="true"] {
-    color: var(--ink);
-  }
-  .legend i {
+  .key-row i {
     width: 0.65rem;
     height: 0.65rem;
     background: var(--t);
   }
-  .readout {
-    margin-top: 0.5rem;
+  .name {
     color: var(--ink-2);
-    font-size: 0.85rem;
+    font: 0.7rem var(--font-code);
+  }
+  .name b {
+    color: var(--ink);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .where {
+    color: var(--ink-2);
+    font-size: 0.82rem;
     line-height: 1.45;
   }
-  .name {
-    color: var(--ink);
-    font-family: var(--font-code);
-    font-size: 0.78rem;
-  }
   @media (max-width: 600px) {
-    .row {
-      grid-template-columns: 1fr;
-      gap: 0.25rem;
+    .key-row {
+      grid-template-columns: 0.65rem minmax(0, 1fr);
+    }
+    .where {
+      grid-column: 2;
     }
   }
 </style>

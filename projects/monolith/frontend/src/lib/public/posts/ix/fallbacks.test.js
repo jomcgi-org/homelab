@@ -1,10 +1,10 @@
-// The post's fallback tables (what readers see without JavaScript) must say
-// what the interactive figures say. Each check derives the table's numbers
-// from the figure's data module and looks for them in the rendered fallback.
+// The post's markdown tables (what GitHub and feed readers see, and the table
+// kept beside some figures) must say what the figures say. Each check derives
+// the table's numbers from the figure's data module and looks for them there.
 import { expect, test } from "vitest";
 import manifest from "../posts-manifest.json";
 import { buildPathIndex, renderDoc } from "$lib/server/docs.js";
-import { splitInteractive } from "./split.js";
+import { splitFigures } from "./split.js";
 import { expertPaths } from "./data.js";
 import { weights } from "./data-fit.js";
 import * as context from "./data-context.js";
@@ -16,10 +16,13 @@ import { rows } from "./data-concurrency.js";
 import { published } from "./data-published.js";
 
 const post = manifest.find((entry) => entry.slug === "125b-on-a-4090");
+// A figure's table is the blocks it replaces, or, with a zero count, the
+// markup that follows it on the page.
+const parts = splitFigures(renderDoc(post, buildPathIndex([])).html);
 const fallback = Object.fromEntries(
-  splitInteractive(renderDoc(post, buildPathIndex([])).html)
-    .filter((part) => part.ix)
-    .map((part) => [part.ix, part.fallback]),
+  parts.flatMap((part, i) =>
+    part.ix ? [[part.ix, part.fallback || parts[i + 1].html]] : [],
+  ),
 );
 
 test("fit", () => {

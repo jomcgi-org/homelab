@@ -211,11 +211,11 @@ export function renderDoc(entry, slugByPath) {
         // source stays escaped, as a no-JS fallback); the client marks it with
         // `doc-mermaid` so the docs page can render it to SVG lazily.
         const language = (lang || "").trim().split(/\s+/)[0];
-        // ```interactive names a blog figure that replaces the next N blocks
-        // once the page hydrates ("residency" or "residency 2"); those blocks
-        // stay as the server-rendered, no-JS fallback.
-        if (language === "interactive") {
-          const m = /^([a-z][a-z0-9-]{0,40})(?:\s+([1-9]))?$/.exec(text.trim());
+        // ```figure names a blog figure that replaces the next N blocks
+        // ("residency", "residency 2", or "concurrency 0" to keep the table
+        // after it). The replaced blocks are the markdown's own version.
+        if (language === "figure") {
+          const m = /^([a-z][a-z0-9-]{0,40})(?:\s+([0-9]))?$/.exec(text.trim());
           if (m)
             return `<div class="ix-slot" data-ix="${m[1]}" data-ix-blocks="${m[2] ?? 1}"></div>\n`;
         }
