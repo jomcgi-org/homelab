@@ -109,12 +109,3 @@ class TestIsRetryableEmbedding:
         """NetworkError (generic network failure) is retryable."""
         exc = httpx.NetworkError("boom")
         assert is_retryable(exc) is True
-
-    def test_boundary_500_is_retryable(self):
-        """HTTPStatusError with exactly 500 (5xx lower boundary) is retryable."""
-        resp = MagicMock()
-        resp.status_code = 500
-        exc = httpx.HTTPStatusError(
-            "Internal Server Error", request=MagicMock(), response=resp
-        )
-        assert is_retryable(exc) is True

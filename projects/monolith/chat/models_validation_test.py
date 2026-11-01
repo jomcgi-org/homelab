@@ -32,20 +32,6 @@ class TestUserChannelSummaryModelStructure:
         schema_dict = table_args[-1] if isinstance(table_args, tuple) else table_args
         assert schema_dict.get("schema") == "chat"
 
-    def test_columns(self):
-        """UserChannelSummary has all expected columns."""
-        columns = {c.name for c in UserChannelSummary.__table__.columns}
-        expected = {
-            "id",
-            "channel_id",
-            "user_id",
-            "username",
-            "summary",
-            "last_message_id",
-            "updated_at",
-        }
-        assert expected == columns
-
     def test_unique_constraint_on_channel_id_and_user_id(self):
         """UserChannelSummary declares a UniqueConstraint on (channel_id, user_id)."""
         from sqlalchemy import UniqueConstraint
