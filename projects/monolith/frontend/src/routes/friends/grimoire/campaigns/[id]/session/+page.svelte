@@ -179,7 +179,12 @@
       const next = await response.json();
       if (!response.ok) throw new Error(next.error);
       if (identity(next) !== identity(state)) {
-        dropDraft(state.campaign.id);
+        // Wait for an in-flight send, as on expiry. The same account (a new
+        // character or role) keeps its draft; another account never gets it.
+        if (busy) return;
+        if (next.user?.id === state.user?.id)
+          keepDraft(state.campaign.id, viewer(), composer());
+        else dropDraft(state.campaign.id);
         return location.reload();
       }
       state = next;
