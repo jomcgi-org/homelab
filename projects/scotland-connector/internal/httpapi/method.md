@@ -22,6 +22,14 @@ connector counts 48 hours from each fetch as hourly. Days further out, up to
 the site has been clear in that month. A plan lists only go and marginal
 options; a day with none says why in `walk_note` or `stargazing_note`.
 
+Plan records each requested dataset's published horizon in
+`datasets.walk.hourly_until` and `datasets.stargaze.hourly_until`. These can
+differ; an individual walk or site can expire earlier. Null means no loaded
+dataset horizon. Consecutive requested dates beyond a horizon share one
+`datasets.<activity>.notes` entry with inclusive `from`, `to` and `why`.
+Partial-day coverage, missing data and date-specific moon advice remain on
+their days. A published horizon never promises rows for every time or entity.
+
 ## Walks
 
 **Walks** are the Walkhighlands catalogue: name, start point, length, ascent
@@ -111,6 +119,16 @@ at most 30 km. The nearest site wins, with ID breaking exact distance ties.
 Astronomy stays at the requested point; the returned `site` identifies where
 the weather samples came from, with its fetch time, horizon and truncation.
 
+Optional `kinds` filters windows: `golden`, `blue`, `civil`, `nautical`,
+`astronomical`, `darkness` and `milky_way`. Omission returns all kinds, as
+does a null or empty MCP array. REST takes one comma-separated `kinds` parameter;
+an empty string, a blank entry, an unknown kind or a repeated parameter is
+an error. MCP rejects blank and unknown entries too. Whitespace around entries
+is trimmed, duplicates collapse and order is ignored. The query echoes the
+canonical order above. Filters do not remove the daily sun/moon events.
+The existing window kind names remain unchanged: for example, filter `civil`
+selects `civil_twilight` and `darkness` selects `astronomical_darkness`.
+
 All event times are UTC RFC3339 seconds. Each date owns local midnight to
 the next midnight, so DST dates can have 23 or 25 hours. Null means the
 crossing does not occur on that date. Absent windows are omitted, with an
@@ -138,8 +156,11 @@ uses the existing truncated solar/lunar series and linear sidereal time,
 without terrain or core refraction. Numerical events resolve to about a
 second; the simplified astronomical model has lower physical accuracy.
 
-Every window has `cloud`, scoped to hourly sample support at the nearby
-site. The stars snapshot retains only already-clear (cloud below 10%)
+Each day states the unknown cloud reason once in `cloud_why`. A window without
+`cloud` means verdict `unknown`, coverage `none`, zero `samples` and zero
+`supported_seconds`. A present `cloud` preserves positive hourly sample
+support, scoped to the nearby site. The reason stays
+on the day. The stars snapshot retains only already-clear (cloud below 10%)
 twilight-dark (sun below -10 degrees) samples. Their one-hour buckets are
 intersected with the window and requested-point sun below -10.
 `supported_seconds` measures the union of those intersections. `samples`
@@ -160,9 +181,31 @@ Moon advice text is omitted there because `days` already carries the geometry.
 Light has plan's cache policy: browsers revalidate after 60 seconds and the
 Cloudflare-only header gives the edge 600 seconds, with the same bounded
 stale directives. The ETag includes snapshot version, as-of hour, exact
-freshness state and canonical query. Forecast updates can change the cloud
+freshness state and canonical query, including the canonical kinds filter.
+Equivalent filters share an ETag; different filters are isolated. Forecast updates can change the cloud
 part. Headers and fixture tests establish the repository contract; actual
 edge hits, query isolation and published cloud coverage remain live checks.
+
+## MCP discovery
+
+Every tool advertises a self-contained `outputSchema` expanded from this
+service's checked-in OpenAPI response components. Both text content and
+`structuredContent` carry the same complete answer and provenance envelope.
+Tool execution errors retain the existing `isError` response shape.
+
+Prompts `plan_trip`, `check_walk` and `photo_light` accept string arguments.
+All require `lat` and `lon`; `check_walk` also requires `walk` and `date`.
+Trip and photo prompts accept optional `from` and `to`; photo also accepts
+comma-separated `kinds`. Use `prompts/list` for argument descriptions and
+`prompts/get` for a user message guiding the corresponding tool call.
+Unknown names, missing required arguments and unknown argument keys are errors.
+
+Resources `scotland://docs/method` (`text/markdown`) and
+`scotland://docs/openapi` (`application/json`) serve the embedded `method.md`
+and `openapi.json`. Use `resources/list` and `resources/read`. Unknown URIs
+return resource-not-found; no URI triggers a network request. HTTP uses
+these same source bytes, with its configured public server URL substituted
+in the HTTP spec when set. MCP retains the spec's relative server URL.
 
 ## Stargazing
 

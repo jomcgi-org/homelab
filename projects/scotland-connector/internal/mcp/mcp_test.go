@@ -93,7 +93,7 @@ func TestToolListAndAnnotations(t *testing.T) {
 // Messages API rejects anyOf, oneOf and allOf there.
 func TestToolSchemaCapsMatchCode(t *testing.T) {
 	type prop struct {
-		Type        string   `json:"type"`
+		Type        any      `json:"type"`
 		Minimum     *float64 `json:"minimum"`
 		Maximum     *float64 `json:"maximum"`
 		Default     any      `json:"default"`
@@ -344,7 +344,7 @@ func TestUnsupportedVersionAndDiscover(t *testing.T) {
 		t.Fatalf("discover: status %d result %v", code, r.Result)
 	}
 
-	code, _, r = post(t, h, `{"jsonrpc":"2.0","id":7,"method":"resources/list","params":{`+modernMeta+`}}`, modern("resources/list", ""))
+	code, _, r = post(t, h, `{"jsonrpc":"2.0","id":7,"method":"unknown/list","params":{`+modernMeta+`}}`, modern("unknown/list", ""))
 	if code != http.StatusNotFound || r.Error == nil || r.Error.Code != codeMethodNotFound {
 		t.Fatalf("unknown method: status %d error %+v", code, r.Error)
 	}

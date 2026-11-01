@@ -25,6 +25,7 @@ go_test(
     name = "connector_test",
     srcs = [
         "bench_test.go",
+        "compact_test.go",
         "connector_test.go",
         "diversity_test.go",
         "light_solver_test.go",

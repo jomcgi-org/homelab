@@ -456,6 +456,43 @@ func TestLightHTTPRoundTripAndCache(t *testing.T) {
 	}
 }
 
+func TestLightHTTPKindsIdentityAndErrors(t *testing.T) {
+	h := handler(true)
+	base := "/v1/light?lat=57.3&lon=-3.7"
+	a, _ := get(t, h, base+"&kinds=blue,golden,blue")
+	b, body := get(t, h, base+"&kinds=%20golden%20,blue")
+	if a.Code != 200 || b.Code != 200 || a.Header().Get("ETag") != b.Header().Get("ETag") || a.Body.String() != b.Body.String() {
+		t.Fatal("noncanonical filter", a.Body, b.Body)
+	}
+	for _, raw := range body["data"].(map[string]any)["days"].([]any) {
+		for _, raw := range raw.(map[string]any)["windows"].([]any) {
+			kind := raw.(map[string]any)["kind"]
+			if kind != "golden" && kind != "blue" {
+				t.Fatal("filter leaked", kind)
+			}
+		}
+	}
+	all, _ := get(t, h, base)
+	explicit, _ := get(t, h, base+"&kinds=milky_way,darkness,astronomical,nautical,civil,blue,golden")
+	if all.Code != 200 || explicit.Code != 200 || all.Header().Get("ETag") != explicit.Header().Get("ETag") {
+		t.Fatal("all filter identity")
+	}
+	other, _ := get(t, h, base+"&kinds=golden", "If-None-Match", a.Header().Get("ETag"))
+	if other.Code != 200 || other.Header().Get("ETag") == a.Header().Get("ETag") {
+		t.Fatal("distinct filters collide")
+	}
+	cached, _ := get(t, h, base+"&kinds=golden,blue", "If-None-Match", a.Header().Get("ETag"))
+	if cached.Code != 304 {
+		t.Fatal("canonical filter not revalidated", cached.Code)
+	}
+	for _, q := range []string{"&kinds=", "&kinds=golden,", "&kinds=golden,,blue", "&kinds=cloud", "&kinds=blue&kinds=golden", "&kinds=GOLDEN"} {
+		bad, _ := get(t, h, base+q)
+		if bad.Code != 400 {
+			t.Fatalf("%s: %d", q, bad.Code)
+		}
+	}
+}
+
 // Check the fixture's complete response against the published response shape,
 // including nullable events, required metadata, enums and nested references.
 func TestLightOpenAPIResponse(t *testing.T) {
@@ -532,7 +569,7 @@ func TestLightOpenAPIResponse(t *testing.T) {
 	validate(body, schemas["LightResponse"].(map[string]any), "response")
 	op := doc["paths"].(map[string]any)["/v1/light"].(map[string]any)["get"].(map[string]any)
 	params := op["parameters"].([]any)
-	if len(params) != 5 {
+	if len(params) != 6 {
 		t.Fatal(params)
 	}
 	for _, raw := range params {

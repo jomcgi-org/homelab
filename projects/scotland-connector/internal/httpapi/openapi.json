@@ -22,14 +22,22 @@
             "name": "lat",
             "in": "query",
             "required": true,
-            "schema": { "type": "number", "minimum": 54.5, "maximum": 61 },
+            "schema": {
+              "type": "number",
+              "minimum": 54.5,
+              "maximum": 61
+            },
             "description": "Latitude, rounded to 0.01 degrees."
           },
           {
             "name": "lon",
             "in": "query",
             "required": true,
-            "schema": { "type": "number", "minimum": -9, "maximum": -0.5 },
+            "schema": {
+              "type": "number",
+              "minimum": -9,
+              "maximum": -0.5
+            },
             "description": "Longitude, degrees east, rounded to 0.01 degrees."
           },
           {
@@ -46,14 +54,42 @@
           {
             "name": "from",
             "in": "query",
-            "schema": { "type": "string", "format": "date" },
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
             "description": "Inclusive first Europe/London civil date, today by default, at most 13 days ahead."
           },
           {
             "name": "to",
             "in": "query",
-            "schema": { "type": "string", "format": "date" },
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
             "description": "Inclusive last date, three-day default, seven-day maximum, no later than 13 days ahead."
+          },
+          {
+            "name": "kinds",
+            "in": "query",
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "golden",
+                  "blue",
+                  "civil",
+                  "nautical",
+                  "astronomical",
+                  "darkness",
+                  "milky_way"
+                ]
+              }
+            },
+            "description": "Comma-separated kinds. Omitted means all. Empty strings, blank entries, unknown kinds and repeated query parameters are errors. Duplicate entries collapse; order and surrounding whitespace are ignored. MCP empty arrays mean all."
           }
         ],
         "responses": {
@@ -751,7 +787,7 @@
       },
       "PlanResult": {
         "type": "object",
-        "required": ["query", "days"],
+        "required": ["query", "days", "datasets"],
         "properties": {
           "query": {
             "type": "object",
@@ -766,31 +802,112 @@
               "limit"
             ],
             "properties": {
-              "lat": { "type": "number" },
-              "lon": { "type": "number" },
-              "radius_km": { "type": "number" },
-              "from": { "type": "string", "format": "date" },
-              "to": { "type": "string", "format": "date" },
+              "lat": {
+                "type": "number"
+              },
+              "lon": {
+                "type": "number"
+              },
+              "radius_km": {
+                "type": "number"
+              },
+              "from": {
+                "type": "string",
+                "format": "date"
+              },
+              "to": {
+                "type": "string",
+                "format": "date"
+              },
               "activities": {
                 "type": "array",
-                "items": { "type": "string", "enum": ["walk", "stargaze"] }
+                "items": {
+                  "type": "string",
+                  "enum": ["walk", "stargaze"]
+                }
               },
-              "min_duration_h": { "type": "number" },
-              "max_duration_h": { "type": "number" },
-              "min_length_km": { "type": "number" },
-              "max_length_km": { "type": "number" },
-              "max_ascent_m": { "type": "integer" },
-              "max_rain_mm_h": { "type": "number" },
-              "max_wind_kmh": { "type": "number" },
-              "min_temp_c": { "type": "number" },
-              "limit": { "type": "integer" }
+              "min_duration_h": {
+                "type": "number"
+              },
+              "max_duration_h": {
+                "type": "number"
+              },
+              "min_length_km": {
+                "type": "number"
+              },
+              "max_length_km": {
+                "type": "number"
+              },
+              "max_ascent_m": {
+                "type": "integer"
+              },
+              "max_rain_mm_h": {
+                "type": "number"
+              },
+              "max_wind_kmh": {
+                "type": "number"
+              },
+              "min_temp_c": {
+                "type": "number"
+              },
+              "limit": {
+                "type": "integer"
+              }
             }
           },
           "days": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/PlanDay" }
+            "items": {
+              "$ref": "#/components/schemas/PlanDay"
+            }
+          },
+          "datasets": {
+            "type": "object",
+            "description": "Independent published dataset horizons. Per-entity horizons may be earlier. Missing datasets never imply forecast coverage.",
+            "properties": {
+              "walk": {
+                "$ref": "#/components/schemas/PlanCoverage"
+              },
+              "stargaze": {
+                "$ref": "#/components/schemas/PlanCoverage"
+              }
+            },
+            "additionalProperties": false
           }
         }
+      },
+      "PlanCoverage": {
+        "type": "object",
+        "required": ["hourly_until"],
+        "properties": {
+          "hourly_until": {
+            "$ref": "#/components/schemas/LightEvent"
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanHorizonNote"
+            }
+          }
+        }
+      },
+      "PlanHorizonNote": {
+        "type": "object",
+        "required": ["from", "to", "why"],
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date"
+          },
+          "to": {
+            "type": "string",
+            "format": "date"
+          },
+          "why": {
+            "type": "string"
+          }
+        },
+        "description": "One explanation for a consecutive run of requested dates beyond an hourly horizon. Distinct entity horizons keep distinct explanations. Partial coverage and unrelated notes remain on each day."
       },
       "PlanResponse": {
         "type": "object",
@@ -810,13 +927,48 @@
       },
       "LightQuery": {
         "type": "object",
-        "required": ["lat", "lon", "radius_km", "from", "to"],
+        "required": ["lat", "lon", "radius_km", "from", "to", "kinds"],
         "properties": {
-          "lat": { "type": "number", "minimum": 54.5, "maximum": 61 },
-          "lon": { "type": "number", "minimum": -9, "maximum": -0.5 },
-          "radius_km": { "type": "number", "minimum": 1, "maximum": 100 },
-          "from": { "type": "string", "format": "date" },
-          "to": { "type": "string", "format": "date" }
+          "lat": {
+            "type": "number",
+            "minimum": 54.5,
+            "maximum": 61
+          },
+          "lon": {
+            "type": "number",
+            "minimum": -9,
+            "maximum": -0.5
+          },
+          "radius_km": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "from": {
+            "type": "string",
+            "format": "date"
+          },
+          "to": {
+            "type": "string",
+            "format": "date"
+          },
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "golden",
+                "blue",
+                "civil",
+                "nautical",
+                "astronomical",
+                "darkness",
+                "milky_way"
+              ]
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          }
         }
       },
       "LightResult": {
@@ -924,26 +1076,48 @@
           "nautical",
           "astronomical",
           "moon",
-          "windows"
+          "windows",
+          "cloud_why"
         ],
         "properties": {
-          "date": { "type": "string", "format": "date" },
-          "sunrise": { "$ref": "#/components/schemas/LightEvent" },
-          "sunset": { "$ref": "#/components/schemas/LightEvent" },
-          "civil": { "$ref": "#/components/schemas/LightTwilight" },
-          "nautical": { "$ref": "#/components/schemas/LightTwilight" },
-          "astronomical": { "$ref": "#/components/schemas/LightTwilight" },
-          "moon": { "$ref": "#/components/schemas/LightMoon" },
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "sunrise": {
+            "$ref": "#/components/schemas/LightEvent"
+          },
+          "sunset": {
+            "$ref": "#/components/schemas/LightEvent"
+          },
+          "civil": {
+            "$ref": "#/components/schemas/LightTwilight"
+          },
+          "nautical": {
+            "$ref": "#/components/schemas/LightTwilight"
+          },
+          "astronomical": {
+            "$ref": "#/components/schemas/LightTwilight"
+          },
+          "moon": {
+            "$ref": "#/components/schemas/LightMoon"
+          },
           "windows": {
             "type": "array",
             "description": "From-inclusive, until-exclusive intervals clipped to local midnight boundaries, sorted by from then kind. Absent windows are omitted, with an empty array when none exist. Sunrise/set and moonrise/set: centre -0.833 degrees. Twilight bands: civil -6 to -0.833, nautical -12 to -6, astronomical -18 to -12. Golden -4 to +6; blue -6 to -4. Milky Way: fixed core RA 17h45m, declination -29 degrees above 0, intersected with sun below -12. July twilight and moonlight can still limit visibility; no terrain/refraction model for core.",
-            "items": { "$ref": "#/components/schemas/LightWindow" }
+            "items": {
+              "$ref": "#/components/schemas/LightWindow"
+            }
+          },
+          "cloud_why": {
+            "type": "string",
+            "description": "Unknown cloud reason stated once per day for all windows. Geometry and separate night suitability are not forecasts of cloud. Missing window cloud means verdict unknown, coverage none, zero samples and supported seconds."
           }
         }
       },
       "LightWindow": {
         "type": "object",
-        "required": ["kind", "from", "until", "night", "cloud"],
+        "required": ["kind", "from", "until", "night"],
         "properties": {
           "kind": {
             "type": "string",
@@ -957,25 +1131,28 @@
               "milky_way"
             ]
           },
-          "from": { "type": "string", "format": "date-time" },
-          "until": { "type": "string", "format": "date-time" },
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time"
+          },
           "night": {
             "type": "string",
             "format": "date",
             "description": "Existing NightDay label at the window midpoint, named for its evening."
           },
-          "cloud": { "$ref": "#/components/schemas/LightCloud" }
+          "cloud": {
+            "$ref": "#/components/schemas/LightCloud",
+            "description": "Present only for positive hourly sample support. If absent, verdict unknown, coverage none, zero samples and supported seconds. The reason is at day.cloud_why, never a night verdict."
+          }
         }
       },
       "LightCloud": {
         "type": "object",
-        "required": [
-          "verdict",
-          "coverage",
-          "supported_seconds",
-          "samples",
-          "why"
-        ],
+        "required": ["verdict", "coverage", "supported_seconds", "samples"],
         "description": "Scope is hourly clear twilight-dark sample support at result.site, attributed to MET Norway in meta.sources. A listed hour supports its hourly bucket, clipped further to requested-point sun below -10. This is neither a continuous cloud forecast nor night suitability. Expired, missing or future site fetches, hours before the as-of hour, hours after the earlier site/dataset 48-hour horizon and unsupported portions have no support. Absence never proves cloud.",
         "properties": {
           "verdict": {
@@ -983,14 +1160,22 @@
             "enum": ["clear", "unknown"],
             "description": "Clear only when supported hourly bucket intersections cover the entire interval. Unknown when any portion lacks support. No cloudy verdict can be inferred from filtered rows."
           },
-          "coverage": { "type": "string", "enum": ["full", "partial", "none"] },
+          "coverage": {
+            "type": "string",
+            "enum": ["full", "partial", "none"]
+          },
           "supported_seconds": {
             "type": "integer",
             "minimum": 0,
             "description": "Union of supported bucket intersections, seconds; not a clear-sky probability."
           },
-          "samples": { "type": "integer", "minimum": 0 },
-          "why": { "type": "string" }
+          "samples": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "why": {
+            "type": "string"
+          }
         }
       },
       "LightNight": {

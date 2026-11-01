@@ -27,6 +27,12 @@ var openAPI []byte
 //go:embed method.md
 var method []byte
 
+// Documentation returns the same embedded bytes served by HTTP. Each caller
+// receives a copy so another surface cannot mutate the shared documents.
+func Documentation() (spec, methodology []byte) {
+	return bytes.Clone(openAPI), bytes.Clone(method)
+}
+
 // Cache policies, each a pair: Cache-Control for browsers and other shared
 // caches, and Cloudflare-CDN-Cache-Control for the edge. Cloudflare treats
 // s-maxage as proxy-revalidate, which disables the stale directives, so the
@@ -180,7 +186,7 @@ func (h *Handler) light(w http.ResponseWriter, r *http.Request) {
 		err = &connector.ParamError{Param: "query", Message: "query too large"}
 	}
 	for k, v := range q {
-		if (k != "lat" && k != "lon" && k != "radius_km" && k != "from" && k != "to") || len(v) != 1 {
+		if (k != "lat" && k != "lon" && k != "radius_km" && k != "from" && k != "to" && k != "kinds") || len(v) != 1 {
 			err = &connector.ParamError{Param: k, Message: "unknown or repeated parameter"}
 		}
 	}
@@ -188,6 +194,9 @@ func (h *Handler) light(w http.ResponseWriter, r *http.Request) {
 	p.Lon, err = floatParam(q.Get("lon"), "lon", err)
 	p.RadiusKm, err = floatParam(q.Get("radius_km"), "radius_km", err)
 	p.From, p.To = strParam(q, "from"), strParam(q, "to")
+	if raw, ok := q["kinds"]; ok {
+		p.Kinds = strings.Split(raw[0], ",")
+	}
 	var env *connector.Envelope
 	if err == nil {
 		env, err = h.svc.Light(p)

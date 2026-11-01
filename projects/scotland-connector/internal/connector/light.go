@@ -1,8 +1,10 @@
 package connector
 
 import (
+	"encoding/json"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/astro"
@@ -19,14 +21,16 @@ type LightParams struct {
 	RadiusKm *float64 `json:"radius_km,omitempty"`
 	From     *string  `json:"from,omitempty"`
 	To       *string  `json:"to,omitempty"`
+	Kinds    []string `json:"kinds,omitempty"`
 }
 
 type LightQuery struct {
-	Lat      float64 `json:"lat"`
-	Lon      float64 `json:"lon"`
-	RadiusKm float64 `json:"radius_km"`
-	From     string  `json:"from"`
-	To       string  `json:"to"`
+	Lat      float64  `json:"lat"`
+	Lon      float64  `json:"lon"`
+	RadiusKm float64  `json:"radius_km"`
+	From     string   `json:"from"`
+	To       string   `json:"to"`
+	Kinds    []string `json:"kinds"`
 }
 
 type LightSite struct {
@@ -46,7 +50,7 @@ type LightCloud struct {
 	Coverage         stars.Coverage `json:"coverage"`
 	SupportedSeconds int64          `json:"supported_seconds"`
 	Samples          int            `json:"samples"`
-	Why              string         `json:"why"`
+	Why              string         `json:"why,omitempty"`
 }
 
 type LightWindow struct {
@@ -55,6 +59,22 @@ type LightWindow struct {
 	Until string     `json:"until"`
 	Night string     `json:"night"`
 	Cloud LightCloud `json:"cloud"`
+}
+
+// Windows without sample support inherit the day's unknown cloud evidence.
+// The in-memory value remains explicit for callers of the shared service.
+func (w LightWindow) MarshalJSON() ([]byte, error) {
+	type window LightWindow
+	var cloud *LightCloud
+	if w.Cloud.Samples > 0 {
+		c := w.Cloud
+		c.Why = ""
+		cloud = &c
+	}
+	return json.Marshal(struct {
+		window
+		Cloud *LightCloud `json:"cloud,omitempty"`
+	}{window(w), cloud})
 }
 
 type LightTwilight struct {
@@ -87,6 +107,30 @@ type LightDay struct {
 	Astronomical LightTwilight `json:"astronomical"`
 	Moon         LightMoon     `json:"moon"`
 	Windows      []LightWindow `json:"windows"`
+	CloudWhy     string        `json:"cloud_why"`
+}
+
+var lightKinds = []string{"golden", "blue", "civil", "nautical", "astronomical", "darkness", "milky_way"}
+
+func canonicalLightKinds(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return append([]string{}, lightKinds...), nil
+	}
+	seen := map[string]bool{}
+	for _, k := range raw {
+		k = strings.TrimSpace(k)
+		if !has(lightKinds, k) {
+			return nil, &ParamError{"kinds", "each kind must be golden, blue, civil, nautical, astronomical, darkness or milky_way"}
+		}
+		seen[k] = true
+	}
+	var out []string
+	for _, k := range lightKinds {
+		if seen[k] {
+			out = append(out, k)
+		}
+	}
+	return out, nil
 }
 
 type LightResult struct {
@@ -264,7 +308,7 @@ func lightCloud(x lightInterval, eligible []lightInterval, ds *stars.Dataset, si
 	if site == nil {
 		return c
 	}
-	c.Why = "The snapshot contains only clear, twilight-dark hourly samples. Missing rows do not establish cloud."
+	c.Why = "Only clear twilight-dark samples; gaps are unknown."
 	until := site.Horizon(ds.HourlyUntil)
 	if site.ForecastFetchedAt.IsZero() || site.ForecastFetchedAt.After(now) || !until.After(now) {
 		c.Why = "Missing, future-dated or expired site forecast."
@@ -338,7 +382,11 @@ func (s *Service) Light(p LightParams) (*Envelope, error) {
 	if err != nil {
 		return nil, err
 	}
-	query := LightQuery{q.Lat, q.Lon, q.RadiusKm, q.From, q.To}
+	kinds, err := canonicalLightKinds(p.Kinds)
+	if err != nil {
+		return nil, err
+	}
+	query := LightQuery{q.Lat, q.Lon, q.RadiusKm, q.From, q.To, kinds}
 	res := LightResult{Query: query, Timezone: "Europe/London", Days: []LightDay{}, Nights: []LightNight{}}
 	var ds *stars.Dataset
 	if s.Data != nil {
@@ -390,8 +438,16 @@ func (s *Service) Light(p LightParams) (*Envelope, error) {
 			{"milky_way", lightIntersect(core.above(0), below(-12))},
 		}
 		eligible := below(-10)
+		out.CloudWhy = lightCloud(lightInterval{start, end}, nil, ds, site, now).Why
 		beforeNoon, afterNoon := stars.NightDay(start), stars.NightDay(end.Add(-time.Second))
 		for _, band := range bands {
+			kind := strings.TrimSuffix(band.kind, "_twilight")
+			if kind == "astronomical_darkness" {
+				kind = "darkness"
+			}
+			if !has(kinds, kind) {
+				continue
+			}
 			for _, x := range band.intervals {
 				n := afterNoon
 				if x.from.Add(x.until.Sub(x.from) / 2).Before(start.Add(12 * time.Hour)) {
@@ -436,17 +492,17 @@ func (s *Service) Light(p LightParams) (*Envelope, error) {
 		}
 		res.Nights = append(res.Nights, n)
 	}
-	sources := []Source{{Name: "Local astronomical calculation", Attribution: "Truncated Meeus lunar/solar series; NOAA sunrise equation", License: "MPL 2.0", URL: "https://github.com/jomcgi-org/homelab/tree/main/projects/scotland-connector/internal/astro", Use: "geometric light windows and moon phase; fixed galactic centre RA 17h45m, declination -29 degrees"}}
+	sources := []Source{{Name: "Local astronomical calculation", Attribution: "Truncated Meeus lunar/solar series; NOAA sunrise equation", License: "MPL 2.0", URL: "https://github.com/jomcgi-org/homelab/tree/main/projects/scotland-connector/internal/astro", Use: "light and lunar geometry"}}
 	if site != nil {
 		sources = append(sources, sourceMET, sourceCERRA, sourceOSM, sourceNaturalEarth)
 	}
 	meta := s.meta(ds, nil, now, sources)
-	meta.Notes = []string{"Staged repository delivery; operational acceptance remains on #7367.", "UTC RFC3339 events, clipped to Europe/London civil dates; null means no crossing on that date. Moon sampled at local noon, phase 0=new, .25=first quarter, .5=full, .75=last quarter.", "Sunrise/set and moonrise/set use centre altitude -0.833 degrees. Twilight -6/-12/-18; golden -4 to +6; blue -6 to -4. Milky Way requires core >0 and sun <-12 (nautical darkness), with twilight and moonlight still limiting visibility. No terrain or visibility guarantee.", "Cloud is nearby-site hourly sample support below sun -10, not a continuous point forecast. Unknown covers unsupported portions. Nights are separate AssessNight suitability verdicts, never interval cloud verdicts. Site forecast ends at the earlier entity/dataset 48-hour horizon; truncated lists and missing rows prove no cloud.", "Hourly altitude brackets include extrema and crossings converge to one-second numerical resolution. This is solver resolution, not ephemeris accuracy; truncated series and simplified horizon physics limit accuracy."}
+	meta.Notes = []string{"Light release acceptance: #7367. Missing cloud: unknown/none, zero samples. Nights assess suitability. See method_url."}
 	// Exact freshness boundaries can fall inside an as-of hour. Include that
 	// state so within-hour expiry never revalidates a changed cloud answer.
 	freshness := "unknown"
 	if site != nil && !site.ForecastFetchedAt.IsZero() && !site.ForecastFetchedAt.After(now) && site.Horizon(ds.HourlyUntil).After(now) {
 		freshness = "fresh"
 	}
-	return &Envelope{Data: res, Meta: meta, ETag: etag("light-v1", meta.DataVersion, meta.AsOf, freshness, canonical(query)), Results: len(res.Days)}, nil
+	return &Envelope{Data: res, Meta: meta, ETag: etag("light-v2", meta.DataVersion, meta.AsOf, freshness, canonical(query)), Results: len(res.Days)}, nil
 }
