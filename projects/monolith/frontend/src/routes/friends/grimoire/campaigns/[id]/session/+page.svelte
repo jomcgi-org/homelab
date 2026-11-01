@@ -19,6 +19,7 @@
   import KnowledgeDrawer from "$lib/grimoire/KnowledgeDrawer.svelte";
   import KnowledgeSearch from "$lib/grimoire/KnowledgeSearch.svelte";
   import ReadAloud from "$lib/grimoire/ReadAloud.svelte";
+  import { presetSpeakers } from "$lib/grimoire/read-aloud.js";
   import VoicePresets from "$lib/grimoire/VoicePresets.svelte";
   import TurnStrip from "$lib/grimoire/TurnStrip.svelte";
   import YourTurnBanner from "$lib/grimoire/YourTurnBanner.svelte";
@@ -580,8 +581,8 @@
                 bind:value={speakerKey}
               >
                 <option value="narrator">Narrator</option>
-                {#each state.npcs || [] as npc}<option value={npc.id}
-                    >{npc.name}</option
+                {#each presetSpeakers(state.voices || []) as speaker}<option
+                    value={speaker.key}>{speaker.name}</option
                   >{/each}
                 <option value="custom">Free label</option>
               </select></label
@@ -643,7 +644,7 @@
         </form>
         {#if dm}<VoicePresets
             presets={state.voices || []}
-            npcs={state.npcs || []}
+            endpoint={endpoint()}
             {act}
             {busy}
           />{/if}

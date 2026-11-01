@@ -3,6 +3,7 @@ import {
   createEventReader,
   createSpeaker,
   loadReadAloudSettings,
+  presetSpeakers,
   readAloudDefaults,
   resolveVoice,
   saveReadAloudSettings,
@@ -186,6 +187,24 @@ describe("device voices", () => {
       rate: 0.8,
       pitch: 0.6,
     });
+  });
+});
+
+describe("preset speakers", () => {
+  it("lists named NPC presets by name, then free labels, never the narrator", () => {
+    const npc = (key, name) => ({ speaker_key: key, speaker_name: name });
+    expect(
+      presetSpeakers([
+        npc("narrator", null),
+        npc("Captain North", null),
+        npc("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "Zed"),
+        npc("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "Mara"),
+      ]),
+    ).toEqual([
+      { key: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Mara" },
+      { key: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "Zed" },
+      { key: "Captain North", name: "Captain North" },
+    ]);
   });
 });
 

@@ -30,6 +30,23 @@ export function voicePreset(presets, key) {
   );
 }
 
+// DM speaker pickers list saved presets only: NPCs by the name the DM voice
+// view carries, then free labels. A player's view has no names to show.
+export function presetSpeakers(presets) {
+  const rows = presets.filter((row) => row.speaker_key !== "narrator");
+  const option = (row) => ({
+    key: row.speaker_key,
+    name: row.speaker_name || row.speaker_key,
+  });
+  return [
+    ...rows
+      .filter((row) => row.speaker_name)
+      .map(option)
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    ...rows.filter((row) => !row.speaker_name).map(option),
+  ];
+}
+
 export function readAloudDefaults(role) {
   return { narration: role === "dm", reveals: false };
 }

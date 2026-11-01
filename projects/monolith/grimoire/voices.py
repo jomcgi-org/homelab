@@ -12,7 +12,7 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from grimoire.models import CampaignVoice, Entity
-from grimoire.visibility import entity_belongs_to_campaign
+from grimoire.visibility import entity_belongs_to_campaign, visible_entities_query
 
 VoiceName = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=64)]
 
@@ -40,6 +40,12 @@ class VoiceView(VoiceRequest):
     @classmethod
     def timestamp_as_utc(cls, value: datetime) -> datetime:
         return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+class DmVoiceView(VoiceView):
+    """DM view: names NPC keys so pickers need no campaign-wide NPC list."""
+
+    speaker_name: str | None = None
 
 
 def validate_speaker_key(session: Session, campaign_id: str, key: object) -> str:
@@ -86,6 +92,39 @@ def voice_view(row: CampaignVoice, *, dm: bool) -> VoiceView:
         pitch=row.pitch,
         updated_at=row.updated_at,
     )
+
+
+def dm_voice_views(
+    session: Session, campaign_id: str, rows: list[CampaignVoice]
+) -> list[DmVoiceView]:
+    """Name entity keys the DM can still see, in one query.
+
+    Free labels and the narrator stay unnamed, as does a key whose NPC left
+    the campaign's DM view.
+    """
+    entity_keys: dict[str, str] = {}
+    for row in rows:
+        try:
+            entity_keys[row.speaker_key] = str(UUID(row.speaker_key))
+        except ValueError:
+            pass
+    names: dict[str, str] = {}
+    if entity_keys:
+        ids = {i for key in entity_keys.values() for i in (key, key.upper())}
+        query = visible_entities_query(campaign_id, "dm").where(
+            Entity.id.in_(ids), Entity.entity_type == "npc"
+        )
+        names = {
+            str(UUID(entity.id)): entity.name
+            for entity, _grant in session.exec(query).all()
+        }
+    return [
+        DmVoiceView(
+            **voice_view(row, dm=True).model_dump(),
+            speaker_name=names.get(entity_keys.get(row.speaker_key)),
+        )
+        for row in rows
+    ]
 
 
 def _find_voice(session: Session, campaign_id: str, key: str) -> CampaignVoice | None:
