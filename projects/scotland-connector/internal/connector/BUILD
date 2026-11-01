@@ -4,6 +4,7 @@ go_library(
     name = "connector",
     srcs = [
         "aurora.go",
+        "camping.go",
         "check.go",
         "connector.go",
         "light.go",
@@ -15,6 +16,7 @@ go_library(
     deps = [
         "//projects/scotland-connector/internal/astro",
         "//projects/scotland-connector/internal/aurora",
+        "//projects/scotland-connector/internal/camping",
         "//projects/scotland-connector/internal/stars",
         "//projects/scotland-connector/internal/verdict",
         "//projects/scotland-connector/internal/walks",
@@ -25,6 +27,7 @@ go_test(
     name = "connector_test",
     srcs = [
         "bench_test.go",
+        "camping_test.go",
         "connector_test.go",
         "diversity_test.go",
         "light_solver_test.go",

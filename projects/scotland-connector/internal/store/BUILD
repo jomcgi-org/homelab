@@ -7,6 +7,12 @@ filegroup(
     visibility = ["//projects/monolith:__pkg__"],
 )
 
+filegroup(
+    name = "camping_walks_fixture",
+    srcs = ["testdata/camping-walks.json"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 go_library(
     name = "store",
     srcs = [
@@ -33,7 +39,10 @@ go_test(
     ],
     data = glob(["testdata/**"]),
     embed = [":store"],
-    embedsrcs = ["testdata/connector-sites.json"],
+    embedsrcs = [
+        "testdata/connector-sites.json",
+        "testdata/camping-walks.json",
+    ],
     deps = [
         "//projects/scotland-connector/internal/connector",
         "//projects/scotland-connector/internal/r2",

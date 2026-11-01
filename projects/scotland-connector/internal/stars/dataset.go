@@ -17,6 +17,8 @@ import (
 	"math"
 	"sort"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/camping"
 )
 
 // Hour is one upcoming clear hour at a site. Every hour in the snapshot is
@@ -33,6 +35,7 @@ type Hour struct {
 
 // Site is one dark-sky grid point.
 type Site struct {
+	Camping           *camping.Membership
 	ForecastFetchedAt time.Time
 	ID                string
 	Lat, Lon          float64
@@ -83,14 +86,15 @@ type sitesDoc struct {
 	FetchedAt *string `json:"fetched_at"`
 	Darkness  string  `json:"darkness"`
 	Sites     []struct {
-		ForecastFetchedAt *string `json:"forecast_fetched_at"`
-		ID                string  `json:"id"`
-		Lat               float64 `json:"lat"`
-		Lon               float64 `json:"lon"`
-		AltitudeM         float64 `json:"altitude_m"`
-		LPZone            string  `json:"lp_zone"`
-		ClearDark         int     `json:"clear_dark_hours"`
-		ClearTwilight     int     `json:"clear_twilight_hours"`
+		Camping           *camping.Membership `json:"camping_membership"`
+		ForecastFetchedAt *string             `json:"forecast_fetched_at"`
+		ID                string              `json:"id"`
+		Lat               float64             `json:"lat"`
+		Lon               float64             `json:"lon"`
+		AltitudeM         float64             `json:"altitude_m"`
+		LPZone            string              `json:"lp_zone"`
+		ClearDark         int                 `json:"clear_dark_hours"`
+		ClearTwilight     int                 `json:"clear_twilight_hours"`
 		BestHours         []struct {
 			Time  string  `json:"time"`
 			Cloud float64 `json:"cloud_area_fraction"`
@@ -148,6 +152,7 @@ func Parse(sitesJSON, historyJSON []byte, version string) (*Dataset, error) {
 			return nil, fmt.Errorf("stars: site %q has invalid coordinates", raw.ID)
 		}
 		site := Site{
+			Camping:       raw.Camping,
 			ID:            raw.ID,
 			Lat:           raw.Lat,
 			Lon:           raw.Lon,

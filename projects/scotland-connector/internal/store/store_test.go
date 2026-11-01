@@ -72,6 +72,11 @@ func TestProducerBytesThroughStoreAndSevenDayPlanCheck(t *testing.T) {
 		t.Fatal(f.calls)
 	}
 	ds := s.Current()
+	for _, site := range ds.Sites {
+		if !site.Camping.Known() || len(site.Camping.Zones) != 0 || len(site.Camping.Parks) != 1 || site.Camping.Parks[0] != "Cairngorms" {
+			t.Fatalf("producer membership lost in store: %+v", site.Camping)
+		}
+	}
 	if len(ds.Sites) != 4 || len(ds.Sites[0].Hours) <= 25 || ds.Sites[0].Truncated() {
 		t.Fatalf("uncapped site: %+v", ds.Sites)
 	}

@@ -317,9 +317,9 @@ py_venv_binary(
     ],  # keep
 )
 
-# Dedicated heavy geospatial computation. None of these sources or dependencies
-# enter :monolith_backend, :main, or :jobs: grid_gen is excluded from their
-# source globs above, and only this binary depends on the GIS wheels.
+# Dedicated raster computation. GeoPandas and Rasterio stay on this binary;
+# grid_gen is excluded from the backend source globs. Shared camping point
+# classification also uses Shapely, without the raster stack.
 py_library(
     name = "stars_grid_generator",
     srcs = [
@@ -503,6 +503,7 @@ py_library(
             "shared/testing/**/*.py",
         ],
     ),
+    data = ["shared/camping_boundaries.json.gz"],
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
@@ -521,6 +522,7 @@ py_library(
         "@pip//pydantic",
         "@pip//python_multipart",
         "@pip//pyyaml",
+        "@pip//shapely",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
         "@pip//tzdata",
@@ -1647,7 +1649,10 @@ py_library(
     ),  # keep
     # entities.yaml is 2.5 KB and deliberately ships as runfiles data, unlike
     # the multi-megabyte ndjson manifest isolated in its own image layer.
-    data = ["knowledge/entities.yaml"],
+    data = [
+        "knowledge/entities.yaml",
+        "shared/camping_boundaries.json.gz",
+    ],
     visibility = ["//:__subpackages__"],
     deps = [
         ":pkg_platform_auth",
@@ -1687,6 +1692,7 @@ py_library(
         "@pip//regex",
         # PyJWT is currently locked transitively through mcp and semgrep.
         "@pip//pyjwt",
+        "@pip//shapely",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
         "@pip//starlette",
@@ -1754,8 +1760,8 @@ py3_image(
 )
 
 # The job's root filesystem is apko-built and package-locked. The application
-# layer is a separate, minimal py_venv_binary closure so GIS wheels never enter
-# the API or general-purpose jobs images.
+# layer is a separate, minimal py_venv_binary closure so the raster stack stays
+# out of the API and general-purpose jobs images.
 apko_image(
     name = "stars_grid_apko_base",
     arm64 = False,
@@ -6131,6 +6137,17 @@ py_test(
 )
 
 py_test(
+    name = "shared_camping_test",
+    srcs = ["shared/camping_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        "@pip//pytest",
+        "@pip//shapely",
+    ],
+)
+
+py_test(
     name = "knowledge_chunker_test",
     srcs = ["knowledge/chunker_test.py"],
     imports = ["."],
@@ -7422,6 +7439,8 @@ py_test(
 py_test(
     name = "hikes_materialize_test",
     srcs = ["hikes/materialize_test.py"],
+    data = ["//projects/scotland-connector/internal/store:camping_walks_fixture"],
+    env = {"CAMPING_WALKS_FIXTURE": "$(rootpath //projects/scotland-connector/internal/store:camping_walks_fixture)"},
     imports = ["."],
     deps = [
         ":pkg_core",
