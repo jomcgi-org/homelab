@@ -18,9 +18,12 @@
   let failure = $state("");
   let disputing = $state(null);
   let request;
+  // Each session poll replaces the page state; this changes only on campaign
+  // navigation, so a poll keeps the player's query and results.
+  const currentCampaign = $derived(campaignId);
   // Clear private results on campaign navigation and abort an older request.
   $effect(() => {
-    campaignId;
+    currentCampaign;
     request?.abort();
     results = [];
     query = "";
