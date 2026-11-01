@@ -1005,13 +1005,10 @@ def _recover_response_lost(
         read_response_lost_hold,
         relay_response_lost_drain,
         response_lost_drain_evidence,
-        response_lost_recovery_enabled,
         settle_response_lost_hold,
     )
     from factory.execution.mcp import invoke_in_progress
 
-    if not response_lost_recovery_enabled():
-        return None
     outcome = adopt_response_lost_result(session_id, pin["artifact_path"])
     if outcome is None or outcome["status"] != "waiting":
         return outcome

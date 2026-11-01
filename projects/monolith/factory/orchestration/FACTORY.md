@@ -2125,11 +2125,10 @@ re-held at every lease pass until the receipt's own seven-day retention and
 pin the admission slot for a week rather than twelve hours. A committed body
 that can never be adopted, one that is not a native completion, ends its hold
 at once rather than waiting out a bound that cannot change the answer.
-Recovery is behind `agents.sessions.responseLostRecoveryEnabled`, off by
-default and dependent on `resultReceiptsEnabled`: with no receipt to adopt, a
-hold would only delay the same unknown outcome. Every owner that writes,
-finishes or ends a hold reads that one flag, so off is the behaviour this lane
-had before any of this existed (#5938, #4322).
+Result receipts and recovery are unconditional (#5938, #4322, #7501). Every
+completed guest result is captured as a receipt before its synchronous response
+is delivered, and every owner that writes, finishes or ends a hold assumes
+both; the two chart values that used to gate them are removed.
 
 A separate control-plane result cache is not planned. The #4322 decision is
 reconsidered only if #5938's bounded native canary demonstrates a completed-result
@@ -2144,9 +2143,8 @@ session instead records `invocation_outcome_unknown`; the
 `lost_before_guest` proof requires a terminal failed session, no current or
 prior binding, no pending executor, no receipt or work product, and one exact
 uncertain permit. The factory may then fail the attempt at zero cost and
-release that reservation exactly once. Changing
-`agents.sessions.responseLostRecoveryEnabled` does not widen or disable this
-proof. A bound guest, including one whose generation or invoke stamp changed,
+release that reservation exactly once. This
+proof is not widened by response-loss recovery. A bound guest, including one whose generation or invoke stamp changed,
 remains on the response-loss and stop-supervision paths and is never refunded
 by `lost_before_guest`. A message with dispatch count zero remains the separate
 `never_dispatched` proof.

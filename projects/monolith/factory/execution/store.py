@@ -383,8 +383,6 @@ def begin_guest_cleanup(
     A retry resumes the same claim without extending or replacing its identity.
     There is deliberately no timeout-based release of uncertain remote work.
     """
-    from factory.execution import result_receipts
-
     row = _lock_session(session, session_id)
     if (
         row is None
@@ -425,7 +423,6 @@ def begin_guest_cleanup(
         .where(AgentSession.ember_session_id == guest_id)
         .execution_options(populate_existing=True)
     ).all()
-    capture_enabled = result_receipts.enabled()
     for alias in aliases:
         if alias.result_receipt_fence_id is not None:
             return {"hold": "observer_pending"}
@@ -436,9 +433,8 @@ def begin_guest_cleanup(
             resuming and alias.id == session_id and hold == "unknown"
         ):
             return {"hold": hold}
-        if not resuming and (capture_enabled or alias.id != session_id):
-            if any(item["session_id"] == alias.id for item in dispatches):
-                return {"hold": "invocation_pending"}
+        if not resuming and any(item["session_id"] == alias.id for item in dispatches):
+            return {"hold": "invocation_pending"}
 
     if not resuming:
         row.guest_cleanup_id = secrets.token_hex(16)
@@ -654,16 +650,6 @@ def _retry_permission(turn: AgentTurn | None, pending: PendingMessage) -> bool:
     ) and pending.dispatch_count < MAX_PENDING_DISPATCHES
 
 
-def response_lost_recovery_enabled() -> bool:
-    """The one read of the response-loss control, shared by every owner.
-
-    Every path that writes, finishes or ends a hold consults this, so the flag
-    off is byte-for-byte the behaviour this repository had before response-loss
-    recovery existed, whatever the receipt flags say.
-    """
-    return flag("AGENT_RESPONSE_LOST_RECOVERY_ENABLED")
-
-
 def rollout_handoff_enabled() -> bool:
     """Keep rollout admission and early receipt handoff behind one control."""
     return flag("AGENT_ROLLOUT_HANDOFF_ENABLED")
@@ -848,7 +834,7 @@ def mark_turn_response_lost_sync(
     ):
         return False
     bound = min(float(hold_seconds), float(RESPONSE_LOST_BACKSTOP_SECONDS))
-    if not response_lost_recovery_enabled() or not bound > 0:
+    if not bound > 0:
         return False
     with Session(get_engine()) as session:
         if lock_timeout_seconds is not None and (
@@ -1009,8 +995,7 @@ def _hold_lease_expired_response(
     the lease rather than being held again until the receipt's own retention.
     """
     if (
-        not response_lost_recovery_enabled()
-        or sess.ember_session_id is None
+        sess.ember_session_id is None
         or sess.result_receipt_fence_id is not None
         or (
             existing is not None
@@ -1186,9 +1171,7 @@ def settle_response_lost_hold(
 def response_lost_drain_relay_enabled() -> bool:
     """Staged control for resuming a held turn a drain interrupted (default off)."""
     return (
-        response_lost_recovery_enabled()
-        and os.getenv("AGENT_RESPONSE_LOST_DRAIN_RELAY_ENABLED", "false").lower()
-        == "true"
+        os.getenv("AGENT_RESPONSE_LOST_DRAIN_RELAY_ENABLED", "false").lower() == "true"
     )
 
 
@@ -1400,8 +1383,6 @@ def adopt_response_lost_result(
     """
     from factory.execution import result_receipts, voice
 
-    if not response_lost_recovery_enabled():
-        return None
     hold = read_response_lost_hold_sync(session_id)
     if hold is None:
         return None

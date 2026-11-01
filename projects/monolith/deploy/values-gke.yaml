@@ -160,9 +160,6 @@ agents:
     # Staged repository delivery for #6288. Live proof validation is tracked
     # on #6559.
     boundZeroTurnSettlementEnabled: false
-    # Preserve native results before their synchronous response is delivered.
-    resultReceiptsEnabled: true
-    responseLostRecoveryEnabled: true
     # 2026-10-01: hand off active invokes before rollout observer teardown (#6670).
     rolloutHandoffEnabled: true
     # Resume a held turn a brick drain interrupted on its exact dispatch,

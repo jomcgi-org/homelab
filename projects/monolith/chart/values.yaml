@@ -152,19 +152,13 @@ agents:
     # Stage the post-guest, zero-local-turn settlement proof from #6288. This
     # remains separate because it conditionally stops a healthy bound guest.
     boundZeroTurnSettlementEnabled: false
-    # Capture exact completed results before the guest's synchronous response.
-    resultReceiptsEnabled: false
     # Consume exact native receipts for active owners. Restart adoption and
     # clearing an observer fence after process loss remain separate controls.
     resultReceiptAdoptionEnabled: false
-    # Hold a turn whose invoke response was lost over a still-working guest and
-    # finish it from its committed receipt instead of settling it unknown.
-    # Requires resultReceiptsEnabled: without a receipt there is nothing to
-    # recover and the hold would only delay the same unknown outcome.
-    responseLostRecoveryEnabled: false
     # Fence new claims at SIGTERM and persist exact holds before cancelling
-    # response observers. Requires resultReceiptsEnabled and response loss
-    # recovery for adoption; other turns receive a bounded five-second grace.
+    # response observers. Result receipts and response loss recovery are always
+    # on and are what adoption relies on; other turns receive a bounded
+    # five-second grace.
     rolloutHandoffEnabled: false
     # Existing-session capacity waits only; no new-session credential bootstrap.
     # Roll back the producer before withdrawing Ember admission support.
@@ -173,7 +167,7 @@ agents:
     # interrupted on exactly this dispatch (the guest parked with an
     # interrupted_turn naming it). The live node workflow turns the hold into
     # the #6256 drain relay and the same guest resumes its CLI session.
-    # Requires responseLostRecoveryEnabled and, for factory nodes,
+    # Response loss recovery is always on; for factory nodes this also requires
     # swarm.factoryDrainRelayContinuationEnabled.
     responseLostDrainRelayEnabled: false
     # When a replica shutdown cancels a turn's executor before it sent the
@@ -190,8 +184,8 @@ agents:
     # Supervision backstop for kg, project and interactive permits: settle an
     # uncertain permit whose bound guest the control plane shows never ran an
     # invoke (turn_seq 0, no invoke stamp or stop record) and for which no
-    # result receipt was ever minted. Requires resultReceiptsEnabled and
-    # uncertainPermitSupervisionEnabled.
+    # result receipt was ever minted. Result receipts are always on; this
+    # requires uncertainPermitSupervisionEnabled.
     neverInvokedGuestSettlementEnabled: false
     # Settle a non-factory permit when the invoke failed with the guest's own
     # 4xx/5xx answer, which EmberVM marks with x-ember-invoke-outcome:

@@ -195,12 +195,8 @@ spec:
               value: {{ .Values.agents.sessions.uncertainPermitSupervisionEnabled | quote }}
             - name: FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED
               value: {{ .Values.agents.sessions.boundZeroTurnSettlementEnabled | default false | quote }}
-            - name: AGENT_RESULT_RECEIPTS_ENABLED
-              value: {{ .Values.agents.sessions.resultReceiptsEnabled | quote }}
             - name: AGENT_RESULT_RECEIPT_ADOPTION_ENABLED
               value: {{ .Values.agents.sessions.resultReceiptAdoptionEnabled | quote }}
-            - name: AGENT_RESPONSE_LOST_RECOVERY_ENABLED
-              value: {{ .Values.agents.sessions.responseLostRecoveryEnabled | default false | quote }}
             - name: FACTORY_ASYNC_RESIDENCY_ENABLED
               value: {{ .Values.agents.sessions.asyncResidencyEnabled | default false | quote }}
             - name: AGENT_ROLLOUT_HANDOFF_ENABLED

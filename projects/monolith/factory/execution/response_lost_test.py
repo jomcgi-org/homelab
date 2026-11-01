@@ -82,9 +82,7 @@ def database(tmp_path, monkeypatch):
     )
     for module in (admission, store, mcp, execution_api, result_receipts, core_db):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "false")
-    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "true")
     monkeypatch.setattr(transport, "RECEIPT_POLL_SECONDS", 0.005)
     observer_executor = ThreadPoolExecutor(max_workers=2)
     monkeypatch.setattr(transport, "_receipt_db_executor", observer_executor)
@@ -417,13 +415,7 @@ def test_factory_pin_reaches_real_invoke_and_response_loss_hold(
     assert bytes(turn["artifact_blob"]) == b'{"status": "ok"}'
 
 
-@pytest.mark.parametrize("recovery_enabled", [True, False])
-def test_persistence_failure_recovers_receipt_without_reinvoking(
-    database, monkeypatch, recovery_enabled
-):
-    monkeypatch.setenv(
-        "AGENT_RESPONSE_LOST_RECOVERY_ENABLED", str(recovery_enabled).lower()
-    )
+def test_persistence_failure_recovers_receipt_without_reinvoking(database, monkeypatch):
     sid = queue(database)
     record = native_record(artifact=False)
 
@@ -440,9 +432,6 @@ def test_persistence_failure_recovers_receipt_without_reinvoking(
     monkeypatch.setattr(mcp, "_persist_turn_from_pending_sync", unavailable)
     asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
     assert len(requests) == 1
-    if not recovery_enabled:
-        assert_unknown(database, sid)
-        return
     assert_held(database, sid, "result_persistence_failed")
     monkeypatch.setattr(mcp, "_persist_turn_from_pending_sync", original)
     outcome = store.adopt_response_lost_result(sid)
@@ -893,15 +882,6 @@ def test_guest_http_failure_is_not_reclassified_when_liveness_is_unavailable(
     assert store.read_response_lost_hold_sync(sid) is None
 
 
-def test_recovery_disabled_records_unknown_exactly_as_before(database, monkeypatch):
-    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "false")
-    sid, _requests = lose_the_response(database, monkeypatch, guest_state=None)
-    state = snapshot(database, sid)
-    assert state["pending"] == []
-    assert state["turns"][0]["stop_reason"] is None
-    assert [row["state"] for row in state["permits"]] == ["uncertain"]
-
-
 @pytest.mark.parametrize("published_before_expiry", [False, True])
 def test_lease_backstop_recovers_exact_result_published_before_or_after_owner_loss(
     database, monkeypatch, published_before_expiry
@@ -1033,39 +1013,6 @@ def test_the_sweep_finishes_executor_written_holds(database, monkeypatch):
     assert [row["state"] for row in after["permits"]] == ["settled"]
     assert len(requests) == 1
     assert mcp._adopt_response_lost_results() == []
-
-
-def test_recovery_disabled_leaves_every_owner_on_todays_behaviour(
-    database, monkeypatch
-):
-    """The flag off is the whole machinery off, whatever the receipt flags say."""
-    from factory.orchestration import node_workflows
-
-    record = native_record(artifact=False)
-    sid, _requests = lose_the_response(database, monkeypatch, record=record)
-    held = assert_held(database, sid, "invoke_response_lost")
-    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "false")
-
-    assert store.adopt_response_lost_result(sid) is None
-    assert mcp._adopt_response_lost_results() == []
-    assert node_workflows._recover_response_lost({"artifact_path": None}, sid) is None
-    assert snapshot(database, sid) == held
-
-    # The lease backstop is off too, so a stale claim with an unconsumed
-    # receipt settles unknown exactly as it did before this change.
-    other = queue(database, "disabled-backstop")
-    owner = "killed-replica"
-    assert store.claim_pending_message_for_session_sync(other, owner) == 1
-    assert admission.recheck(other, 1, owner)
-    receipt = result_receipts.prepare_receipt(
-        other, owner, 1, f"guest-{other}", b'{"message":"request"}'
-    )
-    result_receipts.capture_result(
-        receipt["id"], receipt["token"], json.dumps(record).encode()
-    )
-    age_claim(database, other)
-    assert store.reclaim_stale_claims_sync() == 1
-    assert_unknown(database, other)
 
 
 def test_an_expired_hold_is_never_held_again_and_settles_unknown(database, monkeypatch):
@@ -2306,7 +2253,6 @@ def test_rollout_cancels_non_adoptable_turns_only_after_grace_expires(
 def test_sweep_reaches_later_holds_when_first_batch_never_resolves(
     monkeypatch, blocked
 ):
-    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "true")
     monkeypatch.setattr(mcp, "_response_lost_sweep_cursor", 0, raising=False)
     seen = []
 
@@ -2372,7 +2318,6 @@ def test_response_loss_candidates_page_without_mutating_holds(database):
 def test_sweep_revisits_old_and_newly_eligible_holds_despite_continuous_arrivals(
     monkeypatch,
 ):
-    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "true")
     monkeypatch.setattr(mcp, "_response_lost_sweep_cursor", 0)
     monkeypatch.setattr(mcp, "_response_lost_sweep_ceiling", 0)
     eligible = {1, 3, 4, 5, 6, 7, 8}
@@ -2415,7 +2360,6 @@ def test_sweep_revisits_old_and_newly_eligible_holds_despite_continuous_arrivals
 
 
 def test_sweep_restart_safely_revisits_candidates(monkeypatch):
-    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "true")
     monkeypatch.setattr(mcp, "_response_lost_sweep_cursor", 9)
     monkeypatch.setattr(mcp, "_response_lost_sweep_ceiling", 10)
     monkeypatch.setattr(store, "response_lost_session_ceiling", lambda: 10)

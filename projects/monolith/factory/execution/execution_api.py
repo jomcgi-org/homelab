@@ -325,13 +325,7 @@ async def run_synthetic_session(
             ):
                 raise EmberVMTransportError("Shared execution admission is fenced")
 
-        from factory.execution import result_receipts
-
-        receipt_kwargs = (
-            {"receipt_claim_owner": claim_owner}
-            if result_receipts.required(row.local_session_id, row.model)
-            else {}
-        )
+        receipt_kwargs = {"receipt_claim_owner": claim_owner}
         deliver_started = time.monotonic()
         turn, _returned_ember = await transport.deliver(
             None,

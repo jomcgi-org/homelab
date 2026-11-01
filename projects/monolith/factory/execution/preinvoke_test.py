@@ -109,7 +109,6 @@ def database(tmp_path, monkeypatch):
         ),
     )
     monkeypatch.setattr(drainer, "_turn_has_unknown_outcome_lookup", None)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _sid: None)
     mcp._negative_oracle_verdicts.clear()
 
@@ -393,23 +392,18 @@ def test_synthetic_failed_result_persistence_does_not_destroy_guest(
     )
 
 
-@pytest.mark.parametrize("capture", [False, True])
 def test_synthetic_success_persists_before_normal_cleanup_and_pins_receipt(
-    database, monkeypatch, capture
+    database, monkeypatch
 ):
     requests = []
     receipt = None
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", str(capture).lower())
 
     async def handler(request):
         nonlocal receipt
         requests.append(request.method)
         if request.url.path.endswith("/invoke"):
             payload = json.loads(request.content)
-            if capture:
-                receipt = payload["result_receipt"]
-            else:
-                assert "result_receipt" not in payload
+            receipt = payload["result_receipt"]
         if request.method == "DELETE":
             state = _snapshot(database, _synthetic_id(database))
             assert state["pending"] == []
@@ -426,19 +420,17 @@ def test_synthetic_success_persists_before_normal_cleanup_and_pins_receipt(
     assert state["turns"][0]["cost_usd"] == 0.01
     with Session(database) as db:
         rows = db.exec(select(AgentResultReceipt)).all()
-        assert len(rows) == int(capture)
-        if capture:
-            assert rows[0].id == receipt["id"]
-            assert rows[0].session_id == state["session"]["id"]
-            assert rows[0].seq == rows[0].dispatch_count == 1
-            assert rows[0].claim_owner == state["permit"]["owner"]
-            assert rows[0].guest_id == "probe-guest"
+        assert len(rows) == 1
+        assert rows[0].id == receipt["id"]
+        assert rows[0].session_id == state["session"]["id"]
+        assert rows[0].seq == rows[0].dispatch_count == 1
+        assert rows[0].claim_owner == state["permit"]["owner"]
+        assert rows[0].guest_id == "probe-guest"
 
 
 def test_synthetic_receipt_mint_failure_before_model_post_is_not_invoked(
     database, monkeypatch
 ):
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     requests = []
 
     async def handler(request):

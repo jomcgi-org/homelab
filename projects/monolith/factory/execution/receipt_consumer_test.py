@@ -57,7 +57,6 @@ def database(tmp_path, monkeypatch):
     )
     for module in (admission, store, mcp, execution_api, result_receipts, core_db):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "true")
     monkeypatch.setattr(transport, "RECEIPT_POLL_SECONDS", 0.005)
     # Use the actual bounded executor with a fixture-owned lifetime. Cancelling
@@ -218,18 +217,11 @@ def test_cleanup_claim_blocks_dispatch_until_terminal_confirmation(
     assert store.claim_pending_message_for_session_sync(sid, "next-owner") == 1
 
 
-@pytest.mark.parametrize("claimed", [False, True])
-def test_flags_off_preserve_workflow_cleanup_without_a_receipt(
-    database, monkeypatch, claimed
+def test_adoption_off_preserves_workflow_cleanup_without_a_receipt(
+    database, monkeypatch
 ):
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
     monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "false")
     sid = queue(database)
-    if claimed:
-        assert (
-            store.claim_pending_message_for_session_sync(sid, "cancelled-workflow") == 1
-        )
-        assert admission.recheck(sid, 1, "cancelled-workflow")
     with Session(database) as db:
         agent = db.get(AgentSession, sid)
         agent.workflow_id = "cancelled-workflow"
@@ -304,13 +296,8 @@ def test_cleanup_interruption_retains_exact_claim_for_later_observation(
 
 
 def test_cleanup_winner_denies_late_mint_and_alias_dispatch(database, monkeypatch):
-    # An already issued workflow stop retains its intent if capture is enabled
-    # while the DELETE is being observed.
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
     sid = queue(database)
     guest_id = f"guest-{sid}"
-    assert store.claim_pending_message_for_session_sync(sid, "stopped-owner") == 1
-    assert admission.recheck(sid, 1, "stopped-owner")
     alias = queue(database, "alias-session")
     with Session(database) as db:
         row = db.get(AgentSession, sid)
@@ -321,7 +308,7 @@ def test_cleanup_winner_denies_late_mint_and_alias_dispatch(database, monkeypatc
         claim = store.begin_guest_cleanup(db, sid, guest_id, "stopped-workflow")
     assert claim["claim_id"]
     before = snapshot(database, sid)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
+    assert store.claim_pending_message_for_session_sync(sid, "stopped-owner") is None
     with pytest.raises(result_receipts.ReceiptRejected):
         result_receipts.prepare_receipt(sid, "stopped-owner", 1, guest_id, b"{}")
     assert not admission.recheck(sid, 1, "stopped-owner")
@@ -368,8 +355,26 @@ def test_cleanup_completion_rejects_stale_claim_guest_and_workflow(database):
     assert snapshot(database, sid) == replacement
 
 
+def issue_inherited_cleanup(db, sid, guest_id, workflow_id):
+    """Persist a stop issued while its dispatch was live.
+
+    ``begin_guest_cleanup`` now refuses to issue over a live dispatch, so a stop
+    issued by an earlier release is written directly to prove how it is kept.
+    """
+    row = db.get(AgentSession, sid)
+    row.guest_cleanup_id = "inherited-claim"
+    row.guest_cleanup_guest_id = guest_id
+    row.guest_cleanup_workflow_id = workflow_id
+    row.guest_cleanup_dispatch_json = json.dumps(
+        store._guest_cleanup_dispatches(db, guest_id), sort_keys=True
+    )
+    row.guest_cleanup_started_at = datetime.now(timezone.utc)
+    db.add(row)
+    db.commit()
+    return {"claim_id": row.guest_cleanup_id, "guest_id": guest_id}
+
+
 def test_changed_dispatch_cannot_inherit_an_issued_cleanup(database, monkeypatch):
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
     sid = queue(database)
     guest_id = f"guest-{sid}"
     assert store.claim_pending_message_for_session_sync(sid, "original-owner") == 1
@@ -379,7 +384,7 @@ def test_changed_dispatch_cannot_inherit_an_issued_cleanup(database, monkeypatch
         row.workflow_id = "original-workflow"
         db.add(row)
         db.commit()
-        claim = store.begin_guest_cleanup(db, sid, guest_id, "original-workflow")
+        claim = issue_inherited_cleanup(db, sid, guest_id, "original-workflow")
         pending = store.get_pending_message(db, sid, 1)
         pending.claimed_by_replica = "newer-owner"
         pending.dispatch_count += 1
@@ -399,7 +404,6 @@ def test_changed_dispatch_cannot_inherit_an_issued_cleanup(database, monkeypatch
 def test_confirmed_cleanup_retires_its_claim_without_settling_new_unknown(
     database, monkeypatch
 ):
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
     sid = queue(database)
     guest_id = f"guest-{sid}"
     assert store.claim_pending_message_for_session_sync(sid, "interrupted-owner") == 1
@@ -409,16 +413,13 @@ def test_confirmed_cleanup_retires_its_claim_without_settling_new_unknown(
         row.workflow_id = "cancelled-without-receipt"
         db.add(row)
         db.commit()
-        claim = store.begin_guest_cleanup(
-            db, sid, guest_id, "cancelled-without-receipt"
-        )
+        claim = issue_inherited_cleanup(db, sid, guest_id, "cancelled-without-receipt")
     assert store.release_pending_message_claim_sync(
         sid, 1, "interrupted-owner", "executor_cancelled", dispatch_count=1
     )
     before = snapshot(database, sid)
     assert before["turns"][0]["stop_reason"] == UNKNOWN_INVOCATION
     assert before["permits"][0]["state"] == "uncertain"
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     with Session(database) as db:
         assert (
             store.begin_guest_cleanup(db, sid, guest_id, "cancelled-without-receipt")
@@ -799,7 +800,7 @@ def test_committed_receipt_and_http_race_never_reinvoke_or_double_settle(
     asyncio.run(asyncio.wait_for(run(), 10))
 
 
-def test_executor_cancellation_before_capture_retains_unknown_and_late_history(
+def test_executor_cancellation_before_capture_holds_and_keeps_late_history(
     database, monkeypatch
 ):
     sid = queue(database)
@@ -822,10 +823,12 @@ def test_executor_cancellation_before_capture_retains_unknown_and_late_history(
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(executor, 3)
             before = snapshot(database, sid)
-            assert before["pending"] == []
-            assert before["turns"][0]["stop_reason"] == UNKNOWN_INVOCATION
+            # The invoke may still complete, so the cancelled turn is held for
+            # recovery rather than settled unknown, and keeps its queued prompt.
+            assert len(before["pending"]) == 1
+            assert before["turns"][0]["stop_reason"] == "response_lost"
             assert before["turns"][0]["cost_usd"] is None
-            assert before["permits"][0]["state"] == "uncertain"
+            assert before["permits"][0]["state"] == "running"
             assert before["session"]["ember_session_id"] == f"guest-{sid}"
             await asyncio.to_thread(
                 result_receipts.capture_result,

@@ -122,7 +122,6 @@ def test_response_lost_hold_accepts_an_unstamped_control_plane_outage(
     monkeypatch, tmp_path
 ):
     engine, schemas = _database(monkeypatch, tmp_path)
-    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "true")
     try:
         with Session(engine) as session:
             agent = store.create_session(session, "cp-outage", "<guest>", "main")

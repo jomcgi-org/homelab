@@ -47,10 +47,6 @@ class ReceiptRejected(ValueError):
         self.status = status
 
 
-def enabled() -> bool:
-    return flag("AGENT_RESULT_RECEIPTS_ENABLED")
-
-
 def meter_enrolled(local_session_id: str, model: str) -> bool:
     """Only explicitly named factory tasks on Astra join the observed canary."""
     parts = local_session_id.split(":")
@@ -66,11 +62,6 @@ def meter_enrolled(local_session_id: str, model: str) -> bool:
         and parts[0] == "factory"
         and parts[1] in tasks
     )
-
-
-def required(local_session_id: str, model: str = "") -> bool:
-    """Metered factory work cannot bypass receipts through the optional flag."""
-    return enabled() or meter_enrolled(local_session_id, model)
 
 
 def _now():

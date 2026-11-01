@@ -49,7 +49,6 @@ def database(tmp_path, monkeypatch):
     )
     for module in (admission, mcp, result_receipts, store, core_db):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "false")
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _sid: None)
     mcp._negative_oracle_verdicts.clear()

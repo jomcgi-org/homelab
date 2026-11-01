@@ -103,8 +103,7 @@ def _never_invoked_live_guest(db, permit, agent, turn, observed, guest_id):
     from factory.execution.models import AgentResultReceipt
 
     if (
-        not result_receipts.enabled()
-        or permit.outcome not in _NO_GUEST_OUTCOMES
+        permit.outcome not in _NO_GUEST_OUTCOMES
         or not isinstance(observed, dict)
         or observed.get("state") not in {"parked", "banked"}
         or not never_invoked_view(observed, guest_id)

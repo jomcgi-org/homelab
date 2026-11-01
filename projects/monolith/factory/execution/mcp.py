@@ -99,11 +99,6 @@ RECEIPT_FENCE_RELEASE_ATTEMPTS = 3
 RECEIPT_FENCE_RELEASE_GAP_SECONDS = 1.0
 
 
-def response_lost_recovery_enabled() -> bool:
-    # One definition, in the store that owns the hold.
-    return store.response_lost_recovery_enabled()
-
-
 def invoke_in_progress(view: object) -> bool:
     """Whether a control-plane session view shows an invoke still running.
 
@@ -969,7 +964,6 @@ async def _execute_pending_message(session_id: int) -> None:
     def _response_lost_eligible() -> bool:
         return bool(
             not response_lost_held
-            and response_lost_recovery_enabled()
             and invocation_record.get("attempted")
             and invocation_record.get("receipt_id")
             and invocation_record.get("guest_id")
@@ -1143,12 +1137,7 @@ async def _execute_pending_message(session_id: int) -> None:
             residency = capacity_wait.handoff_context(row)
             if residency is not None:
                 deliver_kwargs["residency"] = residency
-            from factory.execution import result_receipts
-
-            if result_receipts.required(
-                session_row.local_session_id, session_row.model
-            ):
-                deliver_kwargs["receipt_claim_owner"] = claim_owner
+            deliver_kwargs["receipt_claim_owner"] = claim_owner
             if session_row.repo is not None:
                 deliver_kwargs["repo"] = session_row.repo
                 deliver_kwargs["branch"] = session_row.branch
@@ -1733,8 +1722,6 @@ def _adopt_response_lost_results() -> list[int]:
     that knows it. A turn that declared no artifact, which is every lane
     outside the factory, has nothing to lose and is finished here.
     """
-    if not response_lost_recovery_enabled():
-        return []
     adopted = []
     global _response_lost_sweep_cursor, _response_lost_sweep_ceiling
     if _response_lost_sweep_ceiling == 0:

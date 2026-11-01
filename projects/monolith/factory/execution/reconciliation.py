@@ -901,8 +901,6 @@ def factory_attempt_never_posted(db: Session, identity: dict) -> dict | None:
     from factory.execution import result_receipts
     from factory.execution.models import AgentResultReceipt, PendingMessage
 
-    if not result_receipts.enabled():
-        return None
     agent = db.get(AgentSession, identity["session_id"], populate_existing=True)
     if (
         agent is None

@@ -108,25 +108,6 @@ def prepare(**changes):
     return receipts.prepare_receipt(**(args | changes))
 
 
-def test_factory_meter_requires_receipts_without_enrolling_interactive_sessions(
-    monkeypatch,
-):
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
-    monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "true")
-    monkeypatch.setenv("FACTORY_RUNTIME_METER_TASK_IDS", "task")
-    assert receipts.required("factory:task:node:1", "astra")
-    assert not receipts.required("interactive:one", "astra")
-    assert not receipts.required("factory:another:node:1", "astra")
-    for model in ("opus", "sol", "luna", "spark", ""):
-        assert not receipts.required("factory:task:node:1", model)
-    for scope in ("", "*", "task:node", "task,invalid*"):
-        monkeypatch.setenv("FACTORY_RUNTIME_METER_TASK_IDS", scope)
-        assert not receipts.required("factory:task:node:1", "astra")
-    monkeypatch.setenv("FACTORY_RUNTIME_METER_TASK_IDS", "task")
-    monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "false")
-    assert not receipts.required("factory:task:node:1", "astra")
-
-
 def capture(receipt, body=b'{"result":"native","terminal_reason":"end_turn"}'):
     return receipts.capture_result(receipt["id"], receipt["token"], body)
 
@@ -666,13 +647,6 @@ def test_storage_failure_has_no_ack_or_payload_log(database, monkeypatch, caplog
     assert "RuntimeError" in caplog.text
     with Session(database) as db:
         assert db.get(AgentResultReceipt, receipt["id"]).result_body is None
-
-
-def test_receipt_capture_is_disabled_by_default(monkeypatch):
-    monkeypatch.delenv("AGENT_RESULT_RECEIPTS_ENABLED", raising=False)
-    assert not receipts.enabled()
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
-    assert receipts.enabled()
 
 
 def test_receiver_authenticates_before_reading_body(database):

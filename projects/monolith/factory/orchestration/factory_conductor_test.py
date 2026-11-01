@@ -7085,7 +7085,6 @@ def test_bound_zero_turn_live_view_releases_persisted_absence_fence(
     from factory.orchestration import factory_supervision as supervisor
 
     s = bound_zero_turn_factory
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     receipt = result_receipts.prepare_receipt(
         s.sid,
         "lost-bound-executor",
@@ -7526,7 +7525,6 @@ def test_committed_receipt_wins_before_bound_zero_turn_fence(
     from factory.orchestration import factory_supervision as supervisor
 
     s = bound_zero_turn_factory
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     receipt = result_receipts.prepare_receipt(
         s.sid,
         "lost-bound-executor",
@@ -7579,7 +7577,6 @@ def test_bound_zero_turn_remote_progress_reopens_fenced_receipt(
     from factory.orchestration import factory_supervision as supervisor
 
     s = bound_zero_turn_factory
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     receipt = result_receipts.prepare_receipt(
         s.sid,
         "lost-bound-executor",
@@ -7720,7 +7717,6 @@ def test_bound_zero_turn_fence_rejects_late_receipt_callback(
     from factory.execution.models import AgentResultReceipt
 
     s = bound_zero_turn_factory
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     receipt = result_receipts.prepare_receipt(
         s.sid,
         "lost-bound-executor",
@@ -9001,7 +8997,6 @@ def test_never_invoked_guest_settles_exact_attempt_without_a_stop(
 
     s = uncertain_factory
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     monkeypatch.setenv("FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "true")
     _never_invoked_view(s)
 
@@ -9043,7 +9038,6 @@ def test_never_invoked_guest_evidence_is_staged_off_by_default(
 
     s = uncertain_factory
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     monkeypatch.delenv("FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", raising=False)
     _never_invoked_view(s)
 
@@ -9069,7 +9063,6 @@ def test_never_invoked_guest_evidence_is_staged_off_by_default(
         "malformed_created_at",
         "prepared_receipt",
         "captured_receipt",
-        "receipts_disabled",
         "saved_stop_intent",
     ],
 )
@@ -9081,7 +9074,6 @@ def test_ambiguous_never_invoked_evidence_does_not_permit_retry(
 
     s = uncertain_factory
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     monkeypatch.setenv("FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "true")
     _never_invoked_view(s)
     if change == "invoked":
@@ -9107,9 +9099,6 @@ def test_ambiguous_never_invoked_evidence_does_not_permit_retry(
         _add_receipt(s)
     elif change == "captured_receipt":
         _add_receipt(s, captured=True)
-    elif change == "receipts_disabled":
-        # Without receipts the local ledger cannot prove the POST never left.
-        monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
     else:
         with controls._locked_session() as (db, control):
             identity, _run = supervisor._locked_attempt(
@@ -15936,10 +15925,9 @@ def test_lost_before_guest_proof_reads_the_exact_dispatch_identity(
     assert s.native_snapshot() == s.native_snapshot()
 
 
-@pytest.mark.parametrize("response_lost_recovery", [False, True])
 @pytest.mark.parametrize("historical", [False, True])
 def test_lost_before_guest_settles_failed_and_refunds_the_reservation(
-    lost_before_guest_factory, monkeypatch, historical, response_lost_recovery
+    lost_before_guest_factory, monkeypatch, historical
 ):
     import json
     from sqlmodel import Session, select
@@ -15951,10 +15939,6 @@ def test_lost_before_guest_settles_failed_and_refunds_the_reservation(
     from factory.orchestration import factory_controls as controls
 
     s = lost_before_guest_factory
-    monkeypatch.setenv(
-        "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
-        str(response_lost_recovery).lower(),
-    )
     if historical:
         _persist_uncertain_lost_before_guest(s)
     before = controls.task_snapshot(s.task["id"])
@@ -16004,9 +15988,8 @@ def test_lost_before_guest_settles_failed_and_refunds_the_reservation(
     assert s.native_snapshot() == settled_native
 
 
-@pytest.mark.parametrize("response_lost_recovery", [False, True])
 def test_lost_before_guest_settlement_is_inert_while_the_flag_is_off(
-    lost_before_guest_factory, monkeypatch, response_lost_recovery
+    lost_before_guest_factory, monkeypatch
 ):
     from sqlmodel import Session, select
     from factory.execution.models import AgentCapacityReservation
@@ -16014,10 +15997,6 @@ def test_lost_before_guest_settlement_is_inert_while_the_flag_is_off(
 
     s = lost_before_guest_factory
     monkeypatch.setenv("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "false")
-    monkeypatch.setenv(
-        "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
-        str(response_lost_recovery).lower(),
-    )
     _persist_uncertain_lost_before_guest(s)
     before = controls.task_snapshot(s.task["id"])
     native = s.native_snapshot()
@@ -16249,9 +16228,8 @@ def test_lost_before_guest_settlement_revalidates_the_proof(
     assert _stop_events(s) == []
 
 
-@pytest.mark.parametrize("response_lost_recovery", [False, True])
 def test_operator_settle_lost_attempt_releases_one_attempt(
-    lost_before_guest_factory, monkeypatch, response_lost_recovery
+    lost_before_guest_factory, monkeypatch
 ):
     from sqlmodel import Session, select
     from factory.execution.models import AgentCapacityReservation
@@ -16260,10 +16238,6 @@ def test_operator_settle_lost_attempt_releases_one_attempt(
     s = lost_before_guest_factory
     # The operator path is deliberately usable while the reconciler flag is off.
     monkeypatch.setenv("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "false")
-    monkeypatch.setenv(
-        "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
-        str(response_lost_recovery).lower(),
-    )
     _persist_uncertain_lost_before_guest(s)
     settled = controls.settle_lost_attempt(
         s.task["id"], s.run["node_key"], 1, "operator"

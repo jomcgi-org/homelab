@@ -139,7 +139,6 @@ def database(tmp_path, monkeypatch):
         core_db,
     ):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
     monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "false")
     monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     # Dispatch is driven explicitly by the test, using the same pending executor.

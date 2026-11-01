@@ -1764,7 +1764,6 @@ def never_invoked(database, monkeypatch):
 
     SQLModel.metadata.create_all(database, tables=[AgentResultReceipt.__table__])
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     monkeypatch.setenv("AGENT_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "true")
     return database
 
