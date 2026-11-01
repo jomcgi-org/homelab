@@ -137,8 +137,7 @@
       </div>
     </div>
     <div class="links">
-      <a id="after-link">Open after fixture</a
-      ><a id="before-link">Open baseline fixture</a>
+      <a id="after-link">Open after fixture</a>
     </div>
     <p>
       Maps use an invented blank basemap. These images do not establish
@@ -221,14 +220,10 @@
           byId("unavailable").hidden = false;
           byId("status").textContent = byId("unavailable").textContent;
         }
-        for (const [id, target] of [
-          ["after-link", row?.interactive_after],
-          ["before-link", row?.interactive_before],
-        ]) {
-          byId(id).hidden = !target;
-          if (target) byId(id).href = target;
-          else byId(id).removeAttribute("href");
-        }
+        const target = row?.interactive_after;
+        byId("after-link").hidden = !target;
+        if (target) byId("after-link").href = target;
+        else byId("after-link").removeAttribute("href");
         await new Promise(requestAnimationFrame);
         frame.scrollTo(position[0], position[1]);
         window.scrollTo(position[2], position[3]);

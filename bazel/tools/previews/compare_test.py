@@ -123,11 +123,12 @@ class CompareTests(unittest.TestCase):
         for side, sha in (("head", HEAD), ("before", BASE)):
             if side == "before" and not baseline:
                 continue
-            artifact = root / (side + "-artifact")
-            artifact.mkdir()
-            (artifact / "index.html").write_bytes(
-                suite.page("Synthetic demo", "Invented data")
-            )
+            if side == "head":
+                artifact = root / "head-artifact"
+                artifact.mkdir()
+                (artifact / "index.html").write_bytes(
+                    suite.page("Synthetic demo", "Invented data")
+                )
             evidence = root / "evidence" / side / name
             evidence.mkdir(parents=True)
             for filename in suite.expected_captures(name):
@@ -148,7 +149,6 @@ class CompareTests(unittest.TestCase):
         return compare.assemble(
             root / "site",
             root / "head-artifact",
-            root / "before-artifact",
             root / "evidence",
             HEAD,
             BASE,
@@ -171,6 +171,7 @@ class CompareTests(unittest.TestCase):
             self.assertIn(
                 "Screenshot comparison", (root / "site/index.html").read_text()
             )
+            self.assertFalse((root / "site/before").exists())
 
     def test_absent_owner_harness_has_no_fake_before_image(self):
         with tempfile.TemporaryDirectory() as directory:

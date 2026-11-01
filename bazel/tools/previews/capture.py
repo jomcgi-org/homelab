@@ -450,7 +450,6 @@ def comparison_height_regression(output):
                     "before_dimensions": {"width": 390, "height": 1000},
                     "identical": False,
                     "interactive_after": None,
-                    "interactive_before": None,
                 }
             ],
         }
