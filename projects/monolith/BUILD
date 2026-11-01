@@ -7226,6 +7226,7 @@ py_test(
 py_test(
     name = "faas_workload_test",
     srcs = ["faas/workload_test.py"],
+    data = ["//projects:embervm/crd/samples/workload-echo-fn.yaml"],
     imports = ["."],
     deps = [
         ":pkg_faas",

@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -140,9 +141,11 @@ def test_load_config_rejects_unknown_axes(tmp_path):
 def test_repo_index_yaml_loads():
     from pathlib import Path
 
-    path = Path(__file__).resolve().parent.parent / "index.yaml"
-    if not path.exists():
-        pytest.skip("index.yaml is not a runfile under Bazel")
+    if "TEST_SRCDIR" in os.environ:
+        path = Path(os.environ["TEST_SRCDIR"]) / "_main/projects/model-bench/index.yaml"
+    else:
+        path = Path(__file__).resolve().parent.parent / "index.yaml"
+    assert path.is_file(), f"Repository index config missing: {path}"
     cfg = load_config(path)
     assert set(cfg.roles) == {"planner", "implementer", "reviewer"}
 
