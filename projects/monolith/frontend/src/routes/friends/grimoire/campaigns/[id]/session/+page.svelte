@@ -20,7 +20,7 @@
   import KnowledgeDrawer from "$lib/grimoire/KnowledgeDrawer.svelte";
   import KnowledgeSearch from "$lib/grimoire/KnowledgeSearch.svelte";
   import ReadAloud from "$lib/grimoire/ReadAloud.svelte";
-  import { presetSpeakers } from "$lib/grimoire/read-aloud.js";
+  import { FREE_LABEL, presetSpeakers } from "$lib/grimoire/read-aloud.js";
   import VoicePresets from "$lib/grimoire/VoicePresets.svelte";
   import TurnStrip from "$lib/grimoire/TurnStrip.svelte";
   import YourTurnBanner from "$lib/grimoire/YourTurnBanner.svelte";
@@ -76,6 +76,12 @@
   });
   let turnEntries = $derived(turnOrder?.entries || []);
   let ownCharacterIds = $derived(state.characters.map((row) => row.id));
+  let speakers = $derived(presetSpeakers(state.voices || []));
+  // A deleted preset leaves the picker; fall back rather than keep its key.
+  $effect(() => {
+    const options = ["narrator", ...speakers.map((row) => row.key), FREE_LABEL];
+    if (!options.includes(speakerKey)) speakerKey = "narrator";
+  });
   const endpoint = () =>
     `/grimoire/campaigns/${state.campaign.id}/session/state`;
 
@@ -227,7 +233,7 @@
       audience,
       replyTo,
       resolved,
-      speakerKey: speakerKey === "custom" ? speakerLabel.trim() : speakerKey,
+      speakerKey: speakerKey === FREE_LABEL ? speakerLabel.trim() : speakerKey,
     });
     const signature = JSON.stringify({
       sessionId: state.session?.id,
@@ -605,13 +611,13 @@
                 bind:value={speakerKey}
               >
                 <option value="narrator">Narrator</option>
-                {#each presetSpeakers(state.voices || []) as speaker}<option
-                    value={speaker.key}>{speaker.name}</option
+                {#each speakers as speaker}<option value={speaker.key}
+                    >{speaker.name}</option
                   >{/each}
-                <option value="custom">Free label</option>
+                <option value={FREE_LABEL}>Free label</option>
               </select></label
             >
-            {#if speakerKey === "custom"}<label
+            {#if speakerKey === FREE_LABEL}<label
                 >Speaker label <input
                   aria-label="Speaker label"
                   bind:value={speakerLabel}
