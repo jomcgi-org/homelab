@@ -560,6 +560,35 @@ def test_conflict_repair_without_merging_keeps_cap_and_accounting(db, monkeypatc
         assert accounting["committed_cost_usd"] == 2.5
 
 
+def test_declined_conflict_repair_is_named_once_without_refusing_delivery(
+    db, monkeypatch
+):
+    delivered(db, "t-1", 11, 3)
+    policy = {**POLICY, "auto_merge": False}
+    with controls._locked_session() as (session, control):
+        control.policy_json = json.dumps(policy)
+    calls = github(monkeypatch, pulls={3: {**pull(3), "mergeable": False}})
+    # Two refusals request_landing_recovery really returns, the first twice.
+    reasons = iter(["task_paused", "task_paused", "unresolved_execution"])
+    monkeypatch.setattr(
+        landing,
+        "request_landing_recovery",
+        lambda *a, **kw: {"ok": False, "reason": next(reasons)},
+    )
+    before = receipt_state(db, "t-1")
+    for _ in range(3):
+        landing.landing_tick(policy)
+    declined = audits(db, "landing_recovery_declined")
+    assert [row["reason"] for row in declined] == [
+        "task_paused",
+        "unresolved_execution",
+    ]
+    assert declined[0]["pr_number"] == 3
+    assert audits(db, "merge_arm_refused") == []
+    assert receipt_state(db, "t-1") == before
+    assert calls["write"] == calls["graphql"] == []
+
+
 def test_missing_publisher_token_refuses_to_arm_when_enabled(db, monkeypatch):
     from factory import review_publisher
 
