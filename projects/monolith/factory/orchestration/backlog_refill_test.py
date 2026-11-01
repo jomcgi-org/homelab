@@ -41,14 +41,6 @@ _REAL_REFILL_QUOTA = refill.quota
 
 @pytest.fixture
 def world(tmp_path, monkeypatch):
-    from factory.execution import provider_quota
-
-    # Start-time reviewer choice reads the broker; tests start unobserved.
-    monkeypatch.setattr(
-        provider_quota,
-        "fetch_provider_quota_sync",
-        lambda *, force=False: {"available": False},
-    )
     engine = create_engine(
         f"sqlite:///{tmp_path / 'refill.db'}",
         connect_args={"check_same_thread": False, "timeout": 10},
@@ -88,7 +80,10 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(
         refill,
         "quota",
-        lambda model: {"model": model, "checked_at": clock[0].isoformat()},
+        lambda model, *, force=True: {
+            "model": model,
+            "checked_at": clock[0].isoformat(),
+        },
     )
     monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
     policy = controls.validate_policy(
@@ -1053,7 +1048,9 @@ def reviewed_run(world, github, monkeypatch, request):
             refill.latest_event(db, "started", run_id=start["run_id"])
         )
     checked = []
-    monkeypatch.setattr(refill, "quota", lambda model: checked.append(model) or {})
+    monkeypatch.setattr(
+        refill, "quota", lambda model, *, force=True: checked.append(model) or {}
+    )
 
     def reconcile():
         worker.reconcile(
@@ -3310,3 +3307,11 @@ def test_refill_control_accepts_opus_review_evidence_unless_hourly(
     assert set(p["subscription"]) == {"opus"}
     with pytest.raises(ValueError, match="refill_subscription_unavailable"):
         api.preview(True, "opus", True, 0, "hourly learning needs codex")
+    # observe() requires Astra allowed, so the control must too.
+    update(
+        control_world,
+        allowed_models=["opus"],
+        backlog_refill={"enabled": False, "model": "opus"},
+    )
+    with pytest.raises(ValueError, match="refill_model_not_allowed"):
+        api.preview(True, "opus", False, 0, "astra not allowed")

@@ -253,7 +253,8 @@ def _plan(
             or policy.get("repo") not in controls.enabled_repos(policy)
         ):
             raise ValueError("refill_intake_not_enabled")
-        if not {model, reviewer} <= set(policy.get("allowed_models", [])):
+        # observe() still requires Astra, the primary reviewer.
+        if not {model, "astra", reviewer} <= set(policy.get("allowed_models", [])):
             raise ValueError("refill_model_not_allowed")
     for required in ({model, reviewer} if enabled else set()) | (
         {"astra"} if hourly else set()

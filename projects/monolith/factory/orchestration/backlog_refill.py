@@ -570,14 +570,18 @@ def review_contract(policy):
     for contract in REVIEW_CONTRACTS:
         try:
             quota(contract["model"], force=False)
-        except Exception:  # noqa: BLE001 - unavailable evidence tries the next
+        except ValueError:
             continue
         return contract
     return REVIEW_CONTRACT
 
 
 def quota(model, *, force=True):
-    """Fresh subscription evidence for exactly one role, with no fallback."""
+    """Subscription evidence for exactly one role, with no fallback.
+
+    Dispatch forces a fresh read; the start-time reviewer choice uses the
+    broker's short cache.
+    """
     from factory.execution import offered_models, provider_quota
     from factory.orchestration import model_pool
 
