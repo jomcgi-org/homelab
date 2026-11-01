@@ -39,8 +39,10 @@ from factory.orchestration.factory_controls import (
     finish_task,
 )
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
-from factory.orchestration.factory_landing_release import operator_target
-from factory.orchestration import factory_landing_release as releases
+from factory.orchestration.factory_controls import (
+    operator_landing_target as operator_target,
+)
+from factory.orchestration import factory_controls as controls
 
 logger = logging.getLogger(__name__)
 
@@ -448,12 +450,12 @@ def _deliveries(
                 FactoryReceipt.repo == repo,
                 or_(
                     FactoryReceipt.state.in_(("succeeded", "landing")),
-                    FactoryReceipt.task_id == releases.HANDOFF_TARGET[1],
+                    FactoryReceipt.task_id == controls.OPERATOR_DOCS_HANDOFF_TARGET[1],
                 ),
                 FactoryReceipt.task_id.is_not(None),
                 or_(
                     FactoryReceipt.task_id.not_in(terminal),
-                    FactoryReceipt.task_id == releases.HANDOFF_TARGET[1],
+                    FactoryReceipt.task_id == controls.OPERATOR_DOCS_HANDOFF_TARGET[1],
                 ),
                 # A receipt written before classes existed reads as delivery.
                 or_(
@@ -491,7 +493,10 @@ def _deliveries(
     for row in rows:
         delivery = prs.get(row.task_id)
         if operator_target(row.task_id):
-            delivery = (releases.HANDOFF_TARGET[3], releases.HANDOFF_ACCEPTED_HEAD)
+            delivery = (
+                controls.OPERATOR_DOCS_HANDOFF_TARGET[3],
+                controls.OPERATOR_DOCS_HANDOFF_ACCEPTED_HEAD,
+            )
         if delivery is None:
             continue
         audits = state[row.task_id]
@@ -852,13 +857,14 @@ def _scope_wait(item: dict, reason: str) -> None:
 
 
 def _fence_operator_queue_entry(repo, item):
+    from factory.orchestration import factory_landing_release as releases
     from factory.orchestration.factory_controls import _receipt
 
     try:
         with _locked_session() as (db, control):
             # Re-observe under the same lock as apply. A stale tick must never
             # dequeue a newly authorized head using an older PR snapshot.
-            pr = github_get(repo, f"pulls/{releases.HANDOFF_TARGET[3]}")
+            pr = github_get(repo, f"pulls/{controls.OPERATOR_DOCS_HANDOFF_TARGET[3]}")
             if pr.get("merged") or pr.get("state") != "open":
                 return False
             node_id = pr.get("node_id")
@@ -869,7 +875,9 @@ def _fence_operator_queue_entry(repo, item):
                 return False
             head = pr.get("head", {}).get("sha")
             row = _receipt(db, item["task_id"])
-            refusal = releases.scoped_refusal(db, row, releases.HANDOFF_TARGET[3], head)
+            refusal = releases.scoped_refusal(
+                db, row, controls.OPERATOR_DOCS_HANDOFF_TARGET[3], head
+            )
             if not refusal:
                 refusal = releases.operator_queue_refusal(db, control, row, pr)
             if not refusal:

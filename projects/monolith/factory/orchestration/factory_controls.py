@@ -54,6 +54,23 @@ ESCALATED = "escalated"
 # terminal, because a decision can still return it to the lane, but nothing
 # the server does on its own will move it either.
 _SETTLED = (*_TERMINAL, ESCALATED)
+
+# The approved docs release has an operator owner, never a reopened native DAG.
+OPERATOR_DOCS_HANDOFF_TARGET = (
+    1045,
+    "t-a4702857-5c95-41cd-aa21-415e10bc9355",
+    "jomcgi-org/homelab",
+    7492,
+)
+
+
+OPERATOR_DOCS_HANDOFF_ACCEPTED_HEAD = "7da9676f1bdbae60248de2aefaf911493559f33f"
+
+
+def operator_landing_target(task_id):
+    return task_id == OPERATOR_DOCS_HANDOFF_TARGET[1]
+
+
 GENERATION_RECONCILIATION_LIMIT = 50
 GENERATION_RETIREMENT_ACTOR = "factory:generation-retirement"
 _DELIVERY_BRANCH = re.compile(
@@ -4917,10 +4934,8 @@ def request_landing_recovery(
         raise ValueError("invalid landing recovery source")
     if reason not in ("merge_conflict", "queue_ejection"):
         raise ValueError("invalid landing recovery reason")
-    from factory.orchestration.factory_landing_release import operator_target
-
     with _locked_session(session) as (db, _control):
-        if operator_target(task_id):
+        if operator_landing_target(task_id):
             return {"ok": False, "reason": "operator_landing_ownership"}
         if review_recovery_held(task_id, session=db):
             return {"ok": False, "reason": "review_only_recovery"}

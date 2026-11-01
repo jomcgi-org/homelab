@@ -4909,7 +4909,9 @@ def operator_docs_handoff(database, public_docs_delivery, monkeypatch):
 
     pull, responses = public_docs_delivery
     pull["node_id"] = "PR_7170"
-    monkeypatch.setattr(releases, "HANDOFF_TARGET", (838, "task", "org/repo", 7170))
+    monkeypatch.setattr(
+        controls, "OPERATOR_DOCS_HANDOFF_TARGET", (838, "task", "org/repo", 7170)
+    )
     responses[f"commits/{'a' * 40}/status"] = {
         "sha": "a" * 40,
         "statuses": [
@@ -5143,7 +5145,7 @@ def test_operator_handoff_preview_refuses(
     _, responses, scope = operator_docs_handoff
     if change == "target":
         monkeypatch.setattr(
-            releases, "HANDOFF_TARGET", (1045, "task", "org/repo", 7170)
+            controls, "OPERATOR_DOCS_HANDOFF_TARGET", (1045, "task", "org/repo", 7170)
         )
     if change == "review":
         scope["operator_handoff"]["verdict"] = "reject"
