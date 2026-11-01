@@ -5,41 +5,29 @@
 # digests pinned in the freshly built chart against the ones in the published
 # chart of the same version. If they differ, an image was rebuilt without a
 # chart bump, so the merge would publish nothing and silently not deploy (or
-# fail main's Push images idempotency check). Exit 1 with the exact bump command
-# in that case; exit 0 otherwise.
+# fail main's Push images idempotency check). Exit 1 in that case; exit 0
+# otherwise.
 #
 # This is the same digest-content check push.sh.tpl runs post-merge on main,
 # factored out so it can also run pre-merge on a PR branch and be unit tested
 # with a stubbed helm. It is content-stable (compares manifest digests, not the
 # build-timestamped tags) and reads those digests straight from the chart
 # values, so it needs no registry access and does not require the fresh images
-# to have been pushed. A chart with nothing digest-pinned fails OPEN, but an
-# unpublished version is only "nothing to assert" when this PR itself carries
-# the bump. When
-# origin/main's Chart.yaml claims the SAME unpublished version, main's publish
-# is either still in flight or has failed; that is the state a rebase-merge
-# version collision leaves behind (two PRs claimed the same version, the
-# loser's bump hunks were silently emptied at merge). The guard waits briefly
-# for main's publish to land and then digest-compares; if it never lands, it
-# fails CLOSED rather than let another unverifiable PR merge on top.
+# to have been pushed. A chart with nothing digest-pinned, or a version that is
+# not published yet, fails OPEN.
 #
 # Usage:
 #   HELM=/path/helm REPOSITORY=oci://ghcr.io/... \
-#     check-missed-bump.sh <chart_name> <chart_version> <fresh_chart_tgz> <project_dir>
+#     check-missed-bump.sh <chart_name> <chart_version> <fresh_chart_tgz>
 #
 # Env:
 #   HELM                path to the helm binary (required)
 #   REPOSITORY          OCI chart repository (required), e.g. oci://ghcr.io/jomcgi/homelab/charts
-#   MAIN_CHART_VERSION  the chart version origin/main's Chart.yaml claims
-#                       (optional; empty disables the fail-closed collision path)
-#   PUBLISH_WAIT_TRIES  polls while waiting for main's publish (default 10)
-#   PUBLISH_WAIT_SECS   seconds between polls (default 30)
 set -o errexit -o nounset -o pipefail
 
 CHART_NAME="${1:?chart_name required}"
 CHART_VERSION="${2:?chart_version required}"
 CHART_TGZ="${3:?fresh chart .tgz required}"
-PROJECT_DIR="${4:?project_dir required}"
 
 HELM="${HELM:?HELM env required}"
 REPOSITORY="${REPOSITORY:?REPOSITORY env required}"
@@ -93,43 +81,10 @@ _published() {
 }
 
 # The digest comparison is only meaningful when this version is already
-# published. Unpublished splits two ways on whether origin/main claims it:
-#   - main claims a DIFFERENT version: this PR carries the bump; nothing to
-#     assert (publish happens post-merge).
-#   - main claims the SAME version: the bump came from a main commit whose
-#     publish has not landed. Normally that is a minutes-wide window while
-#     main's Push images runs, so wait for it and then compare digests. If it
-#     never lands, main's publish failed and nothing about this PR can be
-#     verified: fail closed with the fix, instead of merging blind.
+# published.
 if ! _published; then
-	if [[ -n "${MAIN_CHART_VERSION:-}" && "$MAIN_CHART_VERSION" == "$CHART_VERSION" ]]; then
-		TRIES="${PUBLISH_WAIT_TRIES:-10}"
-		SECS="${PUBLISH_WAIT_SECS:-30}"
-		echo "check-missed-bump: ${CHART_NAME} ${CHART_VERSION} matches origin/main but is not in the registry yet; waiting up to $((TRIES * SECS))s for main's publish."
-		PUBLISHED=""
-		for _ in $(seq 1 "$TRIES"); do
-			sleep "$SECS"
-			if _published; then
-				PUBLISHED=1
-				break
-			fi
-		done
-		if [[ -z "$PUBLISHED" ]]; then
-			{
-				echo "ERROR: origin/main pins ${CHART_NAME} ${CHART_VERSION} but that version is not in the registry."
-				echo "Main's chart publish is still running or has FAILED (check the latest main 'Push images' run)."
-				echo "This PR does not bump the chart, so its images cannot be verified against a published baseline."
-				echo ""
-				echo "If this PR rebuilds any image the chart pins, bump in this PR:"
-				echo "  bazel/tools/git/bump-chart.sh ${PROJECT_DIR}"
-				echo "Otherwise re-run this check once main's Push images is green."
-			} >&2
-			exit 1
-		fi
-	else
-		echo "check-missed-bump: ${CHART_NAME} ${CHART_VERSION} is not published yet (this PR carries the bump); nothing to check."
-		exit 0
-	fi
+	echo "check-missed-bump: ${CHART_NAME} ${CHART_VERSION} is not published yet (this PR carries the bump); nothing to check."
+	exit 0
 fi
 
 FRESH_DIGESTS=$(_image_digests "$CHART_TGZ") || FRESH_DIGESTS=""
@@ -150,11 +105,7 @@ if [[ "$FRESH_DIGESTS" != "$PUB_DIGESTS" ]]; then
 		echo "Which images differ (< published, > freshly built):"
 		diff <(printf '%s\n' "$PUB_DIGESTS") <(printf '%s\n' "$FRESH_DIGESTS") | sed 's/^/  /' || true
 		echo ""
-		echo "This PR will NOT deploy until the chart version is bumped."
-		echo ""
-		echo "Fix: in a fresh worktree run"
-		echo "  bazel/tools/git/bump-chart.sh ${PROJECT_DIR}"
-		echo "then commit the bump to this PR."
+		echo "The chart content changed, so this version must not be reused."
 	} >&2
 	exit 1
 fi

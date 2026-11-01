@@ -23,6 +23,8 @@ SCRIPT="$(cd "$(dirname "$SCRIPT")" && pwd -P)/$(basename "$SCRIPT")"
 	echo "ERROR: $SCRIPT_REL is not executable" >&2
 	exit 1
 }
+# shellcheck source=bazel/helm/testlib.sh
+source "${SCRIPT%/*}/testlib.sh" || exit 1
 
 TMP="${TEST_TMPDIR:-$(mktemp -d)}"
 REPO="$TMP/repository with space"
@@ -59,32 +61,12 @@ EOF
 chmod +x "$TOOLS/helm" "$TOOLS/bazel"
 
 failures=0
-expect_status() {
-	local description="$1" want="$2" got="$3"
-	if [[ "$want" == "$got" ]]; then
-		echo "PASS: $description"
-	else
-		echo "FAIL: $description, want $want, got $got" >&2
-		failures=$((failures + 1))
-	fi
-}
-
 expect_line() {
 	local description="$1" line="$2" file="$3"
 	if grep -Fxq -- "$line" "$file"; then
 		echo "PASS: $description"
 	else
 		echo "FAIL: $description, missing '$line' in $file" >&2
-		failures=$((failures + 1))
-	fi
-}
-
-expect_contains() {
-	local description="$1" text="$2" file="$3"
-	if grep -Fq -- "$text" "$file"; then
-		echo "PASS: $description"
-	else
-		echo "FAIL: $description, missing '$text' in $file" >&2
 		failures=$((failures + 1))
 	fi
 }

@@ -34,17 +34,13 @@ build --experimental_disk_cache_gc_max_age=30d
 # CI: Disable disk cache (BuildBuddy has limited disk, uses remote cache instead)
 build:ci --disk_cache=
 
-# CI: Use default repository cache location (ephemeral per-runner)
-# Longhorn RWX volumes have I/O errors, BuildBuddy handles remote caching
-
 # rules_python is working to enable this default to avoid dependency on a system interpreter
 # See https://github.com/bazel-contrib/rules_python/issues/3187
 # NB: some tools run py_binary targets even if the user didn't select to add Python to their project
 common --@rules_python//python/config_settings:bootstrap_impl=script
 
 # Enable stamping by default for OCI image tags
-# Local builds: timestamp tag only (via STABLE_IMAGE_TAG)
-# CI builds: timestamp + branch tag (via //bazel/tools/oci:ci_build condition)
+# Local and CI builds: timestamp tag only (via STABLE_IMAGE_TAG)
 common --workspace_status_command=./bazel/tools/workspace_status.sh
 
 # Reproducible apko image digests. apko stamps a wall-clock `created` timestamp
@@ -90,8 +86,6 @@ test --sandbox_default_allow_network=false
 # Measured on the CI Test action: 262 remote executions per run, 64.6s aggregate
 # queue-to-done for 7.0s of real work. Without stamping the same graph executes
 # 0 actions and fully caches, with all 747 tests still passing.
-common:ci --workspace_status_command=./bazel/tools/workspace_status.sh
-common:ci --define=CI=true
 common:ci --repo_env=GHCR_TOKEN
 
 # Fetch external downloads through BuildBuddy's Remote Asset API instead of
@@ -125,7 +119,6 @@ common:ci --noreuse_sandbox_directories
 build:ci --verbose_failures
 build:ci --keep_going=false  # Fail immediately in CI
 build:ci --test_output=errors
-build:ci --test_summary=detailed
 build:ci --build_metadata=ROLE=CI
 
 # BuildBuddy Build Event Service (BES) - Always enabled for observability
@@ -135,7 +128,7 @@ build:ci --bes_backend=grpcs://remote.buildbuddy.io
 # =============================================================================
 # Remote Build Execution (RBE) - Conditionally enabled
 # =============================================================================
-# Import remote execution config when using --config=remote
+# Import remote execution config (the build:ci RBE flags)
 # This allows easy toggling of RBE without modifying this file
 # Note: Authenticate locally with `bb login`. CI uses BuildBuddy runner auth.
 # For manual auth, set API key via --remote_header in user.bazelrc

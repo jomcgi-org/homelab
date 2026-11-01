@@ -23,6 +23,8 @@ SCRIPT="$(cd "$(dirname "$SCRIPT")" && pwd -P)/$(basename "$SCRIPT")"
 	echo "ERROR: $SCRIPT_REL is not executable" >&2
 	exit 1
 }
+# shellcheck source=bazel/helm/testlib.sh
+source "${SCRIPT%/*}/testlib.sh" || exit 1
 
 TMP="${TEST_TMPDIR:-$(mktemp -d)}"
 TOOLS="$TMP/tools"
@@ -61,26 +63,6 @@ make_repo() {
 }
 
 failures=0
-expect_status() {
-	local description="$1" want="$2" got="$3"
-	if [[ "$want" == "$got" ]]; then
-		echo "PASS: $description"
-	else
-		echo "FAIL: $description, want $want, got $got" >&2
-		failures=$((failures + 1))
-	fi
-}
-
-expect_contains() {
-	local description="$1" text="$2" file="$3"
-	if grep -Fq -- "$text" "$file"; then
-		echo "PASS: $description"
-	else
-		echo "FAIL: $description, missing '$text' in $file" >&2
-		failures=$((failures + 1))
-	fi
-}
-
 REPO="$TMP/changed repository"
 make_repo "$REPO"
 printf 'kind: Secret\n' >>"$REPO/projects/alpha/chart/templates/one.yaml"

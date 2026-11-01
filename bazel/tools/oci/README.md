@@ -159,7 +159,6 @@ instead, and the macro appends `_amd64` / `_arm64`. `arm64 = False` with
 | `arm64`              | `True`                                  | Also build the aarch64 variant and an index; callers pass `False` |
 | `tars`               | `None`                                  | Tar layers added to every built platform                         |
 | `multiarch_tars`     | `None`                                  | Tar base names; macro appends `_amd64` / `_arm64`; needs `arm64 = True` |
-| `multiplatform_tars` | `None`                                  | Deprecated. Use `tars` and `multiarch_tars` instead              |
 | `visibility`         | `["//bazel/images:__pkg__"]`            | Visibility of the `.push` target                                 |
 
 Created targets:

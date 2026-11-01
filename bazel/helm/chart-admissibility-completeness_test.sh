@@ -19,6 +19,8 @@ done
 	exit 1
 }
 SCRIPT="$(cd "$(dirname "$SCRIPT")" && pwd -P)/$(basename "$SCRIPT")"
+# shellcheck source=bazel/helm/testlib.sh
+source "${SCRIPT%/*}/testlib.sh" || exit 1
 
 TMP="${TEST_TMPDIR:-$(mktemp -d)}"
 failures=0
@@ -50,26 +52,6 @@ run_check() {
 	local status=$?
 	set -e
 	echo "$status"
-}
-
-expect_status() {
-	local description="$1" want="$2" got="$3"
-	if [[ "$want" == "$got" ]]; then
-		echo "PASS: $description"
-	else
-		echo "FAIL: $description, want $want, got $got" >&2
-		failures=$((failures + 1))
-	fi
-}
-
-expect_contains() {
-	local description="$1" text="$2" file="$3"
-	if grep -Fq -- "$text" "$file"; then
-		echo "PASS: $description"
-	else
-		echo "FAIL: $description, missing '$text' in $file" >&2
-		failures=$((failures + 1))
-	fi
 }
 
 # A platform chart outside both registry lists must fail closed.

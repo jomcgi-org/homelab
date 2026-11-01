@@ -1,7 +1,3 @@
-globals:
-  logging:
-    format: json
-
 # Path-based private ingress. The connection details below are the same on both
 # clusters; each cluster's values file only toggles the two routes on or off.
 #

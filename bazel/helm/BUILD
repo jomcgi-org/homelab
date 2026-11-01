@@ -178,7 +178,10 @@ sh_test(
 sh_test(
     name = "chart_admissibility_completeness_regression_test",
     srcs = ["chart-admissibility-completeness_test.sh"],
-    data = [":chart-admissibility-completeness-test.sh"],
+    data = [
+        ":chart-admissibility-completeness-test.sh",
+        ":testlib.sh",
+    ],
 )
 
 sh_test(
@@ -190,7 +193,10 @@ sh_test(
 sh_test(
     name = "standalone_lint_test",
     srcs = ["lint_test.sh"],
-    data = [":lint.sh"],
+    data = [
+        ":lint.sh",
+        ":testlib.sh",
+    ],
 )
 
 sh_test(
@@ -199,6 +205,7 @@ sh_test(
     args = ["$(rootpath @multitool//tools/helm)"],
     data = [
         ":test.bzl",
+        ":testlib.sh",
         "//projects/platform/cf-ingress-library:chart",
         "//projects/shared/helm/homelab-library/chart",
         "@multitool//tools/helm",
@@ -208,7 +215,10 @@ sh_test(
 sh_test(
     name = "standalone_render_test",
     srcs = ["render_test.sh"],
-    data = [":render.sh"],
+    data = [
+        ":render.sh",
+        ":testlib.sh",
+    ],
 )
 
 sh_test(

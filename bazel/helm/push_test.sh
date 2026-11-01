@@ -8,7 +8,7 @@
 # rendered template directly, because every failure of this feature so far has
 # been in a branch that no test executed.
 #
-# The template is rendered rather than mocked: the seven {{...}} substitutions
+# The template is rendered rather than mocked: the six {{...}} substitutions
 # are plain string replacements, so the code under test is byte for byte what
 # `bazel run` executes. `rlocation` is stubbed to the identity function and the
 # substitutions are absolute paths, which is what makes that possible without a
@@ -73,15 +73,13 @@ setup() {
 	# `helm show chart` exiting 0 is how the template reads "already published".
 	printf '#!/usr/bin/env bash\nexit %s\n' "$([[ "$published" == "yes" ]] && echo 0 || echo 1)" \
 		>"$stubs/helm"
-	printf '#!/usr/bin/env bash\nexit 0\n' >"$stubs/crane"
 	printf '#!/usr/bin/env bash\nexit %s\n' "$([[ "$digests_match" == "yes" ]] && echo 0 || echo 1)" \
 		>"$stubs/check-missed-bump.sh"
 	: >"$stubs/chart.tgz"
-	chmod +x "$stubs"/*.sh "$stubs/helm" "$stubs/crane"
+	chmod +x "$stubs"/*.sh "$stubs/helm"
 
 	sed \
 		-e "s|{{HELM}}|$stubs/helm|" \
-		-e "s|{{CRANE}}|$stubs/crane|" \
 		-e "s|{{CHART_TGZ}}|$stubs/chart.tgz|" \
 		-e "s|{{REPOSITORY}}|oci://example.test/charts|" \
 		-e "s|{{CHART_VERSION_SH}}|$stubs/chart-version.sh|" \

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Push a packaged Helm chart to an OCI registry
-# Template substitutions: {{HELM}}, {{CRANE}}, {{CHART_TGZ}}, {{REPOSITORY}}, {{CHART_VERSION_SH}}, {{CHART_DIR}}, {{CHECK_MISSED_BUMP}}
+# Template substitutions: {{HELM}}, {{CHART_TGZ}}, {{REPOSITORY}}, {{CHART_VERSION_SH}}, {{CHART_DIR}}, {{CHECK_MISSED_BUMP}}
 
 set -o errexit -o nounset -o pipefail
 
@@ -21,7 +21,6 @@ else
 fi
 
 readonly HELM="$(rlocation "{{HELM}}")"
-readonly CRANE="$(rlocation "{{CRANE}}")"
 readonly CHART_TGZ="$(rlocation "{{CHART_TGZ}}")"
 readonly CHECK_MISSED_BUMP="$(rlocation "{{CHECK_MISSED_BUMP}}")"
 REPOSITORY="{{REPOSITORY}}"
@@ -53,8 +52,7 @@ done
 # caller now runs check-missed-bump.sh, which reads the pinned digest out of the
 # chart values and so needs no registry read at all. See the call site for why
 # the registry round trip was unfixable on main (it raced the image pushes in
-# the same multirun and fell open to a warning). CRANE is still resolved above
-# because the PR-side call site passes it through.
+# the same multirun and fell open to a warning).
 
 # _fail_missed_bump lived here. Its manual bump advice no longer applies: with
 # the version computed post-merge there is no bump for a PR to miss.
@@ -176,13 +174,8 @@ if [[ "$CURRENT_BRANCH" == "main" ]]; then
         # place is what wedges ArgoCD into permanent OutOfSync (ADR 011).
         DIGESTS_MATCH="true"
         if [[ -n "$CHECK_MISSED_BUMP" ]] && [[ -f "$CHECK_MISSED_BUMP" ]]; then
-          if [[ -f "${ABS_CHART_DIR}/application.yaml" ]]; then
-            GUARD_PROJECT_DIR="$CHART_DIR"
-          else
-            GUARD_PROJECT_DIR=$(dirname "$CHART_DIR")
-          fi
           if ! env HELM="$HELM" REPOSITORY="$REPOSITORY" \
-            bash "$CHECK_MISSED_BUMP" "$CHART_NAME" "$CHART_VERSION" "$CHART_TGZ" "$GUARD_PROJECT_DIR"; then
+            bash "$CHECK_MISSED_BUMP" "$CHART_NAME" "$CHART_VERSION" "$CHART_TGZ"; then
             DIGESTS_MATCH="false"
           fi
         fi
