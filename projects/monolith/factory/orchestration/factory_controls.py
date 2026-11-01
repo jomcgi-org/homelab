@@ -2826,10 +2826,49 @@ NON_TERMINAL_EFFECTS = ("escape-dismiss",)
 
 
 def issue_body_hash(body: object) -> str:
-    """Hash issue text after collapsing changes that carry no new words."""
+    """Hash issue text after collapsing changes that carry no new words.
+
+    The factory's own generated gate contracts are excluded, ticks inside
+    them included: replacing one rewrites the body without changing anything
+    a person asked, and a card that superseded itself on every rescope was
+    most of the dismissals on the escalations page. Line endings are folded
+    first so a CRLF save from the web editor still parses the block markers.
+    """
+    from factory.orchestration import factory_gate_blocks
+
     text = body if isinstance(body, str) else ""
-    normalized = " ".join(text.split())
-    return hashlib.sha256(normalized.encode()).hexdigest()
+    text = factory_gate_blocks.strip(text.replace("\r\n", "\n").replace("\r", "\n"))
+    return _words_hash(text)
+
+
+def _words_hash(text: str) -> str:
+    return hashlib.sha256(" ".join(text.split()).encode()).hexdigest()
+
+
+def issue_body_hashes(body: object) -> set[str]:
+    """Every hash this body has had: the current rule and the whole-text rule.
+
+    Cards and briefs raised before gate blocks were excluded carry the older
+    hash, so a comparison that only knows the new rule would read every one
+    of them as a changed body once.
+    """
+    text = body if isinstance(body, str) else ""
+    return {issue_body_hash(text), _words_hash(text)}
+
+
+def issue_body_unchanged(stored: object, recorded: object, current: object) -> bool:
+    """Whether the current body still says what the card was raised against.
+
+    The stored hash decides under either rule. The receipt's recorded copy
+    stands in only when no hash was stored or the stored one was taken from
+    that copy, so a body edited after the card and edited back to the
+    admission text is still a change.
+    """
+    if isinstance(stored, str) and stored in issue_body_hashes(current):
+        return True
+    if stored is None or stored in issue_body_hashes(recorded):
+        return issue_body_hash(current) == issue_body_hash(recorded)
+    return False
 
 
 def terminal_effect(effect: str | None) -> bool:
@@ -3308,7 +3347,7 @@ def receipt_operator_direction(db: Session, row: FactoryReceipt) -> dict | None:
         or not answer.get("actor")
         or option is None
         or option.get("effect") != "agent-ready"
-        or brief.get("issue_body_sha256") != issue_body_hash(row.body)
+        or brief.get("issue_body_sha256") not in issue_body_hashes(row.body)
         or _pending_request(db, prior.id)
         or _pending_request(db, row.id)
     ):
