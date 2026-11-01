@@ -402,7 +402,7 @@ class TestSearchNotesWithContext:
         self.session.commit()
 
         public_results = self.store.search_notes_with_context(
-            _QUERY, include_history=True
+            _QUERY, include_history=True, exclude_invalidated=False
         )
         dedupe_results = self.store.search_notes_with_context(
             _QUERY, exclude_invalidated=True
@@ -458,7 +458,9 @@ class TestSearchNotesWithContext:
         filtered = self.store.search_notes_with_context(
             query, limit=1, exclude_invalidated=True
         )
-        unfiltered = self.store.search_notes_with_context(query, limit=1)
+        unfiltered = self.store.search_notes_with_context(
+            query, limit=1, exclude_invalidated=False
+        )
 
         assert [row["note_id"] for row in filtered] == ["disputed-lower"]
         assert [row["note_id"] for row in unfiltered] == ["excluded-top"]
@@ -557,6 +559,7 @@ class TestSearchNotesWithContext:
             [1.0] + [0.0] * 1023,
             scope_filter="repo:jomcgi-org/homelab",
             include_legacy=True,
+            exclude_invalidated=False,
         )
 
         assert {row["note_id"] for row in filtered} == {
