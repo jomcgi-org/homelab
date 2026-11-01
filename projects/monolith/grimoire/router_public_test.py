@@ -260,7 +260,7 @@ def test_list_all_adventures_across_books(client, session):
 
 class TestAdventures:
     def test_list_ordered_with_entity_counts(self, session, client):
-        seed = seed_adventures(session)
+        seed_adventures(session)
         body = client.get("/api/grimoire/books/cm/adventures").json()
         assert [a["name"] for a in body] == [
             "The Joy of Extradimensional Spaces",

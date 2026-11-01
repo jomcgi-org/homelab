@@ -1,11 +1,11 @@
-"""Tests for _wait_for_sidecar() and _start_bot_when_ready() in app.main.
+"""Tests for wait_for_sidecar() and _start_bot_when_ready() in chat.leader.
 
 Covers:
 - Returns immediately when FRONTEND_HEALTH_URL is empty or unset
 - Returns on first try when sidecar responds with a non-5xx status
 - Retries on 5xx responses then succeeds
 - Retries on httpx.HTTPError then succeeds
-- _start_bot_when_ready calls _wait_for_sidecar then bot.start in that order
+- _start_bot_when_ready calls wait_for_sidecar then bot.start in that order
 """
 
 from __future__ import annotations
@@ -19,7 +19,10 @@ import pytest
 # Ensure no valid static directory is set (mirrors other main_* test files)
 os.environ.pop("STATIC_DIR", None)
 
-from app.main import _wait_for_sidecar  # noqa: E402
+from app.main import app  # noqa: E402
+from app.modules_private import ALL_MODULES  # noqa: E402
+from chat.leader import wait_for_sidecar  # noqa: E402
+from framework import start_leader_singletons  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -80,20 +83,20 @@ def _lifespan_patches_no_discord():
 
 @pytest.mark.asyncio
 async def test_wait_for_sidecar_returns_immediately_when_url_empty():
-    """_wait_for_sidecar returns at once when FRONTEND_HEALTH_URL is set to ''."""
+    """wait_for_sidecar returns at once when FRONTEND_HEALTH_URL is set to ''."""
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": ""}):
         # Must not block, raise, or call httpx at all
-        await _wait_for_sidecar()
+        await wait_for_sidecar()
 
 
 @pytest.mark.asyncio
 async def test_wait_for_sidecar_returns_immediately_when_url_unset():
-    """_wait_for_sidecar returns at once when FRONTEND_HEALTH_URL is absent."""
+    """wait_for_sidecar returns at once when FRONTEND_HEALTH_URL is absent."""
     env_without_url = {
         k: v for k, v in os.environ.items() if k != "FRONTEND_HEALTH_URL"
     }
     with patch.dict(os.environ, env_without_url, clear=True):
-        await _wait_for_sidecar()
+        await wait_for_sidecar()
 
 
 @pytest.mark.asyncio
@@ -101,7 +104,7 @@ async def test_wait_for_sidecar_never_calls_httpx_when_url_empty():
     """When FRONTEND_HEALTH_URL is empty, httpx.AsyncClient is never instantiated."""
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": ""}):
         with patch("httpx.AsyncClient") as mock_cls:
-            await _wait_for_sidecar()
+            await wait_for_sidecar()
         mock_cls.assert_not_called()
 
 
@@ -118,7 +121,7 @@ async def test_wait_for_sidecar_returns_immediately_on_200():
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", new_callable=AsyncMock):
-                await _wait_for_sidecar()
+                await wait_for_sidecar()
 
     mock_client.get.assert_called_once()
 
@@ -131,7 +134,7 @@ async def test_wait_for_sidecar_returns_immediately_on_404():
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", new_callable=AsyncMock):
-                await _wait_for_sidecar()
+                await wait_for_sidecar()
 
     mock_client.get.assert_called_once()
 
@@ -144,7 +147,7 @@ async def test_wait_for_sidecar_returns_immediately_on_499():
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", new_callable=AsyncMock):
-                await _wait_for_sidecar()
+                await wait_for_sidecar()
 
     mock_client.get.assert_called_once()
 
@@ -158,7 +161,7 @@ async def test_wait_for_sidecar_does_not_sleep_when_first_response_is_healthy():
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", sleep_mock):
-                await _wait_for_sidecar()
+                await wait_for_sidecar()
 
     sleep_mock.assert_not_called()
 
@@ -177,7 +180,7 @@ async def test_wait_for_sidecar_retries_once_after_500():
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", sleep_mock):
-                await _wait_for_sidecar()
+                await wait_for_sidecar()
 
     assert mock_client.get.call_count == 2
     sleep_mock.assert_called_once_with(2)
@@ -192,7 +195,7 @@ async def test_wait_for_sidecar_retries_on_503():
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", sleep_mock):
-                await _wait_for_sidecar()
+                await wait_for_sidecar()
 
     assert mock_client.get.call_count == 2
     sleep_mock.assert_called_once_with(2)
@@ -209,7 +212,7 @@ async def test_wait_for_sidecar_retries_multiple_5xx_responses():
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", sleep_mock):
-                await _wait_for_sidecar()
+                await wait_for_sidecar()
 
     assert mock_client.get.call_count == 4
     assert sleep_mock.call_count == 3
@@ -224,7 +227,7 @@ async def test_wait_for_sidecar_sleeps_2s_between_5xx_retries():
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", sleep_mock):
-                await _wait_for_sidecar()
+                await wait_for_sidecar()
 
     sleep_mock.assert_called_once_with(2)
 
@@ -247,7 +250,7 @@ async def test_wait_for_sidecar_retries_on_connect_error():
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", sleep_mock):
-                await _wait_for_sidecar()
+                await wait_for_sidecar()
 
     assert mock_client.get.call_count == 2
     sleep_mock.assert_called_once_with(2)
@@ -266,7 +269,7 @@ async def test_wait_for_sidecar_retries_on_read_timeout():
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", sleep_mock):
-                await _wait_for_sidecar()
+                await wait_for_sidecar()
 
     assert mock_client.get.call_count == 2
     sleep_mock.assert_called_once_with(2)
@@ -289,7 +292,7 @@ async def test_wait_for_sidecar_retries_multiple_http_errors():
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", sleep_mock):
-                await _wait_for_sidecar()
+                await wait_for_sidecar()
 
     assert mock_client.get.call_count == 3
     assert sleep_mock.call_count == 2
@@ -312,14 +315,14 @@ async def test_wait_for_sidecar_retries_mixed_errors_and_5xx():
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", sleep_mock):
-                await _wait_for_sidecar()
+                await wait_for_sidecar()
 
     assert mock_client.get.call_count == 3
     assert sleep_mock.call_count == 2
 
 
 # ---------------------------------------------------------------------------
-# _wait_for_sidecar() — URL forwarding and logging
+# wait_for_sidecar(): URL forwarding and logging
 # ---------------------------------------------------------------------------
 
 
@@ -332,7 +335,7 @@ async def test_wait_for_sidecar_passes_correct_url_to_get():
     with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": test_url}):
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", new_callable=AsyncMock):
-                await _wait_for_sidecar()
+                await wait_for_sidecar()
 
     called_url = mock_client.get.call_args.args[0]
     assert called_url == test_url
@@ -347,7 +350,7 @@ async def test_wait_for_sidecar_logs_waiting_message():
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", new_callable=AsyncMock):
                 with patch("chat.leader.logger") as mock_logger:
-                    await _wait_for_sidecar()
+                    await wait_for_sidecar()
 
     messages = [str(c) for c in mock_logger.info.call_args_list]
     assert any("Waiting for frontend sidecar" in m for m in messages)
@@ -362,26 +365,24 @@ async def test_wait_for_sidecar_logs_ready_message():
         with patch("httpx.AsyncClient", return_value=mock_cm):
             with patch("asyncio.sleep", new_callable=AsyncMock):
                 with patch("chat.leader.logger") as mock_logger:
-                    await _wait_for_sidecar()
+                    await wait_for_sidecar()
 
     messages = [str(c) for c in mock_logger.info.call_args_list]
     assert any("Frontend sidecar is ready" in m for m in messages)
 
 
 # ---------------------------------------------------------------------------
-# (5) _start_bot_when_ready calls _wait_for_sidecar then bot.start
+# (5) _start_bot_when_ready calls wait_for_sidecar then bot.start
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_start_bot_when_ready_calls_wait_for_sidecar_before_bot_start():
-    """_start_bot_when_ready awaits _wait_for_sidecar before calling bot.start."""
-    from app.main import _start_singletons, app
-
+    """_start_bot_when_ready awaits wait_for_sidecar before calling bot.start."""
     call_order = []
 
     async def _mock_wait_for_sidecar():
-        call_order.append("_wait_for_sidecar")
+        call_order.append("wait_for_sidecar")
 
     mock_bot = MagicMock()
     mock_bot.close = AsyncMock()
@@ -417,7 +418,7 @@ async def test_start_bot_when_ready_calls_wait_for_sidecar_before_bot_start():
         patches[1],
         patches[2],
     ):
-        await _start_singletons(app)
+        await start_leader_singletons(app, ALL_MODULES)
 
         assert len(captured_bot_coro) == 1, (
             "Expected exactly one bot coroutine captured from create_task"
@@ -425,16 +426,14 @@ async def test_start_bot_when_ready_calls_wait_for_sidecar_before_bot_start():
         # Actually run _start_bot_when_ready to verify sequencing
         await captured_bot_coro[0]
 
-    assert call_order == ["_wait_for_sidecar", "bot.start"], (
-        f"Expected _wait_for_sidecar before bot.start; got: {call_order}"
+    assert call_order == ["wait_for_sidecar", "bot.start"], (
+        f"Expected wait_for_sidecar before bot.start; got: {call_order}"
     )
 
 
 @pytest.mark.asyncio
 async def test_start_bot_when_ready_not_scheduled_when_no_token():
     """When DISCORD_BOT_TOKEN is absent, no bot task (and thus no sidecar wait) is created."""
-    from app.main import _start_singletons, app
-
     created_tasks: list = []
 
     def capture_create_task(coro, **kwargs):
@@ -455,7 +454,7 @@ async def test_start_bot_when_ready_not_scheduled_when_no_token():
         patches[0],
         patches[1],
     ):
-        await _start_singletons(app)
+        await start_leader_singletons(app, ALL_MODULES)
 
     # Ships, pending-message sweep, titles, KG feed, receipt retention, cd probe, quota refresh.
     assert len(created_tasks) == 8, (

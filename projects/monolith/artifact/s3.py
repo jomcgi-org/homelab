@@ -11,10 +11,7 @@ imported lazily inside each function so importing this module never pulls boto3
 into the public app's import closure (app/main_public_imports_test.py).
 """
 
-import logging
 import os
-
-logger = logging.getLogger("monolith.artifact.s3")
 
 # Public-image-safe: a single object key per artifact id. Index naming keeps the
 # door open for multi-file artifacts later without changing the id space.

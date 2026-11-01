@@ -28,8 +28,7 @@ _TYPES = MERGE_TYPES
 _CACHE_CONTROL = "public, max-age=1800, stale-while-revalidate=86400"
 # Declared goals move when the orchestrator declares them, not on a snapshot
 # cadence, so the goals endpoint keeps the same 30-minute shared freshness as
-# the merges snapshot. FACTORY_GOALS_CACHE_CONTROL in
-# frontend/src/lib/cache-headers.js mirrors this; keep the two in sync.
+# the merges snapshot.
 _GOALS_CACHE_CONTROL = "public, max-age=0, s-maxage=1800, stale-while-revalidate=86400"
 # Goal scoring must see every merge the table can possibly hold, not a narrow
 # recency window: merged_prs retains 90 days (app/jobs_main.py

@@ -1613,7 +1613,10 @@ async def test_openrouter_client_extract_self_corrects_once_on_bad_json():
     assert mock_client.post.call_count == 2
 
     second_call_messages = mock_client.post.call_args_list[1][1]["json"]["messages"]
-    assert second_call_messages[0]["content"] == extract.EXTRACTION_PROMPT
+    assert (
+        second_call_messages[0]["content"]
+        == extract.PROMPT_VERSIONS[extract.ACTIVE_PROMPT_VERSION].text
+    )
     assert second_call_messages[1]["content"] == "chunk text"
     assert second_call_messages[2]["role"] == "assistant"
     assert second_call_messages[2]["content"] == "not json"
