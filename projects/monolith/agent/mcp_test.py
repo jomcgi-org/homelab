@@ -374,7 +374,6 @@ async def test_daily_learning_metadata_omits_original_prompt(monkeypatch):
             }
         ],
     )
-    from core.mcp_app import mcp
 
     data = await module.monolith_agent_list_routine_jobs()
     import json

@@ -57,7 +57,6 @@ __all__ = [
     "build_extraction_prompt",
     "build_fact_review_prompt",
     "build_repo_diff_prompt",
-    "current_predicate",
     "defer_audit_if_over_budget",
     "defer_recall",
     "enqueue_extraction",

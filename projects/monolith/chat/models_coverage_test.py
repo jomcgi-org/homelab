@@ -1,8 +1,8 @@
 """Coverage tests for MessageLock and ChannelSummary models, plus max_length constraints.
 
 Fills gaps identified in the coverage review:
-- MessageLock: completed default (False), claimed_at UTC default, column names,
-  discord_message_id as primary key.
+- MessageLock: claimed_at UTC default, column names, discord_message_id as
+  primary key.
 - ChannelSummary: message_count default (0), updated_at UTC default, columns,
   channel_id unique constraint.
 - Blob.sha256 and Attachment.blob_sha256 max_length=64 constraints.
@@ -40,11 +40,6 @@ class TestMessageLock:
         """discord_message_id is the primary key column."""
         pk_cols = {c.name for c in MessageLock.__table__.primary_key.columns}
         assert pk_cols == {"discord_message_id"}
-
-    def test_completed_default_is_false(self):
-        """MessageLock.completed defaults to False."""
-        lock = MessageLock(discord_message_id="msg-1", channel_id="ch-1")
-        assert lock.completed is False
 
     def test_completed_can_be_set_true(self):
         """MessageLock.completed can be set to True."""

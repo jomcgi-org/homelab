@@ -776,9 +776,18 @@ def test_not_invoked_evidence_requires_explicit_dispatch_identity(
 def test_prior_unknown_turn_cannot_be_overwritten_or_settled(database):
     sid = _queue(database, bound=True)
     count = _claim(database, sid)
-    assert store.finish_unknown_pending_sync(
-        sid, 1, "original-executor", count, "executor_cancelled"
-    )
+    with Session(database) as db:
+        assert store.finish_unknown_pending_in_session(
+            db,
+            sid,
+            1,
+            "original-executor",
+            count,
+            "executor_cancelled",
+            expected_guest_id="existing-guest",
+            expected_workflow_id=None,
+        )
+        db.commit()
     before = _snapshot(database, sid)
     assert before["turns"][0]["stop_reason"] == UNKNOWN_INVOCATION
     store.mark_turn_error_sync(
@@ -990,8 +999,6 @@ def test_cancelled_create_without_guest_blocks_next_hour_probe(database, monkeyp
         FactoryControl,
         FactoryReceipt,
         WorkItem,
-        WorkItemEdge,
-        WorkItemEvent,
     )
 
     # Add the factory ledger to the same file-backed execution database.

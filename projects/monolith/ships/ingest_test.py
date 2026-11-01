@@ -20,7 +20,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import ships.ingest as ingest
 from ships.ingest import (
     INITIAL_RECONNECT_DELAY,
     RECONNECT_BACKOFF_FACTOR,

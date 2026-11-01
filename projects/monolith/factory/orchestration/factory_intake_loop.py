@@ -1395,8 +1395,6 @@ def _refill_observation(policy, eligible, complete, lanes, observed_at):
 
 # Re-exported so a caller reading the loop finds the board's view of it here.
 __all__ = [
-    "ACTOR",
-    "CLASS_LABELS",
     "derive_task_class",
     "github_list",
     "intake_state",
