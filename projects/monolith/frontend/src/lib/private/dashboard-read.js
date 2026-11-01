@@ -7,8 +7,8 @@ export const SECTIONS = ["today", "health", "github", "factory"];
 
 /**
  * Refreshes a section may miss before its last good reading is dropped.
- * One missed minute keeps a blip from blanking the page; three says the
- * source is down, and a reading that old is no longer one.
+ * The page spaces refreshes at least 30 seconds apart (60 on its timer), so
+ * one miss is a blip and three are a source down for a minute or more.
  */
 export const STALE_AFTER = 3;
 

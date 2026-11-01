@@ -234,18 +234,44 @@ test("updates at 60 seconds, ages out a dead backend and cleans up", async () =>
   expect(fetch).toHaveBeenCalledTimes(4);
   expect(vi.getTimerCount()).toBe(0);
 });
-test("reads again as soon as the page is visible", async () => {
+test("reads on return to the page, at most every 30 seconds, and stops on unmount", async () => {
   vi.useFakeTimers();
   const next = fixtureData("dashboard").dashboard;
   next.health.scanned = 91;
   const fetch = vi.fn().mockResolvedValue(response(next));
   vi.stubGlobal("fetch", fetch);
+  const visible = () => document.dispatchEvent(new Event("visibilitychange"));
   await render();
-  document.dispatchEvent(new Event("visibilitychange"));
+  // The page just loaded: an immediate return does not read again.
+  visible();
+  await settle();
+  expect(fetch).not.toHaveBeenCalled();
+  // Hidden transitions never read.
+  await vi.advanceTimersByTimeAsync(30000);
+  const state = vi
+    .spyOn(document, "visibilityState", "get")
+    .mockReturnValue("hidden");
+  visible();
+  await settle();
+  expect(fetch).not.toHaveBeenCalled();
+  // A return 30 seconds on reads now; a second return straight after does not.
+  state.mockReturnValue("visible");
+  visible();
   await settle();
   expect(fetch).toHaveBeenCalledTimes(1);
   expect(fetch.mock.calls[0][0]).toBe("/dashboard-data");
   expect(document.body.textContent).toContain("91 workloads scanned");
+  visible();
+  await settle();
+  expect(fetch).toHaveBeenCalledTimes(1);
+  // The listener goes with the page.
+  await unmount(instance);
+  instance = null;
+  await vi.advanceTimersByTimeAsync(30000);
+  visible();
+  await settle();
+  expect(fetch).toHaveBeenCalledTimes(1);
+  state.mockRestore();
 });
 test("task toggle is optimistic, commits success and reverts refusal", async () => {
   let resolve;
