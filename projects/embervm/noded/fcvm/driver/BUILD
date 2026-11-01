@@ -38,6 +38,7 @@ go_library(
         "//projects/embervm/noded/substrate",
         "//projects/embervm/noded/unixsock",
         "//projects/embervm/noded/vsockproto",
+        "//projects/firecracker/substrate/bootenv",
         "@io_opentelemetry_go_otel//:otel",
     ] + select({
         "@rules_go//go/platform:android": [

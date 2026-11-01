@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/bootenv"
 )
 
 // TestServingPortFromCmdline covers extracting the ember.serving_port= value from
@@ -142,13 +144,13 @@ func TestMmdsEnvFromCmdline(t *testing.T) {
 		{"empty value skipped", "ember.env.POSTGRES_PASSWORD=", map[string]string{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mmdsEnvFromCmdline(tc.cmdline)
+			got := bootenv.Decode(tc.cmdline)
 			if len(got) != len(tc.want) {
-				t.Fatalf("mmdsEnvFromCmdline(%q) = %v, want %v", tc.cmdline, got, tc.want)
+				t.Fatalf("bootenv.Decode(%q) = %v, want %v", tc.cmdline, got, tc.want)
 			}
 			for k, v := range tc.want {
 				if got[k] != v {
-					t.Fatalf("mmdsEnvFromCmdline(%q)[%q] = %q, want %q", tc.cmdline, k, got[k], v)
+					t.Fatalf("bootenv.Decode(%q)[%q] = %q, want %q", tc.cmdline, k, got[k], v)
 				}
 			}
 		})
