@@ -5,6 +5,7 @@
   import {
     claimReload,
     dropDraft,
+    expiryCheck,
     keepDraft,
     signInExpired,
     takeDraft,
@@ -121,10 +122,16 @@
     speakerLabel,
   });
 
+  const viewer = () => ({ id: state.user?.id, role: state.campaign.role });
+  const expiry = expiryCheck();
+
   // Only a full page load can pass the login again, so keep the composer and
   // reload. If this tab reloaded within the last minute, stop and ask instead.
+  // While a send is in flight, wait for the next poll: a message that landed
+  // must not come back as a draft and be sent twice.
   function expired() {
-    const kept = keepDraft(state.campaign.id, composer());
+    if (busy) return;
+    const kept = keepDraft(state.campaign.id, viewer(), composer());
     if (claimReload()) return location.reload();
     connection = "Signed out";
     signedOut = kept
@@ -132,9 +139,15 @@
       : "Signed out. Copy your draft, then reload to continue.";
   }
 
+  // A 401 or login redirect shows Reconnecting until a later one confirms it.
+  function signInSignal() {
+    if (!signedOut) connection = "Reconnecting";
+    if (expiry.signal()) expired();
+  }
+
   // While signed out, keep the stored composer current for a manual reload.
   $effect(() => {
-    if (signedOut) keepDraft(state.campaign.id, composer());
+    if (signedOut) keepDraft(state.campaign.id, viewer(), composer());
   });
 
   async function refresh() {
@@ -146,7 +159,8 @@
             : ""),
         { redirect: "manual" },
       );
-      if (signInExpired(response)) return expired();
+      if (signInExpired(response)) return signInSignal();
+      expiry.reset();
       const next = await response.json();
       if (!response.ok) throw new Error(next.error);
       state = next;
@@ -160,6 +174,9 @@
     }
   }
 
+  const interrupted =
+    "Connection interrupted. Your draft is saved. Retry Send to confirm this message.";
+
   async function act(input) {
     if (busy) return;
     busy = true;
@@ -171,7 +188,14 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ sessionId: state.session?.id, ...input }),
       });
-      if (signInExpired(response)) return expired();
+      // Nothing was saved. busy is still set, so a confirmed expiry waits for
+      // the next poll.
+      if (signInExpired(response)) {
+        signInSignal();
+        if (!signedOut) failure = interrupted;
+        return;
+      }
+      expiry.reset();
       const result = await response.json();
       if (!response.ok) throw new Error(result.error);
       if (
@@ -188,7 +212,7 @@
     } catch (error) {
       failure =
         error instanceof TypeError
-          ? "Connection interrupted. Your draft is saved. Retry Send to confirm this message."
+          ? interrupted
           : error.message || "Could not send. Your draft is saved; try again.";
     } finally {
       busy = false;
@@ -291,7 +315,7 @@
   }
 
   onMount(() => {
-    const kept = takeDraft(state.campaign.id, {
+    const kept = takeDraft(state.campaign.id, viewer(), {
       dm,
       characters: state.characters,
       npcs: state.npcs,

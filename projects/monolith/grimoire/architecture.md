@@ -778,11 +778,18 @@ Sign-in renews in place. The gateway requests `offline_access`, which the
 provider maps, so Authentik issues a refresh token and Envoy renews the
 one-hour tokens on the first request after they expire. The provider rotates a
 refresh token only in its last day, so two requests renewing together do not
-revoke each other. When renewal fails, a fetch (`Sec-Fetch-Mode: cors`) gets a
-401 and a navigation still redirects to the login. The BFF state endpoint also
-answers 401 for a missing or rejected token. On a 401 or a login redirect, the
-session page keeps the composer and its audience in the tab's `sessionStorage`
-and reloads at most once a minute; within that minute it shows a signed-out
-notice. A restored draft never widens its audience. The live check remains:
-hold a real login past the access-token lifetime and confirm the session stays
-Live without a reload.
+revoke each other. With refresh tokens, ending a friend's Authentik session or
+editing the application's policies no longer signs them out of Grimoire; to
+cut someone off, deactivate their Authentik account, which deletes their
+refresh tokens, or remove them from the campaign. When renewal fails, a fetch
+(`Sec-Fetch-Mode: cors`) gets a 401 and a navigation still redirects to the
+login. The BFF state endpoint also answers 401 for a missing or rejected token.
+A single 401 or login redirect can be transient, so the session page shows
+Reconnecting and treats it as expiry only when another one arrives at least
+two seconds later with no other answer between them. Then, once no send is in
+flight, it keeps the composer, its audience and the viewer's user id and role
+in the tab's `sessionStorage` and reloads at most once a minute; within that
+minute it shows a signed-out notice. A restored draft never widens its
+audience, and a draft kept for another viewer is dropped. The live check
+remains: hold a real login past the access-token lifetime and confirm the
+session stays Live without a reload.
