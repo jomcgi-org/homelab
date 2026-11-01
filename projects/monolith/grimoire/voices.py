@@ -48,20 +48,27 @@ class DmVoiceView(VoiceView):
     speaker_name: str | None = None
 
 
-def validate_speaker_key(session: Session, campaign_id: str, key: object) -> str:
-    """Validate and canonicalize a key after the caller's campaign access check."""
+def _canonical_key(key: object) -> tuple[str, bool]:
+    """Canonical key and whether it is an entity id, without any lookup."""
     if not isinstance(key, str) or key.startswith("ref:"):
         raise HTTPException(422, "invalid speaker key")
     try:
-        entity_id = str(UUID(key))
+        return str(UUID(key)), True
     except ValueError:
         # Dot-only labels are rejected: "/voices/.." normalizes to another path.
         valid = re.fullmatch(r"[A-Za-z0-9 _'.-]{1,64}", key) is not None
         if not valid or not key.strip("."):
             raise HTTPException(422, "invalid speaker key") from None
+        return key, False
+
+
+def validate_speaker_key(session: Session, campaign_id: str, key: object) -> str:
+    """Validate and canonicalize a key after the caller's campaign access check."""
+    key, is_entity = _canonical_key(key)
+    if not is_entity:
         return key
     entity = session.exec(
-        select(Entity).where(Entity.id.in_((entity_id, entity_id.upper())))
+        select(Entity).where(Entity.id.in_((key, key.upper())))
     ).first()
     if (
         entity is None
@@ -69,7 +76,7 @@ def validate_speaker_key(session: Session, campaign_id: str, key: object) -> str
         or not entity_belongs_to_campaign(session, campaign_id, entity)
     ):
         raise HTTPException(404, "NPC not found in campaign")
-    return entity_id
+    return key
 
 
 def speaker_ref(campaign_id: str, key: str) -> str:
@@ -161,7 +168,9 @@ def upsert_voice(
 
 
 def delete_voice(session: Session, campaign_id: str, key: str) -> None:
-    key = validate_speaker_key(session, campaign_id, key)
+    # Only the stored row is checked, so a preset whose NPC has left the
+    # campaign can still be deleted.
+    key, _ = _canonical_key(key)
     row = _find_voice(session, campaign_id, key)
     if row is None:
         raise HTTPException(404, "voice not found")

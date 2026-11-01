@@ -271,6 +271,24 @@ def test_dm_voice_names_skip_npcs_outside_the_campaign(setup):
     assert row["speaker_name"] is None
 
 
+def test_dm_can_delete_a_preset_whose_npc_left_the_campaign(setup):
+    client, h = setup
+    foreign = h.rows["foreign"]
+    row = CampaignVoice(campaign_id=h.rows["campaign"].id, speaker_key=foreign.id)
+    h.session.add(row)
+    h.session.commit()
+    row_id = row.id
+    # Saving it still needs the NPC in the campaign; removing it does not.
+    response = client.put(path(h, foreign.id), headers=h.headers("dm"), json={})
+    assert response.status_code == 404, response.text
+    response = client.delete(path(h, foreign.id), headers=h.headers("dm"))
+    assert response.status_code == 204, response.text
+    h.session.expire_all()
+    assert h.session.get(CampaignVoice, row_id) is None
+    response = client.delete(path(h, str(uuid4())), headers=h.headers("dm"))
+    assert response.status_code == 404, response.text
+
+
 @pytest.mark.parametrize("viewer", ["player_a", "player_b", "no_character"])
 @pytest.mark.parametrize("method", ["PUT", "DELETE"])
 def test_players_cannot_write_voice_map(setup, viewer, method):
