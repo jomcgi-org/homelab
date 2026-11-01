@@ -1663,13 +1663,13 @@ defmodule Embervm.SessionManager do
   defp validate_restore_lineage(_state, nil, _workload, _principal), do: {:ok, nil}
 
   defp validate_restore_lineage(state, restore_lineage, workload, principal) do
-    with {:ok, holder} <- validate_restore_holder(state, restore_lineage, workload, principal),
-         :ok <- SessionStore.session_restore_allowed(state.session_store, restore_lineage) do
-      {:ok, holder}
-    else
-      {:error, :recovery_fenced} -> {:error, :lineage_recovery_fenced}
-      {:error, :unknown_lineage} -> {:error, :unknown_lineage}
-      _ -> {:error, :lineage_recovery_store_unavailable}
+    with {:ok, holder} <- validate_restore_holder(state, restore_lineage, workload, principal) do
+      case SessionStore.session_restore_allowed(state.session_store, restore_lineage) do
+        :ok -> if is_nil(Map.get(holder, :recovery_fence)), do: {:ok, holder}, else: {:error, :lineage_recovery_fenced}
+        {:error, :recovery_fenced} -> {:error, :lineage_recovery_fenced}
+        {:error, :unknown_lineage} -> {:error, :unknown_lineage}
+        _ -> {:error, :lineage_recovery_store_unavailable}
+      end
     end
   end
 
@@ -1689,7 +1689,6 @@ defmodule Embervm.SessionManager do
 
       {:ok, %{state: session_state} = holder} ->
         cond do
-          not is_nil(Map.get(holder, :recovery_fence)) -> {:error, :lineage_recovery_fenced}
           unresolved_residency_lineage?(state, restore_lineage) -> {:error, :lineage_restore_in_flight}
           SessionState.terminal?(session_state) -> {:ok, holder}
           true -> {:error, :lineage_live_heir}
