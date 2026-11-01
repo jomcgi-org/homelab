@@ -69,6 +69,78 @@ defmodule Embervm.SessionCessationEvidence do
     _ -> {:error, :historical_malformed_history, diagnostics()}
   end
 
+  # Same bounded snapshot semantics, but the recovery caller separately checks
+  # an exact retained terminal row and seals its restore authority. A final
+  # fence audit is not a lifecycle event and must exactly match the projection.
+  # The original history digest deliberately excludes that one audit so a lost
+  # apply response can be reconciled with the original preview.
+  def recovery_history(query, dialect, decode, session_id, expected, principal) do
+    with true <- expected?(expected) and string?(session_id),
+         :ok <- authorize_history(query, dialect, session_id, principal),
+         {:ok, marker_rows} <-
+           query.("SELECT value FROM meta WHERE key = #{arg(dialect, 1)}", [
+             "compacted_through_seq"
+           ]),
+         {:ok, marker} <- marker(marker_rows),
+         {:ok, rows} <-
+           bounded_ops(
+             query,
+             dialect,
+             "session_id = #{arg(dialect, 1)}",
+             [session_id],
+             @history_limit,
+             @history_bytes
+           ),
+         {:ok, original, audit} <- split_recovery_audit(rows, decode),
+         {:ok, proof} <-
+           history(original, decode, session_id, marker, expected, principal, :recovery),
+         true <- proof.interrupted and proof.dispatch_id == expected.dispatch_id,
+         {:ok, creations} <-
+           bounded_ops(
+             query,
+             dialect,
+             "kind = 'session_created' AND seq >= #{arg(dialect, 1)}",
+             [proof.first_seq],
+             @creation_limit,
+             @creation_bytes
+           ),
+         :ok <- no_successor(creations, decode, proof),
+         {:ok, []} <- query.(residency_sql(dialect), [session_id, proof.vm_id]) do
+      {:ok, Map.merge(proof, %{creation_history_complete: true, recovery_audit: audit})}
+    else
+      {:error, reason, detail} -> {:error, reason, Map.merge(diagnostics(), detail)}
+      {:ok, [_ | _]} -> {:error, :historical_current_owner, diagnostics()}
+      false -> {:error, :recovery_identity_mismatch, diagnostics()}
+      _ -> {:error, :historical_store_unavailable, diagnostics()}
+    end
+  rescue
+    _ -> {:error, :historical_malformed_history, diagnostics()}
+  end
+
+  defp split_recovery_audit(rows, decode) do
+    case List.last(rows) do
+      [seq, ts, owner, workload, id, "session_recovery_fenced", bytes] ->
+        original = Enum.drop(rows, -1)
+
+        audit = %{
+          seq: seq,
+          ts: ts,
+          principal: owner,
+          workload: workload,
+          session_id: id,
+          payload: decoded(decode, bytes)
+        }
+
+        {:ok, original, audit}
+
+      _ when length(rows) < @history_limit ->
+        {:ok, rows, nil}
+
+      _ ->
+        {:error, :historical_history_bound, %{}}
+    end
+  end
+
   defp diagnostics, do: %{history_complete: false, creation_history_complete: false}
   defp arg(:postgres, n), do: "$#{n}"
   defp arg(:sqlite, n), do: "?#{n}"
@@ -107,10 +179,12 @@ defmodule Embervm.SessionCessationEvidence do
     end
   end
 
-  defp history([], _decode, _session_id, _marker, _expected, _principal),
+  defp history(rows, decode, session_id, marker, expected, principal, mode \\ :historical)
+
+  defp history([], _decode, _session_id, _marker, _expected, _principal, _mode),
     do: {:error, :historical_history_missing, %{}}
 
-  defp history(rows, decode, session_id, marker, expected, principal) do
+  defp history(rows, decode, session_id, marker, expected, principal, mode) do
     with [first | rest] <- rows,
          [seq, ts, owner, workload, ^session_id, "session_created", payload] <- first,
          true <- integer?(seq) and seq > marker and integer?(ts),
@@ -132,6 +206,12 @@ defmodule Embervm.SessionCessationEvidence do
         last_seq: seq,
         last_ts: ts,
         invoke_started_at: nil,
+        dispatch_id: nil,
+        expected_dispatch_id: if(mode == :recovery, do: expected.dispatch_id),
+        allowed_evictions:
+          if(mode == :recovery, do: ["idle_ttl", "node_gone"], else: ["idle_ttl"]),
+        interrupted: false,
+        interrupted_identity: nil,
         last_invoke_at: nil,
         parking: false,
         parked: false,
@@ -215,19 +295,38 @@ defmodule Embervm.SessionCessationEvidence do
        ) do
     # One dispatch only. Older records without the later dispatch_id field are
     # identified by the original guest, original VM and monotonic start stamp.
-    if payload["turn_seq"] == 1,
-      do: {:ok, %{state | invoke_started_at: ts}},
-      else: {:error, :historical_multiple_dispatches}
+    if payload["turn_seq"] == 1 and
+         (is_nil(state.expected_dispatch_id) or
+            payload["dispatch_id"] == state.expected_dispatch_id),
+       do: {:ok, %{state | invoke_started_at: ts, dispatch_id: payload["dispatch_id"]}},
+       else: {:error, :historical_multiple_dispatches}
   end
 
   defp transition(
          "session_invoked",
-         _payload,
+         payload,
          ts,
          %{state: "running", last_invoke_at: nil, invoke_started_at: started} = state
        )
-       when is_integer(started) and ts >= started,
-       do: {:ok, %{state | last_invoke_at: ts}}
+       when is_integer(started) and ts >= started do
+    marker = payload["interrupted_turn"]
+
+    interrupted =
+      is_map(marker) and marker["seq"] == 1 and
+        marker["dispatch_id"] == state.dispatch_id and string?(marker["cli_session_id"]) and
+        is_binary(marker["transcript_path"]) and byte_size(marker["transcript_path"]) in 1..4096
+
+    if is_nil(state.expected_dispatch_id) or interrupted,
+      do:
+        {:ok,
+         %{
+           state
+           | last_invoke_at: ts,
+             interrupted: interrupted,
+             interrupted_identity: if(interrupted, do: marker)
+         }},
+      else: {:error, :recovery_interruption_unavailable}
+  end
 
   defp transition(
          "session_parking",
@@ -248,19 +347,23 @@ defmodule Embervm.SessionCessationEvidence do
 
   defp transition(
          "session_evicted",
-         %{"reason" => "idle_ttl"},
+         %{"reason" => reason},
          ts,
          %{state: "parked", parked: true} = state
-       ),
-       do:
-         {:ok,
-          %{
-            state
-            | state: "evicted",
-              preceding_state: "parked",
-              terminal_reason: "idle_ttl",
-              updated_at: ts
-          }}
+       ) do
+    if reason in state.allowed_evictions do
+      {:ok,
+       %{
+         state
+         | state: "evicted",
+           preceding_state: "parked",
+           terminal_reason: reason,
+           updated_at: ts
+       }}
+    else
+      {:error, :historical_unsupported_transition}
+    end
+  end
 
   defp transition(_kind, _payload, _ts, _state), do: {:error, :historical_unsupported_transition}
 

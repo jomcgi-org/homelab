@@ -806,6 +806,34 @@ its dead owner. The restart regression covers that distinction; the proof does
 not assert that every orphan RPC has stopped. Consumers must retain their own
 freshness, exact ownership, audited authorization and unknown-outcome fences.
 
+**Retained-session recovery fencing.** The private factory recovery workflow
+uses management-authenticated `POST /v1/sessions/:id/recovery-fence`, restricted
+to the retained principal without a session-token or admin substitution. Preview
+binds a request key to generation zero, one exact dispatch and its interrupted
+turn marker, positive `idled` parking, and `idle_ttl` or `node_gone` eviction.
+Complete bounded original/creation history and fresh durable/hot ownership checks
+must exclude every successor, residency alias and dispatch-capable pending
+restore; tracked handoff exports also refuse. Missing evidence fails closed.
+
+Apply repeats those checks under the serialized manager and compares the exact
+preview digest in one backend transaction. It appends `session_recovery_fenced`
+and writes only immutable `sessions.recovery_fence_json`; original state,
+timestamps, interruption and usage remain unchanged. An identical request can
+read back a fresh proof after a lost response. A changed key, identity, history,
+claim or digest cannot reuse the fence as recovery authority. Freshness and the
+fenced flag are excluded from the stable preview digest.
+
+**Why.** A retained terminal row remains eligible for workspace restoration, so
+proof of prior physical cessation alone cannot safely authorize retry. Restore
+admission now reads the durable fence on every restoring create, including after
+an uncertain apply, and fails closed on unavailable storage. The field survives
+restart; after ordinary projection pruning, the missing durable holder refuses
+as `unknown_lineage` even if ETS still has the old row. The fence never fabricates
+an invocation result or recreates a missing native receipt. It shares the existing
+single-writer deployment assumption. Orphan non-dispatching export RPCs may finish
+uploading bytes, but cannot restore the fenced lineage or authorize execution;
+the proof makes no assertion that all resource RPCs have ceased.
+
 **Why.** A control-plane restart during an interruptible bank could leave a
 benign generation advance indistinguishable from an unauthorized one, forcing
 quarantine (ADR embervm/017). A live-volume timer snapshot was rejected because

@@ -464,6 +464,16 @@ complete retained successor coverage and no remaining restore authority. Monolit
 binds that proof to local lineage ownership, preview digest and audited replay;
 incomplete history remains fenced. See [learning reconciliation](factory/orchestration/FACTORY.md#settled-learning-execution).
 
+**Why.** A second dispatch settled as uninvoked does not establish the first
+dispatch's missing result. A retained terminal EmberVM row can still authorize
+workspace restoration, so current absence of successors is insufficient.
+Explicit settled-retry recovery combines an immutable, journaled lineage fence
+with positive parking evidence and complete successor checks, then rechecks the
+exact local owner before failing only the factory attempt at unknown cost. The
+private management boundary is unchanged. Native history and accounting remain
+intact; partial remote effects are reconciled through a durable request intent.
+See [supervised cessation](factory/orchestration/FACTORY.md#supervised-cessation).
+
 **Why.** Outcome comparisons need complete receipt cohorts and attempt accounting.
 Missing evidence must remain unknown; priced turns and ledger bounds answer
 different questions. See [outcome evidence](factory/orchestration/FACTORY.md#outcome-evidence-ci-at-merge-reverts-after-it).

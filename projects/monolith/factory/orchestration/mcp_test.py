@@ -127,6 +127,7 @@ def test_factory_tools_are_registered():
         "factory_decide",
         "factory_amend_policy",
         "factory_configure_refill",
+        "factory_reconcile_settled_retry",
         "factory_release_landing_hold",
         "factory_find_receipts",
         "factory_prepare_validation",
@@ -2909,3 +2910,118 @@ def test_learning_reconciliation_adapter_binds_actor_and_requires_digest(monkeyp
         ),
     )["ok"]
     assert calls == [(p.subject, 18004, 1, 15160, "reason", "stable", "digest")]
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+        _principal(groups=()),
+    ],
+)
+def test_settled_retry_recovery_requires_standing_operator(monkeypatch, principal):
+    from factory import settled_retry_reconciliation as recovery
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("unauthorized caller reached settled retry recovery")
+
+    monkeypatch.setattr(recovery, "run", forbidden)
+    result = _as(
+        principal,
+        lambda: mcp.factory_reconcile_settled_retry(
+            "preview", 1047, 24399, 22520, "reason", "stable"
+        ),
+    )
+    assert result["error"] == mcp.OPERATOR_REQUIRED
+
+
+@pytest.mark.parametrize("operation,digest", [("preview", None), ("apply", "a" * 64)])
+def test_settled_retry_adapter_binds_operator_and_exact_request(
+    monkeypatch, operation, digest
+):
+    from factory import settled_retry_reconciliation as recovery
+
+    calls = []
+    expected = {"ok": True, "state": "preview" if operation == "preview" else "applied"}
+
+    async def run(*args):
+        calls.append(args)
+        return expected
+
+    monkeypatch.setattr(recovery, "run", run)
+    principal = _principal()
+    result = _as(
+        principal,
+        lambda: mcp.factory_reconcile_settled_retry(
+            operation, 1047, 24399, 22520, "reason", "stable", digest
+        ),
+    )
+    assert result == expected
+    assert calls == [
+        (operation, principal.subject, 1047, 24399, 22520, "reason", "stable", digest)
+    ]
+
+
+@pytest.mark.parametrize("digest", [None, "", "not-a-digest"])
+def test_settled_retry_adapter_requires_reviewed_digest_before_recovery(
+    monkeypatch, digest
+):
+    from factory import settled_retry_reconciliation as recovery
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("apply without a digest reached local or remote recovery")
+
+    monkeypatch.setattr(recovery, "_prepare", forbidden)
+    result = _as(
+        _principal(),
+        lambda: mcp.factory_reconcile_settled_retry(
+            "apply", 1047, 24399, 22520, "reason", "stable", digest
+        ),
+    )
+    assert result == {"ok": False, "reason": "settled_retry_preview_required"}
+
+
+def test_settled_retry_adapter_preserves_uncertain_remote_outcome(monkeypatch):
+    from factory import settled_retry_reconciliation as recovery
+
+    expected = {
+        "ok": False,
+        "state": "outcome_unknown",
+        "phase": "lineage_fence",
+        "request_key": "stable",
+        "factory_settlement": "not_applied",
+        "reason": "replay_identical_apply_to_reconcile",
+    }
+
+    async def run(*args):
+        return expected
+
+    monkeypatch.setattr(recovery, "run", run)
+    assert (
+        _as(
+            _principal(),
+            lambda: mcp.factory_reconcile_settled_retry(
+                "apply", 1047, 24399, 22520, "reason", "stable", "a" * 64
+            ),
+        )
+        == expected
+    )
+
+
+def test_settled_retry_adapter_reports_guard_refusal(monkeypatch):
+    from factory import settled_retry_reconciliation as recovery
+
+    async def run(*args):
+        raise ValueError("settled_retry_identity_unconfirmed")
+
+    monkeypatch.setattr(recovery, "run", run)
+    assert _as(
+        _principal(),
+        lambda: mcp.factory_reconcile_settled_retry(
+            "preview", 1047, 24399, 22520, "reason", "stable"
+        ),
+    ) == {
+        "ok": False,
+        "reason": "settled_retry_identity_unconfirmed",
+    }
