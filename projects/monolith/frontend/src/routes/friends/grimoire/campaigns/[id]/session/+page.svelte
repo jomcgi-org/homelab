@@ -605,7 +605,7 @@
                 ><option value="attacks">Attacks</option></select
               >
             {/if}
-            <div role="radiogroup" aria-label="Roll mode">
+            <div class="roll-mode" role="radiogroup" aria-label="Roll mode">
               <label
                 ><input
                   type="radio"
@@ -920,7 +920,18 @@
     gap: 8px;
     margin: 4px 0 16px;
   }
-  input {
+  .roll-mode {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+  }
+  .roll-mode label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 44px;
+  }
+  input:not([type="checkbox"]):not([type="radio"]) {
     font: inherit;
     color: inherit;
     padding: 12px;
@@ -958,9 +969,6 @@
     gap: 8px;
     align-items: center;
     margin-top: 12px;
-  }
-  .resolve-choice input {
-    width: auto;
   }
   textarea {
     display: block;
