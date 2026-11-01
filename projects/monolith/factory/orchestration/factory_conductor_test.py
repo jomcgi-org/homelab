@@ -4862,7 +4862,6 @@ def test_departed_node_destroy_request_settles_on_following_destroyed_view(
     from factory.orchestration.factory_models import FactoryAudit
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     now = s.failed_turn_at + timedelta(seconds=800)
     updated = int((s.failed_turn_at + timedelta(seconds=10)).timestamp() * 1000)
     s.cp.update(
@@ -8241,7 +8240,6 @@ def test_drained_loss_gate_does_not_change_unknown_invocation_settlement(
 
     s = uncertain_factory
     monkeypatch.setenv("FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     s.cp.update(
         state="failed",
         terminal_reason="brick_gone",
@@ -8511,7 +8509,6 @@ def test_evicted_guest_settles_factory_without_committed_stop_intent(
     from factory.orchestration.factory_models import FactoryAudit
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     observed_at = datetime.now(timezone.utc)
     monkeypatch.setattr(supervisor, "_now", lambda: observed_at + timedelta(seconds=1))
     s.cp.update(
@@ -8561,7 +8558,6 @@ def test_terminal_factory_guest_without_completion_settles_exact_dispatch(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     s.cp.update(
         state=terminal_state,
         last_invoke_at=s.cp["invoke_started_at"] - 1 if prior_completion else None,
@@ -8605,7 +8601,6 @@ def test_incomplete_terminal_factory_proof_rejects_ambiguous_identity(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     s.cp.update(
         state="evicted",
         last_invoke_at=None,
@@ -8645,7 +8640,6 @@ def test_brick_restart_loss_settles_exact_attempt_and_honors_retry_budget(
 
     s = uncertain_factory
     s.result["cost_usd"] = cost_usd
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     s.cp.update(
         state="failed",
         terminal_reason="brick_gone",
@@ -8730,7 +8724,6 @@ def test_ambiguous_brick_restart_evidence_does_not_permit_retry(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     s.cp.update(
         state="failed",
         terminal_reason="brick_gone",
@@ -8798,7 +8791,6 @@ def test_invoke_failure_settles_exact_attempt_and_honors_retry_budget(
 
     s = uncertain_factory
     s.result["cost_usd"] = cost_usd
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
     _invoke_failed_view(s)
 
@@ -8853,7 +8845,6 @@ def test_invoke_failure_evidence_is_staged_off_by_default(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.delenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", raising=False)
     _invoke_failed_view(s)
 
@@ -8887,7 +8878,6 @@ def test_ambiguous_invoke_failure_evidence_does_not_permit_retry(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
     _invoke_failed_view(s)
     if change == "still_running":
@@ -9000,7 +8990,6 @@ def test_never_invoked_guest_settles_exact_attempt_without_a_stop(
     from factory.orchestration.factory_models import FactoryAudit
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     monkeypatch.setenv("FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "true")
     _never_invoked_view(s)
@@ -9042,7 +9031,6 @@ def test_never_invoked_guest_evidence_is_staged_off_by_default(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     monkeypatch.delenv("FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", raising=False)
     _never_invoked_view(s)
@@ -9080,7 +9068,6 @@ def test_ambiguous_never_invoked_evidence_does_not_permit_retry(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     monkeypatch.setenv("FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "true")
     _never_invoked_view(s)
@@ -9171,7 +9158,6 @@ def test_drain_parked_dispatch_settles_unknown_attempt(
     from factory.orchestration.factory_models import FactoryAudit
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED", "true")
     _drain_parked_view(s)
     s.cp["terminal_reason"] = terminal_reason
@@ -9217,7 +9203,6 @@ def test_ambiguous_drain_parked_evidence_does_not_settle(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     if change != "flag_off":
         monkeypatch.setenv("FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED", "true")
     _drain_parked_view(s)
@@ -9264,7 +9249,6 @@ def test_evicted_guest_settles_factory_from_the_committed_stop_intent(
     from factory.orchestration.factory_models import FactoryAudit
 
     s = uncertain_factory
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
     assert not supervisor.reconcile_uncertain_attempt(
         s.run["pin"], s.sid, s.result, "SUCCESS"
     )
@@ -9275,7 +9259,6 @@ def test_evicted_guest_settles_factory_from_the_committed_stop_intent(
         assert len(committed) == 1
         assert json.loads(committed[0].detail_json)["precondition"] == s.precondition
 
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     observed_at = datetime.now(timezone.utc)
     monkeypatch.setattr(supervisor, "_now", lambda: observed_at + timedelta(seconds=1))
     s.cp.update(
@@ -9359,28 +9342,6 @@ def test_evicted_guest_with_a_foreign_stop_precondition_is_refused(
     assert supervisor._control_plane_cessation(s.cp, identity) is not None
 
 
-def test_evicted_factory_guest_does_not_settle_without_new_flag(
-    uncertain_factory, monkeypatch
-):
-    from datetime import datetime, timedelta, timezone
-    from factory.orchestration import factory_supervision as supervisor
-
-    s = uncertain_factory
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
-    observed_at = datetime.now(timezone.utc)
-    monkeypatch.setattr(supervisor, "_now", lambda: observed_at + timedelta(seconds=1))
-    s.cp.update(
-        state="evicted",
-        # The guest ceased after the failure was recorded, which is the
-        # ordering the loop requires and the only one production produces.
-        updated_at=int((s.failed_turn_at + timedelta(seconds=1)).timestamp() * 1000),
-    )
-    assert not supervisor.reconcile_uncertain_attempt(
-        s.run["pin"], s.sid, s.result, "SUCCESS"
-    )
-    assert _uncertain_snapshot(s)["permits"][0]["state"] == "uncertain"
-
-
 def test_new_flag_does_not_poll_factory_before_stop_deadline(
     uncertain_factory, monkeypatch
 ):
@@ -9388,7 +9349,6 @@ def test_new_flag_does_not_poll_factory_before_stop_deadline(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     before_deadline = datetime.now(timezone.utc) - timedelta(seconds=119)
     monkeypatch.setattr(supervisor, "_now", lambda: before_deadline)
     assert not supervisor.reconcile_uncertain_attempt(
@@ -9404,7 +9364,6 @@ def test_old_cessation_timestamp_falls_through_to_stop_completion(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
     now = datetime.now(timezone.utc)
     monkeypatch.setattr(supervisor, "_now", lambda: now + timedelta(seconds=1))
     assert not supervisor.reconcile_uncertain_attempt(
@@ -9419,7 +9378,6 @@ def test_old_cessation_timestamp_falls_through_to_stop_completion(
     }
     s.cp["updated_at"] = int(dispatched_at.timestamp() * 1000)
     assert supervisor._control_plane_cessation(s.cp, identity) is None
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     assert supervisor.reconcile_uncertain_attempt(
         s.run["pin"], s.sid, s.result, "SUCCESS"
     )
@@ -9473,7 +9431,6 @@ def test_same_guest_restart_evidence_settles_the_old_invocation(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     # Commit the exact pre-restart operation identity first.
     assert not supervisor.reconcile_uncertain_attempt(
         s.run["pin"], s.sid, s.result, "SUCCESS"
@@ -9544,7 +9501,6 @@ def test_restart_evidence_refuses_foreign_or_nonmonotonic_invocations(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     assert not supervisor.reconcile_uncertain_attempt(
         s.run["pin"], s.sid, s.result, "SUCCESS"
     )
@@ -9747,7 +9703,6 @@ def test_flag_off_missing_precondition_keeps_legacy_refusal_reason(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.delenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", raising=False)
     s.cp.update(
         stop_precondition=None,
@@ -9779,7 +9734,6 @@ def test_transient_missing_precondition_retries_on_one_durable_window(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
     clock = [s.failed_turn_at + timedelta(minutes=3)]
     monkeypatch.setattr(supervisor, "_now", lambda: clock[0])
@@ -9999,7 +9953,6 @@ def test_concurrent_transient_ticks_persist_one_sample(uncertain_factory, monkey
 
     s = uncertain_factory
     monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(
         supervisor, "_now", lambda: s.failed_turn_at + timedelta(minutes=3)
     )
@@ -21717,7 +21670,6 @@ def initial_evicted_guest(uncertain_factory, monkeypatch):
     from datetime import timedelta
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     s.cp.update(
         state="evicted",
         terminal_reason="idle_ttl",

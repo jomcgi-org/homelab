@@ -19,7 +19,6 @@ import os
 from sqlalchemy import exists, or_, text
 from sqlmodel import Session, select
 
-from core.env import flag
 from core.clock import aware
 from factory.execution import admission
 from factory.execution.constants import (
@@ -65,13 +64,6 @@ def _reason(audit, reason):
     audit.reason = reason
 
 
-def _general_enabled():
-    return (
-        os.getenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "false").lower()
-        == "true"
-    )
-
-
 def _never_invoked_enabled():
     return (
         os.environ.get("AGENT_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "false").lower()
@@ -97,7 +89,7 @@ def _never_invoked_live_guest(db, permit, agent, turn, observed, guest_id):
     the guest happened to be evicted. #6553 closed this for factory attempts;
     this is the same proof for kg, project and interactive permits.
     """
-    if not _general_enabled() or not _never_invoked_enabled():
+    if not _never_invoked_enabled():
         return False
     from factory.execution import result_receipts
     from factory.execution.models import AgentResultReceipt
@@ -127,14 +119,8 @@ def _never_invoked_live_guest(db, permit, agent, turn, observed, guest_id):
     return receipt is None
 
 
-def _probe_enabled():
-    return flag("AGENT_PROBE_SUPERVISION_ENABLED")
-
-
 def _stale_unbound_tier(permit):
-    return permit.tier in {"kg", "project"} or (
-        permit.tier == "probe" and _probe_enabled()
-    )
+    return permit.tier in {"kg", "project", "probe"}
 
 
 def _stale_unbound_outcome(permit):
@@ -363,12 +349,6 @@ def _identity(db, permit, *, allow_stale_unbound=False):
         if not enabled():
             raise ValueError("routine_job_held")
     if agent.ember_session_id is None:
-        if (
-            permit.tier == "probe"
-            and not _general_enabled()
-            and not (allow_stale_unbound and stale_unbound_shape)
-        ):
-            raise ValueError("no_guest_supervision_disabled")
         # store.clear_ember_bindings_by_ember_id now refuses a session holding
         # an unknown outcome, but a binding cleared before that guard, or by
         # another path, still leaves these traces. Without them a cleared
@@ -561,13 +541,7 @@ def _recovered_review_redispatch_ceased(db, permit, agent, turn, observed, recov
 
 
 def _candidates():
-    tiers = []
-    if _probe_enabled():
-        tiers.append("probe")
-    if _general_enabled():
-        tiers.extend(("kg", "project", "interactive"))
-    if not tiers:
-        return []
+    tiers = ["probe", "kg", "project", "interactive"]
     with Session(get_engine()) as db:
         return list(
             db.exec(
@@ -882,10 +856,7 @@ def _record(candidate, observed, observed_at, node_names=None):
                 recovery = None
             # Use the staged factory failure proof for this exact dispatch.
             invoke_failed = (
-                _general_enabled()
-                and os.getenv(
-                    "FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "false"
-                ).lower()
+                os.getenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "false").lower()
                 == "true"
                 and observed.get("state") == "failed"
                 and terminal_dispatch_cessation(
@@ -896,14 +867,11 @@ def _record(candidate, observed, observed_at, node_names=None):
                     allow_failed=True,
                 )
             )
-            terminal_states = {"evicted"}
-            if _general_enabled():
-                # Destroyed is trustworthy cessation proof only because
-                # nodeConfirmedDestroy: true (projects/embervm/deploy/values.yaml)
-                # makes the control plane record "destroyed" only after the
-                # owning node has itself confirmed teardown. Probe-only mode
-                # stays on eviction alone so it does not depend on that gate.
-                terminal_states.add("destroyed")
+            # Destroyed is trustworthy cessation proof only because
+            # nodeConfirmedDestroy: true (projects/embervm/deploy/values.yaml)
+            # makes the control plane record "destroyed" only after the
+            # owning node has itself confirmed teardown.
+            terminal_states = {"evicted", "destroyed"}
             if never_invoked_live:
                 evidence["cessation_evidence"] = "never_invoked"
                 audit.evidence_json = json.dumps(evidence, sort_keys=True)
@@ -944,7 +912,7 @@ def _record(candidate, observed, observed_at, node_names=None):
                 stop_completion = _completion(observed, expected)
                 evidence["reviewed_stop_completion"] = stop_completion
                 audit.evidence_json = json.dumps(evidence, sort_keys=True)
-            exact_dispatch = _general_enabled() and terminal_dispatch_cessation(
+            exact_dispatch = terminal_dispatch_cessation(
                 observed,
                 recovery,
                 permit.owner,
@@ -1152,14 +1120,6 @@ async def _loop():
 
 
 def start_permit_supervision_loop():
-    if not any(
-        os.getenv(name, "false").lower() == "true"
-        for name in (
-            "AGENT_PROBE_SUPERVISION_ENABLED",
-            "AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED",
-        )
-    ):
-        return []
     from framework import log_task_exception
 
     task = asyncio.create_task(_loop(), name="agent-permit-supervision")

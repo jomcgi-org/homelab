@@ -2262,10 +2262,6 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
     )
     if bound_zero_turn:
         return settled
-    cessation_enabled = (
-        os.environ.get("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "false").lower()
-        == "true"
-    )
     try:
         with controls._locked_session() as (db, control):
             if any(action == "stop_settled" for action, _ in _records(db, pin)):
@@ -2334,7 +2330,7 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         # in progress is over. Recorded before anything else acts on the view.
         _record_presence(pin, identity)
         drained_dispatch = None
-        if cessation_enabled and drain_relay_continuation_enabled():
+        if drain_relay_continuation_enabled():
             # Read before the relay hand-off below. read_uncertain_factory_attempt
             # has already proved no pending row exists, so no relay can resume
             # this dispatch and leaving it to one would hold the lane.
@@ -2356,7 +2352,7 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         ):
             return False
         cessation = drained_dispatch
-        if cessation_enabled and cessation is None:
+        if cessation is None:
             cessation = _control_plane_cessation(view, identity, saved)
             if cessation is None:
                 cessation = _brick_restart_cessation(view, identity, saved)
@@ -2370,13 +2366,12 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
             expected = None
             proof = cessation
         else:
-            if cessation_enabled:
-                with controls._locked_session() as (db, control):
-                    current, _run = _locked_attempt(
-                        db, control, pin, session_id, require_stop_due=True
-                    )
-                    if current != identity:
-                        raise ValueError("factory_attempt_changed")
+            with controls._locked_session() as (db, control):
+                current, _run = _locked_attempt(
+                    db, control, pin, session_id, require_stop_due=True
+                )
+                if current != identity:
+                    raise ValueError("factory_attempt_changed")
             if saved is None:
                 value = view.get("stop_precondition")
                 if value is None and isinstance(view.get("stop_intent"), dict):
@@ -2504,7 +2499,7 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                 "missing_stop_precondition",
                 error=str(exc),
             )
-        elif not (cessation_enabled and str(exc) == "factory_stop_not_due"):
+        elif str(exc) != "factory_stop_not_due":
             _note(
                 pin,
                 "stop_evidence_or_ownership_changed",

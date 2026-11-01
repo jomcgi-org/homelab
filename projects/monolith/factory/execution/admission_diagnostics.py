@@ -306,7 +306,6 @@ def inspect_permits(permit_ids, *, session=None):
             "controls": {
                 name: os.getenv(name, "false").lower() == "true"
                 for name in (
-                    "AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED",
                     "FACTORY_RESERVATION_REVIEW_ENABLED",
                     "FACTORY_INVOKE_FAILURE_CESSATION_ENABLED",
                     "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
