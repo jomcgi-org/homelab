@@ -1474,7 +1474,6 @@ py_library(
         "factory/orchestration/api.py",
         "factory/orchestration/factory_controls.py",
         "factory/orchestration/factory_funding_limits.py",
-        "factory/orchestration/evidence_continuation.py",
         # Status needs the durable landing reader in the pruned controls closure.
         # pkg_swarm's existing glob shares this same source artifact.
         "factory/orchestration/factory_landing.py",
@@ -1491,6 +1490,7 @@ py_library(
         ":factory_goal_models",
         ":pkg_core",
         ":pkg_shared",
+        "//projects/monolith/factory/orchestration/evidence_continuation",
         "@pip//httpx",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
@@ -1509,7 +1509,6 @@ py_library(
             "factory/orchestration/api.py",
             "factory/orchestration/factory_controls.py",
             "factory/orchestration/factory_funding_limits.py",
-            "factory/orchestration/evidence_continuation.py",
             "factory/orchestration/factory_models.py",
             "factory/orchestration/models.py",
         ],
@@ -4738,6 +4737,7 @@ py_test(
         ":pkg_factory",
         ":pkg_swarm",
         "@pip//fastapi",
+        "@pip//fastmcp",
         "@pip//httpx",
         "@pip//opentelemetry_sdk",
         "@pip//pytest",
@@ -5012,6 +5012,11 @@ bdd_test(
 bdd_test(
     name = "swarm_factory_funding_audit_postgres_test",
     srcs = ["factory/orchestration/factory_funding_audit_postgres_test.py"],
+)
+
+bdd_test(
+    name = "swarm_evidence_continuation_postgres_test",
+    srcs = ["factory/orchestration/evidence_continuation_postgres_test.py"],
 )
 
 bdd_test(

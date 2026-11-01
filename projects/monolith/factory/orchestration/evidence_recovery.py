@@ -277,6 +277,21 @@ def reconcile(task, policy, nodes, runs):
         ):
             if not conductor._decision_processed(task["id"], cause):
                 conductor.apply_decision(task, policy, run, runs)
+            with controls._read_session() as db:
+                rejected = any(
+                    json.loads(raw).get("cause") == cause
+                    for raw in db.exec(
+                        select(FactoryAudit.detail_json).where(
+                            FactoryAudit.task_id == task["id"],
+                            FactoryAudit.action == "conductor_rejected",
+                        )
+                    ).all()
+                )
+            if rejected:
+                conductor._pause_refusal(
+                    task,
+                    "Evidence continuation final acceptance refused; grant exhausted",
+                )
         else:
             conductor._pause_refusal(
                 task,

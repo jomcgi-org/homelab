@@ -136,6 +136,10 @@ def _refusal_wait(settled, *, progress=False):
 
 
 def _recovery_held(db, task_id):
+    from factory.orchestration.evidence_continuation import recovery_grant
+
+    if recovery_grant(db, task_id) is not None:
+        return True
     return controls.review_recovery_held(
         task_id, session=db
     ) or controls._landing_recovery_expired(db, task_id)
@@ -930,6 +934,11 @@ def settle(task, run, request):
 def reconcile(task, policy, runs, permission):
     """Run oversight through the existing durable conductor executor."""
     from factory.orchestration import factory_conductor as c
+    from factory.orchestration.evidence_continuation import recovery_grant
+
+    with controls._read_session() as db:
+        if recovery_grant(db, task["id"]) is not None:
+            return False
 
     from factory.orchestration import factory_improvement_scout as scout
 
@@ -1526,6 +1535,10 @@ def _preview_continuation(
         raise ValueError("progress_receipt_not_eligible")
     if renewal and not resume_paused and _review_waiting(db, row.task_id, False):
         raise ValueError("progress_funding_review_pending")
+    from factory.orchestration.evidence_continuation import recovery_grant
+
+    if recovery_grant(db, row.task_id) is not None:
+        raise ValueError("evidence_continuation_nonrenewable")
     graph._lock_task(db, row.task_id)
     policy = effective_policy(db, row)
     if (
@@ -1853,6 +1866,10 @@ def renew_continuation(task_id):
     binding = None
     try:
         with controls._read_session() as db:
+            from factory.orchestration.evidence_continuation import recovery_grant
+
+            if recovery_grant(db, task_id) is not None:
+                return False
             row = controls._receipt(db, task_id)
             authorization = latest(db, task_id, CONTINUATION_AUTHORIZED)
             last = latest(db, task_id, CONTINUATION_LEASE)

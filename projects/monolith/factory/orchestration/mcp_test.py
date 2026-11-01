@@ -1851,7 +1851,7 @@ def test_evidence_continuation_requires_standing_operator_and_exact_preview(
     arguments = dict(
         operation="apply",
         receipt_id=1061,
-        decision_id="a" * 64,
+        decision_id="decision:" + "a" * 64,
         node_key="correct_1",
         source_run_id=123,
         expected_revision=10,

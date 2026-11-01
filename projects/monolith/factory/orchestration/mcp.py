@@ -1640,7 +1640,7 @@ def _decide(
 async def factory_continue_evidence(
     operation: Literal["preview", "apply"],
     receipt_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
-    decision_id: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
+    decision_id: Annotated[str, Field(pattern=r"^decision:[0-9a-f]{64}$")],
     node_key: Annotated[str, Field(pattern=r"^correct_[1-9][0-9]*$")],
     source_run_id: Annotated[MCPInteger, Field(gt=0)],
     expected_revision: Annotated[MCPInteger, Field(ge=0)],
