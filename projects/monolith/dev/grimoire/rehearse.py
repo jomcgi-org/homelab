@@ -7,7 +7,11 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from playwright.sync_api import expect, sync_playwright
-from rehearse_join_links import redact_join_artifact, rehearse_join_links
+from rehearse_join_links import (
+    observe_page,
+    redact_join_artifact,
+    rehearse_join_links,
+)
 
 
 def use_loopback_requests(context):
@@ -103,28 +107,7 @@ def main():
                 use_loopback_requests(context)
                 context.tracing.start(screenshots=True, snapshots=True, sources=True)
                 page = context.new_page()
-                page.on(
-                    "pageerror",
-                    lambda error: report["errors"].append(error.stack or str(error)),
-                )
-                page.on(
-                    "console",
-                    lambda message: (
-                        report["console_errors"].append(message.text)
-                        if message.type == "error"
-                        else None
-                    ),
-                )
-                page.on(
-                    "requestfailed",
-                    lambda request: report["network_failures"].append(
-                        {
-                            "url": request.url,
-                            "method": request.method,
-                            "failure": request.failure,
-                        }
-                    ),
-                )
+                observe_page(page, report)
                 page.goto(f"http://friends.localhost:8177/__local/login/{role}")
                 page.get_by_role("link", name="Open session", exact=True).click()
                 # Wait for the mounted UI's first poll before interacting with
