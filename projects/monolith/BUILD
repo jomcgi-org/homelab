@@ -4157,19 +4157,6 @@ py_test(
 )
 
 py_test(
-    name = "chat_summarizer_prompts_test",
-    srcs = ["chat/summarizer_prompts_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "chat_vision_timeout_test",
     srcs = ["chat/vision_timeout_test.py"],
     imports = ["."],
