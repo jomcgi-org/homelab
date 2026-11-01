@@ -1697,10 +1697,12 @@ py_library(
     ],
 )
 
-# nosemgrep: py-glob-missing-tests-exclude — this IS a testing library
 py_library(
     name = "shared_testing",
-    srcs = glob(["shared/testing/**/*.py"]),
+    srcs = glob(
+        ["shared/testing/**/*.py"],
+        exclude = ["**/*_test.py"],
+    ),
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
@@ -2445,16 +2447,6 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_swarm",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "tier_test",
-    srcs = ["factory/orchestration/tier_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
         "@pip//pytest",
     ],
 )
@@ -3367,17 +3359,6 @@ py_test(
 )
 
 py_test(
-    name = "chat_bot_send_message_test",
-    srcs = ["chat/bot_send_message_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
     name = "chat_agent_test",
     srcs = ["chat/agent_test.py"],
     imports = ["."],
@@ -3745,16 +3726,6 @@ py_test(
         ":pkg_core",
         "@pip//opentelemetry_api",
         "@pip//opentelemetry_sdk",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "log_config_test",
-    srcs = ["core/log_config_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_core",
         "@pip//pytest",
     ],
 )
@@ -4578,7 +4549,6 @@ py_test(
     timeout = "moderate",
     srcs = [
         "e2e/__init__.py",
-        "e2e/conftest.py",
         "e2e/e2e_test.py",
     ],
     data = [
@@ -4613,7 +4583,6 @@ py_test(
     timeout = "long",
     srcs = [
         "e2e/__init__.py",
-        "e2e/conftest.py",
         "e2e/e2e_http_test.py",
     ],
     data = [
@@ -7219,6 +7188,7 @@ py_test(
 py_test(
     name = "faas_workload_test",
     srcs = ["faas/workload_test.py"],
+    data = ["//projects:faas_workload_sample"],
     imports = ["."],
     deps = [
         ":pkg_faas",
@@ -8041,16 +8011,6 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_raw_paths_test",
-    srcs = ["knowledge/raw_paths_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
     name = "knowledge_fixes_coverage_test",
     srcs = ["knowledge/knowledge_fixes_coverage_test.py"],
     imports = ["."],
@@ -8622,7 +8582,6 @@ bdd_test(
     srcs = [
         "home/tests/__init__.py",
         "home/tests/bdd_api_test.py",
-        "home/tests/conftest.py",
     ],
 )
 
@@ -8722,7 +8681,6 @@ bdd_test(
     srcs = [
         "chat/tests/__init__.py",
         "chat/tests/bdd_api_test.py",
-        "chat/tests/conftest.py",
     ],
 )
 
@@ -8758,7 +8716,6 @@ bdd_test(
     srcs = [
         "shotter/tests/__init__.py",
         "shotter/tests/bdd_mcp_tool_test.py",
-        "shotter/tests/conftest.py",
     ],
 )
 
@@ -8774,7 +8731,7 @@ py_test(
     # dedicated bdd_test target do not affect this separate py_test that picks
     # the file up by glob.
     data = glob(["*/tests/*_test.py"]),
-    env = {"PYTEST_ADDOPTS": "--import-mode=importlib --ignore=projects/monolith/home/tests --ignore=projects/monolith/chat/tests --ignore=projects/monolith/knowledge/tests --ignore=projects/monolith/scheduler/tests --ignore=projects/monolith/agent/tests --ignore=projects/monolith/goosecracker/tests --ignore=projects/monolith/moving/tests --ignore=projects/monolith/shotter/tests"},
+    env = {"PYTEST_ADDOPTS": "--import-mode=importlib --ignore=projects/monolith/home/tests --ignore=projects/monolith/chat/tests --ignore=projects/monolith/knowledge/tests --ignore=projects/monolith/agent/tests --ignore=projects/monolith/goosecracker/tests --ignore=projects/monolith/moving/tests --ignore=projects/monolith/shotter/tests"},
     imports = ["."],
     tags = ["bdd"],
     deps = [

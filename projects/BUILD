@@ -36,6 +36,13 @@ exports_files(
     visibility = ["//projects/loom/deploy:__pkg__"],
 )
 
+# The faas workload test checks build_workload_spec against this CRD sample.
+filegroup(
+    name = "faas_workload_sample",
+    srcs = ["embervm/crd/samples/workload-echo-fn.yaml"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 # Markdown read by the monolith doc-manifest genrules (#6446). See
 # //projects/monolith:repo_docs_srcs.
 filegroup(
