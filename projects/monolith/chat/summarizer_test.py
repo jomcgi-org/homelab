@@ -97,7 +97,7 @@ class TestGenerateSummaries:
         )
         session.commit()
 
-        _make_message(session, "ch1", "u1", "Alice", "New message", 2)
+        _make_message(session, "ch1", "u1", "Alice", "Brand new infrastructure idea", 2)
 
         mock_llm = AsyncMock(return_value="Alice said old and new things.")
 
@@ -124,7 +124,7 @@ class TestGenerateSummaries:
 
         prompt = mock_llm.await_args.args[0]
         assert "Alice said old things." in prompt
-        assert "New message" in prompt
+        assert "Brand new infrastructure idea" in prompt
 
     @pytest.mark.asyncio
     async def test_skips_when_no_new_messages(self, session):
