@@ -45,6 +45,14 @@ describe("session sign-in expiry", () => {
     expect(expiry.signal(7_000)).toBe(true);
   });
 
+  it("does not let a stale lone signal confirm a later one", () => {
+    const expiry = expiryCheck();
+    // A hidden tab stops polling, so nothing answered the first signal.
+    expect(expiry.signal(10_000)).toBe(false);
+    expect(expiry.signal(10_000 + 31_000)).toBe(false);
+    expect(expiry.signal(10_000 + 33_000)).toBe(true);
+  });
+
   it("allows one reload a minute and none without storage", () => {
     vi.stubGlobal("sessionStorage", memoryStorage());
     expect(claimReload(1_000_000)).toBe(true);
@@ -85,6 +93,7 @@ describe("session sign-in expiry", () => {
       resolved: false,
       speakerKey: npc,
       speakerLabel: "",
+      pending: { signature: "sig", id: "request-1" },
     };
     expect(keepDraft(campaignId, dmViewer, composer)).toBe(true);
     const page = {

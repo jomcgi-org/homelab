@@ -126,9 +126,18 @@
     resolved,
     speakerKey,
     speakerLabel,
+    pending: pendingMessage,
   });
 
   const viewer = () => ({ id: state.user?.id, role: state.campaign.role });
+  // Another account signing in on this browser changes who the poll answers
+  // for. Panels keep their own state, so only a full load is safe.
+  const identity = (view) =>
+    [
+      view.user?.id,
+      view.campaign?.role,
+      view.campaign?.player_character_id,
+    ].join("|");
   const expiry = expiryCheck();
 
   // Only a full page load can pass the login again, so keep the composer and
@@ -169,6 +178,10 @@
       expiry.reset();
       const next = await response.json();
       if (!response.ok) throw new Error(next.error);
+      if (identity(next) !== identity(state)) {
+        dropDraft(state.campaign.id);
+        return location.reload();
+      }
       state = next;
       connection = "Live";
       if (signedOut) {
@@ -333,6 +346,7 @@
       resolved = kept.resolved;
       speakerKey = kept.speakerKey;
       speakerLabel = kept.speakerLabel;
+      pendingMessage = kept.pending;
     }
     let stopped = false;
     let timer;

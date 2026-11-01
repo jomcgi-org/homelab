@@ -9,6 +9,9 @@
 const RELOAD_KEY = "grimoire-sign-in-reload";
 const RELOAD_GAP_MS = 60_000;
 const CONFIRM_GAP_MS = 2_000;
+// A lone signal older than this no longer counts: polling pauses while the
+// tab is hidden, so nothing may have answered it since.
+const STALE_SIGNAL_MS = 30_000;
 const draftKey = (campaignId) => `grimoire-draft:${campaignId}`;
 
 function storage() {
@@ -33,7 +36,8 @@ export function expiryCheck() {
   return {
     // Counts a signal; returns whether it confirms the expiry.
     signal(now = Date.now()) {
-      if (first === null || now < first) first = now;
+      if (first === null || now < first || now - first > STALE_SIGNAL_MS)
+        first = now;
       return now - first >= CONFIRM_GAP_MS;
     },
     // Any other answer shows the sign-in still works.
@@ -101,7 +105,14 @@ export function takeDraft(
   if (dm) audiences.push(...characters.map((row) => `pc:${row.id}`));
   const audience = audiences.includes(saved.audience) ? saved.audience : "dm";
   const reply = saved.replyTo;
+  const pending = saved.pending;
   return {
+    // A send interrupted before the reload keeps its request id, so retrying
+    // it cannot post the message twice.
+    pending:
+      typeof pending?.signature === "string" && typeof pending?.id === "string"
+        ? { signature: pending.signature, id: pending.id }
+        : null,
     text: saved.text.slice(0, 8000),
     audience,
     replyTo:

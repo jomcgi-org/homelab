@@ -1469,6 +1469,63 @@ describe("sign-in expiry", () => {
     expect(document.body.textContent).toContain("Replying privately to Aria");
   });
 
+  it("reloads instead of showing another account's poll in this tab", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    const other = { ...pageData("player", []), user: { id: "someone-else" } };
+    stubFetch(() => other);
+    await render(pageData("player", []));
+    await type("My own draft.");
+
+    await poll();
+    expect(reload).toHaveBeenCalledTimes(1);
+    // The other account never gets this viewer's draft.
+    expect(sessionStorage.getItem(draftKey)).toBe(null);
+  });
+
+  it("retries a send interrupted before the reload with its original request id", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    let failPost = true;
+    let expired = false;
+    const fallback = stubFetch(() => pageData("player", []));
+    const fetch = vi.fn(async (url, options = {}) => {
+      if (url === endpoint && options.method === "POST" && failPost) {
+        failPost = false;
+        throw new TypeError("Failed to fetch");
+      }
+      if (url === endpoint && !options.method && expired) return signedOut();
+      return fallback(url, options);
+    });
+    vi.stubGlobal("fetch", fetch);
+    await render(pageData("player", []));
+    await type("I open the door.");
+    send();
+    await settle();
+    const first = posted(fetch)[0].requestId;
+
+    expired = true;
+    await poll();
+    await poll();
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(kept().pending.id).toBe(first);
+
+    // The reloaded page sends the restored draft under the same request id,
+    // so a message that did land is not posted twice.
+    await unmount(instance);
+    instance = undefined;
+    document.body.innerHTML = "";
+    expired = false;
+    await render(pageData("player", []));
+    await settle();
+    send();
+    await settle();
+    expect(posted(fetch).at(-1)).toMatchObject({
+      text: "I open the door.",
+      requestId: first,
+    });
+  });
+
   it("restores a DM's free-label speaker", async () => {
     sessionStorage.setItem(
       draftKey,
