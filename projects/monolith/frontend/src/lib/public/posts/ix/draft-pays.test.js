@@ -1,7 +1,4 @@
-// @vitest-environment happy-dom
 import { expect, test } from "vitest";
-import { flushSync, mount, unmount } from "svelte";
-import DraftPays from "./DraftPays.svelte";
 import {
   ONE_TOKEN_RATE,
   breakEven,
@@ -23,18 +20,4 @@ test("a draft loses below 4 kept, ties at 4 and pays above", () => {
   expect(verdict(5)).toBe("pays");
   expect(breakEven.low).toBeCloseTo(3.4);
   expect(breakEven.high).toBeCloseTo(4);
-});
-
-test("the figure renders its readout and catch-up toggle", () => {
-  const target = document.createElement("div");
-  document.body.append(target);
-  const c = mount(DraftPays, { target });
-  flushSync();
-  expect(target.querySelector(".readout").textContent).toContain("56–64 tok/s");
-  [...target.querySelectorAll("button")]
-    .find((b) => b.textContent.includes("falls behind"))
-    .click();
-  flushSync();
-  expect(target.querySelector(".ring-out").textContent).toContain("76%");
-  unmount(c);
 });

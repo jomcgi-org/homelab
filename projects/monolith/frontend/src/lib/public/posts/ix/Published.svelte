@@ -1,22 +1,16 @@
 <script>
   import Fig from "./Fig.svelte";
   import { pct, published, rate, ticks } from "./data-published.js";
-
-  let selected = $state("oom");
-  const row = $derived(published.find((r) => r.key === selected));
 </script>
 
 <Fig title="Published decode rates on a 96 GB RTX PRO 6000, and the 4090">
-  <div class="chart" role="group" aria-label="Decode rate by configuration">
+  <div class="chart" role="list" aria-label="Decode rate by configuration">
     {#each published as r}
-      <button
-        type="button"
+      <div
         class="row"
-        class:on={r.key === selected}
         class:ours={r.ours}
-        aria-pressed={r.key === selected}
+        role="listitem"
         aria-label={`${r.label}: ${rate(r)}, speculation ${r.speculation ? "on" : "off"}`}
-        onclick={() => (selected = r.key)}
       >
         <span class="label">{r.label}</span>
         <span class="track">
@@ -31,7 +25,7 @@
             ></span>{/if}
         </span>
         <span class="value">{rate(r)}</span>
-      </button>
+      </div>
     {/each}
     <div class="axis" aria-hidden="true">
       <span></span>
@@ -45,14 +39,6 @@
   <div class="key" aria-hidden="true">
     <span><i class="spec"></i>Speculation on</span>
     <span><i></i>Speculation off</span>
-  </div>
-
-  <div class="readout" aria-live="polite">
-    <span class="name">{row.label}, {rate(row)}.</span>
-    {row.caveat}
-    {#if row.url}<a href={row.url} target="_blank" rel="noopener noreferrer"
-        >Source</a
-      >{/if}
   </div>
 
   {#snippet note()}
@@ -74,23 +60,9 @@
     align-items: center;
   }
   .row {
-    width: 100%;
     min-height: 2.25rem;
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--ink-2);
-    font: 0.7rem var(--font-code);
-    text-align: left;
-    cursor: pointer;
-  }
-  .row.on,
-  .row.ours {
     color: var(--ink);
-  }
-  .row:focus-visible {
-    outline: 2px solid var(--accent-ink);
-    outline-offset: 2px;
+    font: 0.7rem var(--font-code);
   }
   .track {
     position: relative;
@@ -118,12 +90,6 @@
       var(--ink-3) 0 3px,
       transparent 3px 6px
     );
-  }
-  .row.on .bar {
-    border-color: var(--ink);
-  }
-  .row.on .bar.spec {
-    background: var(--ink);
   }
   .row.ours .bar.spec {
     background: var(--tone-hot);
@@ -175,22 +141,6 @@
   .key i.spec {
     border: 0;
     background: var(--ink-3);
-  }
-  .readout {
-    margin-top: 0.6rem;
-    color: var(--ink-2);
-    font-size: 0.85rem;
-    line-height: 1.45;
-  }
-  .name {
-    color: var(--ink);
-    font-family: var(--font-code);
-    font-size: 0.78rem;
-  }
-  .readout a {
-    color: var(--accent-ink);
-    font-family: var(--font-code);
-    font-size: 0.75rem;
   }
   @media (max-width: 600px) {
     .row,

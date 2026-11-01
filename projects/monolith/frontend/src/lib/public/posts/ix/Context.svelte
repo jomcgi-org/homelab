@@ -1,93 +1,71 @@
 <script>
   import Fig from "./Fig.svelte";
   import { weights } from "./data-fit.js";
-  import {
-    kvCache,
-    gb,
-    sliderToTokens,
-    tokensToSlider,
-  } from "./data-context.js";
+  import { CONTEXTS, kvCache, gb } from "./data-context.js";
 
   const VRAM = 24e9;
   const DENSE = weights.find((w) => w.key === "dense").gb * 1e9;
-  let tokens = $state(32_768);
-  const kv = $derived(kvCache(tokens));
-  const experts = $derived(VRAM - DENSE - kv.bytes);
+  const rows = CONTEXTS.map((tokens) => {
+    const kv = kvCache(tokens);
+    return { tokens, kv, experts: VRAM - DENSE - kv.bytes };
+  });
   const pct = (bytes) => `${(bytes / VRAM) * 100}%`;
 </script>
 
 <Fig title="KV cache and experts share the same VRAM">
-  {#snippet controls()}
-    <label class="ix-label" for="context-tokens">Context</label>
-    <input
-      id="context-tokens"
-      type="range"
-      min="0"
-      max="1000"
-      value={tokensToSlider(tokens)}
-      oninput={(e) => (tokens = sliderToTokens(Number(e.currentTarget.value)))}
-      aria-valuetext={`${tokens.toLocaleString("en-US")} tokens`}
-    />
-  {/snippet}
-
-  <div class="readout" aria-live="polite">
-    <div class="big">
-      <span class="allocated">{gb(kv.bytes)} GB</span>
-      <span class="unit">of KV cache</span>
-    </div>
-    <div class="line">{tokens.toLocaleString("en-US")} tokens of context</div>
-    <div class="line">
-      About {kv.records.toLocaleString("en-US")} expert records that no longer fit
-      in VRAM
-    </div>
+  <div class="rows">
+    {#each rows as r}
+      <div class="row">
+        <span class="tokens">{r.tokens.toLocaleString("en-US")} tokens</span>
+        <span
+          class="bar"
+          role="img"
+          aria-label={`${gb(r.kv.bytes)} GB of KV cache, ${gb(r.experts)} GB left for experts`}
+        >
+          <i class="b-dense" style:width={pct(DENSE)}></i>
+          <i class="b-kv" style:width={pct(r.kv.bytes)}></i>
+          <i class="b-experts" style:width={pct(r.experts)}></i>
+        </span>
+        <span class="value"
+          ><b>{gb(r.kv.bytes)} GB</b> KV · {r.kv.records.toLocaleString(
+            "en-US",
+          )} records out</span
+        >
+      </div>
+    {/each}
   </div>
-
-  <div class="vram" aria-hidden="true">
-    <div class="bar">
-      <i class="b-dense" style:width={pct(DENSE)}></i>
-      <i class="b-kv" style:width={pct(kv.bytes)}></i>
-      <i class="b-experts" style:width={pct(experts)}></i>
-    </div>
-    <div class="scale"><span>0</span><span>24 GB VRAM</span></div>
-    <div class="key">
-      <span class="k dense">dense weights</span>
-      <span class="k kv">KV cache</span>
-      <span class="k experts">left for experts · {gb(experts)} GB</span>
-    </div>
+  <div class="key" aria-hidden="true">
+    <span class="k dense">dense weights</span>
+    <span class="k kv">KV cache</span>
+    <span class="k experts">expert records</span>
+    <span class="scale">bar = 24 GB VRAM</span>
   </div>
 </Fig>
 
 <style>
-  .big {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    align-items: baseline;
+  .rows {
+    display: grid;
+    gap: 0.6rem;
   }
-  .allocated {
+  .row {
+    display: grid;
+    grid-template-columns: 7.5rem minmax(0, 1fr) 14.5rem;
+    gap: 0.75rem;
+    align-items: center;
+    font: 0.7rem var(--font-code);
+  }
+  .tokens {
     color: var(--ink);
-    font: 600 1.35rem / 1.2 var(--font-code);
     font-variant-numeric: tabular-nums;
-  }
-  .unit,
-  .line {
-    color: var(--ink-2);
-    font: 0.75rem / 1.6 var(--font-code);
-  }
-  .vram {
-    margin-top: 0.9rem;
   }
   .bar {
     display: flex;
-    height: 1.4rem;
+    height: 1.1rem;
     border: 1px solid var(--ink);
-    background: var(--band);
-    overflow: hidden;
   }
   .bar i {
     display: block;
     height: 100%;
-    transition: width 160ms ease;
   }
   .b-dense {
     background: var(--ink-3);
@@ -98,41 +76,50 @@
   .b-experts {
     background: var(--tone-gpu);
   }
-  .scale {
-    display: flex;
-    justify-content: space-between;
-    margin-top: 0.25rem;
-    color: var(--ink-3);
-    font: 0.65rem var(--font-code);
+  .value {
+    color: var(--ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .value b {
+    color: var(--ink);
+    font-weight: 600;
   }
   .key {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.3rem 1rem;
-    margin-top: 0.4rem;
+    gap: 0.25rem 1rem;
+    margin-top: 0.85rem;
     color: var(--ink-2);
-    font: 0.65rem var(--font-code);
+    font: 0.68rem var(--font-code);
   }
   .k::before {
     content: "";
     display: inline-block;
-    width: 0.6rem;
-    height: 0.6rem;
-    margin-right: 0.35rem;
+    width: 0.65rem;
+    height: 0.65rem;
+    margin-right: 0.4rem;
     vertical-align: -0.05rem;
   }
-  .k.dense::before {
+  .dense::before {
     background: var(--ink-3);
   }
-  .k.kv::before {
+  .kv::before {
     background: var(--tone-hot);
   }
-  .k.experts::before {
+  .experts::before {
     background: var(--tone-gpu);
   }
-  @media (prefers-reduced-motion: reduce) {
-    .bar i {
-      transition: none;
+  .scale {
+    margin-left: auto;
+  }
+  @media (max-width: 600px) {
+    .row {
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.3rem 0.5rem;
+    }
+    .bar {
+      grid-column: 1 / -1;
+      grid-row: 2;
     }
   }
 </style>

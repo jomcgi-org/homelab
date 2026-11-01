@@ -4,8 +4,9 @@
 
 import { RECORD_BYTES } from "./data.js";
 
-export const MAX_CONTEXT = 262_144; // the slider's cap, as --max-context
-export const MIN_CONTEXT = 2_048; // attention.rs INITIAL_KV_TOKENS
+// The figure's rows: the initial allocation (attention.rs INITIAL_KV_TOKENS),
+// the server's default --max-context, and two longer windows up to the cap.
+export const CONTEXTS = [2_048, 32_768, 131_072, 262_144];
 const RATIO = 4; // indexer_compress_ratio
 const IDX_DIM = 128; // indexer_head_dim
 const HEAD_DIM = 256; // head_dim
@@ -40,13 +41,5 @@ export function kvCache(tokens, format = "k8v6") {
   const bytes = ATTENTION_LAYERS * attentionBytes(tokens, format);
   return { bytes, records: Math.round(bytes / RECORD_BYTES) };
 }
-
-// The slider runs on a log scale from 2k to 256k tokens.
-export const sliderToTokens = (v) =>
-  Math.round(MIN_CONTEXT * (MAX_CONTEXT / MIN_CONTEXT) ** (v / 1000));
-export const tokensToSlider = (t) =>
-  Math.round(
-    (1000 * Math.log(t / MIN_CONTEXT)) / Math.log(MAX_CONTEXT / MIN_CONTEXT),
-  );
 
 export const gb = (bytes) => (bytes / 1e9).toFixed(2);
