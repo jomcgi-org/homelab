@@ -19852,6 +19852,11 @@ def test_the_past_deadline_warning_needs_an_expired_deadline(
         )
 
 
+@pytest.mark.parametrize(
+    "model, expected, refine_expected",
+    [("astra", 0.5, 0.5), ("spark", 0.5, 0.5), ("opus", 6.0, 4.0)],
+)
+@pytest.mark.parametrize("refine", [False, True])
 def test_planner_node_pricing(feedback_db, model, expected, refine_expected, refine):
     # A Claude planner reserves 1.5x the turn budget for xhigh; refine does not.
     expected = refine_expected if refine else expected
@@ -22815,13 +22820,13 @@ def test_active_cessation_releases_a_paused_task(bound_zero_turn_factory, monkey
     monkeypatch.setattr(landing, "github_write", lambda *args: None)
     monkeypatch.setattr(conductor, "_post_decision_card", lambda *args: None)
     monkeypatch.setattr(conductor, "_notify_escalation", lambda *args: None)
-    # Elapsed time alone releases nothing, so the task is still admitted here;
-    # supervised cessation below is the only release.
+    # Elapsed time alone releases nothing, so the receipt still holds its
+    # uncertain attempt here; supervised cessation below is the only release.
     with Session(s.engine) as db:
         receipt = db.exec(
             select(FactoryReceipt).where(FactoryReceipt.task_id == s.task["id"])
         ).one()
-        assert receipt.state == "admitted"
+        assert receipt.state == "uncertain"
 
     conductor._supervise_cessation(s.cessation_task, s.dbos)
     assert s.destroys == [s.precondition["session_id"]]
