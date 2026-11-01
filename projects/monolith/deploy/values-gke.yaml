@@ -150,6 +150,14 @@ agents:
     # Exact-turn Stop (#6564). Flipped 2026-10-01 for the live checks; set back
     # to false if any of the seven checks on #4321 fails.
     stopControlEnabled: true
+    # Compatibility guard for #7500. Only monolith charts published before the
+    # permit supervision flag retirement read these two keys; the current chart
+    # ignores them. Argo takes chart values from git HEAD but the chart from
+    # the Kargo-pinned version, so removing them turns both supervisions off on
+    # an older pin and on any rollback to one. Remove them in a follow-up once
+    # the retired-flag chart is verified live and no rollback target predates it.
+    probeSupervisionEnabled: true
+    uncertainPermitSupervisionEnabled: true
     # Staged repository delivery for #6288. Live proof validation is tracked
     # on #6559.
     boundZeroTurnSettlementEnabled: false
