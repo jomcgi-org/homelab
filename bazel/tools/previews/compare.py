@@ -151,7 +151,6 @@ def case_details(name, filename):
 def assemble(
     output,
     head_artifact,
-    base_artifact,
     evidence,
     head,
     baseline,
@@ -164,9 +163,9 @@ def assemble(
         "invalid comparison revisions",
     )
     output.mkdir()
+    # Only the head's fixture site is published. The baseline is shown by its
+    # captures; its own site would duplicate them and overflow the archive cap.
     shutil.copytree(head_artifact, output / "after")
-    if base_names:
-        shutil.copytree(base_artifact, output / "before")
     head_receipt = json.loads((evidence / "head/suite.json").read_text())
     base_receipt = (
         json.loads((evidence / "before/suite.json").read_text())
@@ -228,9 +227,6 @@ def assemble(
                 ),
                 "before_dimensions": None,
                 "interactive_after": f"after/suites/{name}/",
-                "interactive_before": f"before/suites/{name}/"
-                if before_record
-                else None,
             }
             target = output / "captures" / name
             target.mkdir(parents=True, exist_ok=True)
@@ -337,7 +333,6 @@ def run(output, evidence, head, base_sha):
                 model = assemble(
                     output,
                     root / "head-artifact",
-                    root / "base-artifact",
                     evidence,
                     head,
                     baseline,
