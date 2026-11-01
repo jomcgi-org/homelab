@@ -14,10 +14,8 @@ from factory.orchestration.browser_evidence import (
     ExportProof,
     Producer,
     Provenance,
-    RestorationProof,
     parse_handoff,
     validate_export,
-    validate_review_ready,
     verify_inventory,
 )
 
@@ -62,21 +60,6 @@ class BrowserEvidenceTest(unittest.TestCase):
         self.export = ExportProof(
             self.producer, self.handoff.handoff_sha256, "completed", "e" * 64
         )
-        self.restore = RestorationProof(
-            reviewer=replace(
-                self.producer,
-                node_id="independent-review",
-                session_id="review-session",
-                turn=1,
-            ),
-            handoff_sha256=self.handoff.handoff_sha256,
-            provenance=self.provenance,
-            restored=True,
-            fingerprint=self.export.fingerprint,
-            manifest_sha256=self.handoff.manifest_sha256,
-            inventory_sha256=self.handoff.inventory_sha256,
-            inventory_verified=True,
-        )
 
     def parse(self, raw=None):
         return parse_handoff(
@@ -85,8 +68,8 @@ class BrowserEvidenceTest(unittest.TestCase):
             expected_producer=self.producer,
         )
 
-    def test_matching_capture_export_and_independent_restore(self):
-        validate_review_ready(self.handoff, self.export, self.restore)
+    def test_matching_completed_export(self):
+        validate_export(self.handoff, self.export)
         self.assertEqual(self.handoff.provenance, self.provenance)
         self.assertEqual(self.handoff.producer.turn, 2)
 
@@ -226,42 +209,6 @@ class BrowserEvidenceTest(unittest.TestCase):
         for proof in cases:
             with self.subTest(proof=proof), self.assertRaises(EvidenceError):
                 validate_export(self.handoff, proof)
-
-    def test_review_requires_independence_restore_and_inventory(self):
-        cases = [
-            replace(self.restore, restored=False),
-            replace(self.restore, restored=1),
-            replace(self.restore, inventory_verified=False),
-            replace(self.restore, inventory_verified=1),
-            replace(self.restore, fingerprint="0" * 64),
-            replace(self.restore, manifest_sha256="0" * 64),
-            replace(self.restore, inventory_sha256="0" * 64),
-            replace(self.restore, handoff_sha256="0" * 64),
-            replace(
-                self.restore, provenance=replace(self.provenance, head_sha="0" * 40)
-            ),
-        ]
-        for field in ("node_id", "session_id", "lineage_id", "workload", "principal"):
-            changed = (
-                getattr(self.producer, field)
-                if field in ("node_id", "session_id")
-                else "other"
-            )
-            cases.append(
-                replace(
-                    self.restore,
-                    reviewer=replace(self.restore.reviewer, **{field: changed}),
-                )
-            )
-        for proof in cases:
-            with self.subTest(proof=proof), self.assertRaises(EvidenceError):
-                validate_review_ready(self.handoff, self.export, proof)
-
-    def test_restore_cannot_override_unfinished_export(self):
-        with self.assertRaises(EvidenceError):
-            validate_review_ready(
-                self.handoff, replace(self.export, state="queued"), self.restore
-            )
 
     def test_workspace_manifest_has_separate_eight_mib_boundary(self):
         with tempfile.TemporaryDirectory() as directory:

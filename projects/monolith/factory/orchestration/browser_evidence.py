@@ -135,20 +135,6 @@ class ExportProof:
     fingerprint: str
 
 
-@dataclass(frozen=True)
-class RestorationProof:
-    """Trusted restore and file-verification observations from the reviewer."""
-
-    reviewer: Producer
-    handoff_sha256: str
-    provenance: Provenance
-    restored: bool
-    fingerprint: str
-    manifest_sha256: str
-    inventory_sha256: str
-    inventory_verified: bool
-
-
 def _unique_object(pairs: list[tuple[str, object]]) -> dict:
     result = {}
     for key, value in pairs:
@@ -239,41 +225,6 @@ def validate_export(handoff: Handoff, proof: ExportProof) -> None:
     _require(proof.handoff_sha256 == handoff.handoff_sha256, "export handoff mismatch")
     _require(proof.state == "completed", "export not completed")
     _require(_digest(proof.fingerprint), "missing export fingerprint")
-
-
-def validate_review_ready(
-    handoff: Handoff, export: ExportProof, restore: RestorationProof
-) -> None:
-    """Gate inspection on independent identity and verified restored inventory.
-
-    This is not a review verdict. The caller must obtain these observations
-    using existing authorized owners and must not trust guest-supplied proofs.
-    """
-    validate_export(handoff, export)
-    restore.reviewer.validate()
-    _require(
-        restore.reviewer.session_id != handoff.producer.session_id
-        and restore.reviewer.node_id != handoff.producer.node_id,
-        "reviewer is not independent",
-    )
-    for name in ("lineage_id", "workload", "principal"):
-        _require(
-            getattr(restore.reviewer, name) == getattr(handoff.producer, name),
-            "restore ownership mismatch",
-        )
-    _require(restore.restored is True, "workspace not restored")
-    _require(
-        restore.handoff_sha256 == handoff.handoff_sha256
-        and restore.provenance == handoff.provenance,
-        "restored provenance mismatch",
-    )
-    _require(restore.fingerprint == export.fingerprint, "restore fingerprint mismatch")
-    _require(
-        restore.manifest_sha256 == handoff.manifest_sha256
-        and restore.inventory_sha256 == handoff.inventory_sha256
-        and restore.inventory_verified is True,
-        "restored inventory not verified",
-    )
 
 
 @dataclass(frozen=True)
