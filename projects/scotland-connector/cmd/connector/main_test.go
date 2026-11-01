@@ -25,7 +25,7 @@ func TestAppDocumentationMatchesHTTP(t *testing.T) {
 	t.Setenv("S3_ACCESS_KEY_ID", "fixture-key")
 	t.Setenv("S3_SECRET_ACCESS_KEY", "fixture-secret")
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	for _, baseURL := range []string{"", "https://jomcgi.dev/scotland/"} {
+	for _, baseURL := range []string{"", "https://jomcgi.dev/scotland", "https://jomcgi.dev/scotland/"} {
 		t.Run(baseURL, func(t *testing.T) {
 			t.Setenv("PUBLIC_BASE_URL", baseURL)
 			cfg, err := loadConfig()
@@ -49,7 +49,7 @@ func TestAppDocumentationMatchesHTTP(t *testing.T) {
 					var spec struct {
 						Servers []struct{ URL string } `json:"servers"`
 					}
-					want := cfg.publicBaseURL
+					want := strings.TrimRight(baseURL, "/")
 					if want == "" {
 						want = "/"
 					}

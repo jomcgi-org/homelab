@@ -9,7 +9,9 @@ The `scotland` MCP server answers with `plan`, `check` and `light`, and
 `aurora` when it is listed. `check` answers each item with a verdict (`go`,
 `marginal`, `no` or `unknown`) and a one-line `why` in UK local time; `plan`
 lists only `go` and `marginal` options, and a day's `walk_note` or
-`stargazing_note` says why it has none. Lead with the verdict and the why;
+`stargazing_note` says why it has none, except for a run beyond the hourly
+horizon. Read that reason once in `datasets.<activity>.notes`; daily notes
+may be absent or contain only moon advice. Lead with the verdict and the why;
 they are written to be repeated. `light` has no verdict: it gives sunrise,
 sunset, twilight, golden and blue light, the moon and Milky Way windows for
 photographers and stargazers.

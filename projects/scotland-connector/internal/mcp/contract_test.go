@@ -280,6 +280,71 @@ func TestOutputSchemasMatchOpenAPIAndStructuredContent(t *testing.T) {
 	}
 }
 
+func TestPlanHorizonDescriptions(t *testing.T) {
+	spec, _ := httpapi.Documentation()
+	var doc map[string]any
+	if err := json.Unmarshal(spec, &doc); err != nil {
+		t.Fatal(err)
+	}
+	objectAt := func(t *testing.T, root map[string]any, path ...string) map[string]any {
+		t.Helper()
+		for _, key := range path {
+			child, ok := root[key].(map[string]any)
+			if !ok {
+				t.Fatalf("missing object %q in %v", key, path)
+			}
+			root = child
+		}
+		return root
+	}
+	checkDescription := func(t *testing.T, schema map[string]any, phrases ...string) {
+		t.Helper()
+		description, _ := schema["description"].(string)
+		for _, phrase := range phrases {
+			if !strings.Contains(description, phrase) {
+				t.Errorf("description %q does not explain %q", description, phrase)
+			}
+		}
+	}
+	t.Run("endpoint", func(t *testing.T) {
+		checkDescription(t, objectAt(t, doc, "paths", "/v1/plan", "get"), "beyond the hourly forecast horizon", "once in datasets.<activity>.notes")
+	})
+	day := objectAt(t, doc, "components", "schemas", "PlanDay", "properties")
+	t.Run("component", func(t *testing.T) {
+		checkDescription(t, objectAt(t, day, "walk_note"), "once in datasets.walk.notes", "may be absent")
+		checkDescription(t, objectAt(t, day, "stargazing_note"), "once in datasets.stargaze.notes", "only moon advice", "absent")
+	})
+	for _, version := range []string{ModernVersion, LegacyVersions[0]} {
+		t.Run(version, func(t *testing.T) {
+			params := ""
+			headers := map[string]string{"MCP-Protocol-Version": version}
+			if version == ModernVersion {
+				params = modernMeta
+				headers = modern("tools/list", "")
+			}
+			code, _, listing := post(t, handler(), `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{`+params+`}}`, headers)
+			if code != http.StatusOK || listing.Error != nil {
+				t.Fatalf("tools/list: status %d, error %v", code, listing.Error)
+			}
+			for _, raw := range listing.Result["tools"].([]any) {
+				tool := raw.(map[string]any)
+				if tool["name"] != "plan" {
+					continue
+				}
+				checkDescription(t, tool, "beyond the hourly forecast horizon", "once in datasets.<activity>.notes")
+				advertised := objectAt(t, tool, "outputSchema", "properties", "data", "properties", "days", "items", "properties")
+				for _, name := range []string{"walk_note", "stargazing_note"} {
+					if got, want := objectAt(t, advertised, name)["description"], objectAt(t, day, name)["description"]; got != want {
+						t.Errorf("%s description: got %v, want %v", name, got, want)
+					}
+				}
+				return
+			}
+			t.Fatal("plan is missing from tools/list")
+		})
+	}
+}
+
 type schemaAuroraSource struct{ snapshot *aurora.Snapshot }
 
 func (s schemaAuroraSource) Current() *aurora.Snapshot { return s.snapshot }
