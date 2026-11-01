@@ -6,9 +6,7 @@ Covers:
 - _process_message: embed content used when message.content is empty
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from chat.bot import _extract_embed_text, _has_embeddable_content
 

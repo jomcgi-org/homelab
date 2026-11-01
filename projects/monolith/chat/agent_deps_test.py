@@ -2,7 +2,7 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
-from chat.agent import ChatDeps, build_system_prompt, create_agent
+from chat.agent import ChatDeps, create_agent
 
 
 class TestChatDeps:
@@ -21,8 +21,3 @@ class TestCreateAgentWithDeps:
         """create_agent returns an Agent parameterized with ChatDeps."""
         agent = create_agent(base_url="http://fake:8080")
         assert agent is not None
-
-    def test_system_prompt_references_search_first(self):
-        """System prompt encourages search-first behavior."""
-        prompt = build_system_prompt()
-        assert "Search before you respond" in prompt

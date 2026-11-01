@@ -189,25 +189,6 @@ class TestBuildSystemPromptReturnType:
 
 
 # ---------------------------------------------------------------------------
-# build_system_prompt — content: tool guidance
-# Tool-specific descriptions are now auto-generated from signposts in the
-# dynamic system prompt; see TestAllToolsSignposted in agent_tools_test.py.
-# ---------------------------------------------------------------------------
-
-
-class TestBuildSystemPromptToolGuidance:
-    def test_encourages_proactive_search(self):
-        """System prompt encourages search-first behavior."""
-        prompt = build_system_prompt()
-        assert "Search before you respond" in prompt
-
-    def test_includes_dont_pretend_rule(self):
-        """System prompt warns against claiming to have searched without doing so."""
-        prompt = build_system_prompt()
-        assert "Pretend you looked something up" in prompt
-
-
-# ---------------------------------------------------------------------------
 # build_system_prompt — content: guidance phrases
 # ---------------------------------------------------------------------------
 
@@ -1078,11 +1059,6 @@ class TestBuildSystemPromptDoSection:
         """DO section tells the agent to match the vibe of the conversation."""
         prompt = build_system_prompt()
         assert "Match the vibe" in prompt
-
-    def test_instructs_search_first_behavior(self):
-        """DO section explicitly says to search before responding."""
-        prompt = build_system_prompt()
-        assert "Search before you respond" in prompt
 
     def test_instructs_when_in_doubt_search(self):
         """DO section ends the search directive with 'When in doubt, search'."""

@@ -1,7 +1,5 @@
 """Tests for UserChannelSummary model."""
 
-from datetime import datetime, timezone
-
 from chat.models import UserChannelSummary
 
 

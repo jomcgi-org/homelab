@@ -2,8 +2,6 @@
 
 import logging
 
-import pytest
-
 from chat.agent import _coerce_username
 
 

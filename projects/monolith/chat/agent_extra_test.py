@@ -1,6 +1,6 @@
 """Extra coverage for agent.py -- empty message list and web_search tool body."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
