@@ -787,11 +787,13 @@ refresh tokens, or remove them from the campaign. When renewal fails, a fetch
 (`Sec-Fetch-Mode: cors`) gets a 401 and a navigation still redirects to the
 login. The BFF state endpoint also answers 401 for a missing or rejected token.
 A single 401 or login redirect can be transient, so the session page shows
-Reconnecting and treats it as expiry only when another one arrives at least
-two seconds later with no other answer between them. Then, once no send is in
-flight, it keeps the composer, its audience and the viewer's user id and role
-in the tab's `sessionStorage` and reloads at most once a minute; within that
-minute it shows a signed-out notice. A restored draft never widens its
-audience, and a draft kept for another viewer is dropped. The live check
-remains: hold a real login past the access-token lifetime and confirm the
-session stays Live without a reload.
+Reconnecting and treats it as expiry only when another one arrives two to
+thirty seconds later with no other answer between them. Then, once no send is
+in flight, it keeps the composer, its audience, any interrupted send's request
+id and the viewer's user id and role in the tab's `sessionStorage` and reloads
+at most once a minute; within that minute it shows a signed-out notice. A
+restored draft never widens its audience, and a draft kept for another viewer
+is dropped. A poll that answers for a different account or role reloads the
+page, because panels such as knowledge search keep their own state. The live
+check remains: hold a real login past the access-token lifetime and confirm
+the session stays Live without a reload.
