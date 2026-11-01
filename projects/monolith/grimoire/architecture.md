@@ -770,3 +770,16 @@ After the normal Linux CI and deployment gates, verify with two fresh accounts:
    Shared `/_app/` assets accept either app's signed cookie, while page and API
    permissions remain separate. Requests to `/api/grimoire` on the friends
    hostname have no backend route.
+
+Sign-in renews in place. The gateway requests `offline_access`, which the
+provider maps, so Authentik issues a refresh token and Envoy renews the
+one-hour tokens on the first request after they expire. The provider rotates a
+refresh token only in its last day, so two requests renewing together do not
+revoke each other. When renewal fails, a fetch (`Sec-Fetch-Mode: cors`) gets a
+401 and a navigation still redirects to the login. The BFF state endpoint also
+answers 401 for a missing or rejected token. On a 401 or a login redirect, the
+session page keeps the composer and its audience in the tab's `sessionStorage`
+and reloads at most once a minute; within that minute it shows a signed-out
+notice. A restored draft never widens its audience. The live check remains:
+hold a real login past the access-token lifetime and confirm the session stays
+Live without a reload.

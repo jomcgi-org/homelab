@@ -111,6 +111,7 @@ afterEach(async () => {
   instance = undefined;
   document.body.innerHTML = "";
   localStorage.clear();
+  sessionStorage.clear();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   vi.useRealTimers();
@@ -910,6 +911,201 @@ describe("session feed polling", () => {
     expect(document.querySelector('[role="status"]').textContent).toBe(
       "Reconnecting",
     );
+  });
+});
+
+describe("sign-in expiry", () => {
+  const draftKey = `grimoire-draft:${campaignId}`;
+  const signedOut = () =>
+    new Response(JSON.stringify({ error: "Your session has expired." }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    });
+  // What fetch returns for a manual redirect: no status, no body.
+  const loginRedirect = () => ({
+    type: "opaqueredirect",
+    status: 0,
+    ok: false,
+    json: async () => {
+      throw new SyntaxError("No body");
+    },
+  });
+  const kept = () => JSON.parse(sessionStorage.getItem(draftKey));
+  const connection = () =>
+    document.querySelector('[role="status"]').textContent;
+
+  async function type(text) {
+    const textarea = document.getElementById("message");
+    textarea.value = text;
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+  }
+
+  function stubReload() {
+    const reload = vi.fn();
+    vi.spyOn(window.location, "reload").mockImplementation(reload);
+    return reload;
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("keeps the draft and reloads once when a poll is signed out", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    const fetch = vi.fn(async () => signedOut());
+    vi.stubGlobal("fetch", fetch);
+    await render(pageData("player", []));
+    await type("I search the altar.");
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(statePolls(fetch)).toEqual([[endpoint, { redirect: "manual" }]]);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(kept()).toMatchObject({
+      text: "I search the altar.",
+      audience: "table",
+    });
+    expect(connection()).not.toBe("Reconnecting");
+  });
+
+  it("keeps a DM's private reply when Send meets the login redirect", async () => {
+    const reload = stubReload();
+    const privateAction = event("act", 1, "I pocket the key.", {
+      kind: "action",
+      audience: "dm",
+      author_member_id: "member-a",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => loginRedirect()),
+    );
+    await render(pageData("dm", [privateAction]));
+    [...document.querySelectorAll("button")]
+      .find((button) => button.textContent.trim() === "Reply privately to Aria")
+      .click();
+    await tick();
+    await type("The key is warm.");
+    document
+      .querySelector("form.composer")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(kept()).toMatchObject({
+      text: "The key is warm.",
+      audience: `pc:${pcA}`,
+      replyTo: { id: "act", name: "Aria" },
+    });
+    // The reload is the whole response: no send failure, no signed-out notice.
+    expect(document.querySelector(".feed .failure")).toBe(null);
+  });
+
+  it("does not reload again within a minute and says the draft is kept", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    sessionStorage.setItem("grimoire-sign-in-reload", String(Date.now()));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => signedOut()),
+    );
+    await render(pageData("player", []));
+    await type("I search the altar.");
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(reload).not.toHaveBeenCalled();
+    expect(connection()).toBe("Signed out");
+    const alert = document.querySelector(".signed-out");
+    expect(alert.getAttribute("role")).toBe("alert");
+    expect(alert.textContent).toContain(
+      "Signed out. Reload to continue; your draft is kept.",
+    );
+    // Text typed after the notice is kept for a manual reload too.
+    await type("I search the altar twice.");
+    expect(kept().text).toBe("I search the altar twice.");
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settle();
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the notice and the kept copy when a later poll succeeds", async () => {
+    vi.useFakeTimers();
+    const reload = stubReload();
+    sessionStorage.setItem("grimoire-sign-in-reload", String(Date.now()));
+    let polls = 0;
+    const fallback = stubFetch(() => pageData("player", []));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url, options) =>
+        url === endpoint && (polls += 1) === 1
+          ? signedOut()
+          : fallback(url, options),
+      ),
+    );
+    await render(pageData("player", []));
+    await type("I search the altar.");
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(kept().text).toBe("I search the altar.");
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(reload).not.toHaveBeenCalled();
+    expect(connection()).toBe("Live");
+    expect(document.querySelector(".signed-out")).toBe(null);
+    expect(document.getElementById("message").value).toBe(
+      "I search the altar.",
+    );
+    expect(sessionStorage.getItem(draftKey)).toBe(null);
+  });
+
+  it("restores the kept draft once and never widens its audience", async () => {
+    sessionStorage.setItem(
+      draftKey,
+      JSON.stringify({
+        text: "Only the DM should read this.",
+        audience: `pc:${pcB}`,
+        replyTo: { id: "act", name: "Bram" },
+      }),
+    );
+    stubFetch(() => pageData("player", []));
+    await render(pageData("player", []));
+    await settle();
+
+    expect(document.getElementById("message").value).toBe(
+      "Only the DM should read this.",
+    );
+    // A player has no per-character audience, so the DM is the fallback.
+    expect(document.querySelector('select[aria-label="Send to"]').value).toBe(
+      "dm",
+    );
+    expect(document.body.textContent).not.toContain("Replying privately");
+    expect(sessionStorage.getItem(draftKey)).toBe(null);
+  });
+
+  it("restores a DM's private reply to the same character", async () => {
+    sessionStorage.setItem(
+      draftKey,
+      JSON.stringify({
+        text: "The key is warm.",
+        audience: `pc:${pcA}`,
+        replyTo: { id: "act", name: "Aria" },
+        resolved: true,
+        speakerKey: "narrator",
+      }),
+    );
+    stubFetch(() => pageData("dm", []));
+    await render(pageData("dm", []));
+    await settle();
+
+    expect(document.getElementById("message").value).toBe("The key is warm.");
+    expect(document.querySelector('select[aria-label="Send to"]').value).toBe(
+      `pc:${pcA}`,
+    );
+    expect(document.body.textContent).toContain("Replying privately to Aria");
   });
 });
 
