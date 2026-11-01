@@ -67,7 +67,20 @@ spec:
     cookieNames:
       accessToken: grimoire-access-token
       idToken: grimoire-id-token
-    scopes: [email, profile]
+    # offline_access is the only scope authentik issues a refresh token for.
+    # Envoy then renews expired tokens in place, so a session outlives the
+    # one-hour access token without a login redirect.
+    scopes: [email, profile, offline_access]
+    refreshToken: true
+    # A fetch that cannot be renewed gets a 401 instead of a cross-origin
+    # redirect to authentik, which the browser can only report as a network
+    # error. Page navigations send "navigate" and still go to the login page.
+    denyRedirect:
+      headers:
+        # type is the CRD default, spelled out so the live object never drifts.
+        - name: sec-fetch-mode
+          type: Exact
+          value: cors
   jwt:
     providers:
       - name: grimoire

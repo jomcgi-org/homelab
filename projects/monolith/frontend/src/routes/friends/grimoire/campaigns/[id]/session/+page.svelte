@@ -2,6 +2,13 @@
   import { onMount, untrack, tick } from "svelte";
   import { sheetRolls } from "$lib/grimoire/sheet-rolls.js";
   import { composeMessage } from "$lib/grimoire/session-compose.js";
+  import {
+    claimReload,
+    dropDraft,
+    keepDraft,
+    signInExpired,
+    takeDraft,
+  } from "$lib/grimoire/session-expiry.js";
   import HandoutCard from "$lib/grimoire/HandoutCard.svelte";
   import HandoutComposer from "$lib/grimoire/HandoutComposer.svelte";
   import RevealPanel from "$lib/grimoire/RevealPanel.svelte";
@@ -39,6 +46,7 @@
   let failure = $state("");
   let pendingMessage = null;
   let connection = $state("Live");
+  let signedOut = $state("");
   $effect(() => {
     state = data;
     draft = "";
@@ -103,6 +111,31 @@
     activeTab = "inventory";
   }
 
+  const composer = () => ({
+    text: draft,
+    audience,
+    replyTo,
+    resolved,
+    speakerKey,
+    speakerLabel,
+  });
+
+  // Only a full page load can pass the login again, so keep the composer and
+  // reload. If this tab reloaded within the last minute, stop and ask instead.
+  function expired() {
+    const kept = keepDraft(state.campaign.id, composer());
+    if (claimReload()) return location.reload();
+    connection = "Signed out";
+    signedOut = kept
+      ? "Signed out. Reload to continue; your draft is kept."
+      : "Signed out. Copy your draft, then reload to continue.";
+  }
+
+  // While signed out, keep the stored composer current for a manual reload.
+  $effect(() => {
+    if (signedOut) keepDraft(state.campaign.id, composer());
+  });
+
   async function refresh() {
     try {
       const response = await fetch(
@@ -110,13 +143,19 @@
           (data.selectedSessionId
             ? `?${new URLSearchParams({ session: data.selectedSessionId })}`
             : ""),
+        { redirect: "manual" },
       );
+      if (signInExpired(response)) return expired();
       const next = await response.json();
       if (!response.ok) throw new Error(next.error);
       state = next;
       connection = "Live";
+      if (signedOut) {
+        signedOut = "";
+        dropDraft(state.campaign.id);
+      }
     } catch {
-      connection = "Reconnecting";
+      if (!signedOut) connection = "Reconnecting";
     }
   }
 
@@ -127,9 +166,11 @@
     try {
       const response = await fetch(endpoint(), {
         method: "POST",
+        redirect: "manual",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ sessionId: state.session?.id, ...input }),
       });
+      if (signInExpired(response)) return expired();
       const result = await response.json();
       if (!response.ok) throw new Error(result.error);
       if (
@@ -249,6 +290,19 @@
   }
 
   onMount(() => {
+    const kept = takeDraft(state.campaign.id, {
+      dm,
+      characters: state.characters,
+      npcs: state.npcs,
+    });
+    if (kept) {
+      draft = kept.text;
+      audience = kept.audience;
+      replyTo = kept.replyTo;
+      resolved = kept.resolved;
+      speakerKey = kept.speakerKey;
+      speakerLabel = kept.speakerLabel;
+    }
     let stopped = false;
     let timer;
     async function poll() {
@@ -510,6 +564,13 @@
         </article>
       {/each}
       {#if failure}<p role="alert" class="failure">{failure}</p>{/if}
+      {#if signedOut}<p role="alert" class="failure signed-out">
+          {signedOut}<button
+            type="button"
+            class="secondary"
+            onclick={() => location.reload()}>Reload</button
+          >
+        </p>{/if}
       {#if playing}
         <form onsubmit={post} class="composer">
           {#if dm}
@@ -1023,6 +1084,13 @@
     padding: 14px;
     border: 1px solid var(--tone-disk);
     color: var(--tone-disk);
+  }
+  .signed-out {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
   }
   a {
     color: var(--grim-accent);

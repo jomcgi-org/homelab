@@ -93,10 +93,14 @@ export async function GET({ fetch, cookies, params, url }) {
   } catch (error) {
     return json(
       { error: error.message || "Could not refresh the session." },
-      { status: 400 },
+      { status: signInStatus(error) },
     );
   }
 }
+
+// A missing or rejected sign-in stays a 401, so the page can renew it.
+// Everything else, including a 403 membership denial, stays a 400.
+const signInStatus = (error) => (error?.status === 401 ? 401 : 400);
 
 const UUID = /^[0-9a-f-]{36}$/i;
 
@@ -321,7 +325,7 @@ export async function POST({ request, fetch, cookies, params }) {
   } catch (error) {
     return json(
       { error: error.message || "Could not save. Your draft is still here." },
-      { status: 400 },
+      { status: signInStatus(error) },
     );
   }
 }
