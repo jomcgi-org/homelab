@@ -32,12 +32,13 @@
   const REFRESH_TIMEOUT_MS = 20_000;
   let misses = {};
   let inFlight = false;
-  let lastAttempt = Date.now();
+  // Monotonic, so a wall clock stepping backwards cannot hold refreshes.
+  let lastAttempt = performance.now();
 
   async function refresh() {
-    if (inFlight || Date.now() - lastAttempt < MIN_GAP_MS) return;
+    if (inFlight || performance.now() - lastAttempt < MIN_GAP_MS) return;
     inFlight = true;
-    lastAttempt = Date.now();
+    lastAttempt = performance.now();
     let next = null;
     try {
       const res = await fetch("/dashboard-data", {
