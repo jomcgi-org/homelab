@@ -1480,6 +1480,10 @@ Their former URLs, including query-string bookmarks, use the root path-aware
 404 page. They have no replacement destination. Their backend APIs, records,
 refresh jobs and backups remain independent of this frontend retirement.
 
+Joe's 2026-11-01 decision suspends the hourly BC Parks refresh because it is
+no longer used. Records, backups and the campsites module remain; any removal
+belongs to #7030.
+
 Public application responses follow the anonymous cache pattern established by
 the platform CDN decisions, with route handlers declaring cache and ETag
 semantics where their data permits it.
