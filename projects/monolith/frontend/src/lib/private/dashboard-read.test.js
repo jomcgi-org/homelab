@@ -48,13 +48,32 @@ describe("mergeRead", () => {
     expect(misses.github).toBe(1);
   });
 
-  it("changes nothing for a refresh that is not a read", () => {
+  it("counts a failed refresh as a miss for every section", () => {
     for (const next of [null, undefined, "x", { error: "down" }]) {
-      expect(mergeRead(full, next, { factory: 2 })).toEqual({
-        read: full,
-        misses: { factory: 2 },
-      });
+      const { read, misses } = mergeRead(full, next, { factory: 1 });
+      expect(read).toEqual(full);
+      expect(misses).toEqual({ today: 1, health: 1, github: 1, factory: 2 });
     }
+  });
+
+  it("ages every section out when the backend stays down", () => {
+    let state = { read: full, misses: {} };
+    for (let tick = 0; tick < STALE_AFTER; tick++) {
+      state = mergeRead(state.read, null, state.misses);
+    }
+    expect(state.read).toEqual({
+      today: null,
+      health: null,
+      github: null,
+      factory: null,
+    });
+  });
+
+  it("leaves a page with no read alone until a read arrives", () => {
+    expect(mergeRead(null, null)).toEqual({ read: null, misses: {} });
+    expect(mergeRead(null, { factory: full.factory }).read).toEqual({
+      factory: full.factory,
+    });
   });
 });
 
@@ -80,5 +99,8 @@ describe("missingReadings", () => {
       "cluster",
     ]);
     expect(missingReadings(null)).toEqual(["cluster", "factory", "github"]);
+    expect(
+      missingReadings({ ...full, factory: { ok: false, reason: "x" } }),
+    ).toEqual(["factory"]);
   });
 });

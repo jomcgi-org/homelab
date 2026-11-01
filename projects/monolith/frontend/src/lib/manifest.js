@@ -1,6 +1,7 @@
 // The web app manifest, one per host. app.html links /manifest.webmanifest
 // and hooks.js reroutes it under the tier's prefix, so each tier names the
 // app it installs: the private console is "dashboard", not the public site.
+// The friends host routes only its apps' paths at the gateway, so it has none.
 //
 // The colours are the day sheet (technical-drawing.css --sheet). A manifest
 // is static, so an installed app's splash is the day sheet even for a reader
@@ -24,11 +25,12 @@ export function manifest(name, shortName) {
   };
 }
 
-export function manifestResponse(name, shortName) {
+/** `cacheHeaders` is the route's policy: shared on the apex, private behind Access. */
+export function manifestResponse(name, shortName, cacheHeaders) {
   return new Response(JSON.stringify(manifest(name, shortName)), {
     headers: {
       "Content-Type": "application/manifest+json",
-      "Cache-Control": "public, max-age=600",
+      ...cacheHeaders,
     },
   });
 }

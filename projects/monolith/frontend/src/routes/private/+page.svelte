@@ -23,22 +23,36 @@
   // A refresh replaces the sections it brings and keeps the last good
   // reading of one it lacks for a couple of minutes (dashboard-read.js), so
   // a blip does not blank the page and a dead source still reads as dead.
+  // A failed refresh is a miss for every section.
   let misses = {};
 
+  async function refresh() {
+    let next = null;
+    try {
+      const res = await fetch("/dashboard-data");
+      if (res.ok) next = await res.json();
+    } catch {
+      // no read this tick
+    }
+    const merged = mergeRead(dash, next, misses);
+    dash = merged.read;
+    misses = merged.misses;
+  }
+
   $effect(() => {
-    const id = setInterval(async () => {
-      if (document.visibilityState !== "visible") return;
-      try {
-        const res = await fetch("/dashboard-data");
-        if (!res.ok) return;
-        const merged = mergeRead(dash, await res.json(), misses);
-        dash = merged.read;
-        misses = merged.misses;
-      } catch {
-        // keep the last good snapshot
-      }
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") refresh();
     }, 60_000);
-    return () => clearInterval(id);
+    // Reopening the installed app or the tab reads now, not up to a minute
+    // later: hidden ticks are skipped above.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   });
 
   let events = $derived(
