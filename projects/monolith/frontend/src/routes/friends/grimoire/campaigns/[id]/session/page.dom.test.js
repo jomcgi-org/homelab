@@ -875,6 +875,37 @@ describe("private session events from server projections", () => {
     ).toBeNull();
   });
 
+  it("keeps a player's knowledge search query and results across session polls", async () => {
+    const hit = {
+      type: "event",
+      id: "hit",
+      preview: "Mara keeps the harbour ledger.",
+      source: { session_id: sessionId, seq: 7 },
+    };
+    const poll = stubFetch(() => pageData("player", []));
+    const fetch = vi.fn(async (url, options) =>
+      String(url).includes("/knowledge/search")
+        ? json([hit])
+        : poll(url, options),
+    );
+    vi.stubGlobal("fetch", fetch);
+    vi.useFakeTimers();
+    await render(pageData("player", []));
+    const input = document.querySelector('input[type="search"]');
+    input.value = "ledger";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    document
+      .querySelector('form[role="search"]')
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(document.body.textContent).toContain(hit.preview);
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(statePolls(fetch)).toHaveLength(1);
+    expect(input.value).toBe("ledger");
+    expect(document.body.textContent).toContain(hit.preview);
+  });
+
   it("renders a sequence anchor and keeps a historical search target during polling", async () => {
     const state = {
       ...pageData("player", [event("old-event", 42, "An earlier scene.")]),
