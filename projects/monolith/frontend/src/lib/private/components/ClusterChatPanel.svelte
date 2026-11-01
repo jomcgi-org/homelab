@@ -238,10 +238,12 @@
     border-top: 1px solid var(--stroke);
   }
 
+  /* 16px: anything smaller makes iOS Safari zoom the page on focus. */
   .input-bar input {
     flex: 1;
+    min-height: 44px;
     font-family: var(--font-ui);
-    font-size: 13px;
+    font-size: 1rem;
     color: var(--ink);
     background: transparent;
     border: none;
@@ -258,6 +260,8 @@
   }
 
   .input-bar button {
+    min-width: 44px;
+    min-height: 44px;
     font-family: var(--font-ui);
     font-size: 14px;
     font-weight: 700;

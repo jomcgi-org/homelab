@@ -1,61 +1,133 @@
-/* Dashboard-owned layout. Descendant tools keep their own styles and scroll. */
-.dashboard.sheet {
-  padding: 3rem 1.25rem 4rem;
-}
-.dashboard.sheet .frame {
-  max-width: 78rem;
-}
+/* Dashboard-owned layout on the shared sheet. One column read top to
+ * bottom: masthead, what needs a hand, the keypad, today, shipping, chat.
+ * Descendant tools keep their own styles and scroll. */
+
+/* The trail docks inline on a wide screen; the chrome row carries it on
+ * a phone, so the inline copy hides there (same rule as the spine dock). */
 .dashboard .dashboard-trail {
   display: inline-block;
-  margin-bottom: 2rem;
 }
+
+.dashboard .content > * + * {
+  margin-top: 1.5rem;
+}
+
+/* ── Masthead ── */
 .dashboard .masthead {
   display: flex;
   justify-content: space-between;
   align-items: end;
   gap: 1rem;
-  margin-bottom: 2rem;
 }
 .dashboard .greeting {
   margin: 0;
-  font-size: clamp(1.8rem, 4vw, 3rem);
+  font-size: clamp(1.6rem, 4vw, 2.4rem);
   font-weight: 650;
+  letter-spacing: -0.025em;
   line-height: 1.1;
 }
 .dashboard .greeting-mark {
   color: var(--accent-ink);
 }
 .dashboard .masthead-date {
-  margin: 0.5rem 0 0;
+  margin: 0.4rem 0 0;
   color: var(--ink-2);
+  font-size: 0.92rem;
 }
 .dashboard .clock {
-  font: 1.5rem var(--font-code);
+  font: 1.35rem var(--font-code);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ── Bands ──
+   The sheet's head band, carried by the section headings themselves so the
+   outline reads as a diagram: band, rows, foot. */
+.dashboard h2.ed-head {
+  gap: 0.35em 0.7em;
+  font-weight: 500;
+}
+.dashboard .ed-head--stacked {
+  border-top: 1px solid var(--stroke);
+}
+.dashboard .sub-label {
+  margin: 0;
+  padding: 0.5rem 1rem;
+  border-block: 1px solid var(--line);
+  font: 500 0.72rem var(--font-code);
+  color: var(--ink-2);
+}
+.dashboard .none,
+.dashboard .unavail {
+  padding: 0.9rem 1rem;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.88rem;
+}
+
+/* ── Needs you ── */
+.dashboard .needs .spec {
+  border-top: 0;
+}
+.dashboard .needs .need {
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.dashboard .needs a.need {
+  color: var(--accent-ink);
+}
+.dashboard .needs a.need:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+.dashboard .need-detail {
+  display: block;
+  margin-top: 0.2em;
+  color: var(--ink-2);
+  font-size: 0.85rem;
+}
+
+/* The readings row closes the panel: cluster, then factory. One cell each,
+   the dot its only colour. */
 .dashboard .pulse {
-  padding: 1rem;
-  border: 1px solid var(--stroke);
-  margin-bottom: 1rem;
+  border-top: 1px solid var(--stroke);
 }
-.dashboard .pulse,
-.dashboard .pulse-head {
+.dashboard .pulse .reading {
   display: flex;
-  align-items: baseline;
-  gap: 0.65rem;
-  flex-wrap: wrap;
+  flex: 1 1 14em;
+  align-items: center;
+  gap: 0.55em;
+  min-height: 44px;
+  padding: 0.45em 1rem;
+  border-top: 0;
 }
-.dashboard .pulse--bad {
-  border-color: var(--tone-disk);
+.dashboard .pulse .reading:first-child {
+  border-left: 0;
+}
+.dashboard .pulse .reading a {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: 0.55em;
+  min-height: 44px;
+  color: inherit;
+  text-decoration: none;
+}
+.dashboard .pulse .reading a:hover {
+  color: var(--accent-ink);
+}
+.dashboard .pulse-sub {
+  color: var(--ink-2);
 }
 .dashboard .pulse-dot,
 .dashboard .ci-dot {
   display: inline-block;
+  flex: 0 0 auto;
   width: 0.5rem;
   height: 0.5rem;
   background: var(--ink-2);
-  flex: 0 0 auto;
 }
 .dashboard .pulse-dot--ok,
 .dashboard .ci-dot--success {
@@ -68,50 +140,57 @@
 .dashboard .ci-dot--pending {
   background: var(--warn);
 }
-.dashboard .pulse-sub {
-  color: var(--ink-2);
-  margin-left: 0.5rem;
+.dashboard .pulse--bad .reading:first-child {
+  color: var(--ink);
 }
-.dashboard .pulse-list {
-  flex-basis: 100%;
+
+/* ── Keypad ──
+   A divided row of keys, each a 44px cell: label in mono, the decisions
+   count in ink, an arrow on the three that leave the host. */
+.dashboard .keys > li {
+  display: flex;
   padding: 0;
-  margin: 0;
-  list-style: none;
 }
-.dashboard .pulse-kind {
+.dashboard .key {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: 0.5em;
+  min-height: 44px;
+  padding: 0 1rem;
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 0.8rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.dashboard .key:hover {
+  background: var(--band);
+  color: var(--accent-ink);
+}
+.dashboard .key .num {
+  padding: 0 0.4em;
+  border: 1px solid var(--ink);
+  font-weight: 600;
+  line-height: 1.4;
+}
+.dashboard .key .ext {
   color: var(--ink-2);
-  margin-right: 0.5rem;
+  font-size: 0.9em;
 }
-.dashboard .grid {
+
+/* ── Today and shipping ── */
+.dashboard .pair {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
+  gap: 1.5rem;
+  align-items: start;
 }
 .dashboard .edition {
   min-width: 0;
-  margin: 0;
 }
-.dashboard .section-label {
+.dashboard .pair > .edition {
   margin: 0;
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--stroke);
-  background: var(--band);
-  font: 500 0.85rem var(--font-code);
-}
-.dashboard .section-label--stacked {
-  border-top: 1px solid var(--stroke);
-}
-.dashboard .sub-label {
-  margin: 0;
-  padding: 0.5rem 1rem;
-  border-block: 1px solid var(--line);
-  font: 500 0.8rem var(--font-code);
-}
-.dashboard .unavail {
-  padding: 1rem;
-  margin: 0;
-  color: var(--ink-2);
-  font-size: 0.85rem;
 }
 .dashboard .event-list,
 .dashboard .task-list,
@@ -126,8 +205,8 @@
   display: flex;
   align-items: baseline;
   gap: 0.65rem;
-  padding: 0.8rem 1rem;
-  font-size: 0.85rem;
+  padding: 0.7rem 1rem;
+  font-size: 0.88rem;
   min-width: 0;
 }
 .dashboard .event-row + .event-row,
@@ -170,17 +249,21 @@
   background: var(--band);
   border-left: 2px solid var(--accent-ink);
 }
+.dashboard .task-row {
+  align-items: center;
+  padding-block: 0.35rem;
+}
+/* A thumb target: 44px, the mark drawn inside it. */
 .dashboard .task-check {
-  flex: 0 0 2rem;
-  width: 2rem;
-  height: 2rem;
-  align-self: center;
+  flex: 0 0 2.75rem;
+  width: 2.75rem;
+  height: 2.75rem;
   display: grid;
   place-items: center;
   border: 1px solid var(--stroke);
   background: var(--sheet);
   color: var(--ink);
-  padding: 0.45rem;
+  padding: 0.75rem;
   cursor: pointer;
 }
 .dashboard .task-check svg {
@@ -197,92 +280,55 @@
   font-weight: 550;
 }
 .dashboard .pr-row {
+  min-height: 44px;
+  align-items: center;
   color: var(--ink);
   text-decoration: none;
 }
-.dashboard .pr-row:hover,
-.dashboard .tile:hover {
+.dashboard .pr-row:hover {
   background: var(--band);
   color: var(--accent-ink);
 }
-.dashboard .launcher,
-.dashboard .card--chat {
-  grid-column: 1 / -1;
-}
-.dashboard .launcher-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-.dashboard .tile {
-  display: flex;
-  min-width: 0;
-  gap: 0.7rem;
-  padding: 1rem;
-  color: var(--ink);
-  text-decoration: none;
-  border-bottom: 1px solid var(--line);
-}
-.dashboard .tile:not(:nth-child(3n)) {
-  border-right: 1px solid var(--line);
-}
-.dashboard .tile-dot {
-  width: 0.4rem;
-  height: 0.4rem;
-  margin-top: 0.45rem;
-  background: var(--accent-ink);
-  flex-shrink: 0;
-}
-.dashboard .tile-body {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.dashboard .tile-name {
-  display: block;
-  font-size: 0.9rem;
-  font-weight: 600;
-}
-.dashboard .tile-ext {
-  font-size: 0.8rem;
-}
-.dashboard .tile-desc {
-  display: block;
-  margin-top: 0.3rem;
-  font-size: 0.8rem;
-  color: var(--ink-2);
-}
+
+/* ── Ask the cluster ── */
+/* The log grows with the conversation up to the panel's cap, so an empty
+   panel is one line of hint and the input, not a blank window. */
 .dashboard .card--chat .cluster-chat {
-  padding: 1rem;
+  padding: 0.75rem 1rem 0.5rem;
+  min-height: 0;
 }
+.dashboard .card--chat .chat-log {
+  flex: 1 1 auto;
+}
+.dashboard .card--chat {
+  scroll-margin-top: 1rem;
+}
+
 .dashboard :is(a, button, input):focus-visible {
   outline: 2px solid var(--accent-ink);
   outline-offset: -2px;
 }
+
+/* ── Phone ── */
 @media (max-width: 760px) {
-  .dashboard.sheet {
-    padding-top: 2rem;
-  }
   .dashboard .dashboard-trail {
     display: none;
   }
-  .dashboard .grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
   .dashboard .masthead {
-    flex-wrap: wrap;
+    align-items: baseline;
   }
-  .dashboard .launcher-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .dashboard .tile:not(:nth-child(3n)) {
-    border-right: 0;
-  }
-  .dashboard .tile:nth-child(odd) {
-    border-right: 1px solid var(--line);
+  .dashboard .pair {
+    grid-template-columns: minmax(0, 1fr);
   }
   .dashboard .task-row {
     flex-wrap: wrap;
   }
   .dashboard .task-due {
     margin-left: auto;
+  }
+  /* The ask panel is the last thing on the page; a key jumps to it and the
+     panel lands below the chrome row. */
+  .dashboard .card--chat {
+    scroll-margin-top: 0.5rem;
   }
 }

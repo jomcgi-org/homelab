@@ -33,6 +33,7 @@ def measure(page):
         backLinks: document.querySelectorAll('.back-to-dashboard').length,
         backInk: document.querySelector('.back-to-dashboard') ? getComputedStyle(document.querySelector('.back-to-dashboard')).getPropertyValue('--ink').trim() : null,
         schemeControls: document.querySelectorAll('.scheme').length,
+        trails: document.querySelectorAll('.trail').length,
         containers: [...main.querySelectorAll('.grid,.launcher-grid,.edition,.chat-log')].map(el => ({
           name: el.className, client: el.clientWidth, scroll: el.scrollWidth
         }))
@@ -193,29 +194,30 @@ def main():
                                 and child_result["backLinks"] == 0
                             )
                             assert child_result["bodyOverflow"] == "auto"
+                        elif child == "updates":
+                            # The journal carries the shared trail and scheme
+                            # switch, like the factory documents, and no second
+                            # back chrome. It sits on the sheet and follows the
+                            # stored scheme, like the dashboard.
+                            assert (
+                                child_result["schemeControls"] == 1
+                                and child_result["backLinks"] == 0
+                                and child_result["trails"] >= 1
+                            ), child_result
+                            assert child_result["sheet"] == (
+                                "#ffffff" if scheme == "light" else "#181a20"
+                            ), child_result
+                            child_result["trailHome"] = page.evaluate(
+                                """() => document.querySelector('.trail a.crumb').getAttribute('href')"""
+                            )
+                            assert child_result["trailHome"] == "/", child_result
                         else:
                             assert child_result["schemeControls"] == 0
-                            assert child_result["backLinks"] == (
-                                1 if child == "updates" else 0
-                            )
-                            if child == "updates":
-                                # The journal sits on the sheet: it follows the
-                                # stored scheme, like the dashboard.
-                                assert child_result["sheet"] == (
-                                    "#ffffff" if scheme == "light" else "#181a20"
-                                ), child_result
-                                assert child_result["backInk"] == root["ink"], (
-                                    child_result
-                                )
-                                child_result["backClearsContent"] = page.evaluate(
-                                    """() => document.querySelector('.back-to-dashboard').getBoundingClientRect().bottom < document.querySelector('.spine').getBoundingClientRect().top"""
-                                )
-                                assert child_result["backClearsContent"], child_result
-                            else:
-                                # Qwen still follows the OS, opposite to the stored scheme.
-                                assert child_result["sheet"] == (
-                                    "#181a20" if scheme == "light" else "#ffffff"
-                                ), child_result
+                            assert child_result["backLinks"] == 0
+                            # Qwen still follows the OS, opposite to the stored scheme.
+                            assert child_result["sheet"] == (
+                                "#181a20" if scheme == "light" else "#ffffff"
+                            ), child_result
                         if child == "qwen":
                             assert child_result["bodyOverflow"] == "hidden", (
                                 child_result

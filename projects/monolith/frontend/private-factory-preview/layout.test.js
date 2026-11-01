@@ -77,7 +77,7 @@ for (const view of ["board", "escalations", "item"]) {
 test.each([
   "/factory/escalations-extra",
   "/factory/work-items",
-  "/updates",
+  "/updates/archive",
   "/application",
   "/reviewer",
   "/factory/escalations/extra",
@@ -118,6 +118,9 @@ test.each([
   "/factory/execution/drain",
   "/private/factory/execution/",
   "/private/factory/execution/drain/",
+  "/updates",
+  "/updates/",
+  "/private/updates",
 ])("suppresses shared back chrome on %s", async (path) => {
   page.set({
     url: new URL(`https://private.example.test${path}`),

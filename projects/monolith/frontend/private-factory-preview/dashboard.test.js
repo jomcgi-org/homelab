@@ -34,33 +34,84 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
-test("preserves sections, launcher destinations and deduplicated daily tasks", async () => {
+const headings = () =>
+  [...document.querySelectorAll("h2")].map((node) =>
+    node.textContent.replace(/\s+/g, " ").trim(),
+  );
+const keyFor = (label) =>
+  [...document.querySelectorAll(".key")].find(
+    (node) =>
+      node.textContent.replace(/\s+/g, " ").trim().split(" ")[0] ===
+        label.split(" ")[0] && node.textContent.includes(label),
+  );
+test("preserves sections, keypad destinations and deduplicated daily tasks", async () => {
   await render();
-  for (const label of [
+  expect(headings()).toEqual([
+    "Needs you 2",
     "Today",
     "Tasks",
     "Shipping",
-    "Launcher",
     "Ask the cluster",
-  ])
-    expect(
-      [...document.querySelectorAll("h2")].some(
-        (node) => node.textContent === label,
-      ),
-    ).toBe(true);
+  ]);
+  const conductor = fixtureData("dashboard").dashboard.factory.conductor.href;
   for (const item of launcher) {
-    const link = [...document.querySelectorAll(".tile")].find((node) =>
-      node.textContent.includes(item.label),
+    const link = keyFor(item.label);
+    expect(link, item.label).toBeTruthy();
+    expect(link.getAttribute("href")).toBe(
+      item.dynamic === "conductor" ? conductor : item.href,
     );
-    expect(link.getAttribute("href")).toBe(item.href);
     expect(link.getAttribute("target")).toBe(item.external ? "_blank" : null);
   }
+  expect(keyFor("decisions").querySelector(".num").textContent).toBe("2");
+  expect(document.querySelectorAll(".keypad .key")).toHaveLength(
+    launcher.length,
+  );
   expect(
     document.querySelectorAll('[aria-label="Toggle Synthetic daily task"]'),
   ).toHaveLength(1);
   expect(document.querySelectorAll(".task-row")).toHaveLength(2);
   expect(document.querySelector(".back-to-dashboard")).toBeNull();
   expect(document.querySelectorAll(".scheme")).toHaveLength(1);
+});
+test("lists the open decisions first and reads the factory lane", async () => {
+  await render();
+  const rows = [...document.querySelectorAll(".needs-list .row")].map(
+    (row) => ({
+      kind: row.querySelector("dt").textContent,
+      href: row.querySelector("a")?.getAttribute("href") ?? null,
+      text: row.querySelector("dd").textContent.replace(/\s+/g, " ").trim(),
+    }),
+  );
+  expect(rows).toHaveLength(2);
+  expect(rows[0].kind).toBe("decision");
+  expect(rows[0].href).toBe("/factory/escalations");
+  expect(rows[0].text).toContain("#90031 Synthetic 31");
+  expect(rows[0].text).toContain(
+    "Which synthetic scope should this receipt record?",
+  );
+  expect(document.querySelector(".pulse").textContent).toContain(
+    "factory enabled · 1 in flight · 1 queued",
+  );
+  expect(document.querySelector(".pulse a").getAttribute("href")).toBe(
+    "/factory",
+  );
+});
+test("puts a red PR and an unhealthy workload on the list, after decisions", async () => {
+  const data = fixtureData("dashboard");
+  data.dashboard.health = {
+    healthy: false,
+    unhealthy: { pods: [{ namespace: "synthetic", name: "pending-pod" }] },
+  };
+  data.dashboard.github.open_prs[0].ci = "failure";
+  await render("populated", data);
+  expect(headings()[0]).toBe("Needs you 4");
+  const kinds = [...document.querySelectorAll(".needs-list dt")].map(
+    (node) => node.textContent,
+  );
+  expect(kinds).toEqual(["decision", "decision", "unhealthy", "ci failed"]);
+  const ci = [...document.querySelectorAll(".needs-list a")].at(-1);
+  expect(ci.getAttribute("href")).toBe("https://example.test/pull/90001");
+  expect(ci.getAttribute("target")).toBe("_blank");
 });
 test("loads the dashboard typeface outside the bundled fixture font", async () => {
   await render();
@@ -108,7 +159,26 @@ test.each(["empty", "unavailable"])(
       scenario === "empty" ? "a clear calendar" : "calendar unavailable",
     );
     expect(document.body.textContent).toContain("nothing due, go outside");
-    expect(document.querySelectorAll(".tile")).toHaveLength(launcher.length);
+    expect(headings()[0]).toBe("Needs you 0");
+    expect(document.querySelector(".needs .none").textContent.trim()).toBe(
+      scenario === "empty"
+        ? "Nothing is waiting on you."
+        : "No reading. The dashboard is unavailable.",
+    );
+    expect(document.querySelector(".pulse").textContent).toContain(
+      scenario === "empty"
+        ? "factory enabled · 0 in flight · 0 queued"
+        : "factory unavailable",
+    );
+    expect(document.querySelectorAll(".keypad .key")).toHaveLength(
+      launcher.length,
+    );
+    expect(keyFor("decisions").querySelector(".num")).toBeNull();
+    expect(keyFor("conductor").getAttribute("href")).toBe(
+      scenario === "empty"
+        ? fixtureData("dashboard", "empty").dashboard.factory.conductor.href
+        : "/factory/execution?compose=1",
+    );
   },
 );
 test("updates at 60 seconds, retains last-good on all failures and cleans up", async () => {

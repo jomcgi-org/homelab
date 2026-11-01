@@ -9,10 +9,16 @@
   // The scheme currently painted, whichever source decided it.
   let dark = $state(false);
 
+  // The sheet colours of app.html's theme-color metas, so the browser's own
+  // chrome follows a hand-picked scheme rather than the OS one.
+  const SHEET = { light: "#ffffff", dark: "#181a20" };
+
   function apply(next) {
     const root = document.documentElement;
     root.dataset.theme = next;
     dark = next === "dark";
+    for (const meta of document.querySelectorAll('meta[name="theme-color"]'))
+      meta.setAttribute("content", SHEET[next]);
     try {
       localStorage.setItem(KEY, next);
     } catch {
@@ -156,5 +162,13 @@
   .scheme:focus-visible {
     outline: 2px solid var(--accent-ink);
     outline-offset: -2px;
+  }
+
+  /* A thumb needs the 44px floor; the glyph stays the same size. */
+  @media (max-width: 760px) {
+    .scheme {
+      width: 2.75rem;
+      height: 2.75rem;
+    }
   }
 </style>

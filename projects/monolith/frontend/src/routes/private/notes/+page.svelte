@@ -45,6 +45,7 @@
 
 <div class="td notes-root">
   <StatusBar
+    home={{ label: "dashboard", href: "/" }}
     nodeCount={nodes.length}
     edgeCount={edges.length}
     {clusterCount}
