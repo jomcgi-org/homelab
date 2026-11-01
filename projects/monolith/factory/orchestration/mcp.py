@@ -1662,9 +1662,9 @@ async def factory_continue_evidence(
     evidence comment must match. Admit only the next correction attempt, its
     unrun paired review and one final acceptance planner, within unchanged
     cumulative policy caps. Supply an absolute deadline within one hour.
-    Apply explicitly reactivates the same receipt; it never selects readmission
+    Apply explicitly reactivates the same receipt. It never selects readmission
     or resets attempts. No source changes, replacement planning, new funding,
-    access changes or review waiver are authorized. Preview first; apply the
+    access changes or review waiver are authorized. Preview first. Apply the
     exact digest and arguments with a stable request key. Replay acknowledges
     the original result without granting more work. Changed evidence or any
     unresolved execution, competing owner or hold fails closed.
