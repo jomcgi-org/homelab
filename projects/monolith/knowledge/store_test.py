@@ -1091,59 +1091,6 @@ class TestEntityLinks:
         assert store.get_note_by_id("entity-note")["entities"] == expected
 
 
-class TestGetNoteLinks:
-    def test_edge_resolved_when_target_exists(self, store):
-        """Typed edges include resolved_note_id when target note exists."""
-        _upsert(
-            store,
-            note_id="src",
-            path="src.md",
-            title="Source",
-            metadata=_meta(title="Source", edges={"refines": ["tgt"]}),
-        )
-        _upsert(store, note_id="tgt", path="tgt.md", title="Target")
-
-        links = store.get_note_links("src")
-        edges = [e for e in links if e["kind"] == "edge"]
-        assert len(edges) == 1
-        assert edges[0]["target_id"] == "tgt"
-        assert edges[0]["resolved_note_id"] == "tgt"
-
-    def test_edge_unresolved_when_target_missing(self, store):
-        """Typed edges have resolved_note_id=None when target doesn't exist."""
-        _upsert(
-            store,
-            note_id="src",
-            path="src.md",
-            title="Source",
-            metadata=_meta(title="Source", edges={"related": ["ghost"]}),
-        )
-
-        links = store.get_note_links("src")
-        edges = [e for e in links if e["kind"] == "edge"]
-        assert len(edges) == 1
-        assert edges[0]["target_id"] == "ghost"
-        assert edges[0]["resolved_note_id"] is None
-
-    def test_link_has_no_resolved_note_id(self, store):
-        """Body wikilinks (kind='link') do not include resolved_note_id."""
-        _upsert(
-            store,
-            note_id="src",
-            path="src.md",
-            title="Source",
-            links=[Link(target="Some Title", display=None)],
-        )
-
-        links = store.get_note_links("src")
-        wikilinks = [e for e in links if e["kind"] == "link"]
-        assert len(wikilinks) == 1
-        assert "resolved_note_id" not in wikilinks[0]
-
-    def test_missing_note_returns_empty(self, store):
-        assert store.get_note_links("nonexistent") == []
-
-
 def test_get_graph_returns_nodes_and_edges(session):
     store = KnowledgeStore(session)
 

@@ -11,8 +11,6 @@ Pins behaviour at the boundaries of the splitting logic:
 
 from __future__ import annotations
 
-import pytest
-
 from knowledge.chunker import _split_by_headers, _split_paragraphs, chunk_markdown
 
 

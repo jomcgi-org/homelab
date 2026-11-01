@@ -66,83 +66,6 @@ def split_csv(value: str | None) -> list[str] | None:
     return parts or None
 
 
-# Non-terminal gap states the commit hook is allowed to close. A gap in one
-# of these states is still "open" (awaiting research or a user answer); once
-# an atom defining its term lands, the gap is resolved. Terminal states
-# (committed/rejected/parked) are left untouched.
-_OPEN_GAP_STATES = (
-    "discovered",
-    "classified",
-    "in_review",
-    "researching",
-    "researched",
-)
-
-# The only gap_class values that may legally accompany state='committed' under
-# the Postgres CHECK ``gaps_state_class_combo``. Gaps with gap_class NULL or
-# 'parked' MUST NOT be committed: SQLite test fixtures do not enforce the
-# CHECK, so an unguarded commit passes CI and 500s in prod.
-_COMMITTABLE_CLASSES = ("external", "internal", "hybrid")
-
-
-def resolve_gaps_for_note(
-    session: Session,
-    *,
-    note_id: str,
-    title: str,
-    aliases: list[str] | None,
-) -> list[int]:
-    """Commit open gaps whose term now resolves to this note.
-
-    Called after a note is indexed (create_atom / gardener / research routine).
-    Matches ``gap.term`` (slug-normalized via the same ``_slugify`` used
-    elsewhere in this module) against the note's ``note_id``, slugified
-    ``title``, and slugified ``aliases``. Only commits gaps whose ``gap_class``
-    is in the CHECK-combo legal set (external/internal/hybrid); gaps with
-    NULL or 'parked' class are left open because committing them violates
-    ``gaps_state_class_combo`` on Postgres (which SQLite does not catch).
-
-    On match, sets ``state='committed'``, ``note_id=<this note>``,
-    ``resolved_at=now(utc)``, ``human_verified=False``. Commits the session
-    if any gap changed. Returns the list of committed gap ids.
-    """
-    candidates = {note_id, _slugify(title)}
-    for alias in aliases or []:
-        candidates.add(_slugify(alias))
-
-    rows = (
-        session.execute(
-            select(Gap).where(
-                Gap.deleted_at.is_(None),
-                Gap.state.in_(_OPEN_GAP_STATES),
-                Gap.gap_class.in_(_COMMITTABLE_CLASSES),
-            )
-        )
-        .scalars()
-        .all()
-    )
-
-    committed: list[int] = []
-    now = datetime.now(timezone.utc)
-    for gap in rows:
-        if _slugify(gap.term) in candidates:
-            gap.state = "committed"
-            gap.note_id = note_id
-            gap.resolved_at = now
-            gap.human_verified = False
-            committed.append(gap.id)
-
-    if committed:
-        session.commit()
-        logger.info(
-            "gaps.resolve_gaps_for_note: committed %d gap(s) for note_id=%s: %s",
-            len(committed),
-            note_id,
-            committed,
-        )
-    return committed
-
-
 # Terminal states for the audit queue. A gap in one of these states had
 # its lifecycle ended (research auto-commits, classifier parks,
 # reject_gap rejects). The audit queue surfaces
@@ -205,10 +128,9 @@ def list_gaps_for_review(
     """Return gaps for the private review page, filtered by ``mode``.
 
     ``mode='pending'`` — gaps awaiting user attention (``state='in_review'``,
-    ``human_verified IS FALSE``). Oldest first.
-    This is the same queue that backs the original ``list_review_queue``
-    helper plus the ``human_verified`` filter so verified gaps drop out of
-    the queue immediately after a ``/verify`` call.
+    ``human_verified IS FALSE``). Oldest first. The ``human_verified``
+    filter drops verified gaps out of the queue immediately after a
+    ``/verify`` call.
 
     ``mode='audit'`` — terminal gaps (``committed|rejected|parked``) where
     ``human_verified IS FALSE``, most-recently-resolved first. NULL
@@ -245,20 +167,6 @@ def list_gaps_for_review(
 
     rows = session.execute(stmt).scalars().all()
     return [_gap_to_dict(gap, session=session) for gap in rows]
-
-
-def list_review_queue(session: Session) -> list[dict]:
-    """Return user-actionable gaps awaiting attention (internal and hybrid
-    gaps await an answer from Joe, external gaps are drained directly by the
-    research routine with no approval step), oldest first.
-
-    Thin wrapper around :func:`list_gaps_for_review` for backward
-    compatibility — preserved for the small number of in-tree callers
-    (gap_lifecycle_test, gap_end_to_end_test, router test mocks) that
-    expect the original signature. New code should call
-    :func:`list_gaps_for_review` directly.
-    """
-    return list_gaps_for_review(session, mode="pending", limit=50)
 
 
 def _get_gap_or_raise(session: Session, gap_id: int) -> Gap:
