@@ -1133,7 +1133,7 @@ jobs:
       # room to finish; a fully-blocked run still bails early via
       # MAX_CONSECUTIVE_FAILURES. Safe under the hourly schedule + Forbid.
       activeDeadlineSeconds: 1500
-      suspend: false
+      suspend: true
       resources:
         requests:
           cpu: 250m
