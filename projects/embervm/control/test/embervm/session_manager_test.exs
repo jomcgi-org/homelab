@@ -4500,7 +4500,7 @@ defmodule Embervm.SessionManagerTest do
 
   test "an exact recovery fence excludes restore before and after projection pruning" do
     {:ok, clock} = Agent.start_link(fn -> 100 end)
-    ctx = start_stack(store_clock: fn -> Agent.get(clock, & &1) end)
+    ctx = start_stack(store_clock: fn -> Agent.get(clock, & &1) end, prime_fun: fake_prime_fun("vm-recovery"))
     original = create_persistence_session(ctx)
     id = original.session_id
     Agent.update(clock, fn _ -> 200 end)
