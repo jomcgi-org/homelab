@@ -18,7 +18,14 @@
       media="(prefers-color-scheme: dark)"
       content="#181a20"
     />
-    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- use-credentials: the private host sits behind Cloudflare Access,
+         and a manifest fetched without the session cookie gets the login
+         page instead. Same origin everywhere, so nothing leaves the host. -->
+    <link
+      rel="manifest"
+      href="/manifest.webmanifest"
+      crossorigin="use-credentials"
+    />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <script>
       try {

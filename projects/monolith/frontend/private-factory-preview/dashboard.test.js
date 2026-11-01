@@ -102,7 +102,7 @@ test("puts a red PR and an unhealthy workload on the list, after decisions", asy
     healthy: false,
     unhealthy: { pods: [{ namespace: "synthetic", name: "pending-pod" }] },
   };
-  data.dashboard.github.open_prs[0].ci = "failure";
+  data.dashboard.github.open_prs[0].ci = "failing";
   await render("populated", data);
   expect(headings()[0]).toBe("Needs you 4");
   const kinds = [...document.querySelectorAll(".needs-list dt")].map(
@@ -150,6 +150,21 @@ test("renders unhealthy resources and preserves clock-driven schedule states", a
     Date.parse(document.querySelector(".clock").getAttribute("datetime")) -
       Date.parse(before),
   ).toBe(60000);
+});
+test("says which readings did not answer and marks a held lane amber", async () => {
+  const data = fixtureData("dashboard", "empty");
+  data.dashboard = {
+    factory: { ...data.dashboard.factory, state: "paused" },
+  };
+  await render("empty", data);
+  expect(document.querySelector(".needs .none").textContent.trim()).toBe(
+    "Nothing waiting in what answered. No reading from cluster, github.",
+  );
+  const dot = document.querySelector(".pulse a .pulse-dot");
+  expect(dot.classList.contains("pulse-dot--warn")).toBe(true);
+  expect(document.querySelector(".pulse a").textContent).toContain(
+    "factory paused",
+  );
 });
 test.each(["empty", "unavailable"])(
   "renders %s data without losing navigation",

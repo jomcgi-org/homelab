@@ -333,7 +333,7 @@ export function dashboardData(scenario = "populated") {
                     "Synthetic dashboard investigation " +
                     "long-reference".repeat(10),
                   url: "https://example.test/pull/90001",
-                  ci: "success",
+                  ci: "passing",
                   draft: true,
                 },
               ],
