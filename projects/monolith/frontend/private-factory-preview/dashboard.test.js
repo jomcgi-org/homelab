@@ -247,9 +247,23 @@ test("task toggle is optimistic, commits success and reverts refusal", async () 
   button.click();
   await settle();
   expect(button.getAttribute("aria-pressed")).toBe("false");
+  expect(document.querySelector(".task-error")).toBeNull();
   resolve(response({ type: "failure" }));
   await settle();
   expect(button.getAttribute("aria-pressed")).toBe("true");
+  const alert = document.querySelector(".task-error");
+  expect(alert.getAttribute("role")).toBe("alert");
+  expect(alert.textContent).toBe("Could not update Synthetic daily task.");
+  button.click();
+  await settle();
+  expect(document.querySelector(".task-error")).toBeNull();
+});
+test("speaks each PR's CI state beside its dot", async () => {
+  await render();
+  const row = document.querySelector(".pr-row");
+  expect(row.querySelector(".ci-dot").getAttribute("aria-hidden")).toBe("true");
+  expect(row.querySelector(".sr-only").textContent).toBe("ci passing");
+  expect(row.querySelector(".ci-dot--ok")).not.toBeNull();
 });
 test("chat parses split SSE frames, retains prior text history and handles errors", async () => {
   const stream = () =>

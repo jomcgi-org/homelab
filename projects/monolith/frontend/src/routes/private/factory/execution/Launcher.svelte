@@ -395,8 +395,6 @@
     padding: 0 24px 0 7px;
     appearance: none;
     border: 0;
-    /* Same floor as the textarea: a focused 12px select zooms iOS too. */
-    font-size: 16px;
     border-radius: 0;
     color: var(--text-soft);
     background: transparent;
@@ -626,6 +624,11 @@
     clip: rect(0, 0, 0, 0);
   }
   @media (max-width: 760px) {
+    /* The textarea's floor applies to the pickers too: a focused select
+       under 16px zooms iOS Safari. After the shorthand, so it wins. */
+    .select {
+      font-size: 16px;
+    }
     .home {
       padding: 24px 4px 16px;
       gap: 24px;

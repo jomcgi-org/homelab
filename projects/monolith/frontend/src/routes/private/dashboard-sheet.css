@@ -274,6 +274,10 @@
 .dashboard .task-check--done svg {
   stroke: var(--ok);
 }
+.dashboard .task-error {
+  border-top: 1px solid var(--line);
+  color: var(--tone-disk);
+}
 .dashboard .task-title--done {
   text-decoration: line-through;
 }

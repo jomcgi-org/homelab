@@ -134,13 +134,17 @@
     {/each}
   </div>
   <div class="input-bar">
+    <!-- Not disabled while streaming: a disabled field drops focus and the
+         phone keyboard with it. send() already ignores a second send. -->
     <input
       type="text"
       bind:value={input}
       onkeydown={onKeydown}
       placeholder={streaming ? "thinking..." : "ask the cluster..."}
-      disabled={streaming}
       aria-label="Ask the cluster"
+      aria-busy={streaming}
+      enterkeyhint="send"
+      autocomplete="off"
     />
     <button
       aria-label="Send message"
