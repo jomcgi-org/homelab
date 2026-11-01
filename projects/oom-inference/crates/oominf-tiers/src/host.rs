@@ -432,11 +432,6 @@ impl DirectReader {
         })
     }
 
-    /// True while a submitted batch has not been drained.
-    pub fn busy(&self) -> bool {
-        self.outstanding > 0
-    }
-
     /// Queues `jobs` for the workers, without waiting (behind any still in flight;
     /// tags must be distinct among the reads outstanding).
     pub fn submit(&mut self, jobs: Vec<ReadJob>) -> Result<()> {
