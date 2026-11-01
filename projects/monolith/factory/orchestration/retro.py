@@ -930,10 +930,10 @@ def optimizer_evidence(context: dict, now: datetime) -> dict:
             status="WAIT", reason="72h strictly post-deployment observation incomplete"
         )
         return result
-    # The window has ended, so every verdict from here is final: a later run
-    # cannot add traffic to an ended cohort, and holding the selection on a
-    # question the window cannot answer kept the loop on one experiment for
-    # four weeks. Other deployments inside the window are named beside the
+    # The window has ended, so a later run cannot add traffic to its cohort.
+    # Every verdict below is final except the settle WAIT for attempts still
+    # running; holding the selection on a question the window cannot answer
+    # kept the loop on one experiment for four weeks. Other deployments inside the window are named beside the
     # verdict; on a repository that ships several times a day they would
     # otherwise block every verdict.
     result["confounders"] = {
