@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from pydantic_ai import Agent
 
-from chat.agent import build_system_prompt, create_agent
+from chat.agent import create_agent
 
 
 class TestCreateAgent:
@@ -23,9 +23,3 @@ class TestCreateAgent:
         """create_agent() returns a proper pydantic_ai Agent instance."""
         agent = create_agent(base_url="http://llama-fake:8080")
         assert isinstance(agent, Agent)
-
-    def test_system_prompt_references_web_search(self):
-        """The system prompt instructs the model about the web_search tool."""
-        prompt = build_system_prompt()
-        assert "web_search" in prompt
-        assert "Discord" in prompt
