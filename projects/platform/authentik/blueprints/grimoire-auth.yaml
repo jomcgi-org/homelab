@@ -138,9 +138,10 @@ entries:
       client_id: grimoire-friends
       client_secret: !Env GRIMOIRE_OIDC_CLIENT_SECRET
       grant_types: [authorization_code, refresh_token]
-      # authentik rotates the refresh token on every use by default. The
-      # gateway renews per request, so two requests renewing together would
-      # revoke each other's token. Rotate only in the last day of validity.
+      # authentik rotates the refresh token on every use by default.
+      # Requests that arrive together after the access token expires each
+      # renew, so they would revoke each other's token. Rotate only in the
+      # last day of validity.
       refresh_token_threshold: days=1
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
       redirect_uris:
