@@ -1,5 +1,10 @@
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 
+exports_files(
+    ["embervm/crd/samples/workload-echo-fn.yaml"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 filegroup(
     name = "backup_status_application",
     # application.yaml lives in the generated platform-gke package, which

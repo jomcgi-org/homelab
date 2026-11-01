@@ -93,26 +93,29 @@ def test_build_workload_spec_shape_equals_checked_in_sample():
     # Guard against drift from the committed echo sample's spec block.
     sample_path = "projects/embervm/crd/samples/workload-echo-fn.yaml"
 
-    # Walk up to the repo root so the test runs from the bazel runfiles too.
-    here = os.path.dirname(os.path.abspath(__file__))
-    root = here
-    for _ in range(8):
-        candidate = os.path.join(root, sample_path)
-        if os.path.exists(candidate):
-            sample = yaml.safe_load(open(candidate))
-            zip_src = sample["spec"]["source"]["zip"]
-            built = workload.build_workload_spec(
-                code_uri=zip_src["codeUri"],
-                sha256=zip_src["sha256"],
-                handler=zip_src["handler"],
-            )
-            assert built["source"]["zip"].keys() == zip_src.keys()
-            assert built["resources"] == sample["spec"]["resources"]
-            assert built["concurrency"] == sample["spec"]["concurrency"]
-            assert built["invocation"] == sample["spec"]["invocation"]
-            return
-        root = os.path.dirname(root)
-    pytest.skip("crd sample not reachable from runfiles")
+    if "TEST_SRCDIR" in os.environ:
+        candidate = os.path.join(os.environ["TEST_SRCDIR"], "_main", sample_path)
+    else:
+        # Source-tree lookup is only for runs outside Bazel.
+        root = os.path.dirname(os.path.abspath(__file__))
+        for _ in range(8):
+            candidate = os.path.join(root, sample_path)
+            if os.path.exists(candidate):
+                break
+            root = os.path.dirname(root)
+    assert os.path.isfile(candidate), f"CRD sample missing: {candidate}"
+    with open(candidate) as source:
+        sample = yaml.safe_load(source)
+    zip_src = sample["spec"]["source"]["zip"]
+    built = workload.build_workload_spec(
+        code_uri=zip_src["codeUri"],
+        sha256=zip_src["sha256"],
+        handler=zip_src["handler"],
+    )
+    assert built["source"]["zip"].keys() == zip_src.keys()
+    assert built["resources"] == sample["spec"]["resources"]
+    assert built["concurrency"] == sample["spec"]["concurrency"]
+    assert built["invocation"] == sample["spec"]["invocation"]
 
 
 # --------------------------------------------------------------------------- #
