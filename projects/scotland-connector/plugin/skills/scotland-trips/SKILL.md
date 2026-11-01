@@ -11,7 +11,9 @@ near-term heuristic when available; unsupported inputs remain unknown.
 Read each `check` item's verdict (`go`, `marginal`, `no` or `unknown`)
 and one-line `why` in UK
 local time; `plan` lists only `go` and `marginal` options, and a day's
-`walk_note` or `stargazing_note` says why it has none. Lead with the verdict
+`walk_note` or `stargazing_note` says why it has none, except for a run beyond
+the hourly horizon. Read that reason once in `datasets.<activity>.notes`;
+daily notes may be absent or contain only moon advice. Lead with the verdict
 and the why; they are written to be repeated.
 
 Read `datasets.walk.hourly_until` and `datasets.stargaze.hourly_until`
