@@ -17,11 +17,9 @@ artifact, and ``evaluate_content`` imposes no freshness constraint. Diff
 recovery remains a fallback for turns without a direct delivery and can only
 recover added files safely.
 
-The outcome is never a dead end. A turn that fails validation is retryable with
-the reasons fed back to the agent, and when retries run out the node escalates
-to the conductor, which can retry it again or reshape the plan around it. There
-is deliberately no "fail" branch: see `next_action`. Nothing calls
-``evaluate_content`` yet; the conductor (#5419) will be its first caller.
+``evaluate_content`` is the primary whole-file channel used by
+``node_workflows``. The node pin's attempt policy and the conductor own retry
+and escalation.
 """
 
 from __future__ import annotations
@@ -146,42 +144,6 @@ def schema_errors(value, schema: dict) -> list[str]:
         f"{'/'.join(str(p) for p in error.absolute_path) or '<root>'}: {error.message}"
         for error in validator.iter_errors(value)
     )
-
-
-def retry_instruction(outcome: ArtifactOutcome, path: str) -> str:
-    """What the agent is told when its artifact did not pass.
-
-    Names the file and every reason. An agent that is only told "invalid"
-    rewrites at random, which burns a guest boot per guess.
-    """
-    reasons = "\n".join(f"- {reason}" for reason in outcome.errors)
-    return (
-        f"Your previous turn did not produce a usable {path}.\n{reasons}\n"
-        f"Write {path} again from scratch as a single JSON document that "
-        "satisfies the schema you were given. Change nothing else."
-    )
-
-
-# The ladder. There is no terminal failure here on purpose: a node whose
-# artifact never validates escalates to the conductor, which owns the graph and
-# can retry the node again or reshape the plan around it. A validation failure
-# must never be able to strand a run, which is why "fail" is not a value this
-# function can return.
-ACCEPT = "accept"
-RETRY = "retry"
-ESCALATE = "escalate"
-
-
-def next_action(outcome: ArtifactOutcome, attempts: int, max_attempts: int) -> str:
-    """Decide what happens after one artifact evaluation.
-
-    ``attempts`` counts evaluations already spent, including this one.
-    """
-    if outcome.ok:
-        return ACCEPT
-    if attempts < max_attempts:
-        return RETRY
-    return ESCALATE
 
 
 def run_artifact(run: dict) -> dict:
