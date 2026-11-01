@@ -3617,9 +3617,7 @@ def test_scoped_landing_grant_preview_apply_replay(database, scoped_delivery):
 def test_scoped_landing_rejects_other_scope(database, scoped_delivery, classification):
     from factory.orchestration import factory_landing_release as releases
 
-    with pytest.raises(
-        ValueError, match="landing_scope_not_private_internal_reversible"
-    ):
+    with pytest.raises(ValueError, match="landing_scope_unsupported"):
         releases.preview(
             838,
             7170,
@@ -4577,3 +4575,329 @@ def test_rollback_reader_retains_continuation_authority_and_replay(
             )
     assert progress.apply_continuation(**request) == result
     assert not progress.renew_continuation("task")
+
+
+@pytest.fixture
+def public_docs_delivery(database, scoped_delivery, monkeypatch):
+    import base64
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import factory_landing_release as releases
+
+    pull = scoped_delivery
+    pull["base"]["sha"] = "b" * 40
+    pull["changed_files"] = 2
+    paths = sorted(releases.PUBLIC_DOCS)
+    files = [
+        dict(filename=p, status="modified", sha=str(i + 1) * 40)
+        for i, p in enumerate(paths)
+    ]
+    responses = {f"compare/{'b' * 40}...{'a' * 40}": {"files": files}}
+    for revision, prefix in (("b" * 40, "old"), ("a" * 40, "new")):
+        responses[f"git/commits/{revision}"] = {"tree": {"sha": prefix}}
+        for i, path in enumerate(paths):
+            parts = path.split("/")
+            for depth, part in enumerate(parts):
+                tree_sha = prefix + "/" + "/".join(parts[:depth]) if depth else prefix
+                tree = responses.setdefault(
+                    f"git/trees/{tree_sha}", {"truncated": False, "tree": []}
+                )
+                if any(e["path"] == part for e in tree["tree"]):
+                    continue
+                is_file = depth == len(parts) - 1
+                sha = (
+                    (str(i + 1) * 40 if prefix == "new" else str(i + 3) * 40)
+                    if is_file
+                    else prefix + "/" + "/".join(parts[: depth + 1])
+                )
+                tree["tree"].append(
+                    dict(
+                        path=part,
+                        mode="100644" if is_file else "040000",
+                        type="blob" if is_file else "tree",
+                        sha=sha,
+                    )
+                )
+    for f in files:
+        responses[f"git/blobs/{f['sha']}"] = {
+            "encoding": "base64",
+            "size": 7,
+            "content": base64.b64encode(b"# Docs\n").decode(),
+        }
+
+    def github_get(repo, suffix):
+        assert repo == "org/repo"
+        return pull if suffix == "pulls/7170" else responses[suffix]
+
+    monkeypatch.setattr(conductor, "github_get", github_get)
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        direction = json.loads(row.direction_json)
+        direction["landing_hold"] = {"actor": "operator", "reason": "review first"}
+        row.direction_json = json.dumps(direction)
+    return pull, responses
+
+
+def public_docs_scope():
+    return {
+        "classification": "public_docs",
+        "evidence": "Operator approves public documentation publication at this exact head.",
+    }
+
+
+@pytest.mark.parametrize("queue_change", ["review", "head", "hold"])
+def test_public_docs_atomic_release_grant_replay_and_queue(
+    database, public_docs_delivery, monkeypatch, queue_change
+):
+    from factory import review_publisher
+    from factory.orchestration import factory_landing as landing
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, _ = public_docs_delivery
+    pull["node_id"] = "PR_7170"
+    with Session(database) as db:
+        before = db.get(FactoryReceipt, 838).model_dump()
+        assert (
+            releases.scoped_refusal(db, db.get(FactoryReceipt, 838), 7170, "a" * 40)
+            == "landing_receipt_held"
+        )
+    proposal = releases.preview(
+        838, 7170, "a" * 40, "Publish docs", scope=public_docs_scope()
+    )
+    assert proposal["operation"] == "release_and_authorize"
+    assert {f["path"] for f in proposal["public_docs"]["files"]} == releases.PUBLIC_DOCS
+    args = {**operator_request(proposal, "public-docs"), "scope": public_docs_scope()}
+    result = releases.apply(838, 7170, "a" * 40, "Publish docs", **args)
+    assert result["ok"] and not result["delivery_accepted"]
+    assert releases.apply(838, 7170, "a" * 40, "Publish docs", **args) == result
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        after = row.model_dump()
+        assert {
+            k: v for k, v in before.items() if k not in ("direction_json", "updated_at")
+        } == {
+            k: v for k, v in after.items() if k not in ("direction_json", "updated_at")
+        }
+        direction = json.loads(row.direction_json)
+        assert "landing_hold" not in direction
+        assert direction["conductor_gates"] and direction["nonrenewable_recovery"]
+        assert releases.scoped_refusal(db, row, 7170, "a" * 40) is None
+        assert releases.scoped_refusal(db, row, 7170, "b" * 40)
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == releases.SCOPE_ACTION
+                    )
+                ).all()
+            )
+            == 1
+        )
+    # The actual queue fence consumes the same audited grant and still requires
+    # the existing native independent review. It never races a separate release.
+    monkeypatch.setattr(landing, "github_get", lambda *_: pull)
+    monkeypatch.setattr(landing, "_queued_ids", lambda *_: {"PR_7170"})
+    monkeypatch.setattr(
+        review_publisher,
+        "collect",
+        lambda task: review_publisher.ReviewEvidence(
+            task_id=task,
+            repo="org/repo",
+            pr_number=7170,
+            branch="factory/task",
+            head_sha=pull["head"]["sha"],
+            review_run_id=1,
+            review_session_id=2,
+            policy_version=0,
+            details_url="https://example.test/review",
+        ),
+    )
+    actions = []
+    monkeypatch.setattr(landing, "github_graphql", lambda *args: actions.append(args))
+    item = {
+        "task_id": "task",
+        "pr_number": 7170,
+        "head_sha": "a" * 40,
+        "armed": 0,
+        "ejected": 0,
+        "merged": False,
+    }
+    assert not landing._enforce_landing_hold("org/repo", item)
+    assert not landing._fence_ungranted_queue_entry("org/repo", item)
+    assert actions == []
+    # An exact-head grant is not an independent-review substitute.
+    if queue_change == "review":
+        monkeypatch.setattr(
+            review_publisher,
+            "collect",
+            lambda task: review_publisher.Refusal(task, "review_missing"),
+        )
+    if queue_change == "head":
+        pull["head"]["sha"] = "c" * 40
+    elif queue_change == "hold":
+        with Session(database) as db, db.begin():
+            row = db.get(FactoryReceipt, 838)
+            direction = json.loads(row.direction_json)
+            direction["landing_hold"] = {"actor": "operator", "reason": "new hold"}
+            row.direction_json = json.dumps(direction)
+    queued = iter([{"PR_7170"}, set()])
+    monkeypatch.setattr(landing, "_queued_ids", lambda *_: next(queued))
+    assert landing._fence_ungranted_queue_entry("org/repo", item)
+    assert len(actions) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "code",
+        "agent_instructions",
+        "rename",
+        "added",
+        "count",
+        "duplicate",
+        "truncated",
+        "symlink",
+        "executable",
+        "binary",
+        "oversize",
+        "blob",
+        "missing",
+    ],
+)
+def test_public_docs_rejects_unverified_scope(database, public_docs_delivery, change):
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, responses = public_docs_delivery
+    files = responses[f"compare/{'b' * 40}...{'a' * 40}"]["files"]
+    entry = next(
+        e
+        for e in responses["git/trees/new/projects/monolith"]["tree"]
+        if e["path"] == "ARCHITECTURE.md"
+    )
+    blob = responses[f"git/blobs/{files[0]['sha']}"]
+    if change == "code":
+        files[0]["filename"] = "projects/monolith/main.py"
+    elif change == "agent_instructions":
+        files[0]["filename"] = "AGENTS.md"
+    elif change == "rename":
+        files[0]["previous_filename"] = "other.md"
+    elif change == "added":
+        files[0]["status"] = "added"
+    elif change == "count":
+        pull["changed_files"] = 3
+    elif change == "duplicate":
+        files[1] = files[0]
+    elif change == "truncated":
+        responses["git/trees/new"]["truncated"] = True
+    elif change == "symlink":
+        entry["mode"] = "120000"
+    elif change == "executable":
+        entry["mode"] = "100755"
+    elif change == "binary":
+        blob.update(content="AA==", size=1)
+    elif change == "oversize":
+        blob["size"] = 512 * 1024 + 1
+    elif change == "blob":
+        files[0]["sha"] = "f" * 40
+    elif change == "missing":
+        responses["git/trees/new"]["tree"].clear()
+    with pytest.raises(ValueError, match="landing_public_docs_unverified"):
+        releases.preview(838, 7170, "a" * 40, "Publish docs", scope=public_docs_scope())
+    with Session(database) as db:
+        assert controls.landing_held(db.get(FactoryReceipt, 838))
+        assert not db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == releases.SCOPE_ACTION)
+        ).all()
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["head", "base", "receipt", "live", "unknown", "hold", "scope", "unauthorized"],
+)
+def test_public_docs_apply_stale_or_unsafe_refuses_without_release(
+    database, public_docs_delivery, change
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, responses = public_docs_delivery
+    proposal = releases.preview(
+        838, 7170, "a" * 40, "Publish docs", scope=public_docs_scope()
+    )
+    if change in ("head", "base"):
+        part = pull[change]
+        old = part["sha"]
+        part["sha"] = "c" * 40
+        responses[f"git/commits/{'c' * 40}"] = responses[f"git/commits/{old}"]
+        responses[f"compare/{pull['base']['sha']}...{pull['head']['sha']}"] = responses[
+            f"compare/{'b' * 40}...{'a' * 40}"
+        ]
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        if change == "receipt":
+            row.repo = "other/repo"
+        elif change in ("live", "unknown"):
+            if change == "live":
+                db.add(
+                    SwarmNodeRun(
+                        task_id="task",
+                        node_key="live",
+                        attempt=1,
+                        dispatch_key="live",
+                        status="running",
+                    )
+                )
+            else:
+                db.exec(select(FactoryStart)).one().status = "uncertain"
+        elif change == "hold":
+            direction = json.loads(row.direction_json)
+            direction["landing_hold"]["reason"] = "new operator hold"
+            row.direction_json = json.dumps(direction)
+    scope = public_docs_scope()
+    if change == "scope":
+        scope["classification"] = "public_code"
+    if change == "unauthorized":
+        scope["evidence"] = ""
+    # A receipt identity change is rejected before reads can use the other repo.
+    with pytest.raises((ValueError, AssertionError)):
+        releases.apply(
+            838,
+            7170,
+            "a" * 40,
+            "Publish docs",
+            **operator_request(proposal, "stale-docs"),
+            scope=scope,
+        )
+    with Session(database) as db:
+        assert controls.landing_held(db.get(FactoryReceipt, 838))
+        assert not db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == releases.SCOPE_ACTION)
+        ).all()
+
+
+def test_public_docs_audit_failure_rolls_back_hold_and_grant(
+    database, public_docs_delivery, monkeypatch
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    proposal = releases.preview(
+        838, 7170, "a" * 40, "Publish docs", scope=public_docs_scope()
+    )
+    with Session(database) as db:
+        before = db.get(FactoryReceipt, 838).direction_json
+        version = db.get(FactoryControl, "factory").version
+
+    def fail_audit(*args, **kwargs):
+        raise RuntimeError("audit failed")
+
+    monkeypatch.setattr(controls, "_audit", fail_audit)
+    with pytest.raises(RuntimeError, match="audit failed"):
+        releases.apply(
+            838,
+            7170,
+            "a" * 40,
+            "Publish docs",
+            **operator_request(proposal, "atomic-docs"),
+            scope=public_docs_scope(),
+        )
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).direction_json == before
+        assert db.get(FactoryControl, "factory").version == version
