@@ -144,11 +144,6 @@ agents:
     # Repository-only rollout gate for exact-turn Stop. Keep false until the
     # live lane, reuse, accounting and relay-failure checks on #4321 pass.
     stopControlEnabled: false
-    # Observe failed probes until exact eviction evidence releases their hold.
-    probeSupervisionEnabled: false
-    # Cover bound or proven-no-guest kg/project drainers and interactive permits,
-    # probe destroyed/no-guest shapes, and bound factory project attempts.
-    uncertainPermitSupervisionEnabled: false
     # Stage the post-guest, zero-local-turn settlement proof from #6288. This
     # remains separate because it conditionally stops a healthy bound guest.
     boundZeroTurnSettlementEnabled: false
@@ -190,8 +185,7 @@ agents:
     # Supervision backstop for kg, project and interactive permits: settle an
     # uncertain permit whose bound guest the control plane shows never ran an
     # invoke (turn_seq 0, no invoke stamp or stop record) and for which no
-    # result receipt was ever minted. Requires resultReceiptsEnabled and
-    # uncertainPermitSupervisionEnabled.
+    # result receipt was ever minted. Requires resultReceiptsEnabled.
     neverInvokedGuestSettlementEnabled: false
     # Settle a non-factory permit when the invoke failed with the guest's own
     # 4xx/5xx answer, which EmberVM marks with x-ember-invoke-outcome:

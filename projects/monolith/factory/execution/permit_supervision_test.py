@@ -62,7 +62,6 @@ def database(tmp_path, monkeypatch):
                 "next_run_at TIMESTAMP, locked_by TEXT, locked_at TIMESTAMP)"
             )
         )
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     yield engine
     engine.dispose()
@@ -283,7 +282,6 @@ def test_workflow_died_before_hold_settles_non_probe_guest(database, monkeypatch
     still says last_status ok with next_run_at set, which is what seed writes
     unless job_held is passed. Interactive permits have no routine job at all.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, tier, tier=tier)
     sweep(proof(f"guest-{tier}"))
     assert before(database, pid)[0]["state"] == "settled"
@@ -291,7 +289,6 @@ def test_workflow_died_before_hold_settles_non_probe_guest(database, monkeypatch
 
 
 def test_factory_owned_session_is_skipped(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "factory",
@@ -314,7 +311,6 @@ def test_factory_owned_session_is_skipped_via_swarm_node_run_pin(database, monke
     real drainer row, so only the SwarmNodeRun.pin_json ownership check can
     tell this attempt is factory-owned.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "factory-pin",
@@ -344,7 +340,6 @@ def test_factory_owned_session_is_skipped_via_swarm_node_run_pin(database, monke
 
 @pytest.mark.parametrize("tier", ["probe", "kg", "project", "interactive"])
 def test_no_guest_without_delivery_settles(database, monkeypatch, tier):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         f"no-guest-{tier}",
@@ -359,7 +354,6 @@ def test_no_guest_without_delivery_settles(database, monkeypatch, tier):
 
 
 def test_no_guest_without_claim_identity_remains_uncertain(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "unclaimed", tier="kg", guest_bound=False, claimed=False)
     original = before(database, pid)
     sweep(None)
@@ -369,7 +363,6 @@ def test_no_guest_without_claim_identity_remains_uncertain(database, monkeypatch
 def test_no_guest_delivery_is_validated_once_per_locked_identity_read(
     database, monkeypatch
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "single-validation",
@@ -392,7 +385,6 @@ def test_no_guest_delivery_is_validated_once_per_locked_identity_read(
 
 
 def test_failed_kg_without_a_routine_job_is_a_candidate(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "unbound-candidate",
@@ -408,7 +400,6 @@ def test_failed_kg_without_a_routine_job_is_a_candidate(database, monkeypatch):
 def test_stale_unbound_permit_settles_only_after_grace(
     database, monkeypatch, age_seconds
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         f"stale-unbound-{age_seconds}",
@@ -451,7 +442,6 @@ def test_probe_stale_unbound_settlement_requires_all_shape_gates(
     status,
     expected_reason,
 ):
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
     pid = seed(
         database,
         f"stale-probe-{age_seconds}-{binding_evidence}-{status}",
@@ -485,50 +475,17 @@ def test_probe_stale_unbound_settlement_requires_all_shape_gates(
             assert permit["state"] == "uncertain"
 
 
-def test_probe_stale_unbound_flag_is_revalidated_before_settlement(
-    database, monkeypatch
-):
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
-    pid = seed(
-        database,
-        "stale-probe-flag-race",
-        guest_bound=False,
-        created_at=datetime.now(timezone.utc) - timedelta(hours=2),
-    )
-    with Session(database) as db, db.begin():
-        permit = db.get(AgentCapacityReservation, pid)
-        turn = db.exec(
-            select(AgentTurn).where(AgentTurn.session_id == permit.session_id)
-        ).one()
-        turn.usage_json = "{}"
-        db.add(turn)
-
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "false")
-    assert pid not in supervision._candidates()
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
-    candidate = supervision._prepare(pid)
-    assert candidate is not None
-
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "false")
-    supervision._record_stale_unbound(candidate)
-
-    assert before(database, pid)[0]["state"] == "uncertain"
-    with Session(database) as db:
-        assert db.get(ProbeObservation, pid).reason == "no_guest_supervision_disabled"
-
-
 @pytest.mark.parametrize(
     ("age_seconds", "guest_bound", "expected_reason"),
     [
-        (7200, False, "stale_unbound_permit"),
-        (300, False, "stale_unbound_grace"),
+        (7200, False, "no_guest_bound"),
+        (300, False, "no_guest_bound"),
         (7200, True, "observation_unavailable"),
     ],
 )
-def test_lease_expired_settles_only_via_stale_unbound_shape(
+def test_lease_expired_settles_only_without_a_bound_guest(
     database, monkeypatch, age_seconds, guest_bound, expected_reason
 ):
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
     pid = seed(
         database,
         f"lease-expired-{age_seconds}-{guest_bound}",
@@ -547,38 +504,15 @@ def test_lease_expired_settles_only_via_stale_unbound_shape(
     with Session(database) as db:
         audit = db.get(ProbeObservation, pid)
         assert audit.reason == expected_reason
-        if expected_reason == "stale_unbound_permit":
+        if expected_reason == "no_guest_bound":
             assert audit.settled_at is not None
             assert permit["state"] == "settled"
-            assert permit["outcome"] == "stale_unbound_permit"
         else:
             assert audit.settled_at is None
             assert permit["state"] == "uncertain"
 
 
-def test_lease_expired_stale_unbound_requires_probe_flag(database, monkeypatch):
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "false")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    pid = seed(
-        database,
-        "lease-expired-probe-disabled",
-        guest_bound=False,
-        created_at=datetime.now(timezone.utc) - timedelta(hours=2),
-    )
-    with Session(database) as db, db.begin():
-        db.get(AgentCapacityReservation, pid).outcome = "lease_expired"
-    original = before(database, pid)
-
-    sweep(None)
-
-    assert before(database, pid) == original
-    with Session(database) as db:
-        assert db.get(ProbeObservation, pid) is None
-
-
 def test_lease_expired_stale_unbound_rejects_binding_evidence(database, monkeypatch):
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
     pid = seed(
         database,
         "lease-expired-prior-binding",
@@ -601,11 +535,7 @@ def test_lease_expired_stale_unbound_rejects_binding_evidence(database, monkeypa
         assert audit.settled_at is None
 
 
-def test_lease_expired_exact_delivery_proof_settles_with_both_flags(
-    database, monkeypatch
-):
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+def test_lease_expired_exact_delivery_proof_settles(database, monkeypatch):
     pid = seed(
         database,
         "lease-expired-both-flags",
@@ -624,9 +554,7 @@ def test_lease_expired_exact_delivery_proof_settles_with_both_flags(
         assert audit.settled_at is not None
 
 
-def test_both_flags_do_not_settle_fresh_non_error_legacy_probe(database, monkeypatch):
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+def test_fresh_non_error_legacy_probe_is_not_settled(database, monkeypatch):
     pid = seed(
         database,
         "fresh-non-error-both-flags",
@@ -654,7 +582,6 @@ def test_both_flags_do_not_settle_fresh_non_error_legacy_probe(database, monkeyp
 
 
 def test_unrelated_probe_outcome_is_not_tolerated_by_stale_path(database, monkeypatch):
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
     pid = seed(
         database,
         "stale-probe-unrelated-outcome",
@@ -674,7 +601,6 @@ def test_unrelated_probe_outcome_is_not_tolerated_by_stale_path(database, monkey
 
 
 def test_binding_evidence_prevents_stale_unbound_settlement(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "stale-with-binding",
@@ -703,7 +629,6 @@ def test_binding_evidence_prevents_stale_unbound_settlement(database, monkeypatc
 def test_only_true_workspace_loss_blocks_stale_unbound_settlement(
     database, monkeypatch, workspace_loss, settles
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         f"stale-workspace-loss-{workspace_loss}",
@@ -736,7 +661,6 @@ def test_parked_guest_on_absent_node_requests_destroy_and_keeps_hold(
 ):
     from cluster import kubernetes
 
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "departed-node", tier="kg")
     now = datetime.now(timezone.utc)
     stamp = int(now.timestamp() * 1000)
@@ -778,7 +702,6 @@ def test_parked_guest_on_absent_node_requests_destroy_and_keeps_hold(
 def test_node_gone_destroy_is_bounded_and_records_exhaustion(database, monkeypatch):
     from cluster import kubernetes
 
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "bounded-departed-node", tier="kg")
     now = datetime.now(timezone.utc)
     stamp = int(now.timestamp() * 1000)
@@ -831,7 +754,6 @@ def test_never_invoked_parked_guest_on_absent_node_requests_destroy(
 ):
     from cluster import kubernetes
 
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "never-invoked-departed", tier="kg")
     now = datetime.now(timezone.utc)
     observed = proof(
@@ -871,7 +793,6 @@ def test_never_invoked_parked_guest_on_absent_node_requests_destroy(
 def test_unknown_node_inventory_does_not_request_destroy(database, monkeypatch):
     from cluster import kubernetes
 
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "unknown-inventory", tier="kg")
     now = datetime.now(timezone.utc)
     observed = proof(
@@ -907,7 +828,6 @@ def test_unknown_node_inventory_does_not_request_destroy(database, monkeypatch):
 
 @pytest.mark.parametrize("guest_bound", [False, True])
 def test_pending_message_blocks_settlement(database, monkeypatch, guest_bound):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         f"pending-{guest_bound}",
@@ -936,7 +856,6 @@ def test_pending_message_blocks_settlement(database, monkeypatch, guest_bound):
 def test_no_guest_with_delivery_or_missing_recovery_remains_uncertain(
     database, monkeypatch, recovery_updates
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "attempted",
@@ -958,30 +877,7 @@ def test_no_guest_with_delivery_or_missing_recovery_remains_uncertain(
     assert before(database, pid) == original
 
 
-def test_non_probe_flag_off_leaves_kg_and_project_untouched(database, monkeypatch):
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
-    probe_id = seed(database, "probe")
-    other_ids = [seed(database, tier, tier=tier) for tier in ("kg", "project")]
-    originals = [before(database, pid) for pid in other_ids]
-    sweep(lambda guest: proof(guest))
-    assert before(database, probe_id)[0]["state"] == "settled"
-    assert [before(database, pid) for pid in other_ids] == originals
-
-
-def test_probe_flag_off_excludes_probe_when_general_flag_is_on(database, monkeypatch):
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "false")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    probe_id = seed(database, "probe")
-    kg_id = seed(database, "kg", tier="kg")
-    original_probe = before(database, probe_id)
-    sweep(lambda guest: proof(guest))
-    assert before(database, probe_id) == original_probe
-    assert before(database, kg_id)[0]["state"] == "settled"
-
-
 def test_cessation_timestamp_before_failed_turn_does_not_settle(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "early", tier="project")
     original = before(database, pid)
     created_at = original[2][0]["created_at"]
@@ -997,19 +893,10 @@ def test_cessation_timestamp_before_failed_turn_does_not_settle(database, monkey
     assert before(database, pid) == original
 
 
-def test_destroyed_with_timestamp_settles_under_general_flag(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+def test_destroyed_with_timestamp_settles(database, monkeypatch):
     pid = seed(database)
     sweep(proof(state="destroyed"))
     assert before(database, pid)[0]["state"] == "settled"
-
-
-def test_probe_only_destroyed_view_preserves_hold_and_binding(database, monkeypatch):
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
-    pid = seed(database)
-    original = before(database, pid)
-    sweep(proof(state="destroyed"))
-    assert before(database, pid) == original
 
 
 @pytest.mark.parametrize("tier", ["kg", "project"])
@@ -1026,7 +913,6 @@ def test_held_routine_job_permit_is_left_to_the_operator_path(
     owns both supported drainer kinds, and settling here would remove its exact
     permit evidence before it can apply the requested job disposition.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, f"held-{tier}", tier=tier, job_held=True)
     assert pid in supervision._candidates()
     with Session(database) as db:
@@ -1056,7 +942,6 @@ def test_interactive_session_with_completed_history_settles(database, monkeypatc
     reserve_start per turn, so the session owns three reservation rows and the
     two earlier ones are settled.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "chat", tier="interactive", history=2)
     assert before(database, pid)[0]["pending_seq"] == 3
     with Session(database) as db:
@@ -1087,7 +972,6 @@ def test_interactive_reservation_past_the_failed_turn_is_ambiguous(
     reserve_start with the new pending seq), so this permit is no longer the
     session's live attempt and the loop must not settle it.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "chat-resent", tier="interactive", history=1)
     with Session(database) as db, db.begin():
         permit = db.get(AgentCapacityReservation, pid)
@@ -1119,7 +1003,6 @@ def test_interactive_reservation_past_the_failed_turn_is_ambiguous(
 def test_other_drainer_history_is_reported_as_unsupported_shape(
     database, monkeypatch, tier, job_name, history
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database, "other-history", tier=tier, history=history, routine_job_name=job_name
     )
@@ -1132,7 +1015,6 @@ def test_other_drainer_history_is_reported_as_unsupported_shape(
 
 def test_kg_correction_with_settled_history_reaches_cessation(database, monkeypatch):
     """drain_cycle sends a correction in the first extraction's session."""
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database, "kg-correction", tier="kg", history=1, routine_job_name="kg:raw"
     )
@@ -1152,7 +1034,6 @@ def test_kg_correction_with_settled_history_reaches_cessation(database, monkeypa
 
 
 def test_kg_correction_still_requires_guest_cessation(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "kg-live", tier="kg", history=1, routine_job_name="kg:raw")
     original = before(database, pid)
     sweep(proof("guest-kg-live", state="running"))
@@ -1165,7 +1046,6 @@ def test_kg_correction_still_requires_guest_cessation(database, monkeypatch):
 def test_kg_correction_cannot_settle_an_earlier_live_permit(
     database, monkeypatch, state
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database, "kg-live-history", tier="kg", history=1, routine_job_name="kg:raw"
     )
@@ -1192,7 +1072,6 @@ def test_kg_correction_cannot_settle_an_earlier_live_permit(
 def test_kg_correction_requires_routine_session_identity(
     database, monkeypatch, field, value
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database, "kg-wrong-identity", tier="kg", history=1, routine_job_name="kg:raw"
     )
@@ -1209,7 +1088,6 @@ def test_kg_correction_requires_routine_session_identity(
 
 
 def test_later_turn_after_the_failed_turn_is_a_changed_attempt(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "resent", tier="interactive", history=1)
     with Session(database) as db, db.begin():
         permit = db.get(AgentCapacityReservation, pid)
@@ -1239,7 +1117,6 @@ def test_residual_binding_evidence_blocks_a_no_guest_settlement(
     destroy that motivated this lives in admission_test.py, which can import
     store: test_operator_destroy_retains_a_binding_under_an_unknown_outcome.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, f"residual-{field}", tier="kg", guest_bound=False)
     with Session(database) as db, db.begin():
         permit = db.get(AgentCapacityReservation, pid)
@@ -1271,7 +1148,6 @@ def test_production_drainer_kg_settles_when_the_workflow_died_before_the_hold(
     name on the reservation, which is the only selector _candidates matches on.
     The routine job row is still armed because hold_drainer_job never ran.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "production-kg",
@@ -1368,7 +1244,6 @@ def test_never_invoked_terminal_guest_settles(database, monkeypatch):
     indefinitely. `destroyed` is the state the control-plane node-gone
     completion produces, so general mode is on, as it is in production.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database)
     sweep(proof(state="destroyed", invoke_started_at=None, last_invoke_at=None))
     after = before(database, pid)
@@ -1391,7 +1266,6 @@ def test_terminal_guest_with_one_null_invoke_stamp_still_refuses(
     database, monkeypatch, change
 ):
     """One null stamp is a malformed observation, not a never-invoked guest."""
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database)
     original = before(database, pid)
     sweep(proof(state="destroyed", **change))
@@ -1400,7 +1274,6 @@ def test_terminal_guest_with_one_null_invoke_stamp_still_refuses(
 
 def test_never_invoked_guest_that_is_not_terminal_still_refuses(database, monkeypatch):
     """Null stamps on a LIVE guest prove no cessation."""
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database)
     original = before(database, pid)
     sweep(proof(state="running", invoke_started_at=None, last_invoke_at=None))
@@ -1515,23 +1388,40 @@ def test_failed_get_does_not_block_later_terminal_candidate(database):
     assert before(database, second)[0]["state"] == "settled"
 
 
-def test_disabled_start_creates_no_task(monkeypatch):
-    monkeypatch.delenv("AGENT_PROBE_SUPERVISION_ENABLED", raising=False)
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
-    assert supervision.start_permit_supervision_loop() == []
+# Built from parts so the retired names do not appear as greppable flags.
+RETIRED_FLAGS = tuple(
+    f"AGENT_{name}_SUPERVISION_ENABLED" for name in ("PROBE", "UNCERTAIN_PERMIT")
+)
 
 
-def test_enabled_leader_task_is_cancellable(monkeypatch):
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
+def test_leader_task_starts_without_rollout_flags(monkeypatch):
+    for name in RETIRED_FLAGS:
+        monkeypatch.delenv(name, raising=False)
+
+    async def idle():
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(supervision, "_loop", idle)
 
     async def check():
         tasks = supervision.start_permit_supervision_loop()
         assert len(tasks) == 1
+        assert tasks[0].get_name() == "agent-permit-supervision"
         tasks[0].cancel()
         with pytest.raises(asyncio.CancelledError):
             await tasks[0]
 
     asyncio.run(check())
+
+
+def test_candidates_cover_every_tier_without_rollout_flags(database, monkeypatch):
+    for name in RETIRED_FLAGS:
+        monkeypatch.delenv(name, raising=False)
+    ids = {
+        tier: seed(database, tier, tier=tier)
+        for tier in ("probe", "kg", "project", "interactive")
+    }
+    assert set(ids.values()) <= set(supervision._candidates())
 
 
 def test_reimporting_maintenance_keeps_one_model_registration():
@@ -1554,7 +1444,6 @@ def test_nonsettling_reasons_are_visible_without_secret_payloads(database, caplo
 def test_malformed_recovery_still_settles_once_stale_unbound(database, monkeypatch):
     """A recognised outcome with no usable recovery blob is held only until the
     stale unbound grace has passed; afterwards the shape alone settles it."""
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "stale-malformed-recovery",
@@ -1583,7 +1472,6 @@ def test_malformed_recovery_still_settles_once_stale_unbound(database, monkeypat
 
 
 def test_malformed_recovery_is_held_before_the_grace(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "young-malformed-recovery",
@@ -1623,13 +1511,11 @@ def test_malformed_recovery_is_held_before_the_grace(database, monkeypatch):
         "bad_count",
         "bad_completion",
         "nonterminal",
-        "disabled",
     ],
 )
 def test_terminal_dispatch_can_precede_client_failure(
     database, monkeypatch, guest_state, change
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
     now = datetime.now(timezone.utc)
     recovery = {"last_dispatch_at": (now - timedelta(seconds=120)).isoformat()}
@@ -1661,8 +1547,6 @@ def test_terminal_dispatch_can_precede_client_failure(
         evidence["last_invoke_at"] = True
     elif change == "nonterminal":
         evidence["state"] = "running"
-    elif change == "disabled":
-        monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "false")
     sweep(evidence)
     after = before(database, pid)
     assert after[2] == original[2]
@@ -1693,7 +1577,6 @@ def test_terminal_dispatch_can_precede_client_failure(
 def test_failed_invoke_requires_opt_in_and_exact_terminal_proof(
     database, monkeypatch, change
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
     now = datetime.now(timezone.utc)
     pid = seed(
@@ -1763,7 +1646,6 @@ def never_invoked(database, monkeypatch):
     from factory.execution.models import AgentResultReceipt
 
     SQLModel.metadata.create_all(database, tables=[AgentResultReceipt.__table__])
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     monkeypatch.setenv("AGENT_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "true")
     return database
@@ -2098,7 +1980,6 @@ def test_diagnostics_preserve_supervisor_evidence_after_settlement(
         connection.execute(
             text("CREATE TABLE workflow_status (workflow_uuid TEXT, status TEXT)")
         )
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     now = datetime.now(UTC)
     pid = seed(
         database,

@@ -150,7 +150,7 @@ A planner decision applies together under one expected revision. The server owns
 
 ### Permit supervision boundaries
 
-Capacity releases only to the explicit reconciliation owner after fresh authoritative terminal proof. Uncertain permit settlement is behind `agents.sessions.uncertainPermitSupervisionEnabled`, default off.
+Capacity releases only to the explicit reconciliation owner after fresh authoritative terminal proof. Uncertain permit settlement is always on.
 
 ### Guest reuse cleanup
 

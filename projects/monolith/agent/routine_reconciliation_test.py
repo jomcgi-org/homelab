@@ -731,7 +731,6 @@ def test_supervision_recovers_held_kg_correction_atomically(
             )
         ],
     )
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
     monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
@@ -1319,7 +1318,6 @@ def test_factory_supervision_atomically_reconciles_terminal_held_job(
         ],
     )
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     now = datetime.now(timezone.utc)
 
@@ -1626,7 +1624,6 @@ def unbound_held(database, monkeypatch, *, applied=False, outcome="lease_expired
         ],
     )
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     with Session(engine) as db, db.begin():
         agent = db.get(AgentSession, request["session_id"])
@@ -1868,7 +1865,6 @@ def interrupted_dispatch(database, monkeypatch):
     for module in (store, admission, reconciliation):
         monkeypatch.setattr(module, "datetime", Clock)
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervision, "_now", lambda: attempt["clock"])
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _: None)
 
@@ -2734,7 +2730,6 @@ def test_recovered_review_redispatch_settles_only_exact_audited_attempt(
         ],
     )
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
     now = datetime.now(timezone.utc)
 

@@ -189,10 +189,6 @@ spec:
             # surfaces follow one values edit.
             - name: AGENT_MODELS
               value: {{ .Values.agents.models | default "" | quote }}
-            - name: AGENT_PROBE_SUPERVISION_ENABLED
-              value: {{ .Values.agents.sessions.probeSupervisionEnabled | quote }}
-            - name: AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED
-              value: {{ .Values.agents.sessions.uncertainPermitSupervisionEnabled | quote }}
             - name: FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED
               value: {{ .Values.agents.sessions.boundZeroTurnSettlementEnabled | default false | quote }}
             - name: AGENT_RESULT_RECEIPTS_ENABLED
