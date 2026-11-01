@@ -1,4 +1,6 @@
 // Invented data only. No IDs, notes or decisions are loaded from production.
+import { summarizeBoard } from "../src/lib/private/factory-summary.js";
+
 export const itemId = "100001";
 export const taskId =
   "t-synthetic-78381e85-5d08-4751-a77a-long-operator-investigation";
@@ -298,6 +300,8 @@ export function dashboardData(scenario = "populated") {
     tasksDaily: scenario === "empty" ? [] : [daily],
     tasksWeekly: scenario === "empty" ? [] : [daily, weekly],
     dashboard: {
+      // The same summary the server attaches, from the same synthetic board.
+      factory: summarizeBoard(board(scenario === "empty")),
       today: {
         events:
           scenario === "empty"
@@ -329,7 +333,7 @@ export function dashboardData(scenario = "populated") {
                     "Synthetic dashboard investigation " +
                     "long-reference".repeat(10),
                   url: "https://example.test/pull/90001",
-                  ci: "success",
+                  ci: "passing",
                   draft: true,
                 },
               ],

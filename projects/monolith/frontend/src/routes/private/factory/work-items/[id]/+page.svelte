@@ -567,7 +567,8 @@
     background: var(--sheet);
     color: var(--ink);
     font-family: var(--font-ui);
-    font-size: 0.9rem;
+    /* 1rem: a focused input under 16px zooms iOS Safari. */
+    font-size: 1rem;
   }
   .add-form input:focus,
   .add-form select:focus {

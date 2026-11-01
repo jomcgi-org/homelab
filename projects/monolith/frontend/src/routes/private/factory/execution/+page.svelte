@@ -1875,7 +1875,8 @@
 
 {#snippet trail()}
   <Trail
-    crumbs={[{ label: "Factory", href: "/factory" }, { label: "Execution" }]}
+    root={{ label: "dashboard", href: "/" }}
+    crumbs={[{ label: "factory", href: "/factory" }, { label: "execution" }]}
   />
 {/snippet}
 
@@ -3907,7 +3908,8 @@
       min-height: 44px;
       height: 44px;
       padding: 10px 12px;
-      font-size: 15px;
+      /* 16px: iOS Safari zooms the console for anything smaller. */
+      font-size: 16px;
     }
     .bar {
       display: contents;
@@ -3919,8 +3921,11 @@
       justify-self: start;
       margin-left: 4px;
     }
-    .model-picker.composer-model select {
+    .model-picker.composer-model select,
+    .new-panel textarea,
+    .new-panel select {
       min-height: 44px;
+      font-size: 16px;
     }
     .composer-hint {
       /* A phone has no ⌘↵. */

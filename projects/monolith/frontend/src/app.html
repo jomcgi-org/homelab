@@ -2,7 +2,31 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <!-- The browser chrome paints the sheet colour of the scheme in use.
+         SchemeToggle rewrites both when the reader picks a scheme by hand. -->
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: light)"
+      content="#ffffff"
+    />
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: dark)"
+      content="#181a20"
+    />
+    <!-- use-credentials: the private host sits behind Cloudflare Access,
+         and a manifest fetched without the session cookie gets the login
+         page instead. Same origin everywhere, so nothing leaves the host. -->
+    <link
+      rel="manifest"
+      href="/manifest.webmanifest"
+      crossorigin="use-credentials"
+    />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <script>
       try {
         if (typeof window !== "undefined") {

@@ -10,6 +10,7 @@ import {
   money,
   phaseLabel,
   planRanks,
+  prLabel,
   turnShare,
 } from "./factory-view.js";
 
@@ -146,5 +147,21 @@ describe("factory board helpers", () => {
     expect(money(0)).toBe("$0.00");
     expect(money(9.041)).toBe("$9.04");
     expect(money(null)).toBe("");
+  });
+});
+
+describe("prLabel", () => {
+  it("names a pull request by its number", () => {
+    expect(prLabel("https://github.com/jomcgi-org/homelab/pull/7436")).toBe(
+      "PR #7436",
+    );
+    expect(prLabel("https://example.test/org/repo/pull/90001/files")).toBe(
+      "PR #90001",
+    );
+  });
+
+  it("falls back to the plain word for anything else", () => {
+    expect(prLabel("https://example.test/org/repo/pulls")).toBe("pull request");
+    expect(prLabel(null)).toBe("pull request");
   });
 });

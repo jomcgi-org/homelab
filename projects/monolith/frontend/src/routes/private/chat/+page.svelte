@@ -721,6 +721,7 @@
   <div class="explorer-body">
     <aside class="chat-panel">
       <header class="explorer-header">
+        <a class="header-home" href="/">&larr; dashboard</a>
         <span class="header-title">KNOWLEDGE</span>
       </header>
       <div class="chat-log" bind:this={chatLog}>
@@ -887,6 +888,21 @@
     font-weight: 700;
     font-size: 12px;
     letter-spacing: 0.15em;
+  }
+  /* The one way home from a page that draws its own bar: a 44px target. */
+  .header-home {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    margin-right: 14px;
+    padding-right: 12px;
+    border-right: 1px solid var(--stroke);
+    color: var(--ink-2);
+    font-size: 12px;
+    text-decoration: none;
+  }
+  .header-home:hover {
+    color: var(--accent-ink);
   }
   .chat-log {
     flex: 1 1 0;

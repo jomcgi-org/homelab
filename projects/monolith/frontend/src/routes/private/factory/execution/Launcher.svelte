@@ -364,7 +364,8 @@
     border-radius: 0;
     color: var(--text);
     background: transparent;
-    font: 15px/1.5 var(--font-ui);
+    /* 16px: iOS Safari zooms the whole console for anything smaller. */
+    font: 16px/1.5 var(--font-ui);
     outline: none;
   }
   .bar {
@@ -460,6 +461,8 @@
     align-items: center;
     gap: 6px;
     margin: -12px 0;
+    /* 44px on a phone: the two doorways are tapped, not clicked. */
+    min-height: 44px;
     padding: 4px 12px;
     overflow: hidden;
     border-radius: 0;
@@ -621,6 +624,11 @@
     clip: rect(0, 0, 0, 0);
   }
   @media (max-width: 760px) {
+    /* The textarea's floor applies to the pickers too: a focused select
+       under 16px zooms iOS Safari. After the shorthand, so it wins. */
+    .select {
+      font-size: 16px;
+    }
     .home {
       padding: 24px 4px 16px;
       gap: 24px;

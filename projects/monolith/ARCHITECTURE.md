@@ -1474,6 +1474,7 @@ by trust in the guest.
 - `/artifact/{id}`: agent-built HTML served from object storage in a sandboxed opaque origin. (see: /projects/monolith/artifact/router.py)
 - `/blog`, `/docs`, `/engineering`: the posts, the published repository documents (this file among them), and the engineering index. (see: /projects/monolith/frontend/src/routes/public/docs)
 - `/agents` (private hostname): the agent console of section 4. (see: /projects/monolith/frontend/src/routes/private/agents/+page.svelte)
+- `/` (private hostname): the operator console, read phone-first. Its load merges the home aggregate with a summary of the factory board (open decisions, lane counts, the conductor link) so one page says what needs Joe and where every private tool is; the same merged read backs its 60-second refresh. (see: /projects/monolith/frontend/src/lib/private/dashboard-load.js)
 
 The obsolete `/app/dr-jobs` and `/app/campsites` frontend pages are retired.
 Their former URLs, including query-string bookmarks, use the root path-aware

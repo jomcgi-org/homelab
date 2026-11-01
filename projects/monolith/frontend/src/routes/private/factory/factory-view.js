@@ -31,6 +31,16 @@ export function planRanks(nodes) {
   return computeRanks(keyed);
 }
 
+/**
+ * "PR #90001" from a pull request URL, or "pull request" when the URL has no
+ * number. A raw URL wraps over three lines on a phone and says nothing the
+ * number does not.
+ */
+export function prLabel(url) {
+  const match = /\/pull\/(\d+)(?:[/?#]|$)/.exec(String(url ?? ""));
+  return match ? `PR #${match[1]}` : "pull request";
+}
+
 /** fmtCost renders 0 as an empty string; a ledger wants the zero. */
 export function money(value) {
   if (value === null || value === undefined || value === "") return "";

@@ -1,35 +1,37 @@
-// Private launcher registry for the dashboard's launcher strip.
+// The private keypad: every tool on private.jomcgi.dev, plus the three
+// outside services Joe logs into, as one row of keys on the dashboard.
 //
-// Scope: internal cluster-ops tools and repos Joe logs into and uses, not the
-// public /app/* apps (those live on the apex and are reachable at jomcgi.dev).
+// Internal hrefs are browser paths on the private host. External keys open
+// in a new tab. The public /app/* apps live on the apex and are not here.
+// ArgoCD has no hub UI route and Longhorn is retired (#7051); SigNoz left
+// with its chart (#5362) and telemetry is Honeycomb.
 //
-// Internal hrefs are browser paths on private.jomcgi.dev. ArgoCD has no hub
-// UI route and Longhorn is retired. External tools open in a new tab.
-//
-// Telemetry now lives in Honeycomb, which is external and so opens in a new
-// tab rather than sitting under /app/. The SigNoz tile was removed with SigNoz
-// itself (#5362); its /app/signoz HTTPRoute went with the chart, so the tile
-// was left pointing at a route that no longer resolves.
+// `conductor` carries a static fallback; the dashboard swaps in the board's
+// own composed link (model and opening prompt) when the factory answers.
 export const launcher = [
+  { label: "factory", href: "/factory" },
+  { label: "decisions", href: "/factory/escalations", count: "waiting" },
+  { label: "work", href: "/factory/execution" },
   {
-    label: "Honeycomb",
-    desc: "traces and probes",
+    label: "conductor",
+    href: "/factory/execution?compose=1",
+    dynamic: "conductor",
+  },
+  { label: "ask the cluster", href: "#ask" },
+  { label: "knowledge", href: "/chat" },
+  { label: "review", href: "/review" },
+  { label: "notes", href: "/notes" },
+  { label: "updates", href: "/updates" },
+  { label: "qwen", href: "/qwen" },
+  { label: "grimoire", href: "/grimoire" },
+  {
+    label: "honeycomb",
     href: "https://ui.honeycomb.io/jomcgi-75/environments/homelab",
     external: true,
   },
-  { label: "Factory", desc: "autonomous work", href: "/factory" },
-  { label: "Qwen", desc: "4090 chat and inference stats", href: "/qwen" },
-  { label: "Grimoire", desc: "character sheets", href: "/grimoire" },
-  { label: "Updates", desc: "daily release journal", href: "/updates" },
+  { label: "buildbuddy", href: "https://jomcgi.buildbuddy.io", external: true },
   {
-    label: "BuildBuddy",
-    desc: "CI",
-    href: "https://jomcgi.buildbuddy.io",
-    external: true,
-  },
-  {
-    label: "GitHub",
-    desc: "jomcgi-org/homelab",
+    label: "github",
     href: "https://github.com/jomcgi-org/homelab",
     external: true,
   },

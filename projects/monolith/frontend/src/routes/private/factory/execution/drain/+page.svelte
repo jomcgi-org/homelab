@@ -212,9 +212,10 @@
 
 {#snippet trail()}
   <Trail
+    root={{ label: "dashboard", href: "/" }}
     crumbs={[
-      { label: "Factory", href: "/factory" },
-      { label: "Execution", href: "/factory/execution" },
+      { label: "factory", href: "/factory" },
+      { label: "execution", href: "/factory/execution" },
     ]}
     current={D.labels.title}
   />
