@@ -109,7 +109,9 @@ and voice hints are visible to every admitted member: the DM uses an NPC entity
 key for a hidden identity and avoids identifying text in hints. DMs retain raw
 keys, and the DM map adds `speaker_name` for NPC keys still visible to the DM.
 The DM speaker pickers list saved presets from it and find other NPCs by name
-search; the session poll requests no NPC list. Server-generated audio is
+search; the session poll requests no NPC list. An NPC key without a name has
+left the DM's view: narration omits it, and the preset editor offers only its
+deletion, which checks the stored row and no entity. Server-generated audio is
 tracked separately in #6629.
 
 The browser queues only events already received in the session feed, in sequence

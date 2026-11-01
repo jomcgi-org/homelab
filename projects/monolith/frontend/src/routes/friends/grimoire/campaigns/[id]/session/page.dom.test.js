@@ -386,7 +386,7 @@ describe("session read-aloud controls and voice composer", () => {
     );
     replyButton.click();
     await settle();
-    await choose(select, "custom");
+    await choose(select, "label:custom");
     const label = document.querySelector('[aria-label="Speaker label"]');
     label.value = "Captain North";
     label.dispatchEvent(new Event("input", { bubbles: true }));
@@ -612,6 +612,198 @@ describe("session read-aloud controls and voice composer", () => {
       operation: "saveVoice",
       speakerKey: npcSearchHit.toLowerCase(),
     });
+  });
+
+  it("says when the NPC search shows only part of the matches and marks same-named NPCs", async () => {
+    const data = pageData("dm", []);
+    const fetch = stubFetch(() => data);
+    const routed = fetch.getMockImplementation();
+    fetch.mockImplementation(async (url, options) =>
+      String(url).includes("?q=")
+        ? json({
+            items: [
+              {
+                id: npcSearchHit,
+                name: "Mara",
+                entity_type: "npc",
+                source_type: "extracted",
+                source_book: "system-reference-doc-5-1",
+              },
+              {
+                id: npcId,
+                name: "mara",
+                entity_type: "npc",
+                source_type: "homebrew",
+                source_book: null,
+              },
+              {
+                id: pcB,
+                name: "Marabel",
+                entity_type: "npc",
+                source_type: "extracted",
+                source_book: "monster-manual",
+              },
+            ],
+            total: 42,
+            next_cursor: "30",
+          })
+        : routed(url, options),
+    );
+    await render(data);
+    await choose(
+      document.querySelector('[aria-label="Preset speaker"]'),
+      "npc:find",
+    );
+    const name = document.querySelector('[aria-label="NPC name"]');
+    name.value = "Mar";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    document
+      .querySelector(".voice-presets form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    const text = (node) => node.textContent.replace(/\s+/g, " ").trim();
+    expect(
+      [...document.querySelectorAll('[aria-label="Matching NPCs"] button')].map(
+        text,
+      ),
+    ).toEqual([
+      "Mara (system-reference-doc-5-1)",
+      "mara (Homebrew)",
+      "Marabel",
+    ]);
+    expect(text(document.querySelector(".voice-presets"))).toContain(
+      "Showing 3 of 42. Type more of the name.",
+    );
+  });
+
+  it("keeps unavailable NPCs out of narration, lets the DM delete them, and keeps a 'custom' preset apart from Free label", async () => {
+    const stale = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    const preset = (key, name) => ({
+      speaker_key: key,
+      speaker_name: name,
+      voice_hint: { lang: "en-GB", names: [] },
+      rate: 1,
+      pitch: 1,
+    });
+    const data = {
+      ...pageData("dm", []),
+      voices: [
+        preset(stale, null),
+        preset("custom", null),
+        preset(npcId, "NPC_CANARY"),
+      ],
+    };
+    const fetch = stubFetch(() => data);
+    await render(data);
+    const narration = document.querySelector(
+      '[aria-label="Narration speaker"]',
+    );
+    expect(
+      [...narration.options].map((option) => [option.value, option.text]),
+    ).toEqual([
+      ["narrator", "Narrator"],
+      [npcId, "NPC_CANARY"],
+      ["custom", "custom"],
+      ["label:custom", "Free label"],
+    ]);
+    // The saved "custom" label is a speaker, not the Free label field.
+    await choose(narration, "custom");
+    expect(document.querySelector('[aria-label="Speaker label"]')).toBeNull();
+    document.querySelector("#message").value = "Who goes there?";
+    document
+      .querySelector("#message")
+      .dispatchEvent(new Event("input", { bubbles: true }));
+    document
+      .querySelector(".composer")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(posted(fetch)[0]).toMatchObject({
+      kind: "narration",
+      speakerKey: "custom",
+    });
+
+    expect(document.body.textContent).not.toContain(stale);
+    const saved = [
+      ...document.querySelectorAll('[aria-label="Saved voice presets"] button'),
+    ];
+    expect(saved.map((button) => button.textContent)).toEqual([
+      "Unavailable NPC",
+      "custom",
+      "NPC_CANARY",
+    ]);
+    saved[0].click();
+    await settle();
+    const editor = document.querySelector('[aria-label="Preset speaker"]');
+    expect(editor.value).toBe(stale);
+    expect(editor.selectedOptions[0].text).toBe("Unavailable NPC");
+    expect(document.querySelector('[aria-label="Language hint"]')).toBeNull();
+    const buttons = [...document.querySelectorAll(".voice-presets button")];
+    expect(buttons.some((button) => button.textContent === "Save voice")).toBe(
+      false,
+    );
+    buttons.find((button) => button.textContent === "Delete voice").click();
+    await settle();
+    expect(posted(fetch)[1]).toMatchObject({
+      operation: "deleteVoice",
+      speakerKey: stale,
+    });
+
+    saved[1].click();
+    await settle();
+    expect(editor.value).toBe("custom");
+    expect(document.querySelector('[aria-label="Preset label"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Language hint"]').value).toBe(
+      "en-GB",
+    );
+  });
+
+  it("falls back to the narrator in both pickers when the chosen preset is deleted", async () => {
+    vi.useFakeTimers();
+    const preset = (key, name) => ({
+      speaker_key: key,
+      speaker_name: name,
+      voice_hint: { lang: null, names: [] },
+      rate: 1,
+      pitch: 1,
+    });
+    let current = {
+      ...pageData("dm", []),
+      voices: [preset(npcId, "NPC_CANARY"), preset("Old Salt", null)],
+    };
+    const fetch = stubFetch(() => current);
+    await render(current);
+    const narration = document.querySelector(
+      '[aria-label="Narration speaker"]',
+    );
+    const editor = document.querySelector('[aria-label="Preset speaker"]');
+    await choose(narration, npcId);
+    [...document.querySelectorAll('[aria-label="Saved voice presets"] button')]
+      .find((button) => button.textContent === "Old Salt")
+      .click();
+    await settle();
+    expect(editor.value).toBe("Old Salt");
+    current = { ...current, voices: [] };
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(narration.value).toBe("narrator");
+    expect(editor.value).toBe("narrator");
+    document.querySelector("#message").value = "The door creaks.";
+    document
+      .querySelector("#message")
+      .dispatchEvent(new Event("input", { bubbles: true }));
+    document
+      .querySelector(".composer")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    document
+      .querySelector(".voice-presets form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(posted(fetch)).toMatchObject([
+      { kind: "narration", speakerKey: "narrator" },
+      { operation: "saveVoice", speakerKey: "narrator" },
+    ]);
   });
 });
 
