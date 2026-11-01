@@ -2628,6 +2628,17 @@ winning the race.
 
 ### Landing
 
+An operator may preview/apply `public_docs` release scope for modifications only
+of the existing monolith `ARCHITECTURE.md` and this `FACTORY.md`. GitHub evidence
+must prove the exact head changes only regular, non-executable, bounded UTF-8
+files at those paths. Public code, access controls and agent instruction files
+are excluded. The grant and removal of that receipt's landing hold commit
+atomically, preserving settled acceptance, accounting and other holds. The
+operator's scope evidence and server-derived file evidence are audited. Replays
+acknowledge the same operation; changed heads or state require a fresh preview.
+Independent native exact-head review, CI and protected queue checks still apply;
+a release grant cannot refresh acceptance or revive execution.
+
 The operational health loop reports landing or observed-merged active work
 waiting over 30 minutes for reconciliation or rollout. Health evaluation does
 not settle, resume or otherwise repair that work.

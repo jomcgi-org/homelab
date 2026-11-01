@@ -3077,6 +3077,7 @@ def test_historical_conflict_refusal_cannot_accept_wrong_merged_head(
         "destructive",
         "empty_evidence",
         "bool_version",
+        "public_docs_missing_proof",
     ],
 )
 def test_scoped_grant_fails_closed(db, monkeypatch, change):
@@ -3098,6 +3099,8 @@ def test_scoped_grant_fails_closed(db, monkeypatch, change):
                 session.delete(event)
         elif change in ("public", "security", "destructive"):
             grant["scope"]["classification"] = change
+        elif change == "public_docs_missing_proof":
+            grant["scope"]["classification"] = "public_docs"
         elif change == "empty_evidence":
             grant["scope"]["evidence"] = ""
         elif change == "bool_version":

@@ -1732,6 +1732,15 @@ async def factory_release_landing_hold(
     head. Public-facing, security-boundary or destructive changes do not qualify.
     This explicit scoped mode never releases a hold or resumes execution.
     Legacy releases remain historical authority and do not become scoped grants.
+    Alternatively, classification="public_docs" with explicit operator evidence
+    authorizes only modifications of the existing monolith ARCHITECTURE.md and
+    factory/orchestration/FACTORY.md. The server verifies exact GitHub paths,
+    regular non-executable files and bounded UTF-8 text. No other public code,
+    security, access or agent-instruction files qualify. For an unpaused settled
+    delivery this scope atomically releases its landing hold and records the
+    grant; it never resumes execution or changes accepted delivery history.
+    Changed heads require fresh preview/apply and independent review. Other
+    holds remain binding. The returned public_docs evidence is server-derived.
     Independent exact-head review, required CI and the global merge switch still
     apply. Scope is an operator attestation, not an automatic code classifier.
     """

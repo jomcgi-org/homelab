@@ -1738,6 +1738,7 @@ def test_permit_diagnostics_wire_schema_rejects_invalid_ids(monkeypatch):
             "classification": "private_internal_reversible",
             "evidence": "Inspected exact diff",
         },
+        {"classification": "public_docs", "evidence": "Operator approved these docs"},
     ],
 )
 def test_landing_release_requires_human_operator_and_reviewed_preview(
