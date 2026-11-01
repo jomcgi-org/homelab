@@ -70,31 +70,14 @@ swarm:
   # missing-workflow path also fences delayed creators (#6382); ordinary
   # retry and funding policy decide what can run after settlement.
   factoryLostBeforeSessionSweepEnabled: true
-  # Release a lane slot held past its deadline by a start no cessation proof
-  # can settle (#6025): the template landed in #6156, this is the behaviour
-  # flip. Measured, not assumed. On 2026-09-14 four delivery slots were held
-  # for thirty hours in this exact shape and only a manual release at 19:03
-  # on 09-15 cleared them. The absence proof that shipped in the same PR does
-  # not cover it: a torn-down guest answers 200 "destroyed" until op-log
-  # compaction seven days later, so the 404 that proof keys on is nearly
-  # unreachable inside the backstop window, and both incidents instead failed
-  # observation with a transport error, which it deliberately excludes.
-  # Confirmed again after #6156 rolled out at 02:47 on 09-16: receipts 424,
-  # 429 and 430 sat uncertain with nothing running and the proof did not
-  # release any of them in the following forty minutes.
-  #
-  # This is the only path that frees such a slot. It settles the stranded
-  # starts and their capacity permits and escalates the task, never
-  # interrupting a start that is still reserved.
-  factoryDeadlineBackstopEnabled: true
   # Page only for authority decisions; digest the rest daily. All 24
   # intervention pages in the week to 2026-10-01 were settled automatically
   # (active cessation is on), and cards stay on the escalations page.
   factoryNotifyDigestEnabled: true
-  # Produce the cessation proof the backstop waits for (#6495). The backstop
-  # is still staged off in code because elapsed time is not cessation
-  # evidence, so uncertain attempts past their deadline held their permits
-  # forever. This destroys the recorded guest, observes that same guest gone,
+  # Produce the cessation proof stranded attempts wait for (#6495).
+  # Elapsed time is not cessation evidence, so without this uncertain
+  # attempts past their deadline hold their permits. This destroys the
+  # recorded guest, observes that same guest gone,
   # settles the attempt and its permit in one transaction and escalates the
   # task. Guests that never started settle at their reserved cost from local
   # records.
