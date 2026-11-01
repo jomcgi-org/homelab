@@ -65,7 +65,7 @@ export const published = [
   },
 ];
 
-export const SCALE_MAX = 200;
+const SCALE_MAX = 200;
 export const ticks = [0, 50, 100, 150, 200];
 
 export const pct = (v) => (v / SCALE_MAX) * 100;

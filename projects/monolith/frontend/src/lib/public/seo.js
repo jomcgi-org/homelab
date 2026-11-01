@@ -18,7 +18,7 @@ export const LOCATION = {
 // It lets an LLM answer "who is Joe McGinley" from a typed entity (jobTitle,
 // worksFor, sameAs) instead of parsing prose. Facts here are deliberately
 // stable identity claims, kept independent of the CV page's presentation data.
-export const person = {
+const person = {
   "@context": "https://schema.org",
   "@type": "Person",
   name: "Joe McGinley",

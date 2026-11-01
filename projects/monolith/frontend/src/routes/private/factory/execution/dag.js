@@ -93,7 +93,7 @@ export function shapeStateClass(run, node) {
   return nodeStateClass(node);
 }
 
-export function pipClass(attempt) {
+function pipClass(attempt) {
   return attempt.state === "done"
     ? "pip"
     : attempt.state === "running"

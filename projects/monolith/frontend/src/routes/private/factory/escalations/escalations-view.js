@@ -29,7 +29,7 @@ export const ESCAPE_HOTKEYS = {
 };
 
 /** How a key name reads on a button, where the event name is not the label. */
-export const ESCAPE_KEY_LABEL = { Escape: "Esc" };
+const ESCAPE_KEY_LABEL = { Escape: "Esc" };
 
 function hasValue(value) {
   return value !== null && value !== undefined && value !== "";
@@ -287,7 +287,7 @@ export function confirmLine(item) {
 }
 
 /** Clamp an index into a list, returning -1 for an empty one. */
-export function clampIndex(index, length) {
+function clampIndex(index, length) {
   if (!length) return -1;
   return Math.min(Math.max(index, 0), length - 1);
 }

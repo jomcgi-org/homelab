@@ -66,26 +66,29 @@ async function readError(res) {
   return text;
 }
 
+// POST to the monolith with no body.
+async function postNoBody({ request, fetch }) {
+  const data = await request.formData();
+  const path = data.get("path");
+  if (!isAllowedPath(path)) {
+    return fail(400, { error: "invalid path" });
+  }
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) {
+    // Surface the upstream status verbatim so the client can branch on
+    // 404 (item was soft-deleted in another tab) without parsing text.
+    return fail(res.status, { error: await readError(res) });
+  }
+  return { ok: true };
+}
+
 export const actions = {
-  // decide: POST to the monolith with no body — used for every endpoint
-  // except notes' set-visibility (which needs a JSON body).
-  decide: async ({ request, fetch }) => {
-    const data = await request.formData();
-    const path = data.get("path");
-    if (!isAllowedPath(path)) {
-      return fail(400, { error: "invalid path" });
-    }
-    const res = await fetch(`${API_BASE}${path}`, {
-      method: "POST",
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) {
-      // Surface the upstream status verbatim so the client can branch on
-      // 404 (item was soft-deleted in another tab) without parsing text.
-      return fail(res.status, { error: await readError(res) });
-    }
-    return { ok: true };
-  },
+  // decide: used for every endpoint except notes' set-visibility (which
+  // needs a JSON body).
+  decide: postNoBody,
 
   // decideWithBody: POST with a JSON body — used for notes' set-visibility.
   decideWithBody: async ({ request, fetch }) => {
@@ -134,19 +137,5 @@ export const actions = {
   // restore a soft-deleted row. No body. 404 means the row never existed
   // (or for gaps, was never deleted-undelete is idempotent per row); 409
   // means the row is live, which the toast UI silently swallows.
-  undeleteAction: async ({ request, fetch }) => {
-    const data = await request.formData();
-    const path = data.get("path");
-    if (!isAllowedPath(path)) {
-      return fail(400, { error: "invalid path" });
-    }
-    const res = await fetch(`${API_BASE}${path}`, {
-      method: "POST",
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) {
-      return fail(res.status, { error: await readError(res) });
-    }
-    return { ok: true };
-  },
+  undeleteAction: postNoBody,
 };

@@ -7,7 +7,7 @@
 // Vibrant per-day line/accent colours. Not the restrained site tokens: a route
 // map needs ~12 visually distinct hues, so this is local data colour (same
 // rationale as ShipsMap's VESSEL_COLORS), not a new design system.
-export const DAY_COLORS = [
+const DAY_COLORS = [
   "#2563eb",
   "#059669",
   "#d97706",
@@ -45,7 +45,8 @@ export function dayKey(iso, tz) {
   }
 }
 
-function haversineKm(a, b) {
+// Great-circle distance in km between two {lat,lng} points (haversine).
+export function haversineKm(a, b) {
   if (a?.lat == null || b?.lat == null) return 0;
   const R = 6371;
   const dLat = ((b.lat - a.lat) * Math.PI) / 180;

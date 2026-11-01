@@ -15,7 +15,7 @@ export const idleBefore = { idle: 2.7, total: 10.5 };
 
 // Schematic: when the computing layer needs its own fetch copies, and how many.
 export const ARRIVE_MS = 4.3;
-export const FETCH_RECORDS = 10;
+const FETCH_RECORDS = 10;
 
 // Simulates the copy engine. "all" submits the whole stage-ahead at once;
 // "trickle" submits it PIECE_RECORDS at a time as earlier pieces complete, so

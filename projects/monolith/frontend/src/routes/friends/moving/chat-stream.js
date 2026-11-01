@@ -1,49 +1,11 @@
+import { createSseParser } from "$lib/public/sse-parser.js";
+
+export { createSseParser };
+
 export const MOVING_CHAT_PATH = "/api/moving/chat";
 export const CHARACTER_LIMIT = 2000;
 
 const FALLBACK_ERROR = "Something went wrong. Please try again.";
-
-export function createSseParser() {
-  let buffer = "";
-
-  function parseBlock(block) {
-    const dataLines = [];
-    for (const raw of block.split("\n")) {
-      const line = raw.replace(/\r$/, "");
-      if (line.startsWith("data:")) {
-        dataLines.push(line.slice(5).replace(/^ /, ""));
-      }
-    }
-    if (dataLines.length === 0) return null;
-    try {
-      return JSON.parse(dataLines.join("\n"));
-    } catch {
-      return null;
-    }
-  }
-
-  return {
-    push(chunk) {
-      buffer += chunk.replace(/\r\n/g, "\n");
-      const frames = [];
-      let index;
-      while ((index = buffer.indexOf("\n\n")) !== -1) {
-        const block = buffer.slice(0, index);
-        buffer = buffer.slice(index + 2);
-        const frame = parseBlock(block);
-        if (frame) frames.push(frame);
-      }
-      return frames;
-    },
-    flush() {
-      const block = buffer.trim();
-      buffer = "";
-      if (!block) return [];
-      const frame = parseBlock(block);
-      return frame ? [frame] : [];
-    },
-  };
-}
 
 export function initialTurnState() {
   return { status: "idle", assistant: "", error: "" };

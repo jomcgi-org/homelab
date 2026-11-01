@@ -4,16 +4,16 @@
 
 import { RECORD_BYTES } from "./data.js";
 
-export const MAX_CONTEXT = 262_144; // the slider's cap, as --max-context
-export const MIN_CONTEXT = 2_048; // attention.rs INITIAL_KV_TOKENS
+const MAX_CONTEXT = 262_144; // the slider's cap, as --max-context
+const MIN_CONTEXT = 2_048; // attention.rs INITIAL_KV_TOKENS
 const RATIO = 4; // indexer_compress_ratio
 const IDX_DIM = 128; // indexer_head_dim
 const HEAD_DIM = 256; // head_dim
 const KV_HEADS = 2; // num_key_value_heads
-export const ATTENTION_LAYERS = 13; // 12 full-attention decoder layers + MTP
+const ATTENTION_LAYERS = 13; // 12 full-attention decoder layers + MTP
 const F32 = 4;
 
-export const KV_FORMATS = {
+const KV_FORMATS = {
   k8v6: { key: 8, value: 6 },
   fp32: { key: 0, value: 0 },
 };

@@ -1,33 +1,12 @@
-const DATE_FORMAT = new Intl.DateTimeFormat("en-CA", {
-  month: "long",
-  day: "numeric",
-  year: "numeric",
-  timeZone: "UTC",
-});
+import { formatDate, monthLabel } from "$lib/public/dates.js";
 
-const MONTH_FORMAT = new Intl.DateTimeFormat("en-CA", {
-  month: "long",
-  year: "numeric",
-  timeZone: "UTC",
-});
-
-function asDate(value) {
-  return new Date(`${value}T12:00:00Z`);
-}
-
-export function formatDate(value) {
-  return DATE_FORMAT.format(asDate(value));
-}
+export { formatDate, monthLabel };
 
 export function label(value) {
   return value
     .split("-")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
-}
-
-export function monthLabel(value) {
-  return MONTH_FORMAT.format(asDate(`${value}-01`));
 }
 
 export function monthHref(

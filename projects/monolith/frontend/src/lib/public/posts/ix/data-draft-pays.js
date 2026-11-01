@@ -4,7 +4,7 @@
 // draft tokens plus the model's own next token.
 export const DRAFT_TOKENS = 7;
 export const STEP_MS = { low: 110, high: 125 };
-export const ONE_TOKEN_MS = 25;
+const ONE_TOKEN_MS = 25;
 export const ONE_TOKEN_RATE = 1000 / ONE_TOKEN_MS;
 
 // Tokens per second of one draft step that keeps `kept` tokens (arithmetic).
