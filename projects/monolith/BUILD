@@ -5062,6 +5062,11 @@ bdd_test(
     srcs = ["knowledge/exact_search_postgres_test.py"],
 )
 
+bdd_test(
+    name = "knowledge_store_search_postgres_test",
+    srcs = ["knowledge/store_search_postgres_test.py"],
+)
+
 py_test(
     name = "knowledge_freshness_test",
     srcs = ["knowledge/freshness_test.py"],
@@ -6212,7 +6217,6 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
-        "@pip//pgvector",
         "@pip//pydantic",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -8293,7 +8297,6 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
-        "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
