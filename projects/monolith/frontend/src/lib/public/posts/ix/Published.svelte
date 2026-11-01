@@ -25,6 +25,7 @@
             ></span>{/if}
         </span>
         <span class="value">{rate(r)}</span>
+        <span class="caveat">{r.caveat}</span>
       </div>
     {/each}
     <div class="axis" aria-hidden="true">
@@ -60,7 +61,8 @@
     align-items: center;
   }
   .row {
-    min-height: 2.25rem;
+    row-gap: 0.2rem;
+    padding-block: 0.35rem;
     color: var(--ink);
     font: 0.7rem var(--font-code);
   }
@@ -93,6 +95,11 @@
   }
   .row.ours .bar.spec {
     background: var(--tone-hot);
+  }
+  .caveat {
+    grid-column: 2 / -1;
+    color: var(--ink-2);
+    font: 0.78rem / 1.4 var(--font-ui);
   }
   .value {
     text-align: right;
@@ -146,7 +153,7 @@
     .row,
     .axis {
       grid-template-columns: minmax(0, 1fr) 6.5rem;
-      grid-template-areas: "label value" "track track";
+      grid-template-areas: "label value" "track track" "caveat caveat";
       gap: 0.2rem 0.5rem;
     }
     .row {
@@ -161,6 +168,9 @@
     }
     .value {
       grid-area: value;
+    }
+    .caveat {
+      grid-area: caveat;
     }
     .axis > span:not(.ticks) {
       display: none;

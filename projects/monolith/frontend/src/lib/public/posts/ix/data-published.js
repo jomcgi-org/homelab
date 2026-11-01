@@ -1,7 +1,7 @@
 // Published decode rates for the same model family on a 96 GB RTX PRO 6000,
-// with the 4090 replay for scale. Rows come from the post's section 9 table,
-// which keeps the sources; they are author-reported scale references, not a
-// controlled ranking.
+// with the 4090 replay for scale. Rows and caveats come from the post's
+// section 9 table, which keeps the sources; they are author-reported scale
+// references, not a controlled ranking.
 export const published = [
   {
     key: "vllm",
@@ -9,6 +9,8 @@ export const published = [
     from: 74.4,
     to: 74.4,
     speculation: false,
+    caveat:
+      "8k input, 512 output, cache-free. Keeps a roughly 95 GB BF16 PLE table in host RAM.",
   },
   {
     key: "sglang-off",
@@ -16,6 +18,7 @@ export const published = [
     from: 97.9,
     to: 97.9,
     speculation: false,
+    caveat: "NVFP4 + W4 PLE, 512 output, warm, one request at a time.",
   },
   {
     key: "sglang-on",
@@ -23,6 +26,8 @@ export const published = [
     from: 144.6,
     to: 144.6,
     speculation: true,
+    caveat:
+      "Same campaign with MTP and other tuning. KV capacity, memory settings and idle conditions also changed, so not all of the gain is MTP.",
   },
   {
     key: "sglang-later",
@@ -30,6 +35,8 @@ export const published = [
     from: 179.4,
     to: 192.7,
     speculation: true,
+    caveat:
+      "Four workloads, 8,192 output tokens: long reasoning outputs and different sampling.",
   },
   {
     key: "llama",
@@ -37,6 +44,8 @@ export const published = [
     from: 59.7,
     to: 59.7,
     speculation: false,
+    caveat:
+      "22.7k-token prompt. Different weight, PLE and KV choices from the other rows.",
   },
   {
     key: "oom",
@@ -45,6 +54,8 @@ export const published = [
     to: 45.4,
     speculation: true,
     ours: true,
+    caveat:
+      "The research replay: 21,878-token prompt, warm tiers, fresh prefix. MTP and prompt lookup. 24 GB VRAM, 64 GB RAM, NVMe.",
   },
 ];
 

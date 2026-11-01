@@ -30,6 +30,15 @@ export const breakEven = {
   high: STEP_MS.high / ONE_TOKEN_MS - 1,
 };
 
-// Share of prompt-lookup draft tokens kept on file edits (same section,
-// max-perf config, warm medians).
+// Prompt lookup, measured (same section, max-perf config, warm medians): share
+// of draft tokens kept on file edits, and output change by workload.
 export const lookupKept = { low: 0.92, high: 0.95 };
+export const lookupOutcome = {
+  edits: "+22 to +40%",
+  tests: "level",
+  prose: "−2 to −9%",
+};
+
+// MTP catch-up across lookup steps ("Why keep residuals across lookup steps"):
+// share of the head's drafts kept, the blog demo, warm, medians.
+export const catchUp = { before: 76, after: 83 };

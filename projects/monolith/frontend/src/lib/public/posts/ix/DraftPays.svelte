@@ -2,10 +2,14 @@
   import Fig from "./Fig.svelte";
   import {
     DRAFT_TOKENS,
+    ONE_TOKEN_MS,
     ONE_TOKEN_RATE,
+    STEP_MS,
     breakEven,
+    catchUp,
     draftRate,
     lookupKept,
+    lookupOutcome,
   } from "./data-draft-pays.js";
 
   // Drawn at 1:1 pixels once the page measures it; 640 until then.
@@ -32,6 +36,8 @@
     high: lookupKept.high * DRAFT_TOKENS,
   };
   const r0 = (v) => Math.round(v);
+  const pct = (v) => Math.round(v * 100);
+  const marked = [3, 4, 5, 7].map((k) => ({ k, ...draftRate(k) }));
 </script>
 
 <Fig title="When does checking a 7-token draft pay?">
@@ -61,7 +67,7 @@
         class="lookup"
       />
       <text x={x(lookup.high)} y={T - 6} class="tick ink" text-anchor="end"
-        >lookup, file edits</text
+        >lookup, file edits · {pct(lookupKept.low)}–{pct(lookupKept.high)}% kept</text
       >
       <polygon points={band} class="band" />
       <line
@@ -91,6 +97,25 @@
       <text x={L} y={H - 3} class="tick">tok/s</text>
     </svg>
   </div>
+
+  <div class="values">
+    {#each marked as m}
+      <span
+        ><span class="label">{m.k} of {DRAFT_TOKENS} kept</span><b
+          >{r0(m.low)}–{r0(m.high)} tok/s</b
+        ></span
+      >
+    {/each}
+  </div>
+
+  {#snippet note()}
+    Arithmetic on measured step costs: {STEP_MS.low}–{STEP_MS.high} ms for 8 new tokens,
+    about {ONE_TOKEN_MS} ms for one. Lookup, measured: file edits {lookupOutcome.edits}
+    output, tests {lookupOutcome.tests}, prose {lookupOutcome.prose}. Catching
+    the MTP head up after lookup steps raised its kept drafts from {catchUp.before}%
+    to
+    {catchUp.after}%.
+  {/snippet}
 </Fig>
 
 <style>
@@ -127,6 +152,33 @@
     fill: color-mix(in srgb, var(--tone-hot) 30%, transparent);
     stroke: var(--tone-hot);
     stroke-width: 1;
+  }
+  .values {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.5rem 1rem;
+    margin-top: 0.6rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--line);
+  }
+  .values > span {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .label {
+    color: var(--ink-2);
+    font: 0.65rem var(--font-code);
+  }
+  .values b {
+    color: var(--ink);
+    font: 600 0.85rem var(--font-code);
+    font-variant-numeric: tabular-nums;
+  }
+  @media (max-width: 600px) {
+    .values {
+      grid-template-columns: 1fr 1fr;
+    }
   }
   .one {
     stroke: var(--ink);

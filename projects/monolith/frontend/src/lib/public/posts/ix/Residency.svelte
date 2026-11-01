@@ -42,7 +42,7 @@
     <text x="115" y="104" class="wire-label">copy 2.7 MB</text>
     <text x="115" y="119" class="wire-cost">{at.copy.cost}</text>
     <text x="115" y="206" class="wire-label">direct read</text>
-    <text x="115" y="221" class="wire-cost">~0.45 ms</text>
+    <text x="115" y="221" class="wire-cost">~0.45 ms, illustrative</text>
     <text x="380" y="104" class="wire-label">10 KB row</text>
     <text x="380" y="119" class="wire-cost">{at.cpu.cost}</text>
   </svg>
@@ -50,7 +50,9 @@
   <div class="ladder">
     {#each expertPaths as p}
       <div class="rung">
-        <span class="name">{p.label}</span>
+        <span class="name"
+          >{p.label}{p.illustrative ? " (illustrative)" : ""}</span
+        >
         <span class="bar"
           ><i
             class:illustrative={p.illustrative}
@@ -61,6 +63,11 @@
       </div>
     {/each}
   </div>
+
+  {#snippet note()}
+    Running a host hit on the CPU applies to one-token decode. The NVMe row is
+    arithmetic for a 2.7 MB read plus the copy, not an engine measurement.
+  {/snippet}
 </Fig>
 
 <style>

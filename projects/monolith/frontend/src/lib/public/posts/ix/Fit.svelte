@@ -20,7 +20,9 @@
       {/each}
       {#each marks as c}
         <span class="mark" style={`left:${widthPct(c.gb)}%`}>
-          <span class="mark-label">{c.label} {c.gb} GB</span>
+          <span class="mark-label"
+            >{c.key === "vram" ? "VRAM" : "+ RAM"} {c.gb} GB</span
+          >
         </span>
       {/each}
     </div>

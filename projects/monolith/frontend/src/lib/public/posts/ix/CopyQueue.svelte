@@ -3,6 +3,8 @@
   import {
     ARRIVE_MS,
     PIECE_RECORDS,
+    STAGE_MS,
+    STAGE_RECORDS,
     idleBefore,
     results,
     simulate,
@@ -115,6 +117,11 @@
       <span class="num">{idleBefore.idle} of {idleBefore.total} s</span>
     </div>
   </div>
+
+  {#snippet note()}
+    A layer's stage-ahead is about {STAGE_RECORDS} records, 1.2 GB and {STAGE_MS}
+    ms of copy-engine time. Timelines are schematic; prefill times are measured, warm.
+  {/snippet}
 </Fig>
 
 <style>
