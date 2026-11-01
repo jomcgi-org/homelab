@@ -1,0 +1,2948 @@
+{
+  "head": "ff005ebcfdd019d0ccb09c515b342d8ca7a9bf4b",
+  "baseline": "9be5d3618ab4b3132e10e320ab6b0877caa845fe",
+  "baseline_kind": "git merge-base",
+  "rows": [
+    {
+      "suite": "blog",
+      "case": "complete",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/blog/after-1440x1000-complete.png",
+      "before": "captures/blog/before-1440x1000-complete.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1757
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1757
+      },
+      "interactive_after": "after/suites/blog/"
+    },
+    {
+      "suite": "blog",
+      "case": "full",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/blog/after-1440x1000-full.png",
+      "before": "captures/blog/before-1440x1000-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1757
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1757
+      },
+      "interactive_after": "after/suites/blog/"
+    },
+    {
+      "suite": "blog",
+      "case": "opening",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/blog/after-1440x1000-opening.png",
+      "before": "captures/blog/before-1440x1000-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/blog/"
+    },
+    {
+      "suite": "blog",
+      "case": "complete",
+      "width": 360,
+      "scheme": "light",
+      "after": "captures/blog/after-360x640-complete.png",
+      "before": "captures/blog/before-360x640-complete.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 360,
+        "height": 1841
+      },
+      "before_dimensions": {
+        "width": 360,
+        "height": 1841
+      },
+      "interactive_after": "after/suites/blog/"
+    },
+    {
+      "suite": "blog",
+      "case": "full",
+      "width": 360,
+      "scheme": "light",
+      "after": "captures/blog/after-360x640-full.png",
+      "before": "captures/blog/before-360x640-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 360,
+        "height": 1599
+      },
+      "before_dimensions": {
+        "width": 360,
+        "height": 1599
+      },
+      "interactive_after": "after/suites/blog/"
+    },
+    {
+      "suite": "blog",
+      "case": "opening",
+      "width": 360,
+      "scheme": "light",
+      "after": "captures/blog/after-360x640-opening.png",
+      "before": "captures/blog/before-360x640-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 360,
+        "height": 640
+      },
+      "before_dimensions": {
+        "width": 360,
+        "height": 640
+      },
+      "interactive_after": "after/suites/blog/"
+    },
+    {
+      "suite": "blog",
+      "case": "complete",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/blog/after-390x844-complete.png",
+      "before": "captures/blog/before-390x844-complete.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1844
+      },
+      "interactive_after": "after/suites/blog/"
+    },
+    {
+      "suite": "blog",
+      "case": "full",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/blog/after-390x844-full.png",
+      "before": "captures/blog/before-390x844-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1803
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1803
+      },
+      "interactive_after": "after/suites/blog/"
+    },
+    {
+      "suite": "blog",
+      "case": "opening",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/blog/after-390x844-opening.png",
+      "before": "captures/blog/before-390x844-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/blog/"
+    },
+    {
+      "suite": "factory",
+      "case": "activity-full",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-activity-live-1440x1000-dark-100pct-full.png",
+      "before": "captures/factory/before-activity-live-1440x1000-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 2176
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 2176
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "activity-opening",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-activity-live-1440x1000-dark-100pct-opening.png",
+      "before": "captures/factory/before-activity-live-1440x1000-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "activity-full",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-activity-live-1440x1000-light-100pct-full.png",
+      "before": "captures/factory/before-activity-live-1440x1000-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 2176
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 2176
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "activity-opening",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-activity-live-1440x1000-light-100pct-opening.png",
+      "before": "captures/factory/before-activity-live-1440x1000-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "activity-full",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-activity-live-390x844-dark-100pct-full.png",
+      "before": "captures/factory/before-activity-live-390x844-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 4773
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 4773
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "activity-opening",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-activity-live-390x844-dark-100pct-opening.png",
+      "before": "captures/factory/before-activity-live-390x844-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "activity-full",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-activity-live-390x844-light-100pct-full.png",
+      "before": "captures/factory/before-activity-live-390x844-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 4773
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 4773
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "activity-opening",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-activity-live-390x844-light-100pct-opening.png",
+      "before": "captures/factory/before-activity-live-390x844-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "chapter-full",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-chapter-live-1440x1000-dark-100pct-full.png",
+      "before": "captures/factory/before-chapter-live-1440x1000-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "chapter-opening",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-chapter-live-1440x1000-dark-100pct-opening.png",
+      "before": "captures/factory/before-chapter-live-1440x1000-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "chapter-full",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-chapter-live-1440x1000-light-100pct-full.png",
+      "before": "captures/factory/before-chapter-live-1440x1000-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "chapter-opening",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-chapter-live-1440x1000-light-100pct-opening.png",
+      "before": "captures/factory/before-chapter-live-1440x1000-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "chapter-full",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-chapter-live-390x844-dark-100pct-full.png",
+      "before": "captures/factory/before-chapter-live-390x844-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 2186
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 2186
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "chapter-opening",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-chapter-live-390x844-dark-100pct-opening.png",
+      "before": "captures/factory/before-chapter-live-390x844-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "chapter-full",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-chapter-live-390x844-light-100pct-full.png",
+      "before": "captures/factory/before-chapter-live-390x844-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 2186
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 2186
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "chapter-opening",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-chapter-live-390x844-light-100pct-opening.png",
+      "before": "captures/factory/before-chapter-live-390x844-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "context-full",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-context-live-1440x1000-dark-100pct-full.png",
+      "before": "captures/factory/before-context-live-1440x1000-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "context-opening",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-context-live-1440x1000-dark-100pct-opening.png",
+      "before": "captures/factory/before-context-live-1440x1000-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "context-full",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-context-live-1440x1000-light-100pct-full.png",
+      "before": "captures/factory/before-context-live-1440x1000-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "context-opening",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-context-live-1440x1000-light-100pct-opening.png",
+      "before": "captures/factory/before-context-live-1440x1000-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "context-full",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-context-live-390x844-dark-100pct-full.png",
+      "before": "captures/factory/before-context-live-390x844-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1301
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1301
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "context-opening",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-context-live-390x844-dark-100pct-opening.png",
+      "before": "captures/factory/before-context-live-390x844-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "context-full",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-context-live-390x844-light-100pct-full.png",
+      "before": "captures/factory/before-context-live-390x844-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1301
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1301
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "context-opening",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-context-live-390x844-light-100pct-opening.png",
+      "before": "captures/factory/before-context-live-390x844-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "overview-full",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-overview-live-1440x1000-dark-100pct-full.png",
+      "before": "captures/factory/before-overview-live-1440x1000-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "overview-opening",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-overview-live-1440x1000-dark-100pct-opening.png",
+      "before": "captures/factory/before-overview-live-1440x1000-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "overview-full",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-overview-live-1440x1000-light-100pct-full.png",
+      "before": "captures/factory/before-overview-live-1440x1000-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "overview-opening",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-overview-live-1440x1000-light-100pct-opening.png",
+      "before": "captures/factory/before-overview-live-1440x1000-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": false,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "overview-full",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-overview-live-390x844-dark-100pct-full.png",
+      "before": "captures/factory/before-overview-live-390x844-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 3172
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 3172
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "overview-opening",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-overview-live-390x844-dark-100pct-opening.png",
+      "before": "captures/factory/before-overview-live-390x844-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "overview-full",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-overview-live-390x844-light-100pct-full.png",
+      "before": "captures/factory/before-overview-live-390x844-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 3172
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 3172
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "overview-opening",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-overview-live-390x844-light-100pct-opening.png",
+      "before": "captures/factory/before-overview-live-390x844-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "search-full",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-search-live-1440x1000-dark-100pct-full.png",
+      "before": "captures/factory/before-search-live-1440x1000-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "search-opening",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/factory/after-search-live-1440x1000-dark-100pct-opening.png",
+      "before": "captures/factory/before-search-live-1440x1000-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "search-full",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-search-live-1440x1000-light-100pct-full.png",
+      "before": "captures/factory/before-search-live-1440x1000-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1024
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "search-opening",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/factory/after-search-live-1440x1000-light-100pct-opening.png",
+      "before": "captures/factory/before-search-live-1440x1000-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "search-full",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-search-live-390x844-dark-100pct-full.png",
+      "before": "captures/factory/before-search-live-390x844-dark-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 2176
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 2176
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "search-opening",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/factory/after-search-live-390x844-dark-100pct-opening.png",
+      "before": "captures/factory/before-search-live-390x844-dark-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "search-full",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-search-live-390x844-light-100pct-full.png",
+      "before": "captures/factory/before-search-live-390x844-light-100pct-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 2176
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 2176
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "factory",
+      "case": "search-opening",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/factory/after-search-live-390x844-light-100pct-opening.png",
+      "before": "captures/factory/before-search-live-390x844-light-100pct-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 844
+      },
+      "interactive_after": "after/suites/factory/"
+    },
+    {
+      "suite": "review",
+      "case": "gaps-audit",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/review/after-gaps-audit-1440-dark.png",
+      "before": "captures/review/before-gaps-audit-1440-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "gaps-audit",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/review/after-gaps-audit-1440-light.png",
+      "before": "captures/review/before-gaps-audit-1440-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "gaps-audit",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/review/after-gaps-audit-390-dark.png",
+      "before": "captures/review/before-gaps-audit-390-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "gaps-audit",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/review/after-gaps-audit-390-light.png",
+      "before": "captures/review/before-gaps-audit-390-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "gaps-pending",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/review/after-gaps-pending-1440-dark.png",
+      "before": "captures/review/before-gaps-pending-1440-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "gaps-pending",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/review/after-gaps-pending-1440-light.png",
+      "before": "captures/review/before-gaps-pending-1440-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "gaps-pending",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/review/after-gaps-pending-390-dark.png",
+      "before": "captures/review/before-gaps-pending-390-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "gaps-pending",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/review/after-gaps-pending-390-light.png",
+      "before": "captures/review/before-gaps-pending-390-light.png",
+      "unavailable": null,
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "notes-audit",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/review/after-notes-audit-1440-dark.png",
+      "before": "captures/review/before-notes-audit-1440-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "notes-audit",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/review/after-notes-audit-1440-light.png",
+      "before": "captures/review/before-notes-audit-1440-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "notes-audit",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/review/after-notes-audit-390-dark.png",
+      "before": "captures/review/before-notes-audit-390-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "notes-audit",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/review/after-notes-audit-390-light.png",
+      "before": "captures/review/before-notes-audit-390-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "notes-pending",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/review/after-notes-pending-1440-dark.png",
+      "before": "captures/review/before-notes-pending-1440-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "notes-pending",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/review/after-notes-pending-1440-light.png",
+      "before": "captures/review/before-notes-pending-1440-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "notes-pending",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/review/after-notes-pending-390-dark.png",
+      "before": "captures/review/before-notes-pending-390-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/review/"
+    },
+    {
+      "suite": "review",
+      "case": "notes-pending",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/review/after-notes-pending-390-light.png",
+      "before": "captures/review/before-notes-pending-390-light.png",
+      "unavailable": null,
+      "identical": false,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/review/"
+    },
+    {
+      "suite": "trips",
+      "case": "day-fullscreen",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/trips/after-day-1440-dark-fullscreen.png",
+      "before": "captures/trips/before-day-1440-dark-fullscreen.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "day-map-controls",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/trips/after-day-1440-dark-map-controls.png",
+      "before": "captures/trips/before-day-1440-dark-map-controls.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "day",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/trips/after-day-1440-dark.png",
+      "before": "captures/trips/before-day-1440-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "day-fullscreen",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/trips/after-day-1440-light-fullscreen.png",
+      "before": "captures/trips/before-day-1440-light-fullscreen.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "day-map-controls",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/trips/after-day-1440-light-map-controls.png",
+      "before": "captures/trips/before-day-1440-light-map-controls.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "day",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/trips/after-day-1440-light.png",
+      "before": "captures/trips/before-day-1440-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "day-fullscreen",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/trips/after-day-390-dark-fullscreen.png",
+      "before": "captures/trips/before-day-390-dark-fullscreen.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "day-map-controls",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/trips/after-day-390-dark-map-controls.png",
+      "before": "captures/trips/before-day-390-dark-map-controls.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1979
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1979
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "day",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/trips/after-day-390-dark.png",
+      "before": "captures/trips/before-day-390-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1979
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1979
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "day-fullscreen",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/trips/after-day-390-light-fullscreen.png",
+      "before": "captures/trips/before-day-390-light-fullscreen.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "day-map-controls",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/trips/after-day-390-light-map-controls.png",
+      "before": "captures/trips/before-day-390-light-map-controls.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1979
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1979
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "day",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/trips/after-day-390-light.png",
+      "before": "captures/trips/before-day-390-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1979
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1979
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "index",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/trips/after-index-1440-dark.png",
+      "before": "captures/trips/before-index-1440-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "index",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/trips/after-index-1440-light.png",
+      "before": "captures/trips/before-index-1440-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "index",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/trips/after-index-390-dark.png",
+      "before": "captures/trips/before-index-390-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1107
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1107
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "index",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/trips/after-index-390-light.png",
+      "before": "captures/trips/before-index-390-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1107
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1107
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "timeline-map",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/trips/after-timeline-1440-dark-map.png",
+      "before": "captures/trips/before-timeline-1440-dark-map.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1037
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1037
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "timeline-viewer",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/trips/after-timeline-1440-dark-viewer.png",
+      "before": "captures/trips/before-timeline-1440-dark-viewer.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "timeline",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/trips/after-timeline-1440-dark.png",
+      "before": "captures/trips/before-timeline-1440-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "timeline-map",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/trips/after-timeline-1440-light-map.png",
+      "before": "captures/trips/before-timeline-1440-light-map.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1037
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1037
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "timeline-viewer",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/trips/after-timeline-1440-light-viewer.png",
+      "before": "captures/trips/before-timeline-1440-light-viewer.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "timeline",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/trips/after-timeline-1440-light.png",
+      "before": "captures/trips/before-timeline-1440-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "timeline-map",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/trips/after-timeline-390-dark-map.png",
+      "before": "captures/trips/before-timeline-390-dark-map.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1171
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1171
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "timeline-viewer",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/trips/after-timeline-390-dark-viewer.png",
+      "before": "captures/trips/before-timeline-390-dark-viewer.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "timeline",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/trips/after-timeline-390-dark.png",
+      "before": "captures/trips/before-timeline-390-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1128
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1128
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "timeline-map",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/trips/after-timeline-390-light-map.png",
+      "before": "captures/trips/before-timeline-390-light-map.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1171
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1171
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "timeline-viewer",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/trips/after-timeline-390-light-viewer.png",
+      "before": "captures/trips/before-timeline-390-light-viewer.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "timeline",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/trips/after-timeline-390-light.png",
+      "before": "captures/trips/before-timeline-390-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1128
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1128
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "trip",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/trips/after-trip-1440-dark.png",
+      "before": "captures/trips/before-trip-1440-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1439
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1439
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "trip",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/trips/after-trip-1440-light.png",
+      "before": "captures/trips/before-trip-1440-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1439
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1439
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "trip",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/trips/after-trip-390-dark.png",
+      "before": "captures/trips/before-trip-390-dark.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1337
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1337
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "trips",
+      "case": "trip",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/trips/after-trip-390-light.png",
+      "before": "captures/trips/before-trip-390-light.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1337
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1337
+      },
+      "interactive_after": "after/suites/trips/"
+    },
+    {
+      "suite": "stars",
+      "case": "historical",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/stars/after-historical-dark-1440.png",
+      "before": "captures/stars/before-historical-dark-1440.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "interactive_after": "after/suites/stars/"
+    },
+    {
+      "suite": "stars",
+      "case": "historical",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/stars/after-historical-dark-390.png",
+      "before": "captures/stars/before-historical-dark-390.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1455
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1455
+      },
+      "interactive_after": "after/suites/stars/"
+    },
+    {
+      "suite": "stars",
+      "case": "historical",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/stars/after-historical-light-1440.png",
+      "before": "captures/stars/before-historical-light-1440.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "interactive_after": "after/suites/stars/"
+    },
+    {
+      "suite": "stars",
+      "case": "historical",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/stars/after-historical-light-390.png",
+      "before": "captures/stars/before-historical-light-390.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1455
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1455
+      },
+      "interactive_after": "after/suites/stars/"
+    },
+    {
+      "suite": "stars",
+      "case": "live",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/stars/after-live-dark-1440.png",
+      "before": "captures/stars/before-live-dark-1440.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "interactive_after": "after/suites/stars/"
+    },
+    {
+      "suite": "stars",
+      "case": "live",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/stars/after-live-dark-390.png",
+      "before": "captures/stars/before-live-dark-390.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1296
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1296
+      },
+      "interactive_after": "after/suites/stars/"
+    },
+    {
+      "suite": "stars",
+      "case": "live",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/stars/after-live-light-1440.png",
+      "before": "captures/stars/before-live-light-1440.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1029
+      },
+      "interactive_after": "after/suites/stars/"
+    },
+    {
+      "suite": "stars",
+      "case": "live",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/stars/after-live-light-390.png",
+      "before": "captures/stars/before-live-light-390.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1296
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1296
+      },
+      "interactive_after": "after/suites/stars/"
+    },
+    {
+      "suite": "agents",
+      "case": "no-js-banner",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-1440-dark-no-js-banner.png",
+      "before": "captures/agents/before-agents-1440-dark-no-js-banner.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "no-js-full",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-1440-dark-no-js-full.png",
+      "before": "captures/agents/before-agents-1440-dark-no-js-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 4266
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 4266
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "no-js-opening",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-1440-dark-no-js-opening.png",
+      "before": "captures/agents/before-agents-1440-dark-no-js-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "no-js-resume",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-1440-dark-no-js-resume.png",
+      "before": "captures/agents/before-agents-1440-dark-no-js-resume.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "normal-banner",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-1440-dark-normal-banner.png",
+      "before": "captures/agents/before-agents-1440-dark-normal-banner.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "normal-full",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-1440-dark-normal-full.png",
+      "before": "captures/agents/before-agents-1440-dark-normal-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 4266
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 4266
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "normal-opening",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-1440-dark-normal-opening.png",
+      "before": "captures/agents/before-agents-1440-dark-normal-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "normal-resume",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-1440-dark-normal-resume.png",
+      "before": "captures/agents/before-agents-1440-dark-normal-resume.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "reduced-banner",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-1440-dark-reduced-banner.png",
+      "before": "captures/agents/before-agents-1440-dark-reduced-banner.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "reduced-full",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-1440-dark-reduced-full.png",
+      "before": "captures/agents/before-agents-1440-dark-reduced-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 4266
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 4266
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "reduced-opening",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-1440-dark-reduced-opening.png",
+      "before": "captures/agents/before-agents-1440-dark-reduced-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "reduced-resume",
+      "width": 1440,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-1440-dark-reduced-resume.png",
+      "before": "captures/agents/before-agents-1440-dark-reduced-resume.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "no-js-banner",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-1440-light-no-js-banner.png",
+      "before": "captures/agents/before-agents-1440-light-no-js-banner.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "no-js-full",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-1440-light-no-js-full.png",
+      "before": "captures/agents/before-agents-1440-light-no-js-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 4266
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 4266
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "no-js-opening",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-1440-light-no-js-opening.png",
+      "before": "captures/agents/before-agents-1440-light-no-js-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "no-js-resume",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-1440-light-no-js-resume.png",
+      "before": "captures/agents/before-agents-1440-light-no-js-resume.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "normal-banner",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-1440-light-normal-banner.png",
+      "before": "captures/agents/before-agents-1440-light-normal-banner.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "normal-full",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-1440-light-normal-full.png",
+      "before": "captures/agents/before-agents-1440-light-normal-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 4266
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 4266
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "normal-opening",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-1440-light-normal-opening.png",
+      "before": "captures/agents/before-agents-1440-light-normal-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "normal-resume",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-1440-light-normal-resume.png",
+      "before": "captures/agents/before-agents-1440-light-normal-resume.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "reduced-banner",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-1440-light-reduced-banner.png",
+      "before": "captures/agents/before-agents-1440-light-reduced-banner.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "reduced-full",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-1440-light-reduced-full.png",
+      "before": "captures/agents/before-agents-1440-light-reduced-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 4266
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 4266
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "reduced-opening",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-1440-light-reduced-opening.png",
+      "before": "captures/agents/before-agents-1440-light-reduced-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "reduced-resume",
+      "width": 1440,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-1440-light-reduced-resume.png",
+      "before": "captures/agents/before-agents-1440-light-reduced-resume.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 1440,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "no-js-banner",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-390-dark-no-js-banner.png",
+      "before": "captures/agents/before-agents-390-dark-no-js-banner.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "no-js-full",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-390-dark-no-js-full.png",
+      "before": "captures/agents/before-agents-390-dark-no-js-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 5597
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 5597
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "no-js-opening",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-390-dark-no-js-opening.png",
+      "before": "captures/agents/before-agents-390-dark-no-js-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "no-js-resume",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-390-dark-no-js-resume.png",
+      "before": "captures/agents/before-agents-390-dark-no-js-resume.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "normal-banner",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-390-dark-normal-banner.png",
+      "before": "captures/agents/before-agents-390-dark-normal-banner.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "normal-full",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-390-dark-normal-full.png",
+      "before": "captures/agents/before-agents-390-dark-normal-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 5597
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 5597
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "normal-opening",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-390-dark-normal-opening.png",
+      "before": "captures/agents/before-agents-390-dark-normal-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "normal-resume",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-390-dark-normal-resume.png",
+      "before": "captures/agents/before-agents-390-dark-normal-resume.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "reduced-banner",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-390-dark-reduced-banner.png",
+      "before": "captures/agents/before-agents-390-dark-reduced-banner.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "reduced-full",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-390-dark-reduced-full.png",
+      "before": "captures/agents/before-agents-390-dark-reduced-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 5597
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 5597
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "reduced-opening",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-390-dark-reduced-opening.png",
+      "before": "captures/agents/before-agents-390-dark-reduced-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "reduced-resume",
+      "width": 390,
+      "scheme": "dark",
+      "after": "captures/agents/after-agents-390-dark-reduced-resume.png",
+      "before": "captures/agents/before-agents-390-dark-reduced-resume.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "no-js-banner",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-390-light-no-js-banner.png",
+      "before": "captures/agents/before-agents-390-light-no-js-banner.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "no-js-full",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-390-light-no-js-full.png",
+      "before": "captures/agents/before-agents-390-light-no-js-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 5597
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 5597
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "no-js-opening",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-390-light-no-js-opening.png",
+      "before": "captures/agents/before-agents-390-light-no-js-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "no-js-resume",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-390-light-no-js-resume.png",
+      "before": "captures/agents/before-agents-390-light-no-js-resume.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "normal-banner",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-390-light-normal-banner.png",
+      "before": "captures/agents/before-agents-390-light-normal-banner.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "normal-full",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-390-light-normal-full.png",
+      "before": "captures/agents/before-agents-390-light-normal-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 5597
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 5597
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "normal-opening",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-390-light-normal-opening.png",
+      "before": "captures/agents/before-agents-390-light-normal-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "normal-resume",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-390-light-normal-resume.png",
+      "before": "captures/agents/before-agents-390-light-normal-resume.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "reduced-banner",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-390-light-reduced-banner.png",
+      "before": "captures/agents/before-agents-390-light-reduced-banner.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "reduced-full",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-390-light-reduced-full.png",
+      "before": "captures/agents/before-agents-390-light-reduced-full.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 5597
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 5597
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "reduced-opening",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-390-light-reduced-opening.png",
+      "before": "captures/agents/before-agents-390-light-reduced-opening.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    },
+    {
+      "suite": "agents",
+      "case": "reduced-resume",
+      "width": 390,
+      "scheme": "light",
+      "after": "captures/agents/after-agents-390-light-reduced-resume.png",
+      "before": "captures/agents/before-agents-390-light-reduced-resume.png",
+      "unavailable": null,
+      "identical": true,
+      "after_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "before_dimensions": {
+        "width": 390,
+        "height": 1000
+      },
+      "interactive_after": "after/suites/agents/"
+    }
+  ],
+  "suites": {
+    "blog": "Blog replay",
+    "factory": "Factory overview, activity and context",
+    "review": "Private review components",
+    "trips": "Trips sheets and photo viewer",
+    "stars": "Stars live and historical map",
+    "agents": "Agents technical-drawing sheet"
+  },
+  "fixture_fingerprints": {
+    "blog": {
+      "head": "2535e868f8a3d5629c3da8640d023cd556737734026887dfe0c89d95202f7be3",
+      "before": "2535e868f8a3d5629c3da8640d023cd556737734026887dfe0c89d95202f7be3"
+    },
+    "factory": {
+      "head": "fd21a9bae825ab5fb1a02f6d0cdea62a798661b7063617e45dd896ca4bc31ec4",
+      "before": "fd21a9bae825ab5fb1a02f6d0cdea62a798661b7063617e45dd896ca4bc31ec4"
+    },
+    "review": {
+      "head": "49ed0f54a02a546efa64440da2609a9eddfdc67200dd8d41d26bd986bc9f5314",
+      "before": "49ed0f54a02a546efa64440da2609a9eddfdc67200dd8d41d26bd986bc9f5314"
+    },
+    "trips": {
+      "head": "93a2391681cf450230c57e124750b26d731ff84c84bd2d3d5ae12b3c6a3b2020",
+      "before": "93a2391681cf450230c57e124750b26d731ff84c84bd2d3d5ae12b3c6a3b2020"
+    },
+    "stars": {
+      "head": "b230a677a11d2c4056233247eee947f82de36dc7e63b9b68836cbac3099f4cb0",
+      "before": "b230a677a11d2c4056233247eee947f82de36dc7e63b9b68836cbac3099f4cb0"
+    },
+    "agents": {
+      "head": "dc833ae119b58fada6a6e6345b98a60bcbaf21e33beae44c0b74a31c9ad57014",
+      "before": "dc833ae119b58fada6a6e6345b98a60bcbaf21e33beae44c0b74a31c9ad57014"
+    }
+  }
+}
