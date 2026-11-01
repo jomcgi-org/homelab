@@ -9,7 +9,7 @@ pending sweep is finalized before the next sweep; no audit history is rewritten.
 import json
 from datetime import UTC, datetime, timedelta
 
-from core.clock import aware
+from core.clock import aware, aware_iso
 from sqlalchemy import func, tuple_
 from sqlmodel import select
 
@@ -309,7 +309,7 @@ def backlog(db, now=None):
                 "repo": item.github_repo,
                 "issue_number": item.github_issue_number,
                 "title": item.title,
-                "created_at": aware(created).isoformat() if created else None,
+                "created_at": aware_iso(created),
                 "age_days": max(0, (now - aware(created)).days) if created else None,
                 "decision": prior.get("decision") if prior else None,
                 "reason": prior.get("reason") if prior else "never_considered",
