@@ -204,9 +204,9 @@ def test_display_text_helper_rejects_gateway_dangerous_text(desc: str):
 
 
 # Benign shapes the gateway keeps: backticked ``javascript`` (no colon right
-# after the scheme word, and the backtick is outside the JS prefix class),
-# a non-listed tag like <b> (the HTML pattern names its tags), and a bare
-# percent sign (unquote leaves "50% off" unchanged, so no double encoding).
+# after the scheme word), a non-listed tag like <b> (the HTML pattern names
+# its tags), and a bare percent sign (unquote leaves "50% off" unchanged, so
+# no double encoding).
 @pytest.mark.parametrize(
     "desc",
     [
