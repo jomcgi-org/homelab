@@ -194,7 +194,7 @@ The delivery planner's fifth action is `pause`, which leaves the lane rather tha
 
 ### Automatic pause questions
 
-Automatic safety pauses keep their active receipt and reservations. The pause and its question commit under the control lock. #7165 owns historical audit attribution and post-rollout observation.
+Automatic safety pauses keep their active receipt and reservations. The pause and its question commit under the control lock. The issue-body hash excludes the factory's own generated gate blocks (`issue_body_hash`), so a gate block the factory wrote does not read as a person's edit; a card stored under the older whole-text hash still matches through `issue_body_unchanged`. #7165 owns historical audit attribution and post-rollout observation.
 (see: /projects/monolith/factory/orchestration/factory_decisions.py)
 
 ## Controls and uncertainty

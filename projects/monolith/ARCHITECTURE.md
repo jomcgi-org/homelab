@@ -406,6 +406,7 @@ See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-check
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Escalation cards survive the factory's own gate writes, declined landing recovery is named, and optimizer verdicts are final when the window ends | section 4; evidence on the issue | #7495 | repository delivery; 72-hour before and after counts remain on the issue |
 | Per-sweep intake decisions, private backlog age and digest evidence | section 4; repository-only Conductor rescope | #7459 | staged repository delivery; rollout, first-sweep distribution and credential-backed follow-up remain on the issue |
 | One funding decision owns continuation, steering and stop while accounting retains reservations and unknown outcomes | Funding consolidation; repository acceptance in #7454 | #7454 | policy tests consolidated, task grant, progress and continuation decisions unified, allocation recovery folded into funding, shadow and reservation dollar-ceiling paths retired; reservation and meter decisions share the funding resolver; canonical funding audits retain rollback projections; reduction percentages are measurements |
 | Optional queue-driven inventory refill, default-off with durable advisory execution and bounded issue publication | section 4, recorded Conductor rescope and cap decision | #7376 | repository-only; operational checklist remains on the issue; no shipped policy enablement |
@@ -586,6 +587,13 @@ review, one line per task, cost per accepted PR, and shared planner and
 implementation starts (#5956).
 
 ### Execution and recovery rationale
+
+**Why.** Sixteen of the thirty-one resolved cards in the newest fifty were
+dismissed because the issue body changed. Four came minutes after the card, on
+issues already carrying the factory's own gate blocks, so the hash excludes
+those blocks. An optimizer window that has ended cannot gain traffic, so its
+verdict is final and releases the selection; one experiment had held the loop
+for four weeks (#7495). See [automatic pause questions](factory/orchestration/FACTORY.md#automatic-pause-questions).
 
 **Why.** KG admission needs a fresh permitting grant; a stale pool can block
 the traffic that refreshes it. Inference-free usage refresh and a bounded probe
