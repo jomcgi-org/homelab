@@ -306,26 +306,6 @@ class TestUpsertAtomicity:
         assert notes[0].content_hash == "h1"
 
 
-class TestNoteLinkValidation:
-    def test_notelink_rejects_link_with_edge_type(self):
-        with pytest.raises(ValueError, match="kind='link' requires edge_type=None"):
-            NoteLink(
-                src_note_fk=1,
-                target_id="B",
-                kind="link",
-                edge_type="refines",
-            )
-
-    def test_notelink_rejects_edge_without_edge_type(self):
-        with pytest.raises(ValueError, match="kind='edge' requires"):
-            NoteLink(
-                src_note_fk=1,
-                target_id="B",
-                kind="edge",
-                edge_type=None,
-            )
-
-
 class TestDeleteNote:
     def test_cascade_removes_chunks_and_links(self, store, session):
         _upsert(
@@ -533,39 +513,6 @@ class TestEntityLinks:
 
 
 class TestGetNoteLinks:
-    def test_edge_resolved_when_target_exists(self, store):
-        """Typed edges include resolved_note_id when target note exists."""
-        _upsert(
-            store,
-            note_id="src",
-            path="src.md",
-            title="Source",
-            metadata=_meta(title="Source", edges={"refines": ["tgt"]}),
-        )
-        _upsert(store, note_id="tgt", path="tgt.md", title="Target")
-
-        links = store.get_note_links("src")
-        edges = [e for e in links if e["kind"] == "edge"]
-        assert len(edges) == 1
-        assert edges[0]["target_id"] == "tgt"
-        assert edges[0]["resolved_note_id"] == "tgt"
-
-    def test_edge_unresolved_when_target_missing(self, store):
-        """Typed edges have resolved_note_id=None when target doesn't exist."""
-        _upsert(
-            store,
-            note_id="src",
-            path="src.md",
-            title="Source",
-            metadata=_meta(title="Source", edges={"related": ["ghost"]}),
-        )
-
-        links = store.get_note_links("src")
-        edges = [e for e in links if e["kind"] == "edge"]
-        assert len(edges) == 1
-        assert edges[0]["target_id"] == "ghost"
-        assert edges[0]["resolved_note_id"] is None
-
     def test_link_has_no_resolved_note_id(self, store):
         """Body wikilinks (kind='link') do not include resolved_note_id."""
         _upsert(

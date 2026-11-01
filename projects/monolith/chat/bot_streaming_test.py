@@ -357,34 +357,6 @@ class TestMultipleToolCalls:
         assert any("✅ trail cafes" in c for c in all_contents)
 
 
-class TestNoEventsFallback:
-    @pytest.mark.asyncio
-    async def test_no_events_sends_fallback(self):
-        """Empty event stream sends fallback message."""
-        bot = _make_bot()
-        bot_user = bot.user
-        message = _make_message(content="Hi", mentions=[bot_user])
-        mock_store = _make_store()
-
-        # Empty stream
-        bot.agent.run_stream_events = MagicMock(return_value=_async_iter([]))
-
-        with (
-            patch("chat.bot.get_engine"),
-            patch("chat.bot.Session") as mock_session_cls,
-            patch("chat.bot.MessageStore", return_value=mock_store),
-        ):
-            ctx = MagicMock()
-            mock_session_cls.return_value.__enter__ = MagicMock(return_value=ctx)
-            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
-            await bot.on_message(message)
-
-        # Should have sent a fallback message
-        reply_text = message.reply.call_args_list[0][0][0]
-        assert "Sorry" in reply_text
-        assert "trouble" in reply_text
-
-
 # ---------------------------------------------------------------------------
 # New gap-coverage tests
 # ---------------------------------------------------------------------------

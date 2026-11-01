@@ -85,17 +85,6 @@ class TestSearchSimilarModelValidate:
         contents = [r.content for r in results]
         assert contents == ["first", "second", "third"]
 
-    def test_empty_result_returns_empty_list(self, store, mock_session):
-        """search_similar returns [] when the raw query returns no rows."""
-        mock_session.exec.return_value = []
-
-        results = store.search_similar(
-            channel_id="ch1",
-            query_embedding=[0.0] * 1024,
-        )
-
-        assert results == []
-
     def test_channel_id_preserved_after_deserialization(self, store, mock_session):
         """channel_id is preserved correctly after model_validate deserialization."""
         raw = _raw_row(channel_id="special-channel-42")

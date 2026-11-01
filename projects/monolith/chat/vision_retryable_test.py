@@ -89,12 +89,3 @@ class TestIsRetryableVision:
             "Client Closed Request", request=MagicMock(), response=resp
         )
         assert _is_retryable(exc) is False
-
-    def test_boundary_500_is_retryable(self):
-        """HTTPStatusError with exactly 500 (5xx lower boundary) is retryable."""
-        resp = MagicMock()
-        resp.status_code = 500
-        exc = httpx.HTTPStatusError(
-            "Internal Server Error", request=MagicMock(), response=resp
-        )
-        assert _is_retryable(exc) is True

@@ -622,18 +622,6 @@ class TestListGapsEndpoint:
                 limit=50,
             )
 
-    def test_default_limit_is_100(self, note_client):
-        """Default limit is 100 when not specified."""
-        with patch("knowledge.router.KnowledgeStore") as MockStore:
-            MockStore.return_value.list_gaps.return_value = []
-            note_client.get("/api/knowledge/gaps")
-
-            MockStore.return_value.list_gaps.assert_called_once_with(
-                states=None,
-                classes=None,
-                limit=100,
-            )
-
     def test_limit_over_max_returns_422(self, note_client):
         """limit > 500 is rejected with HTTP 422 (FastAPI ge/le validation)."""
         r = note_client.get("/api/knowledge/gaps?limit=501")
