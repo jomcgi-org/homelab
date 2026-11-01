@@ -327,6 +327,49 @@ func TestCheckNearbyWalksAreSubstitutes(t *testing.T) {
 	}
 }
 
+// A walk_name several routes match equally well checks the shortest name and
+// says so ("ben" was Ben Ledi with nothing to say it was a tie-break); a
+// name that is a walk's whole name, a single match, or one route listed
+// twice under two ids (as Beinn Eighe is live) carries no note.
+func TestCheckSaysWhenWalkNameIsATieBreak(t *testing.T) {
+	walk := func(id, name string) string {
+		return `{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"` + id + `","name":"` + name + `","url":"https://www.walkhighlands.co.uk/` + id + `.shtml","lat":57.1,"lon":-3.7,"distance_km":8,"ascent_m":600,"duration_h":4,"hours":[]}`
+	}
+	body := `{"schema_version":1,"fetched_at":"2026-10-19T14:20:00+00:00","walks":[` +
+		walk("ledi", "Ben Ledi") + `,` + walk("hope", "Ben Hope") + `,` + walk("nevis", "Ben Nevis by the Mountain Track") + `,` + walk("vrackie", "Ben Vrackie") + `,` +
+		strings.Replace(walk("eighe-a", "Beinn Eighe (western summits)"), "eighe-a.shtml", "eighe.shtml", 1) + `,` +
+		strings.Replace(walk("eighe-b", "Beinn Eighe (western summits)"), "eighe-b.shtml", "eighe.shtml", 1) + `]}`
+	wk, err := walks.Parse([]byte(body), "w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := fixture.Service(true)
+	svc.Walks = fixture.WalkSource{DS: wk}
+	for _, c := range []struct{ name, walk, note string }{
+		{"ben", "Ben Hope", `4 walks match "ben" equally well; Ben Hope was checked`},
+		{"Ben Ledi", "Ben Ledi", ""},
+		{"nevis", "Ben Nevis by the Mountain Track", ""},
+		{"beinn eighe western", "Beinn Eighe (western summits)", ""},
+	} {
+		env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-10-20", WalkName: c.name}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		it := env.Data.(connector.CheckResult).Items[0]
+		if it.Walk == nil || it.Walk.Name != c.walk {
+			t.Fatalf("%q checked %+v, want %s", c.name, it.Walk, c.walk)
+		}
+		if c.note == "" && it.Walk.MatchNote != "" || !strings.Contains(it.Walk.MatchNote, c.note) {
+			t.Errorf("%q note = %q, want %q", c.name, it.Walk.MatchNote, c.note)
+		}
+		for _, other := range it.Walk.AlsoMatched {
+			if other == c.walk {
+				t.Errorf("%q also matched the same route: %v", c.name, it.Walk.AlsoMatched)
+			}
+		}
+	}
+}
+
 // Before 09:00 the night under way is yesterday's: check accepts its date,
 // and a plan with stargazing starts on it.
 func TestTonightAfterMidnight(t *testing.T) {

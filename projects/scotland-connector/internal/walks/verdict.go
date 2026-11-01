@@ -22,8 +22,9 @@ type Assessment struct {
 	Verdict verdict.Verdict
 	Why     string
 	// StartFrom and StartBy bound the start time that keeps the walk inside
-	// the best slot; zero unless the walk fits. StartFrom is earlier than the
-	// slot when a long walk needs its dark-shoulder credit.
+	// the best slot; zero unless the walk fits. A walk longer than its slot
+	// gets one start: before the slot so it finishes at the slot's end, or at
+	// sunrise when that would be dark, running past the slot's end.
 	StartFrom, StartBy time.Time
 }
 
@@ -70,7 +71,7 @@ func (w *Walk) outcome(d Day) outcome {
 	}
 	b := d.Best
 	switch {
-	case float64(b.GoodHours) < w.required-requirementEpsilon:
+	case float64(b.GoodHours) < w.required-requirementEpsilon, d.NeedsDark:
 		return darkShoulder
 	case int(b.End.Sub(b.Start)/time.Hour) > b.GoodHours:
 		return badHourInside
@@ -139,6 +140,15 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) (a Assessment) {
 		if o == darkShoulder && d.DarkLateOnly {
 			a.StartFrom, a.StartBy = b.Start, b.Start
 		}
+		// A walk that fits in daylight starts at sunrise rather than in the
+		// dark, and spends its tolerance after the slot instead.
+		if o != darkShoulder && !d.Rise.IsZero() && a.StartFrom.Before(d.Rise) {
+			rise := d.Rise.Truncate(time.Minute)
+			if rise.Before(d.Rise) {
+				rise = rise.Add(time.Minute)
+			}
+			a.StartFrom, a.StartBy = rise, rise
+		}
 	}
 	// A walk that needs more than the slot starts before it, but never
 	// before the first hour that counts.
@@ -157,7 +167,20 @@ func (w *Walk) Assess(d Day, hourlyUntil time.Time) (a Assessment) {
 	weather += fmt.Sprintf(", rain in %d of %d qualifying hours (at least 0.1 mm/h)", b.WetHours, b.GoodHours)
 	switch o {
 	case darkShoulder:
-		a.Why = fmt.Sprintf("Fits only by starting or finishing in the dark: %s %s to %s, %s.", goodHours(b.GoodHours), local(b.Start), local(b.End), weather)
+		// The slot can also hold its one bad hour (badHourInside comes
+		// after this rule), and that hour is named here too.
+		dark := "Fits only by starting or finishing in the dark"
+		if int(b.End.Sub(b.Start)/time.Hour) > b.GoodHours {
+			bad := "one wet or windy hour"
+			if len(d.GapFails) > 0 {
+				bad = "one " + failWords(d.GapFails) + " hour"
+			}
+			dark += ", with " + bad + " mid-walk"
+			if Known(d.GapRainMM) && d.GapRainMM >= WetMM {
+				weather = strings.Replace(weather, ", dry", ", otherwise dry", 1)
+			}
+		}
+		a.Why = fmt.Sprintf("%s: %s %s to %s, %s.", dark, goodHours(b.GoodHours), local(b.Start), local(b.End), weather)
 	case badHourInside:
 		bad := "one wet or windy hour"
 		if len(d.GapFails) > 0 {

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/astro"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
 )
 
@@ -50,6 +51,73 @@ func TestVerdicts(t *testing.T) {
 	}
 	if none := assessDay(t, 2); none.Verdict != verdict.No || !strings.Contains(none.Why, "No dry, calm daylight hour") {
 		t.Fatalf("none = %+v", none)
+	}
+}
+
+// In November an 8 h slot can fill the day. The 80% rule tolerates hours of
+// poor weather, and a 9 or 10 h walk it fits is marginal because it needs the
+// dark (An Teallach and Ben Nevis on
+// 2026-11-02 were go with a start before sunrise), while a 7 h walk in a
+// morning slot fits in daylight by starting at sunrise.
+func TestWinterDaylightBoundsTheTolerance(t *testing.T) {
+	day := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	lat, lon := 57.8, -5.25
+	assess := func(duration float64, from, to int) Assessment {
+		t.Helper()
+		var hours []string
+		for h := from; h < to; h++ {
+			hours = append(hours, fmt.Sprintf("[%d,6,0,10,40]", day.Add(time.Duration(h)*time.Hour).Unix()))
+		}
+		ds := mustParse(t, fmt.Sprintf(`{"schema_version":1,"generated_at":"2026-11-01T06:30:00+00:00","fetched_at":"2026-11-01T06:20:00+00:00","walks":[{"forecast_fetched_at":"2026-11-01T06:20:00Z","id":"w","name":"W","url":"https://www.walkhighlands.co.uk/w.shtml","lat":%g,"lon":%g,"distance_km":20,"ascent_m":1400,"duration_h":%g,"hours":[%s]}]}`,
+			lat, lon, duration, strings.Join(hours, ",")))
+		w := &ds.Walks[0]
+		d := ds.DayFor(w, LocalDay(day), now)
+		a := w.Assess(d, ds.HourlyUntil)
+		if v := w.Verdict(d); v != a.Verdict {
+			t.Errorf("%g h: Verdict %s, Assess %s", duration, v, a.Verdict)
+		}
+		return a
+	}
+	rise, set, ok := astro.SunTimes(day, lat, lon)
+	if !ok {
+		t.Fatal("no sunrise")
+	}
+	// Good 08:00 to 16:00Z: about 8 h 57 min of daylight in all.
+	for _, h := range []float64{9, 10} {
+		a := assess(h, 8, 16)
+		if a.Verdict != verdict.Marginal || !strings.Contains(a.Why, "in the dark") || !a.StartFrom.Before(rise) {
+			t.Errorf("%g h in a full winter day = %+v", h, a)
+		}
+	}
+	// Good 08:00 to 14:00Z: the hour beyond the slot fits after it.
+	a := assess(7, 8, 14)
+	start := rise.Truncate(time.Minute).Add(time.Minute)
+	if a.Verdict != verdict.Go || !a.StartFrom.Equal(start) || !a.StartBy.Equal(start) || a.StartFrom.Add(7*time.Hour).After(set) {
+		t.Errorf("7 h in a morning slot = %+v, want go starting %v", a, start)
+	}
+	// Inside its slot nothing changes: start between 08:00 and 10:00Z.
+	if a := assess(6, 8, 16); a.Verdict != verdict.Go || !a.StartFrom.Equal(day.Add(8*time.Hour)) || !a.StartBy.Equal(day.Add(10*time.Hour)) {
+		t.Errorf("6 h in an 8 h slot = %+v", a)
+	}
+}
+
+// A walk that needs the dark can also hold its slot's one bad hour, and the
+// why names both: 55N 3W on 2026-10-20 has ten complete daylight hours, and
+// a 10.5 h walk fits nine good ones around a gap at 12:00Z.
+func TestDarkWhyKeepsTheBadHour(t *testing.T) {
+	day := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	var hours []string
+	for h := 7; h < 17; h++ {
+		if h != 12 {
+			hours = append(hours, fmt.Sprintf("[%d,9,0,10,40]", day.Add(time.Duration(h)*time.Hour).Unix()))
+		}
+	}
+	ds := mustParse(t, `{"schema_version":1,"generated_at":"2026-10-19T06:30:00+00:00","fetched_at":"2026-10-19T06:20:00+00:00","walks":[{"forecast_fetched_at":"2026-10-19T06:20:00Z","id":"w","name":"W","url":"https://www.walkhighlands.co.uk/w.shtml","lat":55,"lon":-3,"distance_km":30,"ascent_m":1500,"duration_h":10.5,"hours":[`+strings.Join(hours, ",")+`]}]}`)
+	w := &ds.Walks[0]
+	a := w.Assess(ds.DayFor(w, LocalDay(day), day.Add(-12*time.Hour)), ds.HourlyUntil)
+	if a.Verdict != verdict.Marginal || !strings.Contains(a.Why, "in the dark, with one wet or windy hour mid-walk: 9 good hours 08:00 to 18:00") {
+		t.Fatalf("dark with a gap = %+v", a)
 	}
 }
 
