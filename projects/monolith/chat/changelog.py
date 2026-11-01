@@ -276,91 +276,6 @@ def _build_embed(
     return embed
 
 
-async def run_changelog_iteration(
-    bot: discord.Client,
-    llm_call: Callable[[str], Awaitable[str]],
-    config: ChangelogConfig,
-    store_message: "Callable[[str, str, str, str, str], Awaitable[None]] | None" = None,
-) -> None:
-    """Single iteration: fetch recent commits, summarize, post to Discord.
-
-    store_message, if provided, is called with (discord_message_id, channel_id,
-    user_id, username, content) after a successful send so the changelog message
-    is searchable in history.
-    """
-    github_token = os.environ.get("GITHUB_TOKEN", "")
-
-    if not github_token:
-        logger.warning("Changelog[%s] disabled: missing GITHUB_TOKEN", config.name)
-        return
-
-    since = datetime.now(timezone.utc) - timedelta(hours=config.interval_hours)
-
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(600.0), follow_redirects=True
-    ) as client:
-        commits = await _fetch_commits_since(
-            client, config.github_repo, github_token, since
-        )
-
-        if not commits:
-            logger.info(
-                "Changelog[%s]: no new commits in the last %dh",
-                config.name,
-                config.interval_hours,
-            )
-            return
-
-        if config.commit_filter is not None:
-            commits = _filter_changelog_commits(commits, config.commit_filter)
-        commits = await _exclude_dependency_commits(
-            client, commits, config, github_token
-        )
-
-    if not commits:
-        logger.info("Changelog[%s]: commits found but none match filter", config.name)
-        return
-
-    prompt_key = config.prompt
-    if config.roast_chance > 0 and random.random() < config.roast_chance:
-        prompt_key = "roast"
-        logger.info("Changelog[%s]: roast mode activated", config.name)
-    prompt_template = PROMPTS[prompt_key]
-    summary = await _summarize_with_llm(commits, llm_call, prompt_template)
-    embed = _build_embed(
-        summary, len(commits), title=config.embed_title, color=config.embed_color
-    )
-
-    channel = bot.get_channel(int(config.channel_id))
-    if channel:
-        sent = await channel.send(embed=embed)
-        logger.info(
-            "Changelog[%s]: posted %d changes to channel %s",
-            config.name,
-            len(commits),
-            config.channel_id,
-        )
-        if store_message is not None and bot.user is not None:
-            try:
-                await store_message(
-                    str(sent.id),
-                    config.channel_id,
-                    str(bot.user.id),
-                    bot.user.display_name,
-                    f"{config.embed_title}\n{summary}",
-                )
-            except Exception:
-                logger.exception(
-                    "Changelog[%s]: failed to store sent message %s",
-                    config.name,
-                    sent.id,
-                )
-    else:
-        logger.warning(
-            "Changelog[%s]: channel %s not found", config.name, config.channel_id
-        )
-
-
 def _enqueue_changelog(channel_id: str, embed_dict: dict) -> None:
     """Enqueue a changelog embed to the Discord outbox. Sync so the async job
     can hand it to a worker thread (no sync Session on the event loop)."""
@@ -377,19 +292,11 @@ async def run_changelog_for_config(
     name: str,
     llm_call: Callable[[str], Awaitable[str]] | None = None,
 ) -> None:
-    """One-shot changelog for a named config, ENQUEUED to the Discord outbox.
+    """Run a one-shot named-config changelog for the Argo job.
 
-    Module-level entrypoint for the off-pod Argo job (jobs_main chat-changelog
-    <name>). It computes the embed exactly like run_changelog_iteration (GitHub
-    fetch plus model summary), but instead of posting via the bot it enqueues the
-    embed - the leader's outbox drain posts it. No bot is required, so this runs
-    in an ephemeral pod. Reads the config from CHANGELOG_CONFIGS by name.
-
-    The in-process path's best-effort store-after-send (which made the changelog
-    searchable in the bot's memory, keyed on the real sent message id) is not
-    reproduced here: the job has no sent id until the drain posts. Users still
-    see the post; only the bot-memory searchability is dropped. It can be added
-    back later by having the drain store after posting.
+    jobs_main chat-changelog <name> reads the config from CHANGELOG_CONFIGS,
+    fetches and filters GitHub commits, summarizes them, and enqueues an embed
+    to the Discord outbox. The leader's outbox drain delivers the embed.
     """
     if llm_call is None:
         from chat.summarizer import build_llm_caller
