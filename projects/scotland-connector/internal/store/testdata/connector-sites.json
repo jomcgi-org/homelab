@@ -286,7 +286,8 @@
           "cloud_area_fraction": 5.0,
           "dark": true
         }
-      ]
+      ],
+      "camping_membership": { "zones": [], "parks": ["Cairngorms"] }
     },
     {
       "id": "empty",
@@ -298,7 +299,8 @@
       "lp_zone": "pristine",
       "clear_dark_hours": 0,
       "clear_twilight_hours": 0,
-      "best_hours": []
+      "best_hours": [],
+      "camping_membership": { "zones": [], "parks": ["Cairngorms"] }
     },
     {
       "id": "stale",
@@ -310,7 +312,8 @@
       "lp_zone": "pristine",
       "clear_dark_hours": 0,
       "clear_twilight_hours": 0,
-      "best_hours": []
+      "best_hours": [],
+      "camping_membership": { "zones": [], "parks": ["Cairngorms"] }
     },
     {
       "id": "missing",
@@ -322,7 +325,8 @@
       "lp_zone": "pristine",
       "clear_dark_hours": 0,
       "clear_twilight_hours": 0,
-      "best_hours": []
+      "best_hours": [],
+      "camping_membership": { "zones": [], "parks": ["Cairngorms"] }
     }
   ],
   "count": 4,

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,35 @@ import (
 )
 
 const walksV1 = `{"schema_version":1,"fetched_at":"2026-10-20T12:20:00+00:00","walks":[{"id":"a","name":"A","url":"https://www.walkhighlands.co.uk/a.shtml","lat":57,"lon":-4,"distance_km":5,"ascent_m":200,"duration_h":2,"hours":[]}]}`
+
+// Real build_payload bytes, checked against the producer by Python CI.
+//
+//go:embed testdata/camping-walks.json
+var campingWalksSnapshot []byte
+
+func TestCampingWalkProducerBytesThroughStore(t *testing.T) {
+	f := &fakeR2{calls: map[string]int{}, objects: map[string]r2.Object{
+		"walks.json": {Body: campingWalksSnapshot, ETag: `"camping"`},
+	}}
+	s := NewWalks("stars", "walks.json", time.Minute, f, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := s.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ds := s.Current()
+	shore, park, outside := ds.ByID("shore"), ds.ByID("park"), ds.ByID("outside")
+	if shore == nil || park == nil || outside == nil {
+		t.Fatal("missing walks")
+	}
+	if !shore.Camping.Known() || len(shore.Camping.Zones) != 1 || shore.Camping.Zones[0] != "East Loch Lomond" {
+		t.Fatal(shore.Camping)
+	}
+	if !park.Camping.Known() || len(park.Camping.Zones) != 0 || len(park.Camping.Parks) != 1 || park.Camping.Parks[0] != "Cairngorms" {
+		t.Fatal(park.Camping)
+	}
+	if !outside.Camping.Known() || len(outside.Camping.Zones) != 0 || len(outside.Camping.Parks) != 0 {
+		t.Fatal(outside.Camping)
+	}
+}
 
 func TestWalkStoreKeepsLastGoodSnapshot(t *testing.T) {
 	f := &fakeR2{calls: map[string]int{}, objects: map[string]r2.Object{

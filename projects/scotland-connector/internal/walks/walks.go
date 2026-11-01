@@ -18,6 +18,7 @@ import (
 	_ "time/tzdata" // the image ships no zoneinfo; days are UK calendar dates
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/astro"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/camping"
 )
 
 // Snapshot shapes this package reads. Version 1 holds the good hours only,
@@ -94,6 +95,7 @@ func Known(v float32) bool { return v == v }
 
 // Walk is one WalkHighlands walk with its viable hours in time order.
 type Walk struct {
+	Camping           *camping.Membership
 	ForecastFetchedAt time.Time
 	ID                string
 	Name              string
@@ -143,16 +145,17 @@ type doc struct {
 	SchemaVersion int     `json:"schema_version"`
 	FetchedAt     *string `json:"fetched_at"`
 	Walks         []struct {
-		ForecastFetchedAt *string      `json:"forecast_fetched_at"`
-		ID                string       `json:"id"`
-		Name              string       `json:"name"`
-		URL               string       `json:"url"`
-		Lat               float64      `json:"lat"`
-		Lon               float64      `json:"lon"`
-		DistanceKm        float64      `json:"distance_km"`
-		AscentM           int          `json:"ascent_m"`
-		DurationH         float64      `json:"duration_h"`
-		Hours             [][]*float64 `json:"hours"`
+		Camping           *camping.Membership `json:"camping_membership"`
+		ForecastFetchedAt *string             `json:"forecast_fetched_at"`
+		ID                string              `json:"id"`
+		Name              string              `json:"name"`
+		URL               string              `json:"url"`
+		Lat               float64             `json:"lat"`
+		Lon               float64             `json:"lon"`
+		DistanceKm        float64             `json:"distance_km"`
+		AscentM           int                 `json:"ascent_m"`
+		DurationH         float64             `json:"duration_h"`
+		Hours             [][]*float64        `json:"hours"`
 	} `json:"walks"`
 }
 
@@ -190,7 +193,8 @@ func Parse(body []byte, version string) (*Dataset, error) {
 			continue
 		}
 		out := Walk{
-			ID: w.ID, Name: w.Name, URL: w.URL, Lat: w.Lat, Lon: w.Lon,
+			Camping: w.Camping,
+			ID:      w.ID, Name: w.Name, URL: w.URL, Lat: w.Lat, Lon: w.Lon,
 			LengthKm: w.DistanceKm, AscentM: w.AscentM, DurationH: w.DurationH,
 			Hours:    make([]Hour, len(w.Hours)),
 			cosLat:   math.Cos(w.Lat * math.Pi / 180),
