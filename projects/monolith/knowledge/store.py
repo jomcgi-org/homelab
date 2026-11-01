@@ -1403,25 +1403,3 @@ class KnowledgeStore:
             }
             for gap in rows
         ]
-
-    def get_gap_by_id(self, gap_id: int) -> dict | None:
-        """Fetch a single gap by id, or None if no gap matches.
-
-        Soft-deleted gaps return ``None`` so callers can't accidentally
-        surface tombstoned rows. Restore via :func:`gaps.undelete_gap`.
-        """
-        gap = self.session.get(Gap, gap_id)
-        if gap is None or gap.deleted_at is not None:
-            return None
-        return {
-            "id": gap.id,
-            "term": gap.term,
-            "context": gap.context,
-            "gap_class": gap.gap_class,
-            "state": gap.state,
-            "answer": gap.answer,
-            "created_at": gap.created_at,
-            "classified_at": gap.classified_at,
-            "resolved_at": gap.resolved_at,
-            "pipeline_version": gap.pipeline_version,
-        }

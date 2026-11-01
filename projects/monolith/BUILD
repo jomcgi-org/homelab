@@ -7946,19 +7946,6 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_gap_set_class_test",
-    srcs = ["knowledge/gap_set_class_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "knowledge_store_gap_queries_test",
     srcs = ["knowledge/store_gap_queries_test.py"],
     imports = ["."],
@@ -8057,16 +8044,6 @@ py_test(
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "knowledge_raw_paths_test",
-    srcs = ["knowledge/raw_paths_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pytest",
     ],
 )
 

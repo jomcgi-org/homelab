@@ -1,8 +1,7 @@
 """Gap discovery and review.
 
 A gap is an unresolved body-text wikilink. Discovery writes unresolved terms
-to Postgres, remote routines classify them through MCP, and review endpoints
-audit gap state.
+to Postgres, and review endpoints audit gap state.
 """
 
 from __future__ import annotations
@@ -52,9 +51,6 @@ class GapNotDeletedError(GapError):
     status_code = 409
 
 
-_VALID_GAP_CLASSES = frozenset({"external", "internal", "hybrid", "parked"})
-
-
 def split_csv(value: str | None) -> list[str] | None:
     """Split a comma-separated query/tool param into a list, stripping
     whitespace and dropping empty segments. Returns None when input is None
@@ -64,83 +60,6 @@ def split_csv(value: str | None) -> list[str] | None:
         return None
     parts = [s.strip() for s in value.split(",") if s.strip()]
     return parts or None
-
-
-# Non-terminal gap states the commit hook is allowed to close. A gap in one
-# of these states is still "open" (awaiting research or a user answer); once
-# an atom defining its term lands, the gap is resolved. Terminal states
-# (committed/rejected/parked) are left untouched.
-_OPEN_GAP_STATES = (
-    "discovered",
-    "classified",
-    "in_review",
-    "researching",
-    "researched",
-)
-
-# The only gap_class values that may legally accompany state='committed' under
-# the Postgres CHECK ``gaps_state_class_combo``. Gaps with gap_class NULL or
-# 'parked' MUST NOT be committed: SQLite test fixtures do not enforce the
-# CHECK, so an unguarded commit passes CI and 500s in prod.
-_COMMITTABLE_CLASSES = ("external", "internal", "hybrid")
-
-
-def resolve_gaps_for_note(
-    session: Session,
-    *,
-    note_id: str,
-    title: str,
-    aliases: list[str] | None,
-) -> list[int]:
-    """Commit open gaps whose term now resolves to this note.
-
-    Called after a note is indexed (create_atom / gardener / research routine).
-    Matches ``gap.term`` (slug-normalized via the same ``_slugify`` used
-    elsewhere in this module) against the note's ``note_id``, slugified
-    ``title``, and slugified ``aliases``. Only commits gaps whose ``gap_class``
-    is in the CHECK-combo legal set (external/internal/hybrid); gaps with
-    NULL or 'parked' class are left open because committing them violates
-    ``gaps_state_class_combo`` on Postgres (which SQLite does not catch).
-
-    On match, sets ``state='committed'``, ``note_id=<this note>``,
-    ``resolved_at=now(utc)``, ``human_verified=False``. Commits the session
-    if any gap changed. Returns the list of committed gap ids.
-    """
-    candidates = {note_id, _slugify(title)}
-    for alias in aliases or []:
-        candidates.add(_slugify(alias))
-
-    rows = (
-        session.execute(
-            select(Gap).where(
-                Gap.deleted_at.is_(None),
-                Gap.state.in_(_OPEN_GAP_STATES),
-                Gap.gap_class.in_(_COMMITTABLE_CLASSES),
-            )
-        )
-        .scalars()
-        .all()
-    )
-
-    committed: list[int] = []
-    now = datetime.now(timezone.utc)
-    for gap in rows:
-        if _slugify(gap.term) in candidates:
-            gap.state = "committed"
-            gap.note_id = note_id
-            gap.resolved_at = now
-            gap.human_verified = False
-            committed.append(gap.id)
-
-    if committed:
-        session.commit()
-        logger.info(
-            "gaps.resolve_gaps_for_note: committed %d gap(s) for note_id=%s: %s",
-            len(committed),
-            note_id,
-            committed,
-        )
-    return committed
 
 
 # Terminal states for the audit queue. A gap in one of these states had
@@ -343,56 +262,6 @@ def reopen_gap(session: Session, gap_id: int) -> dict:
     session.commit()
     session.refresh(gap)
     logger.info("gaps.reopen_gap: reopened gap_id=%d term=%r", gap_id, gap.term)
-    return _gap_to_dict(gap, session=session)
-
-
-def set_gap_class(session: Session, gap_id: int, gap_class: str) -> dict:
-    """Classify a discovered gap fileless and transition its state legally.
-
-    Drives the claude.ai classification routine: it reads discovered,
-    NULL-class gaps, applies the privacy rubric, and writes the decision
-    back through this function. Every transition keeps the (state, gap_class)
-    pair legal under the Postgres ``gaps_state_class_combo`` CHECK, which
-    SQLite test fixtures do not enforce, so this transition logic is the
-    only guard against an illegal pair reaching prod.
-
-    Transitions from ``state='discovered'``:
-        * ``external`` -> leave ``state='discovered'`` (the research routine
-          pulls discovered and in_review external gaps, there is no
-          intermediate state).
-        * ``internal`` / ``hybrid`` -> ``state='in_review'`` (awaiting review).
-        * ``parked`` -> ``state='parked'`` and ``resolved_at=now(utc)``
-          (terminal SKIP category).
-
-    Raises:
-        ValueError: if ``gap_class`` is not one of external/internal/hybrid/
-            parked, if ``gap_id`` is unknown, or if the gap is not in
-            ``state='discovered'`` (a non-discovered gap is already
-            classified or in flight).
-    """
-    if gap_class not in _VALID_GAP_CLASSES:
-        raise GapError(f"invalid gap_class: {gap_class!r}")
-    gap = _get_gap_or_raise(session, gap_id)
-    if gap.state != "discovered":
-        raise GapWrongStateError(
-            f"Gap id={gap_id} is in state={gap.state!r}, expected 'discovered'"
-        )
-
-    gap.gap_class = gap_class
-    if gap_class in ("internal", "hybrid"):
-        gap.state = "in_review"
-    elif gap_class == "parked":
-        gap.state = "parked"
-        gap.resolved_at = datetime.now(timezone.utc)
-    # external: leave state='discovered' for the research routine to pull.
-    session.commit()
-    session.refresh(gap)
-    logger.info(
-        "gaps.set_gap_class: gap_id=%d class=%s state=%s",
-        gap_id,
-        gap_class,
-        gap.state,
-    )
     return _gap_to_dict(gap, session=session)
 
 
