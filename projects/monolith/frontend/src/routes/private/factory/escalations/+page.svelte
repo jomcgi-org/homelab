@@ -411,7 +411,7 @@
       <span class="k">decided</span>
       <span class="v num">{settled.length}</span>
     </div>
-    <div>
+    <div class="keys-cell">
       <span class="k">keys</span>
       <span class="v keys">j k e 1-4 c x d esc</span>
     </div>
@@ -982,8 +982,23 @@
     background: var(--sheet);
     color: var(--ink);
     font-family: var(--font-ui);
-    font-size: 0.9rem;
+    /* 16px keeps iOS Safari from zooming the page when the note is focused. */
+    font-size: 1rem;
     resize: vertical;
+  }
+
+  /* The hotkeys are a keyboard's affordance. A thumb has none, so the key
+     legend and the key column leave the buttons their whole width. */
+  @media (hover: none) and (pointer: coarse) {
+    .stats .keys-cell,
+    .option .hotkey,
+    .escape-btn .hotkey {
+      display: none;
+    }
+    .option,
+    .escape-btn {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 
   .links {

@@ -112,12 +112,15 @@ body:has(main.drain-page) .back-to-dashboard {
 }
 
 @media (max-width: 760px) {
-  .execution-sheet .chrome .scheme {
-    min-width: 44px;
+  .drain-page .top button,
+  .drain-page .top .back,
+  .drain-page .chip {
+    display: inline-flex;
+    align-items: center;
     min-height: 44px;
   }
-  .drain-page .top button {
-    min-height: 44px;
+  .drain-page .chip {
+    padding-inline: 12px;
   }
 }
 

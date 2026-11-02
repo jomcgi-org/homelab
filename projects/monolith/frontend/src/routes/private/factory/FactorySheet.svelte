@@ -18,13 +18,14 @@
       key: "drain",
     },
   ]);
-  const ordered = $derived(
-    view === "escalations" ? [views[1], views[0], ...views.slice(2)] : views,
-  );
+  // One order on every view: a tab that moved when it was selected read as
+  // a different page's strip, so a thumb learned the row twice.
+  const ordered = $derived(views);
 </script>
 
 {#snippet trail()}
   <Trail
+    root={{ label: "dashboard", href: "/" }}
     crumbs={[{ label: "factory", href: "/factory" }]}
     current={view === "factory"
       ? ""
@@ -102,9 +103,31 @@
     background: var(--ds-surface);
     font: inherit;
   }
+  /* Every disclosure on these pages shows whether it opens: the same plus
+     and minus the sheet's index groups wear, parked at the row's end. */
+  .factory-sheet :global(details > summary) {
+    list-style: none;
+  }
+  .factory-sheet :global(details > summary::-webkit-details-marker) {
+    display: none;
+  }
+  .factory-sheet :global(details > summary::after) {
+    flex: none;
+    margin-left: auto;
+    padding-left: 0.6em;
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    content: "+";
+  }
+  .factory-sheet :global(details[open] > summary::after) {
+    content: "\2212";
+  }
   @media (max-width: 760px) {
     /* The spine only contains this short private index. Sticky belongs on
-       the spine, not a child constrained to the spine's own height. */
+       the spine, not a child constrained to the spine's own height. The
+       strip keeps the sheet's one-row behaviour: it scrolls sideways
+       rather than wrapping, so the pinned row is one line tall and the
+       page keeps its screen. */
     .factory-sheet .spine {
       position: sticky;
       top: 0;
@@ -119,11 +142,10 @@
     .factory-sheet .index-list {
       min-width: 0;
       width: 100%;
-      flex-wrap: wrap;
       gap: 0;
     }
     .factory-sheet .index-list a {
-      white-space: normal;
+      padding-inline: 0.6em;
     }
   }
 </style>

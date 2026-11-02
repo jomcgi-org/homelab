@@ -1,5 +1,6 @@
 <script>
   import "$lib/public/styles/technical-drawing.css";
+  import SchemePreference from "$lib/public/components/SchemePreference.svelte";
   import { page } from "$app/stores";
 
   let { children } = $props();
@@ -17,6 +18,8 @@
   // - /chat and /notes: both render their own top-left chrome (the explorer
   //   header and the notes status bar) that the link would overlap
   // - /qwen: its session list fills the top-left; the page links home itself
+  // - /updates: carries its own Trail and scheme switch, like the factory
+  //   documents
   //
   // $page.url reflects the browser URL (hooks.js reroute keeps private
   // paths un-prefixed), but strip a literal /private prefix too in case a
@@ -27,29 +30,23 @@
   let showBack = $derived.by(() => {
     if (path === "/") return false;
     if (/^\/(app|review|chat|notes|qwen)(\/|$)/.test(path)) return false;
-    // The factory documents and the execution console carry their own Trail,
-    // whose root is the dashboard, and their own persisted scheme switch.
+    // The factory documents, the execution console and the updates journal
+    // carry their own Trail, whose root is the dashboard, and their own
+    // persisted scheme switch.
     if (
       /^\/factory(?:\/?|\/escalations\/?|\/work-items\/[^/]+\/?|\/execution(?:\/.*)?)$/.test(
         path,
       )
     )
       return false;
+    if (/^\/updates\/?$/.test(path)) return false;
     return true;
   });
 </script>
 
-<svelte:head>
-  <!-- The back link can be the only sheet surface on a fresh child load.
-       Restore the same preference as SchemeToggle before it is painted. -->
-  <script>
-    try {
-      var t = localStorage.getItem("td-theme");
-      if (t === "light" || t === "dark")
-        document.documentElement.dataset.theme = t;
-    } catch (e) {}
-  </script>
-</svelte:head>
+<!-- The back link can be the only sheet surface on a fresh child load.
+     The shared bootstrap restores the stored scheme before it is painted. -->
+<SchemePreference />
 
 {#snippet backLink()}
   <a class="back-to-dashboard td-chrome" href="/">&larr; dashboard</a>
@@ -66,6 +63,10 @@
     top: 8px;
     left: 1.2rem;
     z-index: 1000;
+    display: inline-flex;
+    align-items: center;
+    /* The one control a child page is guaranteed to have: a thumb target. */
+    min-height: 44px;
     font-family: var(--font-code);
     font-size: 13px;
     line-height: 1.3;
@@ -73,7 +74,7 @@
     letter-spacing: 0.01em;
     color: var(--ink-2);
     text-decoration: none;
-    padding: 6px 8px;
+    padding: 6px 12px;
     border: 1px solid var(--stroke);
     background: var(--sheet);
   }

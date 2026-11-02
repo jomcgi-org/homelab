@@ -30,6 +30,20 @@ const crumbs = (root) =>
   }));
 
 describe("Trail", () => {
+  it("names a different root for a host whose / is not the public site", async () => {
+    const root = await render({
+      root: { label: "dashboard", href: "/" },
+      crumbs: [{ label: "factory", href: "/factory" }],
+    });
+    expect(crumbs(root)[0]).toEqual({
+      tag: "A",
+      text: "dashboard",
+      href: "/",
+      current: null,
+      title: false,
+    });
+  });
+
   it("marks the site root current when there is nowhere deeper", async () => {
     const root = await render({});
     expect(crumbs(root)).toEqual([

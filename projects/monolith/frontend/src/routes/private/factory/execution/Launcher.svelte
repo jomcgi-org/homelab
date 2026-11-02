@@ -364,7 +364,8 @@
     border-radius: 0;
     color: var(--text);
     background: transparent;
-    font: 15px/1.5 var(--font-ui);
+    /* 16px: iOS Safari zooms the whole console for anything smaller. */
+    font: 16px/1.5 var(--font-ui);
     outline: none;
   }
   .bar {
@@ -394,6 +395,8 @@
     padding: 0 24px 0 7px;
     appearance: none;
     border: 0;
+    /* Same floor as the textarea: a focused 12px select zooms iOS too. */
+    font-size: 16px;
     border-radius: 0;
     color: var(--text-soft);
     background: transparent;
@@ -460,6 +463,8 @@
     align-items: center;
     gap: 6px;
     margin: -12px 0;
+    /* 44px on a phone: the two doorways are tapped, not clicked. */
+    min-height: 44px;
     padding: 4px 12px;
     overflow: hidden;
     border-radius: 0;

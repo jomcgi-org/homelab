@@ -1,6 +1,7 @@
 <script>
   import "$lib/public/styles/technical-drawing.css";
-  import SchemePreference from "$lib/public/components/SchemePreference.svelte";
+  import TechnicalDrawingChrome from "$lib/public/components/TechnicalDrawingChrome.svelte";
+  import Trail from "$lib/public/components/Trail.svelte";
   import {
     facetHref,
     formatDate,
@@ -47,13 +48,21 @@
   />
 </svelte:head>
 
-<SchemePreference />
+{#snippet trail()}
+  <Trail
+    root={{ label: "dashboard", href: "/" }}
+    crumbs={[{ label: "updates" }]}
+  />
+{/snippet}
+
+<TechnicalDrawingChrome {trail} />
 <main class="td sheet updates-page">
   <div class="frame">
     <h1 class="sr-only">Product updates</h1>
 
     <div class="journal">
       <aside class="spine">
+        <div class="trail-dock">{@render trail()}</div>
         <nav class="spine-filters" aria-label="Filter product updates">
           <p class="sec-label">/ Filter</p>
           {#if data.projects.length}
@@ -857,8 +866,9 @@
   /* ── Mobile ── */
 
   @media (max-width: 760px) {
+    /* The chrome row above carries the trail, so nothing fixed to clear. */
     .updates-page {
-      padding: 3rem 1.35em 4em;
+      padding: 1rem 1.35em 4em;
     }
 
     .updates-page .spine-group summary {
