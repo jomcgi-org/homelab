@@ -2174,50 +2174,6 @@ async def factory_prepare_validation(
 
 
 @mcp.tool
-async def factory_preview_issue_admission(
-    issue_number: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
-    reason: Annotated[str, Field(min_length=1, max_length=4000)],
-) -> dict:
-    """Preview bounded admission configuration for one fresh primary-repo issue.
-
-    Requires a standing human operator. Reads only, creates no receipt and
-    starts no work. All admitted tasks must settle first, even paused ones.
-    Preserves generation and bounds, disables auto-merge and broad intake.
-    Return the preview digest to factory_apply_issue_admission with identical
-    issue and reason. Submission still checks live eligibility afterwards.
-    """
-    return await factory_prepare_validation(
-        "preview", None, reason, issue_number=issue_number
-    )
-
-
-@mcp.tool
-async def factory_apply_issue_admission(
-    issue_number: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
-    reason: Annotated[str, Field(min_length=1, max_length=4000)],
-    expected_preview_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
-    request_key: Annotated[str, Field(min_length=1, max_length=256)],
-) -> dict:
-    """Apply an exact fresh-issue admission preview as a standing human operator.
-
-    Requires the digest from factory_preview_issue_admission and identical
-    issue and reason. Locks and rechecks current state. Preserves generation,
-    budgets and holds, with automatic landing and broad intake disabled.
-    Leaves admissions paused and creates no receipt or worker. Submit the
-    selected issue separately, then explicitly enable admission. Replay the
-    same key and arguments after a lost response, then read fresh state.
-    """
-    return await factory_prepare_validation(
-        "apply",
-        None,
-        reason,
-        issue_number=issue_number,
-        expected_preview_sha256=expected_preview_sha256,
-        request_key=request_key,
-    )
-
-
-@mcp.tool
 async def factory_session_dispatch_diagnostics(
     session_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
     seq: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
@@ -2259,52 +2215,40 @@ def _refinement_delivery(
 
 
 @mcp.tool
-async def factory_preview_refinement_delivery(
+async def factory_refinement_delivery(
+    operation: Literal["preview", "apply"],
     receipt_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
     reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    request_key: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
+    expected_preview_sha256: Annotated[
+        str | None, Field(pattern=r"^[0-9a-f]{64}$")
+    ] = None,
 ) -> dict:
-    """Preview a separate held delivery from completed refinement as an operator.
+    """Preview or queue a held delivery from completed refinement as an operator.
 
     Requires paused admissions and no queued, active or uncertain execution.
     The source must have verified agent-ready refinement and only its conductor
     staging hold and gates. Reads current issue ownership and PR references.
     Ambiguity refuses. Copies every restriction server-side, with no caller
     override. Source receipt, task and accounting remain terminal and unchanged.
-    Preview creates no receipt or reservation. Review its exact inherited
-    restrictions and policy before applying. It grants no landing permission.
+    Preview creates no receipt or reservation; review its exact inherited
+    restrictions and policy first. Apply needs identical receipt and reason,
+    the preview digest and a stable request key. It rechecks state under the
+    control lock and creates one delivery receipt with the unmerged-delivery
+    hold. Auto-merge, broad intake and issue production stay disabled and
+    admissions stay paused. Replay identical arguments after a lost response.
+    This neither starts a worker nor permits landing.
     """
     principal = current_principal()
     refusal = _refuse(principal)
     if refusal is not None:
         return refusal
-    return await asyncio.to_thread(
-        _refinement_delivery, "preview", receipt_id, reason, principal.subject
-    )
-
-
-@mcp.tool
-async def factory_apply_refinement_delivery(
-    receipt_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
-    reason: Annotated[str, Field(min_length=1, max_length=4000)],
-    request_key: Annotated[str, Field(min_length=1, max_length=256)],
-    expected_preview_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
-) -> dict:
-    """Queue the exact previewed held refinement continuation as an operator.
-
-    Requires identical receipt/reason and preview digest. Rechecks ownership,
-    source restrictions, policy and unknown execution under the control lock.
-    Creates one distinct delivery receipt with all conductor restrictions and
-    the unmerged-delivery hold, retaining the terminal refinement unchanged.
-    Preserves generation and caps. Disables auto-merge, broad intake and issue
-    production. Leaves admissions paused: inspect the receipt before enabling.
-    Restrictions are audited and checked again before a task can be admitted.
-    Replay the same request key and identical arguments after a lost response,
-    then read current status. This neither starts a worker nor permits landing.
-    """
-    principal = current_principal()
-    refusal = _refuse(principal)
-    if refusal is not None:
-        return refusal
+    if operation == "preview":
+        return await asyncio.to_thread(
+            _refinement_delivery, "preview", receipt_id, reason, principal.subject
+        )
+    if not request_key or not expected_preview_sha256:
+        return {"ok": False, "reason": "refinement_delivery_preview_required"}
     return await asyncio.to_thread(
         _refinement_delivery,
         "apply",
@@ -2362,11 +2306,16 @@ async def factory_quota_probe_status(
 
 
 @mcp.tool
-async def factory_preview_refinement_batch(
+async def factory_refinement_batch(
+    operation: Literal["preview", "apply"],
     issue_numbers: Annotated[list[int], Field(min_length=1, max_length=10)],
     reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    expected_preview_sha256: Annotated[
+        str | None, Field(pattern=r"^[0-9a-f]{64}$")
+    ] = None,
+    request_key: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
 ) -> dict:
-    """Preview an exact fresh advisory batch as a standing human operator.
+    """Preview or apply an exact fresh advisory batch as a standing operator.
 
     Requires paused admissions, selected-only intake or an inactive prior batch,
     and no queued/uncertain work. Other admitted work retains its policy. Reads
@@ -2375,47 +2324,24 @@ async def factory_preview_refinement_batch(
     Decisions remain private. External notifications and typed gate actions
     are disabled for these receipts, including after the batch is replaced.
     No implementation, closure or landing is authorized by the batch.
+    Apply needs identical issues and reason, the preview digest and a request
+    key; it rechecks fresh GitHub evidence, policy version, receipts and
+    reservations and leaves admissions paused. Replay identical arguments
+    after a lost response, then read current state.
     """
     principal = current_principal()
     refusal = _refuse(principal)
     if refusal is not None:
         return refusal
 
-    def preview():
+    def run():
         from factory.orchestration import factory_refinement_batch
 
         try:
-            return factory_refinement_batch.preview(issue_numbers, reason)
-        except ValueError as exc:
-            return {"ok": False, "reason": str(exc)}
-
-    return await asyncio.to_thread(preview)
-
-
-@mcp.tool
-async def factory_apply_refinement_batch(
-    issue_numbers: Annotated[list[int], Field(min_length=1, max_length=10)],
-    reason: Annotated[str, Field(min_length=1, max_length=4000)],
-    expected_preview_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
-    request_key: Annotated[str, Field(min_length=1, max_length=256)],
-) -> dict:
-    """Apply the exact reviewed advisory batch, leaving admissions paused.
-
-    Rechecks fresh GitHub evidence, policy version, receipts and reservations.
-    Preserves existing selected work, generation, budgets, models and holds.
-    A separate explicit enable authorizes the stated refinement side effects.
-    Natural intake only admits named advisory issues, never their delivery.
-    Replay identical arguments after a lost response, then read current state.
-    """
-    principal = current_principal()
-    refusal = _refuse(principal)
-    if refusal is not None:
-        return refusal
-
-    def apply():
-        from factory.orchestration import factory_refinement_batch
-
-        try:
+            if operation == "preview":
+                return factory_refinement_batch.preview(issue_numbers, reason)
+            if not request_key or not expected_preview_sha256:
+                return {"ok": False, "reason": "refinement_batch_preview_required"}
             return factory_refinement_batch.apply(
                 issue_numbers,
                 reason,
@@ -2426,15 +2352,20 @@ async def factory_apply_refinement_batch(
         except ValueError as exc:
             return {"ok": False, "reason": str(exc)}
 
-    return await asyncio.to_thread(apply)
+    return await asyncio.to_thread(run)
 
 
 @mcp.tool
-async def factory_preview_backlog_intake(
+async def factory_backlog_intake(
+    operation: Literal["preview", "apply"],
     reason: Annotated[str, Field(min_length=1, max_length=4000)],
     include_refinement: bool = False,
+    expected_preview_sha256: Annotated[
+        str | None, Field(pattern=r"^[0-9a-f]{64}$")
+    ] = None,
+    request_key: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
 ) -> dict:
-    """Preview returning the primary repository to existing agent-ready intake.
+    """Preview or apply returning the primary repo to agent-ready intake.
 
     Standing operators only. Requires paused admissions. With existing work,
     only enables discovery under an already-safe posture, retaining manual
@@ -2442,58 +2373,31 @@ async def factory_preview_backlog_intake(
     and landing refuse the change. When idle, clears manual issue selection,
     disables landing, refinement, closure and issue production, and pauses
     other repositories. Eligibility filters, generation and bounds remain.
-    No work is submitted or enabled.
     With include_refinement, requires safe posture and no queued work, preserves
     all selections and limits, and prepares broad brief-only refinement plus
     normal ready-issue implementation. Refinement notifications and typed gate
     actions remain disabled. Cancellation and landing histories stay fenced.
-    Review the full policy diff before applying its exact digest.
+    Review the full policy diff, then apply with the same include_refinement,
+    the preview digest and a request key. Apply rechecks state under the
+    control lock and leaves admissions paused: a separate explicit enable
+    permits intake. No task is submitted, resumed or recovered. Replay
+    identical arguments after a lost response, then read current state.
     """
     principal = current_principal()
     refusal = _refuse(principal)
     if refusal is not None:
         return refusal
 
-    def preview():
+    def run():
         from factory.orchestration import factory_validation
 
         try:
-            return factory_validation.preview_backlog(
-                reason, include_refinement=include_refinement
-            )
-        except ValueError as exc:
-            return {"ok": False, "reason": str(exc)}
-
-    return await asyncio.to_thread(preview)
-
-
-@mcp.tool
-async def factory_apply_backlog_intake(
-    reason: Annotated[str, Field(min_length=1, max_length=4000)],
-    expected_preview_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
-    request_key: Annotated[str, Field(min_length=1, max_length=256)],
-    include_refinement: bool = False,
-) -> dict:
-    """Apply an exact reviewed backlog-intake preview as a standing operator.
-
-    Rechecks state, policy version, receipt and reservation history under the
-    control lock. Preserves all task bounds and holds. Leaves admissions paused: a
-    separate explicit enable permits the existing intake eligibility checks.
-    No task is submitted, resumed or recovered. Replay identical arguments
-    after a lost response, then read current state before further actions.
-    Pass the same include_refinement choice as the preview. It enables broad
-    brief-only advisory eligibility and normal ready-issue implementation only
-    after separate enable, preserving cancellation, landing and execution holds.
-    """
-    principal = current_principal()
-    refusal = _refuse(principal)
-    if refusal is not None:
-        return refusal
-
-    def apply():
-        from factory.orchestration import factory_validation
-
-        try:
+            if operation == "preview":
+                return factory_validation.preview_backlog(
+                    reason, include_refinement=include_refinement
+                )
+            if not request_key or not expected_preview_sha256:
+                return {"ok": False, "reason": "backlog_intake_preview_required"}
             return factory_validation.apply_backlog(
                 reason,
                 include_refinement=include_refinement,
@@ -2504,7 +2408,7 @@ async def factory_apply_backlog_intake(
         except ValueError as exc:
             return {"ok": False, "reason": str(exc)}
 
-    return await asyncio.to_thread(apply)
+    return await asyncio.to_thread(run)
 
 
 @mcp.tool

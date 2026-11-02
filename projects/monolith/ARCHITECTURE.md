@@ -1000,15 +1000,15 @@ separate from deploying this supported path. Refs #6659.
 **Why explicit review recomputation.** Node loss can leave a prepared review
 batch with an unknown model result indefinitely. Automatic reconciliation keeps
 that uncertainty fenced. A standing human operator may instead use
-`monolith_agent_preview_fact_review_recovery` and
-`monolith_agent_apply_fact_review_recovery` for the exact `kg-fact-review`
-session and permit, acknowledging duplicate computation and writes. These are
-separate tool identities with required typed arguments, so stale discovery
-cannot mistake a recovery preview for an ordinary scheduling call. Preview
-accepts no operation selector and cannot apply. Apply requires the digest, key
-and exact acknowledgment, with no legacy-trigger fallback. The older trigger's
-optional recovery interface remains compatible, but operators must wait for
-the dedicated callable schemas before using these tools. The state
+`monolith_agent_fact_review_recovery` for the exact `kg-fact-review` session
+and permit, acknowledging duplicate computation and writes. It is a tool
+identity separate from routine triggering, so stale discovery cannot mistake
+recovery for an ordinary scheduling call. Its `operation` is `preview` or
+`apply`; preview cannot apply. Apply requires the digest, key and exact
+acknowledgment, checked server-side before any read, with no legacy-trigger
+fallback. The older trigger's optional recovery interface remains compatible.
+One tool per preview/apply operation follows the factory MCP convention and
+keeps the operator catalogue small. The state
 digest and idempotency key bind one audited decision. Only unfinished members
 become abandoned; completed receipts, source evidence, unknown turns and prior
 session bindings remain. Abandoned members reject late writes and become
@@ -2322,9 +2322,9 @@ work. Explicit operator re-admission remains separate, and a delivery inherits
 its prior refinement's landing hold as well as its conductor gates. Readiness
 does not release cancellation, landing, source, ownership or provider authority.
 
-`factory_preview_refinement_batch` and `factory_apply_refinement_batch` prepare
-one to ten fresh primary-repository issues for advisory work while existing
-admitted work retains its pinned policy. Preparation requires paused admissions,
+`factory_refinement_batch` (`preview`, then `apply`) prepares one to ten fresh
+primary-repository issues for advisory work while existing admitted work
+retains its pinned policy. Preparation requires paused admissions,
 selected-only intake or a prior batch with no running refinements, no queued
 work, no unknown starts and the same safe posture
 as active discovery restoration. Preview binds fresh issue ownership and PR

@@ -242,9 +242,9 @@ can require resolving scope ambiguity before preparation can proceed.
 
 ## Continue held completed refinement
 
-`factory_preview_refinement_delivery` and `factory_apply_refinement_delivery`
-create a distinct delivery receipt from a verified completed refinement whose
-only direction is its conductor staging hold and conductor gates. The operator
+`factory_refinement_delivery` (`preview`, then `apply`) creates a distinct
+delivery receipt from a verified completed refinement whose only direction is
+its conductor staging hold and conductor gates. The operator
 supplies an exact source receipt and reason, never replacement restrictions.
 The source receipt, task, accounting and evidence stay terminal and unchanged.
 
@@ -278,10 +278,10 @@ claim uses the same unresolved-session predicate as this diagnostic.
 
 ### Return to backlog intake
 
-`factory_preview_backlog_intake(reason)` and
-`factory_apply_backlog_intake(reason, expected_preview_sha256, request_key)`
-prepare the primary repository to consume its existing agent-ready backlog after
-a bounded validation. Both require a standing human operator. Preview requires
+`factory_backlog_intake(operation, reason, include_refinement,
+expected_preview_sha256, request_key)` prepares the primary repository to
+consume its existing agent-ready backlog after a bounded validation. Both
+operations require a standing human operator. Preview requires
 paused admissions, no active, queued or landing receipts and no reserved or
 uncertain starts. Apply locks and rechecks that snapshot, including receipt
 history and the policy version, and records the before/after policy in audit.
