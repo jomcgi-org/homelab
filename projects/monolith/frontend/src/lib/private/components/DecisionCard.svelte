@@ -39,7 +39,8 @@
       if (out.status === "accepted") ondecided(item, out);
     } catch {
       tone = "warn";
-      message = "Outcome unknown. Check the escalations page before answering again.";
+      message =
+        "Outcome unknown. Check the escalations page before answering again.";
     } finally {
       busy = null;
       armed = false;
