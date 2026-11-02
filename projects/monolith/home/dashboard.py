@@ -130,25 +130,23 @@ async def _collect_github() -> dict:
     return data
 
 
-def _read(fn, session):
-    """Run one synchronous database read, in its own session when none is given.
+def _read(fn):
+    """Run one synchronous database read in its own session.
 
     Called through asyncio.to_thread: a blocking read (or a wait on an
     exhausted pool) on the event loop would stall every request the process
-    is serving. Concurrent reads each open their own session because a
-    Session is not safe to share across threads.
+    is serving. Each read opens its own session, because a Session is not
+    safe to share across threads.
     """
-    if session is not None:
-        return fn(session)
     from sqlmodel import Session
 
     from core.db import get_engine
 
-    with Session(get_engine()) as own:
-        return fn(own)
+    with Session(get_engine()) as session:
+        return fn(session)
 
 
-async def _collect_health(session=None) -> dict:
+async def _collect_health() -> dict:
     """Cluster health rollup, served from the background snapshot when fresh.
 
     The scan itself (~235 resources across all namespaces) runs off-request in
@@ -156,9 +154,7 @@ async def _collect_health(session=None) -> dict:
     Falls back to a live scan only when no fresh snapshot exists: a fresh deploy
     before the first refresh, a wedged refresher, or an unmigrated env.
     """
-    snap = await asyncio.to_thread(
-        _read, cluster_snapshot.read_cluster_snapshot, session
-    )
+    snap = await asyncio.to_thread(_read, cluster_snapshot.read_cluster_snapshot)
     if snap is not None:
         # Surface freshness without disturbing the {healthy, scanned, unhealthy}
         # shape the frontend reads.
@@ -168,25 +164,24 @@ async def _collect_health(session=None) -> dict:
     return await cluster_snapshot.scan_health_live()
 
 
-async def _collect_today(session=None) -> dict:
+async def _collect_today() -> dict:
     """Today's calendar events (same-domain, home.schedule)."""
-    events = await asyncio.to_thread(_read, schedule.get_today_events, session)
+    events = await asyncio.to_thread(_read, schedule.get_today_events)
     return {"events": events}
 
 
-async def build_dashboard(session=None) -> dict:
+async def build_dashboard() -> dict:
     """Assemble every dashboard section, isolating failures per-section.
 
     Each collector runs concurrently; a raised exception in one is mapped to
     {"error": str(exc)} for that section rather than failing the whole
-    response. With no session, each database read opens its own off the
-    event loop.
+    response. Each database read runs off the event loop in its own session.
     """
     names = ("health", "github", "today")
     results = await asyncio.gather(
-        _collect_health(session),
+        _collect_health(),
         _collect_github(),
-        _collect_today(session),
+        _collect_today(),
         return_exceptions=True,
     )
 

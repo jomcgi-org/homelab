@@ -34,7 +34,7 @@ async def test_build_dashboard_isolates_a_failing_section():
             dashboard, "_collect_today", AsyncMock(return_value={"events": []})
         ),
     ):
-        result = await dashboard.build_dashboard(session=MagicMock())
+        result = await dashboard.build_dashboard()
 
     assert result["health"] == {"error": "k8s down"}
     assert result["github"] == {"open_prs": [], "recent_merges": []}
@@ -57,7 +57,7 @@ async def test_build_dashboard_all_sections_healthy():
             dashboard, "_collect_today", AsyncMock(return_value={"events": []})
         ),
     ):
-        result = await dashboard.build_dashboard(session=MagicMock())
+        result = await dashboard.build_dashboard()
 
     for section in ("health", "github", "today"):
         assert "error" not in result[section]
@@ -80,7 +80,7 @@ async def test_build_dashboard_multiple_sections_fail_independently():
             dashboard, "_collect_today", AsyncMock(return_value={"events": []})
         ),
     ):
-        result = await dashboard.build_dashboard(session=MagicMock())
+        result = await dashboard.build_dashboard()
 
     assert "error" in result["health"]
     assert "error" in result["github"]
