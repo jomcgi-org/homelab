@@ -427,6 +427,15 @@ def test_optimizer_loader_bounds_windows_at_proven_deployment(monkeypatch):
             assert params["as_of"] == NOW
     from factory.orchestration import learning_inputs
 
+    loaded["rollout"]["reconciled_at"] = NOW.isoformat()
+    monkeypatch.setattr(
+        retro,
+        "_verify_optimizer_rollout",
+        lambda *_: {
+            "verdict": "verified",
+            "reconciled_at": (NOW + retro.timedelta(hours=1)).isoformat(),
+        },
+    )
     later = retro._load_optimizer(object(), NOW + retro.timedelta(hours=1))
     assert later["outcomes_and_cost_as_of"] != loaded["outcomes_and_cost_as_of"]
     first = learning_inputs.fingerprint({"optimizer": loaded}, "a" * 40, "prompt")

@@ -30,6 +30,7 @@ VOLATILE = {
     "age_days",
     "generated_at",
     "outcomes_and_cost_as_of",
+    "reconciled_at",
 }
 
 
