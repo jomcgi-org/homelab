@@ -915,6 +915,7 @@ def test_control_plane_runtime_envs_render(renders):
     assert dev_env.get("EMBERVM_BRICK_CEILING_IDLE_MS") == "3600000"
     assert "EMBERVM_WARMTH_S3_GC_EXPECTED_NODES" not in dev_env
     assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_ENABLED") == "0"
+    assert gke_env.get("EMBERVM_ENVELOPE_REWRAP_ENABLED") == "1"
     assert dev_env.get("EMBERVM_ENVELOPE_REWRAP_ENABLED") == "0"
     assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_MAX_ARTIFACTS") == "100"
     assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_CONCURRENCY") == "8"
