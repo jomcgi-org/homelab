@@ -987,7 +987,7 @@ their outcomes remain unresolved. Fewer-attempted revisions precede retries.
 its routine lease when the parent workflow stops before applying the saved result.
 The default-off `knowledge.completedRawRecoveryEnabled` gate permits a standing
 operator to preview and apply that exact result through the dedicated
-`monolith_agent_*_completed_raw_recovery` tools. Preview binds the stored turn,
+`monolith_agent_completed_raw_recovery` tool. Preview binds the stored turn,
 raw input, lease owner, terminal workflow, settled permit and extraction version.
 Apply rechecks them under ownership locks and uses the normal validating writer.
 Its knowledge writes, job completion and durable recovery receipt commit together.
@@ -1007,8 +1007,8 @@ recovery for an ordinary scheduling call. Its `operation` is `preview` or
 `apply`; preview cannot apply. Apply requires the digest, key and exact
 acknowledgment, checked server-side before any read, with no legacy-trigger
 fallback. The older trigger's optional recovery interface remains compatible.
-One tool per preview/apply operation follows the factory MCP convention and
-keeps the operator catalogue small. The state
+One tool serving both preview and apply follows the factory MCP convention
+and keeps the operator catalogue small. The state
 digest and idempotency key bind one audited decision. Only unfinished members
 become abandoned; completed receipts, source evidence, unknown turns and prior
 session bindings remain. Abandoned members reject late writes and become
