@@ -158,8 +158,12 @@ def main():
                     elif how == "scrim":
                         page.mouse.click(195, 40)
                     else:
-                        page.keyboard.press("Escape")
+                        # A held Escape repeats; it must close one sheet only.
+                        page.keyboard.down("Escape")
+                        page.keyboard.down("Escape")
+                        page.keyboard.up("Escape")
                     expect(page.locator(".panel.open")).to_have_count(0)
+                    expect(page.locator("main.dashboard")).to_be_visible()
                     expect(page).to_have_url(re.compile(r"view=dashboard"))
 
                 if phone:

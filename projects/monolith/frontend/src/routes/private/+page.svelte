@@ -214,8 +214,12 @@
     else pushState("", { sheet: id });
   }
 
+  // One back per open sheet: a held Escape or a drag release followed by a
+  // tap could otherwise step back past the dashboard before popstate lands.
+  let closing = null;
   function closeSheet() {
-    if (!sheet) return;
+    if (!sheet || closing === sheet) return;
+    closing = sheet;
     dragY = 0;
     history.back();
   }
@@ -224,6 +228,7 @@
   let lastSheet = null;
   $effect(() => {
     const now = sheet;
+    closing = null;
     if (now) {
       document.getElementById(`close-${now}`)?.focus({ preventScroll: true });
     } else if (lastSheet && phone) {
