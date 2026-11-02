@@ -3,7 +3,8 @@
 `stars-grid-compute` is the infrequent, dedicated pipeline that computes the
 site grid and writes it to `stars.sites`. Its image contains rasterio,
 geopandas, Shapely, and their native libraries. The API and routine jobs images
-continue to exclude this directory and those dependencies.
+exclude this directory, rasterio and geopandas. They include Shapely for
+camping boundary membership during snapshot materialization.
 
 Each run downloads four operator-selected objects from one S3-compatible store:
 

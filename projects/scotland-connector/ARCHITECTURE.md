@@ -1,5 +1,13 @@
 # Scotland connector architecture
 
+A public, read-only, free API and MCP endpoint for planning and checking
+Scottish trips: which walks fit the weather and where the night sky will be
+dark and clear, each with a go, marginal, no or unknown verdict.
+Tracking issue: #7240. Deployed on the hub through Kargo
+(`projects/gke-apps/scotland-connector/`, pipeline `scotland-connector` in
+`projects/platform/kargo/values.yaml`), served publicly at
+`https://jomcgi.dev/scotland/mcp` and `https://jomcgi.dev/scotland/v1/...`.
+
 ## Camping at a walk start or stars site
 
 Why: camping restrictions depend on fixed boundaries and the requested date.
@@ -23,14 +31,6 @@ Producer preparation, provenance and OGL attribution years are documented in
 runfiles only. Offline tests cover sourced points, topology, serialized
 membership, season edges and both response paths. No new operational
 acceptance is required by this repository feature.
-
-A public, read-only, free API and MCP endpoint for planning and checking
-Scottish trips: which walks fit the weather and where the night sky will be
-dark and clear, each with a go, marginal, no or unknown verdict.
-Tracking issue: #7240. Deployed on the hub through Kargo
-(`projects/gke-apps/scotland-connector/`, pipeline `scotland-connector` in
-`projects/platform/kargo/values.yaml`), served publicly at
-`https://jomcgi.dev/scotland/mcp` and `https://jomcgi.dev/scotland/v1/...`.
 
 ## Shape
 

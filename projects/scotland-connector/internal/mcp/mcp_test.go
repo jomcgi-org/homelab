@@ -424,31 +424,43 @@ func TestLegacyClient(t *testing.T) {
 	}
 }
 
-func TestDiscoveryInstructionsIncludeLightScope(t *testing.T) {
-	for _, tc := range []struct {
-		method  string
-		body    string
-		headers map[string]string
+func TestDiscoveryInstructionsIncludeLightAndCampingScope(t *testing.T) {
+	for _, deployment := range []struct {
+		name         string
+		h            *Handler
+		instructions string
+		verdict      string
 	}{
-		{"initialize", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}`, nil},
-		{"server/discover", `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + modernMeta + `}}`, modern("server/discover", "")},
+		{"aurora-enabled", auroraHandler(), Instructions, "For plan, check and aurora"},
+		{"aurora-disabled", handler(), InstructionsWithoutAurora, "For plan and check"},
 	} {
-		t.Run(tc.method, func(t *testing.T) {
-			code, _, r := post(t, auroraHandler(), tc.body, tc.headers)
-			if code != http.StatusOK || r.Error != nil {
-				t.Fatalf("status %d error %+v", code, r.Error)
-			}
-			instructions, ok := r.Result["instructions"].(string)
-			if !ok || instructions != Instructions {
-				t.Fatalf("instructions missing or inconsistent: %v", r.Result["instructions"])
-			}
-			for _, guidance := range []string{"Use light", "no top-level verdict", "cloud", "nearby-site hourly sample support", "nights", "interval cloud forecasts", "For plan, check and aurora", "meta.sources"} {
-				if !strings.Contains(instructions, guidance) {
-					t.Errorf("discovery instructions omit %q", guidance)
-				}
-			}
-			if strings.Contains(instructions, "Lead with each answer's verdict") {
-				t.Error("discovery requires a verdict from light")
+		t.Run(deployment.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				method  string
+				body    string
+				headers map[string]string
+			}{
+				{"initialize", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}`, nil},
+				{"server/discover", `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + modernMeta + `}}`, modern("server/discover", "")},
+			} {
+				t.Run(tc.method, func(t *testing.T) {
+					code, _, r := post(t, deployment.h, tc.body, tc.headers)
+					if code != http.StatusOK || r.Error != nil {
+						t.Fatalf("status %d error %+v", code, r.Error)
+					}
+					instructions, ok := r.Result["instructions"].(string)
+					if !ok || instructions != deployment.instructions {
+						t.Fatalf("instructions missing or inconsistent: %v", r.Result["instructions"])
+					}
+					for _, guidance := range []string{"Use light", "no top-level verdict", "cloud", "nearby-site hourly sample support", "nights", "interval cloud forecasts", deployment.verdict, "meta.sources", "camping guidance for each matched walk start or stars site on the requested date", "does not classify a whole route", "Unknown membership requires checking the official map", "National Park membership alone is not a camping restriction"} {
+						if !strings.Contains(instructions, guidance) {
+							t.Errorf("discovery instructions omit %q", guidance)
+						}
+					}
+					if strings.Contains(instructions, "Lead with each answer's verdict") {
+						t.Error("discovery requires a verdict from light")
+					}
+				})
 			}
 		})
 	}
