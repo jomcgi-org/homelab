@@ -409,12 +409,12 @@ async def monolith_agent_fact_review_recovery(
     """Preview or apply operator recovery of one held kg-fact-review attempt.
 
     Requires a standing human operator. Preview does not schedule work or
-    change claims, permits, receipts or audit history; it returns
+    change claims, permits, receipts or audit history. It returns
     expected_state_sha256. Apply needs that digest, a reconciliation key and
     the explicit acknowledgment. It preserves completed receipts and prior
     state, abandons only unfinished claims, and rearms under existing caps.
     Capacity remains charged unless fresh server evidence proves cessation.
-    The key makes replay idempotent; the acknowledgment accepts duplicate
+    The key makes replay idempotent. The acknowledgment accepts duplicate
     computation and writes for this attempt only. Never use this as
     automatic retry policy. Session and permit identity are checked
     server-side.

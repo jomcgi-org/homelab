@@ -2231,7 +2231,7 @@ async def factory_refinement_delivery(
     staging hold and gates. Reads current issue ownership and PR references.
     Ambiguity refuses. Copies every restriction server-side, with no caller
     override. Source receipt, task and accounting remain terminal and unchanged.
-    Preview creates no receipt or reservation; review its exact inherited
+    Preview creates no receipt or reservation. Review its exact inherited
     restrictions and policy first. Apply needs identical receipt and reason,
     the preview digest and a stable request key. It rechecks state under the
     control lock and creates one delivery receipt with the unmerged-delivery
@@ -2325,7 +2325,7 @@ async def factory_refinement_batch(
     are disabled for these receipts, including after the batch is replaced.
     No implementation, closure or landing is authorized by the batch.
     Apply needs identical issues and reason, the preview digest and a request
-    key; it rechecks fresh GitHub evidence, policy version, receipts and
+    key. It rechecks fresh GitHub evidence, policy version, receipts and
     reservations and leaves admissions paused. Replay identical arguments
     after a lost response, then read current state.
     """
