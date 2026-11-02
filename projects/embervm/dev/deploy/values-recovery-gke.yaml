@@ -78,7 +78,6 @@ noded:
     enabled: true
     onepassword:
       itemPath: vaults/k8s-homelab/items/embervm-recovery-noded-token
-  requireRestoreCapability: true
   warmthHeartbeat:
     intervalSeconds: 30
     staleAfterSeconds: 600
@@ -96,8 +95,6 @@ noded:
     # use this profile for workspace restoration or executor-loss recovery.
     endpoint: ''
     bucket: ''
-    compress: true
-    encrypt: true
     credentials:
       enabled: false
       secretName: ''

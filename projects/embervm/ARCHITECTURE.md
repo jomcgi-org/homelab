@@ -748,13 +748,9 @@ evidence. Private bounded caches reuse only redacted terminal logs. Image
 publication does not establish guest uptake or measured reductions in repeated
 CI calls; the next retro window supplies that operational acceptance.
 
-A sequential Firecracker dirty-page diff bank path exists and is dormant.
-The merge-at-bank step now attempts Linux `FICLONE` for the temporary copy of
-the previous full and falls back to a byte copy on ext4 or across filesystems.
-Repository support does not establish that the fleet scratch path supports
-reflink: `noded.diffBanking` remains false until #5699 validates the staged XFS
-loop path on a dev node and #4970 records the demo-postgres latency and
-correctness comparison. Only full bundles ever enter the archive.
+Banking always writes a Full snapshot. The dormant dirty-page diff path and
+its merge-at-bank reflink helper were removed in 2026-11: its prerequisite,
+XFS reflink scratch (#5699), was closed as not planned.
 
 **`maxLifetimeSeconds` is a version-convergence bound, not a data lifetime**:
 it stops a session riding a stale base forever and is never raised to buy

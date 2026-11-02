@@ -1408,15 +1408,6 @@ noded:
   # Keep this aligned with noded's daemon fallback.
   memRejectFloorMib: 512
 
-  # Use Firecracker dirty-page diffs for repeated memory banks. Disabled by
-  # default until the staged XFS path in #5699 is validated on a dev node and
-  # the #4970 demo-postgres rollout records latency and correctness. The merge
-  # helper uses FICLONE on capable storage and falls back to a byte copy on ext4.
-  diffBanking: false
-  # Comma-separated workload allowlist for dirty tracking at both Prime and
-  # Relight. Keep task and park-only workloads outside the diff path.
-  diffBankingWorkloads: sandbox-session
-
   # New banks write bundle.json v1 with the ext4 UUID of their actual rootfs.
   # Keep rejection off for the observation roll: unstamped v0 is always
   # grandfathered, while invalid stamped v1 bundles are logged. A staged values
@@ -1571,11 +1562,6 @@ noded:
     # Watches GCE's instance/preempted metadata value with hanging GETs. Landed
     # off so a deployment can verify the mechanism before arming it in values.
     preemptionNoticeEnabled: false
-    # Keep the artifact export and restore workers running after SIGTERM so the
-    # drain can actually move parked workspaces and banked sessions into the
-    # store. Off, the workers stop with the signal and every drain export fails
-    # "context canceled", so a parked session can only relight on its own node.
-    exportsOutliveSignal: false
     # GCE's approximately 30s Spot shutdown period, less notice-observation
     # latency and noded's final stop, leaves 20s to publish to the control plane.
     # Re-derive this from the GCE contract if that contract changes. Do not tune
@@ -1626,15 +1612,6 @@ noded:
     # rootfs.ext4.sha256 in that identity prefix names the complete payload.
     # Remote retention remains default-off staged follow-up work on #5772.
     bucket: embervm
-    # Reader support shipped while writer compression remained inert, the first
-    # phase of the two-phase rollout. Every brick in the fleet now runs a daemon
-    # that honors the per-file zstd marker, so the arming precondition is met and
-    # new objects can be compressed safely.
-    compress: true
-    # EMBERVM_NODED_STORE_ENCRYPT. Phase 1 ships the reader fleet-wide with the
-    # writer inert. Arm only after every daemon can read enveloped artifacts and
-    # the control plane wrap endpoint is available.
-    encrypt: false
     # Optional override for the daemon's retry suppression period after an
     # artifact-specific control-plane wrap refusal. Empty uses the Go default.
     unexportableTTL: ""
@@ -1656,11 +1633,6 @@ noded:
   # issuer of volume generations. noded rejects an unblessed writable attach
   # (blessed_generation == 0) FAILED_PRECONDITION unconditionally; the
   # EMBERVM_NODED_REQUIRE_BLESSING rollout gate was collapsed in #4950.
-
-  # EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY. Phase 1 validates restore
-  # capabilities with enforcement inert. Arm only after the control plane
-  # supplies a capability on every enveloped restore.
-  requireRestoreCapability: false
 
   # 256Mi req / 36Gi limit (Task 14b full side-by-side). The limit is a cgroup
   # OOM CEILING, not a scheduling reservation (the request stays 256Mi), so it

@@ -1680,7 +1680,7 @@ def test_bundle_rootfs_identity_enforcement_can_be_staged_on():
 
 
 def test_brick_renders_inert_artifact_encryption_envs():
-    """Envelope writing and restore enforcement default off on every brick."""
+    """Bricks always encrypt and enforce; no rollout gate env is rendered."""
     chart = _chart_dir()
     rendered = _render("envelope", [chart / "values.yaml"], ["bricks.enabled=true"])
     brick_deployments = [
@@ -1692,19 +1692,13 @@ def test_brick_renders_inert_artifact_encryption_envs():
         "default render produced no brick Deployment; this test is inert"
     )
 
-    expected = {
-        "EMBERVM_NODED_STORE_ENCRYPT": "false",
-        "EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY": "false",
-    }
     for deployment in brick_deployments:
-        for name, value in expected.items():
-            rendered_env = re.search(
-                rf"name:\s*{name}\s+value:\s*\"([^\"]+)\"", deployment
-            )
-            assert rendered_env, f"brick Deployment is missing {name}"
-            assert rendered_env.group(1) == value, (
-                f"brick Deployment renders {name}={rendered_env.group(1)!r}, "
-                f"want {value!r}"
+        for name in (
+            "EMBERVM_NODED_STORE_ENCRYPT",
+            "EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY",
+        ):
+            assert f"name: {name}" not in deployment, (
+                f"brick Deployment still renders retired gate {name}"
             )
 
     control_plane = next(
@@ -2634,7 +2628,6 @@ def test_recovery_rendered_credentials_and_capacity(recovery_render) -> None:
         assert env["EMBERVM_NODED_MAX_LIVE_VMS"]["value"] == "1"
         assert env["EMBERVM_NODED_STORE_ENDPOINT"]["value"] == ""
         assert env["EMBERVM_NODED_STORE_BUCKET"]["value"] == ""
-        assert env["EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY"]["value"] == "true"
         if name.endswith("-8gi"):
             assert env["EMBERVM_NODED_WARM_RESTORE_WITH_VOLUME"]["value"] == "true"
         else:
@@ -2704,8 +2697,6 @@ def test_recovery_disarms_destructive_defaults() -> None:
     assert values["warmthS3Gc"]["enabled"] == ""
     assert values["rootfsReclaim"]["enabled"] == ""
     assert values["statefulSweeper"]["pressureBanking"]["enabled"] is False
-    assert values["noded"]["store"]["encrypt"] is True
-    assert values["noded"]["requireRestoreCapability"] is True
     assert values["artifactEncryption"]["enabled"] is False
     assert values["kekRoot"]["enabled"] is False
     assert values["noded"]["store"]["credentials"]["enabled"] is False

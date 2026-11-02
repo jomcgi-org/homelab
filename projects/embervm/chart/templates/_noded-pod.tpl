@@ -541,10 +541,6 @@ containers:
         value: {{ $ctx.Values.noded.vmOverheadMib | quote }}
       - name: EMBERVM_NODED_MEM_REJECT_FLOOR_MIB
         value: {{ $ctx.Values.noded.memRejectFloorMib | default 512 | quote }}
-      - name: EMBERVM_NODED_DIFF_BANKING
-        value: {{ $ctx.Values.noded.diffBanking | quote }}
-      - name: EMBERVM_NODED_DIFF_BANKING_WORKLOADS
-        value: {{ $ctx.Values.noded.diffBankingWorkloads | quote }}
       - name: EMBERVM_NODED_ENFORCE_BUNDLE_ROOTFS_IDENTITY
         value: {{ $ctx.Values.noded.enforceBundleRootfsIdentity | quote }}
       # Brick silence timeout (ADR embervm/037, #5073), seconds. Rendered only
@@ -618,8 +614,6 @@ containers:
         value: {{ $ctx.Values.noded.drain.preemptionNoticeEnabled | quote }}
       - name: EMBERVM_NODED_PREEMPTION_DRAIN_TIMEOUT
         value: "{{ $ctx.Values.noded.drain.preemptionTimeoutSeconds }}s"
-      - name: EMBERVM_NODED_DRAIN_EXPORTS_OUTLIVE_SIGNAL
-        value: {{ $ctx.Values.noded.drain.exportsOutliveSignal | default false | quote }}
       {{- if $ctx.Values.egress.enabled }}
       # Guest egress lane (ADR 023). Serve the vsock egress port per guest and
       # tunnel to the sidecar above. The workload list is load-bearing because
@@ -715,10 +709,6 @@ containers:
         value: {{ $ctx.Values.noded.store.endpoint | quote }}
       - name: EMBERVM_NODED_STORE_BUCKET
         value: {{ $ctx.Values.noded.store.bucket | quote }}
-      - name: EMBERVM_NODED_STORE_COMPRESS
-        value: {{ $ctx.Values.noded.store.compress | quote }}
-      - name: EMBERVM_NODED_STORE_ENCRYPT
-        value: {{ $ctx.Values.noded.store.encrypt | quote }}
       {{- with $ctx.Values.noded.store.unexportableTTL }}
       - name: EMBERVM_NODED_UNEXPORTABLE_TTL
         value: {{ . | quote }}
@@ -735,8 +725,6 @@ containers:
             name: {{ include "embervm.store.credentialsSecretName" $ctx }}
             key: {{ $ctx.Values.noded.store.credentials.secretAccessKeyKey }}
       {{- end }}
-      - name: EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY
-        value: {{ $ctx.Values.noded.requireRestoreCapability | quote }}
       {{- if $ctx.Values.controlPlane.restoreCapabilityKeySecret.enabled }}
       # Same Secret and key as the control-plane minting path. This env name is
       # noded-specific, while the underlying key identity is exactly shared.

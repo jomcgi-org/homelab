@@ -214,19 +214,11 @@ noded:
     enabled: true
     onepassword:
       itemPath: "vaults/k8s-homelab/items/embervm-noded-token"
-  # Step 3 of the #4691 production rollout: refuse an enveloped artifact unless
-  # the control plane supplies a short-lived capability scoped to the principal,
-  # artifact lineage, target brick, workload, generation, and lease.
-  requireRestoreCapability: true
   # SigV4 credentials for the artifact store (#4708). The embervm identity in
   # the SeaweedFS identities policy; clients sign every request once these are
   # present, and the gateway starts checking them when s3.enableAuth flips in
   # projects/platform/seaweedfs.
   store:
-    # The reader is already unconditional on every brick. New session,
-    # session-workspace, stateful, volume, and group-set exports are encrypted;
-    # shared immutable bases remain plaintext and deduplicable.
-    encrypt: true
     credentials:
       enabled: true
       onepassword:
