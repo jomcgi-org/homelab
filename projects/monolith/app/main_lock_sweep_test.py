@@ -192,8 +192,9 @@ class TestSweepTaskRegistration:
             await start_leader_singletons(app, ALL_MODULES)
 
         # Ships ingest, the agent_sessions pending-message sweep, title refresh,
-        # KG feed, guest cleanup, receipt retention, cd-probe, and quota refresh are the eight service tasks.
-        assert len(tasks_created) == 8
+        # KG feed, permit supervision, guest cleanup, receipt retention, cd-probe and
+        # quota refresh are the nine service tasks.
+        assert len(tasks_created) == 9
         messages = [str(c) for c in mock_logger.info.call_args_list]
         assert not any("Message lock sweep started" in m for m in messages)
 
