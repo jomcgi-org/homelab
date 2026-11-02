@@ -1385,6 +1385,12 @@ def admit_dispatch(
                 != backlog_refill.dispatch_schema(task_id, node_key, session=db)
             ):
                 return refuse("invalid_execution_context")
+            source = context["artifact_schema"].get("x-factory-refill-inspection")
+            if source is not None and (
+                context.get("branch") != "commit:" + source["sha"]
+                or context.get("hydration_branch") != "commit:" + source["sha"]
+            ):
+                return refuse("invalid_execution_context")
             context_fields = context_fields | {"read_only"}
         if not isinstance(context, dict) or set(context) - context_fields:
             return refuse("invalid_execution_context")

@@ -40,7 +40,7 @@ _REAL_REFILL_QUOTA = refill.quota
 
 
 @pytest.fixture
-def world(tmp_path, monkeypatch):
+def world(tmp_path, monkeypatch, request):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'refill.db'}",
         connect_args={"check_same_thread": False, "timeout": 10},
@@ -73,6 +73,23 @@ def world(tmp_path, monkeypatch):
             )
         ],
     )
+    # Existing fixtures exercise the deployed v1 contract and its replay.
+    # New source-contract cases explicitly request the inspection fixture.
+    if getattr(request, "param", None) != "inspection":
+        observe = refill.observe
+
+        def historical_observe(*args, **kwargs):
+            result = observe(*args, **kwargs)
+            if result.get("ok"):
+                with Session(engine) as db:
+                    row = refill.latest_event(db, "started", run_id=result["run_id"])
+                    detail = refill._detail(row)
+                    detail.pop("inspection_contract", None)
+                    row.detail_json = dumps(detail)
+                    db.commit()
+            return result
+
+        monkeypatch.setattr(refill, "observe", historical_observe)
     clock = [NOW]
     monkeypatch.setattr(controls, "get_engine", lambda: engine)
     monkeypatch.setattr(controls, "_now", lambda: clock[0])
@@ -150,6 +167,7 @@ def admit(world, start):
                 id=task_id,
                 task_text="inventory",
                 repo=policy["repo"],
+                base_branch=policy["base_branch"],
                 conductor_model="opus",
                 created_at=clock[0],
                 budget_usd=policy["task_budget_usd"],
@@ -1036,7 +1054,9 @@ def reviewed_run(world, github, monkeypatch, request):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
     monkeypatch.setattr(conductor, "_free_background_slots", lambda: 3)
     monkeypatch.setattr(
-        conductor, "github_get", lambda *_: {"object": {"sha": "a" * 40}}
+        conductor,
+        "github_get",
+        lambda *_: {"sha": "a" * 40, "object": {"sha": "a" * 40}},
     )
     monkeypatch.setattr(conductor, "github_list", lambda *_: [])
     update(world, backlog_refill={"enabled": True, "model": "opus", "max_findings": 5})
@@ -1148,8 +1168,27 @@ def reviewed_run(world, github, monkeypatch, request):
         }
     reconcile()
     collector = dispatch(refill.NODE)
+    if "inspection_contract" in detail:
+        collection.update(status="completed", source_sha="a" * 40)
+    scenario = getattr(request, "param", None)
+    if scenario in {"empty", "blocked", "source_mismatch"}:
+        collection["findings"] = []
+    if scenario == "blocked":
+        collection.update(status="blocked", source_sha=None)
+    if scenario == "source_mismatch":
+        collection["source_sha"] = "b" * 40
     settle(collector, collection)
     reconcile()
+    if scenario in {"blocked", "source_mismatch"}:
+        return SimpleNamespace(
+            engine=engine,
+            task_id=task_id,
+            start=detail,
+            collection=collection,
+            collector=collector,
+            reconcile=reconcile,
+            github=github,
+        )
     assert writer.advance(detail) is None and not github[1]
     reviewer = dispatch(refill.REVIEW_NODE)
     assert reviewer["pin"]["model"] == "astra" and reviewer["pin"]["effort"] == "xhigh"
@@ -1187,6 +1226,12 @@ def reviewed_run(world, github, monkeypatch, request):
             }
             for finding in collection["findings"]
         ]
+    if "inspection_contract" in detail:
+        verdict.update(status="completed", source_sha="a" * 40)
+    if scenario == "empty":
+        verdict["decisions"] = []
+    if scenario == "review_blocked":
+        verdict.update(status="blocked", source_sha=None, decisions=[])
     settle(reviewer, verdict)
     return SimpleNamespace(
         engine=engine,
@@ -1200,6 +1245,7 @@ def reviewed_run(world, github, monkeypatch, request):
         collection=collection,
         reconcile=reconcile,
         checked=checked,
+        settle=settle,
         github=github,
     )
 
@@ -3315,3 +3361,213 @@ def test_refill_control_accepts_opus_review_evidence_unless_hourly(
     )
     with pytest.raises(ValueError, match="refill_model_not_allowed"):
         api.preview(True, "opus", False, 0, "astra not allowed")
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+def test_inspection_commit_is_shared_and_does_not_follow_ref_movement(
+    reviewed_run, monkeypatch
+):
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import node_workflows
+
+    state = reviewed_run
+    source = refill.inspection_source(state.start)
+    assert source == {
+        "version": 1,
+        "repo": state.start["repo"],
+        "ref": "main",
+        "sha": "a" * 40,
+    }
+    for run in (state.collector, state.reviewer):
+        pin = node_workflows._validate_pin(run["pin"])
+        assert pin["branch"] == pin["hydration_branch"] == "commit:" + source["sha"]
+        prompt = node_workflows._node_prompt(
+            pin["prompt"],
+            pin["artifact_path"],
+            pin["artifact_schema"],
+            branch=pin["branch"],
+        )
+        assert f"Inspect exactly commit {source['sha']}" in prompt
+        assert f"Inspect branch factory/{state.task_id}" not in prompt
+        assert pin["artifact_schema"]["x-factory-refill-inspection"] == source
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_: pytest.fail("pinned source read again")
+    )
+    assert refill.prepare_inspection(conductor._task(state.task_id), state.start)
+    state.reconcile()
+    assert refill.inspection_source(state.start) == source
+    with controls._read_session() as db:
+        assert len(refill._events(db, "inspection_pinned")) == 1
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize(
+    "reviewed_run",
+    ["empty", "blocked", "source_mismatch", "review_blocked"],
+    indirect=True,
+)
+def test_inspection_outcomes_distinguish_completed_empty_from_blocked(
+    reviewed_run, request
+):
+    from factory.orchestration import factory_conductor as conductor
+
+    state = reviewed_run
+    state.reconcile()
+    scenario = request.node.callspec.params["reviewed_run"]
+    expected = "succeeded" if scenario == "empty" else "failed"
+    with Session(state.engine) as db:
+        owner = db.get(FactoryReceipt, state.start["receipt_id"])
+        assert owner.state == expected
+        if scenario != "source_mismatch":
+            completed = refill.latest_event(
+                db, "completed", run_id=state.start["run_id"]
+            )
+            assert refill._detail(completed)["success"] == (scenario == "empty")
+            assert refill._detail(completed)["new_issues"] == 0
+    runs = conductor.graph.node_runs(state.task_id)
+    assert len(runs) == (1 if scenario in {"blocked", "source_mismatch"} else 2)
+    assert not state.github[1]
+    before = [(r["id"], r["status"], r["cost_usd"]) for r in runs]
+    state.reconcile()
+    assert [
+        (r["id"], r["status"], r["cost_usd"])
+        for r in conductor.graph.node_runs(state.task_id)
+    ] == before
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize("failure", ["missing", "malformed", "changed_owner"])
+def test_inspection_preparation_fails_before_any_model_start(
+    world, monkeypatch, failure
+):
+    from factory.orchestration import backlog_refill_worker as worker
+    from factory.orchestration import factory_conductor as conductor
+
+    engine, policy, _clock = world
+    for module in (conductor, conductor.graph):
+        monkeypatch.setattr(module, "get_engine", lambda: engine)
+    start = refill.observe(policy, eligible=0, complete=True)
+    task_id = admit(world, start)
+    task = conductor._task(task_id)
+
+    def read(_repo, suffix):
+        assert suffix == "commits/main"
+        if failure == "missing":
+            response = httpx.Response(
+                404,
+                request=httpx.Request(
+                    "GET",
+                    "https://api.github.com/repos/jomcgi-org/homelab/commits/main",
+                ),
+            )
+            response.raise_for_status()
+        if failure == "changed_owner":
+            with Session(engine) as db:
+                db.get(FactoryReceipt, start["receipt_id"]).task_paused = True
+                db.commit()
+            return {"sha": "a" * 40}
+        return {"sha": "not-a-commit"}
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    worker.reconcile(task, policy, [], [], 0)
+    assert conductor.graph.node_runs(task_id) == []
+    assert conductor.graph.load_graph(task_id) == []
+    with Session(engine) as db:
+        owner = db.get(FactoryReceipt, start["receipt_id"])
+        assert owner.state == ("admitted" if failure == "changed_owner" else "failed")
+        assert not refill._events(db, "inspection_pinned")
+        assert db.exec(select(FactoryStart)).all() == []
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+def test_inspection_source_cannot_be_changed_by_artifact_or_dispatch_pin(reviewed_run):
+    from factory.orchestration import node_workflows
+
+    state = reviewed_run
+    for field in ("branch", "hydration_branch", "repo"):
+        pin = {**state.collector["pin"], field: "b" * 40}
+        with pytest.raises(ValueError, match="inspection pin"):
+            node_workflows._validate_pin(pin)
+    with Session(state.engine) as db:
+        row = db.get(SwarmNodeRun, state.collector["id"])
+        import json
+
+        pin = json.loads(row.pin_json)
+        pin["branch"] = "b" * 40
+        row.pin_json = dumps(pin)
+        db.commit()
+    with pytest.raises(ValueError, match="inspection pin|source mismatch"):
+        writer.review(state.start["run_id"], state.reviewer["id"])
+    assert not state.github[1]
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+def test_losing_preparation_failure_cannot_settle_pinned_run(world, monkeypatch):
+    from factory.orchestration import backlog_refill_worker as worker
+    from factory.orchestration import factory_conductor as conductor
+
+    engine, policy, _clock = world
+    for module in (conductor, conductor.graph):
+        monkeypatch.setattr(module, "get_engine", lambda: engine)
+    start = refill.observe(policy, eligible=0, complete=True)
+    task_id = admit(world, start)
+
+    def read(_repo, _suffix):
+        with controls._locked_session() as (db, _control):
+            refill.record(
+                db,
+                "inspection_pinned",
+                run_id=start["run_id"],
+                source={
+                    "version": 1,
+                    "repo": policy["repo"],
+                    "ref": "main",
+                    "sha": "a" * 40,
+                },
+            )
+        httpx.Response(
+            404, request=httpx.Request("GET", "https://api.github.com")
+        ).raise_for_status()
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    worker.reconcile(conductor._task(task_id), policy, [], [], 0)
+    with Session(engine) as db:
+        assert db.get(FactoryReceipt, start["receipt_id"]).state == "admitted"
+        assert len(refill._events(db, "inspection_pinned")) == 1
+        assert not refill._events(db, "completed")
+        assert db.exec(select(FactoryStart)).all() == []
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+def test_concurrent_source_preparation_keeps_first_pinned_commit(world, monkeypatch):
+    from threading import Barrier, Lock
+    from factory.orchestration import factory_conductor as conductor
+
+    engine, policy, _clock = world
+    monkeypatch.setattr(conductor, "get_engine", lambda: engine)
+    start = refill.observe(policy, eligible=0, complete=True)
+    task_id = admit(world, start)
+    task = conductor._task(task_id)
+    with controls._read_session() as db:
+        detail = refill._detail(
+            refill.latest_event(db, "started", run_id=start["run_id"])
+        )
+    barrier, lock, counter = Barrier(2), Lock(), []
+
+    def read(_repo, _suffix):
+        with lock:
+            counter.append(len(counter))
+            sha = ("a" if len(counter) == 1 else "b") * 40
+        barrier.wait(timeout=5)
+        return {"sha": sha}
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(lambda _: refill.prepare_inspection(task, detail), range(2))
+        )
+    assert results == [True, True]
+    with controls._read_session() as db:
+        assert len(refill._events(db, "inspection_pinned")) == 1
+        assert db.exec(select(FactoryStart)).all() == []
+    assert refill.inspection_source(detail)["sha"] in {"a" * 40, "b" * 40}

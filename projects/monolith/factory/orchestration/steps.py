@@ -392,10 +392,20 @@ def read_branch_head(repo: str, branch: str) -> str | None:
     token = os.environ.get("GITHUB_API_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    url = f"https://api.github.com/repos/{repo}/git/ref/heads/{branch}"
+    pinned_commit = (
+        branch.startswith("commit:")
+        and len(branch) == 47
+        and all(c in "0123456789abcdef" for c in branch[7:])
+    )
+    suffix = f"git/commits/{branch[7:]}" if pinned_commit else f"git/ref/heads/{branch}"
+    url = f"https://api.github.com/repos/{repo}/{suffix}"
     with httpx.Client(timeout=10.0) as client:
         response = client.get(url, headers=headers)
     if response.status_code == 404:
         return None
     response.raise_for_status()
+    if pinned_commit:
+        if response.json()["sha"] != branch[7:]:
+            raise ValueError("inspection commit identity changed")
+        return branch[7:]
     return response.json()["object"]["sha"]
