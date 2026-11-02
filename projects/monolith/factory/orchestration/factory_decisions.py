@@ -47,12 +47,10 @@ from factory.orchestration.factory_controls import (
     decision_identity,
     delivery_branch_owner,
     granted_delivery_surface,
-    intake_policy,
     is_advisory,
     terminal_effect,
     terminal_resolution,
 )
-from factory.orchestration.factory_intake import INTAKE_ACTOR
 from factory.orchestration import work_items
 from factory.orchestration.factory_models import (
     FactoryAudit,
@@ -1263,77 +1261,6 @@ def _append_operator_exchange(
     escalation["conversation"] = conversation[-20:]
 
 
-def request_chat(receipt_id: int, note: str, actor: str) -> dict:
-    """Ask the lane for more before deciding, and say so on the issue."""
-    note = (note or "").strip()
-    if not note:
-        return {"ok": False, "reason": "a chat request needs a note"}
-    if len(note) > MAX_NOTE:
-        raise DecisionError(422, "the note is too long")
-    with _locked_session() as (db, control):
-        row = _receipt(db, receipt_id)
-        _require_current_generation(db, row, control)
-        if _pending_request(db, receipt_id):
-            raise DecisionError(
-                409, "a durable decision request has an unresolved outcome"
-            )
-        escalation = escalation_of(row)
-        fields = _fields(row)
-        if escalation is None:
-            raise DecisionError(409, "this receipt raised no escalation")
-        # A dismiss is not a decision, so asking about a card you cleared is
-        # allowed: it is the way back from one keypress that wrote nothing.
-        if terminal_resolution(escalation.get("resolved")):
-            raise DecisionError(409, "this escalation was already decided")
-        # Keyed on how many times chat has been asked, so a second, different
-        # question posts a second comment while a retry of the first does not.
-        sequence = len(escalation.get("chat") or [])
-        marker = _marker(receipt_id, f"chat-{sequence}")
-        answer = (
-            "Re-queued for another brief that answers this."
-            if fields["task_class"] == TASK_CLASS
-            else "Re-admitted to the delivery lane with this as the direction."
-        )
-        try:
-            # Keep the control-row fence until the receipt is re-queued. A
-            # generation bump can therefore happen before this operation, in
-            # which case it is refused above, or afterwards, when configure
-            # retires it. It cannot land between the GitHub write and state.
-            _comment(
-                fields["repo"],
-                fields["issue_number"],
-                marker,
-                f"{CHAT_PREFIX} {note}\n\n{answer}",
-            )
-        except (httpx.HTTPError, ValueError) as exc:
-            raise DecisionError(
-                502, "the question could not be posted on GitHub"
-            ) from exc
-        task_id = row.task_id
-        blocker = _requeue_refine(db, row, note, actor)
-        _audit(
-            db,
-            actor,
-            "decision_chat_requested",
-            task_id=task_id,
-            receipt_id=receipt_id,
-            issue_number=fields["issue_number"],
-            note=note[:MAX_NOTE],
-            requeued=blocker is None,
-            blocked_by=blocker,
-            sequence=sequence,
-        )
-    from factory.orchestration.conductor_context import report_receipt_with_deadline
-
-    report_receipt_with_deadline(receipt_id)
-    return {
-        "ok": True,
-        "requeued": blocker is None,
-        "blocked_by": blocker,
-        "sequence": sequence,
-    }
-
-
 def _request_event(db, actor: str, request: dict, result: dict) -> None:
     _audit(db, actor, "decision_request", request=request, result=result)
 
@@ -1597,7 +1524,6 @@ __all__ = [
     "DecisionError",
     "apply_decision",
     "decision_in_flight",
-    "request_chat",
     "request_decision",
     "resume_escalated",
 ]

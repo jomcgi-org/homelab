@@ -17,6 +17,7 @@ import os
 
 from sqlmodel import select
 
+from core.clock import utc_now as _now
 from factory.execution.api import (
     factory_attempt_never_posted,
     drain_relay_continuation_enabled,
@@ -105,10 +106,6 @@ _PRECONDITION_KEYS = frozenset(
 )
 
 
-def _now():
-    return datetime.now(timezone.utc)
-
-
 def _timestamp(value):
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
@@ -177,15 +174,7 @@ def _stop_deadline(snapshot: dict, identity: dict, pin: dict) -> datetime:
     return deadline
 
 
-def _locked_attempt(
-    db,
-    control,
-    pin,
-    sid,
-    *,
-    require_stop_due=True,
-    identity_reader=None,
-):
+def _lock_pinned_run_and_start(db, pin, sid, *, run_statuses, start_statuses):
     run = db.exec(
         select(SwarmNodeRun)
         .where(
@@ -200,7 +189,7 @@ def _locked_attempt(
         or json.loads(run.pin_json or "null") != pin
         or run.dispatch_key != pin["workflow_id"]
         or run.session_id not in (None, sid)
-        or run.status not in ("admitted", "dispatched", "uncertain")
+        or run.status not in run_statuses
         or db.exec(
             select(SwarmNodeRun.id).where(
                 SwarmNodeRun.task_id == pin["task_id"],
@@ -221,12 +210,31 @@ def _locked_attempt(
     ).one_or_none()
     if (
         start is None
-        or start.status not in ("reserved", "uncertain")
+        or start.status not in start_statuses
         or start.session_id not in (None, sid)
         or start.model != pin["model"]
         or start.max_cost_usd != pin["max_cost_usd"]
     ):
         raise ValueError("factory_start_changed")
+    return run
+
+
+def _locked_attempt(
+    db,
+    control,
+    pin,
+    sid,
+    *,
+    require_stop_due=True,
+    identity_reader=None,
+):
+    run = _lock_pinned_run_and_start(
+        db,
+        pin,
+        sid,
+        run_statuses=("admitted", "dispatched", "uncertain"),
+        start_statuses=("reserved", "uncertain"),
+    )
     reader = identity_reader or read_uncertain_factory_attempt
     identity = reader(db, pin, sid)
     snapshot = controls.task_snapshot(pin["task_id"], session=db)

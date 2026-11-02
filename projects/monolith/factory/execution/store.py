@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
+from core.clock import as_utc
 from core.env import flag
 from factory.execution.constants import (
     CLEAN_TERMINAL_REASONS,
@@ -560,21 +561,13 @@ def turn_observation(
     runtime_duration_ms: object = None,
 ) -> dict:
     """Snapshot server queue identity and the clocks of one physical dispatch."""
-
-    def utc(value: datetime | None) -> datetime | None:
-        if value is None:
-            return None
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
-
     # queued_at is stamped by a Python default_factory on the monolith pod, while
     # dispatched_at (last_dispatch_at) is set with func.now(), which on
     # Postgres is the database server's transaction-start time. Queue wait
     # therefore subtracts two hosts' clocks; when skew inverts the order the
     # difference is reported as null rather than a negative wait.
-    queued = utc(pending.created_at) if pending is not None else None
-    dispatched = utc(pending.last_dispatch_at) if pending is not None else None
+    queued = as_utc(pending.created_at) if pending is not None else None
+    dispatched = as_utc(pending.last_dispatch_at) if pending is not None else None
     queue_wait_ms = None
     if queued is not None and dispatched is not None and dispatched >= queued:
         queue_wait_ms = (dispatched - queued) // timedelta(milliseconds=1)
@@ -1576,29 +1569,6 @@ def finish_unknown_pending_in_session(
     _finish_unknown_locked(session, row, pending, cause)
     session.flush()
     return True
-
-
-def finish_unknown_pending_sync(
-    session_id: int,
-    turn_seq: int,
-    claim_owner: str,
-    dispatch_count: int,
-    cause: str,
-) -> bool:
-    with Session(get_engine()) as session:
-        row = _lock_session(session, session_id)
-        pending = get_pending_message(session, session_id, turn_seq)
-        if (
-            row is None
-            or _bound_zero_turn_cleanup_pending(row)
-            or pending is None
-            or pending.claimed_by_replica != claim_owner
-            or pending.dispatch_count != dispatch_count
-        ):
-            return False
-        _finish_unknown_locked(session, row, pending, cause)
-        session.commit()
-        return True
 
 
 def create_voice_ui_companion(

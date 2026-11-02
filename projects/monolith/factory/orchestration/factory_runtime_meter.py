@@ -14,7 +14,6 @@ import math
 
 from sqlmodel import select
 
-from core.env import flag
 from core.jsonio import dumps
 from factory.execution import admission, result_receipts
 from factory.execution.runtime_meter_evidence import (
@@ -45,10 +44,6 @@ SESSION_USD = 500.0
 OBJECTIVE_USD = 1000.0
 PRICE_MODEL = "gpt-6-astra"
 MAX_USAGE_AGE_SECONDS = 900
-
-
-def enabled():
-    return flag("FACTORY_RUNTIME_METER_ENABLED")
 
 
 def _records(db, task_ids, actions):

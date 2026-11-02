@@ -37,6 +37,16 @@ fi
 INVOCATION_RE='^((timeout[[:space:]]+((-[a-z]|--[a-z-]+)([[:space:]]+[^[:space:]]+)?[[:space:]]+)*[^[:space:]]+|time([[:space:]]+((-[a-z]|--[a-z-]+)[[:space:]]+))*|nohup|env([[:space:]]+((-[a-z]|--[a-z-]+)[[:space:]]+))*|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*)[[:space:]]+)*([^[:space:]]*/)?(ci|bb)([[:space:]]|$)'
 FILTER_RE='\|&?[[:space:]]*(tail|head|grep|sed|awk|wc|less|more)([[:space:]]|$)'
 
+block_masked() {
+	cat >&2 <<-'EOF'
+		BLOCKED: Piping ci / bb remote output straight into a filter (tail, head, grep, sed, awk, wc) or discarding it can mask a failed run (#4118, exit 0 does not prove tests ran).
+
+		Run the ci or bb remote command unpiped, or use 2>&1 | tee /tmp/ci.log. Further pipes after tee are fine since the full log is preserved. Judge the run by the "Executed N out of M tests" summary and grep the saved log for FAILED.
+
+	EOF
+	exit 2
+}
+
 # Split command control operators, keeping single pipes and |& in segments.
 while IFS= read -r segment || [[ -n "$segment" ]]; do
 	segment=$(printf '%s' "$segment" | sed -E 's/^[[:space:]]+//; s/^\(+[[:space:]]*//')
@@ -47,13 +57,7 @@ while IFS= read -r segment || [[ -n "$segment" ]]; do
 
 	# tee preserves the complete gate output unless it writes to /dev/null.
 	if [[ "$segment" =~ \|[[:space:]]*tee[[:space:]]+/dev/null ]]; then
-		cat >&2 <<-'EOF'
-			BLOCKED: Piping ci / bb remote output straight into a filter (tail, head, grep, sed, awk, wc) or discarding it can mask a failed run (#4118, exit 0 does not prove tests ran).
-
-			Run the ci or bb remote command unpiped, or use 2>&1 | tee /tmp/ci.log. Further pipes after tee are fine since the full log is preserved. Judge the run by the "Executed N out of M tests" summary and grep the saved log for FAILED.
-
-		EOF
-		exit 2
+		block_masked
 	fi
 
 	if [[ "$segment" =~ \|[[:space:]]*tee[[:space:]] ]] &&
@@ -64,13 +68,7 @@ while IFS= read -r segment || [[ -n "$segment" ]]; do
 	if [[ "$segment" =~ $FILTER_RE ]] ||
 		[[ "$segment" =~ \>[[:space:]]*/dev/null ]] ||
 		[[ "$segment" =~ \&\>[[:space:]]*/dev/null ]]; then
-		cat >&2 <<-'EOF'
-			BLOCKED: Piping ci / bb remote output straight into a filter (tail, head, grep, sed, awk, wc) or discarding it can mask a failed run (#4118, exit 0 does not prove tests ran).
-
-			Run the ci or bb remote command unpiped, or use 2>&1 | tee /tmp/ci.log. Further pipes after tee are fine since the full log is preserved. Judge the run by the "Executed N out of M tests" summary and grep the saved log for FAILED.
-
-		EOF
-		exit 2
+		block_masked
 	fi
 done < <(printf '%s\n' "$COMMAND" | awk '{ gsub(/&&/, "\n"); gsub(/\|\|/, "\n"); gsub(/;/, "\n"); print }')
 

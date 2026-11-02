@@ -3219,7 +3219,7 @@ def test_scoped_landing_rechecks_after_review_collection(db, monkeypatch, race):
 def test_ungranted_existing_holder_is_fenced(db, monkeypatch, queued):
     delivered(db, "t-1", 11, 3)
     pulls = {3: pull(3)}
-    calls = github(monkeypatch, pulls=pulls)
+    github(monkeypatch, pulls=pulls)
     landing.landing_tick(POLICY)
     with Session(db) as session, session.begin():
         controls._receipt(session, "t-1").direction_json = "{}"

@@ -314,14 +314,4 @@ defmodule Embervm.StatefulState do
         raise IllegalTransition, state: state, event: event
     end
   end
-
-  @doc """
-  The op kind that records a given terminal state, for the write-through append.
-  A total map over the three terminal states; a non-terminal state raises
-  (callers only ask for terminal kinds), mirroring `ServingState.terminal_op_kind/1`.
-  """
-  @spec terminal_op_kind(state()) :: atom()
-  def terminal_op_kind(:evicted), do: :stateful_evicted
-  def terminal_op_kind(:destroyed), do: :stateful_destroyed
-  def terminal_op_kind(:failed), do: :stateful_failed
 end

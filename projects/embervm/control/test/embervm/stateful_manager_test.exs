@@ -445,19 +445,6 @@ defmodule Embervm.StatefulManagerTest do
     refute StatefulStore.quarantined?(ctx.store, "wl-a")
   end
 
-  test "export is never planned for a quarantined volume's artifacts" do
-    ctx = start_stack()
-    stateful_workload(ctx, "wl-a")
-    stateful_node(ctx, "node-4")
-
-    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "system:stateful:wl-a")
-    # Quarantine from a NON-anchor node (a node-4-anchor forward report is adopted).
-    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-9", generation: 2, generation_blessed: false})
-    assert StatefulStore.quarantined?(ctx.store, "wl-a")
-
-    refute Embervm.StatefulSweeper.export_allowed?(ctx.store, "wl-a")
-  end
-
   # -- mmds_env (R4, D-R4.PR-7.1: MMDS-lite over boot-args) --------------------
 
   test "a FRESH/COLD wake with a secretRef reads the secret and populates mmds_env" do

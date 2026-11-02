@@ -34,7 +34,9 @@ TASK_CLASS = "advisory-diagnosis"
 REPO = "jomcgi-org/homelab"
 SOURCE = "quota_improvement"
 MODEL = "sol"
-NODE_KEYS = {"scout_collect_1", "scout_review_1"}
+COLLECT_KEY = "scout_collect_1"
+REVIEW_KEY = "scout_review_1"
+NODE_KEYS = {COLLECT_KEY, REVIEW_KEY}
 MAX_AGE_SECONDS = 900
 
 

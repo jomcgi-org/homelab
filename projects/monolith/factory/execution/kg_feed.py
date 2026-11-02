@@ -19,10 +19,9 @@ from factory.execution.constants import (
 )
 from factory.execution.models import AgentSession, AgentTurn, PendingMessage
 from factory.execution.rationale import parse_rationale
-from factory.execution.redact import redact_text
 from core.db import get_engine
 from framework import log_task_exception
-from knowledge.api import enqueue_extraction, ingest_raw_with_status
+from knowledge.api import enqueue_extraction, ingest_raw_with_status, redact_text
 
 logger = logging.getLogger(__name__)
 
@@ -261,12 +260,6 @@ def _render_session_raw(
             kept.pop(middle)
             omitted += 1
     return content, redactions, truncated
-
-
-def render_session_raw(session_row: AgentSession, turns: list[AgentTurn]) -> str:
-    """Render an incremental session transcript as bounded markdown."""
-    content, _, _ = _render_session_raw(session_row, turns)
-    return content
 
 
 def _raw_is_queued_or_handled(session: Session, raw_id: str) -> bool:

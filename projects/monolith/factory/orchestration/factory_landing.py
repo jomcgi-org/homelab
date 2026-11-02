@@ -19,7 +19,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import json
 import logging
-import os
 import re
 
 import httpx
@@ -27,7 +26,7 @@ from sqlalchemy import or_
 from sqlmodel import select
 
 from core.clock import aware
-from core.github import GITHUB_API
+from core.github import GITHUB_API, github_headers
 from factory.orchestration.factory_controls import (
     ADVISORY_CLASSES,
     _audit,
@@ -145,18 +144,6 @@ def github_list(repo: str, suffix: str) -> list:
     return read(repo, suffix)
 
 
-def _headers() -> dict[str, str]:
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "monolith-factory-landing",
-    }
-    token = os.environ.get("GITHUB_API_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
-
-
 def _body(response: httpx.Response) -> object:
     if len(response.content) > RESPONSE_LIMIT_BYTES:
         raise ValueError("GitHub response exceeds factory limit")
@@ -173,7 +160,7 @@ def github_write(
         response = client.request(
             method,
             f"{GITHUB_API}/repos/{repo}/{suffix}",
-            headers=_headers(),
+            headers=github_headers("monolith-factory-landing"),
             json=payload,
         )
         response.raise_for_status()
@@ -189,7 +176,7 @@ def github_graphql(query: str, variables: dict) -> dict:
     with httpx.Client(timeout=WRITE_TIMEOUT_SECONDS) as client:
         response = client.post(
             f"{GITHUB_API}/graphql",
-            headers=_headers(),
+            headers=github_headers("monolith-factory-landing"),
             json={"query": query, "variables": variables},
         )
         response.raise_for_status()

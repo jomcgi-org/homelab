@@ -17,13 +17,13 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine, delete, select
-from sqlmodel.pool import StaticPool
+from sqlmodel import Session, delete, select
 
 from core.db import get_session
 from hikes.models import Walk, WalkHour
 from hikes.router import _doable_days, _longest_good_run, router
 from shared.forecast_freshness import top_of_hour
+from shared.testing.sqlite import sqlite_session
 
 CUTOFF = top_of_hour(datetime.now(timezone.utc))
 H1 = CUTOFF + timedelta(hours=1)
@@ -46,26 +46,8 @@ def _hours_at(base: datetime, *offsets: int) -> list[datetime]:
 
 @pytest.fixture(name="session")
 def session_fixture():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    # SQLite can't span schemas, so strip the Postgres-only schema= overrides so
-    # SQLModel.metadata.create_all() lands every table in the default schema.
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
+    with sqlite_session() as session:
+        yield session
 
 
 @pytest.fixture(name="client")

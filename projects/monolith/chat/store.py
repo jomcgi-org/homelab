@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from core.s3 import path_style_client
 from shared.embedding import EmbeddingClient
 from chat.models import (
     Attachment,
@@ -38,16 +39,13 @@ def _blob_s3_put(sha256: str, data: bytes, content_type: str) -> bool:
     """Best-effort upload of a content-addressed attachment blob to SeaweedFS.
 
     Stored at ``s3://<CHAT_BLOB_S3_BUCKET>/blobs/<sha256>``. Content-addressed,
-    so writes are idempotent and dedup for free. Mirrors stars.grid._s3_client:
-    dummy creds (SeaweedFS auth is disabled cluster-wide), path-style addressing,
-    scheme prepended to the endpoint. The bucket is auto-created on first write.
+    so writes are idempotent and dedup for free. The client comes from core.s3.
+    The bucket is auto-created on first write.
 
     The caller treats failures as non-fatal: blob bytes are write-only today
     (no read path consumes them), so an upload miss is at worst an archival gap,
     never a chat-breaking error.
     """
-    import boto3
-    from botocore.config import Config
     from botocore.exceptions import ClientError
 
     bucket = os.environ.get("CHAT_BLOB_S3_BUCKET", "")
@@ -55,18 +53,7 @@ def _blob_s3_put(sha256: str, data: bytes, content_type: str) -> bool:
     if not bucket or not endpoint:
         logger.warning("chat blob S3 not configured; skipping upload of %s", sha256)
         return False
-    if not endpoint.startswith(("http://", "https://")):
-        endpoint = "http://" + endpoint
-    # Scheme guaranteed by the guard above; the inline nosemgrep
-    # suppresses boto3-endpoint-url-missing-scheme for Semgrep scans.
-    client = boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),
-        aws_secret_access_key=os.environ.get("S3_SECRET_ACCESS_KEY", "duckdb"),
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-        config=Config(s3={"addressing_style": "path"}),
-    )
+    client = path_style_client(endpoint)
     key = f"blobs/{sha256}"
     try:
         client.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)

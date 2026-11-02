@@ -110,17 +110,6 @@ func TestCompositeObserver_Empty(t *testing.T) {
 // TestCompositeObserver_CallsAllObservers verifies that all registered observers
 // receive the OnTransition call.
 func TestCompositeObserver_CallsAllObservers(t *testing.T) {
-	callCount := 0
-
-	type countingObserver struct{ NoOpObserver }
-
-	// We use a closure-based observer using the counting mechanism.
-	type closureObserver struct {
-		onTransition      func()
-		onTransitionError func()
-	}
-
-	// Build a simple recording observer using the interface.
 	counter1 := &recordingObserver{}
 	counter2 := &recordingObserver{}
 
@@ -135,8 +124,6 @@ func TestCompositeObserver_CallsAllObservers(t *testing.T) {
 	if counter2.transitionCount != 1 {
 		t.Errorf("observer2 OnTransition called %d times, want 1", counter2.transitionCount)
 	}
-
-	_ = callCount
 }
 
 // TestCompositeObserver_CallsAllObservers_Error verifies OnTransitionError is

@@ -91,7 +91,7 @@ defmodule Embervm.GroupManager do
 
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{GroupState, GroupStore, NodeCapacity, WakeInstance, WorkloadCatalog}
+  alias Embervm.{GroupStore, NodeCapacity, WakeInstance, WorkloadCatalog}
   alias Embervm.Scheduler.Inflight
 
   alias Embervm.Node.V1.{
@@ -232,7 +232,7 @@ defmodule Embervm.GroupManager do
       # NodeService stub over the shared NodeChannel).
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       # Drop the shared node channel when a group verb reveals its transport is dead
-      # (a noded rollout), so the next safe_channel/2 re-dials instead of every member
+      # (a noded rollout), so the next NodeChannel.safe_dial/2 re-dials instead of every member
       # start failing on a dead ConnectionProcess until the control plane restarts
       # (D-R2.7.2). Injected for tests.
       invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
@@ -1454,7 +1454,7 @@ defmodule Embervm.GroupManager do
   defp delete_network(state) do
     req = %DeleteGroupNetworkRequest{trace: %Trace{workload: state.workload}, group_instance_id: state.instance_id}
 
-    with {:ok, channel} <- safe_channel(state, state.dial_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, state.dial_id) do
       try do
         state.delete_group_network_fun.(channel, req)
       rescue
@@ -1501,23 +1501,15 @@ defmodule Embervm.GroupManager do
     kind, reason -> {:error, {:start_group_member_raised, {kind, reason}}}
   end
 
-  defp safe_channel(state, node_id) do
-    state.channel_fun.(node_id)
-  rescue
-    e -> {:error, {:channel_raised, e}}
-  catch
-    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
-  end
-
   # Acquire the node's shared channel and run a group verb over it, invalidating that
-  # channel (so the next safe_channel/2 re-dials) when the call reveals the transport
+  # channel (so the next NodeChannel.safe_dial/2 re-dials) when the call reveals the transport
   # is dead: a transport_dead? error return, or an :exit from the Mint ConnectionProcess
   # dying (its crash on an in-flight stream RST during a noded rollout surfaces here as
   # an exit). A server-returned gRPC status rode a HEALTHY channel and never invalidates
   # it (Embervm.NodeChannel.transport_dead?/1, D-R2.7.2). Returns the verb's raw result,
-  # {:error, {:exit, reason}} on an exit, or the safe_channel error if no channel.
+  # {:error, {:exit, reason}} on an exit, or the safe_dial error if no channel.
   defp over_channel(state, node_id, call_fun) do
-    with {:ok, channel} <- safe_channel(state, node_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, node_id) do
       try do
         result = call_fun.(channel)
         if Embervm.NodeChannel.transport_dead?(result), do: state.invalidate_fun.(node_id, channel)
@@ -1618,7 +1610,7 @@ defmodule Embervm.GroupManager do
       member_name: member.member_name
     }
 
-    with {:ok, channel} <- safe_channel(state, state.dial_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, state.dial_id) do
       try do
         state.stop_group_member_fun.(channel, req)
       rescue
@@ -1640,7 +1632,7 @@ defmodule Embervm.GroupManager do
       member_name: member.member_name
     }
 
-    with {:ok, channel} <- safe_channel(state, state.dial_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, state.dial_id) do
       try do
         case state.stop_group_member_fun.(channel, req) do
           {:ok, %{teardown_confirmed: true}} ->
@@ -1667,7 +1659,7 @@ defmodule Embervm.GroupManager do
   defp evict_snapshot(state, snapshot_ref) do
     req = %EvictSnapshotRequest{trace: %Trace{workload: state.workload}, snapshot_ref: snapshot_ref}
 
-    with {:ok, channel} <- safe_channel(state, state.dial_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, state.dial_id) do
       try do
         state.evict_snapshot_fun.(channel, req)
       rescue
@@ -1783,7 +1775,4 @@ defmodule Embervm.GroupManager do
         :error
     end
   end
-
-  @doc false
-  def group_state_module, do: GroupState
 end

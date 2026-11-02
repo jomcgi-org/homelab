@@ -73,21 +73,6 @@ def reviewer_prompt_parts(task: str, branch: str, commit_sha: str) -> tuple[str,
     return intent, verdict_trailer_instruction()
 
 
-def implementer_prompt(
-    task: str,
-    branch: str,
-    previous_failure: str | None = None,
-    review_feedback: str | None = None,
-) -> str:
-    return "\n".join(
-        implementer_prompt_parts(task, branch, previous_failure, review_feedback)
-    )
-
-
-def reviewer_prompt(task: str, branch: str, commit_sha: str) -> str:
-    return "\n".join(reviewer_prompt_parts(task, branch, commit_sha))
-
-
 # Markdown-writing reviewers decorate the verdict line (bold, bullets,
 # headings) or append a closing code fence after it, so matching only a bare
 # final line turns fail-closed into fail-always. Scan a short tail window and

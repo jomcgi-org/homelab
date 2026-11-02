@@ -78,9 +78,6 @@ impl Memory for Gpu {
         self.zero(&b)?;
         Ok(b)
     }
-    fn fill_zero(&self, buf: &mut Self::F32) -> Result<()> {
-        self.zero(buf)
-    }
     fn upload_f32(&self, host: &[f32]) -> Result<Self::F32> {
         self.upload(host)
     }

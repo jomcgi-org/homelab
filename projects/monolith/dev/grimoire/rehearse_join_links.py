@@ -29,33 +29,38 @@ def redact_join_artifact(value):
     return value
 
 
+def observe_page(page, report):
+    """Record page errors, console errors and failed requests in ``report``."""
+    page.on(
+        "pageerror",
+        lambda error: report["errors"].append(error.stack or str(error)),
+    )
+    page.on(
+        "console",
+        lambda message: (
+            report["console_errors"].append(message.text)
+            if message.type == "error"
+            else None
+        ),
+    )
+    page.on(
+        "requestfailed",
+        lambda request: report["network_failures"].append(
+            {
+                "url": request.url,
+                "method": request.method,
+                "failure": request.failure,
+            }
+        ),
+    )
+
+
 def rehearse_join_links(browser, output, report, contexts, use_loopback_requests):
     """Keep mutations and all credentials inside run.py's disposable database."""
     requests = []
 
     def observe(page):
-        page.on(
-            "pageerror",
-            lambda error: report["errors"].append(error.stack or str(error)),
-        )
-        page.on(
-            "console",
-            lambda message: (
-                report["console_errors"].append(message.text)
-                if message.type == "error"
-                else None
-            ),
-        )
-        page.on(
-            "requestfailed",
-            lambda request: report["network_failures"].append(
-                {
-                    "url": request.url,
-                    "method": request.method,
-                    "failure": request.failure,
-                }
-            ),
-        )
+        observe_page(page, report)
         page.on(
             "request",
             lambda request: requests.append(

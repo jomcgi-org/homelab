@@ -24,11 +24,10 @@ defmodule Embervm.ServingStore do
 
     * the serving hot set (`instance_id -> instance map`): the projected durable
       row plus the transient FSM state the lifecycle drives it through;
-    * the publisher's FACTS: `published_endpoints/2` (the healthy, `published`
+    * the publisher's FACT: `published_endpoints/2` (the healthy, `published`
       endpoints for a workload, the exact set the publisher renders as an Envoy
-      cluster's EDS assignment) and `serving_workloads/1` (every workload that has
-      any live serving instance), both derived from the hot set so the publisher
-      is a pure function of this store and never of the durable log.
+      cluster's EDS assignment), derived from the hot set so the publisher is a
+      pure function of this store and never of the durable log.
 
   ## the endpoint fact and the fan-out
 
@@ -55,6 +54,7 @@ defmodule Embervm.ServingStore do
 
   use GenServer
 
+  alias Embervm.InstanceTable
   alias Embervm.OpLog.Op
   alias Embervm.ServingState
 
@@ -202,19 +202,6 @@ defmodule Embervm.ServingStore do
   @spec published_endpoints(GenServer.server(), String.t()) :: [%{ip: String.t(), port: non_neg_integer()}]
   def published_endpoints(store \\ __MODULE__, workload) do
     GenServer.call(store, {:published_endpoints, workload})
-  end
-
-  @doc """
-  The publisher fact: every workload that has at least one LIVE serving instance
-  (any non-terminal, non-banked state), so the publisher knows which clusters to
-  render. A banked-only workload has no live VM but still needs an activator
-  endpoint the next miss wakes, so the publisher enumerates workloads from the
-  catalog, not only from this set; this set is the "has a live instance" predicate
-  the publisher uses to decide endpoints-vs-activator per workload.
-  """
-  @spec serving_workloads(GenServer.server()) :: [String.t()]
-  def serving_workloads(store \\ __MODULE__) do
-    GenServer.call(store, :serving_workloads)
   end
 
   @doc """
@@ -423,27 +410,15 @@ defmodule Embervm.ServingStore do
   end
 
   def handle_call({:set_health, instance_id, healthy?}, _from, state) do
-    case fetch(state, instance_id) do
-      {:ok, instance} ->
-        updated = %{instance | healthy: healthy?, updated_at: state.clock.()}
-        :ets.insert(state.instances, {instance_id, updated})
-        {:reply, {:ok, updated}, state}
+    reply =
+      InstanceTable.update(state.instances, instance_id, &%{&1 | healthy: healthy?, updated_at: state.clock.()})
 
-      {:error, _} ->
-        {:reply, :error, state}
-    end
+    {:reply, reply, state}
   end
 
   def handle_call({:touch_active, instance_id, ts}, _from, state) do
-    case fetch(state, instance_id) do
-      {:ok, instance} ->
-        updated = %{instance | last_active_at: ts, updated_at: ts}
-        :ets.insert(state.instances, {instance_id, updated})
-        {:reply, {:ok, updated}, state}
-
-      {:error, _} ->
-        {:reply, :error, state}
-    end
+    reply = InstanceTable.update(state.instances, instance_id, &%{&1 | last_active_at: ts, updated_at: ts})
+    {:reply, reply, state}
   end
 
   def handle_call({:get, instance_id}, _from, state) do
@@ -451,22 +426,11 @@ defmodule Embervm.ServingStore do
   end
 
   def handle_call(:all, _from, state) do
-    all = :ets.foldl(fn {_id, instance}, acc -> [instance | acc] end, [], state.instances)
-    {:reply, all, state}
+    {:reply, InstanceTable.all(state.instances), state}
   end
 
   def handle_call({:list, workload}, _from, state) do
-    items =
-      :ets.foldl(
-        fn {_id, instance}, acc ->
-          if instance.workload == workload, do: [instance | acc], else: acc
-        end,
-        [],
-        state.instances
-      )
-      |> Enum.sort_by(& &1.created_at, :desc)
-
-    {:reply, items, state}
+    {:reply, InstanceTable.list(state.instances, workload), state}
   end
 
   def handle_call({:published_endpoints, workload}, _from, state) do
@@ -484,20 +448,6 @@ defmodule Embervm.ServingStore do
       |> Enum.map(&%{ip: &1.ip, port: &1.port})
 
     {:reply, endpoints, state}
-  end
-
-  def handle_call(:serving_workloads, _from, state) do
-    workloads =
-      :ets.foldl(
-        fn {_id, instance}, acc ->
-          if instance.state in @live_states, do: MapSet.put(acc, instance.workload), else: acc
-        end,
-        MapSet.new(),
-        state.instances
-      )
-      |> MapSet.to_list()
-
-    {:reply, workloads, state}
   end
 
   def handle_call({:counts, workload}, _from, state) do
@@ -537,9 +487,9 @@ defmodule Embervm.ServingStore do
   end
 
   def handle_call({:adopt_endpoint, instance_id, node_id, vm_id, endpoint}, _from, state) do
-    case fetch(state, instance_id) do
-      {:ok, instance} ->
-        updated = %{
+    _ =
+      InstanceTable.update(state.instances, instance_id, fn instance ->
+        %{
           instance
           | node_id: node_id,
             vm_id: vm_id,
@@ -547,13 +497,9 @@ defmodule Embervm.ServingStore do
             port: Map.get(endpoint, :port),
             healthy: Map.get(endpoint, :healthy, instance.healthy)
         }
+      end)
 
-        :ets.insert(state.instances, {instance_id, updated})
-        {:reply, :ok, state}
-
-      {:error, _} ->
-        {:reply, :ok, state}
-    end
+    {:reply, :ok, state}
   end
 
   def handle_call({:adopt_activator, attrs}, _from, state) do
@@ -838,26 +784,13 @@ defmodule Embervm.ServingStore do
   # prior bucket and increment the next. A terminal state is neither live nor
   # banked, so it decrements without a matching increment.
   defp bump_counts(state, prior, next, workload) do
-    counts = Map.get(state.counts, workload, %{live: 0, banked: 0})
-
-    counts =
-      counts
-      |> dec_bucket(bucket_of(prior))
-      |> inc_bucket(bucket_of(next))
-
-    %{state | counts: Map.put(state.counts, workload, counts)}
+    %{state | counts: InstanceTable.bump_counts(state.counts, workload, bucket_of(prior), bucket_of(next))}
   end
 
   defp bucket_of(nil), do: nil
   defp bucket_of(:banked), do: :banked
   defp bucket_of(state) when state in @live_states, do: :live
   defp bucket_of(_terminal), do: nil
-
-  defp inc_bucket(counts, nil), do: counts
-  defp inc_bucket(counts, bucket), do: Map.update!(counts, bucket, &(&1 + 1))
-
-  defp dec_bucket(counts, nil), do: counts
-  defp dec_bucket(counts, bucket), do: Map.update!(counts, bucket, &max(&1 - 1, 0))
 
   # -- helpers ---------------------------------------------------------------
 
@@ -881,12 +814,7 @@ defmodule Embervm.ServingStore do
       is_binary(instance.ip) and instance.ip != "" and is_integer(instance.port)
   end
 
-  defp fetch(state, instance_id) do
-    case :ets.lookup(state.instances, instance_id) do
-      [{^instance_id, instance}] -> {:ok, instance}
-      [] -> {:error, {:not_found, instance_id}}
-    end
-  end
+  defp fetch(state, instance_id), do: InstanceTable.fetch(state.instances, instance_id)
 
   defp get_view(state, instance_id) do
     case fetch(state, instance_id) do

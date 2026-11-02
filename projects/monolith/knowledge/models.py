@@ -745,9 +745,6 @@ def _serialize_open_dispute(mapper, connection, target) -> None:
         )
 
 
-ReviewStatus = Literal["success", "failed", "unavailable", "unsupported"]
-
-
 class ReviewOutcome(
     SQLModel, table=True
 ):  # nosemgrep: sqlmodel-datetime-without-factory

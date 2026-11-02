@@ -710,7 +710,7 @@ defmodule Embervm.ServingSweeper do
                            }
                          } do
           try do
-            with {:ok, channel} <- safe_channel(channel_fun, dial_key),
+            with {:ok, channel} <- Embervm.NodeChannel.safe_dial(channel_fun, dial_key),
                  {:ok, %StopServingResponse{snapshot_ref: ref, size_bytes: size}}
                  when is_binary(ref) and ref != "" <-
                    stop_fun.(channel, bank_request(vm_id, workload)) do
@@ -1252,7 +1252,7 @@ defmodule Embervm.ServingSweeper do
     # Dial the instance holding the banked serving bundle on disk, not the alias.
     dial_key = dial_for_serving_bundle(state, node_id, ref)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_key) do
       try do
         state.evict_artifact_fun.(channel, req)
       rescue
@@ -1273,7 +1273,7 @@ defmodule Embervm.ServingSweeper do
     # Dial the OWNING instance running this serving vm_id, not the node-name alias.
     dial_key = dial_for_serving_vm(state, node_id, vm_id)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_key) do
       try do
         state.stop_serving_fun.(channel, req)
       rescue
@@ -1297,7 +1297,7 @@ defmodule Embervm.ServingSweeper do
     req = %StopServingRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_SERVING_MODE_DESTROY}
     dial_key = dial_for_serving_vm(state, node_id, vm_id)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_key) do
       try do
         case state.stop_serving_fun.(channel, req) do
           {:ok, %{teardown_confirmed: true}} ->
@@ -1404,14 +1404,6 @@ defmodule Embervm.ServingSweeper do
 
   # -- daemon + timer seams --------------------------------------------------
 
-  defp safe_channel(channel_fun, node_id) do
-    channel_fun.(node_id)
-  rescue
-    e -> {:error, {:channel_raised, e}}
-  catch
-    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
-  end
-
   # The channel key for a live serving-VM dial (bank/destroy): the OWNING instance
   # reporting `vm_id` in serving_vms, else the node name (single-instance / legacy
   # fallback). Instance-key unification (PR-B0b): a co-located node's node-name alias
@@ -1442,20 +1434,7 @@ defmodule Embervm.ServingSweeper do
   # upstream). Envoy's ?format=json emits {"stats":[{"name":..,"value":..}, ...]};
   # we keep only the cluster.*.upstream_rq_total gauges and strip to the raw cluster
   # name (cluster.<name>.upstream_rq_total -> <name>).
-  defp default_scrape(url) do
-    req = Finch.build(:get, url)
-
-    case Finch.request(req, Embervm.Finch, receive_timeout: 3_000) do
-      {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
-        parse_stats(body)
-
-      {:ok, %Finch.Response{status: status}} ->
-        {:error, {:stats_status, status}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
+  defp default_scrape(url), do: Embervm.EnvoyStats.scrape(url, &parse_stats/1)
 
   @rq_total_suffix ".upstream_rq_total"
   @cluster_stat_prefix "cluster."

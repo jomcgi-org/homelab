@@ -1147,19 +1147,34 @@ def test_direct_claim_stops_a_previously_released_attempt(uncertain_lane):
         )
 
 
+def _hold_unknown(session_id, owner, dispatch_count):
+    with Session(store.get_engine()) as session:
+        held = store.finish_unknown_pending_in_session(
+            session,
+            session_id,
+            1,
+            owner,
+            dispatch_count,
+            "lost",
+            expected_guest_id="guest-investigate",
+            expected_workflow_id=None,
+        )
+        if held:
+            session.commit()
+        return held
+
+
 def test_unknown_reconciliation_is_idempotent_and_owner_fenced(uncertain_lane):
     engine, session_id = uncertain_lane
-    assert store.finish_unknown_pending_sync(session_id, 1, "other", 1, "lost") is False
-    assert (
-        store.finish_unknown_pending_sync(session_id, 1, "owner-1", 2, "lost") is False
-    )
+    assert _hold_unknown(session_id, "other", 1) is False
+    assert _hold_unknown(session_id, "owner-1", 2) is False
     from threading import Barrier
 
     barrier = Barrier(2)
 
     def reconcile():
         barrier.wait(timeout=5)
-        return store.finish_unknown_pending_sync(session_id, 1, "owner-1", 1, "lost")
+        return _hold_unknown(session_id, "owner-1", 1)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: reconcile(), range(2)))
@@ -1855,7 +1870,7 @@ def test_completion_and_unknown_reconciliation_have_one_durable_winner(uncertain
 
     def hold():
         barrier.wait(timeout=5)
-        return store.finish_unknown_pending_sync(session_id, 1, "owner-1", 1, "lost")
+        return _hold_unknown(session_id, "owner-1", 1)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         completion = pool.submit(complete)

@@ -39,6 +39,7 @@ defmodule Embervm.SessionStore do
   require Logger
   use GenServer
 
+  alias Embervm.InstanceTable
   alias Embervm.OpLog.Op
   alias Embervm.{SessionId, SessionState}
 
@@ -1309,14 +1310,7 @@ defmodule Embervm.SessionStore do
   # prior bucket and increment the next. A terminal state is neither live nor
   # banked, so it decrements without a matching increment.
   defp bump_counts(state, prior, next, workload) do
-    counts = Map.get(state.counts, workload, %{live: 0, banked: 0})
-
-    counts =
-      counts
-      |> dec_bucket(bucket_of(prior))
-      |> inc_bucket(bucket_of(next))
-
-    %{state | counts: Map.put(state.counts, workload, counts)}
+    %{state | counts: InstanceTable.bump_counts(state.counts, workload, bucket_of(prior), bucket_of(next))}
   end
 
   defp bucket_of(nil), do: nil
@@ -1324,12 +1318,6 @@ defmodule Embervm.SessionStore do
   defp bucket_of(:parked), do: :banked
   defp bucket_of(state) when state in @live_states, do: :live
   defp bucket_of(_terminal), do: nil
-
-  defp inc_bucket(counts, nil), do: counts
-  defp inc_bucket(counts, bucket), do: Map.update!(counts, bucket, &(&1 + 1))
-
-  defp dec_bucket(counts, nil), do: counts
-  defp dec_bucket(counts, bucket), do: Map.update!(counts, bucket, &max(&1 - 1, 0))
 
   # -- helpers ---------------------------------------------------------------
 

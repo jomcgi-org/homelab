@@ -12,7 +12,9 @@ import pytest
 
 os.environ.pop("STATIC_DIR", None)
 
-from app.main import app, _start_singletons, _log_task_exception  # noqa: E402
+from app.main import app  # noqa: E402
+from app.modules_private import ALL_MODULES  # noqa: E402
+from framework import log_task_exception, start_leader_singletons  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -36,9 +38,9 @@ async def test_singleton_tasks_all_get_done_callback():
         patch("chat.acl.bootstrap_defaults"),
         patch("chat.bot.create_bot", return_value=mock_bot),
     ):
-        await _start_singletons(app)
+        await start_leader_singletons(app, ALL_MODULES)
 
     # Bot, outbox, scheduled tasks, ships, lock sweep and seven service loops.
     assert len(task_mocks) == 12
     for task in task_mocks:
-        task.add_done_callback.assert_called_once_with(_log_task_exception)
+        task.add_done_callback.assert_called_once_with(log_task_exception)

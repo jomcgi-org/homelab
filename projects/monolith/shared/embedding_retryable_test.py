@@ -9,7 +9,6 @@ HTTPStatusError(5xx) → True, HTTPStatusError(4xx) → False, ValueError → Fa
 from unittest.mock import MagicMock
 
 import httpx
-import pytest
 
 from shared.inference import is_retryable
 

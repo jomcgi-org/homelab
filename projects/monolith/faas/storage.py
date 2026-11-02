@@ -1,9 +1,9 @@
 """Function zip archive storage on the SeaweedFS S3 gateway (ADR 045).
 
-Mirrors artifact/s3.py's client construction and auto-create-bucket-on-first-write
-fallback (dummy creds, path-style addressing, scheme guard on the endpoint;
-boto3 imported lazily inside each function so importing this module never pulls
-boto3 into the public app's import closure).
+Builds its client with core.s3 and mirrors artifact/s3.py's
+auto-create-bucket-on-first-write fallback (boto3 imported lazily inside each
+function so importing this module never pulls boto3 into the public app's
+import closure).
 
 Object key layout is ``<name>/<sha256>.zip`` under the ``faas`` bucket (one
 key per function name + zip content hash; last-write-wins registration keeps
@@ -14,6 +14,8 @@ the bytes host-side never unpacks them (Standing decision 3).
 """
 
 import os
+
+from core.s3 import path_style_client
 
 
 def _bucket() -> str:
@@ -41,27 +43,11 @@ def _read_base() -> str:
 
 
 def _client():
-    """Build a SeaweedFS S3 client (mirrors artifact/s3.py / trips.s3)."""
-    import boto3
-    from botocore.config import Config
-
+    """Build a SeaweedFS S3 client via core.s3."""
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "")
     if not endpoint:
         raise RuntimeError("SEAWEEDFS_S3_ENDPOINT unset; cannot store faas archive")
-    # The chart injects a scheme-less host:port; boto3 requires a scheme and
-    # SeaweedFS S3 is plaintext HTTP.
-    if not endpoint.startswith(("http://", "https://")):
-        endpoint = "http://" + endpoint
-    # Scheme guaranteed above; clears the boto3-endpoint-url-missing-scheme hook
-    # (see artifact/s3.py for the same nosemgrep + exclude_rules rationale).
-    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),
-        aws_secret_access_key=os.environ.get("S3_SECRET_ACCESS_KEY", "duckdb"),
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-        config=Config(s3={"addressing_style": "path"}),
-    )
+    return path_style_client(endpoint)
 
 
 def put_archive(name: str, sha256: str, data: bytes) -> None:

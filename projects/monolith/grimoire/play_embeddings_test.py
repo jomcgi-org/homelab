@@ -18,7 +18,7 @@ from grimoire.play_embeddings import (
     event_text,
     note_text,
     persist_play_vectors,
-    sync_event_embeddings,
+    sync_events_embeddings,
     sync_note_embeddings,
 )
 from grimoire.testing.leak_harness import sqlite_harness
@@ -392,11 +392,11 @@ def test_event_audience_change_and_retraction_helper(harness):
     pc_ids = [h.rows["character"].id, h.rows["character_a"].id]
     row.audience = "pcs"
     row.audience_pc_ids = pc_ids
-    sync_event_embeddings(h.session, row)
+    sync_events_embeddings(h.session, [row])
     h.session.commit()
     assert stored(h, eid)["audience_pc_ids"] == sorted(row.audience_pc_ids)
     row.retracted_at = datetime.now(UTC)
-    sync_event_embeddings(h.session, row)
+    sync_events_embeddings(h.session, [row])
     h.session.commit()
     assert stored(h, eid) is None
 
@@ -580,6 +580,6 @@ def test_retracting_a_handout_removes_its_embedding(harness):
     eid = embedding(h.session, row)
     assert stored(h, eid) is not None
     row.retracted_at = datetime.now(UTC)
-    sync_event_embeddings(h.session, row)
+    sync_events_embeddings(h.session, [row])
     h.session.commit()
     assert stored(h, eid) is None

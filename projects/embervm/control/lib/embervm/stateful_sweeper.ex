@@ -257,23 +257,6 @@ defmodule Embervm.StatefulSweeper do
     GenServer.call(server, {:pressure_state, brick_id})
   end
 
-  @doc """
-  Whether `workload`'s volume is eligible to have any of its artifacts (its
-  banked STATEFUL bundle, or in a later rung its VOLUME snapshot/backup)
-  planned for export (R7, ADR embervm/011, standing decision 4): false while
-  the volume is quarantined (`StatefulStore.quarantined?/2`), true otherwise
-  (including an unknown workload, which has no volume to quarantine). No
-  ExportArtifact planning exists in this control plane yet (Task 10 lands the
-  Longhorn-backed snapshot/backup planning); this predicate is the guard
-  future export-planning call sites (and `eager_evict_broken_pairs`'s bundle
-  eviction, see `do_sweep/1`) must consult FIRST, so quarantine enforcement
-  lands before there is anything to enforce it against.
-  """
-  @spec export_allowed?(GenServer.server(), String.t()) :: boolean()
-  def export_allowed?(store \\ StatefulStore, workload) do
-    not StatefulStore.quarantined?(store, workload)
-  end
-
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true
@@ -310,7 +293,7 @@ defmodule Embervm.StatefulSweeper do
       # the real NodeService stub over the shared NodeChannel).
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       # Drop the shared node channel when a verb reveals its transport is dead (a
-      # noded rollout), so the next safe_channel/2 re-dials instead of hammering a
+      # noded rollout), so the next NodeChannel.safe_dial/2 re-dials instead of hammering a
       # dead ConnectionProcess forever (D-R2.7.2). Injected for tests.
       invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
       stop_stateful_fun: Keyword.get(opts, :stop_stateful_fun, &default_stop_stateful/2),
@@ -1336,8 +1319,9 @@ defmodule Embervm.StatefulSweeper do
       draining_workload?(state, instance.workload) ->
         admit_bank(state, instance, banking_meta)
 
-      # A FRESH reading shows a connection raced in: abort for everyone.
-      connection_raced_in?(state, instance) ->
+      # A FRESH reading shows a connection raced in: abort for everyone. No
+      # reading fails open; the interruptible fail-closed case below uses fresh?.
+      instance_active?(state, instance) ->
         abort_bank(state, instance, :recheck_active)
 
       # Fail CLOSED for an interruptible workload whose re-scrape did NOT produce a
@@ -1375,21 +1359,6 @@ defmodule Embervm.StatefulSweeper do
 
       {:error, _reason} ->
         {state, false}
-    end
-  end
-
-  # True when the instance's node's reading reports cx_active > 0 for its listener,
-  # i.e. a connection raced in and the bank must abort. When there is NO reading
-  # for the node it FAILS OPEN (returns false): the interruptible fail-closed case
-  # is handled separately in recheck_and_bank via the re-scrape freshness flag, so
-  # this predicate is purely "does a present reading show an active connection".
-  defp connection_raced_in?(state, instance) do
-    with {:ok, entry} <- Map.fetch(state.current_stats, instance.node_id),
-         {:ok, cfg} <- stateful_cfg(state, instance.workload),
-         {:ok, %{active: active}} <- Map.fetch(entry, stat_prefix(cfg.listen_port)) do
-      active > 0
-    else
-      _ -> false
     end
   end
 
@@ -2208,9 +2177,10 @@ defmodule Embervm.StatefulSweeper do
   end
 
   # Whether the instance's L4 listener currently reports an open connection,
-  # from THIS tick's freshest reading (falls back to "not active" when there
-  # is no fresh reading for the node, which only delays a destroy that will
-  # still happen once the patience window elapses regardless).
+  # from THIS tick's freshest reading. With no reading for the node it fails
+  # open ("not active"): for the bank recheck that defers to the fresh? flag,
+  # and for an over-lifetime destroy it only delays a destroy that will still
+  # happen once the patience window elapses regardless.
   defp instance_active?(state, instance) do
     with {:ok, entry} <- Map.fetch(state.current_stats, instance.node_id),
          {:ok, cfg} <- stateful_cfg(state, instance.workload),
@@ -2333,7 +2303,7 @@ defmodule Embervm.StatefulSweeper do
     req = %StopStatefulRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_STATEFUL_MODE_DESTROY}
     dial_key = dial_for_vm(state, node_id, vm_id)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_key) do
       try do
         state.stop_stateful_fun.(channel, req)
       rescue
@@ -2352,7 +2322,7 @@ defmodule Embervm.StatefulSweeper do
     req = %EvictSnapshotRequest{trace: %Trace{}, snapshot_ref: ref}
     dial_key = dial_for_bundle(state, node_id, ref)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_key) do
       try do
         state.evict_snapshot_fun.(channel, req)
       rescue
@@ -2378,7 +2348,7 @@ defmodule Embervm.StatefulSweeper do
     req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
     dial_key = dial_for_bundle(state, node_id, ref)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_key) do
       try do
         state.evict_artifact_fun.(channel, req)
       rescue
@@ -2481,14 +2451,6 @@ defmodule Embervm.StatefulSweeper do
 
   # -- daemon + stats seams -------------------------------------------------
 
-  defp safe_channel(channel_fun, node_id) do
-    channel_fun.(node_id)
-  rescue
-    e -> {:error, {:channel_raised, e}}
-  catch
-    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
-  end
-
   # The channel key for a live-VM dial (bank/checkpoint/resolve/destroy): the
   # OWNING noded instance reporting `vm_id`, else the node name (single-instance /
   # legacy fallback, unchanged behaviour). Instance-key unification (PR-B0a): a
@@ -2517,15 +2479,15 @@ defmodule Embervm.StatefulSweeper do
   end
 
   # Acquire the node's shared channel and run a stateful verb over it, invalidating
-  # that channel (so the next safe_channel/2 re-dials) when the call reveals the
+  # that channel (so the next NodeChannel.safe_dial/2 re-dials) when the call reveals the
   # transport is dead: a transport_dead? error return, or an :exit from the Mint
   # ConnectionProcess dying (its crash on an in-flight stream RST during a noded
   # rollout surfaces here as an exit). A server-returned gRPC status rode a HEALTHY
   # channel and never invalidates it (Embervm.NodeChannel.transport_dead?/1, D-R2.7.2).
   # Returns the verb's raw result ({:ok, _} | {:error, _}), {:error, {:exit, reason}}
-  # on an exit, or the safe_channel error if no channel could be obtained.
+  # on an exit, or the safe_dial error if no channel could be obtained.
   defp over_channel(channel_fun, invalidate_fun, node_id, call_fun) do
-    with {:ok, channel} <- safe_channel(channel_fun, node_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(channel_fun, node_id) do
       try do
         result = call_fun.(channel)
         if Embervm.NodeChannel.transport_dead?(result), do: invalidate_fun.(node_id, channel)
@@ -2558,74 +2520,17 @@ defmodule Embervm.StatefulSweeper do
   # Production scrape: GET /stats?format=json over the shared Finch pool, parse
   # the per-listener tcp.<prefix>.downstream_cx_{active,total} counters into
   # %{stat_prefix => %{active: n, total: n}}. A non-200, a transport error, or
-  # an unparseable body is a scrape failure (fail-open). Envoy's ?format=json
-  # emits {"stats":[{"name":..,"value":..}, ...]}; keep only the
-  # tcp.<prefix>.downstream_cx_{active,total} gauges/counters.
-  defp default_scrape(url) do
-    req = Finch.build(:get, url)
-
-    case Finch.request(req, Embervm.Finch, receive_timeout: 3_000) do
-      {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
-        parse_stats(body)
-
-      {:ok, %Finch.Response{status: status}} ->
-        {:error, {:stats_status, status}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @tcp_stat_prefix "tcp."
-  @cx_active_suffix ".downstream_cx_active"
-  @cx_total_suffix ".downstream_cx_total"
+  # an unparseable body is a scrape failure (fail-open).
+  defp default_scrape(url), do: Embervm.EnvoyStats.scrape(url, &parse_stats/1)
 
   @doc """
-  Parse an Envoy `/stats?format=json` body into `%{stat_prefix => %{active: n,
-  total: n}}`, keeping only `tcp.<prefix>.downstream_cx_{active,total}`
-  counters. `@doc false` only so the parse path is exercised directly on a
-  realistic raw body in tests; production reaches it via `default_scrape`. Not
-  part of the module's public API.
+  Parse an Envoy `/stats?format=json` body (`Embervm.EnvoyStats.parse_tcp_stats/1`).
+  `@doc false` only so the parse path is exercised directly on a realistic raw body
+  in tests; production reaches it via `default_scrape`.
   """
   @doc false
   @spec parse_stats(binary()) :: {:ok, %{optional(String.t()) => %{active: integer(), total: integer()}}} | {:error, term()}
-  def parse_stats(body) do
-    case Jason.decode(body) do
-      {:ok, %{"stats" => stats}} when is_list(stats) ->
-        reading =
-          stats
-          |> Enum.reduce(%{}, fn stat, acc -> fold_tcp_stat(stat, acc) end)
-
-        {:ok, reading}
-
-      _ ->
-        {:error, :unparseable_stats}
-    end
-  rescue
-    e -> {:error, {:stats_parse_raised, e}}
-  end
-
-  defp fold_tcp_stat(%{"name" => @tcp_stat_prefix <> rest, "value" => value}, acc) when is_integer(value) do
-    cond do
-      String.ends_with?(rest, @cx_active_suffix) ->
-        prefix = String.replace_suffix(rest, @cx_active_suffix, "")
-        put_field(acc, prefix, :active, value)
-
-      String.ends_with?(rest, @cx_total_suffix) ->
-        prefix = String.replace_suffix(rest, @cx_total_suffix, "")
-        put_field(acc, prefix, :total, value)
-
-      true ->
-        acc
-    end
-  end
-
-  defp fold_tcp_stat(_stat, acc), do: acc
-
-  defp put_field(acc, prefix, field, value) do
-    entry = Map.get(acc, prefix, %{active: 0, total: 0})
-    Map.put(acc, prefix, Map.put(entry, field, value))
-  end
+  def parse_stats(body), do: Embervm.EnvoyStats.parse_tcp_stats(body)
 
   defp schedule(msg, interval_ms) when interval_ms > 0 do
     Process.send_after(self(), msg, interval_ms)

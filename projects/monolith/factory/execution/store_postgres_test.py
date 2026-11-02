@@ -153,9 +153,20 @@ def _wait_for_blocked_connection(lane, actor, blocker_pid):
 
 
 def _hold(lane):
-    return store.finish_unknown_pending_sync(
-        lane.session_id, 1, OWNER, 1, "observer_lost"
-    )
+    with Session(store.get_engine()) as session:
+        held = store.finish_unknown_pending_in_session(
+            session,
+            lane.session_id,
+            1,
+            OWNER,
+            1,
+            "observer_lost",
+            expected_guest_id="guest-retain",
+            expected_workflow_id=None,
+        )
+        if held:
+            session.commit()
+        return held
 
 
 def _complete(lane):

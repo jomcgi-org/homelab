@@ -9,7 +9,7 @@
 // point of the split: the scrub timing is the only genuinely unit-testable
 // part, so it lives away from the 60fps DOM writes and gets tested directly.
 
-export const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
 
 export const lerp = (a, b, t) => a + (b - a) * t;
 

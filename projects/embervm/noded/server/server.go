@@ -47,6 +47,7 @@ import (
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
 	"github.com/jomcgi/homelab/projects/embervm/noded/egress"
+	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/driver"
 	"github.com/jomcgi/homelab/projects/embervm/noded/guestmem"
 	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 	"github.com/jomcgi/homelab/projects/embervm/noded/snapshotmeta"
@@ -687,14 +688,6 @@ func (s *Server) refuseIfSilenced(what string) error {
 	return status.Errorf(codes.FailedPrecondition, "noded: brick silent past silence timeout, refusing %s", what)
 }
 
-// setLastContactForTest pins the contact instant so tests can age past the
-// silence bound without sleeping.
-func (s *Server) setLastContactForTest(t time.Time) {
-	s.contactMu.Lock()
-	s.lastContact = t
-	s.contactMu.Unlock()
-}
-
 // hasPrimedForWorkload reports whether the task pool already holds at least one
 // primed VM for a workload. A Prime for a workload with existing warmth is a
 // refill (allowed while stale); a Prime for a workload with none is cold
@@ -771,7 +764,7 @@ func (s *Server) buildBaseImage(ctx context.Context, req *nodev1.BuildBaseReques
 	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: image %q (workload %q) not provisioned on this node", imageRef, workload)
 	}
-	rootfsID, err := ext4UUID(img.RootfsPath)
+	rootfsID, err := driver.Ext4UUID(img.RootfsPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			if pendingErr := s.refuseIfRootfsPending(img.RootfsPath); pendingErr != nil {
@@ -820,7 +813,7 @@ func (s *Server) buildBaseZip(ctx context.Context, req *nodev1.BuildBaseRequest)
 	// the digest for R0 (deploys are digest-pinned upstream), mirroring the image
 	// lane where image_ref IS the identity.
 	imageDigest := runtimeRef
-	rootfsID, err := ext4UUID(img.RootfsPath)
+	rootfsID, err := driver.Ext4UUID(img.RootfsPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			if pendingErr := s.refuseIfRootfsPending(img.RootfsPath); pendingErr != nil {
@@ -1147,7 +1140,7 @@ func (s *Server) verifyReadyBaseBundle(baseKey, rootfsPath string) (bool, error)
 	if wantRootfsID == "" {
 		return false, nil
 	}
-	gotRootfsID, err := ext4UUID(rootfsPath)
+	gotRootfsID, err := driver.Ext4UUID(rootfsPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
@@ -1639,29 +1632,12 @@ func (s *Server) Assign(ctx context.Context, req *nodev1.AssignRequest) (*nodev1
 	// Assign and explicit Destroy share the same retained teardown entry.
 	defer func() { _, _ = s.destroyTaskVM(vmID) }()
 
-	gr := req.GetRequest()
-	method := gr.GetMethod()
-	if method == "" {
-		method = http.MethodPost
-	}
-	path := gr.GetPath()
-	if path == "" {
-		path = defaultInvokePath
-	}
-	timeout := time.Duration(req.GetTimeoutMs()) * time.Millisecond
-	if timeout <= 0 {
-		timeout = defaultAssignTimeout
-	}
-	rtCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	httpReq, err := http.NewRequestWithContext(rtCtx, method, "http://vsock"+path, bytes.NewReader(gr.GetBody()))
+	httpReq, cancel, timeout, err := newGuestRequest(ctx, req.GetRequest(), req.GetTimeoutMs())
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "noded: build guest request: %v", err)
+		return nil, err
 	}
-	for k, v := range gr.GetHeaders() {
-		httpReq.Header.Set(k, v)
-	}
+	defer cancel()
+	rtCtx := httpReq.Context()
 
 	uds := s.driver.VsockUDSPath(e.handle.ThreadID)
 	t0 := time.Now()
@@ -1697,6 +1673,34 @@ func (s *Server) Assign(ctx context.Context, req *nodev1.AssignRequest) (*nodev1
 		},
 		Usage: usage,
 	}, nil
+}
+
+// newGuestRequest builds the vsock HTTP request an Assign or SessionAssign
+// delivers, with the method, path and timeout defaults applied. The request's
+// context carries the timeout; the caller must call cancel.
+func newGuestRequest(ctx context.Context, gr *nodev1.GuestRequest, timeoutMs uint32) (*http.Request, context.CancelFunc, time.Duration, error) {
+	method := gr.GetMethod()
+	if method == "" {
+		method = http.MethodPost
+	}
+	path := gr.GetPath()
+	if path == "" {
+		path = defaultInvokePath
+	}
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	if timeout <= 0 {
+		timeout = defaultAssignTimeout
+	}
+	rtCtx, cancel := context.WithTimeout(ctx, timeout)
+	httpReq, err := http.NewRequestWithContext(rtCtx, method, "http://vsock"+path, bytes.NewReader(gr.GetBody()))
+	if err != nil {
+		cancel()
+		return nil, nil, 0, status.Errorf(codes.InvalidArgument, "noded: build guest request: %v", err)
+	}
+	for k, v := range gr.GetHeaders() {
+		httpReq.Header.Set(k, v)
+	}
+	return httpReq, cancel, timeout, nil
 }
 
 // ---- Destroy ---------------------------------------------------------------
@@ -1915,29 +1919,12 @@ func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignReq
 	abandoned := false
 	defer func() { e.endSessionAssign(req.GetDispatchId(), abandoned) }()
 
-	gr := req.GetRequest()
-	method := gr.GetMethod()
-	if method == "" {
-		method = http.MethodPost
-	}
-	path := gr.GetPath()
-	if path == "" {
-		path = defaultInvokePath
-	}
-	timeout := time.Duration(req.GetTimeoutMs()) * time.Millisecond
-	if timeout <= 0 {
-		timeout = defaultAssignTimeout
-	}
-	rtCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	httpReq, err := http.NewRequestWithContext(rtCtx, method, "http://vsock"+path, bytes.NewReader(gr.GetBody()))
+	httpReq, cancel, timeout, err := newGuestRequest(ctx, req.GetRequest(), req.GetTimeoutMs())
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "noded: build guest request: %v", err)
+		return nil, err
 	}
-	for k, v := range gr.GetHeaders() {
-		httpReq.Header.Set(k, v)
-	}
+	defer cancel()
+	rtCtx := httpReq.Context()
 
 	uds := s.driver.VsockUDSPath(e.handle.ThreadID)
 	t0 := time.Now()
@@ -3355,29 +3342,6 @@ func (s *Server) drainSessionExports(exports *drainExports) int {
 			exports.pending["workspace inventory unavailable"] = true
 			return pending + 1
 		}
-		if !complete {
-			// A partial scan still queues the workspaces it did read, but the
-			// drain stays blocked: unknown inventory is never treated as done.
-			// Unlike a hard error this never exhausts: a persistent skip (for
-			// example unreadable session dirs) must hold the drain, not age
-			// out of it.
-			for _, volume := range inventory {
-				if s.lineageAttached(volume.Workload, volume.LineageID) {
-					continue
-				}
-				ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: volume.Workload, Ref: volume.LineageID}
-				key := artifactPrefix(ref, s.cfg.CpuVendor)
-				if !exports.workspaces[key] {
-					s.exported.clear(key)
-					exports.workspaces[key] = true
-				}
-				queue(ref)
-			}
-			s.logger.Warn("drain workspace scan incomplete")
-			exports.nextScanRetry = time.Now().Add(500 * time.Millisecond)
-			exports.pending["workspace inventory unavailable"] = true
-			return pending + 1
-		}
 		for _, volume := range inventory {
 			if s.lineageAttached(volume.Workload, volume.LineageID) {
 				continue
@@ -3389,6 +3353,17 @@ func (s *Server) drainSessionExports(exports *drainExports) int {
 				exports.workspaces[key] = true
 			}
 			queue(ref)
+		}
+		if !complete {
+			// A partial scan still queues the workspaces it did read, but the
+			// drain stays blocked: unknown inventory is never treated as done.
+			// Unlike a hard error this never exhausts: a persistent skip (for
+			// example unreadable session dirs) must hold the drain, not age
+			// out of it.
+			s.logger.Warn("drain workspace scan incomplete")
+			exports.nextScanRetry = time.Now().Add(500 * time.Millisecond)
+			exports.pending["workspace inventory unavailable"] = true
+			return pending + 1
 		}
 	}
 	return pending
@@ -4340,7 +4315,7 @@ func (s *Server) readBaseRootfsPath(baseKey string) string {
 // A UUID read failure leaves the sidecar absent, which makes the base fail every
 // restore and adoption identity gate.
 func (s *Server) writeBaseRootfsID(baseKey, rootfsPath string) error {
-	id, err := ext4UUID(rootfsPath)
+	id, err := driver.Ext4UUID(rootfsPath)
 	if err != nil {
 		s.logger.Warn("noded: persist base rootfs identity skipped", "base", baseKey, "rootfs", rootfsPath, "err", err)
 		return fmt.Errorf("read base rootfs identity: %w", err)

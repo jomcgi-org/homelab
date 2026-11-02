@@ -13,25 +13,6 @@ impl Gpu {
             128,
         )
     }
-    pub fn embedding(
-        &self,
-        weights: &Dev<u16>,
-        token: usize,
-        hidden: usize,
-        out: &mut Dev<f32>,
-    ) -> Result<()> {
-        ensure!(
-            hidden > 0 && token < weights.len / hidden && out.len >= hidden,
-            "embedding range invalid"
-        );
-        self.launch(
-            "embedding",
-            &[weights.buffer(), out.buffer()],
-            &[token as u32, hidden as u32],
-            hidden,
-            128,
-        )
-    }
 
     pub fn causal_conv(
         &self,

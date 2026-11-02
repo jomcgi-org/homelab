@@ -33,8 +33,7 @@ projects/mcp/
     │       ├── team-mapping-cronjob.yaml # Reconciles authentik group -> CF team from values
     │       ├── postgres-cnpg.yaml        # CloudNativePG cluster and scheduled GCS backup
     │       ├── cnpg-backup-gcs-secret.yaml
-    │       ├── onepassworditem.yaml      # 1Password secret sync (JWT_SECRET_KEY, etc.)
-    │       └── networkpolicy.yaml        # Cross-namespace ingress policy (disabled; see below)
+    │       └── onepassworditem.yaml      # 1Password secret sync (JWT_SECRET_KEY, etc.)
     ├── scripts/provision-mcp-auth.sh     # Creates the sso_providers row after a DB rebuild
     └── deploy/
         ├── application.yaml    # Home-cluster Application shape (no root references it)
