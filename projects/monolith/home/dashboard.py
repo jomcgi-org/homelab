@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 import httpx
 
 from core.github import GITHUB_API, GITHUB_REPO
+from home import cluster_snapshot, schedule
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,25 @@ async def _collect_github() -> dict:
     return data
 
 
-async def _collect_health(session) -> dict:
+def _read(fn, session):
+    """Run one synchronous database read, in its own session when none is given.
+
+    Called through asyncio.to_thread: a blocking read (or a wait on an
+    exhausted pool) on the event loop would stall every request the process
+    is serving. Concurrent reads each open their own session because a
+    Session is not safe to share across threads.
+    """
+    if session is not None:
+        return fn(session)
+    from sqlmodel import Session
+
+    from core.db import get_engine
+
+    with Session(get_engine()) as own:
+        return fn(own)
+
+
+async def _collect_health(session=None) -> dict:
     """Cluster health rollup, served from the background snapshot when fresh.
 
     The scan itself (~235 resources across all namespaces) runs off-request in
@@ -137,31 +156,31 @@ async def _collect_health(session) -> dict:
     Falls back to a live scan only when no fresh snapshot exists: a fresh deploy
     before the first refresh, a wedged refresher, or an unmigrated env.
     """
-    from home.cluster_snapshot import read_cluster_snapshot, scan_health_live
-
-    snap = read_cluster_snapshot(session)
+    snap = await asyncio.to_thread(
+        _read, cluster_snapshot.read_cluster_snapshot, session
+    )
     if snap is not None:
         # Surface freshness without disturbing the {healthy, scanned, unhealthy}
         # shape the frontend reads.
         health = dict(snap["health"])
         health["snapshot_at"] = snap["snapshot_at"]
         return health
-    return await scan_health_live()
+    return await cluster_snapshot.scan_health_live()
 
 
-async def _collect_today(session) -> dict:
+async def _collect_today(session=None) -> dict:
     """Today's calendar events (same-domain, home.schedule)."""
-    from home.schedule import get_today_events
+    events = await asyncio.to_thread(_read, schedule.get_today_events, session)
+    return {"events": events}
 
-    return {"events": get_today_events(session)}
 
-
-async def build_dashboard(session) -> dict:
+async def build_dashboard(session=None) -> dict:
     """Assemble every dashboard section, isolating failures per-section.
 
     Each collector runs concurrently; a raised exception in one is mapped to
     {"error": str(exc)} for that section rather than failing the whole
-    response.
+    response. With no session, each database read opens its own off the
+    event loop.
     """
     names = ("health", "github", "today")
     results = await asyncio.gather(
