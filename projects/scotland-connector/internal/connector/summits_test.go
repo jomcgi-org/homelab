@@ -77,9 +77,10 @@ func TestUKVCheckAndDisabledCompatibility(t *testing.T) {
 	if item.Walk.UKV == nil || !strings.Contains(item.Walk.UKV.Note, "Synthetic") {
 		t.Fatal("fixture identity missing")
 	}
-	if len(on.Meta.Sources) != len(baseline.Meta.Sources)+4 {
+	if len(on.Meta.Sources) != len(baseline.Meta.Sources)+10 {
 		t.Fatal(on.Meta.Sources)
 	}
+	attributed := map[string]bool{}
 	for n, src := range on.Meta.Sources {
 		if n < len(baseline.Meta.Sources) {
 			x, _ := json.Marshal(src)
@@ -91,6 +92,12 @@ func TestUKVCheckAndDisabledCompatibility(t *testing.T) {
 		}
 		if len(src.Fields) != 1 || src.LicenseURI != summits.License || src.Adaptation != summits.Adaptation {
 			t.Fatal(src)
+		}
+		attributed[src.Fields[0]] = true
+	}
+	for _, field := range []string{"run_at", "points[].sample_lat", "points[].sample_lon", "points[].cloud_base_reference", "points[].orography_m_asl", "points[].hours[].valid_at", "points[].hours[].wind_kmh", "points[].hours[].gust_kmh", "points[].hours[].cloud_base_m", "points[].hours[].freezing_level_m_asl"} {
+		if !attributed["data.items[].walk.ukv."+field] {
+			t.Fatalf("missing attribution: %s", field)
 		}
 	}
 	// Missing, stale and walk-start-only evidence preserve the baseline verdict.
