@@ -2435,6 +2435,19 @@ dispatch pins and deadline supervision. A second recovery cannot renew it.
 pinned policy. Merely reopening the old task would replay its previous decision
 or retry its failed preflight before the operator's replacement plan was read.
 
+The proposed internal recovery worker is staged off behind
+`swarm.factoryRecoveryDelegationEnabled`; its exact grant contract is in
+[FACTORY.md](factory/orchestration/FACTORY.md#proposed-internal-recovery-authorization).
+Standing humans record bounded requests, and a distinct deterministic worker
+calls the existing guarded owners internally. Authorization and execution are
+separate append-only audit identities; no delegated credential is minted.
+**Why.** Routine recovery should not depend on chat connector publication, but
+settled task reactivation and permanent restore fencing remain privileged.
+Sharing their owner implementations preserves proof and accounting invariants
+without making the Planner an operator. Unchanged empty retrospectives receive
+one report-only diagnosis under the existing program rather than repeating the
+same model call; that deduplication is independently staged off.
+
 ### Public factory and graph warm snapshots
 
 The public frontend prewarms six fixed, anonymous backend projections at startup

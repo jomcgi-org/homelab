@@ -131,6 +131,11 @@ def hold_drainer_job(
 def pin_drainer_settings() -> dict:
     with tracer.start_as_current_span("drain.pin_settings") as span:
         settings = asdict(agent_config.load_drainer_settings())
+        from factory.orchestration import learning_inputs
+
+        # This checkpoint pins the branch for replay. Old histories lack the
+        # key and retain their original prompt step even after a flag change.
+        settings["learning_input_dedup_enabled"] = learning_inputs.enabled()
         set_attributes(
             span,
             {
@@ -1588,6 +1593,13 @@ def build_retro_prompt(instructions: str) -> str:
         return prompt
 
 
+@DBOS.step()
+def prepare_learning_input(name: str, holder: str) -> dict:
+    from factory.orchestration.learning_inputs import prepare_job
+
+    return prepare_job(name, holder)
+
+
 def _kg_raw_id(payload: object) -> str:
     if not isinstance(payload, dict):
         raise MalformedPayload("missing raw_id in payload")
@@ -1991,7 +2003,27 @@ def drain_cycle() -> dict:
                             job.get("payload"), settings
                         )
                         model = _job_model(job.get("payload"), strict=True)
-                        prompt = _job_prompt(job.get("payload"), prompt)
+                        if (
+                            isinstance(job.get("payload"), dict)
+                            and job["payload"].get("learning_stage") == "evidence"
+                            and DBOS.patch("factory-learning-input-v1")
+                            and settings.get("learning_input_dedup_enabled", False)
+                        ):
+                            prepared = prepare_learning_input(
+                                name, job.get("locked_by")
+                            )
+                            if prepared["skip"]:
+                                finish_drainer_job(
+                                    name,
+                                    "no_new_evidence",
+                                    "Unchanged evidence already produced a verified empty result. Existing owner diagnosis retained.",
+                                    **ownership,
+                                )
+                                cancel_drainer_reservation(local_session_id)
+                                continue
+                            prompt = prepared["prompt"]
+                        else:
+                            prompt = _job_prompt(job.get("payload"), prompt)
                     set_attributes(
                         job_span,
                         {

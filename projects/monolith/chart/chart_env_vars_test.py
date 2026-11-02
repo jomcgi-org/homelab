@@ -263,6 +263,42 @@ def test_session_stop_control_is_default_off_and_wires_both_containers(
     assert re.findall(pattern, result.stdout) == ["true", "true"]
 
 
+@pytest.mark.parametrize(
+    "env,value",
+    [
+        (
+            "FACTORY_RECOVERY_DELEGATION_ENABLED",
+            "swarm.factoryRecoveryDelegationEnabled",
+        ),
+        (
+            "FACTORY_LEARNING_INPUT_DEDUP_ENABLED",
+            "agents.drainer.learningInputDedupEnabled",
+        ),
+    ],
+)
+def test_recovery_features_ship_disabled_until_explicit_opt_in(
+    chart_context, env, value
+):
+    pattern = rf'- name: {env}\n\s+value: "(true|false)"'
+    assert re.findall(pattern, chart_context["rendered"]) == ["false"]
+    rendered = subprocess.run(
+        [
+            os.environ.get("HELM_BIN", "helm"),
+            "template",
+            "monolith",
+            str(chart_context["chart_dir"]),
+            "--values",
+            str(chart_context["deploy_values_file"]),
+            "--set",
+            value + "=true",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert re.findall(pattern, rendered) == ["true"]
+
+
 def test_factory_lost_before_session_sweep_ships_staged_off(chart_context):
     """The chart wires the runtime gate without enabling the new sweep."""
     rendered = chart_context["rendered"]

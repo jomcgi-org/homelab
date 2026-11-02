@@ -14,7 +14,11 @@ from factory.orchestration import (
     factory_controls as controls,
     graph,
 )
-from factory.orchestration.factory_models import FactoryControl, FactoryReceipt
+from factory.orchestration.factory_models import (
+    FactoryAudit,
+    FactoryControl,
+    FactoryReceipt,
+)
 from factory.orchestration.models import SwarmTask
 
 
@@ -82,4 +86,65 @@ def test_task_then_nowait_session_does_not_deadlock_result_writer(pg, monkeypatc
             assert db.execute(text("SELECT 1")).scalar_one() == 1
         assert writer_finished.wait(5)
         writer.result(timeout=5)
+    engine.dispose()
+
+
+def test_recovery_grant_claims_serialize_and_revocation_fences_admission(
+    pg, monkeypatch
+):
+    from datetime import timedelta
+    from factory.orchestration import recovery_delegation as delegation
+    from core.jsonio import dumps
+
+    engine = create_engine(pg.url)
+    monkeypatch.setattr(controls, "get_engine", lambda: engine)
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    # The owner result is absent; this test exercises real ledger queries and
+    # locks, while SQLite owner tests exercise both complete recovery paths.
+    monkeypatch.setattr(delegation, "_owner_result", lambda *_: None)
+    owner = {
+        "receipt_id": 1,
+        "session_id": 2,
+        "permit_id": 3,
+        "actor": delegation.ACTOR,
+        "request_key": "pg-" + uuid4().hex,
+    }
+    saved = {
+        "request": {
+            "target": {"kind": "settled_retry"},
+            "expires_at": (controls._now() + timedelta(minutes=10)).isoformat(),
+        },
+        "owner_request": owner,
+        "owner_preview_sha256": "a" * 64,
+    }
+    with controls._locked_session() as (db, control):
+        control.state = "enabled"
+        row = FactoryAudit(
+            actor="operator", action=delegation.GRANT, detail_json=dumps(saved)
+        )
+        db.add(row)
+        db.flush()
+        grant_id = row.id
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claims = list(pool.map(lambda _: delegation._claim(), range(2)))
+    assert sum(claim is not None for claim in claims) == 1
+    token, _ = next(claim for claim in claims if claim is not None)
+    assert token["grant_id"] == grant_id
+    with controls._locked_session() as (db, _):
+        assert delegation._state(db, grant_id)["calls"] == 1
+        controls._audit(db, "operator", delegation.REVOKE, grant_id=grant_id)
+    with controls._locked_session() as (db, _):
+        with pytest.raises(ValueError, match="disabled_or_revoked"):
+            delegation.guard(
+                db, delegation.ACTOR, "settled_retry", owner, "a" * 64, token
+            )
+        assert not db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == delegation.ADMIT,
+                delegation._field(db, "grant_id", integer=True) == grant_id,
+            )
+        ).all()
+        grant = db.get(FactoryAudit, grant_id)
+        # Cleanup only this fixture's ledger; live uncertainty is not expired.
+        delegation._record(db, grant, "refused", calls=1)
     engine.dispose()

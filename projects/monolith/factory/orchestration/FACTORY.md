@@ -224,6 +224,41 @@ and key to reconcile its durable intent. If local ownership changed after the
 fence, settlement refuses and the exact lineage stays fenced. This operation
 does not delete guests, invoke models, adjust quota or authorize public release.
 
+### Proposed internal recovery authorization
+
+`swarm.factoryRecoveryDelegationEnabled` defaults false, including the GKE
+overlay. The private standing-human `/api/swarm/factory/recovery-authorizations`
+preview/authorize route records one exact shared-owner request and digest.
+It does not grant the Planner operator identity or credentials. The fixed
+`factory:recovery-worker` actor consumes the append-only grant on the existing
+Conductor cadence. The recorded human remains the separate authorizer.
+
+The proposed scope is one evidence-only settled correction recovery or one
+settled retry lineage fence, a maximum fifteen-minute admission window, and
+at most two calls of the identical shared-owner request. The second call can
+only replay the same idempotency key; it grants no additional task starts.
+The underlying owner still requires all current identity, head, decision,
+quiescence, funding, journal, successor and restore proofs. Its mutation lock
+also checks grant expiry and revocation. Revocation stops future admissions;
+an already admitted call may finish and must be reconciled from its journal.
+Unknown calls remain fenced after expiry, revocation or exhaustion. One bounded
+diagnosis is retained in the existing task's planner context without restarting
+it. No unknown result or cost is rewritten, and budgets, cumulative start caps,
+independent review and landing holds are unchanged.
+
+Enabling this delegation and exercising any specific grant require separate
+explicit approval. The draft implementation is not authority to invoke a
+missing MCP control through another path.
+
+`agents.drainer.learningInputDedupEnabled` also defaults false. When enabled
+alongside the existing learning handoff, the routine pins its collected input,
+code head and prompt. A matching prior completed empty output suppresses only
+that repeated model turn. One report-only diagnosis stays with the existing
+program #6781 owner, or its existing routine queue when no native owner exists.
+Changed evidence or coverage allows another observation. Missing/unknown prior
+output never counts as empty. Diagnostic output is a recommendation; it cannot
+file or dispatch work, reset a breaker or establish an HTTP 502 root cause.
+
 For an attempt whose run and start are both `uncertain` and whose node workflow is terminal, `factory_cessation.py` records a `cessation_intent`, destroys that guest at most twice, then settles run and start failed, the permit `supervised_cessation` and cost unknown in one transaction. The automatic path runs behind `FACTORY_ACTIVE_CESSATION_ENABLED` (default off); `request_cessation` runs the same steps for one operator-reviewed attempt fingerprint, never cancelling the receipt.
 
 ## Validation

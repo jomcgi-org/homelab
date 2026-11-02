@@ -12,6 +12,442 @@ from factory.orchestration.turn_artifact import schema_errors
 _REAL_OBSERVE_HUMAN_OWNERSHIP = conductor._observe_human_ownership
 
 
+def delegation_principal():
+    from auth.api import Authority, Principal, PrincipalKind
+
+    return Principal(
+        subject="human-operator",
+        actor=(),
+        scope=(),
+        groups=("operators",),
+        email=None,
+        kind=PrincipalKind.HUMAN,
+        authority=Authority.STANDING,
+    )
+
+
+def delegation_request(s, kind, *, key="authorize-exact-recovery"):
+    from factory.orchestration import (
+        recovery_delegation as delegation,
+        factory_controls as controls,
+    )
+
+    if kind == "settled_retry":
+        target = {
+            "kind": kind,
+            **{k: s.request[k] for k in ("receipt_id", "session_id", "permit_id")},
+        }
+    else:
+        target = {
+            "kind": kind,
+            **{k: s.request[k] for k in ("receipt_id", "decision_id", "deadline_at")},
+            **{
+                k: v
+                for k, v in s.request["decision"].items()
+                if k not in ("action", "reason", "expected_version")
+            },
+            "expected_revision": s.request["decision"]["expected_version"],
+        }
+    return delegation.Request(
+        operation="preview",
+        target=target,
+        expires_at=(controls._now() + timedelta(minutes=10)).isoformat(),
+        request_key=key,
+        reason="Explicit exact recovery",
+    )
+
+
+def authorize_delegation(s, kind):
+    import asyncio
+    from factory.orchestration import recovery_delegation as delegation
+
+    request = delegation_request(s, kind)
+    preview = asyncio.run(
+        delegation.request_authorization(delegation_principal(), request)
+    )
+    request = request.model_copy(
+        update={
+            "operation": "authorize",
+            "expected_preview_sha256": preview["proposal"]["preview_sha256"],
+        }
+    )
+    result = asyncio.run(
+        delegation.request_authorization(delegation_principal(), request)
+    )
+    return request, result, preview
+
+
+@pytest.mark.parametrize(
+    "kind,fixture",
+    [
+        ("evidence_continuation", "evidence_terminal"),
+        ("settled_retry", "settled_retry_recovery"),
+    ],
+)
+def test_recovery_delegation_executes_exact_shared_owner_once(
+    request, monkeypatch, kind, fixture
+):
+    import asyncio
+    from factory.orchestration import (
+        recovery_delegation as delegation,
+        factory_controls as controls,
+    )
+    from factory.orchestration.factory_models import FactoryControl
+
+    s = request.getfixturevalue(fixture)
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    before = controls.task_snapshot(s.task["id"])
+    native = s.native_snapshot() if kind == "settled_retry" else None
+    with Session(s.engine) as db:
+        version = db.get(FactoryControl, "factory").version
+    req, result, preview = authorize_delegation(s, kind)
+    assert controls.task_snapshot(s.task["id"]) == before
+    with Session(s.engine) as db:
+        assert db.get(FactoryControl, "factory").version == version
+    assert preview["proposal"]["execution_actor"] == delegation.ACTOR
+    assert preview["proposal"]["authorizer"] == "human-operator"
+    asyncio.run(delegation.run_once())
+    state = delegation.status(result["grant_id"])
+    assert state["state"]["state"] == "applied"
+    assert state["state"]["calls"] == 1
+    assert state["owner_result"]["ok"]
+    after = controls.task_snapshot(s.task["id"])
+    assert after["policy"] == before["policy"]
+    assert after["turns_used"] == before["turns_used"]
+    if native is not None:
+        assert s.native_snapshot() == native
+    replay = asyncio.run(delegation.request_authorization(delegation_principal(), req))
+    assert replay["replay"] and replay["grant_id"] == result["grant_id"]
+    asyncio.run(delegation.run_once())
+    assert delegation.status(result["grant_id"])["state"] == state["state"]
+    assert controls.task_snapshot(s.task["id"]) == after
+
+
+@pytest.mark.parametrize(
+    "kind,fixture",
+    [
+        ("evidence_continuation", "evidence_terminal"),
+        ("settled_retry", "settled_retry_recovery"),
+    ],
+)
+@pytest.mark.parametrize("change", ["revoke", "expire", "disable", "scope"])
+def test_recovery_delegation_claim_is_not_mutation_authority(
+    request, monkeypatch, kind, fixture, change
+):
+    import asyncio
+    from factory.orchestration import (
+        recovery_delegation as delegation,
+        factory_controls as controls,
+    )
+    from factory import settled_retry_reconciliation
+
+    s = request.getfixturevalue(fixture)
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    _, result, preview = authorize_delegation(s, kind)
+    token, saved = delegation._claim()
+    before = controls.task_snapshot(s.task["id"])
+    if change == "revoke":
+        revoked = delegation.revoke(
+            delegation_principal(),
+            result["grant_id"],
+            preview["proposal"]["preview_sha256"],
+        )
+        assert revoked["in_flight_may_finish"]
+    elif change == "expire":
+        monkeypatch.setattr(
+            controls,
+            "_now",
+            lambda: (
+                datetime.fromisoformat(saved["request"]["expires_at"])
+                + timedelta(seconds=1)
+            ),
+        )
+    elif change == "disable":
+        monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "false")
+    else:
+        saved["owner_request"]["reason" if kind == "settled_retry" else "decision"] = (
+            "changed"
+        )
+    with pytest.raises((ValueError, TypeError)):
+        if kind == "settled_retry":
+            asyncio.run(
+                settled_retry_reconciliation.run(
+                    "apply",
+                    **saved["owner_request"],
+                    expected_preview_sha256=saved["owner_preview_sha256"],
+                    delegation=token,
+                )
+            )
+        else:
+            s.recovery.apply(
+                saved["owner_request"],
+                actor=delegation.ACTOR,
+                request_key=saved["key"],
+                expected_preview_sha256=saved["owner_preview_sha256"],
+                delegation=token,
+            )
+    assert controls.task_snapshot(s.task["id"])["starts"] == before["starts"]
+    assert delegation.status(result["grant_id"])["owner_result"] is None
+
+
+def test_recovery_delegation_lost_fence_replays_same_key_then_preserves_accounting(
+    settled_retry_recovery, monkeypatch
+):
+    import asyncio
+    from factory.orchestration import (
+        recovery_delegation as delegation,
+        factory_controls as controls,
+    )
+
+    s = settled_retry_recovery
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    _, result, _ = authorize_delegation(s, "settled_retry")
+    native = s.native_snapshot()
+    s.lose_apply_response = True
+    asyncio.run(delegation.run_once())
+    state = delegation.status(result["grant_id"])["state"]
+    assert state["state"] == "uncertain" and state["calls"] == 1
+    assert delegation._claim() is None
+    now = controls._now() + timedelta(seconds=181)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    s.lose_apply_response = False
+    s.proof_change = lambda proof: {
+        **proof,
+        "observed_at_unix_ms": int(now.timestamp() * 1000),
+    }
+    asyncio.run(delegation.run_once())
+    assert delegation.status(result["grant_id"])["state"]["state"] == "applied"
+    assert delegation.status(result["grant_id"])["state"]["calls"] == 2
+    assert s.native_snapshot() == native
+
+
+@pytest.mark.parametrize("closed", ["expired", "revoked", "exhausted"])
+def test_recovery_delegation_uncertainty_blocks_replacement_after_close(
+    settled_retry_recovery, monkeypatch, closed
+):
+    import asyncio
+    from factory.orchestration import (
+        recovery_delegation as delegation,
+        factory_controls as controls,
+    )
+
+    s = settled_retry_recovery
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    req, result, preview = authorize_delegation(s, "settled_retry")
+    s.lose_apply_response = True
+    asyncio.run(delegation.run_once())
+    now = controls._now() + timedelta(seconds=181)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    if closed == "revoked":
+        delegation.revoke(
+            delegation_principal(),
+            result["grant_id"],
+            preview["proposal"]["preview_sha256"],
+        )
+    elif closed == "expired":
+        now = datetime.fromisoformat(req.expires_at) + timedelta(seconds=1)
+    else:
+        asyncio.run(delegation.run_once())
+        now += timedelta(seconds=181)
+    assert delegation._claim() is None
+    state = delegation.status(result["grant_id"])
+    assert state["state"]["state"] == "uncertain"
+    with Session(s.engine) as db:
+        assert len(delegation._pending(db)) == 1
+    # A new key cannot silently replace this actor's or a human's intent.
+    with pytest.raises(ValueError):
+        authorize_delegation(s, "settled_retry")
+
+
+def test_recovery_delegation_reconciles_commit_after_revoke_without_new_owner_call(
+    evidence_terminal, monkeypatch
+):
+    from factory.orchestration import recovery_delegation as delegation
+
+    s = evidence_terminal
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    _, result, preview = authorize_delegation(s, "evidence_continuation")
+    token, saved = delegation._claim()
+    s.recovery.apply(
+        saved["owner_request"],
+        actor=delegation.ACTOR,
+        request_key=saved["key"],
+        expected_preview_sha256=saved["owner_preview_sha256"],
+        delegation=token,
+    )
+    delegation.revoke(
+        delegation_principal(),
+        result["grant_id"],
+        preview["proposal"]["preview_sha256"],
+    )
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "false")
+    assert delegation._claim() is None
+    delegation._finish(token, {"ok": False, "state": "outcome_unknown"})
+    assert delegation.status(result["grant_id"])["state"]["state"] == "applied"
+
+
+def test_recovery_delegation_concurrent_claims_and_stale_call_cannot_apply(
+    evidence_terminal, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from factory.orchestration import (
+        recovery_delegation as delegation,
+        factory_controls as controls,
+    )
+
+    s = evidence_terminal
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    _, result, _ = authorize_delegation(s, "evidence_continuation")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claims = list(pool.map(lambda _: delegation._claim(), range(2)))
+    claimed = [claim for claim in claims if claim is not None]
+    assert len(claimed) == 1
+    old_token, saved = claimed[0]
+    now = controls._now() + timedelta(seconds=181)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    new_token, _ = delegation._claim()
+    assert new_token != old_token
+    with pytest.raises(ValueError, match="call_changed"):
+        s.recovery.apply(
+            saved["owner_request"],
+            actor=delegation.ACTOR,
+            request_key=saved["key"],
+            expected_preview_sha256=saved["owner_preview_sha256"],
+            delegation=old_token,
+        )
+    s.recovery.apply(
+        saved["owner_request"],
+        actor=delegation.ACTOR,
+        request_key=saved["key"],
+        expected_preview_sha256=saved["owner_preview_sha256"],
+        delegation=new_token,
+    )
+    delegation._finish(old_token, {"error": "late_old_worker"})
+    state = delegation.status(result["grant_id"])["state"]
+    assert state["state"] == "applied" and state["calls"] == 2
+
+
+def test_recovery_delegation_uncertain_call_is_bounded_and_diagnosed_once(
+    settled_retry_recovery, monkeypatch
+):
+    import asyncio
+    from factory.orchestration import (
+        recovery_delegation as delegation,
+        factory_controls as controls,
+    )
+
+    s = settled_retry_recovery
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    _, result, _ = authorize_delegation(s, "settled_retry")
+    now = controls._now()
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    s.proof_change = lambda proof: {
+        **proof,
+        "observed_at_unix_ms": int(now.timestamp() * 1000),
+    }
+    s.lose_apply_response = True
+    for _ in range(2):
+        asyncio.run(delegation.run_once())
+        now += timedelta(seconds=181)
+    for _ in range(3):
+        asyncio.run(delegation.run_once())
+    assert s.cp_effects == 1
+    applies = [payload for operation, payload in s.cp_calls if operation == "apply"]
+    assert len(applies) == 2 and applies[0] == applies[1]
+    state = delegation.status(result["grant_id"])
+    assert state["state"]["state"] == "uncertain" and state["state"]["calls"] == 2
+    with Session(s.engine) as db:
+        context = delegation.diagnostic_context(db, s.task["id"])
+        assert len(context) == 1 and context[0]["grant_id"] == result["grant_id"]
+    assert len(s.audits(delegation.DIAGNOSIS)) == 1
+
+
+def test_recovery_delegation_conflicting_human_intent_blocks_worker(
+    settled_retry_recovery, monkeypatch
+):
+    import asyncio
+    from factory.orchestration import recovery_delegation as delegation
+
+    s = settled_retry_recovery
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    _, result, _ = authorize_delegation(s, "settled_retry")
+    viewed = _settled_retry_call(s)
+    s.lose_apply_response = True
+    assert (
+        _settled_retry_call(s, "apply", viewed["preview_sha256"])["state"]
+        == "outcome_unknown"
+    )
+    before = list(s.cp_calls)
+    asyncio.run(delegation.run_once())
+    assert not any(operation == "apply" for operation, _ in s.cp_calls[len(before) :])
+    assert delegation.status(result["grant_id"])["owner_result"] is None
+    assert s.cp_effects == 1
+
+
+def test_recovery_delegation_disabled_cannot_authorize_and_workload_cannot_preview(
+    evidence_terminal, monkeypatch
+):
+    import asyncio
+    from dataclasses import replace
+    from auth.api import PrincipalKind
+    from factory.orchestration import recovery_delegation as delegation
+
+    req = delegation_request(evidence_terminal, "evidence_continuation")
+    principal = delegation_principal()
+    with pytest.raises(ValueError, match="standing_human_required"):
+        asyncio.run(
+            delegation.request_authorization(
+                replace(principal, kind=PrincipalKind.WORKLOAD), req
+            )
+        )
+    monkeypatch.delenv("FACTORY_RECOVERY_DELEGATION_ENABLED", raising=False)
+    preview = asyncio.run(delegation.request_authorization(principal, req))
+    assert not preview["enabled"]
+    with pytest.raises(ValueError, match="disabled"):
+        asyncio.run(
+            delegation.request_authorization(
+                principal,
+                req.model_copy(
+                    update={
+                        "operation": "authorize",
+                        "expected_preview_sha256": preview["proposal"][
+                            "preview_sha256"
+                        ],
+                    }
+                ),
+            )
+        )
+
+
+def test_recovery_delegation_tick_does_not_block_or_duplicate_running_owner(
+    monkeypatch,
+):
+    import asyncio
+    from factory.orchestration import recovery_delegation as delegation
+
+    async def scenario():
+        running = asyncio.Event()
+        calls = []
+
+        async def owner():
+            calls.append("owner")
+            running.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+        monkeypatch.setattr(delegation, "run_once", owner)
+        monkeypatch.setattr(delegation, "_worker", None)
+        delegation.launch_tick()
+        await running.wait()
+        for _ in range(5):
+            delegation.launch_tick()
+        assert calls == ["owner"]
+        await delegation.stop()
+        assert delegation._worker is None
+
+    asyncio.run(scenario())
+
+
 @pytest.fixture
 def evidence_resume(feedback_db, monkeypatch):
     from factory.execution.models import (

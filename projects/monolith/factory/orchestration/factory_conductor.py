@@ -9195,18 +9195,23 @@ def disarm_watchdog() -> None:
 
 async def run_loop() -> None:
     global _last_loop_progress
-    while True:
-        try:
-            await asyncio.to_thread(tick)
-        except Exception:
-            # A later tick reconciles the same durable identity. It never
-            # creates a new attempt merely because this observation failed.
-            logger.exception("factory reconciliation failed")
-        # Returning with an error still means the loop can retry. Dependency
-        # failures must not turn into a restart storm. A hung tick never gets
-        # here and a cancelled loop is detected through its task state.
-        _last_loop_progress = _watchdog_clock()
-        await asyncio.sleep(TICK_SECONDS)
+    from factory.orchestration import recovery_delegation
+
+    try:
+        while True:
+            try:
+                await asyncio.to_thread(tick)
+            except Exception:
+                # A later tick reconciles the same durable identity. It never
+                # creates a new attempt merely because this observation failed.
+                logger.exception("factory reconciliation failed")
+            # Remote recovery must not delay ordinary task reconciliation.
+            # Its own durable claim admits at most one exact owner call.
+            recovery_delegation.launch_tick()
+            _last_loop_progress = _watchdog_clock()
+            await asyncio.sleep(TICK_SECONDS)
+    finally:
+        await recovery_delegation.stop()
 
 
 def start_loop() -> list[asyncio.Task]:

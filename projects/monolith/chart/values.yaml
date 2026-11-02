@@ -205,6 +205,8 @@ agents:
   drainer:
     # Report-only Luna to Astra handoff; existing daily job needs explicit opt-in.
     learningHandoffEnabled: false
+    # Stage unchanged-input suppression and one report-only diagnosis.
+    learningInputDedupEnabled: false
     # Pin the reviewed existing daily payload before reconciliation may replace it.
     learningDailyPayloadSha256: ""
     # Master kill switch. The CronWorkflow stays unsuspended and safely gets a
@@ -1774,6 +1776,8 @@ metaSpark:
 swarm:
   # Availability gate only. Operator policy and durable enable are separate.
   factoryEnabled: false
+  # Staged only: human-authorized internal recovery calls. No grants are seeded.
+  factoryRecoveryDelegationEnabled: false
   # Consume exact durable Ember teardown proof for stopped/expired attempts.
   factoryReservationReviewEnabled: false
   # Authenticated issue lifecycle ingress. Keep off until the GitHub hook and

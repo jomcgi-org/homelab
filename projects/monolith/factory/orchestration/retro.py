@@ -1315,6 +1315,10 @@ def build_factory_retro_prompt(instructions: str) -> str:
 
     with Session(get_engine()) as session:
         data = load_retro_data(session)
+    return render_factory_retro_prompt(instructions, data)
+
+
+def render_factory_retro_prompt(instructions: str, data: dict) -> str:
     from factory.orchestration import learning
 
     references = ""

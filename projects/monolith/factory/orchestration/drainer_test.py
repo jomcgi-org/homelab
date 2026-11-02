@@ -151,6 +151,43 @@ def _run(
     return result, claims, starts, completions, notifications, destroys
 
 
+@pytest.mark.parametrize("pinned", [None, False, True])
+def test_learning_dedup_branch_is_checkpointed_and_skips_without_dispatch(
+    monkeypatch, pinned
+):
+    calls = []
+    monkeypatch.setattr(
+        drainer,
+        "prepare_learning_input",
+        lambda name, holder: calls.append((name, holder)) or {"skip": True},
+    )
+    monkeypatch.setattr(drainer, "_job_prompt", lambda payload, prompt: "old prompt")
+    monkeypatch.setenv("FACTORY_LEARNING_INPUT_DEDUP_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_LEARNING_HANDOFF_ENABLED", "true")
+    settings = SETTINGS.copy()
+    if pinned is not None:
+        settings["learning_input_dedup_enabled"] = pinned
+    job = {
+        "name": "factory-retro-daily",
+        "locked_by": "luna-drainer:w:0",
+        "locked_at": "2026-11-01T00:00:00+00:00",
+        "payload": {
+            "model": "luna",
+            "repo": "jomcgi-org/homelab",
+            "learning_stage": "evidence",
+            "digest": "factory-retro",
+            "prompt": "retro",
+        },
+    }
+    _, _, starts, completions, _, _ = _run(monkeypatch, [job], settings=settings)
+    if pinned:
+        assert calls == [(job["name"], job["locked_by"])]
+        assert not starts and completions[0][1] == "no_new_evidence"
+    else:
+        assert not calls and len(starts) == 1
+        assert starts[0][1] == "old prompt"
+
+
 @pytest.mark.parametrize("cap", [0, -1, 10])
 @pytest.mark.parametrize("registered", [False, True])
 def test_grimoire_claim_kind_is_default_off(cap, registered, monkeypatch):
