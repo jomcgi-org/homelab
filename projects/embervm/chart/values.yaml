@@ -228,37 +228,6 @@ opLog:
   # audit is retained by the configured telemetry backend.
   journalHorizonDays: 30
 
-# SpecTrace gate for spec validation (GitHub issue #4770). A debug-gated, spec-shaped
-# trace that validates TLA+ specs against real behaviour, read once at boot. OFF means
-# no process, no connection, no sweep.
-#
-# Backend selection reuses EMBERVM_OPLOG_DSN: set means the Postgres backend (its own
-# table in the existing `embervm_oplog` database), unset means SQLite. This mirrors the
-# Node-confirmed destroy ordering (ADR embervm/014 decision 5). FALSE keeps the
-# legacy ordering: tear the VM down locally, then record destroyed. TRUE records
-# the durable destroying intent, runs the node-confirmed teardown RPC, and
-# records destroyed ONLY when the node confirms.
-#
-# #4758: the control plane has read this gate since the ADR landed and no
-# template rendered it, so the ordering has never run in any environment and two
-# modeled invariants (NoDestroyBeforeConfirm, DestroyIntentPrecedesRecord)
-# describe behaviour production has never performed. Production stays false
-# until dev has exercised it under the conformance harness.
-nodeConfirmedDestroy: false
-
-# Flush exact unfinished invokes on control-plane restart before idle parking.
-# Default off for staged rollout; recovery evidence is never fabricated.
-restartFlushInflightInvokes: false
-
-# Instance-scoped session drain. Read at boot as
-# EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS. False (the default) keeps the old
-# behaviour: a brick drain edge interrupts and banks every running session on
-# the node. True drains only the sessions placed on the draining brick instance
-# (node + pod_uid), so the autoscaler's idle drain of an empty brick does not
-# interrupt live turns on a co-located brick of another size class. A session
-# whose placement is unknown is still drained.
-drainInstanceScopedSessions: false
-
 # Instance-scoped class drain for serving, stateful and group workloads. Read
 # at boot as EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS. False (the default) keeps
 # the old behaviour: a brick drain edge force-banks every serving, stateful and
@@ -267,11 +236,12 @@ drainInstanceScopedSessions: false
 # neighbours' guests. A guest whose placement is unknown is still drained.
 drainInstanceScopedWorkloads: false
 
-# EMBERVM_CROSS_NODE_REJOIN. False preserves node-pinned workspace rejoin.
-# True permits another brick only after a synchronous export proves the current
-# unattached workspace fingerprint. CP restarts discard that in-memory proof.
-crossNodeRejoin: false
-
+# SpecTrace gate for spec validation (GitHub issue #4770). A debug-gated, spec-shaped
+# trace that validates TLA+ specs against real behaviour, read once at boot. OFF means
+# no process, no connection, no sweep.
+#
+# Backend selection reuses EMBERVM_OPLOG_DSN: set means the Postgres backend (its own
+# table in the existing `embervm_oplog` database), unset means SQLite. This mirrors the
 # existing op_log_mod/0 selection and avoids inventing a second switch.
 specTrace:
   # Default OFF in production. ON in dev for local spec validation.
@@ -1112,22 +1082,16 @@ demoPostgres:
 statefulSweeper:
   sweepIntervalMs: ""
   wakeMax: ""
+  # Resident-memory hysteresis for pressure banking, which always runs.
   pressureBanking:
-    # Lane lands off and is armed by a later values-only change after live verification.
-    # Cross-brick stateful relight is currently broken (#5502) and every extra bank
-    # is another exposure to it.
-    enabled: false
     highWaterFraction: 0.85
     lowWaterFraction: 0.70
     idleFloorMs: 5000
     sessionPressureIdleFloorMs: 60000
 
-# gRPC connection sweep gate for orphaned channels. Empty means off: the
-# sweeper only logs what it would clean up and leaves connections untouched.
-# Set enabled to "1" or "true" to arm the destructive sweep, which terminates
-# orphaned connections. This is a deploy values gate, not an application default.
+# Orphaned gRPC connection sweep, always on. Empty interval uses the 60s
+# application default.
 grpcConnectionSweeper:
-  enabled: ""
   sweepIntervalMs: ""
 
 # Base-retention sweep gate (base-durability PR-3, control-plane env). Empty

@@ -288,17 +288,12 @@ rootfsReclaim:
 envelopeRewrap:
   enabled: false
 grpcConnectionSweeper:
-  enabled: ''
   sweepIntervalMs: ''
-statefulSweeper:
-  pressureBanking:
-    enabled: false
 tracing:
   endpoint: ''
   serviceName: embervm-recovery-control
 hypervisorEpoch: fc-v1.16.1-r2-recovery-gke-1
 
-# Retain the verified node-confirmed ordering and serialize create workers.
-nodeConfirmedDestroy: true
+# Serialize create workers.
 controlPlane:
   createConcurrency: 1
