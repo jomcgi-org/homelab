@@ -275,16 +275,27 @@ func negotiate(r *http.Request, req request) (era, int, *rpcError) {
 	if m := r.Header.Get("Mcp-Method"); m != req.Method {
 		return era{}, http.StatusBadRequest, &rpcError{Code: codeHeaderMismatch, Message: fmt.Sprintf("Header mismatch: Mcp-Method header value '%s' does not match body value '%s'", m, req.Method)}
 	}
-	if req.Method == "tools/call" {
+	switch req.Method {
+	case "tools/call", "prompts/get", "resources/read":
+		expectedName := params.Name
+		if req.Method == "resources/read" {
+			var resourceParams struct {
+				URI *string `json:"uri"`
+			}
+			if err := json.Unmarshal(req.Params, &resourceParams); err != nil {
+				return era{}, http.StatusBadRequest, &rpcError{Code: codeInvalidParams, Message: "uri must be a string"}
+			}
+			expectedName = resourceParams.URI
+		}
 		raw, present := r.Header["Mcp-Name"]
 		if !present || len(raw) == 0 {
-			return era{}, http.StatusBadRequest, &rpcError{Code: codeHeaderMismatch, Message: "Header mismatch: Mcp-Name header is required for tools/call"}
+			return era{}, http.StatusBadRequest, &rpcError{Code: codeHeaderMismatch, Message: "Header mismatch: Mcp-Name header is required for " + req.Method}
 		}
 		name, ok := decodeHeaderValue(raw[0])
-		if !ok || params.Name == nil || name != *params.Name {
+		if !ok || expectedName == nil || name != *expectedName {
 			body := ""
-			if params.Name != nil {
-				body = *params.Name
+			if expectedName != nil {
+				body = *expectedName
 			}
 			return era{}, http.StatusBadRequest, &rpcError{Code: codeHeaderMismatch, Message: fmt.Sprintf("Header mismatch: Mcp-Name header value '%s' does not match body value '%s'", raw[0], body)}
 		}

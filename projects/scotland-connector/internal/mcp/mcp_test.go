@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -372,6 +373,52 @@ func TestModernHeaderValidation(t *testing.T) {
 	// Base64-sentinel Mcp-Name decodes before comparison.
 	if code, _, r := post(t, h, call, modern("tools/call", "=?base64?cGxhbg==?=")); code != http.StatusOK || r.Error != nil {
 		t.Errorf("base64 name: status %d error %+v", code, r.Error)
+	}
+}
+
+func TestDocumentationNameHeaders(t *testing.T) {
+	h := handler()
+	for _, operation := range []struct {
+		method, name, mismatch, params string
+	}{
+		{"prompts/get", "plan_trip", "check_walk", `"name":"plan_trip","arguments":{"lat":"57.3","lon":"-3.7"}`},
+		{"resources/read", "scotland://docs/method", "scotland://docs/openapi", `"uri":"scotland://docs/method"`},
+	} {
+		t.Run(operation.method, func(t *testing.T) {
+			for _, tc := range []struct {
+				name, header string
+				valid        bool
+			}{
+				{"missing", "", false},
+				{"mismatched", operation.mismatch, false},
+				{"malformed", "=?base64?!!!?=", false},
+				{"matching", operation.name, true},
+				{"encoded", "=?base64?" + base64.StdEncoding.EncodeToString([]byte(operation.name)) + "?=", true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					body := `{"jsonrpc":"2.0","id":1,"method":"` + operation.method + `","params":{` + operation.params + `,` + modernMeta + `}}`
+					status, _, r := post(t, h, body, modern(operation.method, tc.header))
+					if tc.valid {
+						if status != http.StatusOK || r.Error != nil {
+							t.Fatalf("status %d error %+v", status, r.Error)
+						}
+					} else if status != http.StatusBadRequest || r.Error == nil || r.Error.Code != codeHeaderMismatch {
+						t.Fatalf("status %d error %+v; want 400/-32020", status, r.Error)
+					}
+					// Legacy requests do not require or validate Mcp-Name.
+					for _, version := range LegacyVersions {
+						body := `{"jsonrpc":"2.0","id":1,"method":"` + operation.method + `","params":{` + operation.params + `}}`
+						headers := map[string]string{"MCP-Protocol-Version": version}
+						if tc.header != "" {
+							headers["Mcp-Name"] = tc.header
+						}
+						if status, _, r := post(t, h, body, headers); status != http.StatusOK || r.Error != nil {
+							t.Errorf("legacy %s: status %d error %+v", version, status, r.Error)
+						}
+					}
+				})
+			}
+		})
 	}
 }
 

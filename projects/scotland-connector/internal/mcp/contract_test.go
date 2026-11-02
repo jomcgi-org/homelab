@@ -388,9 +388,18 @@ func TestDocumentationCapabilitiesDispatchAndBytes(t *testing.T) {
 	for _, version := range []string{ModernVersion, LegacyVersions[0]} {
 		t.Run(version, func(t *testing.T) {
 			request := func(method string, params string) reply {
+				t.Helper()
 				headers := map[string]string{"MCP-Protocol-Version": version}
 				if version == ModernVersion {
-					headers = modern(method, "")
+					var values map[string]any
+					if err := json.Unmarshal([]byte("{"+params+"}"), &values); err != nil {
+						t.Fatal(err)
+					}
+					name, _ := values["name"].(string)
+					if method == "resources/read" {
+						name, _ = values["uri"].(string)
+					}
+					headers = modern(method, name)
 					if params != "" {
 						params += ","
 					}

@@ -76,6 +76,7 @@ func TestAppDocumentationMatchesHTTP(t *testing.T) {
 						req.Header.Set("MCP-Protocol-Version", version)
 						if version == mcp.ModernVersion {
 							req.Header.Set("Mcp-Method", "resources/read")
+							req.Header.Set("Mcp-Name", doc.uri)
 						}
 						rec := httptest.NewRecorder()
 						a.public.ServeHTTP(rec, req)
