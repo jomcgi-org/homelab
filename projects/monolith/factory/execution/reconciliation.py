@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
+from core.clock import aware, aware_iso
 from factory.execution import admission
 from factory.execution.constants import UNKNOWN_INVOCATION
 from factory.execution.models import AgentCapacityReservation, AgentSession
@@ -232,7 +233,6 @@ def read_never_dispatched_factory_attempt(
     read_not_invoked_factory_attempt, whose first dispatch was claimed and
     whose dispatch_count is exactly one.
     """
-    from datetime import timezone
     from sqlalchemy import or_
 
     from factory.execution import normalize_model
@@ -310,9 +310,6 @@ def read_never_dispatched_factory_attempt(
         or message.partial_activities is not None
     ):
         return None
-
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     if aware(agent.last_turn_at) > aware(message.created_at):
         return None
@@ -446,13 +443,9 @@ def _interrupted_dispatch_receipts(
     mutable turn row. Missing, conflicting or non-drain responses are unknown.
     This proof says nothing about earlier spend and must never refund it.
     """
-    from datetime import timezone
     from sqlalchemy import or_
     from factory.execution import result_receipts, store
     from factory.execution.models import AgentResultReceipt
-
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     ids = db.exec(
         select(AgentResultReceipt.id)
@@ -667,7 +660,7 @@ def _read_not_invoked_factory_attempt(
     evidence under pool/session locks; it never settles capacity, clears a
     binding, or infers physical cessation from an absent guest.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
     from sqlalchemy import or_
 
     from factory.execution import normalize_model, store
@@ -733,9 +726,6 @@ def _read_not_invoked_factory_attempt(
         )
     except (AttributeError, TypeError, ValueError):
         return None
-
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     permits = db.exec(
         select(AgentCapacityReservation)
@@ -1284,7 +1274,7 @@ def read_bound_zero_turn_factory_attempt(
     or permit mutation refuses the proof.
     """
     import hashlib
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import or_
 
@@ -1396,11 +1386,6 @@ def read_bound_zero_turn_factory_attempt(
             raise ValueError("factory_bound_zero_turn_result_committed")
         receipt_id = receipt.id
 
-    def stamp(value: datetime) -> str:
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.isoformat()
-
     protected = {
         "pin": pin,
         "session_id": agent.id,
@@ -1415,8 +1400,8 @@ def read_bound_zero_turn_factory_attempt(
         "model": message.model,
         "dispatch_count": message.dispatch_count,
         "claim_owner": message.claimed_by_replica,
-        "claimed_at": stamp(message.claimed_at),
-        "dispatched_at": stamp(message.last_dispatch_at),
+        "claimed_at": aware_iso(message.claimed_at),
+        "dispatched_at": aware_iso(message.last_dispatch_at),
         "permit_id": permit.id,
         "permit_state": permit.state,
         "permit_outcome": permit.outcome,
@@ -1606,7 +1591,7 @@ def read_drained_lost_factory_attempt(db: Session, pin: dict, session_id: int) -
     supervisor before the separate settlement call consumes this identity.
     """
     import hashlib
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import or_
 
@@ -1710,13 +1695,8 @@ def read_drained_lost_factory_attempt(db: Session, pin: dict, session_id: int) -
     ):
         raise ValueError("missing_factory_dispatch_identity")
 
-    def stamp(value: datetime) -> str:
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.isoformat()
-
-    dispatched_at = stamp(message.last_dispatch_at)
-    interrupted_at = stamp(turn.created_at)
+    dispatched_at = aware_iso(message.last_dispatch_at)
+    interrupted_at = aware_iso(turn.created_at)
     if datetime.fromisoformat(dispatched_at) > datetime.fromisoformat(interrupted_at):
         raise ValueError("missing_factory_dispatch_identity")
     identity = {
@@ -2075,7 +2055,6 @@ def read_stranded_factory_attempt(db: Session, pin: dict, session_id: int) -> di
     returns no prompt, result body or credential, settles nothing.
     """
     import hashlib
-    from datetime import timezone
 
     from sqlalchemy import or_
 
@@ -2163,20 +2142,13 @@ def read_stranded_factory_attempt(db: Session, pin: dict, session_id: int) -> di
     ):
         raise ValueError("factory_result_committed")
 
-    def stamp(value):
-        if value is None:
-            return None
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.isoformat()
-
     protected = {
         "pin": pin,
         "session_id": agent.id,
         "local_session_id": agent.local_session_id,
         "workflow_id": agent.workflow_id,
         "status": agent.status,
-        "recovery_completed_at": stamp(agent.recovery_completed_at),
+        "recovery_completed_at": aware_iso(agent.recovery_completed_at),
         "turns": [
             {
                 "id": turn.id,
@@ -2184,7 +2156,7 @@ def read_stranded_factory_attempt(db: Session, pin: dict, session_id: int) -> di
                 "terminal_reason": turn.terminal_reason,
                 "stop_reason": turn.stop_reason,
                 "cost_usd": turn.cost_usd,
-                "created_at": stamp(turn.created_at),
+                "created_at": aware_iso(turn.created_at),
             }
             for turn in turns
         ],
@@ -2194,8 +2166,8 @@ def read_stranded_factory_attempt(db: Session, pin: dict, session_id: int) -> di
                 "seq": message.seq,
                 "dispatch_count": message.dispatch_count,
                 "claimed_by_replica": message.claimed_by_replica,
-                "claimed_at": stamp(message.claimed_at),
-                "last_dispatch_at": stamp(message.last_dispatch_at),
+                "claimed_at": aware_iso(message.claimed_at),
+                "last_dispatch_at": aware_iso(message.last_dispatch_at),
             }
             for message in pending
         ],
@@ -2213,7 +2185,7 @@ def read_stranded_factory_attempt(db: Session, pin: dict, session_id: int) -> di
                 "dispatch_count": receipt.dispatch_count,
                 "claim_owner": receipt.claim_owner,
                 "guest_id": receipt.guest_id,
-                "superseded_at": stamp(receipt.superseded_at),
+                "superseded_at": aware_iso(receipt.superseded_at),
             }
             for receipt in receipts
         ],
@@ -2466,9 +2438,6 @@ def cancel_queued_factory_attempt(db: Session, pin: dict, session_id: int | None
     ):
         return None
 
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-
     # Initial creation precedes enqueue. A later last_turn_at is valid only
     # when the existing one-shot recovery wrote its matching completion marker;
     # that path never resets dispatch_count and refuses attempted messages.
@@ -2619,7 +2588,7 @@ def inspect_lost_before_guest_factory_attempt(
     Like the not-invoked proof this reads under the pool and session locks,
     settles nothing and clears nothing; settlement is a separate call.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
     from sqlalchemy import or_
 
     from factory.execution import normalize_model
@@ -2716,9 +2685,6 @@ def inspect_lost_before_guest_factory_attempt(
         )
     except (AttributeError, TypeError, ValueError):
         return None, "missing_dispatch_identity"
-
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     if not aware(dispatched) <= aware(turn.created_at):
         return None, "missing_dispatch_identity"
@@ -2907,9 +2873,6 @@ def inspect_lost_before_session_factory_attempt(
         is not None
     ):
         return None, "result_receipt_exists"
-
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     if (_utcnow() - aware(start.created_at)).total_seconds() <= pin[
         "turn_timeout_seconds"

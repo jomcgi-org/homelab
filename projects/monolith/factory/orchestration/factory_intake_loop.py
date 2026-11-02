@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import select
 
-from core.clock import aware
+from core.clock import aware, aware_iso
 from factory.orchestration.factory_controls import (
     DEFAULT_TASK_CLASS,
     LANES,
@@ -501,7 +501,7 @@ def _local_candidates(
             "html_url": work_item.source_ref
             or f"https://github.com/{repo}/issues/{number}",
             "labels": work_item.labels,
-            "created_at": aware(created_at).isoformat(),
+            "created_at": aware_iso(created_at),
             "user": None,
         }
         candidates.append(

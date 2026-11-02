@@ -9,7 +9,7 @@ from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta, timezone
 from uuid import uuid4
 
-from core.clock import iso as utc_iso
+from core.clock import iso as utc_iso, isoformat_or_none
 from sqlalchemy import and_, case, false, func, or_
 from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, delete, select
@@ -406,10 +406,6 @@ def _rank_search_chunks(
         for row in note_rows
         if row.id in chunk_id_by_note
     ]
-
-
-def _iso_or_none(value: datetime | None) -> str | None:
-    return value.isoformat() if value is not None else None
 
 
 class KnowledgeStore:
@@ -827,9 +823,9 @@ class KnowledgeStore:
                     "scope": row.scope,
                     "verification_state": row.verification_state,
                     "confidence": row.confidence,
-                    "valid_from": _iso_or_none(row.valid_from),
-                    "valid_until": _iso_or_none(row.valid_until),
-                    "observed_at": _iso_or_none(row.observed_at),
+                    "valid_from": isoformat_or_none(row.valid_from),
+                    "valid_until": isoformat_or_none(row.valid_until),
+                    "observed_at": isoformat_or_none(row.observed_at),
                     **self._freshness_metadata(row),
                     "disputed": (
                         row.note_id in disputed_note_ids
@@ -902,9 +898,9 @@ class KnowledgeStore:
             "scope": row.scope,
             "verification_state": row.verification_state,
             "confidence": row.confidence,
-            "valid_from": _iso_or_none(row.valid_from),
-            "valid_until": _iso_or_none(row.valid_until),
-            "observed_at": _iso_or_none(row.observed_at),
+            "valid_from": isoformat_or_none(row.valid_from),
+            "valid_until": isoformat_or_none(row.valid_until),
+            "observed_at": isoformat_or_none(row.observed_at),
             **self._freshness_metadata(row),
             "last_review_outcome": self._last_review_outcome(row.note_id),
             "disputed": (
@@ -971,8 +967,8 @@ class KnowledgeStore:
         return {
             "status": outcome.status,
             "reason": outcome.reason,
-            "attempted_at": _iso_or_none(outcome.attempted_at),
-            "next_attempt_at": _iso_or_none(outcome.next_attempt_at),
+            "attempted_at": isoformat_or_none(outcome.attempted_at),
+            "next_attempt_at": isoformat_or_none(outcome.next_attempt_at),
         }
 
     def _freshness_metadata(self, note) -> dict:

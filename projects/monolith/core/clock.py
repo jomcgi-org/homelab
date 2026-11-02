@@ -37,3 +37,7 @@ def iso_or_str(value: object) -> str | None:
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def isoformat_or_none(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None

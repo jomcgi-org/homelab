@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from core.clock import aware
 from grimoire.models import CampaignVoice, Entity
 from grimoire.visibility import entity_belongs_to_campaign, visible_entities_query
 
@@ -39,7 +40,7 @@ class VoiceView(VoiceRequest):
     @field_validator("updated_at")
     @classmethod
     def timestamp_as_utc(cls, value: datetime) -> datetime:
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+        return aware(value)
 
 
 class DmVoiceView(VoiceView):
