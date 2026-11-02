@@ -152,7 +152,9 @@ def main():
                     expect(page.locator(".pulse")).to_contain_text(
                         "77 workloads scanned"
                     )
-                    for failure in ("refused", "error", "transport"):
+                    # Two failed refreshes keep the last good read; the third
+                    # ages it out, so a dead backend never reads as all quiet.
+                    for failure in ("refused", "error"):
                         page.evaluate(
                             "(failure) => window.__privateFixture.outcomes = [failure]",
                             failure,
@@ -161,6 +163,19 @@ def main():
                         expect(page.locator(".pulse")).to_contain_text(
                             "77 workloads scanned"
                         )
+                    page.evaluate('window.__privateFixture.outcomes = ["transport"]')
+                    page.clock.fast_forward(60000)
+                    expect(page.locator(".pulse")).to_contain_text(
+                        "cluster status unavailable"
+                    )
+                    expect(page.locator(".pulse")).to_contain_text(
+                        "factory unavailable"
+                    )
+                    # The next good read restores every section at once.
+                    page.clock.fast_forward(60000)
+                    expect(page.locator(".pulse")).to_contain_text(
+                        "77 workloads scanned"
+                    )
                     chat = page.get_by_role("textbox", name="Ask the cluster")
                     chat.fill("Synthetic browser question")
                     chat.press("Enter")
@@ -176,7 +191,7 @@ def main():
                     assert len(history) == 2, history
                     root["chatHistory"] = history
                     root["taskAndPolling"] = (
-                        "optimistic success/refusal; 60s refresh and last-good retention"
+                        "optimistic success/refusal; 60s refresh, two-miss retention, then unavailable"
                     )
                     capture("interacted")
 
