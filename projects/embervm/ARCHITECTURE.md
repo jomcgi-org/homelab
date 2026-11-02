@@ -2066,15 +2066,11 @@ that existing serving path before polling can resume.
 
 The Codex sidecar excludes grants at 97 percent or explicit exhaustion, and
 never falls from a fresh usable tier into stale or exhausted quota after a
-token-fetch failure. With `SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION=true`, the
-KG gate can ignore exhausted accounts beside a fresh permitting account. Unknown inventory, malformed evidence, role floors
-and no fresh permitting account still defer. Cached sidecar observations age
-even while the broker is unavailable. The gate's compatibility setting defaults
-to false because monolith and EmberVM promote independently. First deploy and
-verify every sidecar's exclusion, then enable the setting through a separate
-monolith values change (`swarm.codexExhaustedGrantExclusion: true`). Until that activation, reobserved exhaustion still
-vetoes KG admission, preserving the old conservative contract. Opposite version
-skew could let an old sidecar select an account the new gate excludes.
+token-fetch failure. The KG gate ignores exhausted accounts beside a fresh
+permitting account. Unknown inventory, malformed evidence, role floors and no
+fresh permitting account still defer. Cached sidecar observations age even
+while the broker is unavailable. Every sidecar carries the exclusion, so an old
+sidecar can no longer select an account the gate excludes.
 
 **Account preference** (enabled on the hub for factory and interactive guests): `grantPolicy: prefer-first`
 on a two-member Codex catalog pool chooses its first member whenever fresh usage

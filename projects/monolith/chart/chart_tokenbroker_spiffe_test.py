@@ -299,18 +299,11 @@ def test_quota_job_preserves_spiffe_transport_without_granting_job_identity() ->
 
 
 def test_codex_account_admission_activation_is_explicit_and_reachable() -> None:
-    for settings, enabled, preferred in [
-        ([], "false", ""),
-        (
-            [
-                "swarm.codexExhaustedGrantExclusion=true",
-                "swarm.codexPreferredGrant=codex-b",
-            ],
-            "true",
-            "codex-b",
-        ),
+    for settings, preferred in [
+        ([], ""),
+        (["swarm.codexPreferredGrant=codex-b"], "codex-b"),
     ]:
         objects = _render("monolith", ["swarm.enabled=true", *settings])
         env = _env(_container(_object(objects, "Deployment", "monolith"), "backend"))
-        assert env["SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION"] == enabled
+        assert "SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION" not in env
         assert env["SWARM_CODEX_PREFERRED_GRANT"] == preferred

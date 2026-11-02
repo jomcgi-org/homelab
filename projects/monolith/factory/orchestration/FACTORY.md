@@ -24,7 +24,7 @@ The **Factory** orchestrates Ember agents. Its operator-facing **Conductor** sel
 
 ### Authoritative records and context
 
-Owners: `swarm.work_item`; `swarm.factory_receipt` for submission, queue and admission state; `swarm.swarm_task`, `swarm_plan_version`, `swarm_node` and `swarm_node_run` for the task, DAG history, nodes and evidence; receipt `escalation_json` and `direction_json`; append-only `swarm.factory_audit` rows; the singleton `swarm.factory_control` row for authoritative state, policy and version. Queue order is `(created_at, id)`. Issues #5787/#5788/#5849 own Conductor knowledge, MCP exposure and Planner context. `CONDUCTOR_CONTINUITY_ENABLED` is false when unset.
+Owners: `swarm.work_item`; `swarm.factory_receipt` for submission, queue and admission state; `swarm.swarm_task`, `swarm_plan_version`, `swarm_node` and `swarm_node_run` for the task, DAG history, nodes and evidence; receipt `escalation_json` and `direction_json`; append-only `swarm.factory_audit` rows; the singleton `swarm.factory_control` row for authoritative state, policy and version. Queue order is `(created_at, id)`. Issues #5787/#5788/#5849 own Conductor knowledge, MCP exposure and Planner context.
 
 ### Submit, plan, execute, report
 
@@ -90,7 +90,7 @@ Admitted and uncertain receipts count across generations, except paused or landi
 
 ### Quota evidence and probe cleanup
 
-KG admission needs at least one fresh permitting grant observation. `SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION=true` stops exhausted accounts vetoing a healthy one and defaults off. Tokenbroker refreshes usage; the Codex probe backs it up.
+KG admission needs at least one fresh permitting grant observation. Exhausted accounts never veto a healthy one. Tokenbroker refreshes usage; the Codex probe backs it up.
 
 ### Autonomous intake and refine
 
@@ -142,11 +142,11 @@ A `needs-human` verdict arrives as two to four options, recommendation first; `e
 
 The reconciler expands only active receipts from a fresh control row. Source nodes receive a server-authored push-format contract for the exact task, node, attempt and dispatch key; a chained pre-push hook validates the outgoing commit in a detached linked worktree and refuses the push on missing tools or changed outputs. [Experiment #7458](https://github.com/jomcgi-org/homelab/issues/7458) stages repository-only.
 
-Gate every checkpoint-sequence change to `drain_cycle`, `implement_then_review` and `start_session_workflow` with `DBOS.patch`; steps, `DBOS.sleep`, send/recv, events, child workflows and patch markers consume function ids. Add with `if DBOS.patch("<name>")`, remove with `if not DBOS.patch("<name>")`, make reorder or rename a remove plus add, and never wrap an unchanged call. Retire with `DBOS.deprecate_patch` only once no pre-patch workflow can be PENDING. Unpatched edits strand in-flight nodes: the reconciler audits `workflow_stranded` and settles the attempt as uncertain for bounded retry. A stale-checkpoint PENDING workflow settles the same way, audited `node_stalled` once. A replica lost mid-invoke holds the turn as `response_lost`, behind `agents.sessions.responseLostRecoveryEnabled` (off by default).
+Gate every checkpoint-sequence change to `drain_cycle`, `implement_then_review` and `start_session_workflow` with `DBOS.patch`; steps, `DBOS.sleep`, send/recv, events, child workflows and patch markers consume function ids. Add with `if DBOS.patch("<name>")`, remove with `if not DBOS.patch("<name>")`, make reorder or rename a remove plus add, and never wrap an unchanged call. Retire with `DBOS.deprecate_patch` only once no pre-patch workflow can be PENDING. Unpatched edits strand in-flight nodes: the reconciler audits `workflow_stranded` and settles the attempt as uncertain for bounded retry. A stale-checkpoint PENDING workflow settles the same way, audited `node_stalled` once. A replica lost mid-invoke holds the turn as `response_lost`.
 
-The lost-before-session sweep (#6285) runs before task reconciliation and the deadline backstop, once the node's pinned `turn_timeout_seconds` has elapsed. `swarm.factoryLostBeforeSessionSweepEnabled` maps to `FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED`: false in the chart, true in `projects/monolith/deploy/values-gke.yaml`. The owning DBOS workflow must report `ERROR` or `CANCELLED`, or a lookup must prove it absent. Under the control lock shared with session creation, the proof also needs immutable run and start ownership and no bound or deterministic session, cost, outcome, permit or result receipt. Both ledgers then settle atomically as `failed` at zero cost with `no_model_post` and `never_dispatched`; anything else leaves the attempt untouched.
+The lost-before-session sweep (#6285) runs before task reconciliation and the deadline backstop, once the node's pinned `turn_timeout_seconds` has elapsed. The owning DBOS workflow must report `ERROR` or `CANCELLED`, or a lookup must prove it absent. Under the control lock shared with session creation, the proof also needs immutable run and start ownership and no bound or deterministic session, cost, outcome, permit or result receipt. Both ledgers then settle atomically as `failed` at zero cost with `no_model_post` and `never_dispatched`; anything else leaves the attempt untouched.
 
-`provider_error_before_work` settles a guest provider error with no tool activity, diff or artifact at reported spend. `FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED` (chart false) settles a drained continuation only on durable `evicted`/`node_gone` proof. Sessions 8410 and 8416 remediation and live checks stay on [#6271](https://github.com/jomcgi-org/homelab/issues/6271#issuecomment-5750415773). `FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED` (chart false, GKE true) carries a brick-drain relay to an owner in the node workflow.
+`provider_error_before_work` settles a guest provider error with no tool activity, diff or artifact at reported spend. `FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED` (chart false) settles a drained continuation only on durable `evicted`/`node_gone` proof. Sessions 8410 and 8416 remediation and live checks stay on [#6271](https://github.com/jomcgi-org/homelab/issues/6271#issuecomment-5750415773). The node workflow carries a brick-drain relay to an owner.
 
 A planner decision applies together under one expected revision. The server owns review correction up to `max_review_rounds`; the planner returns only for a named deviation. Nodes able to start together dispatch together up to `max_parallel_nodes`, each on `factory/<task-id>-<node key>`, with an `integrate` node merging into the task branch. The guest hydrates the task branch in a dedicated linked worktree; transient artifacts go under `/workspace/src/.factory/`. Completion needs a non-draft PR on the exact task branch, a successful implementation node, the latest independent review approving the current head, and passing PR status checks, all re-read from GitHub. The body carries `Closes #<issue>` when no live checks are recorded; otherwise it carries `Refs #<issue>`, a `Conductor rescope:` line and the outstanding checklist, with no closing keyword.
 
@@ -212,7 +212,7 @@ Automatic safety pauses keep their active receipt and reservations. The pause an
 
 `pause_admissions` lets admitted work finish, `pause_task` stops new nodes for that task, and `stop` durably fences factory admission and descendants. MCP and `POST /api/swarm/factory/control` use `request_control` with a stable `request_key` and the exact control version. `cancel_receipt` settles one queued receipt; `cancel_task` takes a `task_id` and `cancellation_reason` and refuses landing or settled receipts. Both are MCP-only. An operator pause never expires; a reconciler-written pause is cancellable after two hours only with all starts terminal. Only exact positive stop evidence for every owned workflow produces `cessation_confirmed`.
 
-The deadline-release implementation stays hard-staged off, and agent workloads have a twelve-hour runtime backstop. An uncertain attempt keeps its capacity until exact control-plane evidence proves its guest ceased. `FACTORY_INVOKE_FAILURE_CESSATION_ENABLED` and `FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED` extend settled cessation proof to the at-most-once 502 and the never-invoked guest. Attempt stops lock factory control, capacity pool, then session; Ember owns physical cessation.
+The deadline-release implementation stays hard-staged off, and agent workloads have a twelve-hour runtime backstop. An uncertain attempt keeps its capacity until exact control-plane evidence proves its guest ceased. Settled cessation proof extends to the at-most-once 502 and the never-invoked guest. Attempt stops lock factory control, capacity pool, then session; Ember owns physical cessation.
 
 ### Supervised cessation
 
@@ -270,7 +270,7 @@ Changed evidence or coverage allows another observation. Missing/unknown prior
 output never counts as empty. Diagnostic output is a recommendation; it cannot
 file or dispatch work, reset a breaker or establish an HTTP 502 root cause.
 
-For an attempt whose run and start are both `uncertain` and whose node workflow is terminal, `factory_cessation.py` records a `cessation_intent`, destroys that guest at most twice, then settles run and start failed, the permit `supervised_cessation` and cost unknown in one transaction. The automatic path runs behind `FACTORY_ACTIVE_CESSATION_ENABLED` (default off); `request_cessation` runs the same steps for one operator-reviewed attempt fingerprint, never cancelling the receipt.
+For an attempt whose run and start are both `uncertain` and whose node workflow is terminal, `factory_cessation.py` records a `cessation_intent`, destroys that guest at most twice, then settles run and start failed, the permit `supervised_cessation` and cost unknown in one transaction. The automatic path always runs; `request_cessation` runs the same steps for one operator-reviewed attempt fingerprint, never cancelling the receipt.
 
 ## Validation
 
@@ -306,7 +306,7 @@ Refine, investigate and planner artifacts carry a typed `gate` when a missing pa
 
 #### Handing off live checks
 
-`FACTORY_OPERATIONAL_HANDOFF_ENABLED` (default false) makes "repository work delivered, only live checks remain" an autonomous outcome rather than a page. A planner whose scope is already merged returns a `repository_delivered` gate; the server verifies each PR merged here and references the issue, then opens one child issue with the checks and `needs-human`, or uses the open `tracked_in` issue the rescope names. A delivery task first adopts the oldest matching open PR closing its issue and directs rebase onto main, repair and fresh independent review. `FACTORY_NOTIFY_DIGEST_ENABLED` (default false) decides per notification kind whether the operator pages or digests; cards stay on `/factory/escalations`.
+Operational handoff makes "repository work delivered, only live checks remain" an autonomous outcome rather than a page. A planner whose scope is already merged returns a `repository_delivered` gate; the server verifies each PR merged here and references the issue, then opens one child issue with the checks and `needs-human`, or uses the open `tracked_in` issue the rescope names. A delivery task first adopts the oldest matching open PR closing its issue and directs rebase onto main, repair and fresh independent review. `factory_notify_policy` decides per notification kind whether the operator pages or digests; cards stay on `/factory/escalations`.
 
 ### Restrict receipt model choices
 

@@ -17,7 +17,6 @@ export const session = {
 export const executionData = {
   sessions: [session],
   models: [{ id: "luna", name: "Luna", family: "codex" }],
-  sessionStopControlEnabled: false,
   error: false,
 };
 
