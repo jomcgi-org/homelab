@@ -60,12 +60,22 @@ def _stable(value):
 def fingerprint(data, head, instructions):
     if not re.fullmatch(r"[0-9a-f]{40}", head or ""):
         raise ValueError("learning_input_head_unavailable")
+    optimizer = data.get("optimizer") or {}
+    observed = retro._utc_time(optimizer.get("outcomes_and_cost_as_of"))
+    if optimizer.get("outcomes_and_cost_as_of") and observed is None:
+        raise ValueError("learning_input_observation_unavailable")
+    verdict = retro.optimizer_evidence(optimizer, observed) if observed else {}
     return learning._sha(
         {
             "version": 1,
             "head": head,
             "instructions": instructions,
             "data": _stable(data),
+            # Clock ticks are not evidence, but reaching the existing bounded
+            # settlement horizon changes the conclusion even without new rows.
+            "optimizer_phase": {
+                k: verdict[k] for k in ("status", "reason") if k in verdict
+            },
         }
     )
 
@@ -204,7 +214,13 @@ def prepare(db, name, holder, data, head):
     return {
         "skip": False,
         "input_sha256": identity,
-        "prompt": retro.render_factory_retro_prompt(instructions, copy.deepcopy(data)),
+        "prompt": retro.render_factory_retro_prompt(
+            instructions,
+            copy.deepcopy(data),
+            now=retro._utc_time(
+                (data.get("optimizer") or {}).get("outcomes_and_cost_as_of")
+            ),
+        ),
     }
 
 
