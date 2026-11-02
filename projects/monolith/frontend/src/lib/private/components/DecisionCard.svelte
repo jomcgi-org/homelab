@@ -37,6 +37,9 @@
       tone = out.status === "accepted" ? "ok" : "warn";
       message = out.message;
       if (out.status === "accepted") ondecided(item, out);
+    } catch {
+      tone = "warn";
+      message = "Outcome unknown. Check the escalations page before answering again.";
     } finally {
       busy = null;
       armed = false;
@@ -112,6 +115,9 @@
   {#if message}
     <p class="message {tone}" role={tone === "warn" ? "alert" : "status"}>
       {message}
+      {#if tone === "warn"}<a href={item.url ?? "/factory/escalations"}
+          >Open in escalations</a
+        >{/if}
     </p>
   {/if}
 
@@ -280,6 +286,13 @@
   }
   .message.warn {
     color: var(--warn);
+  }
+  .message a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    margin-left: 0.4rem;
+    color: var(--ink);
   }
   .more {
     margin-top: 0.4rem;

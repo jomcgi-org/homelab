@@ -62,4 +62,16 @@ describe("loadDashboard", () => {
       dashboard: null,
     });
   });
+
+  it("reads a malformed board as no factory reading", async () => {
+    const { cache } = cacheWith({
+      "/api/home/dashboard": () => jsonResponse(home),
+      "/api/agents/factory": () =>
+        jsonResponse({ ok: true, active: 5, escalations: "x" }),
+    });
+    await loadDashboard("http://b", { cache });
+    await tick();
+    const { dashboard } = await loadDashboard("http://b", { cache });
+    expect(dashboard).toEqual({ ...home, factory: null });
+  });
 });

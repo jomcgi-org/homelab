@@ -17,7 +17,16 @@ export async function loadDashboard(apiBase, { cache } = {}) {
     readHome(apiBase, options),
     readBoard(apiBase, options),
   ]);
-  const factory = summarizeBoard(board);
+  const factory = summarize(board);
   if (home == null && factory == null) return { dashboard: null };
   return { dashboard: { ...(home ?? {}), factory } };
+}
+
+// A malformed board reads as no factory reading, never as a broken page.
+function summarize(board) {
+  try {
+    return summarizeBoard(board);
+  } catch {
+    return null;
+  }
 }
