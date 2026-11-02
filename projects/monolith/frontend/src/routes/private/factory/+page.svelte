@@ -14,6 +14,7 @@
     money,
     phaseLabel,
     planRanks,
+    prLabel,
     turnShare,
   } from "./factory-view.js";
 
@@ -422,7 +423,9 @@
         <div class="row">
           <dt class="label">pr</dt>
           <dd class="value">
-            <a href={receipt.evidence.pr_url}>{receipt.evidence.pr_url}</a>
+            <a href={receipt.evidence.pr_url}
+              >{prLabel(receipt.evidence.pr_url)}</a
+            >
           </dd>
         </div>
       {/if}

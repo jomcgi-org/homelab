@@ -375,6 +375,7 @@
 <main class="td sheet review-page">
   <section class="review edition">
     <header class="bar ed-head">
+      <a class="home" href="/">&larr; dashboard</a>
       <div class="tabs" role="tablist" aria-label="Review tab">
         <button
           role="tab"
@@ -463,6 +464,22 @@
   .bar {
     flex-shrink: 0;
     gap: 0.35em 1.5rem;
+  }
+
+  /* The one way home from a page that draws its own bar: a cell at the
+     band's start, divided from the tabs like the tabs are from each other. */
+  .home {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    margin: -0.55em 0;
+    padding: 0 0.8em 0 0;
+    border-right: 1px solid var(--stroke);
+    color: var(--ink-2);
+    text-decoration: none;
+  }
+  .home:hover {
+    color: var(--accent-ink);
   }
 
   /* The tab strips reuse the band's divided-cells vocabulary. */

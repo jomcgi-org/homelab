@@ -1,3 +1,5 @@
+import { loadDashboard } from "$lib/private/dashboard-load.js";
+
 // No URL fallback: API_BASE is injected via values.yaml in prod; a localhost
 // dev run sets it in the environment. A missing var fails loudly instead of
 // silently serving from the wrong backend.
@@ -9,13 +11,10 @@ const DONE_STATUSES = ["done", "cancelled"];
 
 export async function load({ fetch }) {
   // Fail-soft parallel fetches: a dead backend section degrades to
-  // null/[] so SSR always renders.
-  const [dashboard, tasksDaily, tasksWeekly] = await Promise.all([
-    fetch(`${API_BASE}/api/home/dashboard`, {
-      signal: AbortSignal.timeout(15000),
-    })
-      .then((res) => (res.ok ? res.json() : null))
-      .catch(() => null),
+  // null/[] so SSR always renders. The dashboard read carries the home
+  // aggregate and the factory summary together (see dashboard-load.js).
+  const [{ dashboard }, tasksDaily, tasksWeekly] = await Promise.all([
+    loadDashboard(fetch, API_BASE),
     fetch(`${API_BASE}/api/knowledge/tasks/daily`, {
       signal: AbortSignal.timeout(10000),
     })

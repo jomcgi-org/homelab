@@ -1875,7 +1875,8 @@
 
 {#snippet trail()}
   <Trail
-    crumbs={[{ label: "Factory", href: "/factory" }, { label: "Execution" }]}
+    root={{ label: "dashboard", href: "/" }}
+    crumbs={[{ label: "factory", href: "/factory" }, { label: "execution" }]}
   />
 {/snippet}
 
