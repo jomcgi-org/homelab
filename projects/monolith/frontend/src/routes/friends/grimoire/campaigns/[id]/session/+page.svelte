@@ -1,5 +1,12 @@
 <script>
-  import { onMount, untrack, tick } from "svelte";
+  import { onMount, setContext, untrack, tick } from "svelte";
+  import {
+    RECOVERY,
+    createRecovery,
+    fields,
+    recoveryScope,
+    registerDraft,
+  } from "$lib/grimoire/rollout-recovery.js";
   import { sheetRolls } from "$lib/grimoire/sheet-rolls.js";
   import { composeMessage } from "$lib/grimoire/session-compose.js";
   import {
@@ -50,6 +57,7 @@
   let pendingMessage = null;
   let connection = $state("Live");
   let signedOut = $state("");
+  let root;
   $effect(() => {
     state = data;
     draft = "";
@@ -130,7 +138,72 @@
     pending: pendingMessage,
   });
 
-  const viewer = () => ({ id: state.user?.id, role: state.campaign.role });
+  const viewer = () => ({
+    id: state.user?.id,
+    role: state.campaign.role,
+    ...(data.rolloutRecoveryEnabled === true
+      ? { sessionId: state.session?.id }
+      : {}),
+  });
+  const recovery = createRecovery({
+    enabled: () => data.rolloutRecoveryEnabled === true,
+    scope: () => recoveryScope(state),
+    keepComposer: () => keepDraft(state.campaign.id, viewer(), composer()),
+    dropComposer: () => dropDraft(state.campaign.id),
+    reconnect: () => reconnect(),
+  });
+  setContext(RECOVERY, recovery);
+  registerDraft(
+    "page",
+    () => ({
+      activeTab,
+      journalView,
+      formula,
+      rollLabel,
+      rollVisibility,
+      rollMode,
+      rollKind,
+      details: [...(root?.querySelectorAll("details") || [])].map(
+        (el) => el.open,
+      ),
+      scroll: window.scrollY,
+    }),
+    async (saved) => {
+      const kept = fields(saved, {
+        activeTab: "",
+        journalView: "",
+        formula: "",
+        rollLabel: "",
+        rollVisibility: "",
+        rollMode: "",
+        rollKind: "",
+        scroll: 0,
+      });
+      activeTab = ["story", "notes", "inventory", "journal"].includes(
+        kept.activeTab,
+      )
+        ? kept.activeTab
+        : "story";
+      journalView = kept.journalView === "party" ? "party" : "mine";
+      formula = kept.formula;
+      rollLabel = kept.rollLabel;
+      rollVisibility = ["table", "dm", "self"].includes(kept.rollVisibility)
+        ? kept.rollVisibility
+        : "dm";
+      rollMode = ["normal", "adv", "dis"].includes(kept.rollMode)
+        ? kept.rollMode
+        : "normal";
+      rollKind = ["checks", "saves", "attacks"].includes(kept.rollKind)
+        ? kept.rollKind
+        : "checks";
+      await tick();
+      if (Array.isArray(saved.details))
+        [...root.querySelectorAll("details")].forEach((el, index) => {
+          el.open = saved.details[index] === true;
+        });
+      window.scrollTo(0, Math.max(0, kept.scroll));
+    },
+  );
   // Another account signing in on this browser changes who the poll answers
   // for. Panels keep their own state, so only a full load is safe.
   const identity = (view) =>
@@ -365,21 +438,38 @@
   }
 
   onMount(() => {
-    const kept = takeDraft(state.campaign.id, viewer(), {
-      dm,
-      characters: state.characters,
-      speakers: ["narrator", ...speakers.map((row) => row.key), FREE_LABEL],
-    });
-    if (kept) {
-      draft = kept.text;
-      audience = kept.audience;
-      replyTo = kept.replyTo;
-      resolved = kept.resolved;
-      speakerKey = kept.speakerKey;
-      speakerLabel = kept.speakerLabel;
-      pendingMessage = kept.pending;
-    }
     let stopped = false;
+    // Initial page and child effects run before restored form assignments.
+    void tick().then(async () => {
+      if (stopped) return;
+      await recovery.restore();
+      if (stopped || !playing) return;
+      const kept = takeDraft(state.campaign.id, viewer(), {
+        dm,
+        characters: state.characters,
+        speakers: ["narrator", ...speakers.map((row) => row.key), FREE_LABEL],
+      });
+      if (kept) {
+        draft = kept.text;
+        audience = kept.audience;
+        replyTo = kept.replyTo;
+        resolved = kept.resolved;
+        speakerKey = kept.speakerKey;
+        speakerLabel = kept.speakerLabel;
+        pendingMessage = kept.pending;
+        if (kept.pending) uncertainSend = interrupted;
+      }
+    });
+    const callback = {
+      save: () => {
+        const saved = recovery.save();
+        if (!saved)
+          uncertainSend =
+            "Could not keep all drafts. Copy them before reloading.";
+        return saved;
+      },
+    };
+    if (recovering()) window.__grimoireRecovery = callback;
     let timer;
     async function poll() {
       if (!document.hidden) await refresh();
@@ -394,13 +484,15 @@
       stopped = true;
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", visible);
+      if (window.__grimoireRecovery === callback)
+        delete window.__grimoireRecovery;
     };
   });
 </script>
 
 <svelte:head><title>{state.campaign.name} · Grimoire</title></svelte:head>
 
-<main class="grimoire table">
+<main class="grimoire table" bind:this={root}>
   <header>
     <a href="/grimoire">← Your campaigns</a>
     <p class="eyebrow">

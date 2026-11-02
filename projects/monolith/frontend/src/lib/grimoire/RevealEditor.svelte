@@ -1,6 +1,12 @@
 <script>
   import { knowledgeFields, selectedDetails } from "./knowledge-fields.js";
   import RevealProjection from "./RevealProjection.svelte";
+  import {
+    fields as draftFields,
+    registerDraft,
+    panelRecovery,
+  } from "./rollout-recovery.js";
+  const recovery = panelRecovery();
   let { endpoint, characters, changed } = $props();
   let query = $state("");
   let recipient = $state("");
@@ -16,6 +22,52 @@
   let failure = $state("");
   let notice = $state("");
   let silent = $state(false);
+  registerDraft(
+    "reveal",
+    () => ({
+      query,
+      recipient,
+      selected,
+      entityId: entity?.id ?? null,
+      scope,
+      clue,
+      fields,
+      silent,
+    }),
+    async (saved) => {
+      const kept = draftFields(saved, {
+        query: "",
+        recipient: "",
+        scope: "",
+        clue: "",
+        silent: false,
+      });
+      if (
+        !Array.isArray(saved.selected) ||
+        !saved.selected.every((id) => characters.some((pc) => pc.id === id))
+      )
+        return;
+      if (kept.recipient && !characters.some((pc) => pc.id === kept.recipient))
+        return;
+      if (typeof saved.entityId === "string") {
+        await choose({ id: saved.entityId });
+        if (entity?.id !== saved.entityId) return;
+      }
+      query = kept.query;
+      recipient = kept.recipient;
+      selected = saved.selected;
+      scope = ["name_only", "partial", "full"].includes(kept.scope)
+        ? kept.scope
+        : "name_only";
+      clue = kept.clue;
+      silent = kept.silent;
+      if (Array.isArray(saved.fields))
+        fields = saved.fields.filter((key) =>
+          knowledgeFields(entity).some(([field]) => field === key),
+        );
+      // Old previews and search results are deliberately not retained.
+    },
+  );
   let revealedDetails = $derived(selectedDetails(entity, fields, clue));
   let signature = $derived(
     JSON.stringify({ entityId: entity?.id, selected, scope, revealedDetails }),
@@ -25,7 +77,9 @@
     busy = true;
     failure = "";
     try {
-      const response = await fetch(`${endpoint}?entity=${item.id}`);
+      const response = await recovery.fetch(
+        `${endpoint}?entity=${encodeURIComponent(item.id)}`,
+      );
       const result = await response.json();
       if (!response.ok) throw new Error(result.error);
       entity = result;
@@ -34,6 +88,7 @@
       previews = [];
       previewSignature = "";
     } catch (error) {
+      if (recovery.transient(error)) return;
       failure = error.message;
     } finally {
       busy = false;
@@ -47,12 +102,13 @@
     try {
       const params = new URLSearchParams({ q: query });
       if (recipient) params.set("notGrantedTo", recipient);
-      const response = await fetch(`${endpoint}?${params}`);
+      const response = await recovery.fetch(`${endpoint}?${params}`);
       const result = await response.json();
       if (!response.ok) throw new Error(result.error);
       items = result.items;
       entity = null;
     } catch (error) {
+      if (recovery.transient(error)) return;
       failure = error.message;
     } finally {
       busy = false;
@@ -65,7 +121,7 @@
     failure = "";
     notice = "";
     try {
-      const response = await fetch(endpoint, {
+      const response = await recovery.fetch(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -91,6 +147,7 @@
       await changed();
       await search();
     } catch (error) {
+      if (recovery.transient(error)) return;
       failure = error.message;
     } finally {
       busy = false;

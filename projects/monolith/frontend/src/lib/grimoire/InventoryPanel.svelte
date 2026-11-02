@@ -1,5 +1,7 @@
 <script>
   import { onMount } from "svelte";
+  import { fields, registerDraft, panelRecovery } from "./rollout-recovery.js";
+  const recovery = panelRecovery();
 
   let {
     endpoint,
@@ -26,6 +28,59 @@
     source_event_id: null,
   });
   let give = $state(emptyGive());
+  let initialLoad;
+  registerDraft(
+    "inventory",
+    () => ({ give, drafts }),
+    (saved) => {
+      if (dm) {
+        const kept = fields(saved.give, {
+          owner: "",
+          name: "",
+          quantity: 1,
+          notes: "",
+          hidden_from_party: false,
+          reason: "",
+        });
+        if (
+          kept.owner === "party" ||
+          characters.some((pc) => pc.id === kept.owner)
+        )
+          give = {
+            ...emptyGive(),
+            ...kept,
+            entity_id:
+              typeof saved.give.entity_id === "string"
+                ? saved.give.entity_id
+                : null,
+            source_event_id:
+              typeof saved.give.source_event_id === "string"
+                ? saved.give.source_event_id
+                : null,
+          };
+      }
+      for (const item of items) {
+        if (!saved.drafts?.[item.id]) continue;
+        const kept = fields(saved.drafts[item.id], {
+          name: "",
+          notes: "",
+          quantity: 1,
+          hidden_from_party: false,
+          reason: "",
+          owner: "",
+          moveQuantity: 1,
+          moveReason: "",
+        });
+        // `items` was freshly projected for this caller before restoration.
+        if (
+          kept.owner === "party" ||
+          characters.some((pc) => pc.id === kept.owner)
+        )
+          drafts[item.id] = kept;
+      }
+    },
+    () => initialLoad,
+  );
   let sections = $derived(
     dm
       ? [
@@ -46,7 +101,7 @@
   });
 
   async function read(query) {
-    const response = await fetch(`${endpoint}?${query}`);
+    const response = await recovery.fetch(`${endpoint}?${query}`);
     const result = await response.json();
     if (!response.ok)
       throw new Error(result.error || "Could not load inventory.");
@@ -73,6 +128,7 @@
       drafts = nextDrafts;
       items = nextItems;
     } catch (error) {
+      if (recovery.transient(error)) return;
       failure = error.message;
     } finally {
       loading = false;
@@ -85,6 +141,7 @@
         `inventory=changes&item=${encodeURIComponent(id)}`,
       );
     } catch (error) {
+      if (recovery.transient(error)) return;
       failure = error.message;
     }
   }
@@ -94,7 +151,7 @@
     busy = true;
     failure = "";
     try {
-      const response = await fetch(endpoint, {
+      const response = await recovery.fetch(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
@@ -112,6 +169,7 @@
           .map((item) => loadHistory(item.id)),
       );
     } catch (error) {
+      if (recovery.transient(error)) return;
       failure = error.message;
     } finally {
       busy = false;
@@ -158,7 +216,7 @@
   }
 
   onMount(() => {
-    load();
+    initialLoad = load();
     const timer = setInterval(() => {
       if (!busy) load();
     }, 4000);

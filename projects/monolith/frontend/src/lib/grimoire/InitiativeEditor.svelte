@@ -1,5 +1,6 @@
 <script>
   import { untrack } from "svelte";
+  import { fields, registerDraft } from "./rollout-recovery.js";
 
   // `initiative` is the DM view from the server. The rows below are a local
   // draft: a poll never overwrites them while the DM has unsaved edits.
@@ -19,6 +20,42 @@
   let dirty = $state(false);
   let editRevision = $state(0);
   let note = $state("");
+  registerDraft(
+    "initiative",
+    () => (dirty ? { rows, activeKey, hiddenDisplay } : null),
+    (saved) => {
+      if (saved === null) return;
+      if (!Array.isArray(saved.rows) || saved.rows.length > 100) return;
+      const kept = saved.rows.map((row) => {
+        // Empty number inputs are valid unsaved drafts too.
+        if (
+          row.initiative !== "" &&
+          row.initiative !== null &&
+          !Number.isFinite(row.initiative)
+        )
+          throw new Error("invalid initiative");
+        const entry = fields(row, {
+          key: 0,
+          label: "",
+          player_character_id: "",
+          hidden: false,
+        });
+        if (
+          entry.player_character_id &&
+          !characters.some((pc) => pc.id === entry.player_character_id)
+        )
+          throw new Error("unavailable character");
+        return { ...entry, initiative: row.initiative };
+      });
+      rows = kept;
+      nextKey = Math.max(0, ...kept.map((row) => row.key));
+      activeKey = kept.some((row) => row.key === saved.activeKey)
+        ? saved.activeKey
+        : null;
+      hiddenDisplay = saved.hiddenDisplay === "omit" ? "omit" : "mask";
+      dirty = true;
+    },
+  );
 
   const toRows = (entries) =>
     (entries || []).map((entry) => ({

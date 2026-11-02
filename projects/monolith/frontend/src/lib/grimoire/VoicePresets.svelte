@@ -1,5 +1,8 @@
 <script>
   import { FREE_LABEL, presetSpeakers } from "./read-aloud.js";
+  import { tick } from "svelte";
+  import { fields, registerDraft, panelRecovery } from "./rollout-recovery.js";
+  const recovery = panelRecovery();
   let { presets = [], endpoint, act, busy = false } = $props();
   // Colons never appear in speaker keys, so this cannot shadow a free label.
   const FIND = "npc:find";
@@ -14,6 +17,41 @@
   let picked = $state(null);
   let searching = $state(false);
   let failure = $state("");
+  registerDraft(
+    "voice",
+    () => ({ selected, freeLabel, lang, names, rate, pitch, query, picked }),
+    async (saved) => {
+      const kept = fields(saved, {
+        selected: "",
+        freeLabel: "",
+        lang: "",
+        names: "",
+        rate: 1,
+        pitch: 1,
+        query: "",
+      });
+      // A picked NPC is revalidated against the current DM endpoint. Never
+      // persist or trust the old search results or the old NPC name.
+      if (saved.picked) {
+        const key = fields(saved.picked, { key: "", name: "" }).key;
+        const response = await recovery.fetch(
+          `${endpoint}?entity=${encodeURIComponent(key)}`,
+        );
+        if (!response.ok) return;
+        const npc = await response.json();
+        if (npc.id !== key) return;
+        picked = { key, name: npc.name };
+      }
+      selected = kept.selected;
+      freeLabel = kept.freeLabel;
+      await tick(); // Selecting a preset initializes its hints first.
+      lang = kept.lang;
+      names = kept.names;
+      rate = kept.rate;
+      pitch = kept.pitch;
+      query = kept.query;
+    },
+  );
   let key = $derived(
     selected === FREE_LABEL
       ? freeLabel.trim()
@@ -70,11 +108,12 @@
     failure = "";
     try {
       const params = new URLSearchParams({ q: query.trim(), type: "npc" });
-      const response = await fetch(`${endpoint}?${params}`);
+      const response = await recovery.fetch(`${endpoint}?${params}`);
       const result = await response.json();
       if (!response.ok) throw new Error(result.error);
       found = { items: result.items, total: result.total };
     } catch (error) {
+      if (recovery.transient(error)) return;
       failure = error.message || "Could not search NPCs.";
     } finally {
       searching = false;

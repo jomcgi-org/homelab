@@ -1,5 +1,7 @@
 <script>
   import { onMount } from "svelte";
+  import { fields, registerDraft, panelRecovery } from "./rollout-recovery.js";
+  const recovery = panelRecovery();
   import Markdown from "$lib/public/factory/Markdown.svelte";
   let { endpoint, dm = false, showEvent, openKnowledge } = $props();
   let kind = $state("character");
@@ -12,15 +14,51 @@
   let busy = $state(false);
   let failure = $state("");
   let notice = $state("");
+  let initialLoad;
+  registerDraft(
+    "notes",
+    () => ({ kind, noteId, title, markdown, dmReadable, pinned }),
+    async (saved) => {
+      const kept = fields(saved, {
+        kind: "",
+        title: "",
+        markdown: "",
+        dmReadable: false,
+        pinned: false,
+      });
+      if (
+        !["character", "party"].includes(kept.kind) ||
+        (dm && kept.kind !== "party")
+      )
+        return;
+      kind = kept.kind;
+      await load();
+      // A revoked edit permission or deleted note never restores a private edit.
+      if (
+        saved.noteId !== null &&
+        !notes.some((row) => row.id === saved.noteId && row.editable)
+      )
+        return;
+      noteId = saved.noteId;
+      title = kept.title;
+      markdown = kept.markdown;
+      dmReadable = kept.dmReadable;
+      pinned = kept.pinned;
+    },
+    () => initialLoad,
+  );
 
   async function load() {
     const requestedKind = kind;
     try {
-      const response = await fetch(`${endpoint}?notes=${requestedKind}`);
+      const response = await recovery.fetch(
+        `${endpoint}?notes=${requestedKind}`,
+      );
       const result = await response.json();
       if (!response.ok) throw new Error(result.error);
       if (kind === requestedKind) notes = result;
     } catch (error) {
+      if (recovery.transient(error)) return;
       failure = error.message;
     }
   }
@@ -50,7 +88,7 @@
     failure = "";
     notice = "";
     try {
-      const response = await fetch(endpoint, {
+      const response = await recovery.fetch(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -69,6 +107,7 @@
       notice = "Note saved.";
       await load();
     } catch (error) {
+      if (recovery.transient(error)) return;
       failure = error.message;
     } finally {
       busy = false;
@@ -78,7 +117,7 @@
     busy = true;
     failure = "";
     try {
-      const response = await fetch(endpoint, {
+      const response = await recovery.fetch(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ operation: "deleteNote", noteId: id }),
@@ -89,13 +128,14 @@
       notice = "Note deleted.";
       await load();
     } catch (error) {
+      if (recovery.transient(error)) return;
       failure = error.message;
     } finally {
       busy = false;
     }
   }
   onMount(() => {
-    load();
+    initialLoad = load();
     const timer = setInterval(load, 4000);
     return () => clearInterval(timer);
   });

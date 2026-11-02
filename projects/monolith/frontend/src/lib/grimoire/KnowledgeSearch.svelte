@@ -1,5 +1,6 @@
 <script>
   import { onDestroy } from "svelte";
+  import { fields, registerDraft } from "./rollout-recovery.js";
   import { chunkHref } from "$lib/public/grimoire/api.js";
 
   let { campaignId } = $props();
@@ -18,6 +19,13 @@
   let failure = $state("");
   let disputing = $state(null);
   let request;
+  registerDraft(
+    "knowledge-search",
+    () => ({ query }),
+    (saved) => {
+      query = fields(saved, { query: "" }).query;
+    },
+  );
   // Each session poll replaces the page state; this changes only on campaign
   // navigation, so a poll keeps the player's query and results.
   const currentCampaign = $derived(campaignId);

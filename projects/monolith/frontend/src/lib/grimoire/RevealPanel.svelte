@@ -1,5 +1,6 @@
 <script>
   import { tick } from "svelte";
+  import { fields, registerDraft } from "./rollout-recovery.js";
   import RevealEditor from "./RevealEditor.svelte";
   let { endpoint, characters, changed } = $props();
   let open = $state(false);
@@ -8,6 +9,15 @@
   let started = $state(false);
   let opener = $state(null);
   let panel = $state(null);
+  registerDraft(
+    "reveal-panel",
+    () => ({ open, started }),
+    (saved) => {
+      const kept = fields(saved, { open: false, started: false });
+      open = kept.open;
+      started = kept.started;
+    },
+  );
 
   async function show() {
     open = true;

@@ -58,7 +58,11 @@ export function keepDraft(campaignId, viewer, composer) {
         draftKey(campaignId),
         JSON.stringify({
           ...composer,
-          viewer: { id: viewer.id, role: viewer.role },
+          viewer: {
+            id: viewer.id,
+            role: viewer.role,
+            ...(viewer.sessionId ? { sessionId: viewer.sessionId } : {}),
+          },
         }),
       );
     return true;
@@ -97,7 +101,8 @@ export function takeDraft(
   if (
     typeof viewer?.id !== "string" ||
     saved?.viewer?.id !== viewer.id ||
-    saved.viewer.role !== viewer.role
+    saved.viewer.role !== viewer.role ||
+    (viewer.sessionId && saved.viewer.sessionId !== viewer.sessionId)
   )
     return null;
   if (typeof saved.text !== "string" || !saved.text.trim()) return null;

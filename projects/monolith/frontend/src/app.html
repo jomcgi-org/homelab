@@ -50,12 +50,14 @@
         const chunkError =
           /dynamically imported module|Importing a module script failed/i;
         const here = new URL(location.href);
+        let recovering = false;
         if (here.searchParams.has("_fresh")) {
           here.searchParams.delete("_fresh");
           history.replaceState(history.state, "", here);
         }
-        window.__freshReload = (error, target = location.href) => {
+        window.__freshReload = (error, target = location.href, recover) => {
           if (!chunkError.test(String(error?.message ?? error))) return false;
+          if (recovering) return true;
           try {
             const last = Number(sessionStorage.getItem("fresh-reload"));
             if (Date.now() - last < 30000) return false;
@@ -64,8 +66,29 @@
             return false; // No loop guard without storage, so no reload.
           }
           const url = new URL(target, location.href);
-          url.searchParams.set("_fresh", Date.now().toString(36));
-          location.replace(url);
+          const reload = () => {
+            url.searchParams.set("_fresh", Date.now().toString(36));
+            location.replace(url);
+          };
+          const session = window.__grimoireRecovery;
+          if (session) {
+            // A failed save keeps the current page and its in-memory drafts.
+            if (!session.save()) return false;
+            recovering = true;
+            Promise.resolve()
+              .then(() => recover?.(url) ?? false)
+              .catch(() => false)
+              .then((recovered) => {
+                // Never reload after the user left this session meanwhile.
+                if (window.__grimoireRecovery !== session) return;
+                if (!recovered) {
+                  if (session.save()) reload();
+                }
+              })
+              .finally(() => {
+                recovering = false;
+              });
+          } else reload();
           return true;
         };
         addEventListener("unhandledrejection", (event) => {
