@@ -46,6 +46,7 @@
   let inventoryPrefill = $state(null);
   let busy = $state(false);
   let failure = $state("");
+  let uncertainSend = $state("");
   let pendingMessage = null;
   let connection = $state("Live");
   let signedOut = $state("");
@@ -139,6 +140,13 @@
       view.campaign?.player_character_id,
     ].join("|");
   const expiry = expiryCheck();
+  const recovering = () => data.rolloutRecoveryEnabled === true;
+  const transientResponse = (response) =>
+    recovering() && [502, 503, 504].includes(response.status);
+  function reconnect() {
+    expiry.reset();
+    if (!signedOut) connection = "Reconnecting";
+  }
 
   // Only a full page load can pass the login again, so keep the composer and
   // reload. If this tab reloaded within the last minute, stop and ask instead.
@@ -175,6 +183,7 @@
         { redirect: "manual" },
       );
       if (signInExpired(response)) return signInSignal();
+      if (transientResponse(response)) return reconnect();
       expiry.reset();
       const next = await response.json();
       if (!response.ok) throw new Error(next.error);
@@ -194,6 +203,7 @@
         dropDraft(state.campaign.id);
       }
     } catch {
+      if (recovering()) expiry.reset();
       if (!signedOut) connection = "Reconnecting";
     }
   }
@@ -205,6 +215,7 @@
     if (busy) return;
     busy = true;
     failure = "";
+    uncertainSend = "";
     try {
       const response = await fetch(endpoint(), {
         method: "POST",
@@ -217,6 +228,13 @@
       if (signInExpired(response)) {
         signInSignal();
         if (!signedOut) failure = interrupted;
+        return;
+      }
+      // A proxy can return HTML, or lose a response after the write committed.
+      // Keep the exact pending request id for the user's explicit retry.
+      if (transientResponse(response)) {
+        reconnect();
+        if (input.operation === "post") uncertainSend = interrupted;
         return;
       }
       expiry.reset();
@@ -234,6 +252,14 @@
       await refresh();
       return result;
     } catch (error) {
+      if (
+        recovering() &&
+        (error instanceof TypeError || error.name === "AbortError")
+      ) {
+        reconnect();
+        if (input.operation === "post") uncertainSend = interrupted;
+        return;
+      }
       failure =
         error instanceof TypeError
           ? interrupted
@@ -686,6 +712,7 @@
               >{busy ? "Sending…" : "Send"}</button
             >
           </div>
+          {#if uncertainSend}<p role="status">{uncertainSend}</p>{/if}
           {#if replyTo}<label class="resolve-choice"
               ><input type="checkbox" bind:checked={resolved} />Mark action
               resolved</label
