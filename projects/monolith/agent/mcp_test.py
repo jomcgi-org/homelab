@@ -9,20 +9,14 @@ from pydantic import ValidationError
 
 EXPECTED_TOOLS = {
     "monolith_agent_completed_raw_recovery",
-    "monolith_agent_acquire_lock",
-    "monolith_agent_extend_lock",
-    "monolith_agent_release_lock",
+    "monolith_agent_lock",
     "monolith_agent_list_locks",
     "monolith_agent_notify",
     "monolith_agent_check_stuck_jobs",
     "monolith_agent_check_dead_letters",
     "monolith_agent_trigger_job",
     "monolith_agent_list_routine_jobs",
-    "monolith_agent_claim_routine_job",
-    "monolith_agent_complete_routine_job",
-    "monolith_agent_register_routine_job",
-    "monolith_agent_deregister_routine_job",
-    "monolith_agent_trigger_routine_job",
+    "monolith_agent_routine_job",
     "monolith_agent_fact_review_recovery",
     "monolith_agent_set_factory_goals",
     "monolith_agent_schema_retirement_inventory",
@@ -41,9 +35,9 @@ async def test_all_agent_tools_registered():
     assert "monolith_agent_check_orphan_jobs" not in registered
 
 
-def test_expected_tool_count_is_eighteen():
+def test_expected_tool_count_is_twelve():
     """Guard against silently dropping a tool from EXPECTED_TOOLS."""
-    assert len(EXPECTED_TOOLS) == 18
+    assert len(EXPECTED_TOOLS) == 12
 
 
 def test_admission_api_import_does_not_require_private_operator_module(monkeypatch):
@@ -154,7 +148,7 @@ async def test_routine_list_is_bounded_and_does_not_export_payloads(monkeypatch)
         ("delegated", "human", ("operators",), False),
     ],
 )
-async def test_explicit_review_recovery_requires_existing_operator_gate(
+async def test_review_recovery_requires_existing_operator_gate(
     monkeypatch, authority, kind, groups, allowed
 ):
     import threading
@@ -183,16 +177,11 @@ async def test_explicit_review_recovery_requires_existing_operator_gate(
     )
     recovery = {"mode": "preview", "session_id": 20412, "permit_id": 17827}
     try:
-        result = await mcp.monolith_agent_trigger_routine_job(
-            "kg-fact-review", recovery
-        )
+        result = await mcp.monolith_agent_fact_review_recovery("preview", 20412, 17827)
         assert result["ok"] is allowed
-        if allowed:
-            assert calls == [{"actor": "operator", "recovery": recovery}]
-            with pytest.raises(ValueError, match="limited"):
-                await mcp.monolith_agent_trigger_routine_job("other", recovery)
-        else:
-            assert calls == []
+        assert calls == (
+            [{"actor": "operator", "recovery": recovery}] if allowed else []
+        )
     finally:
         reset_current_principal(token)
 
@@ -423,3 +412,160 @@ async def test_daily_learning_metadata_omits_original_prompt(monkeypatch):
         "reconciled": True,
     }
     assert "PRIVATE" not in json.dumps(data)
+
+
+@pytest.mark.asyncio
+async def test_lock_actions_dispatch_to_lock_store(monkeypatch):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from agent import mcp
+
+    lock_id = uuid4()
+    expires = datetime(2026, 11, 2, tzinfo=timezone.utc)
+    calls = []
+    monkeypatch.setattr(
+        mcp.locks,
+        "acquire",
+        lambda *a: (
+            calls.append(("acquire", a))
+            or SimpleNamespace(acquired=True, lock_id=lock_id, expires_at=expires)
+        ),
+    )
+    monkeypatch.setattr(
+        mcp.locks, "extend", lambda *a: calls.append(("extend", a)) or expires
+    )
+    monkeypatch.setattr(
+        mcp.locks, "release", lambda *a: calls.append(("release", a)) or True
+    )
+
+    acquired = await mcp.monolith_agent_lock(
+        "acquire", key="k", holder="h", ttl_secs=60
+    )
+    assert acquired["acquired"] and acquired["lock_id"] == str(lock_id)
+    assert (await mcp.monolith_agent_lock("extend", lock_id=str(lock_id), ttl_secs=30))[
+        "ok"
+    ]
+    assert await mcp.monolith_agent_lock("release", lock_id=str(lock_id)) == {
+        "ok": True
+    }
+    assert calls == [
+        ("acquire", ("k", "h", 60)),
+        ("extend", (lock_id, 30)),
+        ("release", (lock_id,)),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "args"),
+    [
+        ("acquire", {"holder": "h", "ttl_secs": 60}),
+        ("acquire", {"key": "k", "ttl_secs": 60}),
+        ("acquire", {"key": "k", "holder": "h"}),
+        ("extend", {"ttl_secs": 30}),
+        ("extend", {"lock_id": "00000000-0000-0000-0000-000000000001"}),
+        ("release", {}),
+    ],
+)
+async def test_lock_actions_require_their_arguments(monkeypatch, action, args):
+    from agent import mcp
+
+    for name in ("acquire", "extend", "release"):
+        monkeypatch.setattr(
+            mcp.locks, name, lambda *a: pytest.fail("lock store must not be called")
+        )
+    with pytest.raises(ValueError, match="requires"):
+        await mcp.monolith_agent_lock(action, **args)
+
+
+@pytest.mark.asyncio
+async def test_routine_job_actions_dispatch_to_routine_store(monkeypatch):
+    from agent import mcp
+
+    calls = []
+
+    def record(name, result):
+        def fn(*a, **kw):
+            calls.append((name, a, kw))
+            return result
+
+        return fn
+
+    monkeypatch.setattr(mcp.routine_jobs, "claim_job", record("claim", None))
+    monkeypatch.setattr(mcp.routine_jobs, "complete_job", record("complete", True))
+    monkeypatch.setattr(mcp.routine_jobs, "register_job", record("register", None))
+    monkeypatch.setattr(mcp.routine_jobs, "deregister_job", record("deregister", True))
+    monkeypatch.setattr(mcp.routine_jobs, "trigger_job", record("trigger", True))
+
+    assert await mcp.monolith_agent_routine_job(
+        "claim", holder="h", ttl_secs=60, kind="qwen-drain"
+    ) == {"claimed": False, "job": None}
+    assert await mcp.monolith_agent_routine_job(
+        "complete", name="j", status="ok", summary="done"
+    ) == {"ok": True}
+    assert await mcp.monolith_agent_routine_job(
+        "register",
+        name="j",
+        kind="qwen-drain",
+        payload={"prompt": "p"},
+        next_run_at="2026-11-02T00:00:00+00:00",
+    ) == {"ok": True}
+    assert await mcp.monolith_agent_routine_job("deregister", name="j") == {"ok": True}
+    assert await mcp.monolith_agent_routine_job("trigger", name="j") == {"ok": True}
+    assert [c[0] for c in calls] == [
+        "claim",
+        "complete",
+        "register",
+        "deregister",
+        "trigger",
+    ]
+    assert calls[0][1:] == (("h", 60), {"kind": "qwen-drain", "name": None})
+    assert calls[1][1:] == (("j", "ok"), {"summary": "done"})
+    assert calls[2][2]["kind"] == "qwen-drain"
+    assert calls[2][2]["payload"] == {"prompt": "p"}
+    assert calls[2][2]["next_run_at"].isoformat() == "2026-11-02T00:00:00+00:00"
+    assert calls[3][1] == ("j",) and calls[4][1] == ("j",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "args"),
+    [
+        ("claim", {"ttl_secs": 60}),
+        ("claim", {"holder": "h"}),
+        ("complete", {"status": "ok"}),
+        ("complete", {"name": "j"}),
+        ("register", {"kind": "qwen-drain"}),
+        ("register", {"name": "j"}),
+        ("deregister", {}),
+        ("trigger", {}),
+    ],
+)
+async def test_routine_job_actions_require_their_arguments(monkeypatch, action, args):
+    from agent import mcp
+
+    for name in (
+        "claim_job",
+        "complete_job",
+        "register_job",
+        "deregister_job",
+        "trigger_job",
+    ):
+        monkeypatch.setattr(
+            mcp.routine_jobs,
+            name,
+            lambda *a, **kw: pytest.fail("routine store must not be called"),
+        )
+    with pytest.raises(ValueError, match="requires"):
+        await mcp.monolith_agent_routine_job(action, **args)
+
+
+@pytest.mark.asyncio
+async def test_routine_job_tool_has_no_legacy_recovery_argument():
+    from agent import mcp
+
+    tool = await mcp.mcp.get_tool("monolith_agent_routine_job")
+    assert "recovery" not in tool.parameters["properties"]
+    assert tool.parameters["required"] == ["action"]

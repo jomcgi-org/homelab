@@ -28,7 +28,7 @@ issue filing have separate default-off switches.
 
 ## Queueing work
 
-Register with the MCP tool `monolith-agent-register-routine-job`:
+Register with the MCP tool `monolith-agent-routine-job`, `action: "register"`:
 
 - `kind: "qwen-drain"`, `payload: {"prompt": ...}` (optional `repo`, `branch`,
   `reasoning`, `model`, `digest`).
@@ -40,9 +40,9 @@ Register with the MCP tool `monolith-agent-register-routine-job`:
 - `digest` appends a server-built evidence block to the prompt at claim time.
   The only value is `factory-retro` (see below).
 - One-shot jobs: `interval_secs` null, `next_run_at` now. On completion
-  `next_run_at` goes NULL and the job leaves the queue; `trigger-routine-job`
+  `next_run_at` goes NULL and the job leaves the queue; `action: "trigger"`
   re-arms it.
-- Recurring jobs: set `interval_secs`. To edit a prompt, `deregister-routine-job`
+- Recurring jobs: set `interval_secs`. To edit a prompt, `action: "deregister"`
   then re-register with the original schedule.
 - `next_run_at` is a priority field: `claim_job` orders by it ascending, so a
   past timestamp jumps the queue.
@@ -252,9 +252,9 @@ finding.
 | Symptom in `last_summary` | Cause | Fix |
 |---|---|---|
 | `502 :invoke_timeout` after ~12 hours | the 43200s EmberVM invoke backstop | a non-converging job: check the tool-call count in `usage_json`, then narrow its search space |
-| `502 {:session_down, ...}`, `503 workspace does not exist`, `All connection attempts failed`, `Server disconnected` | a bad guest; the job was fine | `trigger-routine-job`; it usually passes on a fresh guest. These are terminal, so a one-shot stays dead until requeued by hand |
+| `502 {:session_down, ...}`, `503 workspace does not exist`, `All connection attempts failed`, `Server disconnected` | a bad guest; the job was fine | `routine-job` `action: "trigger"`; it usually passes on a fresh guest. These are terminal, so a one-shot stays dead until requeued by hand |
 | jobs due but nothing claimed for hours, ticks firing | a wedged drain cycle holding the concurrency-1 slot | open the drain console. A pod roll does not clear it (DBOS recovery re-enqueues into a PENDING row). The reaper cancels a cycle with no step checkpoint for 1800s; to clear one sooner, `POST /api/swarm/runs/{workflow_id}/cancel` in-pod |
-| `next_run_at` NULL, job gone from the due list | the one-shot completed | `trigger-routine-job` to re-run |
+| `next_run_at` NULL, job gone from the due list | the one-shot completed | `routine-job` `action: "trigger"` to re-run |
 
 ### Harness knobs
 
