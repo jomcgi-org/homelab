@@ -1247,9 +1247,7 @@ def main():
                 links.get_by_role(
                     "button", name="Create invitation link", exact=True
                 ).click()
-                private_link = links.get_by_label(
-                    "Private invitation link", exact=True
-                )
+                private_link = links.get_by_label("Private invitation link", exact=True)
                 expect(private_link).to_be_visible()
                 invite_links[email] = private_link.input_value()
                 dm.wait_for_load_state("networkidle")
