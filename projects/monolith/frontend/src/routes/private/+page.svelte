@@ -173,8 +173,13 @@
     return DONE_STATUSES.includes(task?.status);
   }
 
+  // A refused toggle reverts the tick; on a phone that reads as a missed
+  // tap unless the page says it failed.
+  let taskError = $state("");
+
   async function toggleTask(task) {
     const prev = task.status;
+    taskError = "";
     // Optimistic flip; the server computes the same transition.
     task.status = DONE_STATUSES.includes(prev) ? "todo" : "done";
     try {
@@ -190,6 +195,7 @@
       if (outcome.data?.status) task.status = outcome.data.status;
     } catch {
       task.status = prev;
+      taskError = `Could not update ${task.title}.`;
     }
   }
 
@@ -420,6 +426,9 @@
                 {/each}
               </ul>
             {/if}
+            {#if taskError}
+              <p class="unavail task-error" role="alert">{taskError}</p>
+            {/if}
           </section>
 
           <!-- Shipping: PRs + merges -->
@@ -443,7 +452,11 @@
                         target="_blank"
                         rel="noopener"
                       >
-                        <span class="ci-dot ci-dot--{ciState(pr.ci)}"></span>
+                        <span
+                          class="ci-dot ci-dot--{ciState(pr.ci)}"
+                          aria-hidden="true"
+                        ></span>
+                        <span class="sr-only">ci {pr.ci ?? "pending"}</span>
                         <span class="pr-num mono">#{pr.number}</span>
                         <span class="pr-title">{pr.title}</span>
                         {#if pr.draft}
