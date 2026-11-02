@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,1671 @@ from factory.orchestration.factory_models import FactoryReceipt, WorkItem
 from factory.orchestration.turn_artifact import schema_errors
 
 _REAL_OBSERVE_HUMAN_OWNERSHIP = conductor._observe_human_ownership
+
+
+def delegation_principal():
+    from auth.api import Authority, Principal, PrincipalKind
+
+    return Principal(
+        subject="human-operator",
+        actor=(),
+        scope=(),
+        groups=("operators",),
+        email=None,
+        kind=PrincipalKind.HUMAN,
+        authority=Authority.STANDING,
+    )
+
+
+def delegation_request(s, kind, *, key="authorize-exact-recovery"):
+    from factory.orchestration import (
+        recovery_delegation as delegation,
+        factory_controls as controls,
+    )
+
+    if kind == "settled_retry":
+        target = {
+            "kind": kind,
+            **{k: s.request[k] for k in ("receipt_id", "session_id", "permit_id")},
+        }
+    else:
+        target = {
+            "kind": kind,
+            **{k: s.request[k] for k in ("receipt_id", "decision_id", "deadline_at")},
+            **{
+                k: v
+                for k, v in s.request["decision"].items()
+                if k not in ("action", "reason", "expected_version")
+            },
+            "expected_revision": s.request["decision"]["expected_version"],
+        }
+    return delegation.Request(
+        operation="preview",
+        target=target,
+        expires_at=(controls._now() + timedelta(minutes=10)).isoformat(),
+        request_key=key,
+        reason="Explicit exact recovery",
+    )
+
+
+def authorize_delegation(s, kind):
+    import asyncio
+    from factory.orchestration import recovery_delegation as delegation
+
+    request = delegation_request(s, kind)
+    preview = asyncio.run(
+        delegation.request_authorization(delegation_principal(), request)
+    )
+    request = request.model_copy(
+        update={
+            "operation": "authorize",
+            "expected_preview_sha256": preview["proposal"]["preview_sha256"],
+        }
+    )
+    result = asyncio.run(
+        delegation.request_authorization(delegation_principal(), request)
+    )
+    return request, result, preview
+
+
+@pytest.mark.parametrize(
+    "kind,fixture",
+    [
+        ("evidence_continuation", "evidence_terminal"),
+        ("settled_retry", "settled_retry_recovery"),
+    ],
+)
+def test_recovery_delegation_executes_exact_shared_owner_once(
+    request, monkeypatch, kind, fixture
+):
+    import asyncio
+    from factory.orchestration import (
+        recovery_delegation as delegation,
+        factory_controls as controls,
+    )
+    from factory.orchestration.factory_models import FactoryControl
+
+    s = request.getfixturevalue(fixture)
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    before = controls.task_snapshot(s.task["id"])
+    native = s.native_snapshot() if kind == "settled_retry" else None
+    with Session(s.engine) as db:
+        version = db.get(FactoryControl, "factory").version
+    req, result, preview = authorize_delegation(s, kind)
+    assert controls.task_snapshot(s.task["id"]) == before
+    with Session(s.engine) as db:
+        assert db.get(FactoryControl, "factory").version == version
+    assert preview["proposal"]["execution_actor"] == delegation.ACTOR
+    assert preview["proposal"]["authorizer"] == "human-operator"
+    asyncio.run(delegation.run_once())
+    state = delegation.status(result["grant_id"])
+    assert state["state"]["state"] == "applied"
+    assert state["state"]["calls"] == 1
+    assert state["owner_result"]["ok"]
+    after = controls.task_snapshot(s.task["id"])
+    assert after["policy"] == before["policy"]
+    assert after["turns_used"] == before["turns_used"]
+    if native is not None:
+        assert s.native_snapshot() == native
+    replay = asyncio.run(delegation.request_authorization(delegation_principal(), req))
+    assert replay["replay"] and replay["grant_id"] == result["grant_id"]
+    asyncio.run(delegation.run_once())
+    assert delegation.status(result["grant_id"])["state"] == state["state"]
+    assert controls.task_snapshot(s.task["id"]) == after
+
+
+@pytest.mark.parametrize(
+    "kind,fixture",
+    [
+        ("evidence_continuation", "evidence_terminal"),
+        ("settled_retry", "settled_retry_recovery"),
+    ],
+)
+@pytest.mark.parametrize("change", ["revoke", "expire", "disable", "scope"])
+def test_recovery_delegation_claim_is_not_mutation_authority(
+    request, monkeypatch, kind, fixture, change
+):
+    import asyncio
+    from factory.orchestration import (
+        recovery_delegation as delegation,
+        factory_controls as controls,
+    )
+    from factory import settled_retry_reconciliation
+
+    s = request.getfixturevalue(fixture)
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    _, result, preview = authorize_delegation(s, kind)
+    token, saved = delegation._claim()
+    before = controls.task_snapshot(s.task["id"])
+    if change == "revoke":
+        revoked = delegation.revoke(
+            delegation_principal(),
+            result["grant_id"],
+            preview["proposal"]["preview_sha256"],
+        )
+        assert revoked["in_flight_may_finish"]
+    elif change == "expire":
+        monkeypatch.setattr(
+            controls,
+            "_now",
+            lambda: (
+                datetime.fromisoformat(saved["request"]["expires_at"])
+                + timedelta(seconds=1)
+            ),
+        )
+    elif change == "disable":
+        monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "false")
+    else:
+        saved["owner_request"]["reason" if kind == "settled_retry" else "decision"] = (
+            "changed"
+        )
+    with pytest.raises((ValueError, TypeError)):
+        if kind == "settled_retry":
+            asyncio.run(
+                settled_retry_reconciliation.run(
+                    "apply",
+                    **saved["owner_request"],
+                    expected_preview_sha256=saved["owner_preview_sha256"],
+                    delegation=token,
+                )
+            )
+        else:
+            s.recovery.apply(
+                saved["owner_request"],
+                actor=delegation.ACTOR,
+                request_key=saved["key"],
+                expected_preview_sha256=saved["owner_preview_sha256"],
+                delegation=token,
+            )
+    assert controls.task_snapshot(s.task["id"])["starts"] == before["starts"]
+    assert delegation.status(result["grant_id"])["owner_result"] is None
+
+
+def test_recovery_delegation_lost_fence_replays_same_key_then_preserves_accounting(
+    settled_retry_recovery, monkeypatch
+):
+    import asyncio
+    from factory.orchestration import (
+        recovery_delegation as delegation,
+        factory_controls as controls,
+    )
+
+    s = settled_retry_recovery
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    _, result, _ = authorize_delegation(s, "settled_retry")
+    native = s.native_snapshot()
+    s.lose_apply_response = True
+    asyncio.run(delegation.run_once())
+    state = delegation.status(result["grant_id"])["state"]
+    assert state["state"] == "uncertain" and state["calls"] == 1
+    assert delegation._claim() is None
+    now = controls._now() + timedelta(seconds=181)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    s.lose_apply_response = False
+    s.proof_change = lambda proof: {
+        **proof,
+        "observed_at_unix_ms": int(now.timestamp() * 1000),
+    }
+    asyncio.run(delegation.run_once())
+    assert delegation.status(result["grant_id"])["state"]["state"] == "applied"
+    assert delegation.status(result["grant_id"])["state"]["calls"] == 2
+    assert s.native_snapshot() == native
+
+
+@pytest.mark.parametrize("closed", ["expired", "revoked", "exhausted"])
+def test_recovery_delegation_uncertainty_blocks_replacement_after_close(
+    settled_retry_recovery, monkeypatch, closed
+):
+    import asyncio
+    from factory.orchestration import (
+        recovery_delegation as delegation,
+        factory_controls as controls,
+    )
+
+    s = settled_retry_recovery
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    req, result, preview = authorize_delegation(s, "settled_retry")
+    s.lose_apply_response = True
+    asyncio.run(delegation.run_once())
+    now = controls._now() + timedelta(seconds=181)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    if closed == "revoked":
+        delegation.revoke(
+            delegation_principal(),
+            result["grant_id"],
+            preview["proposal"]["preview_sha256"],
+        )
+    elif closed == "expired":
+        now = datetime.fromisoformat(req.expires_at) + timedelta(seconds=1)
+    else:
+        asyncio.run(delegation.run_once())
+        now += timedelta(seconds=181)
+    assert delegation._claim() is None
+    state = delegation.status(result["grant_id"])
+    assert state["state"]["state"] == "uncertain"
+    with Session(s.engine) as db:
+        assert len(delegation._pending(db)) == 1
+    # A new key cannot silently replace this actor's or a human's intent.
+    with pytest.raises(ValueError):
+        authorize_delegation(s, "settled_retry")
+
+
+def test_recovery_delegation_reconciles_commit_after_revoke_without_new_owner_call(
+    evidence_terminal, monkeypatch
+):
+    from factory.orchestration import recovery_delegation as delegation
+
+    s = evidence_terminal
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    _, result, preview = authorize_delegation(s, "evidence_continuation")
+    token, saved = delegation._claim()
+    s.recovery.apply(
+        saved["owner_request"],
+        actor=delegation.ACTOR,
+        request_key=saved["key"],
+        expected_preview_sha256=saved["owner_preview_sha256"],
+        delegation=token,
+    )
+    delegation.revoke(
+        delegation_principal(),
+        result["grant_id"],
+        preview["proposal"]["preview_sha256"],
+    )
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "false")
+    assert delegation._claim() is None
+    delegation._finish(token, {"ok": False, "state": "outcome_unknown"})
+    assert delegation.status(result["grant_id"])["state"]["state"] == "applied"
+
+
+def test_recovery_delegation_concurrent_claims_and_stale_call_cannot_apply(
+    evidence_terminal, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from factory.orchestration import (
+        recovery_delegation as delegation,
+        factory_controls as controls,
+    )
+
+    s = evidence_terminal
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    _, result, _ = authorize_delegation(s, "evidence_continuation")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claims = list(pool.map(lambda _: delegation._claim(), range(2)))
+    claimed = [claim for claim in claims if claim is not None]
+    assert len(claimed) == 1
+    old_token, saved = claimed[0]
+    now = controls._now() + timedelta(seconds=181)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    new_token, _ = delegation._claim()
+    assert new_token != old_token
+    with pytest.raises(ValueError, match="call_changed"):
+        s.recovery.apply(
+            saved["owner_request"],
+            actor=delegation.ACTOR,
+            request_key=saved["key"],
+            expected_preview_sha256=saved["owner_preview_sha256"],
+            delegation=old_token,
+        )
+    s.recovery.apply(
+        saved["owner_request"],
+        actor=delegation.ACTOR,
+        request_key=saved["key"],
+        expected_preview_sha256=saved["owner_preview_sha256"],
+        delegation=new_token,
+    )
+    delegation._finish(old_token, {"error": "late_old_worker"})
+    state = delegation.status(result["grant_id"])["state"]
+    assert state["state"] == "applied" and state["calls"] == 2
+
+
+def test_recovery_delegation_uncertain_call_is_bounded_and_diagnosed_once(
+    settled_retry_recovery, monkeypatch
+):
+    import asyncio
+    from factory.orchestration import (
+        recovery_delegation as delegation,
+        factory_controls as controls,
+    )
+
+    s = settled_retry_recovery
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    _, result, _ = authorize_delegation(s, "settled_retry")
+    now = controls._now()
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    s.proof_change = lambda proof: {
+        **proof,
+        "observed_at_unix_ms": int(now.timestamp() * 1000),
+    }
+    s.lose_apply_response = True
+    for _ in range(2):
+        asyncio.run(delegation.run_once())
+        now += timedelta(seconds=181)
+    for _ in range(3):
+        asyncio.run(delegation.run_once())
+    assert s.cp_effects == 1
+    applies = [payload for operation, payload in s.cp_calls if operation == "apply"]
+    assert len(applies) == 2 and applies[0] == applies[1]
+    state = delegation.status(result["grant_id"])
+    assert state["state"]["state"] == "uncertain" and state["state"]["calls"] == 2
+    with Session(s.engine) as db:
+        context = delegation.diagnostic_context(db, s.task["id"])
+        assert len(context) == 1 and context[0]["grant_id"] == result["grant_id"]
+    assert len(s.audits(delegation.DIAGNOSIS)) == 1
+
+
+def test_recovery_delegation_conflicting_human_intent_blocks_worker(
+    settled_retry_recovery, monkeypatch
+):
+    import asyncio
+    from factory.orchestration import recovery_delegation as delegation
+
+    s = settled_retry_recovery
+    monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+    _, result, _ = authorize_delegation(s, "settled_retry")
+    viewed = _settled_retry_call(s)
+    s.lose_apply_response = True
+    assert (
+        _settled_retry_call(s, "apply", viewed["preview_sha256"])["state"]
+        == "outcome_unknown"
+    )
+    before = list(s.cp_calls)
+    asyncio.run(delegation.run_once())
+    assert not any(operation == "apply" for operation, _ in s.cp_calls[len(before) :])
+    assert delegation.status(result["grant_id"])["owner_result"] is None
+    assert s.cp_effects == 1
+
+
+def test_recovery_delegation_disabled_cannot_authorize_and_workload_cannot_preview(
+    evidence_terminal, monkeypatch
+):
+    import asyncio
+    from dataclasses import replace
+    from auth.api import PrincipalKind
+    from factory.orchestration import recovery_delegation as delegation
+
+    req = delegation_request(evidence_terminal, "evidence_continuation")
+    principal = delegation_principal()
+    with pytest.raises(ValueError, match="standing_human_required"):
+        asyncio.run(
+            delegation.request_authorization(
+                replace(principal, kind=PrincipalKind.WORKLOAD), req
+            )
+        )
+    monkeypatch.delenv("FACTORY_RECOVERY_DELEGATION_ENABLED", raising=False)
+    preview = asyncio.run(delegation.request_authorization(principal, req))
+    assert not preview["enabled"]
+    with pytest.raises(ValueError, match="disabled"):
+        asyncio.run(
+            delegation.request_authorization(
+                principal,
+                req.model_copy(
+                    update={
+                        "operation": "authorize",
+                        "expected_preview_sha256": preview["proposal"][
+                            "preview_sha256"
+                        ],
+                    }
+                ),
+            )
+        )
+
+
+def test_recovery_delegation_tick_does_not_block_or_duplicate_running_owner(
+    monkeypatch,
+):
+    import asyncio
+    from factory.orchestration import recovery_delegation as delegation
+
+    async def scenario():
+        running = asyncio.Event()
+        calls = []
+
+        async def owner():
+            calls.append("owner")
+            running.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setenv("FACTORY_RECOVERY_DELEGATION_ENABLED", "true")
+        monkeypatch.setattr(delegation, "run_once", owner)
+        monkeypatch.setattr(delegation, "_worker", None)
+        delegation.launch_tick()
+        await running.wait()
+        for _ in range(5):
+            delegation.launch_tick()
+        assert calls == ["owner"]
+        await delegation.stop()
+        assert delegation._worker is None
+
+    asyncio.run(scenario())
+
+
+@pytest.fixture
+def evidence_resume(feedback_db, monkeypatch):
+    from factory.execution.models import (
+        AgentSession,
+        AgentCapacityReservation,
+        AgentTurn,
+        PendingMessage,
+    )
+    from sqlmodel import SQLModel
+    from factory.orchestration import evidence_continuation as continuation
+    from factory.orchestration import factory_controls as controls, graph
+    from factory.orchestration.models import SwarmNodeRun
+
+    feedback_db = feedback_db.execution_options(
+        schema_translate_map={"swarm": None, "agent_sessions": None}
+    )
+    for module in (conductor, conductor.graph, controls):
+        monkeypatch.setattr(module, "get_engine", lambda: feedback_db)
+    SQLModel.metadata.create_all(
+        feedback_db,
+        tables=[
+            m.__table__
+            for m in (AgentSession, AgentCapacityReservation, AgentTurn, PendingMessage)
+        ],
+    )
+    task, policy = feedback_task(
+        max_turns=6, max_task_turns_hard=6, max_planner_turns=10
+    )
+    head = "a" * 40
+    complete_feedback_node(
+        task,
+        policy,
+        "implement_fix",
+        {
+            "status": "complete",
+            "pr_number": 3,
+            "head_sha": head,
+            "summary": "Implemented the existing issue acceptance checks",
+        },
+        head=head,
+    )
+    review = complete_feedback_node(
+        task,
+        policy,
+        "review_initial",
+        {"verdict": "changes_requested", "pr_number": 3, "head_sha": head},
+        head=head,
+        deps=["implement_fix"],
+    )
+    for key, kind, deps in (
+        ("correct_1", "work", ["review_initial"]),
+        ("review_1", "gate", ["correct_1"]),
+    ):
+        assert graph.add_node(
+            task["id"],
+            node_key=key,
+            kind=kind,
+            prompt="Original correction or review",
+            model="opus",
+            deps=deps,
+            max_cost_usd=policy["turn_budget_usd"],
+            side_effects=True,
+            max_attempts=1,
+            turn_timeout_seconds=60,
+            author_kind="engine",
+            author="factory",
+            cause_kind="factory_loop",
+            cause_ref="round:1",
+            stated_reason="Existing round",
+            expected_version=graph.current_version(task["id"]),
+        ).ok
+    source = run_feedback_node(
+        task,
+        "correct_1",
+        {
+            "status": "escalate",
+            "pr_number": 3,
+            "head_sha": head,
+            "reason": "Current-head evidence unavailable",
+        },
+        head=head,
+        status="escalated",
+    )
+    with Session(feedback_db) as db, db.begin():
+        db.add(
+            AgentSession(
+                id=source["session_id"],
+                local_session_id=f"factory:{task['id']}:correct_1:1",
+                workspace="/workspace/src",
+                branch=conductor.delivery_branch(task),
+                repo=task["repo"],
+                workflow_id=source["dispatch_key"],
+                node_key="correct_1",
+                node_attempt=1,
+                status="completed",
+                last_turn_at=datetime.now(timezone.utc) - timedelta(minutes=6),
+            )
+        )
+        db.get(SwarmNodeRun, source["id"]).finished_at = datetime.now(
+            timezone.utc
+        ) - timedelta(minutes=5)
+        controls._audit(
+            db,
+            "factory",
+            "funding_granted",
+            task_id=task["id"],
+            source_run_id=review["id"],
+            policy_overlay=policy,
+            next_plan="One evidence-only correction and existing independent review",
+            review_due_at=(
+                datetime.now(timezone.utc) + timedelta(minutes=30)
+            ).isoformat(),
+            deadline_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        )
+    pr = {
+        "number": 3,
+        "state": "open",
+        "merged": False,
+        "head": {
+            "sha": head,
+            "ref": conductor.delivery_branch(task),
+            "repo": {"full_name": task["repo"]},
+        },
+        "base": {"ref": "main"},
+    }
+    comment = {
+        "id": 99,
+        "issue_url": f"https://api.github.com/repos/{task['repo']}/issues/3",
+        "body": f"Verified cached evidence at {head}",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    issue = {"state": "open", "labels": []}
+    checks = {
+        "state": "success",
+        "statuses": [{"context": "pr-checks", "state": "success"}],
+    }
+
+    def read(repo, path):
+        assert repo == task["repo"]
+        if path.startswith("git/ref/heads/"):
+            return {"object": {"sha": head}}
+        return {
+            "issues/7": issue,
+            "pulls/3": pr,
+            "issues/comments/99": comment,
+            f"commits/{head}/status": checks,
+        }[path]
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    decision = {
+        "action": "continue_evidence",
+        "reason": "New exact-head evidence resolves the prior evidence blocker",
+        "node_key": "correct_1",
+        "source_run_id": source["id"],
+        "pr_number": 3,
+        "head_sha": head,
+        "evidence_comment_id": 99,
+        "expected_version": graph.current_version(task["id"]),
+    }
+    return SimpleNamespace(
+        task=task,
+        policy=policy,
+        head=head,
+        source=source,
+        decision=decision,
+        read=read,
+        pr=pr,
+        issue=issue,
+        comment=comment,
+        checks=checks,
+        engine=feedback_db,
+        continuation=continuation,
+    )
+
+
+def grant_evidence(s, cause="decision:evidence:1"):
+    s.continuation.apply(s.task["id"], s.decision, cause, github_get=s.read)
+    return next(
+        n
+        for n in conductor.graph.load_graph(s.task["id"])
+        if n["node_key"] == "correct_1"
+    )
+
+
+def evidence_context(s, node):
+    key = node["node_key"]
+    attempt = 2 if key == "correct_1" else 1
+    workflow = f"factory-node:{s.task['id']}:{key}:{attempt}"
+    return {
+        "repo": s.task["repo"],
+        "branch": conductor.delivery_branch(s.task),
+        "workflow_id": workflow,
+        "artifact_path": f".factory/{key}-{attempt}.json",
+        "artifact_schema": s.continuation.prepare(
+            s.task, node, conductor._schema(key), github_get=s.read
+        ),
+        "hydration_branch": "main",
+        "retry_context": "[]",
+    }
+
+
+def test_evidence_continuation_reuses_owner_and_preserves_history(evidence_resume):
+    from factory.orchestration import factory_controls as controls
+
+    s = evidence_resume
+    graph = conductor.graph
+    before = graph.node_runs(s.task["id"])
+    original = graph.load_graph(s.task["id"])
+    assert not conductor._ready_nodes(original, before)
+    node = grant_evidence(s)
+    assert node["max_attempts"] == 1
+    assert graph.node_runs(s.task["id"]) == before
+    assert graph.load_graph(s.task["id"], s.decision["expected_version"]) == original
+    assert [
+        n["node_key"]
+        for n in conductor._ready_nodes(graph.load_graph(s.task["id"]), before)
+    ] == ["correct_1"]
+    allowance = controls.derive_allowance(
+        s.task["id"], s.policy, review_rounds_remaining=0
+    )
+    assert allowance["turns"] == 5
+    context = evidence_context(s, node)
+    key = context["workflow_id"]
+    assert conductor.reserve_node(s.task["id"], "correct_1", key, context)
+    after = graph.node_runs(s.task["id"])
+    new = next(r for r in after if r["node_key"] == "correct_1" and r["attempt"] == 2)
+    assert new["pin"]["max_attempts"] == 2
+    assert new["pin"]["max_cost_usd"] == node["max_cost_usd"]
+    assert "Do not edit source" in new["pin"]["prompt"]
+    assert new["status"] == "admitted"
+    assert next(r for r in after if r["id"] == s.source["id"]) == next(
+        r for r in before if r["id"] == s.source["id"]
+    )
+    assert conductor.reserve_node(s.task["id"], "correct_1", key, context)
+    assert len(graph.node_runs(s.task["id"])) == len(after)
+    grant_evidence(s)  # replay after consumption/restart acknowledges only
+    assert len(graph.node_runs(s.task["id"])) == len(after)
+    assert controls.task_snapshot(s.task["id"])["turns_used"] == 4
+    assert not conductor._ready_nodes(graph.load_graph(s.task["id"]), after)
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ("head", "pr_changed"),
+        ("comment_target", "comment_identity_missing"),
+        ("old_evidence", "evidence_not_new"),
+        ("ci", "ci_not_passed"),
+        ("human", "issue_held"),
+        ("version", "stale_version"),
+        ("run", "escalation_changed"),
+        ("extra_fields", "invalid_request"),
+    ],
+)
+def test_evidence_continuation_refuses_invalid_inputs(evidence_resume, change, reason):
+    s = evidence_resume
+    if change == "head":
+        s.pr["head"]["sha"] = "b" * 40
+    if change == "comment_target":
+        s.comment["issue_url"] = "https://api.github.com/repos/other/repo/issues/3"
+    if change == "old_evidence":
+        s.comment["updated_at"] = "2020-01-01T00:00:00Z"
+    if change == "ci":
+        s.checks["statuses"][0]["state"] = "failure"
+    if change == "human":
+        s.issue["labels"] = [{"name": "human"}]
+    if change == "version":
+        s.decision["expected_version"] -= 1
+    if change == "run":
+        s.decision["source_run_id"] += 100
+    if change == "extra_fields":
+        s.decision["gate"] = {"kind": "external_account"}
+    before = conductor.graph.node_runs(s.task["id"])
+    with pytest.raises(ValueError, match=reason):
+        grant_evidence(s)
+    assert conductor.graph.node_runs(s.task["id"]) == before
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ("paused", "task_paused"),
+        ("unknown", "unresolved_starts"),
+        ("attempt_cap", "attempt_cap"),
+        ("task_cap", "task_cap"),
+        ("review_started", "review_owner_changed"),
+    ],
+)
+def test_evidence_continuation_preserves_caps_and_holds(
+    evidence_resume, change, reason
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit, FactoryStart
+    from factory.orchestration.models import SwarmPlanNode
+
+    s = evidence_resume
+    with Session(s.engine) as db, db.begin():
+        if change == "paused":
+            controls._receipt(db, s.task["id"]).task_paused = True
+        elif change == "unknown":
+            db.exec(
+                select(FactoryStart).where(FactoryStart.task_id == s.task["id"])
+            ).first().status = "uncertain"
+        elif change == "review_started":
+            db.exec(
+                select(SwarmPlanNode).where(
+                    SwarmPlanNode.task_id == s.task["id"],
+                    SwarmPlanNode.node_key == "review_1",
+                )
+            ).one().armed_at = datetime.now(timezone.utc)
+        else:
+            row = db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == "funding_granted")
+            ).one()
+            grant = json.loads(row.detail_json)
+            grant["policy_overlay"][
+                "max_attempts" if change == "attempt_cap" else "max_task_turns_hard"
+            ] = 1 if change == "attempt_cap" else 4
+            row.detail_json = json.dumps(grant)
+    with pytest.raises(ValueError, match=reason):
+        grant_evidence(s)
+
+
+@pytest.mark.parametrize(
+    "change", ["comment", "head", "funding", "direction", "preflight_age"]
+)
+def test_evidence_continuation_rechecks_before_admission(evidence_resume, change):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = evidence_resume
+    node = grant_evidence(s)
+    if change in ("comment", "head"):
+        if change == "comment":
+            s.comment["body"] += " changed"
+        else:
+            s.pr["head"]["sha"] = "b" * 40
+        with pytest.raises(ValueError):
+            evidence_context(s, node)
+        return
+    context = evidence_context(s, node)
+    with Session(s.engine) as db, db.begin():
+        if change == "funding":
+            row = db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == "funding_granted")
+            ).one()
+            controls._audit(
+                db,
+                "factory",
+                "funding_granted",
+                task_id=s.task["id"],
+                **json.loads(row.detail_json),
+            )
+        elif change == "direction":
+            controls._receipt(
+                db, s.task["id"]
+            ).direction_json = '{"note":"Changed scope"}'
+    if change == "preflight_age":
+        context["artifact_schema"][s.continuation.MARKER]["observed_at"] = (
+            "2020-01-01T00:00:00Z"
+        )
+    assert not conductor.reserve_node(
+        s.task["id"], "correct_1", context["workflow_id"], context
+    )
+    assert len(conductor.graph.node_runs(s.task["id"], "correct_1")) == 1
+
+
+def test_evidence_continuation_capacity_denial_consumes_grant(evidence_resume):
+    from factory.orchestration import factory_controls as controls
+
+    s = evidence_resume
+    node = grant_evidence(s)
+    context = evidence_context(s, node)
+    assert conductor.reserve_node(
+        s.task["id"], "correct_1", context["workflow_id"], context
+    )
+    assert conductor.graph.record_outcome(
+        s.task["id"], "correct_1", 2, "failed", 0.0, None, '{"capacity_denied":true}'
+    ).ok
+    assert controls.record_start_outcome(
+        s.task["id"], context["workflow_id"], "failed", "factory", cost_usd=0.0
+    )["ok"]
+    runs = conductor.graph.node_runs(s.task["id"])
+    assert not conductor._ready_nodes(conductor.graph.load_graph(s.task["id"]), runs)
+    assert not conductor.graph.admit_dispatch(
+        s.task["id"], "correct_1", dispatch_key="third", execution_context=context
+    ).ok
+    s.decision["expected_version"] = conductor.graph.current_version(s.task["id"])
+    with pytest.raises(ValueError, match="already_granted"):
+        grant_evidence(s, cause="different")
+
+
+def test_evidence_continuation_does_not_settle_unknown_execution(evidence_resume):
+    s = evidence_resume
+    node = grant_evidence(s)
+    context = evidence_context(s, node)
+    pin = {**context, "node_key": "correct_1"}
+    result = {"status": "uncertain", "head_sha": "b" * 40, "cost_usd": None}
+    assert s.continuation.validate_result(pin, result) is result
+    result = {
+        **result,
+        "status": "succeeded",
+        "value": {"status": "complete", "head_sha": s.head, "pr_number": 3},
+    }
+    failed = s.continuation.validate_result(pin, result)
+    assert failed["status"] == "failed"
+    assert failed["cost_usd"] is None and failed["previous_outcome"] == result
+    result = {**result, "head_sha": s.head}
+    assert s.continuation.validate_result(pin, result) is result
+
+
+def test_evidence_continuation_prompt_has_no_push_requirement(evidence_resume):
+    from factory.orchestration.node_workflows import _node_prompt
+
+    s = evidence_resume
+    schema = evidence_context(s, grant_evidence(s))["artifact_schema"]
+    prompt = _node_prompt(
+        "Evidence only", ".factory/out.json", schema, branch="factory/test"
+    )
+    assert "Commit and push source changes" not in prompt
+    assert "without source changes, commits or pushes" in prompt
+
+
+def test_evidence_continuation_keeps_independent_review_pending_until_delivery(
+    evidence_resume,
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.node_workflows import _node_prompt
+
+    s = evidence_resume
+    node = grant_evidence(s)
+    graph = conductor.graph
+    review = next(
+        n for n in graph.load_graph(s.task["id"]) if n["node_key"] == "review_1"
+    )
+    context = evidence_context(s, review)
+    assert not conductor.reserve_node(
+        s.task["id"], "review_1", context["workflow_id"], context
+    )
+    correction = evidence_context(s, node)
+    assert conductor.reserve_node(
+        s.task["id"], "correct_1", correction["workflow_id"], correction
+    )
+    result = {
+        "status": "succeeded",
+        "head_sha": s.head,
+        "cost_usd": None,
+        "value": {"status": "complete", "head_sha": s.head, "pr_number": 3},
+    }
+    assert graph.record_outcome(
+        s.task["id"], "correct_1", 2, "succeeded", None, s.head, json.dumps(result)
+    ).ok
+    assert controls.record_start_outcome(
+        s.task["id"], correction["workflow_id"], "succeeded", "factory"
+    )["ok"]
+    assert [
+        n["node_key"]
+        for n in conductor._ready_nodes(
+            graph.load_graph(s.task["id"]), graph.node_runs(s.task["id"])
+        )
+    ] == ["review_1"]
+    context = evidence_context(s, review)
+    assert conductor.reserve_node(
+        s.task["id"], "review_1", context["workflow_id"], context
+    )
+    pin = graph.node_runs(s.task["id"], "review_1")[0]["pin"]
+    assert pin["artifact_schema"]["properties"]["head_sha"] == {"const": s.head}
+    prompt = _node_prompt(
+        pin["prompt"],
+        pin["artifact_path"],
+        pin["artifact_schema"],
+        branch=pin["branch"],
+    )
+    assert "Do not modify the PR body" in prompt
+    assert "Only the existing PR body may be updated" not in prompt
+    assert controls.task_snapshot(s.task["id"])["turns_used"] == 5
+    assert graph.node_runs(s.task["id"], "correct_1")[0]["status"] == "escalated"
+
+
+@pytest.mark.parametrize(
+    "change", ["head", "closed", "artifact_head", "artifact_pr", "incomplete"]
+)
+def test_evidence_continuation_rejects_changed_completion(evidence_resume, change):
+    s = evidence_resume
+    node = grant_evidence(s)
+    pin = {**evidence_context(s, node), "node_key": "correct_1"}
+    value = {"status": "complete", "head_sha": s.head, "pr_number": 3}
+    result = {
+        "status": "succeeded",
+        "head_sha": s.head,
+        "cost_usd": 1.5,
+        "value": value,
+    }
+    if change == "head":
+        s.pr["head"]["sha"] = "b" * 40
+    if change == "closed":
+        s.pr["state"] = "closed"
+    if change == "artifact_head":
+        value["head_sha"] = "b" * 40
+    if change == "artifact_pr":
+        value["pr_number"] = 4
+    if change == "incomplete":
+        value["status"] = "needs_work"
+    checked = s.continuation.validate_result(
+        pin, result, task=s.task, github_get=s.read
+    )
+    assert checked["status"] == "failed"
+    assert checked["cost_usd"] == 1.5 and checked["previous_outcome"] == result
+
+
+@pytest.mark.parametrize("value", [None, "invalid", "", 42])
+def test_evidence_continuation_malformed_timestamp_fails_closed(evidence_resume, value):
+    s = evidence_resume
+    s.comment["updated_at"] = value
+    with pytest.raises(ValueError, match="invalid_timestamp"):
+        grant_evidence(s)
+
+
+def test_evidence_continuation_cas_rechecks_changes_during_github_read(evidence_resume):
+    from factory.orchestration import factory_controls as controls
+
+    s = evidence_resume
+
+    def read(repo, path):
+        if path == "issues/comments/99":
+            with controls._locked_session() as (db, control):
+                controls._receipt(db, s.task["id"]).task_paused = True
+                control.version += 1
+        return s.read(repo, path)
+
+    with pytest.raises(ValueError, match="task_paused"):
+        s.continuation.apply(s.task["id"], s.decision, "raced", github_get=read)
+    assert not any(
+        n.get("evidence_continuation") for n in conductor.graph.load_graph(s.task["id"])
+    )
+
+
+def test_evidence_continuation_concurrent_grants_and_admission_are_once(
+    evidence_resume,
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from factory.orchestration.models import SwarmPlanVersion
+
+    s = evidence_resume
+    readers = Barrier(2)
+
+    def read(repo, path):
+        if path == "issues/comments/99":
+            readers.wait(timeout=10)
+        return s.read(repo, path)
+
+    def grant(_):
+        s.continuation.apply(s.task["id"], s.decision, "same-request", github_get=read)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(grant, range(2)))
+    with Session(s.engine) as db:
+        assert (
+            len(
+                db.exec(
+                    select(SwarmPlanVersion).where(
+                        SwarmPlanVersion.task_id == s.task["id"],
+                        SwarmPlanVersion.op == s.continuation.OP,
+                    )
+                ).all()
+            )
+            == 1
+        )
+    node = next(
+        n
+        for n in conductor.graph.load_graph(s.task["id"])
+        if n["node_key"] == "correct_1"
+    )
+    context = evidence_context(s, node)
+
+    def reserve(_):
+        return bool(
+            conductor.reserve_node(
+                s.task["id"], "correct_1", context["workflow_id"], context
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(pool.map(reserve, range(2))) == [True, True]
+    assert len(conductor.graph.node_runs(s.task["id"], "correct_1")) == 2
+
+
+def test_evidence_continuation_stale_block_is_durable_and_idempotent(evidence_resume):
+    s = evidence_resume
+    node = grant_evidence(s)
+    context = evidence_context(s, node)
+    s.continuation.block(s.task["id"], node["evidence_continuation"], "changed_head")
+    revision = conductor.graph.current_version(s.task["id"])
+    s.continuation.block(s.task["id"], node["evidence_continuation"], "changed_head")
+    assert conductor.graph.current_version(s.task["id"]) == revision
+    assert not conductor._ready_nodes(
+        conductor.graph.load_graph(s.task["id"]),
+        conductor.graph.node_runs(s.task["id"]),
+    )
+    assert not conductor.reserve_node(
+        s.task["id"], "correct_1", context["workflow_id"], context
+    )
+
+
+@pytest.fixture
+def evidence_terminal(evidence_resume):
+    from factory.orchestration import (
+        evidence_recovery,
+        factory_controls as controls,
+        factory_decisions,
+    )
+
+    s = evidence_resume
+    with Session(s.engine) as db, db.begin():
+        row = controls._receipt(db, s.task["id"])
+        row.state = "escalated"
+        row.escalation_json = json.dumps(
+            {
+                "reason": "Evidence continuation unavailable",
+                "question": "Recover the same owner?",
+                "options": [
+                    {"key": "defer", "label": "Defer", "effect": "defer", "detail": {}}
+                ],
+            }
+        )
+        task = conductor.graph._lock_task(db, s.task["id"])
+        task.settled_at = datetime.now(timezone.utc)
+        task.start_state = "escalated"
+        s.request = {
+            "receipt_id": row.id,
+            "decision_id": factory_decisions._fields(row)["decision_id"],
+            "deadline_at": (
+                datetime.now(timezone.utc) + timedelta(minutes=30)
+            ).isoformat(),
+            "decision": dict(s.decision),
+        }
+        s.prior = row.model_dump(mode="json")
+    s.recovery = evidence_recovery
+    s.issue["labels"] = [{"name": "needs-human"}]
+    return s
+
+
+def recover_evidence(s):
+    proposal = s.recovery.preview(s.request)["proposal"]
+    result = s.recovery.apply(
+        s.request,
+        actor="operator",
+        request_key="same-owner",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    return proposal, result
+
+
+def test_evidence_continuation_terminal_operator_recovery_keeps_owner_and_accounting(
+    evidence_terminal,
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = evidence_terminal
+    runs = conductor.graph.node_runs(s.task["id"])
+    before = controls.task_snapshot(s.task["id"])
+    proposal, result = recover_evidence(s)
+    after = controls.task_snapshot(s.task["id"])
+    assert result["ok"] and after["state"] == "admitted"
+    assert after["task_id"] == before["task_id"]
+    assert after["policy"] == before["policy"] and after["starts"] == before["starts"]
+    assert after["turns_used"] == before["turns_used"] == 3
+    assert after["allowance"]["turns"] == proposal["work_turn_ceiling"] == 5
+    assert after["deadline_at"] == proposal["deadline_at"]
+    assert conductor.graph.node_runs(s.task["id"]) == runs
+    with Session(s.engine) as db:
+        audit = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == s.recovery.ACTION)
+        ).one()
+        saved = json.loads(audit.detail_json)["proposal"]
+        assert saved["prior_escalation"] == json.loads(s.prior["escalation_json"])
+        assert saved["local"]["task"]["settled_at"] is not None
+        assert controls._receipt(db, s.task["id"]).policy_json == s.prior["policy_json"]
+    assert (
+        s.recovery.apply(
+            s.request,
+            actor="operator",
+            request_key="same-owner",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+        == result
+    )
+    assert s.issue["labels"] == [{"name": "needs-human"}]
+    node = next(
+        n
+        for n in conductor.graph.load_graph(s.task["id"])
+        if n["node_key"] == "correct_1"
+    )
+    context = evidence_context(s, node)
+    assert conductor.reserve_node(
+        s.task["id"], "correct_1", context["workflow_id"], context
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["decision", "deadline", "head", "human", "paused", "control", "direction"],
+)
+def test_evidence_continuation_terminal_preview_changes_refuse(
+    evidence_terminal, change
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = evidence_terminal
+    proposal = s.recovery.preview(s.request)["proposal"]
+    if change == "decision":
+        s.request["decision_id"] = "0" * 64
+    if change == "deadline":
+        s.request["deadline_at"] = (
+            datetime.now(timezone.utc) + timedelta(hours=2)
+        ).isoformat()
+    if change == "head":
+        s.pr["head"]["sha"] = "b" * 40
+    if change == "human":
+        s.issue["labels"].append({"name": "human"})
+    with controls._locked_session() as (db, control):
+        row = controls._receipt(db, s.task["id"])
+        if change == "paused":
+            row.task_paused = True
+        if change == "control":
+            control.version += 1
+        if change == "direction":
+            row.direction_json = '{"note":"new scope"}'
+    with pytest.raises(ValueError):
+        s.recovery.apply(
+            s.request,
+            actor="operator",
+            request_key="same-owner",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+    assert controls.task_snapshot(s.task["id"])["state"] == "escalated"
+
+
+def test_evidence_continuation_terminal_scope_rejects_old_retries_new_funding_and_early_acceptance(
+    evidence_terminal,
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = evidence_terminal
+    proposal, _ = recover_evidence(s)
+    for key in (
+        "correct_1:3",
+        "conductor_funding_99:1",
+        "implement_fix:2",
+        proposal["planner_key"] + ":1",
+    ):
+        refusal = controls.authorize_start(
+            s.task["id"],
+            f"factory-node:{s.task['id']}:{key}",
+            "factory",
+            model="opus",
+            max_cost_usd=1,
+        )
+        assert not refusal["ok"]
+    with pytest.raises(ValueError, match="acceptance_only"):
+        conductor._apply_decision(
+            s.task, s.policy, {"action": "request_funding"}, "old-planner", []
+        )
+
+
+@pytest.mark.parametrize(
+    "change", ["pending", "active_session", "fence", "unknown_permit", "owner"]
+)
+def test_evidence_continuation_rechecks_native_work_and_ownership(
+    evidence_resume, change
+):
+    from factory.execution.models import (
+        AgentSession,
+        AgentCapacityReservation,
+        PendingMessage,
+    )
+    from factory.orchestration import factory_controls as controls
+
+    s = evidence_resume
+    node = grant_evidence(s)
+    context = evidence_context(s, node)
+    with Session(s.engine) as db, db.begin():
+        session = db.get(AgentSession, s.source["session_id"])
+        if change == "pending":
+            db.add(
+                PendingMessage(
+                    session_id=session.id, seq=2, message_text="pending work"
+                )
+            )
+        if change == "active_session":
+            session.status = "running"
+        if change == "fence":
+            session.result_receipt_fence_id = "unsettled"
+        if change == "unknown_permit":
+            db.add(
+                AgentCapacityReservation(
+                    local_session_id=session.local_session_id,
+                    session_id=session.id,
+                    pending_seq=2,
+                    tier="project",
+                    state="uncertain",
+                )
+            )
+        if change == "owner":
+            original = controls._receipt(db, s.task["id"])
+            clone = original.model_dump(exclude={"id"})
+            clone.update(task_id=None, generation=original.generation + 1)
+            db.add(FactoryReceipt(**clone))
+    assert not conductor.reserve_node(
+        s.task["id"], "correct_1", context["workflow_id"], context
+    )
+    assert len(conductor.graph.node_runs(s.task["id"], "correct_1")) == 1
+
+
+@pytest.mark.parametrize("verdict", ["approve", "changes_requested", "draft"])
+def test_evidence_continuation_terminal_executes_only_pair_and_one_acceptance(
+    evidence_terminal, monkeypatch, verdict
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.node_workflows import _node_prompt
+
+    s = evidence_terminal
+    proposal, _ = recover_evidence(s)
+    monkeypatch.setattr(conductor, "_slot_budget", lambda: 1)
+    monkeypatch.setattr(conductor, "_reviewer_override", lambda *_: (True, "opus"))
+    monkeypatch.setattr(conductor, "_attempt_escalation", lambda *_: None)
+    monkeypatch.setattr(conductor, "select_model", lambda *_: {"model": "opus"})
+    real_pause = conductor._pause_refusal
+    pauses = []
+    monkeypatch.setattr(
+        conductor, "_pause_refusal", lambda _task, reason: pauses.append(reason)
+    )
+
+    def tick():
+        return s.recovery.reconcile(
+            conductor._task(s.task["id"]),
+            s.policy,
+            conductor.graph.load_graph(s.task["id"]),
+            conductor.graph.node_runs(s.task["id"]),
+        )
+
+    def settle(key, attempt, value):
+        workflow = f"factory-node:{s.task['id']}:{key}:{attempt}"
+        result = {
+            "status": "succeeded",
+            "head_sha": s.head,
+            "cost_usd": None,
+            "value": {"summary": "Verified cached exact-head evidence", **value},
+            "artifact": {
+                "status": "ok",
+                "value": {"summary": "Verified cached exact-head evidence", **value},
+            },
+        }
+        assert conductor.graph.record_outcome(
+            s.task["id"], key, attempt, "succeeded", None, s.head, json.dumps(result)
+        ).ok
+        assert controls.record_start_outcome(
+            s.task["id"], workflow, "succeeded", "factory"
+        )["ok"]
+
+    assert tick()
+    assert conductor.graph.node_runs(s.task["id"], "correct_1")[-1]["attempt"] == 2
+    settle("correct_1", 2, {"status": "complete", "head_sha": s.head, "pr_number": 3})
+    assert tick()
+    assert len(conductor.graph.node_runs(s.task["id"], "review_1")) == 1
+    settle(
+        "review_1",
+        1,
+        {
+            "verdict": "approve" if verdict == "draft" else verdict,
+            "head_sha": s.head,
+            "pr_number": 3,
+        },
+    )
+    assert tick()
+    if verdict == "changes_requested":
+        assert pauses and not conductor.graph.node_runs(
+            s.task["id"], proposal["planner_key"]
+        )
+        return
+    final = next(
+        n
+        for n in conductor.graph.load_graph(s.task["id"])
+        if n["node_key"] == proposal["planner_key"]
+    )
+    assert final["max_attempts"] == 1
+    assert tick()
+    run = conductor.graph.node_runs(s.task["id"], proposal["planner_key"])[0]
+    assert run["attempt"] == 1
+    schema = run["pin"]["artifact_schema"]
+    assert schema["properties"]["action"] == {"enum": ["finish", "pause"]}
+    assert schema["properties"]["head_sha"] == {"const": s.head}
+    finish = {"action": "finish", "reason": "Verified", "pr_number": 3}
+    assert schema_errors(finish, schema)
+    assert not schema_errors({**finish, "head_sha": s.head}, schema)
+    assert "read-only" in _node_prompt(
+        run["pin"]["prompt"],
+        run["pin"]["artifact_path"],
+        schema,
+        branch=run["pin"]["branch"],
+    )
+    settle(
+        proposal["planner_key"],
+        1,
+        {"action": "finish", "reason": "Verified", "pr_number": 3, "head_sha": s.head},
+    )
+    if verdict == "draft":
+        from factory.orchestration.factory_models import FactoryAudit
+
+        monkeypatch.setattr(conductor, "_pause_refusal", real_pause)
+        s.pr["draft"] = True
+        before = conductor.graph.node_runs(s.task["id"])
+        assert tick()
+        assert controls.task_snapshot(s.task["id"])["task_paused"]
+        with Session(s.engine) as db:
+            rejection = db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.task_id == s.task["id"],
+                    FactoryAudit.action == "conductor_rejected",
+                )
+            ).one()
+            assert (
+                "delivery PR does not match"
+                in json.loads(rejection.detail_json)["reason"]
+            )
+        assert tick()
+        assert conductor.graph.node_runs(s.task["id"]) == before
+        return
+    accepted = []
+    monkeypatch.setattr(
+        conductor, "apply_decision", lambda *args: accepted.append(args)
+    )
+    assert tick() and len(accepted) == 1
+    assert controls.task_snapshot(s.task["id"])["turns_used"] == 5
+    assert controls.task_snapshot(s.task["id"])["planner_turns_used"] == 1
+
+
+def test_evidence_continuation_preserves_unknown_historical_spend(evidence_terminal):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    s = evidence_terminal
+    with Session(s.engine) as db, db.begin():
+        run = db.get(SwarmNodeRun, s.source["id"])
+        run.cost_usd = None
+        result = json.loads(run.outcome_json)
+        result["cost_usd"] = None
+        run.outcome_json = json.dumps(result)
+        start = db.exec(
+            select(FactoryStart).where(
+                FactoryStart.task_id == s.task["id"],
+                FactoryStart.start_key == run.dispatch_key,
+            )
+        ).one()
+        start.cost_usd = None
+    before = controls.task_snapshot(s.task["id"])
+    recover_evidence(s)
+    after = controls.task_snapshot(s.task["id"])
+    assert before["starts"] == after["starts"]
+    assert before["committed_cost_usd"] == after["committed_cost_usd"]
+    assert conductor.graph.node_runs(s.task["id"], "correct_1")[0]["cost_usd"] is None
+
+
+def test_evidence_continuation_rejects_intervening_graph_edit(evidence_resume):
+    s = evidence_resume
+    node = grant_evidence(s)
+    context = evidence_context(s, node)
+    assert conductor._add(
+        s.task,
+        s.policy,
+        "investigate_new",
+        "Other work",
+        [],
+        "opus",
+        "other",
+        "Changed plan",
+    ).ok
+    assert not conductor.reserve_node(
+        s.task["id"], "correct_1", context["workflow_id"], context
+    )
+
+
+def test_evidence_continuation_native_schema_reaches_real_preview_and_apply(
+    evidence_terminal,
+):
+    import asyncio
+    from auth.dependencies import reset_current_principal, set_current_principal
+    from auth.principal import Authority, Principal, PrincipalKind
+    from fastmcp import Client
+    from factory.orchestration import mcp
+
+    s = evidence_terminal
+    arguments = {
+        "operation": "preview",
+        "receipt_id": s.request["receipt_id"],
+        "decision_id": s.request["decision_id"],
+        "deadline_at": s.request["deadline_at"],
+        **{
+            k: v
+            for k, v in s.decision.items()
+            if k not in ("action", "expected_version")
+        },
+        "expected_revision": s.decision["expected_version"],
+    }
+    assert arguments["decision_id"].startswith("decision:")
+
+    async def native():
+        async with Client(mcp.mcp) as client:
+            preview = (
+                await client.call_tool("factory_continue_evidence", arguments)
+            ).structured_content
+            assert preview["ok"]
+            apply = {
+                **arguments,
+                "operation": "apply",
+                "request_key": "native-once",
+                "expected_preview_sha256": preview["proposal"]["preview_sha256"],
+            }
+            result = (
+                await client.call_tool("factory_continue_evidence", apply)
+            ).structured_content
+            assert result["ok"] and result["task_id"] == s.task["id"]
+            assert (
+                await client.call_tool("factory_continue_evidence", apply)
+            ).structured_content == result
+
+    principal = Principal(
+        subject="operator",
+        actor=(),
+        scope=(),
+        groups=("operators",),
+        email=None,
+        kind=PrincipalKind.HUMAN,
+        authority=Authority.STANDING,
+    )
+    token = set_current_principal(principal)
+    try:
+        asyncio.run(native())
+    finally:
+        reset_current_principal(token)
+
+
+def test_evidence_continuation_refuses_native_unknown_turn_even_with_settled_permit(
+    evidence_resume,
+):
+    from factory.execution.models import (
+        AgentSession,
+        AgentTurn,
+        AgentCapacityReservation,
+    )
+    from shared.invocation_outcomes import UNKNOWN_INVOCATION
+
+    s = evidence_resume
+    with Session(s.engine) as db, db.begin():
+        session = db.get(AgentSession, s.source["session_id"])
+        session.status = "failed"
+        db.add(
+            AgentTurn(
+                session_id=session.id,
+                seq=1,
+                prompt="old work",
+                result_text="unknown",
+                stop_reason=UNKNOWN_INVOCATION,
+            )
+        )
+        db.add(
+            AgentCapacityReservation(
+                local_session_id=session.local_session_id,
+                session_id=session.id,
+                pending_seq=1,
+                tier="project",
+                state="settled",
+                settled_at=datetime.now(timezone.utc),
+            )
+        )
+    with pytest.raises(ValueError, match="unknown_invocation"):
+        grant_evidence(s)
+
+
+@pytest.mark.parametrize("changed", ["decision", "verified"])
+def test_evidence_continuation_final_acceptance_is_bound_to_granted_head(
+    evidence_terminal, monkeypatch, changed
+):
+    s = evidence_terminal
+    recover_evidence(s)
+    decision = {
+        "action": "finish",
+        "pr_number": 3,
+        "head_sha": "b" * 40 if changed == "decision" else s.head,
+    }
+    monkeypatch.setattr(
+        conductor, "verify_delivery", lambda *a, **kw: {"head_sha": "b" * 40}
+    )
+    with pytest.raises(
+        ValueError, match="evidence_continuation_delivery_(identity|head)_changed"
+    ):
+        conductor._apply_decision(
+            conductor._task(s.task["id"]), s.policy, decision, "final", []
+        )
+
+
+def test_evidence_continuation_dispatch_refusal_cannot_request_more_funding(
+    evidence_terminal, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls, factory_funding
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = evidence_terminal
+    recover_evidence(s)
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    monkeypatch.setattr(conductor, "_slot_budget", lambda: 1)
+    monkeypatch.setattr(conductor, "_attempt_escalation", lambda *_: None)
+    reserve = conductor.reserve_node
+
+    def changed_authority(*args, **kwargs):
+        with controls._locked_session() as (db, _control):
+            controls._receipt(
+                db, s.task["id"]
+            ).direction_json = '{"note":"changed scope"}'
+        return reserve(*args, **kwargs)
+
+    monkeypatch.setattr(conductor, "reserve_node", changed_authority)
+    task = conductor._task(s.task["id"])
+    nodes, runs = (
+        conductor.graph.load_graph(s.task["id"]),
+        conductor.graph.node_runs(s.task["id"]),
+    )
+    assert not conductor._dispatch_ready(
+        task, nodes, runs, 1, fan_out=False, parallel=1, policy=s.policy
+    )
+    assert controls.task_snapshot(s.task["id"])["task_paused"]
+    assert not factory_funding.request(task, "must not renew", progress=True)
+    assert not factory_funding.renew_continuation(task["id"])
+    assert conductor.graph.node_runs(s.task["id"]) == runs
+    assert not any(
+        n["node_key"].startswith("conductor_funding_")
+        for n in conductor.graph.load_graph(s.task["id"])
+    )
+    with Session(s.engine) as db:
+        assert not db.exec(
+            select(FactoryAudit.id).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "funding_review_requested",
+            )
+        ).all()
+
+
+def test_evidence_continuation_start_fence_uses_only_shared_models(
+    evidence_terminal, monkeypatch
+):
+    import builtins
+
+    s = evidence_terminal
+    proposal, _ = recover_evidence(s)
+    original = builtins.__import__
+
+    def restricted(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "factory.orchestration.graph" or (
+            name == "factory.orchestration" and "graph" in fromlist
+        ):
+            raise ImportError("graph is absent from the pruned controls consumer")
+        return original(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", restricted)
+    with Session(s.engine) as db:
+        assert (
+            s.continuation.recovery_start_refusal(
+                db,
+                s.task["id"],
+                f"factory-node:{s.task['id']}:{proposal['planner_key']}:1",
+            )
+            == "evidence_continuation_acceptance_not_ready"
+        )
+
+
+def test_evidence_continuation_terminal_concurrent_apply_and_expired_replay(
+    evidence_terminal, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.models import SwarmPlanVersion
+
+    s = evidence_terminal
+    proposal = s.recovery.preview(s.request)["proposal"]
+    barrier = Barrier(2)
+
+    def read(repo, path):
+        if path == "issues/comments/99":
+            barrier.wait(timeout=10)
+        return s.read(repo, path)
+
+    monkeypatch.setattr(conductor, "github_get", read)
+
+    def apply(_):
+        return s.recovery.apply(
+            s.request,
+            actor="operator",
+            request_key="concurrent",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(apply, range(2)))
+    assert results[0] == results[1]
+    with Session(s.engine) as db:
+        assert (
+            len(
+                db.exec(
+                    select(SwarmPlanVersion).where(
+                        SwarmPlanVersion.task_id == s.task["id"],
+                        SwarmPlanVersion.op == s.continuation.OP,
+                    )
+                ).all()
+            )
+            == 1
+        )
+    monkeypatch.setattr(
+        controls,
+        "_now",
+        lambda: datetime.fromisoformat(proposal["deadline_at"]) + timedelta(seconds=1),
+    )
+    assert controls.can_start(s.task["id"])["reason"] == "task_deadline"
+    assert apply(0) == results[0]  # No remote read and no renewed lease on replay.
 
 
 @pytest.fixture(autouse=True)

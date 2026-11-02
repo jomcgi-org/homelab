@@ -425,6 +425,27 @@ def test_optimizer_loader_bounds_windows_at_proven_deployment(monkeypatch):
         if sql == retro._OPTIMIZER_COUNTS:
             assert params["end"] - params["start"] == retro.timedelta(hours=72)
             assert params["as_of"] == NOW
+    from factory.orchestration import learning_inputs
+
+    loaded["rollout"]["reconciled_at"] = NOW.isoformat()
+    monkeypatch.setattr(
+        retro,
+        "_verify_optimizer_rollout",
+        lambda *_: {
+            "verdict": "verified",
+            "reconciled_at": (NOW + retro.timedelta(hours=1)).isoformat(),
+        },
+    )
+    later = retro._load_optimizer(object(), NOW + retro.timedelta(hours=1))
+    assert later["outcomes_and_cost_as_of"] != loaded["outcomes_and_cost_as_of"]
+    first = learning_inputs.fingerprint({"optimizer": loaded}, "a" * 40, "prompt")
+    assert first == learning_inputs.fingerprint(
+        {"optimizer": later}, "a" * 40, "prompt"
+    )
+    later["post"]["unknown_reservation_usd"] = 0
+    assert first != learning_inputs.fingerprint(
+        {"optimizer": later}, "a" * 40, "prompt"
+    )
 
 
 def test_optimizer_merge_without_provenance_never_loads_windows(monkeypatch):
@@ -753,6 +774,263 @@ def _learning_jobs(db):
             "SELECT name,payload FROM routine_jobs WHERE name LIKE 'factory-learning:%'"
         )
     ).all()
+
+
+@pytest.fixture
+def learning_input_db(learning_db, monkeypatch):
+    from sqlmodel import SQLModel
+    from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
+    from factory.orchestration.models import SwarmTask
+
+    db = learning_db
+    monkeypatch.setenv("FACTORY_LEARNING_INPUT_DEDUP_ENABLED", "true")
+    db.connection(execution_options={"schema_translate_map": {"swarm": None}})
+    SQLModel.metadata.create_all(
+        db.connection(),
+        tables=[SwarmTask.__table__, FactoryAudit.__table__, FactoryReceipt.__table__],
+    )
+    db.execute(
+        text(
+            "UPDATE routine_jobs SET routine_kind='qwen-drain', locked_by='luna-drainer:w:0'"
+        )
+    )
+    yield db
+
+
+def _prepare_learning(db, data=None, head="a" * 40, holder="luna-drainer:w:0"):
+    from factory.orchestration import learning_inputs
+
+    return learning_inputs.prepare(
+        db,
+        "factory-retro-daily",
+        holder,
+        data or {"turns": [{"session_id": 2, "result_text": "source evidence"}]},
+        head,
+    )
+
+
+def test_learning_unchanged_verified_empty_result_routes_one_diagnosis(
+    learning_input_db,
+):
+    from factory.orchestration import learning_inputs
+    from factory.orchestration.factory_models import FactoryAudit
+    from sqlmodel import select
+
+    db = learning_input_db
+    first = _prepare_learning(db)
+    assert not first["skip"]
+    _learn(db, {"findings": []})
+    before = db.execute(
+        text("SELECT result_text FROM agent_turns WHERE session_id=1")
+    ).scalar_one()
+    for _ in range(3):
+        assert _prepare_learning(db) == {
+            "skip": True,
+            "input_sha256": first["input_sha256"],
+            "reason": "no_new_evidence",
+        }
+    jobs = _learning_jobs(db)
+    assert len(jobs) == 1
+    payload = json.loads(jobs[0].payload)
+    assert payload["learning_stage"] == "diagnose" and payload["model"] == "astra"
+    assert "Do not modify files" in learning.prompt(payload)
+    assert "HTTP 502 alone" in learning.prompt(payload)
+    assert (
+        len(
+            db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.action == learning_inputs.ACTION
+                )
+            ).all()
+        )
+        == 1
+    )
+    assert (
+        db.execute(
+            text("SELECT result_text FROM agent_turns WHERE session_id=1")
+        ).scalar_one()
+        == before
+    )
+
+
+@pytest.mark.parametrize("change", ["head", "evidence", "prompt", "coverage"])
+def test_learning_changed_inputs_allow_new_observation(
+    learning_input_db, monkeypatch, change
+):
+    db = learning_input_db
+    first = _prepare_learning(db)
+    _learn(db, {"findings": []})
+    if change == "prompt":
+        old = learning.prompt
+        monkeypatch.setattr(
+            learning,
+            "prompt",
+            lambda payload: old(payload) + " new collection question",
+        )
+    data = (
+        {"turns": [{"session_id": 2, "result_text": "new evidence"}]}
+        if change == "evidence"
+        else None
+    )
+    if change == "coverage":
+        data = {
+            "turns": [{"session_id": 2, "result_text": "source evidence"}],
+            "coverage": "unavailable",
+        }
+    result = _prepare_learning(db, data, "b" * 40 if change == "head" else "a" * 40)
+    assert not result["skip"] and result["input_sha256"] != first["input_sha256"]
+    assert not _learning_jobs(db)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "unknown",
+        "changed_result",
+        "missing",
+        "wrong_holder",
+        "disabled",
+        "missing_head",
+    ],
+)
+def test_learning_dedup_requires_exact_completed_evidence(
+    learning_input_db, monkeypatch, change
+):
+    db = learning_input_db
+    _prepare_learning(db)
+    _learn(db, {"findings": []})
+    if change == "unknown":
+        db.execute(
+            text(
+                "UPDATE agent_turns SET terminal_reason='failed', stop_reason='invocation_outcome_unknown' WHERE session_id=1"
+            )
+        )
+    elif change == "changed_result":
+        db.execute(text("UPDATE agent_turns SET result_text='{}' WHERE session_id=1"))
+    elif change == "missing":
+        db.execute(text("DELETE FROM agent_turns WHERE session_id=1"))
+    elif change == "disabled":
+        monkeypatch.setenv("FACTORY_LEARNING_INPUT_DEDUP_ENABLED", "false")
+    with pytest.raises(ValueError):
+        _prepare_learning(
+            db,
+            head=None if change == "missing_head" else "a" * 40,
+            holder="stale" if change == "wrong_holder" else "luna-drainer:w:0",
+        )
+    assert not _learning_jobs(db)
+
+
+def test_learning_input_ignores_observation_clock_and_its_own_diagnostic():
+    from factory.orchestration import learning_inputs
+
+    data = {
+        "observed_at": "yesterday",
+        "items": [{"id": 1, "age_days": 1}, {"id": 2}],
+        "recovery_events": [],
+    }
+    later = {
+        "observed_at": "today",
+        "items": [{"id": 2}, {"id": 1, "age_days": 2}],
+        "recovery_events": [{"action": learning_inputs.ACTION, "id": 4}],
+    }
+    assert learning_inputs.fingerprint(
+        data, "a" * 40, "prompt"
+    ) == learning_inputs.fingerprint(later, "a" * 40, "prompt")
+    later["items"][0]["stale"] = True
+    assert learning_inputs.fingerprint(
+        data, "a" * 40, "prompt"
+    ) != learning_inputs.fingerprint(later, "a" * 40, "prompt")
+
+
+def test_learning_fingerprint_keeps_optimizer_settlement_phase_transition():
+    from factory.orchestration import learning_inputs
+
+    context = _experiment_context(post={"attempts": 10, "unknown": 1})
+
+    def observed(hours):
+        return {
+            "optimizer": {
+                **context,
+                "outcomes_and_cost_as_of": (
+                    NOW + retro.timedelta(hours=hours)
+                ).isoformat(),
+            }
+        }
+
+    first = learning_inputs.fingerprint(observed(0), "a" * 40, "prompt")
+    assert first == learning_inputs.fingerprint(observed(1), "a" * 40, "prompt")
+    final = learning_inputs.fingerprint(
+        observed(retro._OPTIMIZER_SETTLE_HOURS), "a" * 40, "prompt"
+    )
+    assert first != final
+    assert final == learning_inputs.fingerprint(
+        observed(retro._OPTIMIZER_SETTLE_HOURS + 1), "a" * 40, "prompt"
+    )
+
+
+@pytest.mark.parametrize("state", ["queued", "admitted", "escalated", "uncertain"])
+def test_learning_diagnosis_stays_with_existing_native_owner(learning_input_db, state):
+    from factory.orchestration.factory_models import FactoryReceipt
+    from factory.orchestration.recovery_delegation import diagnostic_context
+
+    db = learning_input_db
+    db.add(
+        FactoryReceipt(
+            repo=learning.REPO,
+            issue_number=6781,
+            title="learning",
+            body="existing",
+            url="https://github.com/jomcgi-org/homelab/issues/6781",
+            actor="operator",
+            state=state,
+            task_id=None if state == "queued" else "existing-learning-owner",
+        )
+    )
+    db.flush()
+    _prepare_learning(db)
+    _learn(db, {"findings": []})
+    _prepare_learning(db)
+    assert not _learning_jobs(db)
+    if state == "queued":
+        assert not diagnostic_context(db, "existing-learning-owner")
+        db.execute(
+            text(
+                "UPDATE factory_receipt SET state='admitted',task_id='existing-learning-owner' WHERE issue_number=6781"
+            )
+        )
+    context = diagnostic_context(db, "existing-learning-owner")
+    assert len(context) == 1 and context[0]["source"]["session_id"] == 1
+    assert not diagnostic_context(db, "unrelated-owner")
+
+
+def test_learning_diagnosis_completion_records_report_without_new_work(
+    learning_input_db,
+):
+    db = learning_input_db
+    _prepare_learning(db)
+    _learn(db, {"findings": []})
+    _prepare_learning(db)
+    job = _learning_jobs(db)[0]
+    db.execute(
+        text(
+            "INSERT INTO agent_sessions VALUES (3,:repo,'astra',:local,'diag','qwen-drain','completed')"
+        ),
+        {"repo": learning.REPO, "local": "diag:qwen-drain:" + job.name},
+    )
+    output = {
+        "verdict": "unknown",
+        "issue_number": 6781,
+        "pr_number": None,
+        "rationale": "No new source evidence; do not infer a failure or retry the same input.",
+    }
+    db.execute(
+        text("INSERT INTO agent_turns VALUES (3,1,:result,'completed',NULL,:now)"),
+        {"result": json.dumps(output), "now": datetime.now(timezone.utc).isoformat()},
+    )
+    learning.complete(db, job.name, "luna-drainer:diag:0")
+    assert len(_learning_jobs(db)) == 1
+    saved = json.loads(_learning_jobs(db)[0].payload)["learning_evaluation"]
+    assert saved["session_id"] == 3 and not saved["links_verified_by_server"]
 
 
 def test_learning_pins_evidence_and_never_rearms_duplicate(learning_db):

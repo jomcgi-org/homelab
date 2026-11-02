@@ -73,6 +73,48 @@ def db(tmp_path, monkeypatch):
     engine.dispose()
 
 
+@pytest.mark.parametrize("has_evidence", [False, True])
+def test_recovery_deadline_preserves_historical_status_read_budget(
+    db, monkeypatch, has_evidence
+):
+    from factory.orchestration.evidence_continuation import RECOVERY
+
+    deadline = datetime.now(timezone.utc) + timedelta(minutes=30)
+    monkeypatch.setattr(controls, "_landing_recovery_deadline", lambda *_: None)
+    with Session(db) as session:
+        session.add(SwarmTask(id="deadline", task_text="test", conductor_model="astra"))
+        session.commit()
+        if has_evidence:
+            session.add_all(
+                [
+                    FactoryAudit(
+                        task_id="deadline",
+                        actor="test",
+                        action=RECOVERY,
+                        detail_json=dumps(
+                            {"proposal": {"deadline_at": value.isoformat()}}
+                        ),
+                    )
+                    for value in (deadline - timedelta(minutes=10), deadline)
+                ]
+            )
+            session.commit()
+        reads = []
+        connection = session.connection()
+
+        def count(_connection, _cursor, statement, _parameters, _context, _many):
+            reads.append(statement)
+
+        event.listen(connection, "before_cursor_execute", count)
+        try:
+            assert controls._recovery_deadline(session, "deadline") == (
+                deadline if has_evidence else None
+            )
+        finally:
+            event.remove(connection, "before_cursor_execute", count)
+        assert len(reads) == 1
+
+
 @pytest.fixture
 def policy():
     return {

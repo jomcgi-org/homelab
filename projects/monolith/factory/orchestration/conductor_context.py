@@ -713,6 +713,7 @@ def _planner_factory_context(task_id: str) -> dict:
     """Current authoritative records for one server-selected planner task."""
     from factory.orchestration.factory_models import FactoryAudit
     from factory.orchestration.models import SwarmTask
+    from factory.orchestration.recovery_delegation import diagnostic_context
 
     with controls._read_session() as db:
         task = db.get(SwarmTask, task_id)
@@ -810,6 +811,7 @@ def _planner_factory_context(task_id: str) -> dict:
             "decision": decision,
             "recent_exchanges": [],
             "followups": _refresh_followup_notes(followups),
+            "recovery_diagnostics": diagnostic_context(db, task_id),
         }
 
 

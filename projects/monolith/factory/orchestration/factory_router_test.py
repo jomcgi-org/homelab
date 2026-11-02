@@ -76,6 +76,17 @@ def test_factory_controls_require_verified_standing_operator(authority, kind, gr
         authority=authority,
     )
     client = TestClient(app)
+    assert (
+        client.post("/api/swarm/factory/recovery-authorizations", json={}).status_code
+        == 403
+    )
+    assert client.get("/api/swarm/factory/recovery-authorizations/1").status_code == 403
+    assert (
+        client.post(
+            "/api/swarm/factory/recovery-authorizations/1/revoke", json={}
+        ).status_code
+        == 403
+    )
     assert client.get("/api/swarm/factory/improvements/context").status_code == 403
     assert client.post("/api/swarm/factory/improvements", json={}).status_code == 403
     assert client.post("/api/swarm/factory/synthetics", json={}).status_code == 403

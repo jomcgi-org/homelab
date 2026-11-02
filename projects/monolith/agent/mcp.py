@@ -244,7 +244,8 @@ async def monolith_agent_list_routine_jobs(
                         if payload.get("model") in {"sol", "luna", "astra"}
                         else None,
                         "stage": payload.get("learning_stage")
-                        if payload.get("learning_stage") in {"evidence", "evaluate"}
+                        if payload.get("learning_stage")
+                        in {"evidence", "evaluate", "diagnose"}
                         else None,
                         "reconciled": isinstance(
                             payload.get("learning_activation"), dict

@@ -56,6 +56,7 @@ CAPABILITIES = {
         "decision_direction": "supported_when_pending",
         "pause_resume_stop": "supported",
         "expired_task_recovery": "supported_preview_apply_same_task",
+        "evidence_continuation": "supported_preview_apply_same_node",
         "landing_hold_release": "supported_preview_apply_exact_pr_head",
         "priority_change": "unavailable_no_owner",
         "standalone_conductor_request": "unavailable_no_shared_owner",
@@ -1633,6 +1634,84 @@ def _decide(
     from factory.orchestration.conductor_context import with_request_knowledge
 
     return with_request_knowledge(result, actor, request_key)
+
+
+@mcp.tool
+async def factory_continue_evidence(
+    operation: Literal["preview", "apply"],
+    receipt_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+    decision_id: Annotated[str, Field(pattern=r"^decision:[0-9a-f]{64}$")],
+    node_key: Annotated[str, Field(pattern=r"^correct_[1-9][0-9]*$")],
+    source_run_id: Annotated[MCPInteger, Field(gt=0)],
+    expected_revision: Annotated[MCPInteger, Field(ge=0)],
+    pr_number: Annotated[MCPInteger, Field(gt=0)],
+    head_sha: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")],
+    evidence_comment_id: Annotated[MCPInteger, Field(gt=0)],
+    deadline_at: str,
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    request_key: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
+    expected_preview_sha256: Annotated[
+        str | None, Field(pattern=r"^[0-9a-f]{64}$")
+    ] = None,
+) -> dict:
+    """Preview/apply one evidence-only continuation of a settled correction.
+
+    Standing operators only. Preserve the exact receipt, task, nodes, consumed
+    attempts, costs, original escalation and independent review. The exact
+    unresolved decision, current revision, source run, owned PR/head and new
+    evidence comment must match. Admit only the next correction attempt, its
+    unrun paired review and one final acceptance planner, within unchanged
+    cumulative policy caps. Supply an absolute deadline within one hour.
+    Apply explicitly reactivates the same receipt. It never selects readmission
+    or resets attempts. No source changes, replacement planning, new funding,
+    access changes or review waiver are authorized. Preview first. Apply the
+    exact digest and arguments with a stable request key. Replay acknowledges
+    the original result without granting more work. Changed evidence or any
+    unresolved execution, competing owner or hold fails closed.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    request = {
+        "receipt_id": receipt_id,
+        "decision_id": decision_id,
+        "deadline_at": deadline_at,
+        "decision": {
+            "action": "continue_evidence",
+            "reason": reason,
+            "node_key": node_key,
+            "source_run_id": source_run_id,
+            "expected_version": expected_revision,
+            "pr_number": pr_number,
+            "head_sha": head_sha,
+            "evidence_comment_id": evidence_comment_id,
+        },
+    }
+
+    def execute():
+        from factory.orchestration import evidence_recovery
+
+        try:
+            if operation == "preview":
+                return evidence_recovery.preview(request)
+            if not request_key or not expected_preview_sha256:
+                return {
+                    "ok": False,
+                    "reason": "evidence_continuation_requires_preview_and_request_key",
+                }
+            return evidence_recovery.apply(
+                request,
+                actor=principal.subject,
+                request_key=request_key,
+                expected_preview_sha256=expected_preview_sha256,
+            )
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+        except httpx.HTTPError:
+            return {"ok": False, "reason": "evidence_continuation_github_read_failed"}
+
+    return await asyncio.to_thread(execute)
 
 
 @mcp.tool
