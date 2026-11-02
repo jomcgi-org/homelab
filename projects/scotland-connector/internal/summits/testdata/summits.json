@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-20T07:00:00Z",
+  "run_at": "2026-10-20T06:00:00Z",
+  "source": "s3://met-office-atmospheric-model-data/uk-deterministic-2km/",
+  "license_uri": "https://creativecommons.org/licenses/by-sa/4.0/",
+  "adaptation": "UKV hourly fields sampled at declared points; no elevation correction or summit inference.",
+  "fixture": true,
+  "points": [
+    {
+      "id": "synthetic-summit",
+      "walk_id": "wh-meall-a-bhuachaille",
+      "kind": "summit",
+      "lat": 57.18,
+      "lon": -3.66,
+      "sample_lat": 57.18,
+      "sample_lon": -3.66,
+      "sampling": "nearest_grid_point",
+      "cloud_base_reference": "above_ground",
+      "elevation_m_asl": 810,
+      "orography_m_asl": 500,
+      "hours": [
+        {
+          "valid_at": "2026-10-20T08:00:00Z",
+          "wind_kmh": 36,
+          "gust_kmh": 54,
+          "cloud_base_m": 200,
+          "freezing_level_m_asl": 750
+        },
+        {
+          "valid_at": "2026-10-20T09:00:00Z",
+          "wind_kmh": null,
+          "gust_kmh": null,
+          "cloud_base_m": null,
+          "freezing_level_m_asl": null
+        }
+      ]
+    }
+  ]
+}

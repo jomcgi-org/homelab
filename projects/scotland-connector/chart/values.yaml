@@ -82,6 +82,8 @@ adminPort: 9090
 podSecurity: restricted
 
 config:
+  ukvEnabled: false
+  summitsKey: summits.json
   # Repository-only delivery, pending #7256 operational acceptance.
   auroraEnabled: false
   auroraKey: aurora.json

@@ -31,6 +31,35 @@ _GATEWAY_VALUES = (
 _ROUTE_ON = ["route.enabled=true", "route.hostname=connector.example.test"]
 
 
+@pytest.mark.parametrize("deployed", [False, True])
+def test_ukv_consumer_defaults_off(deployed):
+    command = [
+        os.environ.get("HELM_BIN", "helm"),
+        "template",
+        "scotland-connector",
+        str(_CHART_DIR),
+        "--set",
+        "config.r2Endpoint=https://storage.invalid",
+    ]
+    if deployed:
+        command += ["-f", str(_DEPLOY_VALUES)]
+        assert (
+            yaml.safe_load(_DEPLOY_VALUES.read_text())["config"]["ukvEnabled"] is False
+        )
+    output = subprocess.run(command, check=True, capture_output=True, text=True)
+    docs = [d for d in yaml.safe_load_all(output.stdout) if d]
+    container = _one(docs, "Deployment")["spec"]["template"]["spec"]["containers"][0]
+    env = {e["name"]: e.get("value") for e in container["env"]}
+    assert env["UKV_CONSUMER_ENABLED"] == "false"
+    assert env["UKV_SUMMITS_KEY"] == "summits.json"
+    enabled = _one(_render(["config.ukvEnabled=true"]), "Deployment")
+    env = {
+        e["name"]: e.get("value")
+        for e in enabled["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert env["UKV_CONSUMER_ENABLED"] == "true"
+
+
 def test_aurora_activation_defaults_off_and_has_explicit_enabled_wiring() -> None:
     for overrides, expected in (([], "false"), (["config.auroraEnabled=true"], "true")):
         docs = _render(overrides)

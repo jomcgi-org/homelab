@@ -24,6 +24,38 @@ options; a day with none says why in `walk_note` or `stargazing_note`.
 
 ## Walks
 
+### Optional UKV support is staged off
+
+`check` may carry `walk.ukv` after separately controlled activation. It is
+absent while disabled. Its hours cover only the checked walk's returned slot;
+`plan`, other days and nearby alternatives retain their existing forecasts.
+`status` is `sampled`, `unavailable` or `stale`. Sampled values do not establish
+safe conditions. Missing values stay null and unsupported hours stay absent.
+
+Real inputs currently identify walk starts only. They are model grid samples,
+with both requested and sampled WGS84 coordinates, never measured summit
+forecasts. Synthetic fixtures exercise explicit summit elevations. Actual
+summit coverage requires the separate DoBIH delivery (#7368). Route ascent
+never supplies summit elevation. No height adjustment is applied to wind.
+
+Wind and gust are km/h. Cloud base is metres with an explicit height reference;
+above-ground values need the sampled model orography in metres above mean sea
+level before comparison. Unknown references cannot support that comparison.
+Freezing level and explicit point elevations use metres above mean sea level.
+UTC run and hourly valid times are separate. Runs older than 12 hours and
+future-dated support are unavailable for assessment; forecast steps are never
+interpolated. Supported cloud or freezing evidence can downgrade `go` to
+`marginal` with the point and valid hour in the reason. Existing `marginal`,
+`no` and `unknown` outcomes are preserved. Missing elevation preserves the
+existing verdict and conveys no summit safety assessment.
+
+Each returned UKV weather field has a separate `meta.sources` entry with its
+field path, adaptation description and CC BY-SA 4.0 licence URI. Reuse of these
+fields remains permitted under those terms, including through metered access.
+Other sources retain their existing metadata and reuse terms.
+
+### Walk-start forecasts
+
 **Walks** are the Walkhighlands catalogue: name, start point, length, ascent
 and estimated time, with a link to the walk's page. The route, maps and
 descriptions stay on Walkhighlands; follow the link for them.

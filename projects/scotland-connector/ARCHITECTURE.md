@@ -766,6 +766,66 @@ representative terrain and nodata coverage; separately authorized producer and
 existing-storage publication with refresh/replacement/expiry checks; separately
 authorized rollout and public MCP/REST smoke tests, plan/check and accounting.
 
+## UKV support is staged off (#7525)
+
+`config.ukvEnabled=false` in chart defaults and deployment values renders
+`UKV_CONSUMER_ENABLED=false` on Deployment `scotland-connector`. The independent
+`SummitStore` fetches `UKV_SUMMITS_KEY=summits.json` from `STARS_BUCKET` only
+when explicitly enabled. Direct refresh and current-data calls also check
+enablement. UKV never gates readiness or fetches a provider during a request.
+The existing stars/walk objects and their reuse metadata are unchanged.
+
+`hikes/ukv.py` in monolith produces the shared version-1 JSON contract.
+Snapshots are at most 16 MiB, 8,192 points, eight points per walk and 121
+whole UTC hourly rows per point, within run time through T+120. There is no
+interpolation across three-hour provider steps. Point identity includes a
+stable sample ID, walk ID, `kind`, requested and sampled WGS84 coordinates,
+`nearest_grid_point` sampling, nullable point elevation and separate model
+orography. Coordinates must lie within 54 to 61 N and -9 to 0 E; sample
+offset is at most 0.05 degrees per axis. This is a bounded sampling tolerance,
+not a calibrated measure of mountain forecast accuracy.
+
+Wind/gust use km/h (0 to 500); cloud base uses metres (0 to 20,000) and an
+explicit `mean_sea_level`, `above_ground` or `unknown` reference. Freezing
+level uses metres above mean sea level (-1,000 to 20,000). Point/model surface
+elevations are -500 to 2,000 metres above mean sea level. Invalid values reject
+the replacement; missing values remain null. Above-ground cloud requires
+model orography for comparison. Route ascent never supplies elevation. Valid
+provenance records the UKV source prefix, CC BY-SA URI and adaptation text.
+Each returned weather field has its own `meta.sources` entry; paid access
+cannot restrict reuse of those fields. Other providers retain their terms.
+
+Model run and materialization clocks are independent. Future or over-12-hour
+support is stale for a check, even after an R2 304. Regressive replacements
+are refused, and bad/missing objects retain the previous clocks. The optional
+`walk.ukv` output states unavailable/stale support. Only hours inside the
+checked slot are shown. Supported explicit summit cloud/freezing evidence can
+downgrade `go` to `marginal`; no other verdict or reason is upgraded. Other
+days, nearby alternatives and `plan` retain their existing weather policy.
+
+Real inputs remain walk starts. Summit-kind inputs require an explicit
+synthetic fixture flag, with visible fixture limitations in output. No actual
+summit coverage is claimed. The offline producer accepts normalized sampled
+extracts or a predecoded grid crop. Provider acquisition/GRIB adaptation is
+not installed and requires separate validation before activation. Controlled
+activation, real snapshot validation and DoBIH coverage remain on #7525.
+
+Read-only disabled-state inspection after authorized rollout:
+
+```sh
+kubectl -n monolith-workflows get cronworkflow hikes-ukv-materialize --ignore-not-found -o yaml
+kubectl -n monolith-workflows get cronworkflows -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.workflowSpec.templates[0].container.env}{"\n"}{end}'
+kubectl -n scotland-connector get deployment scotland-connector -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="UKV_CONSUMER_ENABLED")].value}'
+```
+
+The producer resource must be absent in the delivered configuration. If an
+older explicitly opted-in resource still exists, inspect `spec.suspend` and
+`UKV_PRODUCER_ENABLED` before accepting the rollout. Its mere suspension does
+not prove manual execution is disabled. No UKV command or object-store write
+is an acceptance probe for this delivery. Within 72 hours of authorized
+rollout, verify both `monolith` and `scotland-connector` at the CI-produced
+chart versions containing the PR, then inspect the disabled state above.
+
 ## Direction
 
 Decided and not yet built, each with the issue that tracks it. A row leaves

@@ -21,10 +21,15 @@ image guard elsewhere.
 {{- if not (kindIs "bool" .Values.sharedS3.enabled) }}
 {{- fail "sharedS3.enabled must be a boolean" }}
 {{- end }}
+{{- if not (kindIs "bool" .Values.ukv.producerEnabled) }}
+{{- fail "ukv.producerEnabled must be a boolean" }}
+{{- end }}
 {{- if .Values.jobs.image }}
 {{- $cronWorkflows := append .Values.jobs.cronWorkflows .Values.jobs.snapshotMergedPrs }}
 {{- range $cronWorkflows }}
-{{- if and .grimoire (not $.Values.grimoire.enabled) }}
+{{- if and .ukv (not $.Values.ukv.producerEnabled) }}
+{{- /* Disabled UKV execution has no resource, including manual submission. */ -}}
+{{- else if and .grimoire (not $.Values.grimoire.enabled) }}
 {{- /* grimoire jobs are private-tier only: skip them entirely unless the
        grimoire module is enabled, so an unrelated (public) deploy never
        renders a CronWorkflow referencing the openrouter secret. */ -}}
@@ -127,6 +132,8 @@ spec:
           args:
             {{- toYaml .args | nindent 12 }}
           env:
+            - name: UKV_PRODUCER_ENABLED
+              value: {{ $.Values.ukv.producerEnabled | quote }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

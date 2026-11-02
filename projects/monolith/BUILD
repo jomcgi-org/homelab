@@ -7432,6 +7432,17 @@ py_test(
 )
 
 py_test(
+    name = "hikes_ukv_test",
+    srcs = ["hikes/ukv_test.py"],
+    data = ["//projects/scotland-connector/internal/summits:snapshot_fixture"],
+    imports = ["."],
+    deps = [
+        ":pkg_hikes",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "hikes_router_test",
     srcs = ["hikes/router_test.py"],
     imports = ["."],

@@ -1,4 +1,7 @@
 # Hub production overrides, layered after deploy/values.yaml by gke-apps.
+ukv:
+  producerEnabled: false
+
 backend:
   # Fixed replica count on the hub; backend autoscaling remains disabled.
   replicas: 2

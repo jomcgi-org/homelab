@@ -1,6 +1,9 @@
 # Inactive recovery preset. Load ONLY over chart defaults with release and
 # namespace monolith-dev. Do not layer production or historical dev values.
 # No Application references this file. See recovery-gke.md before activation.
+ukv:
+  producerEnabled: false
+
 backend:
   replicas: 2
   autoscaling:

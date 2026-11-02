@@ -16,6 +16,7 @@ import (
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/aurora"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/stars"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/summits"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
 )
 
@@ -124,6 +125,8 @@ type Service struct {
 	Data       DatasetSource
 	Walks      WalksSource
 	AuroraData interface{ Current() *aurora.Snapshot }
+	UKVEnabled bool
+	SummitData interface{ Current() *summits.Snapshot }
 	// MethodURL is published in every envelope.
 	MethodURL string
 	Now       func() time.Time
@@ -131,11 +134,14 @@ type Service struct {
 
 // Source is one attribution in the envelope.
 type Source struct {
-	Name        string `json:"name"`
-	Attribution string `json:"attribution"`
-	License     string `json:"license"`
-	URL         string `json:"url"`
-	Use         string `json:"use"`
+	Name        string   `json:"name"`
+	Attribution string   `json:"attribution"`
+	License     string   `json:"license"`
+	URL         string   `json:"url"`
+	Use         string   `json:"use"`
+	Fields      []string `json:"fields,omitempty"`
+	LicenseURI  string   `json:"license_uri,omitempty"`
+	Adaptation  string   `json:"adaptation,omitempty"`
 }
 
 // Meta is the provenance block on every response.

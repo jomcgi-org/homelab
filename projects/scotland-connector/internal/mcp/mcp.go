@@ -82,7 +82,9 @@ const (
 		"Light has no top-level verdict; present the requested events and windows with their coverage and why. " +
 		"Its per-window cloud is nearby-site hourly sample support; unsupported portions, including golden/blue light, stay unknown and missing rows never prove cloud. " +
 		"Its nights are separate night suitability assessments, never interval cloud forecasts. "
-	instructionsSources = "Every result carries meta.sources: credit them when you present the data."
+	instructionsSources = "Every result carries meta.sources: credit them when you present the data. " +
+		"If check returns optional walk.ukv, quote its status, point kind and limitations. Walk-start model samples are not measured summit forecasts. " +
+		"Missing or stale UKV support never establishes safe summit conditions. UKV field-specific CC BY-SA terms do not change other sources' reuse terms."
 
 	Instructions              = instructionsHead + instructionsAurora + instructionsLight + "For plan, check and aurora, lead with the verdict and why. " + instructionsSources
 	InstructionsWithoutAurora = instructionsHead + instructionsLight + "For plan and check, lead with the verdict and why. " + instructionsSources
