@@ -1013,6 +1013,7 @@ def test_docfix_jobs_are_enabled_named_and_idempotent(session, monkeypatch):
         "knowledge.repo_docs.load_manifest",
         lambda: _manifest_with("docs/guide.md"),
     )
+    monkeypatch.setenv("DRAINER_DOCFIX_ENABLED", "true")
     monkeypatch.setattr("knowledge.atoms.EmbeddingClient", _Embedder)
     _create_routine_jobs(session)
     assertion = {

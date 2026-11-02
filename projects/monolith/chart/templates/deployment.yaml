@@ -547,18 +547,12 @@ spec:
               value: {{ .Values.knowledge.defaultRepoScope | quote }}
             - name: KG_FEED_ENABLED
               value: {{ .Values.knowledge.feeds.emberSessions.enabled | quote }}
-            - name: KNOWLEDGE_RECALL_ENABLED
-              value: {{ .Values.knowledge.recall.enabled | quote }}
             - name: KNOWLEDGE_RECALL_LIMIT
               value: {{ .Values.knowledge.recall.limit | quote }}
             - name: CONDUCTOR_CONTINUITY_ENABLED
               value: {{ .Values.knowledge.conductorContinuity.enabled | quote }}
-            - name: KG_REPO_DIFF_ENABLED
-              value: {{ .Values.knowledge.feeds.repoDiff.enabled | quote }}
             - name: KG_AUDIT_ENABLED
               value: {{ .Values.knowledge.audit.enabled | quote }}
-            - name: KG_FACT_REVIEW_ENABLED
-              value: {{ .Values.knowledge.factReview.enabled | quote }}
             - name: KG_FACT_REVIEW_COVERAGE_ENABLED
               value: {{ .Values.knowledge.factReview.coverageEnabled | quote }}
             - name: KG_FACT_REVIEW_MAX_DAILY
@@ -603,8 +597,6 @@ spec:
               value: {{ .Values.knowledge.layout.gravity | quote }}
             - name: KNOWLEDGE_LAYOUT_MAX_ITER
               value: {{ .Values.knowledge.layout.maxIter | quote }}
-            - name: KNOWLEDGE_LAYOUT_LINLOG
-              value: {{ .Values.knowledge.layout.linlog | quote }}
             - name: KNOWLEDGE_LAYOUT_CORE_FRACTION
               value: {{ .Values.knowledge.layout.coreFraction | quote }}
             - name: KNOWLEDGE_LAYOUT_NODE_SIZE_SCALE
@@ -673,12 +665,8 @@ spec:
               value: {{ .Values.artifact.bucket | quote }}
             {{- end }}
             {{- end }}
-            - name: GRIMOIRE_PLAY_ENABLED
-              value: {{ .Values.grimoire.play.enabled | quote }}
             - name: GRIMOIRE_TRANSCRIPT_ENABLED
               value: {{ .Values.grimoire.transcript.enabled | quote }}
-            - name: GRIMOIRE_INVITATION_LINKS_ENABLED
-              value: {{ .Values.grimoire.invitationLinks.enabled | quote }}
             - name: PLATFORM_AUTH_MANAGEMENT_ENABLED
               value: {{ .Values.platformAuth.managementEnabled | quote }}
             - name: PLATFORM_AUTH_ENROLLMENT_ENABLED
@@ -711,9 +699,6 @@ spec:
             - name: GRIMOIRE_INVITATION_ENROLLMENT_ENABLED
               value: {{ .Values.grimoire.invitationLinks.enrollmentEnabled | quote }}
             {{- if .Values.grimoire.invitationLinks.enrollmentEnabled }}
-            {{- if not .Values.grimoire.invitationLinks.enabled }}
-            {{- fail "grimoire invitation enrollment requires invitationLinks.enabled" }}
-            {{- end }}
             - name: GRIMOIRE_INVITATION_API_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -967,12 +952,8 @@ spec:
             # multipart framing. The backend enforces the real 5 MiB cap.
             - name: BODY_SIZE_LIMIT
               value: "6M"
-            - name: GRIMOIRE_PLAY_ENABLED
-              value: {{ .Values.grimoire.play.enabled | quote }}
             - name: GRIMOIRE_TRANSCRIPT_ENABLED
               value: {{ .Values.grimoire.transcript.enabled | quote }}
-            - name: GRIMOIRE_INVITATION_LINKS_ENABLED
-              value: {{ .Values.grimoire.invitationLinks.enabled | quote }}
             - name: PLATFORM_AUTH_MANAGEMENT_ENABLED
               value: {{ .Values.platformAuth.managementEnabled | quote }}
             - name: PLATFORM_AUTH_ENROLLMENT_ENABLED

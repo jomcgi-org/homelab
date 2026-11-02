@@ -1463,8 +1463,8 @@ knowledge:
   factReview:
     # Bounded literal witnesses and content-based reconsideration (#6995).
     coverageEnabled: false
-    # Independent source-grounded review within the shared KG admission budget.
-    enabled: false
+    # Independent source-grounded review within the shared KG admission budget,
+    # always on.
     maxDaily: 20
     intervalSeconds: 900
     batchSize: 32
@@ -1494,7 +1494,6 @@ knowledge:
   # Recall top knowledge-graph facts into every Ember session's system prompt
   # (ADR agents/063 read side). kg-drain sessions are always excluded.
   recall:
-    enabled: false
     limit: 5
   # Receipt-conversation KG maintenance and Astra context injection. Keep this
   # off until the live #5787 checks establish provenance, isolation and outage
@@ -1509,8 +1508,7 @@ knowledge:
       enabled: false
       since: ""
     repoDiff:
-      # Hourly read-only scout feeding the normal knowledge extraction lane.
-      enabled: false
+      # The hourly read-only scout feeding the normal extraction lane always runs.
       reconcile:
         # Default-off backfill of ranges ingested from placeholder evidence.
         enabled: false
@@ -1521,7 +1519,6 @@ knowledge:
     scalingRatio: 2.0
     gravity: 0.1
     maxIter: 100
-    linlog: false
     coreFraction: 0.99
     seed: 42
     nodeSizeScale: 0.005
@@ -2006,7 +2003,6 @@ grimoire:
     # extraction transport, and none is registered in this release (#6991).
     dailyCap: 0
   invitationLinks:
-    enabled: false
     enrollmentEnabled: false
     # Set only after a separate permission/provisioning review. The chart
     # references an existing Operator-managed Secret; it does not create one.
@@ -2015,9 +2011,6 @@ grimoire:
     flowID: ""
   authentikBaseUrl: "http://authentik-server.authentik:80"
   enabled: false
-  play:
-    # Play routes stay off until the complete play surface is ready (#6612).
-    enabled: false
   transcript:
     # Off until the capture surface is ready.
     enabled: false

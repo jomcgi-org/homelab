@@ -1770,7 +1770,7 @@ def apply_extraction(
         raw.extra = extra
         session.add(raw)
 
-        if raw.source == "repo-diff":
+        if flag("DRAINER_DOCFIX_ENABLED") and raw.source == "repo-diff":
             base_sha = extra.get("base_sha")
             head_sha = extra.get("head_sha")
             if isinstance(base_sha, str) and isinstance(head_sha, str):
