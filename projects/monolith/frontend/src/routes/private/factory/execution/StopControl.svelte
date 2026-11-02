@@ -1,11 +1,7 @@
 <script>
   import { makeStopRequest, stopInFlight } from "./stop-control.js";
 
-  let {
-    identity = null,
-    status = null,
-    onStop = () => {},
-  } = $props();
+  let { identity = null, status = null, onStop = () => {} } = $props();
 
   const busy = $derived(stopInFlight(status));
   const label = $derived(
