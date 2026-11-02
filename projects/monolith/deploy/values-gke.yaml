@@ -20,6 +20,9 @@ tokenBroker:
 
 swarm:
   factoryPlannerHoldRefusalEnabled: false
+  # One display-only GitHub comment per GitHub-sourced work item, linking its
+  # durable factory record. Never read back. Rollback is this flag.
+  factoryWorkItemPointerEnabled: true
   # Make the bounded reconciler available on the existing GKE stack. Durable
   # operator policy separately controls issue admission and starts disabled.
   factoryEnabled: true
