@@ -65,6 +65,13 @@ describe("summarizeBoard", () => {
     });
   });
 
+  it("prints a reason code as words", () => {
+    expect(
+      summarizeBoard({ ok: false, reason: "not_initialized" }).reason,
+    ).toBe("not initialized");
+    expect(summarizeBoard({ ok: false }).reason).toBe("not ready");
+  });
+
   it("treats a missing escalation list as nothing waiting", () => {
     expect(waitingDecisions({})).toEqual([]);
     expect(waitingDecisions({ escalations: [{ open: false }] })).toEqual([]);
