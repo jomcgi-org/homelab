@@ -59,6 +59,7 @@ describe("loadDashboard", () => {
     });
     expect(dashboard).toEqual({ ...home, factory: null });
 
+    resetBoardCache();
     let t = 0;
     const now = () => t;
     const boardUp = vi.fn(async () => jsonResponse(board));
@@ -112,5 +113,35 @@ describe("factorySummary", () => {
 
     t = BOARD_STALE_MS;
     expect(factorySummary(failing, "http://b", now)).toBeNull();
+  });
+
+  it("spaces attempts after a failed read", async () => {
+    let t = 0;
+    const now = () => t;
+    const failing = vi.fn(async () => jsonResponse({}, false));
+    factorySummary(failing, "http://b", now);
+    await new Promise((r) => setTimeout(r, 0));
+    t = BOARD_FRESH_MS - 1;
+    factorySummary(failing, "http://b", now);
+    expect(failing).toHaveBeenCalledTimes(1);
+    t = BOARD_FRESH_MS;
+    factorySummary(failing, "http://b", now);
+    expect(failing).toHaveBeenCalledTimes(2);
+  });
+
+  it("swallows a malformed board instead of rejecting", async () => {
+    const malformed = vi.fn(async () =>
+      jsonResponse({ ok: true, active: 5, escalations: "x" }),
+    );
+    const rejections = [];
+    const onReject = (reason) => rejections.push(reason);
+    process.on("unhandledRejection", onReject);
+    try {
+      factorySummary(malformed, "http://b");
+      await new Promise((r) => setTimeout(r, 10));
+    } finally {
+      process.off("unhandledRejection", onReject);
+    }
+    expect(rejections).toEqual([]);
   });
 });

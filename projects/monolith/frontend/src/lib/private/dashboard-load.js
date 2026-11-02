@@ -30,20 +30,26 @@ async function readJson(fetch, url, timeout) {
 
 let cached = null; // { factory, at }
 let pending = null;
+let attemptedAt = -Infinity;
 
 /** Test hook: forget the cached summary and any read in flight. */
 export function resetBoardCache() {
   cached = null;
   pending = null;
+  attemptedAt = -Infinity;
 }
 
 function refreshBoard(fetch, apiBase, now) {
   if (pending) return pending;
+  attemptedAt = now();
   pending = readJson(fetch, `${apiBase}/api/agents/factory`, BOARD_TIMEOUT_MS)
     .then((board) => {
       const factory = summarizeBoard(board);
       if (factory) cached = { factory, at: now() };
     })
+    // Nobody awaits this read: a malformed board must not become an
+    // unhandled rejection, which would end the whole server process.
+    .catch(() => {})
     .finally(() => {
       pending = null;
     });
@@ -57,7 +63,10 @@ function refreshBoard(fetch, apiBase, now) {
  */
 export function factorySummary(fetch, apiBase, now = Date.now) {
   const age = cached ? now() - cached.at : Infinity;
-  if (age >= BOARD_FRESH_MS) refreshBoard(fetch, apiBase, now);
+  // Attempts are spaced too, so a board that fails fast is still read at
+  // most once a minute.
+  if (age >= BOARD_FRESH_MS && now() - attemptedAt >= BOARD_FRESH_MS)
+    refreshBoard(fetch, apiBase, now);
   return age < BOARD_STALE_MS ? cached.factory : null;
 }
 
