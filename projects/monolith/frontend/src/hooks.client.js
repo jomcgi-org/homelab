@@ -7,6 +7,7 @@ async function recoverNavigation(url) {
   if (url.origin !== location.origin || url.href === location.href)
     return false;
   let timer;
+  const from = location.href;
   try {
     const loaded = await Promise.race([
       preloadCode(url.pathname).then(() => true),
@@ -15,6 +16,7 @@ async function recoverNavigation(url) {
       }),
     ]);
     if (!loaded) return false;
+    if (location.href !== from && location.href !== url.href) return true;
     await goto(url, { keepFocus: true, noScroll: true });
     return page.status < 400 && page.url.href === url.href;
   } finally {

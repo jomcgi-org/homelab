@@ -1,5 +1,6 @@
 <script>
   import { onMount, untrack } from "svelte";
+  import { fields, registerDraft } from "./rollout-recovery.js";
   import {
     createEventReader,
     createSpeaker,
@@ -13,6 +14,15 @@
   let speaking = $state(false);
   const reader = createEventReader();
   let storage;
+  registerDraft(
+    "read-aloud-settings",
+    () => ({ narration: settings.narration, reveals: settings.reveals }),
+    (saved) => {
+      // Initial events are already marked handled. Restore preferences only;
+      // never persist/replay the speaker queue or current utterance.
+      settings = fields(saved, { narration: false, reveals: false });
+    },
+  );
 
   onMount(() => {
     try {

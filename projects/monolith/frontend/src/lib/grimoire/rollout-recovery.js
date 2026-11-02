@@ -3,6 +3,7 @@ import { getContext, onMount, tick } from "svelte";
 export const RECOVERY = Symbol("grimoire-rollout-recovery");
 export const RECOVERY_KEY = "grimoire-rollout-drafts:v1";
 const MAX_BYTES = 96_000;
+const bytes = (value) => new TextEncoder().encode(value).length;
 const MAX_AGE = 15 * 60_000;
 
 // Include only authority from the new server projection. Never store a token,
@@ -19,7 +20,7 @@ export function recoveryScope(view) {
     view.campaign.permissions ?? null,
     view.characters.map((row) => row.id).sort(),
     (view.voices || [])
-      .map((row) => [row.speaker_key, row.speaker_name ?? null])
+      .map((row) => [row.speaker_key, Boolean(row.speaker_name)])
       .sort(),
   ]);
 }
@@ -38,24 +39,28 @@ export function createRecovery({
   let boundScope = null;
   let restoring = false;
   let failed = false;
+  const inProgress = new Set();
   function valid() {
     return enabled() && scope() && boundScope === scope();
   }
   async function restorePanel(key, panel) {
-    if (!Object.hasOwn(drafts, key)) return;
+    if (!Object.hasOwn(drafts, key) || inProgress.has(key)) return;
     const value = drafts[key];
-    delete drafts[key];
-    await tick();
-    await panel.ready();
-    if (!valid() || panels.get(key) !== panel) return;
-    // Consume before awaiting: a later mount must not replay the same draft.
+    inProgress.add(key);
     try {
-      await panel.restore(value);
+      await tick();
+      if ((await panel.ready()) === false) return;
+      const current = () => valid() && panels.get(key) === panel;
+      if (!current()) return;
+      if ((await panel.restore(value, current)) !== false) delete drafts[key];
     } catch {
       failed = true;
+    } finally {
+      inProgress.delete(key);
     }
   }
   return {
+    isEnabled: enabled,
     transient(error) {
       if (
         !enabled() ||
@@ -73,9 +78,18 @@ export function createRecovery({
       panels.set(key, panel);
       if (restoring) void restorePanel(key, panel);
       return () => {
-        if (valid()) drafts[key] = panel.capture();
+        try {
+          if (valid() && !Object.hasOwn(drafts, key))
+            drafts[key] = panel.capture();
+        } catch {
+          failed = true;
+        }
         if (panels.get(key) === panel) panels.delete(key);
       };
+    },
+    retry(key) {
+      const panel = panels.get(key);
+      if (panel) void restorePanel(key, panel);
     },
     async restore() {
       if (!enabled()) return;
@@ -88,7 +102,7 @@ export function createRecovery({
           restoring = true;
           return;
         }
-        if (raw.length > MAX_BYTES) throw new Error("oversize");
+        if (bytes(raw) > MAX_BYTES) throw new Error("oversize");
         saved = JSON.parse(raw);
         if (
           saved.version !== 1 ||
@@ -120,15 +134,17 @@ export function createRecovery({
       );
     },
     save() {
-      if (!valid() || failed) return false;
+      if (!valid() || failed || inProgress.size) return false;
       try {
         const snapshot = { ...drafts };
-        for (const [key, panel] of panels) snapshot[key] = panel.capture();
+        for (const [key, panel] of panels) {
+          if (!Object.hasOwn(drafts, key)) snapshot[key] = panel.capture();
+        }
         const raw = JSON.stringify(
           { version: 1, at: Date.now(), scope: boundScope, drafts: snapshot },
           (_key, value) => (value === undefined ? null : value),
         );
-        if (raw.length > MAX_BYTES || !keepComposer()) return false;
+        if (bytes(raw) > MAX_BYTES || !keepComposer()) return false;
         sessionStorage.setItem(RECOVERY_KEY, raw);
         return sessionStorage.getItem(RECOVERY_KEY) === raw;
       } catch {
@@ -141,6 +157,7 @@ export function createRecovery({
 export function registerDraft(key, capture, restore, ready = async () => {}) {
   const recovery = getContext(RECOVERY);
   onMount(() => recovery?.register(key, { capture, restore, ready }));
+  return () => recovery?.retry(key);
 }
 
 // Reject corrupt fields rather than coerce objects into strings or booleans.
@@ -167,15 +184,18 @@ export function fields(value, defaults) {
 export function panelRecovery() {
   const recovery = getContext(RECOVERY);
   return {
-    async fetch(...args) {
-      const response = await globalThis.fetch(...args);
-      if ([502, 503, 504].includes(response.status)) {
-        const error = Object.assign(new Error("Upstream unavailable"), {
-          status: response.status,
-        });
-        if (recovery?.transient(error)) throw error;
-      }
-      return response;
+    fetch(...args) {
+      const request = globalThis.fetch(...args);
+      if (!recovery?.isEnabled()) return request;
+      return request.then((response) => {
+        if ([502, 503, 504].includes(response.status)) {
+          const error = Object.assign(new Error("Upstream unavailable"), {
+            status: response.status,
+          });
+          if (recovery.transient(error)) throw error;
+        }
+        return response;
+      });
     },
     transient: (error) => recovery?.transient(error) === true,
   };
@@ -183,5 +203,12 @@ export function panelRecovery() {
 
 export function pendingRequest(value) {
   if (value === null) return null;
-  return fields(value, { signature: "", id: "" });
+  if (
+    typeof value?.signature !== "string" ||
+    value.signature.length > MAX_BYTES ||
+    typeof value?.id !== "string" ||
+    value.id.length > 200
+  )
+    throw new Error("invalid pending request");
+  return { signature: value.signature, id: value.id };
 }

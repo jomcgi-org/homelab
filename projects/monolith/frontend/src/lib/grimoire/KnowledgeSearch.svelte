@@ -1,6 +1,7 @@
 <script>
   import { onDestroy } from "svelte";
-  import { fields, registerDraft } from "./rollout-recovery.js";
+  import { fields, registerDraft, panelRecovery } from "./rollout-recovery.js";
+  const recovery = panelRecovery();
   import { chunkHref } from "$lib/public/grimoire/api.js";
 
   let { campaignId } = $props();
@@ -65,7 +66,7 @@
     disputing = result.id;
     failure = "";
     try {
-      const response = await fetch(
+      const response = await recovery.fetch(
         `/grimoire/campaigns/${encodeURIComponent(currentCampaign)}/facts/${encodeURIComponent(result.id)}/dispute`,
         { method: "POST", cache: "no-store" },
       );
@@ -78,6 +79,7 @@
           : item,
       );
     } catch (cause) {
+      if (recovery.transient(cause)) return;
       if (campaignId === currentCampaign) failure = cause.message;
     } finally {
       disputing = null;
@@ -112,7 +114,7 @@
     }
     loading = true;
     try {
-      const response = await fetch(
+      const response = await recovery.fetch(
         `/grimoire/campaigns/${encodeURIComponent(campaignId)}/knowledge/search?${new URLSearchParams({ q })}`,
         { signal: current.signal, cache: "no-store" },
       );
@@ -125,6 +127,7 @@
       results = body;
       searched = true;
     } catch (cause) {
+      if (recovery.transient(cause)) return;
       if (!current.signal.aborted)
         failure = cause.message || "Knowledge search is unavailable.";
     } finally {

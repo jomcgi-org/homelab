@@ -29,7 +29,7 @@
   });
   let give = $state(emptyGive());
   let initialLoad;
-  registerDraft(
+  const restoreDrafts = registerDraft(
     "inventory",
     () => ({ give, drafts }),
     (saved) => {
@@ -127,9 +127,11 @@
       }
       drafts = nextDrafts;
       items = nextItems;
+      return true;
     } catch (error) {
-      if (recovery.transient(error)) return;
+      if (recovery.transient(error)) return false;
       failure = error.message;
+      return false;
     } finally {
       loading = false;
     }
@@ -218,7 +220,11 @@
   onMount(() => {
     initialLoad = load();
     const timer = setInterval(() => {
-      if (!busy) load();
+      if (!busy)
+        initialLoad = load().then((ready) => {
+          if (ready) restoreDrafts();
+          return ready;
+        });
     }, 4000);
     return () => clearInterval(timer);
   });

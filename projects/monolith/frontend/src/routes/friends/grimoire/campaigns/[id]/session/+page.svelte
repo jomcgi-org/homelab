@@ -163,12 +163,14 @@
       rollVisibility,
       rollMode,
       rollKind,
-      details: [...(root?.querySelectorAll("details") || [])].map(
-        (el) => el.open,
-      ),
+      details: [
+        ...(root?.querySelectorAll(
+          ".initiative-panel, .voice-presets, .dice-tray",
+        ) || []),
+      ].map((el) => el.open),
       scroll: window.scrollY,
     }),
-    async (saved) => {
+    async (saved, current) => {
       const kept = fields(saved, {
         activeTab: "",
         journalView: "",
@@ -197,8 +199,13 @@
         ? kept.rollKind
         : "checks";
       await tick();
+      if (!current()) return;
       if (Array.isArray(saved.details))
-        [...root.querySelectorAll("details")].forEach((el, index) => {
+        [
+          ...root.querySelectorAll(
+            ".initiative-panel, .voice-presets, .dice-tray",
+          ),
+        ].forEach((el, index) => {
           el.open = saved.details[index] === true;
         });
       window.scrollTo(0, Math.max(0, kept.scroll));

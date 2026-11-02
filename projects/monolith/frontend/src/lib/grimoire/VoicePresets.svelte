@@ -19,8 +19,17 @@
   let failure = $state("");
   registerDraft(
     "voice",
-    () => ({ selected, freeLabel, lang, names, rate, pitch, query, picked }),
-    async (saved) => {
+    () => ({
+      selected,
+      freeLabel,
+      lang,
+      names,
+      rate,
+      pitch,
+      query,
+      picked: picked ? { key: picked.key } : null,
+    }),
+    async (saved, current) => {
       const kept = fields(saved, {
         selected: "",
         freeLabel: "",
@@ -33,18 +42,20 @@
       // A picked NPC is revalidated against the current DM endpoint. Never
       // persist or trust the old search results or the old NPC name.
       if (saved.picked) {
-        const key = fields(saved.picked, { key: "", name: "" }).key;
+        const key = fields(saved.picked, { key: "" }).key;
         const response = await recovery.fetch(
           `${endpoint}?entity=${encodeURIComponent(key)}`,
         );
         if (!response.ok) return;
         const npc = await response.json();
+        if (!current()) return;
         if (npc.id !== key) return;
         picked = { key, name: npc.name };
       }
       selected = kept.selected;
       freeLabel = kept.freeLabel;
       await tick(); // Selecting a preset initializes its hints first.
+      if (!current()) return;
       lang = kept.lang;
       names = kept.names;
       rate = kept.rate;

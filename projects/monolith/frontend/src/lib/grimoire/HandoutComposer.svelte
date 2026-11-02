@@ -31,7 +31,21 @@
     () => {
       // An upload still in flight has no durable key. Keep the page open.
       if (uploading) throw new Error("upload in flight");
-      return { title, markdown, toTable, picked, image, pending };
+      return {
+        title,
+        markdown,
+        toTable,
+        picked,
+        image: image
+          ? {
+              key: image.key,
+              name: image.name,
+              content_type: image.content_type,
+              size: image.size,
+            }
+          : null,
+        pending,
+      };
     },
     (saved) => {
       const kept = fields(saved, { title: "", markdown: "", toTable: true });

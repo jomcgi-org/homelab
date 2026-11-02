@@ -6,7 +6,7 @@ import shell from "../../app.html?raw";
 import { handleError } from "../../hooks.client.js";
 import { RECOVERY_KEY } from "./rollout-recovery.js";
 
-let component, target, next, posts;
+let component, target, next, posts, inventoryResponse;
 const data = () => ({
   rolloutRecoveryEnabled: true,
   campaign: { id: "campaign", name: "Recovery table", role: "dm" },
@@ -51,6 +51,7 @@ beforeEach(() => {
   target = document.createElement("div");
   document.body.append(target);
   posts = [];
+  inventoryResponse = () => new Response("[]");
   history.replaceState(null, "", "/grimoire/campaigns/campaign/session");
   new Function(
     [...shell.matchAll(/<script>([\s\S]*?)<\/script>/g)]
@@ -68,7 +69,7 @@ beforeEach(() => {
         return next();
       }
       if (String(url).includes("?notes=")) return new Response("[]");
-      if (String(url).includes("?inventory=")) return new Response("[]");
+      if (String(url).includes("?inventory=")) return inventoryResponse();
       return next();
     }),
   );
@@ -123,6 +124,41 @@ it("clears stale auth observations on a connection failure", async () => {
   next = () => new Response("", { status: 401 });
   await poll();
   expect(target.textContent).not.toContain("Signed out.");
+  vi.setSystemTime(Date.now() + 2100);
+  await poll();
+  expect(target.textContent).toContain("Signed out.");
+});
+it.each([502, 503, 504])(
+  "classifies a non-JSON %s poll before decoding and clears stale expiry",
+  async (status) => {
+    await show();
+    sessionStorage.setItem("grimoire-sign-in-reload", String(Date.now()));
+    next = () => new Response("", { status: 401 });
+    await poll();
+    vi.setSystemTime(Date.now() + 2100);
+    next = () => new Response("<html>restarting</html>", { status });
+    await poll();
+    next = () => new Response("", { status: 401 });
+    await poll();
+    expect(target.textContent).not.toContain("Signed out.");
+    expect(target.querySelector('[role="alert"]')).toBeNull();
+    next = () => new Response(JSON.stringify(data()));
+    await poll();
+    expect(
+      target.querySelector('[aria-label="Session connection"]').textContent,
+    ).toBe("Live");
+  },
+);
+it("keeps enabled application errors visible and treats a manual auth redirect as an auth signal", async () => {
+  await show();
+  next = () =>
+    new Response(JSON.stringify({ error: "Invalid action" }), { status: 400 });
+  send();
+  await settle();
+  expect(target.textContent).toContain("Invalid action");
+  sessionStorage.setItem("grimoire-sign-in-reload", String(Date.now()));
+  next = () => ({ type: "opaqueredirect", status: 0 });
+  await poll();
   vi.setSystemTime(Date.now() + 2100);
   await poll();
   expect(target.textContent).toContain("Signed out.");
@@ -240,6 +276,8 @@ it.each([
   "permissions",
   "corrupt",
   "expired",
+  "version",
+  "oversize",
 ])("rejects %s snapshots and the paired composer", async (change) => {
   await show();
   send();
@@ -261,6 +299,13 @@ it.each([
     overrides.session = { ...data().session, status: "ended" };
   if (change === "corrupt") sessionStorage.setItem(RECOVERY_KEY, "{broken");
   if (change === "expired") vi.setSystemTime(Date.now() + 16 * 60_000);
+  if (change === "version") {
+    const saved = JSON.parse(sessionStorage.getItem(RECOVERY_KEY));
+    saved.version = 2;
+    sessionStorage.setItem(RECOVERY_KEY, JSON.stringify(saved));
+  }
+  if (change === "oversize")
+    sessionStorage.setItem(RECOVERY_KEY, " ".repeat(100_000));
   await show(true, overrides);
   expect(target.querySelector("#message")?.value || "").toBe("");
   expect(posts).toHaveLength(1);
@@ -294,4 +339,120 @@ it("keeps chunk recovery disabled when the server flag is false", async () => {
   await chunkReload();
   expect(sessionStorage.getItem(RECOVERY_KEY)).toBeNull();
   expect(location.replace).toHaveBeenCalledTimes(1);
+});
+it("captures a truly in-flight send without posting again on restore", async () => {
+  await show();
+  let answer;
+  next = () =>
+    new Promise((resolve) => {
+      answer = resolve;
+    });
+  send();
+  await settle();
+  const requestId = posts[0].requestId;
+  await chunkReload();
+  expect(posts).toHaveLength(1);
+  await unmount(component);
+  component = null;
+  next = () => new Response(JSON.stringify(data()));
+  await show();
+  expect(posts).toHaveLength(1);
+  expect(target.querySelector("#message").value).toBe("Hold the door");
+  send();
+  await settle();
+  expect(posts[1].requestId).toBe(requestId);
+  answer(new Response(JSON.stringify(data())));
+  await settle();
+});
+it("restores inventory edits only after delayed current item data arrives", async () => {
+  const item = {
+    id: "item",
+    name: "Compass",
+    notes: "",
+    quantity: 1,
+    owner: "party",
+    hidden_from_party: false,
+  };
+  inventoryResponse = () => new Response(JSON.stringify([item]));
+  await show();
+  click("Inventory");
+  await settle();
+  input("Notes for Compass", "Points north");
+  input("Quantity for Compass", "3");
+  await chunkReload();
+  await unmount(component);
+  component = null;
+  let resolveItems;
+  inventoryResponse = () =>
+    new Promise((resolve) => {
+      resolveItems = resolve;
+    });
+  await show();
+  expect(target.textContent).toContain("Loading inventory");
+  resolveItems(new Response(JSON.stringify([item])));
+  await settle();
+  const notes = [...target.querySelectorAll("textarea")].find(
+    (el) => el.labels?.[0]?.textContent.trim() === "Notes for Compass",
+  );
+  expect(notes.value).toBe("Points north");
+  const quantity = [...target.querySelectorAll("input")].find(
+    (el) => el.labels?.[0]?.textContent.trim() === "Quantity for Compass",
+  );
+  expect(quantity.value).toBe("3");
+  expect(posts).toHaveLength(0);
+});
+it("retains a handout's uncertain request ID through reload without resubmitting it", async () => {
+  await show();
+  input("Handout title", "Map");
+  input("Handout text", "Trail");
+  next = () => new Response("<html>proxy</html>", { status: 503 });
+  const submit = () =>
+    target
+      .querySelector('[aria-label="Send a handout"]')
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  submit();
+  await settle();
+  const id = posts[0].requestId;
+  await chunkReload();
+  await unmount(component);
+  component = null;
+  await show();
+  expect(posts).toHaveLength(1);
+  submit();
+  await settle();
+  expect(posts[1].requestId).toBe(id);
+});
+it("restores read-aloud preferences without replaying old events or retaining the feed", async () => {
+  const synth = { getVoices: () => [], cancel: vi.fn(), speak: vi.fn() };
+  vi.stubGlobal("speechSynthesis", synth);
+  vi.stubGlobal("SpeechSynthesisUtterance", class {});
+  const view = {
+    events: [
+      {
+        id: "old",
+        seq: 1,
+        kind: "narration",
+        audience: "table",
+        body: { text: "Already spoken canary" },
+      },
+    ],
+    user: { id: "dm", token: "SECRET_TOKEN_CANARY" },
+  };
+  await show(true, view);
+  const toggle = target.querySelector('[aria-label="Read aloud"] input');
+  toggle.checked = false;
+  toggle.dispatchEvent(new Event("change", { bubbles: true }));
+  await settle();
+  await chunkReload();
+  const snapshot = sessionStorage.getItem(RECOVERY_KEY);
+  expect(snapshot).not.toContain("SECRET_TOKEN_CANARY");
+  expect(snapshot).not.toContain("Already spoken canary");
+  await unmount(component);
+  component = null;
+  await show(true, view);
+  expect(target.querySelector('[aria-label="Read aloud"] input').checked).toBe(
+    false,
+  );
+  expect(synth.speak).not.toHaveBeenCalled();
+  expect(posts).toHaveLength(0);
 });

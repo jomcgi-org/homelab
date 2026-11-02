@@ -34,7 +34,7 @@
       fields,
       silent,
     }),
-    async (saved) => {
+    async (saved, current) => {
       const kept = draftFields(saved, {
         query: "",
         recipient: "",
@@ -51,6 +51,7 @@
         return;
       if (typeof saved.entityId === "string") {
         await choose({ id: saved.entityId });
+        if (!current()) return;
         if (entity?.id !== saved.entityId) return;
       }
       query = kept.query;

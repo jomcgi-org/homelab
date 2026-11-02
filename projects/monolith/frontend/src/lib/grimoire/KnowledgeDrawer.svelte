@@ -1,17 +1,20 @@
 <script>
   import { onMount } from "svelte";
+  import { panelRecovery } from "./rollout-recovery.js";
+  const recovery = panelRecovery();
   import KnowledgeDetails from "./KnowledgeDetails.svelte";
   let { endpoint, entityId, close } = $props();
   let entity = $state(null);
   let failure = $state("");
   async function load() {
     try {
-      const response = await fetch(`${endpoint}?entity=${entityId}`);
+      const response = await recovery.fetch(`${endpoint}?entity=${entityId}`);
       const result = await response.json();
       if (!response.ok) throw new Error(result.error);
       entity = result;
       failure = "";
-    } catch {
+    } catch (error) {
+      if (recovery.transient(error)) return;
       entity = null;
       failure = "This knowledge is no longer available to you.";
     }

@@ -13,14 +13,15 @@ validation, application errors and invalid JSON are not retried.
 Run the focused regression from the repository root:
 
 ```bash
-pnpm --dir projects/monolith/frontend exec vitest run src/lib/server/grimoire-auth.test.js src/lib/server/grimoire-session.test.js
+pnpm --dir projects/monolith/frontend exec vitest run src/lib/grimoire src/lib/server/grimoire-auth.test.js src/lib/server/grimoire-session.test.js src/hooks.client.test.js
 ```
 
 The existing `//projects/monolith/frontend:test` Linux target discovers the
-new test through its `src/**/*.test.js` glob. These are unit tests, not browser
-or rollout evidence. Do not enable this staged behavior as completed #7565
-delivery: the three-seat built-asset swap and backend-restart rehearsal,
-deployment-reload draft preservation, and resumed-polling coverage are still
+tests through its `src/**/*.test.js` glob. The session DOM tests mount the real
+page and execute the inline `app.html` callback through `hooks.client.js`.
+They cover transient poll/send classification, uncertain-send request IDs,
+chunk fallback and restored forms. They are not a process-restart or rollout
+rehearsal. The three-seat built-asset swap and backend-restart rehearsal remain
 outstanding. The current launcher below uses a dev frontend and cannot prove
 built-chunk replacement recovery. Its backend also creates a fresh disposable
 signing key on startup; a restart rehearsal must retain that local key and
@@ -39,6 +40,65 @@ event deduplication results, and error/sign-out observations. Require no lost
 or duplicate events, every draft retained, and all clients Live within ten
 seconds. Local reports cannot satisfy this live acceptance. A command for
 collecting that live report has not yet been implemented.
+
+### Staged client recovery
+
+The session server load exposes only the boolean `rolloutRecoveryEnabled`,
+derived from `GRIMOIRE_ROLLOUT_RECOVERY_ENABLED === "true"`. It never exposes the
+environment or authentication material. With the flag off, the existing BFF,
+send-error and generic chunk-reload paths remain in use. No chart setting is
+changed by this delivery.
+
+With the flag on, connection failures and HTTP 502/503/504 are Reconnecting,
+including HTML proxy responses. A non-auth transient failure clears the old
+auth-expiry observation; a successful poll returns Live. Real 401/manual
+login redirects still require the existing two observations before sign-out.
+Validation and application errors remain visible. No POST is retried
+automatically. An uncertain composer/handout send retains its exact request ID
+for a manual deduplicated retry.
+
+The mounted session registers a save callback with `window.__freshReload`.
+`hooks.client.js` first attempts SvelteKit `preloadCode` and `goto` for a failed
+navigation. Preloading has a 1.5-second bound. An error on the current route
+(including a lazy panel without an in-place retry callback), a rejected load,
+or an obsolete build falls back to the guarded fresh-HTML reload. The existing
+30-second reload guard and unrelated-page navigation targets remain intact.
+The callback saves before attempting recovery and immediately before replacing
+the location. A failed save blocks location replacement and shows a
+copy-before-reload notice while the session is mounted. SvelteKit retains its
+own error-page handling for a failed navigation. An in-progress image upload
+also prevents replacement.
+
+The per-tab snapshot uses sessionStorage key `grimoire-rollout-drafts:v1`, a
+96,000-byte total limit and a 15-minute lifetime. It is bound to current viewer,
+role, character assignment, campaign, session and the server's permission,
+character and speaker projection. Ended sessions and mismatched identities or
+permissions discard it. The paired composer uses the existing `keepDraft` path
+and additionally checks the session. Corrupt/version-mismatched/expired storage
+is discarded; unavailable or quota-exhausted storage cannot trigger a loop or
+claim that drafts were saved. Restoration runs after initial page effects and
+panel reads; note edit rights and current inventory items are checked again.
+
+| State | Saved across the guarded session reload |
+| --- | --- |
+| Composer | Text, audience, reply, speaker, resolved choice and pending request ID/signature |
+| Page | Open tab, journal view, dice formula/label/mode/visibility/type, cheap details and scroll position |
+| Notes | Audience, note ID, title, markdown, DM sharing and pin choice; edits require current edit permission |
+| Handout | Title, markdown, recipients, completed upload key/metadata and pending request ID/signature; never file bytes or an in-flight upload |
+| Initiative | Dirty rows, active row and hidden-entry display; restored dirty so polling cannot overwrite it |
+| Voice | Speaker/free label, hints, rate/pitch and NPC query; a picked NPC is read again through the current authorized endpoint |
+| Inventory | Give form plus item edit/quantity/move/reason drafts; only currently projected items and available owners restore, after initial reads |
+| Knowledge | Unsent search query and reveal choices/clue; selected entity is read again, old search results and previews are omitted |
+| Read aloud | Preferences only; existing events are marked handled on mount, with no queue or utterance replay |
+
+Hidden/unmounted inventory forms stay in the page registry when switching tabs.
+Restoration never submits a form, emits an event or resumes speech. Backend
+state, event feeds, audit/history results, credentials and private search/entity
+projections are not stored in the snapshot. The next implementation must still
+exercise every draft with three real old clients during the executable
+backend-restart/production-build swap, retain signing identity/database, and
+provide revision-bound live-report collection. No such rehearsal ran in the
+client implementation node.
 
 ## Start a disposable table
 

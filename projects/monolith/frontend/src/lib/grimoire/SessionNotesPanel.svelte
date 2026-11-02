@@ -15,10 +15,10 @@
   let failure = $state("");
   let notice = $state("");
   let initialLoad;
-  registerDraft(
+  const restoreDrafts = registerDraft(
     "notes",
     () => ({ kind, noteId, title, markdown, dmReadable, pinned }),
-    async (saved) => {
+    async (saved, current) => {
       const kept = fields(saved, {
         kind: "",
         title: "",
@@ -32,7 +32,8 @@
       )
         return;
       kind = kept.kind;
-      await load();
+      if (!(await load())) return false;
+      if (!current()) return;
       // A revoked edit permission or deleted note never restores a private edit.
       if (
         saved.noteId !== null &&
@@ -57,9 +58,11 @@
       const result = await response.json();
       if (!response.ok) throw new Error(result.error);
       if (kind === requestedKind) notes = result;
+      return true;
     } catch (error) {
-      if (recovery.transient(error)) return;
+      if (recovery.transient(error)) return false;
       failure = error.message;
+      return false;
     }
   }
   function clear() {
@@ -136,7 +139,12 @@
   }
   onMount(() => {
     initialLoad = load();
-    const timer = setInterval(load, 4000);
+    const timer = setInterval(() => {
+      initialLoad = load().then((ready) => {
+        if (ready) restoreDrafts();
+        return ready;
+      });
+    }, 4000);
     return () => clearInterval(timer);
   });
 </script>
