@@ -18,7 +18,9 @@ go_library(
     ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/runtimes/python/guest-init/cmd",
     visibility = ["//visibility:private"],
-    deps = select({
+    deps = [
+        "//projects/firecracker/substrate/bootenv",
+    ] + select({
         "@rules_go//go/platform:android": [
             "@org_golang_x_sys//unix",
         ],
@@ -37,6 +39,10 @@ go_binary(
 
 go_test(
     name = "cmd_test",
-    srcs = ["main_test.go"],
+    srcs = [
+        "main_test.go",
+        "mmds_test.go",
+    ],
     embed = [":cmd_lib"],
+    deps = ["//projects/firecracker/substrate/bootenv"],
 )

@@ -1,10 +1,10 @@
 package main
 
 import (
-	"encoding/base64"
 	"log/slog"
 	"os"
-	"strings"
+
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/bootenv"
 )
 
 // procCmdlinePath is the kernel command line the stateful boot-args ride in on.
@@ -23,15 +23,6 @@ const (
 	volumeMountCmdlineKey = "ember.volume_mount"
 )
 
-// mmdsEnvCmdlinePrefix is the boot-arg token prefix noded's driver.bootArgsFor
-// appends for a STATEFUL FRESH/COLD boot's mmds_env (R4, D-R4.PR-7.1: MMDS-lite
-// over boot-args). Each entry rides as `ember.env.<KEY>=<base64url(value)>`; the
-// guest process env variable name is exactly <KEY>, so a workload's secretRef
-// naming POSTGRES_PASSWORD gets POSTGRES_PASSWORD set directly in the
-// environment the Postgres bootstrap reads. A base build and a RELIGHT carry no
-// such token, so this decoder is a complete no-op for them.
-const mmdsEnvCmdlinePrefix = "ember.env."
-
 // statefulVolumeFromCmdline reads /proc/cmdline and returns the volume device
 // and mount path when the stateful boot-args are present, or ("", "") for a base
 // build (no volume boot-arg). A missing /proc/cmdline (host build) also returns
@@ -41,11 +32,11 @@ func statefulVolumeFromCmdline(logger *slog.Logger) (dev, mountPath string) {
 	if err != nil {
 		return "", ""
 	}
-	dev = valueFromCmdline(string(raw), volumeDevCmdlineKey)
+	dev = bootenv.Value(string(raw), volumeDevCmdlineKey)
 	if dev == "" {
 		return "", ""
 	}
-	mountPath = valueFromCmdline(string(raw), volumeMountCmdlineKey)
+	mountPath = bootenv.Value(string(raw), volumeMountCmdlineKey)
 	if mountPath == "" {
 		// A volume device with no mount path is a malformed stateful boot; fall
 		// back to the CR default so the datastore still has a home. The driver
@@ -68,7 +59,7 @@ func setMmdsEnv(logger *slog.Logger) {
 	if err != nil {
 		return
 	}
-	values := mmdsEnvFromCmdline(string(raw))
+	values := bootenv.Decode(string(raw))
 	if len(values) == 0 {
 		return
 	}
@@ -84,63 +75,6 @@ func setMmdsEnv(logger *slog.Logger) {
 		keys = append(keys, k)
 	}
 	logger.Info("stateful first-boot env: set from mmds_env boot-args", "keys", keys)
-}
-
-// mmdsEnvFromCmdline extracts every `ember.env.<KEY>=<base64url>` token from a
-// kernel command line and returns the decoded KEY -> value map. A KEY failing
-// isValidEnvKeyName or a value failing base64url decode is skipped. Uses
-// base64.RawURLEncoding (no padding, URL-safe alphabet), matching exactly what
-// the noded driver's mmdsEnvBootArgs encodes with and what the python runtime
-// guest-init decodes with.
-func mmdsEnvFromCmdline(cmdline string) map[string]string {
-	out := map[string]string{}
-	for _, tok := range strings.Fields(cmdline) {
-		k, val, ok := strings.Cut(tok, "=")
-		if !ok || val == "" || !strings.HasPrefix(k, mmdsEnvCmdlinePrefix) {
-			continue
-		}
-		key := strings.TrimPrefix(k, mmdsEnvCmdlinePrefix)
-		if !isValidEnvKeyName(key) {
-			continue
-		}
-		decoded, err := base64.RawURLEncoding.DecodeString(val)
-		if err != nil {
-			continue
-		}
-		out[key] = string(decoded)
-	}
-	return out
-}
-
-// isValidEnvKeyName mirrors the noded driver's isValidMmdsEnvKey and the python
-// runtime guest-init's copy exactly (a shell/kernel-cmdline-safe identifier:
-// letters, digits, underscore). Duplicated per binary rather than shared for the
-// same reason the python runtime copy is: no existing cross-binary shared package.
-func isValidEnvKeyName(key string) bool {
-	if key == "" {
-		return false
-	}
-	for _, r := range key {
-		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-// valueFromCmdline extracts the value of a `key=value` token from a kernel
-// command line (space-separated tokens). Returns "" when the token is absent or
-// has an empty value. The last occurrence wins, matching the kernel.
-func valueFromCmdline(cmdline, key string) string {
-	value := ""
-	for _, tok := range strings.Fields(cmdline) {
-		k, val, ok := strings.Cut(tok, "=")
-		if ok && k == key && val != "" {
-			value = val
-		}
-	}
-	return value
 }
 
 // setDefaultEnv sets PATH, HOME, and the Postgres data/config defaults so a raw

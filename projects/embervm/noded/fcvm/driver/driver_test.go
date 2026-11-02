@@ -2604,6 +2604,10 @@ func TestBootArgsForMmdsEnv(t *testing.T) {
 	if !strings.Contains(mixed, wantValid) {
 		t.Fatalf("bootArgsFor(mmdsEnv with invalid keys) = %q, want %q present", mixed, wantValid)
 	}
+	// The shared encoder retains digit-leading keys and emits empty values.
+	if got := d.bootArgsFor(coldBootSpec{mmdsEnv: map[string]string{"9_KEY": "f", "EMPTY": ""}}); got != "console=ttyS0 ember.env.9_KEY=Zg ember.env.EMPTY=" {
+		t.Fatalf("digit-leading and empty wire = %q", got)
+	}
 }
 
 // TestMmdsEnvKeyNamesRedactsValues asserts the logging helper returns ONLY

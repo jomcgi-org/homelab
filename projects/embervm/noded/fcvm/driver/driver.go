@@ -13,7 +13,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -31,6 +30,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/bootenv"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/fcclient"
 	"github.com/jomcgi/homelab/projects/embervm/noded/snapshotmeta"
@@ -709,48 +710,9 @@ func (d *Driver) bootArgsFor(cb coldBootSpec) string {
 	// SECURITY: do not log mmdsEnv values anywhere in this package; only key
 	// names are safe to log (see mmdsEnvKeyNames below).
 	if len(cb.mmdsEnv) > 0 {
-		args += " " + mmdsEnvBootArgs(cb.mmdsEnv)
+		args += " " + bootenv.Encode(cb.mmdsEnv)
 	}
 	return args
-}
-
-// mmdsEnvKeyPattern is the allowed charset for an mmds_env key: a shell/kernel-
-// cmdline-safe identifier. A key outside this set is silently skipped (never
-// included in the boot-arg string) rather than failing the whole boot, since a
-// single malformed key must not block every other secret from being delivered.
-func isValidMmdsEnvKey(key string) bool {
-	if key == "" {
-		return false
-	}
-	for _, r := range key {
-		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-// mmdsEnvBootArgs renders mmdsEnv as space-separated ember.env.<KEY>=<base64url>
-// tokens, one per entry, sorted by key so the output is deterministic. Keys are
-// validated against isValidMmdsEnvKey (skipped, not fatal, if invalid); values
-// are base64url-encoded (RawURLEncoding: no padding, no '+'/'/' characters that
-// would need cmdline escaping) so an arbitrary secret value survives the kernel
-// command line's space-separated token parsing intact.
-func mmdsEnvBootArgs(mmdsEnv map[string]string) string {
-	keys := make([]string, 0, len(mmdsEnv))
-	for k := range mmdsEnv {
-		if isValidMmdsEnvKey(k) {
-			keys = append(keys, k)
-		}
-	}
-	sort.Strings(keys)
-	tokens := make([]string, 0, len(keys))
-	for _, k := range keys {
-		encoded := base64.RawURLEncoding.EncodeToString([]byte(mmdsEnv[k]))
-		tokens = append(tokens, fmt.Sprintf("ember.env.%s=%s", k, encoded))
-	}
-	return strings.Join(tokens, " ")
 }
 
 // mmdsEnvKeyNames returns the sorted key names of mmdsEnv for logging. It NEVER

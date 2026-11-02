@@ -125,7 +125,8 @@ common:ci --noreuse_sandbox_directories
 build:ci --verbose_failures
 build:ci --keep_going=false  # Fail immediately in CI
 build:ci --test_output=errors
-build:ci --test_summary=detailed
+# Match the preset's test scope so successful targets remain attributable in CI.
+test:ci --test_summary=detailed
 build:ci --build_metadata=ROLE=CI
 
 # BuildBuddy Build Event Service (BES) - Always enabled for observability
