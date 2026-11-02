@@ -9,6 +9,7 @@ export const aliases = [
   { find: "$lib", replacement: here("../src/lib") },
   { find: "$app/stores", replacement: here("./state.js") },
   { find: "$app/navigation", replacement: here("./state.js") },
+  { find: "$app/state", replacement: here("./app-state.svelte.js") },
   { find: "$app/forms", replacement: here("./forms.js") },
 ];
 export default defineConfig({
