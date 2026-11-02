@@ -76,7 +76,6 @@ agents:
     enabled: true
     jobKinds: [qwen-drain]
     maxJobsPerCycle: 1
-    notifyFailures: false
     docFixEnabled: false
     docFixAutoMerge: false
     kgMaxJobsPerDay: 0

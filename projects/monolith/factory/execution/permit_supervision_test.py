@@ -914,7 +914,6 @@ def test_held_routine_job_permit_is_left_to_the_operator_path(
     owns both supported drainer kinds, and settling here would remove its exact
     permit evidence before it can apply the requested job disposition.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, f"held-{tier}", tier=tier, job_held=True)
     assert pid in supervision._candidates()
     with Session(database) as db:

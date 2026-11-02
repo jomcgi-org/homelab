@@ -154,9 +154,7 @@ This is a delivery slice of #5788, not the complete conductor interface.
   exposed by these tools. `capabilities` reports these missing owners
   explicitly. Direction is supported only through an exact pending decision.
 - Exact-attempt stop remains on its existing HTTP owner. It is not an MCP
-  operation. Chart defaults keep it off with
-  `FACTORY_STOP_SUPERVISION_ENABLED=false`; the hub overlay
-  (`deploy/values-gke.yaml`) turns it on.
+  operation.
 - The factory reconciler defaults off under `swarm.factoryEnabled=false` in
   chart values, and the hub overlay turns it on. This repository slice changed
   neither flag and enables no new mutation adapter.

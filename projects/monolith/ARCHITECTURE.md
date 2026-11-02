@@ -720,11 +720,11 @@ final acceptance on #6271.
 
 **Why.** `factory_cessation.py` closes the unknown-hold gap for an attempt
 whose run and start are both `uncertain` and whose node workflow is terminal;
-the automatic path runs more than two hours past the task deadline behind
-`FACTORY_ACTIVE_CESSATION_ENABLED`, and `request_cessation` runs the same steps
+the automatic path runs more than two hours past the task deadline, and
+`request_cessation` runs the same steps
 for one exact attempt on an operator reviewed fingerprint (#6025, #6288).
 
-**Why.** `FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED` carries a brick-drain relay
+**Why.** The node workflow carries a brick-drain relay
 through to an owner in the node workflow, with continuation retirement and
 stop supervision; a stranded state otherwise needs the control-plane root
 cause on #6091 (#6256).
