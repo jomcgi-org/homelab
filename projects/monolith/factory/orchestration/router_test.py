@@ -1227,7 +1227,8 @@ def test_list_runs_clamps_limit_query_parameter(monkeypatch):
     monkeypatch.setattr("core.db.get_engine", lambda: object())
     monkeypatch.setattr("sqlmodel.Session", FakeSession)
     monkeypatch.setattr(
-        "factory.orchestration.rows.swarm_session_views", lambda session: {}
+        "factory.orchestration.rows.swarm_session_views",
+        lambda session, **kwargs: {},
     )
     monkeypatch.setattr(
         "factory.orchestration.store.list_open_decisions_for",

@@ -1026,8 +1026,13 @@ def list_runs(request: Request, active: bool = True, limit: int = 50) -> dict:
     from sqlmodel import Session
     from factory.orchestration.rows import swarm_session_views
 
-    with Session(get_engine()) as session:
-        session_costs = swarm_session_views(session)
+    def session_costs(workflow_ids):
+        # Only the listed runs' sessions: an unscoped read grows with every
+        # session ever recorded, and once held the pool long enough to stall
+        # the process and run it out of memory.
+        with Session(get_engine()) as session:
+            return swarm_session_views(session, workflow_ids=workflow_ids)
+
     try:
         requested_limit = int(request.query_params.get("limit", limit))
     except (TypeError, ValueError):
