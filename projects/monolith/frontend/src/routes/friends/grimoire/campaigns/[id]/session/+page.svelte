@@ -447,7 +447,8 @@
   onMount(() => {
     let stopped = false;
     // Initial page and child effects run before restored form assignments.
-    void tick().then(async () => {
+    async function restore() {
+      await tick();
       if (stopped) return;
       await recovery.restore();
       if (stopped || !playing) return;
@@ -466,8 +467,14 @@
         pendingMessage = kept.pending;
         if (kept.pending) uncertainSend = interrupted;
       }
-    });
+    }
+    void restore();
     const callback = {
+      restore: async () => {
+        if (!recovery.sameScope()) return false;
+        await restore();
+        return true;
+      },
       save: () => {
         const saved = recovery.save();
         if (!saved)

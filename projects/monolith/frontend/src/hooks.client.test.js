@@ -114,7 +114,8 @@ test("staged recovery tries supported route loading before falling back", async 
 });
 test("a recovered navigation keeps the page in place and still guards retries", async () => {
   boot("/grimoire/campaigns/a/session");
-  window.__grimoireRecovery = { save: vi.fn(() => true) };
+  const restore = vi.fn();
+  window.__grimoireRecovery = { save: vi.fn(() => true), restore };
   const url = new URL("/grimoire/campaigns/b/session", location.href);
   preloadCode.mockResolvedValueOnce();
   goto.mockImplementationOnce(async () => {
@@ -125,6 +126,7 @@ test("a recovered navigation keeps the page in place and still guards retries", 
   await settle();
   expect(goto).toHaveBeenCalledWith(url, { keepFocus: true, noScroll: true });
   expect(replace).not.toHaveBeenCalled();
+  expect(restore).toHaveBeenCalledTimes(1);
   expect(window.__freshReload(chunkError)).toBe(false);
 });
 test("a stalled preload is bounded and repeated errors do not start a second recovery", async () => {

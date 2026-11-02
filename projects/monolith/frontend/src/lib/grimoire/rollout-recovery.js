@@ -61,6 +61,7 @@ export function createRecovery({
   }
   return {
     isEnabled: enabled,
+    sameScope: valid,
     transient(error) {
       if (
         !enabled() ||

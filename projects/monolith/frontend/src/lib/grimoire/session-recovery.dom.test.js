@@ -364,6 +364,22 @@ it("captures a truly in-flight send without posting again on restore", async () 
   answer(new Response(JSON.stringify(data())));
   await settle();
 });
+it("the real in-place completion callback reapplies drafts after reused-page initialization", async () => {
+  await show();
+  input("Set the scene", "Preserve in place");
+  input("Handout title", "Map");
+  expect(window.__grimoireRecovery.save()).toBe(true);
+  input("Set the scene", "");
+  input("Handout title", "");
+  await window.__grimoireRecovery.restore();
+  await settle();
+  expect(target.querySelector("#message").value).toBe("Preserve in place");
+  const title = [...target.querySelectorAll("input")].find(
+    (el) => el.labels?.[0]?.textContent.trim() === "Handout title",
+  );
+  expect(title.value).toBe("Map");
+  expect(posts).toHaveLength(0);
+});
 it("restores inventory edits only after delayed current item data arrives", async () => {
   const item = {
     id: "item",

@@ -47,6 +47,11 @@
           throw new Error("unavailable character");
         return { ...entry, initiative: row.initiative };
       });
+      if (
+        kept.some((row) => !Number.isSafeInteger(row.key) || row.key < 1) ||
+        new Set(kept.map((row) => row.key)).size !== kept.length
+      )
+        throw new Error("invalid row keys");
       rows = kept;
       nextKey = Math.max(0, ...kept.map((row) => row.key));
       activeKey = kept.some((row) => row.key === saved.activeKey)

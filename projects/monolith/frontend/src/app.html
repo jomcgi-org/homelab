@@ -73,18 +73,29 @@
           const session = window.__grimoireRecovery;
           if (session) {
             const from = location.href;
-            // A failed save keeps the current page and its in-memory drafts.
+            // A failed save prevents a location replacement.
             if (!session.save()) return false;
             recovering = true;
             Promise.resolve()
-              .then(() => recover?.(url) ?? false)
+              .then(() => recover?.(url, session) ?? false)
               .catch(() => false)
-              .then((recovered) => {
+              .then(async (recovered) => {
                 // Kit may unmount the failed route for its error page while
                 // this runs. Its saved snapshot still applies. A different
                 // user navigation, however, must not be replaced.
                 if (location.href !== from && location.href !== url.href)
                   return;
+                if (recovered === "cancelled") return;
+                if (
+                  recovered &&
+                  window.__grimoireRecovery === session &&
+                  (await session.restore?.()) === false
+                ) {
+                  // A reused component changed viewer/session/permissions.
+                  // Fresh initialization must clear the old private controls.
+                  reload();
+                  return;
+                }
                 if (!recovered) {
                   if (window.__grimoireRecovery !== session || session.save())
                     reload();

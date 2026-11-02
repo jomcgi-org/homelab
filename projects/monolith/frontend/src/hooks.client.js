@@ -3,7 +3,7 @@ import { page } from "$app/state";
 
 // Only a failed navigation has a supported in-place retry. A lazy panel on the
 // current route has no retry callback, and an obsolete build needs fresh HTML.
-async function recoverNavigation(url) {
+async function recoverNavigation(url, session) {
   if (url.origin !== location.origin || url.href === location.href)
     return false;
   let timer;
@@ -17,6 +17,10 @@ async function recoverNavigation(url) {
     ]);
     if (!loaded) return false;
     if (location.href !== from && location.href !== url.href) return true;
+    // A same-component navigation can reinitialize page data. Capture edits
+    // made during preloading, then restore after those initialization effects.
+    if (window.__grimoireRecovery === session && !session.save())
+      return "cancelled";
     await goto(url, { keepFocus: true, noScroll: true });
     return page.status < 400 && page.url.href === url.href;
   } finally {
