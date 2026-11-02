@@ -8,8 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 EXPECTED_TOOLS = {
-    "monolith_agent_preview_completed_raw_recovery",
-    "monolith_agent_apply_completed_raw_recovery",
+    "monolith_agent_completed_raw_recovery",
     "monolith_agent_acquire_lock",
     "monolith_agent_extend_lock",
     "monolith_agent_release_lock",
@@ -24,8 +23,7 @@ EXPECTED_TOOLS = {
     "monolith_agent_register_routine_job",
     "monolith_agent_deregister_routine_job",
     "monolith_agent_trigger_routine_job",
-    "monolith_agent_preview_fact_review_recovery",
-    "monolith_agent_apply_fact_review_recovery",
+    "monolith_agent_fact_review_recovery",
     "monolith_agent_set_factory_goals",
     "monolith_agent_schema_retirement_inventory",
 }
@@ -43,9 +41,9 @@ async def test_all_agent_tools_registered():
     assert "monolith_agent_check_orphan_jobs" not in registered
 
 
-def test_expected_tool_count_is_twenty():
+def test_expected_tool_count_is_eighteen():
     """Guard against silently dropping a tool from EXPECTED_TOOLS."""
-    assert len(EXPECTED_TOOLS) == 20
+    assert len(EXPECTED_TOOLS) == 18
 
 
 def test_admission_api_import_does_not_require_private_operator_module(monkeypatch):
@@ -200,46 +198,54 @@ async def test_explicit_review_recovery_requires_existing_operator_gate(
 
 
 @pytest.mark.asyncio
-async def test_recovery_tools_publish_distinct_required_schemas():
+async def test_recovery_tool_publishes_typed_schema():
     from agent import mcp as agent_mcp
 
     tools = {tool.name: tool for tool in await agent_mcp.mcp.list_tools()}
-    preview = tools["monolith_agent_preview_fact_review_recovery"].parameters
-    apply = tools["monolith_agent_apply_fact_review_recovery"].parameters
-    assert set(preview["properties"]) == {"session_id", "permit_id"}
-    assert set(preview["required"]) == {"session_id", "permit_id"}
-    assert (
-        set(apply["required"])
-        == set(apply["properties"])
-        == {
-            "session_id",
-            "permit_id",
-            "expected_state_sha256",
-            "reconciliation_key",
-            "acknowledgment",
-        }
+    schema = tools["monolith_agent_fact_review_recovery"].parameters
+    assert set(schema["required"]) == {"operation", "session_id", "permit_id"}
+    assert set(schema["properties"]) == {
+        "operation",
+        "session_id",
+        "permit_id",
+        "expected_state_sha256",
+        "reconciliation_key",
+        "acknowledgment",
+    }
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["operation"]["enum"] == ["preview", "apply"]
+    for name in ("session_id", "permit_id"):
+        assert schema["properties"][name] == {"type": "integer", "exclusiveMinimum": 0}
+    assert {
+        "const": "accept_duplicate_compute_and_writes",
+        "type": "string",
+    } in schema["properties"]["acknowledgment"]["anyOf"]
+    assert {
+        "pattern": "^[0-9a-f]{64}$",
+        "type": "string",
+    } in schema["properties"]["expected_state_sha256"]["anyOf"]
+
+
+def _operator(authorized=True):
+    from auth.api import Authority, Principal, PrincipalKind
+
+    return Principal(
+        subject="operator",
+        actor=(),
+        scope=(),
+        groups=("operators",),
+        email=None,
+        kind=PrincipalKind("human"),
+        authority=Authority("standing" if authorized else "delegated"),
     )
-    for schema in (preview, apply):
-        assert schema["additionalProperties"] is False
-        for name in ("session_id", "permit_id"):
-            assert schema["properties"][name] == {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-            }
-    assert (
-        apply["properties"]["acknowledgment"]["const"]
-        == "accept_duplicate_compute_and_writes"
-    )
-    assert apply["properties"]["expected_state_sha256"]["pattern"] == "^[0-9a-f]{64}$"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["preview", "apply"])
 @pytest.mark.parametrize("authorized", [False, True])
-async def test_registered_recovery_tools_cannot_fall_back_to_trigger(
+async def test_registered_recovery_tool_cannot_fall_back_to_trigger(
     monkeypatch, mode, authorized
 ):
-    from auth.api import Authority, Principal, PrincipalKind
     from auth.dependencies import reset_current_principal, set_current_principal
     from agent import mcp, routine_reconciliation
 
@@ -254,46 +260,32 @@ async def test_registered_recovery_tools_cannot_fall_back_to_trigger(
 
     monkeypatch.setattr(routine_reconciliation, "recover_review_job", recover)
     monkeypatch.setattr(mcp.routine_jobs, "trigger_job", forbidden_trigger)
-    principal = Principal(
-        subject="operator",
-        actor=(),
-        scope=(),
-        groups=("operators",),
-        email=None,
-        kind=PrincipalKind("human"),
-        authority=Authority("standing" if authorized else "delegated"),
-    )
-    token = set_current_principal(principal)
-    args = {"session_id": 20412, "permit_id": 17827}
+    token = set_current_principal(_operator(authorized))
+    fields = {"session_id": 20412, "permit_id": 17827}
     if mode == "apply":
-        args.update(
+        fields.update(
             expected_state_sha256="a" * 64,
             reconciliation_key="review-once",
             acknowledgment="accept_duplicate_compute_and_writes",
         )
+    args = {"operation": mode, **fields}
     try:
-        tool = next(
-            t
-            for t in await mcp.mcp.list_tools()
-            if t.name == f"monolith_agent_{mode}_fact_review_recovery"
-        )
+        tool = await mcp.mcp.get_tool("monolith_agent_fact_review_recovery")
         await tool.run(args)
         assert calls == (
-            [{"actor": "operator", "recovery": {"mode": mode, **args}}]
+            [{"actor": "operator", "recovery": {"mode": mode, **fields}}]
             if authorized
             else []
         )
         calls.clear()
         invalid = [
             {**args, "mode": "apply"},
+            {**args, "operation": "trigger"},
             {**args, "name": "kg-fact-review"},
             {**args, "session_id": True},
             {**args, "permit_id": 0},
         ]
         if mode == "apply":
-            invalid.extend(
-                [{k: v for k, v in args.items() if k != field} for field in args]
-            )
             invalid.extend(
                 [
                     {**args, "acknowledgment": "yes"},
@@ -309,12 +301,37 @@ async def test_registered_recovery_tools_cannot_fall_back_to_trigger(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "missing", ["expected_state_sha256", "reconciliation_key", "acknowledgment"]
+)
+async def test_fact_review_apply_without_preview_fields_is_refused(missing):
+    from auth.dependencies import reset_current_principal, set_current_principal
+    from agent import mcp
+
+    args = {
+        "operation": "apply",
+        "session_id": 20412,
+        "permit_id": 17827,
+        "expected_state_sha256": "a" * 64,
+        "reconciliation_key": "review-once",
+        "acknowledgment": "accept_duplicate_compute_and_writes",
+    }
+    del args[missing]
+    token = set_current_principal(_operator())
+    try:
+        tool = await mcp.mcp.get_tool("monolith_agent_fact_review_recovery")
+        with pytest.raises(Exception, match="Invalid|SHA256|acknowledgment"):
+            await tool.run(args)
+    finally:
+        reset_current_principal(token)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["preview", "apply"])
 @pytest.mark.parametrize("authorized", [False, True])
 async def test_completed_raw_recovery_requires_standing_operator(
     monkeypatch, mode, authorized
 ):
-    from auth.api import Authority, Principal, PrincipalKind
     from auth.dependencies import reset_current_principal, set_current_principal
     from agent import mcp, routine_reconciliation
 
@@ -324,31 +341,51 @@ async def test_completed_raw_recovery_requires_standing_operator(
         "recover_completed_raw",
         lambda **kwargs: calls.append(kwargs) or {"ok": True},
     )
-    token = set_current_principal(
-        Principal(
-            subject="operator",
-            actor=(),
-            scope=(),
-            groups=("operators",),
-            email=None,
-            kind=PrincipalKind("human"),
-            authority=Authority("standing" if authorized else "delegated"),
-        )
-    )
-    args = {"job_name": "kg:raw", "session_id": 1, "permit_id": 2}
+    token = set_current_principal(_operator(authorized))
+    fields = {"job_name": "kg:raw", "session_id": 1, "permit_id": 2}
     if mode == "apply":
-        args.update(expected_state_sha256="a" * 64, reconciliation_key="one")
+        fields.update(expected_state_sha256="a" * 64, reconciliation_key="one")
+    args = {"operation": mode, **fields}
     try:
-        tool = next(
-            t
-            for t in await mcp.mcp.list_tools()
-            if t.name == f"monolith_agent_{mode}_completed_raw_recovery"
-        )
-        assert set(tool.parameters["required"]) == set(args)
+        tool = await mcp.mcp.get_tool("monolith_agent_completed_raw_recovery")
+        assert set(tool.parameters["required"]) == {
+            "operation",
+            "job_name",
+            "session_id",
+            "permit_id",
+        }
         await tool.run(args)
-        assert len(calls) == int(authorized)
+        assert calls == (
+            [{"actor": "operator", "recovery": {"mode": mode, **fields}}]
+            if authorized
+            else []
+        )
         with pytest.raises(ValidationError):
             await tool.run({**args, "mode": "apply"})
+    finally:
+        reset_current_principal(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", ["expected_state_sha256", "reconciliation_key"])
+async def test_completed_raw_apply_without_preview_fields_is_refused(missing):
+    from auth.dependencies import reset_current_principal, set_current_principal
+    from agent import mcp
+
+    args = {
+        "operation": "apply",
+        "job_name": "kg:raw",
+        "session_id": 1,
+        "permit_id": 2,
+        "expected_state_sha256": "a" * 64,
+        "reconciliation_key": "one",
+    }
+    del args[missing]
+    token = set_current_principal(_operator())
+    try:
+        tool = await mcp.mcp.get_tool("monolith_agent_completed_raw_recovery")
+        with pytest.raises(Exception, match="Invalid|SHA256"):
+            await tool.run(args)
     finally:
         reset_current_principal(token)
 

@@ -132,8 +132,9 @@ def test_factory_tools_are_registered():
         "factory_release_landing_hold",
         "factory_find_receipts",
         "factory_prepare_validation",
-        "factory_preview_refinement_batch",
-        "factory_apply_refinement_batch",
+        "factory_refinement_batch",
+        "factory_refinement_delivery",
+        "factory_backlog_intake",
         "factory_request_brief",
         "factory_context",
         "factory_verify_synthetics",
@@ -2317,7 +2318,7 @@ def test_fresh_issue_preparation_wire_and_authority(monkeypatch):
     assert calls == [((None, "selected work"), {"issue_number": 7275})]
 
 
-def test_fresh_issue_dedicated_tools_require_typed_apply_and_operator(monkeypatch):
+def test_fresh_issue_preparation_requires_typed_apply_and_operator(monkeypatch):
     from fastmcp import Client
     from core.mcp_app import mcp as shared
     from factory.orchestration import factory_validation as validation
@@ -2335,11 +2336,18 @@ def test_fresh_issue_dedicated_tools_require_typed_apply_and_operator(monkeypatc
     )
 
     async def preview():
-        return await mcp.factory_preview_issue_admission(7275, "selected work")
+        return await mcp.factory_prepare_validation(
+            "preview", None, "selected work", issue_number=7275
+        )
 
     async def apply():
-        return await mcp.factory_apply_issue_admission(
-            7275, "selected work", "a" * 64, "exact-key"
+        return await mcp.factory_prepare_validation(
+            "apply",
+            None,
+            "selected work",
+            request_key="exact-key",
+            expected_preview_sha256="a" * 64,
+            issue_number=7275,
         )
 
     for principal in (
@@ -2354,24 +2362,40 @@ def test_fresh_issue_dedicated_tools_require_typed_apply_and_operator(monkeypatc
     async def wire():
         async with Client(shared) as client:
             valid = {
+                "operation": "apply",
+                "receipt_id": None,
                 "issue_number": 7275,
                 "reason": "selected work",
                 "expected_preview_sha256": "a" * 64,
                 "request_key": "exact-key",
             }
-            for field in valid:
+            for field in ("operation", "receipt_id", "reason"):
                 result = await client.call_tool(
-                    "factory_apply_issue_admission",
+                    "factory_prepare_validation",
                     {k: v for k, v in valid.items() if k != field},
                     raise_on_error=False,
                 )
                 assert result.is_error
+            for field in ("expected_preview_sha256", "request_key"):
+                result = await client.call_tool(
+                    "factory_prepare_validation",
+                    {k: v for k, v in valid.items() if k != field},
+                )
+                assert result.data == {
+                    "ok": False,
+                    "reason": "validation_requires_preview_and_request_key",
+                }
             result = await client.call_tool(
-                "factory_preview_issue_admission",
-                {"issue_number": 7275, "reason": "selected work"},
+                "factory_prepare_validation",
+                {
+                    "operation": "preview",
+                    "receipt_id": None,
+                    "issue_number": 7275,
+                    "reason": "selected work",
+                },
             )
             assert result.data["ok"]
-            result = await client.call_tool("factory_apply_issue_admission", valid)
+            result = await client.call_tool("factory_prepare_validation", valid)
             assert result.data["ok"]
 
     _as(_principal(), wire)
@@ -2461,8 +2485,10 @@ def test_refinement_delivery_operator_gate_precedes_owner(principal, monkeypatch
 
     monkeypatch.setattr(mcp, "_refinement_delivery", forbidden)
     for fn in (
-        lambda: mcp.factory_preview_refinement_delivery(902, "continue"),
-        lambda: mcp.factory_apply_refinement_delivery(902, "continue", "key", "a" * 64),
+        lambda: mcp.factory_refinement_delivery("preview", 902, "continue"),
+        lambda: mcp.factory_refinement_delivery(
+            "apply", 902, "continue", "key", "a" * 64
+        ),
     ):
         assert _as(principal, fn)["error"] == mcp.OPERATOR_REQUIRED
 
@@ -2478,12 +2504,18 @@ def test_refinement_delivery_adapter_passes_only_server_actor_and_exact_request(
 
     monkeypatch.setattr(mcp, "_refinement_delivery", owner)
     assert _as(
-        _principal(), lambda: mcp.factory_preview_refinement_delivery(902, "continue")
+        _principal(),
+        lambda: mcp.factory_refinement_delivery("preview", 902, "continue"),
     ) == {"ok": True}
     assert _as(
         _principal(),
-        lambda: mcp.factory_apply_refinement_delivery(902, "continue", "key", "a" * 64),
+        lambda: mcp.factory_refinement_delivery(
+            "apply", 902, "continue", "key", "a" * 64
+        ),
     ) == {"ok": True}
+    assert _as(
+        _principal(), lambda: mcp.factory_refinement_delivery("apply", 902, "continue")
+    ) == {"ok": False, "reason": "refinement_delivery_preview_required"}
     assert calls == [
         ("preview", 902, "continue", "joe"),
         ("apply", 902, "continue", "joe", "key", "a" * 64),
@@ -2494,14 +2526,15 @@ def test_refinement_delivery_tool_schema_has_no_restriction_override():
     from core.mcp_app import mcp as shared
 
     tools = {tool.name: tool for tool in asyncio.run(shared.list_tools())}
-    for name, fields in (
-        ("factory_preview_refinement_delivery", {"receipt_id", "reason"}),
-        (
-            "factory_apply_refinement_delivery",
-            {"receipt_id", "reason", "request_key", "expected_preview_sha256"},
-        ),
-    ):
-        assert set(tools[name].parameters["properties"]) == fields
+    parameters = tools["factory_refinement_delivery"].parameters
+    assert set(parameters["properties"]) == {
+        "operation",
+        "receipt_id",
+        "reason",
+        "request_key",
+        "expected_preview_sha256",
+    }
+    assert set(parameters["required"]) == {"operation", "receipt_id", "reason"}
 
 
 def test_raw_extraction_diagnostics_operator_and_worker_thread(monkeypatch):
@@ -2613,18 +2646,28 @@ def test_backlog_preparation_requires_standing_operator_before_any_read(monkeypa
         lambda *a, **kw: calls.append((a, kw)) or {"ok": True},
     )
     for principal in (_principal(groups=()), _principal(authority=Authority.DELEGATED)):
-        assert not _as(principal, lambda: mcp.factory_preview_backlog_intake("resume"))[
-            "ok"
-        ]
+        assert not _as(
+            principal, lambda: mcp.factory_backlog_intake("preview", "resume")
+        )["ok"]
         assert not _as(
             principal,
-            lambda: mcp.factory_apply_backlog_intake("resume", "a" * 64, "key"),
+            lambda: mcp.factory_backlog_intake(
+                "apply", "resume", expected_preview_sha256="a" * 64, request_key="key"
+            ),
         )["ok"]
     assert not calls
-    assert _as(_principal(), lambda: mcp.factory_preview_backlog_intake("resume"))["ok"]
+    assert _as(_principal(), lambda: mcp.factory_backlog_intake("preview", "resume"))[
+        "ok"
+    ]
+    assert _as(_principal(), lambda: mcp.factory_backlog_intake("apply", "resume")) == {
+        "ok": False,
+        "reason": "backlog_intake_preview_required",
+    }
     assert _as(
         _principal(),
-        lambda: mcp.factory_apply_backlog_intake("resume", "a" * 64, "key"),
+        lambda: mcp.factory_backlog_intake(
+            "apply", "resume", expected_preview_sha256="a" * 64, request_key="key"
+        ),
     )["ok"]
     assert calls[0] == (("resume",), {"include_refinement": False})
     assert calls[1][1]["expected_preview_sha256"] == "a" * 64
@@ -2648,21 +2691,26 @@ def test_refinement_batch_requires_standing_operator_before_any_read(monkeypatch
         _principal(kind=PrincipalKind.WORKLOAD),
     ):
         assert not _as(
-            principal, lambda: mcp.factory_preview_refinement_batch([7249], "briefs")
+            principal, lambda: mcp.factory_refinement_batch("preview", [7249], "briefs")
         )["ok"]
         assert not _as(
             principal,
-            lambda: mcp.factory_apply_refinement_batch(
-                [7249], "briefs", "a" * 64, "key"
+            lambda: mcp.factory_refinement_batch(
+                "apply", [7249], "briefs", "a" * 64, "key"
             ),
         )["ok"]
     assert not calls
     assert _as(
-        _principal(), lambda: mcp.factory_preview_refinement_batch([7249], "briefs")
+        _principal(), lambda: mcp.factory_refinement_batch("preview", [7249], "briefs")
     )["ok"]
     assert _as(
+        _principal(), lambda: mcp.factory_refinement_batch("apply", [7249], "briefs")
+    ) == {"ok": False, "reason": "refinement_batch_preview_required"}
+    assert _as(
         _principal(),
-        lambda: mcp.factory_apply_refinement_batch([7249], "briefs", "a" * 64, "key"),
+        lambda: mcp.factory_refinement_batch(
+            "apply", [7249], "briefs", "a" * 64, "key"
+        ),
     )["ok"]
     assert calls[0] == (([7249], "briefs"), {})
     assert calls[1][1]["request_key"] == "key"

@@ -396,48 +396,37 @@ async def _recover_fact_review(recovery: dict) -> dict:
 
 
 @mcp.tool
-async def monolith_agent_preview_fact_review_recovery(
+async def monolith_agent_fact_review_recovery(
+    operation: Literal["preview", "apply"],
     session_id: Annotated[int, Field(strict=True, gt=0)],
     permit_id: Annotated[int, Field(strict=True, gt=0)],
+    expected_state_sha256: Annotated[
+        str | None, Field(pattern=r"^[0-9a-f]{64}$")
+    ] = None,
+    reconciliation_key: str | None = None,
+    acknowledgment: Literal["accept_duplicate_compute_and_writes"] | None = None,
 ) -> dict:
-    """Read an exact held kg-fact-review attempt and preview operator recovery.
+    """Preview or apply operator recovery of one held kg-fact-review attempt.
 
-    Requires a standing human operator. Does not schedule work or change claims,
-    permits, receipts or audit history. Returns expected_state_sha256 for the
-    separate apply tool. Session and permit identity are checked server-side.
+    Requires a standing human operator. Preview does not schedule work or
+    change claims, permits, receipts or audit history; it returns
+    expected_state_sha256. Apply needs that digest, a reconciliation key and
+    the explicit acknowledgment. It preserves completed receipts and prior
+    state, abandons only unfinished claims, and rearms under existing caps.
+    Capacity remains charged unless fresh server evidence proves cessation.
+    The key makes replay idempotent; the acknowledgment accepts duplicate
+    computation and writes for this attempt only. Never use this as
+    automatic retry policy. Session and permit identity are checked
+    server-side.
     """
-    return await _recover_fact_review(
-        {"mode": "preview", "session_id": session_id, "permit_id": permit_id}
-    )
-
-
-@mcp.tool
-async def monolith_agent_apply_fact_review_recovery(
-    session_id: Annotated[int, Field(strict=True, gt=0)],
-    permit_id: Annotated[int, Field(strict=True, gt=0)],
-    expected_state_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
-    reconciliation_key: str,
-    acknowledgment: Literal["accept_duplicate_compute_and_writes"],
-) -> dict:
-    """Apply one digest-bound operator recovery of a held kg-fact-review attempt.
-
-    Requires a standing human operator and the digest from the separate preview
-    tool. Preserves completed receipts and prior state, abandons only unfinished
-    claims, and rearms under existing caps. Capacity remains charged unless fresh
-    server evidence proves cessation. The reconciliation key makes replay
-    idempotent. Explicit acknowledgment accepts duplicate computation and writes
-    for this attempt only. Never use this as automatic retry policy.
-    """
-    return await _recover_fact_review(
-        {
-            "mode": "apply",
-            "session_id": session_id,
-            "permit_id": permit_id,
+    recovery = {"mode": operation, "session_id": session_id, "permit_id": permit_id}
+    if operation == "apply":
+        recovery |= {
             "expected_state_sha256": expected_state_sha256,
             "reconciliation_key": reconciliation_key,
             "acknowledgment": acknowledgment,
         }
-    )
+    return await _recover_fact_review(recovery)
 
 
 @mcp.tool
@@ -558,48 +547,36 @@ async def _recover_completed_raw(recovery: dict) -> dict:
 
 
 @mcp.tool
-async def monolith_agent_preview_completed_raw_recovery(
+async def monolith_agent_completed_raw_recovery(
+    operation: Literal["preview", "apply"],
     job_name: str,
     session_id: Annotated[int, Field(strict=True, gt=0)],
     permit_id: Annotated[int, Field(strict=True, gt=0)],
+    expected_state_sha256: Annotated[
+        str | None, Field(pattern=r"^[0-9a-f]{64}$")
+    ] = None,
+    reconciliation_key: str | None = None,
 ) -> dict:
-    """Preview one locked, completed raw KG result as a standing human operator.
+    """Preview or apply one locked, completed raw KG result as an operator.
 
-    No raw content is returned. Does not apply, unlock, invoke or schedule work.
-    Error, unknown, already-applied and ambiguous ownership remain fenced.
+    Requires a standing human operator. Preview returns no raw content and does
+    not apply, unlock, invoke or schedule work. Error, unknown, already-applied
+    and ambiguous ownership remain fenced. Apply needs the preview digest, a
+    reconciliation key and the default-off completedRawRecoveryEnabled
+    deployment gate. It revalidates exact original-result and ownership
+    identity, then atomically validates/applies extraction, completes its lease
+    and records a receipt. Never invokes a model, rearms a job or changes
+    execution/cost history.
     """
-    return await _recover_completed_raw(
-        {
-            "mode": "preview",
-            "job_name": job_name,
-            "session_id": session_id,
-            "permit_id": permit_id,
-        }
-    )
-
-
-@mcp.tool
-async def monolith_agent_apply_completed_raw_recovery(
-    job_name: str,
-    session_id: Annotated[int, Field(strict=True, gt=0)],
-    permit_id: Annotated[int, Field(strict=True, gt=0)],
-    expected_state_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
-    reconciliation_key: str,
-) -> dict:
-    """Apply one previewed saved raw KG result as a standing human operator.
-
-    Requires the default-off completedRawRecoveryEnabled deployment gate.
-    Revalidates exact original-result and ownership identity, then atomically
-    validates/applies extraction, completes its lease and records a receipt.
-    Never invokes a model, rearms a job or changes execution/cost history.
-    """
-    return await _recover_completed_raw(
-        {
-            "mode": "apply",
-            "job_name": job_name,
-            "session_id": session_id,
-            "permit_id": permit_id,
+    recovery = {
+        "mode": operation,
+        "job_name": job_name,
+        "session_id": session_id,
+        "permit_id": permit_id,
+    }
+    if operation == "apply":
+        recovery |= {
             "expected_state_sha256": expected_state_sha256,
             "reconciliation_key": reconciliation_key,
         }
-    )
+    return await _recover_completed_raw(recovery)
