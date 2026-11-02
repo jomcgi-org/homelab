@@ -188,6 +188,30 @@ def test_learning_dedup_branch_is_checkpointed_and_skips_without_dispatch(
         assert starts[0][1] == "old prompt"
 
 
+def test_learning_no_new_evidence_is_an_observation_without_model_completion(
+    monkeypatch,
+):
+    from agent import routine_jobs
+
+    calls = []
+    monkeypatch.setenv("FACTORY_LEARNING_HANDOFF_ENABLED", "true")
+    monkeypatch.setattr(
+        routine_jobs,
+        "complete_job",
+        lambda name, **options: calls.append((name, options)) or True,
+    )
+    assert drainer.finish_drainer_job.__wrapped__(
+        "factory-retro-daily",
+        "no_new_evidence",
+        "Verified input unchanged",
+        expected_holder="luna-drainer:w:0",
+    )
+    assert len(calls) == 1 and "transaction_finalize" not in calls[0][1]
+    spans = _spans_named("drain.finish_job")
+    assert len(spans) == 1 and spans[0].status.status_code != StatusCode.ERROR
+    assert spans[0].attributes["drain.status"] == "no_new_evidence"
+
+
 @pytest.mark.parametrize("cap", [0, -1, 10])
 @pytest.mark.parametrize("registered", [False, True])
 def test_grimoire_claim_kind_is_default_off(cap, registered, monkeypatch):

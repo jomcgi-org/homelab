@@ -1032,7 +1032,7 @@ def finish_drainer_job(
                 "drain.summary": first_line[:SPAN_SUMMARY_MAX_CHARS],
             },
         )
-        if status != "ok":
+        if status not in {"ok", "no_new_evidence"}:
             span.set_status(Status(StatusCode.ERROR))
         return completed
 
@@ -2019,7 +2019,6 @@ def drain_cycle() -> dict:
                                     "Unchanged evidence already produced a verified empty result. Existing owner diagnosis retained.",
                                     **ownership,
                                 )
-                                cancel_drainer_reservation(local_session_id)
                                 continue
                             prompt = prepared["prompt"]
                         else:
