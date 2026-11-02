@@ -1020,7 +1020,7 @@ identity separate from routine triggering, so stale discovery cannot mistake
 recovery for an ordinary scheduling call. Its `operation` is `preview` or
 `apply`; preview cannot apply. Apply requires the digest, key and exact
 acknowledgment, checked server-side before any read, with no legacy-trigger
-fallback. The older trigger's optional recovery interface remains compatible.
+fallback. Routine triggering no longer accepts a recovery argument.
 One tool serving both preview and apply follows the factory MCP convention
 and keeps the operator catalogue small. The state
 digest and idempotency key bind one audited decision. Only unfinished members
