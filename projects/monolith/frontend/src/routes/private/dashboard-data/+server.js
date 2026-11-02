@@ -8,8 +8,8 @@ const API_BASE = process.env.API_BASE || "http://localhost:8000";
  * page's 60s client refresh hits this same-origin endpoint instead of the
  * cluster-internal API base.
  */
-export async function GET({ fetch }) {
-  const { dashboard } = await loadDashboard(fetch, API_BASE);
+export async function GET() {
+  const { dashboard } = await loadDashboard(API_BASE);
   if (dashboard == null) {
     return new Response(JSON.stringify({ error: "dashboard unavailable" }), {
       status: 502,

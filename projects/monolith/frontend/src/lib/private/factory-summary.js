@@ -8,17 +8,38 @@ import {
   laneSummary,
 } from "../../routes/private/factory/factory-view.js";
 
-/** The open escalations, trimmed to what a phone card needs. */
+const optionFields = (option) => ({
+  key: option.key,
+  label: option.label ?? option.key,
+  effect: option.effect ?? null,
+  closes: option.closes ?? [],
+  in_favour_of: option.in_favour_of ?? null,
+  children: option.children ?? 0,
+});
+
+/**
+ * The open escalations, with what a phone card needs to answer one in place:
+ * the question, the brief's options (recommendation first), the fixed escape
+ * options and the exact decision identity a reply must carry.
+ */
 export function waitingDecisions(board) {
   return (board?.escalations ?? [])
     .filter((item) => item?.open)
     .map((item) => ({
       receipt_id: item.receipt_id ?? null,
+      decision_id: item.decision_id ?? null,
       issue_number: item.issue_number ?? null,
       work_item_id: item.work_item_id ?? null,
+      kind: item.kind ?? null,
+      briefing: Boolean(item.briefing),
       title: item.title ?? "",
       question: item.question ?? "",
+      summary: item.summary ?? "",
       recommendation: item.recommendation ?? null,
+      url: item.url ?? null,
+      pr_url: item.pr_url ?? null,
+      options: (item.options ?? []).filter((o) => o?.key).map(optionFields),
+      escape: (item.escape ?? []).filter((o) => o?.key).map(optionFields),
     }));
 }
 

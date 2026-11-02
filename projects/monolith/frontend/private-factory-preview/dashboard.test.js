@@ -74,28 +74,90 @@ test("preserves sections, keypad destinations and deduplicated daily tasks", asy
   expect(document.querySelector(".back-to-dashboard")).toBeNull();
   expect(document.querySelectorAll(".scheme")).toHaveLength(1);
 });
-test("lists the open decisions first and reads the factory lane", async () => {
+test("puts each open decision first as an answerable card", async () => {
   await render();
-  const rows = [...document.querySelectorAll(".needs-list .row")].map(
-    (row) => ({
-      kind: row.querySelector("dt").textContent,
-      href: row.querySelector("a")?.getAttribute("href") ?? null,
-      text: row.querySelector("dd").textContent.replace(/\s+/g, " ").trim(),
-    }),
-  );
-  expect(rows).toHaveLength(2);
-  expect(rows[0].kind).toBe("decision");
-  expect(rows[0].href).toBe("/factory/escalations");
-  expect(rows[0].text).toContain("#90031 Synthetic 31");
-  expect(rows[0].text).toContain(
+  const cards = [...document.querySelectorAll(".needs .decision")];
+  expect(cards).toHaveLength(2);
+  const first = cards[0];
+  expect(first.querySelector(".title").textContent).toContain("Synthetic 31");
+  expect(first.querySelector(".question").textContent).toBe(
     "Which synthetic scope should this receipt record?",
   );
+  const answers = [...first.querySelectorAll(":scope > .answers .answer")];
+  expect(answers.map((b) => b.querySelector(".label").textContent)).toEqual([
+    "Deliver the narrowed repository scoperecommended",
+    "Leave it open",
+  ]);
+  expect(answers[0].classList.contains("recommended")).toBe(true);
+  expect(answers[0].querySelector(".effect").textContent).toBe(
+    "re-admits the work with your answer as its direction",
+  );
+  const ways = [...first.querySelectorAll(".more .answer .label")].map(
+    (n) => n.textContent,
+  );
+  expect(ways).toEqual([
+    "Ask for more",
+    "Close the issue",
+    "Defer it",
+    "Dismiss the escalation",
+  ]);
   expect(document.querySelector(".pulse").textContent).toContain(
     "factory enabled · 1 in flight · 1 queued",
   );
   expect(document.querySelector(".pulse a").getAttribute("href")).toBe(
     "/factory",
   );
+});
+test("answers a decision in place and drops the card", async () => {
+  sessionStorage.clear();
+  const fetch = vi.fn(async () => response({ ok: true }));
+  vi.stubGlobal("fetch", fetch);
+  await render();
+  const first = document.querySelector(".needs .decision");
+  first.querySelector(".answer.recommended").click();
+  await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+  await vi.waitFor(() =>
+    expect(document.querySelectorAll(".needs .decision")).toHaveLength(1),
+  );
+  const [url, init] = fetch.mock.calls[0];
+  expect(url).toBe("/factory/escalations/decisions/31");
+  const body = JSON.parse(init.body);
+  expect(body).toMatchObject({
+    option_key: "continue-narrowed",
+    decision_id: `decision:${"31".repeat(32)}`,
+  });
+  expect(body.request_key).toMatch(/^browser-v1:/);
+  expect(document.querySelectorAll(".needs .decision")).toHaveLength(1);
+  expect(document.querySelector(".needs .answered").textContent).toBe(
+    "Recorded for #90031.",
+  );
+  expect(headings()[0]).toBe("Needs you 1");
+});
+test("asks before closing and keeps the card on a refusal", async () => {
+  sessionStorage.clear();
+  const fetch = vi.fn(async () => ({
+    ok: false,
+    status: 409,
+    json: async () => ({ detail: "stale decision" }),
+  }));
+  vi.stubGlobal("fetch", fetch);
+  await render();
+  const card = document.querySelector(".needs .decision");
+  const close = [...card.querySelectorAll(".more .answer")].find(
+    (b) => b.querySelector(".label").textContent === "Close the issue",
+  );
+  close.click();
+  await settle();
+  expect(fetch).not.toHaveBeenCalled();
+  expect(card.querySelector(".message").textContent).toContain("again");
+  close.click();
+  await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+  await vi.waitFor(() =>
+    expect(card.querySelector(".message").textContent.trim()).toBe(
+      "stale decision",
+    ),
+  );
+  expect(document.querySelectorAll(".needs .decision")).toHaveLength(2);
 });
 test("puts a red PR and an unhealthy workload on the list, after decisions", async () => {
   const data = fixtureData("dashboard");
@@ -106,10 +168,11 @@ test("puts a red PR and an unhealthy workload on the list, after decisions", asy
   data.dashboard.github.open_prs[0].ci = "failing";
   await render("populated", data);
   expect(headings()[0]).toBe("Needs you 4");
+  expect(document.querySelectorAll(".needs .decision")).toHaveLength(2);
   const kinds = [...document.querySelectorAll(".needs-list dt")].map(
     (node) => node.textContent,
   );
-  expect(kinds).toEqual(["decision", "decision", "unhealthy", "ci failed"]);
+  expect(kinds).toEqual(["unhealthy", "ci failed"]);
   const ci = [...document.querySelectorAll(".needs-list a")].at(-1);
   expect(ci.getAttribute("href")).toBe("https://example.test/pull/90001");
   expect(ci.getAttribute("target")).toBe("_blank");

@@ -18,6 +18,17 @@ const board = {
       title: "Retain receipt notes",
       question: "Which scope?",
       recommendation: "continue-narrowed",
+      decision_id: "decision:31",
+      kind: "delivery",
+      options: [
+        {
+          key: "continue-narrowed",
+          label: "Deliver it",
+          effect: "agent-ready",
+        },
+        { label: "no key, dropped" },
+      ],
+      escape: [{ key: "escape:close" }],
       open: true,
       extra: "not copied",
     },
@@ -43,11 +54,37 @@ describe("summarizeBoard", () => {
     expect(summary.waiting).toEqual([
       {
         receipt_id: 31,
+        decision_id: "decision:31",
         issue_number: 90031,
         work_item_id: 100031,
+        kind: "delivery",
+        briefing: false,
         title: "Retain receipt notes",
         question: "Which scope?",
+        summary: "",
         recommendation: "continue-narrowed",
+        url: null,
+        pr_url: null,
+        options: [
+          {
+            key: "continue-narrowed",
+            label: "Deliver it",
+            effect: "agent-ready",
+            closes: [],
+            in_favour_of: null,
+            children: 0,
+          },
+        ],
+        escape: [
+          {
+            key: "escape:close",
+            label: "escape:close",
+            effect: null,
+            closes: [],
+            in_favour_of: null,
+            children: 0,
+          },
+        ],
       },
     ]);
   });
