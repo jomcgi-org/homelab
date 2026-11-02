@@ -16,14 +16,18 @@ export const STALE_AFTER = 3;
  * Merge a refresh into the shown read. A section the refresh brings
  * replaces the old one and clears its miss count. A section it lacks keeps
  * the last good reading until it has missed STALE_AFTER refreshes in a
- * row, then reads as missing. A refresh that is not a read changes nothing.
- * Returns `{ read, misses }`; neither input is mutated.
+ * row, then reads as missing. A failed refresh (no read at all, or one that
+ * reports {error}) is a miss for every section, so a dead backend reads as
+ * dead too. Returns `{ read, misses }`; neither input is mutated.
  */
 export function mergeRead(previous, next, misses = {}) {
-  if (!next || typeof next !== "object" || next.error) {
-    return { read: previous, misses };
+  if (!next || typeof next !== "object" || next.error) next = {};
+  if (previous == null) {
+    return Object.keys(next).length
+      ? mergeRead({}, next, misses)
+      : { read: previous, misses };
   }
-  const read = { ...(previous ?? {}) };
+  const read = { ...previous };
   const counted = { ...misses };
   for (const key of SECTIONS) {
     const value = next[key];
@@ -58,7 +62,9 @@ export function missingReadings(read) {
   if (read == null) return ["cluster", "factory", "github"];
   const missing = [];
   if (read.health == null || read.health.error) missing.push("cluster");
-  if (read.factory == null) missing.push("factory");
+  // A board that answered "not ready" cannot say what is waiting either.
+  if (read.factory == null || read.factory.ok === false)
+    missing.push("factory");
   if (read.github == null || read.github.error) missing.push("github");
   return missing;
 }

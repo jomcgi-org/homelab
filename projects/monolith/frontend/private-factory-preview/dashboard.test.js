@@ -196,7 +196,7 @@ test.each(["empty", "unavailable"])(
     );
   },
 );
-test("updates at 60 seconds, retains last-good on all failures and cleans up", async () => {
+test("updates at 60 seconds, ages out a dead backend and cleans up", async () => {
   vi.useFakeTimers();
   const next = fixtureData("dashboard").dashboard;
   next.health.scanned = 77;
@@ -213,16 +213,39 @@ test("updates at 60 seconds, retains last-good on all failures and cleans up", a
   await vi.advanceTimersByTimeAsync(1);
   await settle();
   expect(document.body.textContent).toContain("77 workloads scanned");
-  for (let i = 0; i < 3; i++) {
+  // Refused, {error} and offline: the last good read holds for two misses,
+  // then the page says the readings are gone instead of showing them green.
+  for (let i = 0; i < 2; i++) {
     await vi.advanceTimersByTimeAsync(60000);
     await settle();
     expect(document.body.textContent).toContain("77 workloads scanned");
   }
+  await vi.advanceTimersByTimeAsync(60000);
+  await settle();
+  expect(document.body.textContent).not.toContain("77 workloads scanned");
+  expect(document.body.textContent).toContain("cluster status unavailable");
+  expect(document.body.textContent).toContain("factory unavailable");
+  expect(document.querySelector(".needs .none").textContent).toContain(
+    "No reading from cluster, factory, github.",
+  );
   await unmount(instance);
   instance = null;
   await vi.advanceTimersByTimeAsync(120000);
   expect(fetch).toHaveBeenCalledTimes(4);
   expect(vi.getTimerCount()).toBe(0);
+});
+test("reads again as soon as the page is visible", async () => {
+  vi.useFakeTimers();
+  const next = fixtureData("dashboard").dashboard;
+  next.health.scanned = 91;
+  const fetch = vi.fn().mockResolvedValue(response(next));
+  vi.stubGlobal("fetch", fetch);
+  await render();
+  document.dispatchEvent(new Event("visibilitychange"));
+  await settle();
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(fetch.mock.calls[0][0]).toBe("/dashboard-data");
+  expect(document.body.textContent).toContain("91 workloads scanned");
 });
 test("task toggle is optimistic, commits success and reverts refusal", async () => {
   let resolve;

@@ -160,6 +160,11 @@ export const FACTORY_GOALS_CACHE_CONTROL = `public, max-age=0, s-maxage=1800, st
 // and 304s cheaply when neither data nor build moved.
 export const DOCS_CACHE_CONTROL = `public, s-maxage=${ONE_HOUR}, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
 
+// /manifest.webmanifest on the apex: fixed per build and fetched when a
+// browser offers to install the site, so an hour at the edge; browsers keep it
+// ten minutes. The private host's manifest is behind Access and stays private.
+export const MANIFEST_CACHE_CONTROL = `public, max-age=600, s-maxage=${ONE_HOUR}, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
+
 // /scotland/marketplace.json: the Claude Code plugin catalog is fixed per
 // build and fetched only when someone adds or refreshes the marketplace, so
 // an hour at the edge is plenty; browsers revalidate.
