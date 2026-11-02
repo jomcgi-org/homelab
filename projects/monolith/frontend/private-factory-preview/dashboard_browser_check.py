@@ -153,6 +153,10 @@ def main():
                         return
                     if how == "back":
                         page.go_back()
+                    elif how == "done":
+                        page.locator(".panel.open .close").click()
+                    elif how == "scrim":
+                        page.mouse.click(195, 40)
                     else:
                         page.keyboard.press("Escape")
                     expect(page.locator(".panel.open")).to_have_count(0)
@@ -162,11 +166,24 @@ def main():
                     # Closed sheets are out of reach; open ones trap the page.
                     expect(page.locator("#panel-today")).to_have_attribute("inert", "")
                     sheet("today")
+                    # Behind an open sheet nothing takes focus or a tap.
+                    contained = page.evaluate(
+                        """() => [...document.querySelectorAll('.dashboard .needs, .dashboard .pulse, .dashboard .dock')].every(el => el.inert)"""
+                    )
+                    assert contained, "content behind the open sheet is not inert"
                     root["sheetOpen"] = measure(page)["bodyOverflow"]
+                    assert root["sheetOpen"] == "hidden", root
                     page.screenshot(path=str(args.output / f"{name}-sheet.png"))
                     close("back")
+                    expect(
+                        page.locator('.dock-key[aria-controls="panel-today"]')
+                    ).to_be_focused()
                     sheet("tools")
                     close("escape")
+                    sheet("shipping")
+                    close("done")
+                    sheet("today")
+                    close("scrim")
                 if scenario == "populated":
                     sheet("today")
                     task = page.get_by_role(

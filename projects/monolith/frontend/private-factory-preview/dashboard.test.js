@@ -181,7 +181,9 @@ test("asks before closing and keeps the card on a refusal", async () => {
     ),
   );
   // A refusal offers the full escalation, where a pending answer is restored.
-  expect(card.querySelector(".message a").getAttribute("href")).toBeTruthy();
+  expect(card.querySelector(".message a").getAttribute("href")).toBe(
+    "/factory/escalations",
+  );
   expect(document.querySelector(".needs .decision")).toBe(card);
   expect(document.querySelectorAll(".needs .queued")).toHaveLength(1);
 });

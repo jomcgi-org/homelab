@@ -1,5 +1,7 @@
 <script>
-  import { tick } from "svelte";
+  import { untrack } from "svelte";
+  import { pushState, replaceState } from "$app/navigation";
+  import { page } from "$app/state";
   import { deserialize } from "$app/forms";
   import { launcher } from "$lib/private/launcher.js";
   import {
@@ -194,42 +196,45 @@
     { id: "tools", label: "Tools" },
   ];
   let phone = $state(false);
-  let sheet = $state(null);
+  // The open sheet lives in SvelteKit's shallow-routing state, so the back
+  // gesture closes it and a link followed from inside it comes back to it.
+  let sheet = $derived(phone ? (page.state.sheet ?? null) : null);
   let dragY = $state(0);
   let dragFrom = null;
-  let pushed = false;
   const dockButtons = {};
 
-  async function openSheet(id) {
+  function openSheet(id) {
     if (!phone) {
       document.getElementById(`panel-${id}`)?.scrollIntoView();
       return;
     }
     if (sheet === id) return;
-    if (sheet) history.replaceState({ dashSheet: id }, "");
-    else {
-      history.pushState({ dashSheet: id }, "");
-      pushed = true;
-    }
-    sheet = id;
     dragY = 0;
-    await tick();
-    document.getElementById(`close-${id}`)?.focus({ preventScroll: true });
+    if (sheet) replaceState("", { sheet: id });
+    else pushState("", { sheet: id });
   }
 
   function closeSheet() {
     if (!sheet) return;
-    const was = sheet;
-    sheet = null;
     dragY = 0;
-    if (pushed) {
-      pushed = false;
-      history.back();
-    }
-    dockButtons[was]?.focus();
+    history.back();
   }
 
+  // Focus follows the sheet in, and back to its dock key on the way out.
+  let lastSheet = null;
+  $effect(() => {
+    const now = sheet;
+    if (now) {
+      document.getElementById(`close-${now}`)?.focus({ preventScroll: true });
+    } else if (lastSheet && phone) {
+      dockButtons[lastSheet]?.focus();
+    }
+    lastSheet = now;
+  });
+
   function grab(event) {
+    // Done sits in the grab strip; a captured pointer would steal its click.
+    if (event.target.closest("button")) return;
     dragFrom = event.clientY;
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }
@@ -246,28 +251,21 @@
   $effect(() => {
     const media = window.matchMedia("(max-width: 760px)");
     const sync = () => {
-      phone = media.matches;
-      if (!phone) sheet = null;
+      const narrow = media.matches;
+      phone = narrow;
+      // A sheet open when the window widens would leave a dead back entry.
+      if (!narrow && untrack(() => page.state.sheet)) history.back();
     };
     sync();
     media.addEventListener("change", sync);
-    const onPop = () => {
-      if (sheet) {
-        const was = sheet;
-        pushed = false;
-        sheet = null;
-        dragY = 0;
-        dockButtons[was]?.focus();
-      }
-    };
     const onKey = (event) => {
-      if (event.key === "Escape" && sheet) closeSheet();
+      if (event.key !== "Escape" || event.isComposing || event.defaultPrevented)
+        return;
+      if (untrack(() => sheet)) closeSheet();
     };
-    window.addEventListener("popstate", onPop);
     window.addEventListener("keydown", onKey);
     return () => {
       media.removeEventListener("change", sync);
-      window.removeEventListener("popstate", onPop);
       window.removeEventListener("keydown", onKey);
     };
   });
@@ -417,9 +415,11 @@
   <div class="frame">
     <div class="journal single">
       <div class="content">
-        <div class="trail-inline dashboard-trail">{@render trail()}</div>
+        <div class="trail-inline dashboard-trail" inert={sheet != null}>
+          {@render trail()}
+        </div>
 
-        <header class="masthead">
+        <header class="masthead" inert={sheet != null}>
           <div class="masthead-words">
             <h1 class="greeting">
               {greeting}<span class="greeting-mark">.</span>
@@ -434,6 +434,7 @@
         <!-- The two readings: is the cluster quiet, is the factory moving. -->
         <ul
           class="divided pulse"
+          inert={sheet != null}
           class:pulse--bad={health != null && !health.healthy}
           aria-label="Readings"
         >
@@ -463,7 +464,11 @@
         </ul>
 
         <!-- What needs a hand: the decision deck, then anything else red. -->
-        <section class="edition needs" aria-labelledby="needs-h">
+        <section
+          class="edition needs"
+          aria-labelledby="needs-h"
+          inert={sheet != null}
+        >
           <h2 class="ed-head" id="needs-h">
             Needs you <span class="num">{decisions.length + needs.length}</span>
           </h2>
@@ -549,7 +554,7 @@
     </div>
   </div>
 
-  <nav class="dock" aria-label="Open a panel">
+  <nav class="dock" aria-label="Open a panel" inert={sheet != null}>
     {#each SHEETS as item (item.id)}
       <button
         type="button"

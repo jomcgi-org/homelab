@@ -19,16 +19,21 @@
   let tone = $state("");
   let note = $state("");
   let armed = $state(false);
+  // Set when the outcome is unknown or refused: the full escalation page
+  // restores a pending answer and shows the whole receipt.
+  let unsettled = $state(false);
 
   async function send(body, label) {
     if (busy) return;
     if (item.briefing) {
       tone = "warn";
       message = "A brief is running on this issue. Answer when it settles.";
+      unsettled = false;
       return;
     }
     busy = label;
     message = "";
+    unsettled = false;
     try {
       const out = await sendDecision(item, body, {
         fetchImpl: (...args) => fetch(...args),
@@ -36,11 +41,13 @@
       });
       tone = out.status === "accepted" ? "ok" : "warn";
       message = out.message;
+      unsettled = out.status !== "accepted";
       if (out.status === "accepted") ondecided(item, out);
     } catch {
       tone = "warn";
       message =
         "Outcome unknown. Check the escalations page before answering again.";
+      unsettled = true;
     } finally {
       busy = null;
       armed = false;
@@ -56,6 +63,7 @@
       armed = true;
       tone = "warn";
       message = `Tap "${option.label}" again to close #${item.issue_number} as not planned.`;
+      unsettled = false;
       return;
     }
     return send(decisionBody(option.key, note, item.decision_id), option.key);
@@ -65,6 +73,7 @@
     if (!note.trim()) {
       tone = "warn";
       message = "Say what is missing first.";
+      unsettled = false;
       return;
     }
     return send(chatBody(note, item.decision_id), "chat");
@@ -116,9 +125,7 @@
   {#if message}
     <p class="message {tone}" role={tone === "warn" ? "alert" : "status"}>
       {message}
-      {#if tone === "warn"}<a href={item.url ?? "/factory/escalations"}
-          >Open in escalations</a
-        >{/if}
+      {#if unsettled}<a href="/factory/escalations">Open in escalations</a>{/if}
     </p>
   {/if}
 
