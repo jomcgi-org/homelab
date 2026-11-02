@@ -122,7 +122,11 @@ Collector and reviewer hydrate and inspect that same commit. Their versioned
 artifacts distinguish completed inspections from blocked preparation; a blocked
 collector stops before review, and blocked results cannot publish or count as a
 successful empty audit. Existing run contracts and accounting remain unchanged.
-Preparation failures use the existing bounded failure breaker. Refs #7485.
+Hydration verifies both HEAD and tracked/index cleanliness before model execution.
+An authenticated, exact-dispatch native preflight error settles as failed outside
+durable replay, retaining unknown cost and consumed starts. Missing or conflicting
+receipt evidence remains uncertain. Preparation failures use the existing bounded
+failure breaker. Refs #7485.
 
 The optional `backlog_refill` block ships omitted; omission and `enabled: false` start nothing. Defaults per the #7376 decision: `min_eligible: 25`, `cooldown_minutes: 15`, `min_new_issues: 3`, `breaker_consecutive_low_yield: 3`, `max_per_24_hours: 24`, `model: astra`, `effort: high`. The generator runs one maintenance routine, recorded as `routine` on the start and rotated through `backlog_refill.ROUTINES`: `dead-code`, `finished-flags`, `test-gaps`, `useless-tests`, `abstraction-police`; a start without one uses the first. Independent xhigh review challenges every finding before issue writes. New starts prefer Astra, pinning Opus when cached quota walls Astra and policy permits Opus; dispatch needs fresh quota for the pinned model. Existing pins remain immutable. Astra remains required in `allowed_models`; hourly learning still requires Codex quota. A routine run's summary stays in its settled audit; a pre-routine start still publishes one `needs-human` inventory summary. Reaching the breaker opens one `needs-human` issue. `factory_configure_refill` keeps the breaker open unless `reset_breaker: true`, which records the reset without a full policy post or generation change. Optional `min_new_issues` sets the low-yield floor the same way. Acceptance stays on [#7376](https://github.com/jomcgi-org/homelab/issues/7376).
 

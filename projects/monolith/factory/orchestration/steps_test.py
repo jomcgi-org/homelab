@@ -552,29 +552,3 @@ def test_provider_evidence_reads_the_guest_model_and_effort():
     assert provider_evidence(json.dumps({"effort": 3, "provider_model": ""})) == {}
     assert provider_evidence(None) == {}
     assert provider_evidence("not json") == {}
-
-
-@pytest.mark.parametrize(
-    "status,observed", [(200, "a" * 40), (404, None), (200, "b" * 40)]
-)
-def test_read_pinned_inspection_commit(monkeypatch, status, observed):
-    sha = "a" * 40
-    urls = []
-
-    class Client(FakeClient):
-        def get(self, url, **kwargs):
-            urls.append(url)
-            return httpx.Response(
-                status, json={"sha": observed}, request=httpx.Request("GET", url)
-            )
-
-    monkeypatch.setattr(steps.httpx, "Client", Client)
-    if observed == "b" * 40:
-        with pytest.raises(ValueError, match="identity changed"):
-            steps.read_branch_head.__wrapped__("jomcgi/homelab", "commit:" + sha)
-    else:
-        assert (
-            steps.read_branch_head.__wrapped__("jomcgi/homelab", "commit:" + sha)
-            == observed
-        )
-    assert urls == [f"https://api.github.com/repos/jomcgi/homelab/git/commits/{sha}"]

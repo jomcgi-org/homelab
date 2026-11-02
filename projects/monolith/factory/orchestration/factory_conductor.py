@@ -6032,6 +6032,7 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
             from factory.execution.api import (
                 read_interrupted_factory_continuation,
                 read_provider_error_factory_attempt,
+                read_refill_preflight_factory_attempt,
             )
 
             # Native terminal responses can settle a drain, or a provider error
@@ -6041,6 +6042,10 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 with _locked_session(db):
                     native_ready = (
                         read_interrupted_factory_continuation(
+                            db, pin, session_id, workflow_status
+                        )
+                        is not None
+                        or read_refill_preflight_factory_attempt(
                             db, pin, session_id, workflow_status
                         )
                         is not None
@@ -6071,10 +6076,14 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 # rather than in execute_node so the pinned node workflow
                 # version holds across this deploy; execute_node still records
                 # these as uncertain, and this is the next thing that reads
-                # them. Unlike the proofs below it keeps a measured cost.
+                # them. A receipt-bound refill preflight error uses the same
+                # owner checks but its own proof and phase, preserving unknown
+                # spend instead of treating it as pre-POST non-invocation.
                 from factory.execution.api import (
                     read_provider_error_factory_attempt,
+                    read_refill_preflight_factory_attempt,
                     settle_provider_error_factory_attempt,
+                    settle_refill_preflight_factory_attempt,
                 )
                 from factory.orchestration.node_workflows import (
                     ACCOUNTING_LABELS,
@@ -6087,7 +6096,17 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                     result.get("session_id") or run.get("session_id"),
                     workflow_status,
                 )
+                settle_native_failure = settle_provider_error_factory_attempt
+                if provider_error is None:
+                    provider_error = read_refill_preflight_factory_attempt(
+                        db,
+                        pin,
+                        result.get("session_id") or run.get("session_id"),
+                        workflow_status,
+                    )
+                    settle_native_failure = settle_refill_preflight_factory_attempt
                 if provider_error is not None:
+                    phase = provider_error["invocation_phase"]
                     current = next(
                         (
                             value
@@ -6108,7 +6127,7 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         not in ("admitted", "dispatched", "uncertain")
                     ):
                         raise ValueError("provider-error factory attempt changed")
-                    settle_provider_error_factory_attempt(db, pin, provider_error)
+                    settle_native_failure(db, pin, provider_error)
                     cost, basis = _settlement_cost(
                         provider_error["cost_usd"], provider_error["list_cost_usd"]
                     )
@@ -6120,17 +6139,17 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         "cost_basis": basis,
                         "accounting": ACCOUNTING_LABELS[basis],
                         "head_sha": current.get("head_sha") or result.get("head_sha"),
-                        "invocation_phase": "provider_error_before_work",
-                        "reason": (
-                            "provider_error_before_work: " + provider_error["error"]
-                        ),
+                        "invocation_phase": phase,
+                        "reason": phase + ": " + provider_error["error"],
                         "previous_outcome": _outcome(current) or result,
-                        "provider_error_before_work": provider_error,
+                        phase: provider_error,
                     }
                     _controls_audit(
                         db,
                         ACTOR,
-                        "provider_error_settled",
+                        "provider_error_settled"
+                        if phase == "provider_error_before_work"
+                        else "refill_preflight_failed",
                         task_id=task["id"],
                         workflow_id=key,
                         session_id=provider_error["session_id"],

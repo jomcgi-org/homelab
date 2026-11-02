@@ -1848,6 +1848,24 @@ def read_provider_error_factory_attempt(
     returns None and leaves the attempt to the ordinary uncertain path. The
     caller holds the factory control lock through graph and start settlement.
     """
+    return _read_native_failed_factory_attempt(db, pin, session_id, workflow_status)
+
+
+def read_refill_preflight_factory_attempt(db, pin, session_id, workflow_status):
+    """Prove a pinned refill checkout failed before invoking its model.
+
+    This is a received native error, not the pre-POST not-invoked proof. Require
+    its authenticated receipt and immutable inspection contract in addition to
+    the common no-work/terminal-owner checks. Unknown spend remains reserved.
+    """
+    return _read_native_failed_factory_attempt(
+        db, pin, session_id, workflow_status, preflight=True
+    )
+
+
+def _read_native_failed_factory_attempt(
+    db, pin, session_id, workflow_status, *, preflight=False
+):
     import zlib
 
     from factory.execution.constants import PROVIDER_ERROR_TERMINAL_REASONS
@@ -1889,7 +1907,8 @@ def read_provider_error_factory_attempt(
     turn = turns[0]
     if (
         turn.seq != 1
-        or turn.terminal_reason not in PROVIDER_ERROR_TERMINAL_REASONS
+        or turn.terminal_reason
+        not in ({"error"} if preflight else PROVIDER_ERROR_TERMINAL_REASONS)
         or turn.stop_reason == UNKNOWN_INVOCATION
         or turn.artifact_blob is not None
         or turn.artifact_outcome == "ok"
@@ -1941,6 +1960,11 @@ def read_provider_error_factory_attempt(
         or permit.state not in ("uncertain", "settled")
     ):
         return None
+    receipt = None
+    if preflight:
+        receipt = _refill_preflight_receipt(db, pin, agent, turn, permit, usage)
+        if receipt is None:
+            return None
     error = " ".join((turn.result_text or "").split())[:PROVIDER_ERROR_TEXT_LIMIT]
     return {
         "session_id": agent.id,
@@ -1954,8 +1978,112 @@ def read_provider_error_factory_attempt(
         "error": error or turn.terminal_reason,
         "cost_usd": turn.cost_usd,
         "list_cost_usd": turn.list_cost_usd,
-        "invocation_phase": "provider_error_before_work",
+        "invocation_phase": "refill_inspection_preflight_failed"
+        if preflight
+        else "provider_error_before_work",
+        **({"native_receipt": receipt} if preflight else {}),
     }
+
+
+def _refill_preflight_receipt(db, pin, agent, turn, permit, usage):
+    from factory.execution import result_receipts
+    from factory.execution.constants import exact_dispatch_id
+    from factory.execution.models import AgentResultReceipt
+    from factory.orchestration import backlog_refill
+
+    schema = backlog_refill.dispatch_schema(pin["task_id"], pin["node_key"], session=db)
+    source = (schema or {}).get("x-factory-refill-inspection")
+    if (
+        not isinstance(source, dict)
+        or pin.get("artifact_schema") != schema
+        or pin.get("read_only") is not True
+        or source.get("repo") != pin["repo"]
+        or pin["branch"] != "commit:" + str(source.get("sha"))
+        or pin.get("hydration_branch") != pin["branch"]
+    ):
+        return None
+    ids = db.exec(
+        select(AgentResultReceipt.id)
+        .where(AgentResultReceipt.session_id == agent.id)
+        .with_for_update()
+        .limit(2)
+    ).all()
+    if len(ids) != 1:
+        return None
+    row = result_receipts._receipt_metadata(db, ids[0])
+    if (
+        row is None
+        or row["local_session_id"] != agent.local_session_id
+        or row["seq"] != 1
+        or row["dispatch_count"] != 1
+        or row["claim_owner"] != permit.owner
+        or not row["claim_owner"]
+        or not row["guest_id"]
+        # A later normal cleanup may detach this guest; the authenticated
+        # receipt still proves this invocation ended. A different binding cannot.
+        or agent.ember_session_id not in (None, row["guest_id"])
+        or row["superseded_at"] is not None
+        or row["response_observed_at"] is None
+    ):
+        return None
+    try:
+        captured = result_receipts._result(db, row)
+        native = json.loads(captured["result_body"])
+    except (result_receipts.ReceiptRejected, ValueError, TypeError):
+        return None
+    evidence = usage.get("refill_inspection_preflight")
+    dispatch = exact_dispatch_id(agent.id, row["guest_id"], 1, permit.owner, 1)
+    if (
+        not isinstance(evidence, dict)
+        or type(evidence.get("version")) is not int
+        or evidence["version"] != 1
+        or evidence.get("expected_sha") != source["sha"]
+        or (
+            evidence.get("observed_sha") is not None
+            and not re.fullmatch(r"[0-9a-f]{40}", str(evidence["observed_sha"]))
+        )
+        or evidence.get("invocation_started") is not False
+        or evidence.get("dispatch_id") != dispatch
+        or type(evidence.get("turn_seq")) is not int
+        or evidence["turn_seq"] != 1
+        or type(evidence.get("tracked_clean")) is not bool
+        or (evidence.get("observed_sha") == source["sha"] and evidence["tracked_clean"])
+        or usage.get("native_result_receipt") != captured["provenance"]
+        or not isinstance(native, dict)
+        or not isinstance(native.get("usage"), dict)
+        or native["usage"].get("refill_inspection_preflight") != evidence
+        or native.get("terminal_reason") != "error"
+        or native.get("stop_reason") != "refill_inspection_preflight_failed"
+        or turn.stop_reason != native["stop_reason"]
+        or native.get("result") != turn.result_text
+        or native.get("dispatch_id") != dispatch
+        or native.get("turn_seq") != 1
+        or native.get("is_error") is not True
+        or native.get("num_turns") != 0
+        or native.get("activities") != []
+        or native.get("permission_denials") != []
+        or native.get("artifact") is not None
+        or native.get("diff") is not None
+    ):
+        return None
+    return captured["provenance"]
+
+
+def settle_refill_preflight_factory_attempt(db, pin, proof):
+    current = read_refill_preflight_factory_attempt(
+        db, pin, proof["session_id"], proof["workflow_status"]
+    )
+    if current != proof:
+        raise ValueError("factory_attempt_changed")
+    agent = _locked_session(db, proof["session_id"])
+    admission.settle(
+        db,
+        agent,
+        proof["seq"],
+        outcome=proof["invocation_phase"],
+        cessation_confirmed=True,
+    )
+    db.flush()
 
 
 def settle_provider_error_factory_attempt(db: Session, pin: dict, proof: dict) -> None:
