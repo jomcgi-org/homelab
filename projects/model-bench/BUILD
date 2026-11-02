@@ -18,6 +18,11 @@
 # gazelle:exclude tasks
 
 # Hand-authored test data; Gazelle still generates the Python test targets.
+exports_files(
+    ["index.yaml"],
+    visibility = ["//projects/model-bench/bench:__pkg__"],
+)
+
 filegroup(
     name = "stars_climatology_perf_data",
     srcs = [
