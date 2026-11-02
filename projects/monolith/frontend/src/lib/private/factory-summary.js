@@ -31,7 +31,12 @@ export function summarizeBoard(board) {
   const lanes = laneSummary(board);
   return {
     ok: board.ok !== false,
-    reason: board.ok === false ? (board.reason ?? "not ready") : null,
+    // The board's reasons are codes (not_initialized); the readings row
+    // prints words.
+    reason:
+      board.ok === false
+        ? String(board.reason || "not ready").replaceAll("_", " ")
+        : null,
     state: lanes.state,
     inFlight: lanes.active,
     queued: lanes.queued,

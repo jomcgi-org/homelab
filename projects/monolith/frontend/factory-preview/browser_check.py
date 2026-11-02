@@ -327,7 +327,9 @@ def layout_checks(page, view, scenario, width, scale):
             )
         elif scenario == "empty":
             require(
-                page.get_by_text("Nothing in the lane.", exact=True).is_visible(),
+                page.get_by_text(
+                    "No confirmed execution right now.", exact=True
+                ).is_visible(),
                 "empty lane missing",
             )
     elif view == "activity" and scenario == "live":

@@ -1,6 +1,11 @@
 <script>
   import { deserialize } from "$app/forms";
   import { launcher } from "$lib/private/launcher.js";
+  import {
+    ciState,
+    mergeRead,
+    missingReadings,
+  } from "$lib/private/dashboard-read.js";
   import ClusterChatPanel from "$lib/private/components/ClusterChatPanel.svelte";
   import TechnicalDrawingChrome from "$lib/public/components/TechnicalDrawingChrome.svelte";
   import Trail from "$lib/public/components/Trail.svelte";
@@ -15,17 +20,10 @@
   // svelte-ignore state_referenced_locally
   let dash = $state(data.dashboard);
 
-  // A refresh replaces only the sections it brings. The read fails soft per
-  // source, so a tick with the factory down carries no factory and a tick
-  // with the home aggregate down carries only the factory; either keeps the
-  // last good reading of what it lacks rather than blanking it.
-  function mergeRead(previous, next) {
-    if (!next || typeof next !== "object" || next.error) return previous;
-    const fresh = Object.fromEntries(
-      Object.entries(next).filter(([, value]) => value != null),
-    );
-    return { ...(previous ?? {}), ...fresh };
-  }
+  // A refresh replaces the sections it brings and keeps the last good
+  // reading of one it lacks for a couple of minutes (dashboard-read.js), so
+  // a blip does not blank the page and a dead source still reads as dead.
+  let misses = {};
 
   $effect(() => {
     const id = setInterval(async () => {
@@ -33,7 +31,9 @@
       try {
         const res = await fetch("/dashboard-data");
         if (!res.ok) return;
-        dash = mergeRead(dash, await res.json());
+        const merged = mergeRead(dash, await res.json(), misses);
+        dash = merged.read;
+        misses = merged.misses;
       } catch {
         // keep the last good snapshot
       }
@@ -60,8 +60,9 @@
   let factory = $derived(dash?.factory ?? null);
   let waiting = $derived(factory?.waiting ?? []);
   let failingPrs = $derived(
-    (github?.open_prs ?? []).filter((pr) => pr.ci === "failure"),
+    (github?.open_prs ?? []).filter((pr) => ciState(pr.ci) === "bad"),
   );
+  let missing = $derived(missingReadings(dash));
 
   // Everything that needs a hand from Joe, in the order it needs it:
   // decisions the factory stopped for, workloads the cluster reports
@@ -104,6 +105,17 @@
       : !factory.ok
         ? `factory ${factory.reason}`
         : `factory ${factory.state} · ${factory.inFlight} in flight · ${factory.queued} queued`,
+  );
+  // Green for an open lane, amber for a lane held (paused, draining), red
+  // for a board that is not ready, grey for no reading.
+  let factoryTone = $derived(
+    factory == null
+      ? "unknown"
+      : !factory.ok
+        ? "bad"
+        : factory.state === "enabled"
+          ? "ok"
+          : "warn",
   );
 
   // The keypad: the registry's keys, with the live decision count and the
@@ -273,7 +285,9 @@
             <p class="none">
               {dash == null
                 ? "No reading. The dashboard is unavailable."
-                : "Nothing is waiting on you."}
+                : missing.length
+                  ? `Nothing waiting in what answered. No reading from ${missing.join(", ")}.`
+                  : "Nothing is waiting on you."}
             </p>
           {:else}
             <dl class="spec needs-list">
@@ -324,12 +338,7 @@
             </li>
             <li class="reading">
               <a href="/factory">
-                <span
-                  class="pulse-dot"
-                  class:pulse-dot--ok={factory?.ok &&
-                    factory.state === "enabled"}
-                  class:pulse-dot--bad={factory != null && !factory.ok}
-                ></span>
+                <span class="pulse-dot pulse-dot--{factoryTone}"></span>
                 {factoryLine}
               </a>
             </li>
@@ -434,8 +443,7 @@
                         target="_blank"
                         rel="noopener"
                       >
-                        <span class="ci-dot ci-dot--{pr.ci ?? 'pending'}"
-                        ></span>
+                        <span class="ci-dot ci-dot--{ciState(pr.ci)}"></span>
                         <span class="pr-num mono">#{pr.number}</span>
                         <span class="pr-title">{pr.title}</span>
                         {#if pr.draft}

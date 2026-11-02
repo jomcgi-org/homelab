@@ -130,13 +130,14 @@
   background: var(--ink-2);
 }
 .dashboard .pulse-dot--ok,
-.dashboard .ci-dot--success {
+.dashboard .ci-dot--ok {
   background: var(--ok);
 }
 .dashboard .pulse-dot--bad,
-.dashboard .ci-dot--failure {
+.dashboard .ci-dot--bad {
   background: var(--tone-disk);
 }
+.dashboard .pulse-dot--warn,
 .dashboard .ci-dot--pending {
   background: var(--warn);
 }
