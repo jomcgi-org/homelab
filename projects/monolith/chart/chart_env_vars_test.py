@@ -348,12 +348,12 @@ def test_drainer_lost_before_session_sweep_ships_staged_off(chart_context):
     )
 
 
-def test_repo_diff_reconcile_ships_default_off(chart_context):
-    """The chart wires the reconcile gate without enabling the backfill."""
+def test_repo_diff_reconcile_enabled_in_deploy(chart_context):
+    """Production runs the idempotent placeholder-range backfill."""
     rendered = chart_context["rendered"]
 
     assert re.search(
-        r'- name: KG_REPO_DIFF_RECONCILE_ENABLED\n\s+value: "false"',
+        r'- name: KG_REPO_DIFF_RECONCILE_ENABLED\n\s+value: "true"',
         rendered,
     )
 
