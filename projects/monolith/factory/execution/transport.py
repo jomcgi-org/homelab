@@ -30,7 +30,6 @@ from typing import Awaitable, Callable, NamedTuple
 import httpx
 from opentelemetry import trace
 
-from core.env import flag
 from factory import execution as agent_sessions
 from factory.execution import model_family
 from factory.execution import create_outcome
@@ -523,10 +522,6 @@ _receipt_db_slots = threading.BoundedSemaphore(2)
 _receipt_db_executor = ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="native-receipt"
 )
-
-
-def receipt_adoption_enabled() -> bool:
-    return flag("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED")
 
 
 async def _receipt_database_call(fn, *args, **kwargs):
@@ -1682,13 +1677,7 @@ class EmberVmShimTransport:
         # delivery started in a factory callback. Always restore the caller's
         # context on success, denial, transport failure, or cancellation.
         token = _delivery_admission_check.set(admission_check)
-        from factory.execution.store import rollout_handoff_enabled
-
-        invocation = _DeliveryInvocation(
-            observer_record=invocation_record
-            if rollout_handoff_enabled() or residency is not None
-            else None
-        )
+        invocation = _DeliveryInvocation(observer_record=invocation_record)
         invocation_token = _delivery_invocation.set(invocation)
         try:
             with tracer.start_as_current_span("agent_sessions.deliver") as span:
@@ -1977,12 +1966,9 @@ class EmberVmShimTransport:
 
                 async def post() -> Turn:
                     async with httpx.AsyncClient(timeout=timeout) as client:
-                        from factory.execution.store import rollout_handoff_enabled
-
-                        if rollout_handoff_enabled() or residency is not None:
-                            # Receipt preparation yields after the admission
-                            # check above. Fence a shutdown in that window too.
-                            await _check_delivery_admission()
+                        # Receipt preparation yields after the admission
+                        # check above. Fence a shutdown in that window too.
+                        await _check_delivery_admission()
                         # Mark before yielding to I/O. Even a connect/write/read
                         # failure after this point retains the conservative hold.
                         invocation = _delivery_invocation.get()
@@ -2038,7 +2024,6 @@ class EmberVmShimTransport:
 
                 if (
                     receipt is not None
-                    and receipt_adoption_enabled()
                     and len(_receipt_observers) < MAX_RECEIPT_OBSERVERS
                 ):
                     return await _observe_native_result(

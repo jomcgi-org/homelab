@@ -122,7 +122,6 @@ def test_response_lost_hold_accepts_an_unstamped_control_plane_outage(
     monkeypatch, tmp_path
 ):
     engine, schemas = _database(monkeypatch, tmp_path)
-    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "true")
     try:
         with Session(engine) as session:
             agent = store.create_session(session, "cp-outage", "<guest>", "main")
@@ -1224,7 +1223,6 @@ def test_session_lock_heartbeat_skips_pool_lock_and_keeps_fences(
     uncertain_lane, monkeypatch
 ):
     engine, session_id = uncertain_lane
-    monkeypatch.setenv("AGENT_CLAIM_HEARTBEAT_SESSION_LOCK_ENABLED", "true")
 
     def no_pool(_db):
         raise AssertionError("heartbeat took the capacity pool lock")
@@ -1252,20 +1250,6 @@ def test_session_lock_heartbeat_skips_pool_lock_and_keeps_fences(
         session.add(row)
         session.commit()
     assert store.refresh_claim_sync(session_id, 1, "owner-1") is False
-
-
-def test_heartbeat_takes_pool_lock_when_flag_off(uncertain_lane, monkeypatch):
-    _, session_id = uncertain_lane
-    monkeypatch.delenv("AGENT_CLAIM_HEARTBEAT_SESSION_LOCK_ENABLED", raising=False)
-    calls = []
-    original = store.admission.lock_pool
-    monkeypatch.setattr(
-        store.admission,
-        "lock_pool",
-        lambda db: calls.append(True) or original(db),
-    )
-    assert store.refresh_claim_sync(session_id, 1, "owner-1") is True
-    assert calls
 
 
 def test_expired_attempt_is_recorded_once(uncertain_lane):

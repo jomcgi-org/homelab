@@ -225,7 +225,6 @@ def test_receipt_observer_limit_preserves_one_synchronous_post(monkeypatch):
         pytest.fail("a full observer pool must not create another observer")
 
     _client(monkeypatch, handler)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "true")
     monkeypatch.setattr(transport, "MAX_RECEIPT_OBSERVERS", 0)
     monkeypatch.setattr(transport, "_observe_native_result", unexpected_observer)
     monkeypatch.setattr(
@@ -3516,7 +3515,6 @@ def test_metered_synchronous_result_cannot_bypass_terminal_validation(monkeypatc
         return _turn_response(request)
 
     _client(monkeypatch, handler)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "false")
     monkeypatch.setattr(
         result_receipts,
         "prepare_receipt",

@@ -14,7 +14,6 @@ from factory.execution.reconciliation import (
     confirm_reconciled_guest_cessation as confirm_reconciled_guest_cessation,
     confirm_reconciled_unbound_attempt as confirm_reconciled_unbound_attempt,
     factory_attempt_never_posted as factory_attempt_never_posted,
-    drain_relay_continuation_enabled as drain_relay_continuation_enabled,
     fence_bound_zero_turn_factory_attempt as fence_bound_zero_turn_factory_attempt,
     inspect_lost_before_guest_factory_attempt as inspect_lost_before_guest_factory_attempt,
     inspect_lost_before_session_factory_attempt as inspect_lost_before_session_factory_attempt,
@@ -75,13 +74,6 @@ def read_factory_dispatch(db, pin: dict, session_id: int) -> dict:
 def lock_capacity_pool(session) -> None:
     """Lock shared capacity without committing the caller's transaction."""
     _admission.lock_pool(session)
-
-
-def response_lost_recovery_enabled() -> bool:
-    """Whether response-loss recovery is enabled for this process."""
-    from factory.execution import store
-
-    return store.response_lost_recovery_enabled()
 
 
 def read_response_lost_hold(session_id: int):

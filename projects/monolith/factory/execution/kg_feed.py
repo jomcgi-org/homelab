@@ -36,15 +36,6 @@ EMBER_SESSIONS_FEED = "ember-sessions"
 _kg_feed_task: asyncio.Task | None = None
 
 
-def _enabled() -> bool:
-    return os.environ.get("KG_FEED_ENABLED", "").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
 def _configured_since_floor() -> datetime | None:
     configured = os.environ.get("KG_FEED_SINCE", "").strip()
     if not configured:
@@ -374,8 +365,6 @@ async def feed_once(
     is_handled=None,
 ) -> int:
     """Export up to KG_FEED_BATCH finished sessions."""
-    if not _enabled():
-        return 0
     try:
         return await asyncio.to_thread(
             _feed_once_sync,
