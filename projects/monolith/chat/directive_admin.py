@@ -10,17 +10,13 @@ plain session here; the async MCP wrappers dispatch these via a worker thread.
 
 from __future__ import annotations
 
-from datetime import datetime
 
 from sqlmodel import Session, select
 
+from core.clock import isoformat_or_none
 from core.db import get_engine
 from chat import directives
 from chat.models import ChannelDirective, DirectiveAutopilot, UserStylePref
-
-
-def _iso(dt: datetime | None) -> str | None:
-    return dt.isoformat() if dt else None
 
 
 def _latest_autopilot_action(session, scope_kind: str, scope_id: str) -> dict | None:
@@ -36,8 +32,8 @@ def _latest_autopilot_action(session, scope_kind: str, scope_id: str) -> dict | 
         "status": row.status,
         "rationale": row.rationale,
         "target_version": row.target_version,
-        "applied_at": _iso(row.applied_at),
-        "created_at": _iso(row.created_at),
+        "applied_at": isoformat_or_none(row.applied_at),
+        "created_at": isoformat_or_none(row.created_at),
     }
 
 
@@ -94,7 +90,7 @@ def directive_history(scope_kind: str, scope_id: str) -> dict:
                     "text": r.pref,
                     "active": r.active,
                     "source": r.source,
-                    "created_at": _iso(r.created_at),
+                    "created_at": isoformat_or_none(r.created_at),
                 }
                 for r in rows
             ]
@@ -111,7 +107,7 @@ def directive_history(scope_kind: str, scope_id: str) -> dict:
                     "active": r.active,
                     "source": r.source,
                     "proposal_message_id": r.proposal_message_id,
-                    "created_at": _iso(r.created_at),
+                    "created_at": isoformat_or_none(r.created_at),
                 }
                 for r in rows
             ]
@@ -133,9 +129,9 @@ def directive_history(scope_kind: str, scope_id: str) -> dict:
                     "rationale": a.rationale,
                     "baseline_json": a.baseline_json,
                     "evidence_json": a.evidence_json,
-                    "applied_at": _iso(a.applied_at),
-                    "validate_after": _iso(a.validate_after),
-                    "created_at": _iso(a.created_at),
+                    "applied_at": isoformat_or_none(a.applied_at),
+                    "validate_after": isoformat_or_none(a.validate_after),
+                    "created_at": isoformat_or_none(a.created_at),
                 }
                 for a in log
             ],
