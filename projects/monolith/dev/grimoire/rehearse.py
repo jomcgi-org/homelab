@@ -1235,25 +1235,39 @@ def main():
             newcomers = dm.get_by_role("article").filter(
                 has=dm.get_by_role("heading", name="The Newcomers", exact=True)
             )
+            invite_links = {}
             for email in ("a@example.test", "b@example.test"):
                 open_campaign_players(dm, newcomers)
-                email_input = newcomers.get_by_label("Registered player's email")
-                expect(email_input).to_be_visible()
-                email_input.fill(email)
-                with dm.expect_navigation(wait_until="networkidle") as submitted:
-                    newcomers.get_by_role(
-                        "button", name="Invite player", exact=True
-                    ).click()
-                assert submitted.value.status == 200
-                expect(dm.get_by_text("Saved.", exact=True)).to_be_visible()
-            for player in (a, b):
-                player.goto("http://friends.localhost:4177/grimoire")
-                invitation = player.get_by_role("article").filter(
-                    has=player.get_by_role("heading", name="The Newcomers", exact=True)
+                links = newcomers.get_by_role(
+                    "region", name="Single-use campaign links"
                 )
-                invitation.get_by_role(
-                    "button", name="Accept invitation", exact=True
+                links.get_by_label("Player's email or @username", exact=True).fill(
+                    email
+                )
+                links.get_by_role(
+                    "button", name="Create invitation link", exact=True
                 ).click()
+                private_link = links.get_by_label(
+                    "Private invitation link", exact=True
+                )
+                expect(private_link).to_be_visible()
+                invite_links[email] = private_link.input_value()
+                dm.wait_for_load_state("networkidle")
+                links.get_by_role("button", name="Hide link", exact=True).click()
+                expect(private_link).to_have_count(0)
+            for player, email in ((a, "a@example.test"), (b, "b@example.test")):
+                # A fragment-only goto would not reload the landing page.
+                player.goto("about:blank")
+                player.goto(invite_links[email])
+                player.get_by_role("link", name="Sign in to accept", exact=True).click()
+                accept = player.get_by_role(
+                    "button", name="Accept and join campaign", exact=True
+                )
+                expect(accept).to_be_visible()
+                player.wait_for_load_state("networkidle")
+                with player.expect_navigation(wait_until="networkidle"):
+                    accept.click()
+                player.goto("http://friends.localhost:4177/grimoire")
             new_a = a.get_by_role("article").filter(
                 has=a.get_by_role("heading", name="The Newcomers", exact=True)
             )
