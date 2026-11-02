@@ -2023,7 +2023,10 @@ def _refill_preflight_receipt(db, pin, agent, turn, permit, usage):
         # receipt still proves this invocation ended. A different binding cannot.
         or agent.ember_session_id not in (None, row["guest_id"])
         or row["superseded_at"] is not None
-        or row["response_observed_at"] is None
+        or (
+            row["response_observed_at"] is None
+            and row["response_observer_released_at"] is None
+        )
     ):
         return None
     try:
@@ -2031,6 +2034,14 @@ def _refill_preflight_receipt(db, pin, agent, turn, permit, usage):
         native = json.loads(captured["result_body"])
     except (result_receipts.ReceiptRejected, ValueError, TypeError):
         return None
+    # HTTP can win the observation race without adopting the callback. The
+    # same authenticated immutable body must still match the stored turn.
+    # Adopted provenance, when present, must name this exact receipt too.
+    provenance = usage.get("native_result_receipt")
+    if provenance is not None and provenance != captured["provenance"]:
+        return None
+    from factory.execution.transport import parse_native_turn
+
     evidence = usage.get("refill_inspection_preflight")
     dispatch = exact_dispatch_id(agent.id, row["guest_id"], 1, permit.owner, 1)
     if (
@@ -2048,10 +2059,13 @@ def _refill_preflight_receipt(db, pin, agent, turn, permit, usage):
         or evidence["turn_seq"] != 1
         or type(evidence.get("tracked_clean")) is not bool
         or (evidence.get("observed_sha") == source["sha"] and evidence["tracked_clean"])
-        or usage.get("native_result_receipt") != captured["provenance"]
         or not isinstance(native, dict)
         or not isinstance(native.get("usage"), dict)
-        or native["usage"].get("refill_inspection_preflight") != evidence
+        or native["usage"] != {"refill_inspection_preflight": evidence}
+        or type(native.get("num_turns")) is not int
+        or native["num_turns"] != 0
+        or parse_native_turn(native, row["guest_id"]).total_cost_usd != turn.cost_usd
+        or turn.list_cost_usd is not None
         or native.get("terminal_reason") != "error"
         or native.get("stop_reason") != "refill_inspection_preflight_failed"
         or turn.stop_reason != native["stop_reason"]

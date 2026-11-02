@@ -3585,7 +3585,7 @@ def test_concurrent_source_preparation_keeps_first_pinned_commit(world, monkeypa
 
 
 @pytest.fixture
-def preflight_run(reviewed_run, monkeypatch):
+def preflight_run(reviewed_run, monkeypatch, request):
     """Persist an authenticated guest preflight error through the real writer."""
     import hashlib
     from types import SimpleNamespace
@@ -3600,6 +3600,7 @@ def preflight_run(reviewed_run, monkeypatch):
         AgentResultReceipt,
         PendingMessage,
     )
+    from factory.execution import transport
     from factory.execution.transport import parse_native_turn
     from factory.orchestration import factory_conductor as conductor, node_workflows
 
@@ -3675,19 +3676,54 @@ def preflight_run(reviewed_run, monkeypatch):
         receipt.result_body = body
         receipt.result_sha256 = hashlib.sha256(body).hexdigest()
         receipt.received_at = datetime.now(timezone.utc)
-        receipt.response_observed_at = receipt.received_at
         db.add(receipt)
         db.commit()
-        captured = result_receipts._result(
-            db, result_receipts._receipt_metadata(db, s.receipt_id)
+    import asyncio
+
+    ordering = getattr(request, "param", "callback")
+
+    async def observe():
+        post_release, observed = asyncio.Event(), asyncio.Event()
+
+        async def database_call(fn, *args, **kwargs):
+            if fn is result_receipts.read_active_result and ordering == "http":
+                await observed.wait()
+            value = fn(*args, **kwargs)
+            if fn is result_receipts.mark_response_observed:
+                observed.set()
+            return value
+
+        monkeypatch.setattr(transport, "_receipt_database_call", database_call)
+
+        async def post():
+            if ordering != "http":
+                await post_release.wait()
+            if ordering == "lost":
+                raise OSError("original response lost after callback committed")
+            return parse_native_turn(s.native, "preflight-guest")
+
+        result = await transport._observe_native_result(
+            post,
+            {
+                "receipt_id": s.receipt_id,
+                "session_id": s.sid,
+                "claim_owner": owner,
+                "dispatch_count": 1,
+                "guest_id": "preflight-guest",
+                "request_sha256": hashlib.sha256(b"request").hexdigest(),
+            },
+            None,
+            None,
+            5,
         )
-    turn = parse_native_turn(s.native, "preflight-guest")._replace(
-        native_receipt={
-            **captured["provenance"],
-            "cli_session_id": None,
-            "artifact_path": None,
-        }
-    )
+        post_release.set()
+        await asyncio.gather(
+            *list(transport._receipt_observers), return_exceptions=True
+        )
+        assert (result.native_receipt is None) == (ordering == "http")
+        return result
+
+    turn = asyncio.run(observe())
     store.persist_turn_from_pending_sync(
         s.sid,
         1,
@@ -3698,6 +3734,22 @@ def preflight_run(reviewed_run, monkeypatch):
         claim_owner=owner,
         dispatch_count=1,
     )
+    if ordering == "lost":
+        # The ordinary execution owner releases a receipt winner in its finally
+        # before cleanup. Recovery must refuse until that fence actually clears.
+        from factory.execution.api import read_refill_preflight_factory_attempt
+
+        with Session(s.engine) as db:
+            assert (
+                read_refill_preflight_factory_attempt(db, pin, s.sid, "SUCCESS") is None
+            )
+        assert result_receipts.release_unobserved_fence(
+            s.receipt_id, s.sid, owner, 1, "preflight-guest"
+        )
+        with Session(s.engine) as db:
+            assert store.clear_ember_bindings_by_ember_id(db, "preflight-guest") == [
+                s.sid
+            ]
     assert conductor.graph.record_dispatch(s.task_id, refill.NODE, 1, s.sid, None).ok
     s.result = {
         "status": "uncertain",
@@ -3720,6 +3772,7 @@ def preflight_run(reviewed_run, monkeypatch):
 
 @pytest.mark.parametrize("world", ["inspection"], indirect=True)
 @pytest.mark.parametrize("reviewed_run", ["preflight"], indirect=True)
+@pytest.mark.parametrize("preflight_run", ["http", "callback", "lost"], indirect=True)
 def test_authenticated_refill_preflight_settles_failure_without_refunding_unknown_spend(
     preflight_run,
 ):
@@ -3802,6 +3855,7 @@ def test_refill_preflight_refuses_incomplete_or_changed_proof(preflight_run, cas
             receipt.result_sha256 = "b" * 64
         elif case == "unobserved":
             receipt.response_observed_at = None
+            receipt.response_observer_released_at = None
         elif case == "new_dispatch":
             receipt.dispatch_count = 2
         elif case == "wrong_guest":
