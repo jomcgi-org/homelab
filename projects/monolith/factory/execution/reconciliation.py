@@ -1010,8 +1010,6 @@ def factory_attempt_never_posted(db: Session, identity: dict) -> dict | None:
     from factory.execution import result_receipts
     from factory.execution.models import AgentResultReceipt, PendingMessage
 
-    if not result_receipts.enabled():
-        return None
     agent = db.get(AgentSession, identity["session_id"], populate_existing=True)
     if (
         agent is None
@@ -1771,14 +1769,12 @@ def read_interrupted_factory_continuation(
     except ValueError:
         return None
     # A drain response carries the spend of the dispatch it interrupted, so a
-    # priced interrupted turn is the ordinary shape, not a completed one. With
-    # the staged relay control it is retired like an unpriced one: the
-    # conductor still settles at unknown cost, so the reserved ceiling stays
-    # charged and nothing is refunded. On 2026-10-01 sessions 13510, 13517 and
-    # 13518 held their lanes after two drains because only this refused them.
-    if (
-        identity["cost_usd"] is not None and not drain_relay_continuation_enabled()
-    ) or identity["dispatch_count"] > store.MAX_PENDING_DISPATCHES:
+    # priced interrupted turn is the ordinary shape, not a completed one. It is
+    # retired like an unpriced one: the conductor still settles at unknown
+    # cost, so the reserved ceiling stays charged and nothing is refunded. On
+    # 2026-10-01 sessions 13510, 13517 and 13518 held their lanes after two
+    # drains because only this refused them.
+    if identity["dispatch_count"] > store.MAX_PENDING_DISPATCHES:
         return None
     agent = _locked_session(db, session_id)
     permit = db.get(AgentCapacityReservation, identity["permit_id"])
@@ -2457,16 +2453,6 @@ def settle_stranded_factory_attempt(
     db.flush()
 
 
-def drain_relay_continuation_enabled() -> bool:
-    """One read of the staged drain-relay control (#6256), shared by its owners."""
-    import os
-
-    return (
-        os.environ.get("FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED", "false").lower()
-        == "true"
-    )
-
-
 def _relay_continuation(db: Session, session_id: int, row) -> bool:
     """Whether a later dispatch count is this attempt's own relay continuation.
 
@@ -2482,8 +2468,7 @@ def _relay_continuation(db: Session, session_id: int, row) -> bool:
     from factory.execution.models import AgentTurn
 
     if (
-        not drain_relay_continuation_enabled()
-        or row.last_dispatch_at is None
+        row.last_dispatch_at is None
         or type(row.dispatch_count) is not int
         or not 2 <= row.dispatch_count <= store.MAX_PENDING_DISPATCHES
     ):

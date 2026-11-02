@@ -1240,12 +1240,7 @@
   }
 
   async function stopActiveTurn(identity) {
-    if (
-      !data.sessionStopControlEnabled ||
-      !selectedId ||
-      !identity ||
-      stopInFlight(stopPresentation)
-    ) {
+    if (!selectedId || !identity || stopInFlight(stopPresentation)) {
       return;
     }
     const sessionId = selectedId;
@@ -2406,9 +2401,6 @@
             {/if}
 
             <StopControl
-              enabled={Boolean(
-                data.sessionStopControlEnabled && detail?.stop_control?.enabled,
-              )}
               identity={detail?.stop_control?.active ?? null}
               status={stopPresentation}
               onStop={stopActiveTurn}

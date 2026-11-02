@@ -2,7 +2,6 @@
   import { makeStopRequest, stopInFlight } from "./stop-control.js";
 
   let {
-    enabled = false,
     identity = null,
     status = null,
     onStop = () => {},
@@ -30,7 +29,7 @@
   }
 </script>
 
-{#if enabled && (identity || status)}
+{#if identity || status}
   <div class="stop-control" data-outcome={status?.outcome ?? "idle"}>
     {#if status?.outcome}
       <span class="stop-state" role="status">

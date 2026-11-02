@@ -238,7 +238,6 @@ def test_session_lock_heartbeat_does_not_queue_on_pool_holder(lane, monkeypatch)
     """A long capacity_pool holder no longer delays a heartbeat past its lease."""
     from factory.execution import admission
 
-    monkeypatch.setenv("AGENT_CLAIM_HEARTBEAT_SESSION_LOCK_ENABLED", "true")
     holder = lane.engine.connect()
     transaction = holder.begin()
     try:

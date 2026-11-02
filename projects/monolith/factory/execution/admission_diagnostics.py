@@ -305,12 +305,7 @@ def inspect_permits(permit_ids, *, session=None):
             "items": items,
             "controls": {
                 name: os.getenv(name, "false").lower() == "true"
-                for name in (
-                    "AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED",
-                    "FACTORY_RESERVATION_REVIEW_ENABLED",
-                    "FACTORY_INVOKE_FAILURE_CESSATION_ENABLED",
-                    "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
-                )
+                for name in ("FACTORY_RESERVATION_REVIEW_ENABLED",)
             },
             "coverage": "Persisted metadata only. Saved cessation fields are historical observations, not current verification. Hashes alone do not establish validity. Guest cessation is not verified; receipt presence does not establish validity or adoption.",
             "recovery_authorized": False,

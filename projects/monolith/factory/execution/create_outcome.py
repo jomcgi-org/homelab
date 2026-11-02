@@ -21,30 +21,22 @@ error or a malformed success body. Other 4xx answers (a restore denial, an
 unknown workload) are about the caller's request and are not recorded.
 
 Recording is best effort and off the create path: it is scheduled as a
-background thread write, never awaited by the caller, and never raises. It is
-gated on ``EMBERVM_CREATE_OUTCOME_LATCH_ENABLED`` so tests and binaries without
-the platform_probe table do not try to write it.
+background thread write, never awaited by the caller, and never raises.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
 LATEST = "embervm.session_create"
 FAILING_SINCE = "embervm.session_create.failing_since"
-ENABLED_ENV = "EMBERVM_CREATE_OUTCOME_LATCH_ENABLED"
 _DETAIL_MAX = 300
 
 _pending: set[asyncio.Task] = set()
-
-
-def enabled() -> bool:
-    return os.environ.get(ENABLED_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
 def _record_sync(ok: bool, detail: str, now: datetime | None = None) -> None:
@@ -98,8 +90,6 @@ def _done(task: asyncio.Task) -> None:
 
 def record(ok: bool, detail: str) -> None:
     """Schedule one outcome write. Never raises and never blocks the caller."""
-    if not enabled():
-        return
     try:  # nosemgrep: no-broad-except-swallow - telemetry must not fail a create
         loop = asyncio.get_running_loop()
         task = loop.create_task(asyncio.to_thread(_record_sync, ok, detail))

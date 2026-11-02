@@ -2904,6 +2904,8 @@ def test_lost_executor_holds_original_prompt_and_partial_evidence(
             [{"tool": "read", "path": "store.py"}],
         )
         if failure == "cancel":
+            # The real transport marks the record before every invoke POST.
+            kwargs["invocation_record"]["attempted"] = True
             raise asyncio.CancelledError
         return _completed_turn(args[2]), guest
 

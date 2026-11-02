@@ -4,7 +4,6 @@ import asyncio
 import collections
 import json
 import logging
-import os
 import platform
 import re
 import secrets
@@ -97,11 +96,6 @@ INFLIGHT_DRAIN_SECONDS = 5.0
 # same way the response observer bounds its own write: three tries, two gaps.
 RECEIPT_FENCE_RELEASE_ATTEMPTS = 3
 RECEIPT_FENCE_RELEASE_GAP_SECONDS = 1.0
-
-
-def response_lost_recovery_enabled() -> bool:
-    # One definition, in the store that owns the hold.
-    return store.response_lost_recovery_enabled()
 
 
 def invoke_in_progress(view: object) -> bool:
@@ -652,13 +646,11 @@ def _delete_pending_message_sync(session_id: int, turn_seq: int) -> None:
 def _guest_answer_settles(session_row, exc: BaseException) -> bool:
     """Whether a failed invoke carries the guest's own answer as evidence.
 
-    Staged behind AGENT_GUEST_ANSWER_SETTLEMENT_ENABLED. Factory sessions are
-    excluded: their uncertain permit is the handle stop supervision settles
-    the graph attempt and start through, and settling it here would strand
-    that attempt (read_uncertain_factory_attempt requires it uncertain).
+    Factory sessions are excluded: their uncertain permit is the handle stop
+    supervision settles the graph attempt and start through, and settling it
+    here would strand that attempt (read_uncertain_factory_attempt requires it
+    uncertain).
     """
-    if os.getenv("AGENT_GUEST_ANSWER_SETTLEMENT_ENABLED", "false").lower() != "true":
-        return False
     local_session_id = getattr(session_row, "local_session_id", None) or ""
     if local_session_id.startswith("factory:"):
         return False
@@ -773,12 +765,11 @@ _rollout_drain_started = False
 def begin_rollout_shutdown() -> None:
     """Fence admission at SIGTERM, before HTTP and leader teardown wait."""
     global _rollout_shutdown_started
-    if store.rollout_handoff_enabled():
-        _rollout_shutdown_started = True
+    _rollout_shutdown_started = True
 
 
 def rollout_shutdown_in_progress() -> bool:
-    return store.rollout_handoff_enabled() and _rollout_shutdown_started
+    return _rollout_shutdown_started
 
 
 def _schedule_next_message(session_id: int) -> None:
@@ -959,7 +950,6 @@ async def _execute_pending_message(session_id: int) -> None:
     def _response_lost_eligible() -> bool:
         return bool(
             not response_lost_held
-            and response_lost_recovery_enabled()
             and invocation_record.get("attempted")
             and invocation_record.get("receipt_id")
             and invocation_record.get("guest_id")
@@ -1133,12 +1123,7 @@ async def _execute_pending_message(session_id: int) -> None:
             residency = capacity_wait.handoff_context(row)
             if residency is not None:
                 deliver_kwargs["residency"] = residency
-            from factory.execution import result_receipts
-
-            if result_receipts.required(
-                session_row.local_session_id, session_row.model
-            ):
-                deliver_kwargs["receipt_claim_owner"] = claim_owner
+            deliver_kwargs["receipt_claim_owner"] = claim_owner
             if session_row.repo is not None:
                 deliver_kwargs["repo"] = session_row.repo
                 deliver_kwargs["branch"] = session_row.branch
@@ -1435,8 +1420,7 @@ async def _execute_pending_message(session_id: int) -> None:
             return False
         return _record_response_lost("replica_shutdown", {}, lock_timeout_seconds)
 
-    if store.rollout_handoff_enabled():
-        _rollout_handoffs[executor_task] = handoff
+    _rollout_handoffs[executor_task] = handoff
     try:
         # Start the heartbeat refresh task
         refresh_task = asyncio.create_task(_refresh_heartbeat())
@@ -1478,7 +1462,6 @@ async def _execute_pending_message(session_id: int) -> None:
             and not response_lost_held
             and claimed_dispatch_count is not None
             and not invocation_record.get("attempted")
-            and store.executor_not_invoked_record_enabled()
         ):
             try:
                 claim_released = store.mark_turn_error_sync(
@@ -1726,8 +1709,6 @@ def _adopt_response_lost_results() -> list[int]:
     that knows it. A turn that declared no artifact, which is every lane
     outside the factory, has nothing to lose and is finished here.
     """
-    if not response_lost_recovery_enabled():
-        return []
     adopted = []
     global _response_lost_sweep_cursor, _response_lost_sweep_ceiling
     if _response_lost_sweep_ceiling == 0:
