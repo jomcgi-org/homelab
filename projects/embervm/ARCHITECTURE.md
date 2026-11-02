@@ -644,10 +644,8 @@ unknown and is never guessed from the brick's current configuration.
 
 ### Parked workspaces can rejoin across nodes
 
-`crossNodeRejoin` defaults to false in the chart and is enabled in the GKE
-overlay (#6663). With it off, workspace rejoin stays pinned to `volume_node_id`
-and drains use the existing asynchronous archive path. With it on, drain workers
-synchronously export the unattached workspace through the owning instance dial,
+Cross-node rejoin (#6663) is unconditional. Drain workers synchronously export
+the unattached workspace through the owning instance dial,
 falling back to the draining pod's dial or the pre-park session dial when draining
 has removed its capacity fact. Export retries are bounded to three attempts.
 
@@ -1101,8 +1099,8 @@ against them.
    to the pod UID and node name claims in the brick's bound ServiceAccount
    token, so a brick can establish only its own stream. The one carve-out is
    destruction: an instance is recorded destroyed only after the owning node
-   confirms teardown (gate `nodeConfirmedDestroy`: true in production
-   and dev since 2026-08-22, #4758), and reconciliation is fail-closed toward destruction (an
+   confirms teardown (unconditional since 2026-11; armed in production and dev
+   from 2026-08-22, #4758), and reconciliation is fail-closed toward destruction (an
    unrecognised node VM is an orphan to destroy, unless it carries the
    `origin: ACTIVATOR` marker, in which case it is adopted and backfilled).
    Model-checked (`adoption.tla`) against control-plane and node crashes

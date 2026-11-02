@@ -2618,7 +2618,6 @@ def test_recovery_rendered_credentials_and_capacity(recovery_render) -> None:
             "EMBERVM_BASE_REMOTE_RETENTION_SWEEP",
             "EMBERVM_WARMTH_RETENTION_SWEEP",
             "EMBERVM_WARMTH_S3_GC",
-            "EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED",
         }
         & control_env.keys()
     )
@@ -2697,7 +2696,6 @@ def test_recovery_disarms_destructive_defaults() -> None:
     assert values["warmthRetention"]["sweepEnabled"] == ""
     assert values["warmthS3Gc"]["enabled"] == ""
     assert values["rootfsReclaim"]["enabled"] == ""
-    assert values["statefulSweeper"]["pressureBanking"]["enabled"] is False
     assert values["artifactEncryption"]["enabled"] is False
     assert values["kekRoot"]["enabled"] is False
     assert values["noded"]["store"]["credentials"]["enabled"] is False

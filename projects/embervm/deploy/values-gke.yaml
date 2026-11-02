@@ -308,23 +308,6 @@ scratchSizeGi: 70
 # (a home policy for the scratch-k8s composite). Revisit the session-class
 # ceiling and group-spread when the Spark lane revives (#5459, #5461).
 
-statefulSweeper:
-  pressureBanking:
-    # Armed on the hub (#4667 decision D15). The lane landed off because
-    # cross-brick stateful relight was broken (#5502); #5502 and #5521 are
-    # closed, so the stated reason to stay off is gone. Thresholds stay at the
-    # chart defaults. Revert is this one line.
-    enabled: true
-
-# Drain only the sessions on the draining brick instance. Every size class
-# shares the ember-bricks node, so a node-scoped drain made each autoscaler
-# idle drain of an EMPTY brick interrupt every live turn on the node's 8gi
-# brick (2026-10-01 00:44:42 and 02:04:42). A session with unknown placement
-# is still drained. Revert is this one line.
-drainInstanceScopedSessions: true
-crossNodeRejoin: true
-# Recover interrupted turns before adoption parks them. Rollback: set false.
-restartFlushInflightInvokes: true
 rootfsBuilder:
   inPodBake:
     # This flag flip rolls bricks once. Delete this enabled line to roll back.

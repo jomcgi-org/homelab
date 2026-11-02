@@ -298,19 +298,6 @@ conformance:
 usageAdmins:
   - system:serviceaccount:embervm-dev:embervm-dev-embervm
 
-# ARMED in dev, and this is the point of the environment.
-#
-# #4758: EMBERVM_NODE_CONFIRMED_DESTROY has been read by the control plane since
-# ADR embervm/014 landed and rendered by no template, so the node-confirmed
-# ordering has never executed anywhere. adoption.tla's NoDestroyBeforeConfirm
-# and DestroyIntentPrecedesRecord model behaviour production has never run.
-#
-# Dev is where that ordering ran for the first time, under the conformance
-# harness, with EMBERVM_SPEC_TRACE on so the destroy invariants have data.
-# Production armed the same day the drill passed, 2026-08-22 (see
-# deploy/values.yaml).
-nodeConfirmedDestroy: true
-
 # rootfsPath is a SEPARATE key from noded.firecracker.nvmeRoot, and overriding
 # only the latter is not enough.
 #
