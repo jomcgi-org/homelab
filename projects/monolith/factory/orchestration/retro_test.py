@@ -933,6 +933,32 @@ def test_learning_input_ignores_observation_clock_and_its_own_diagnostic():
     ) != learning_inputs.fingerprint(later, "a" * 40, "prompt")
 
 
+def test_learning_fingerprint_keeps_optimizer_settlement_phase_transition():
+    from factory.orchestration import learning_inputs
+
+    context = _experiment_context(post={"attempts": 10, "unknown": 1})
+
+    def observed(hours):
+        return {
+            "optimizer": {
+                **context,
+                "outcomes_and_cost_as_of": (
+                    NOW + retro.timedelta(hours=hours)
+                ).isoformat(),
+            }
+        }
+
+    first = learning_inputs.fingerprint(observed(0), "a" * 40, "prompt")
+    assert first == learning_inputs.fingerprint(observed(1), "a" * 40, "prompt")
+    final = learning_inputs.fingerprint(
+        observed(retro._OPTIMIZER_SETTLE_HOURS), "a" * 40, "prompt"
+    )
+    assert first != final
+    assert final == learning_inputs.fingerprint(
+        observed(retro._OPTIMIZER_SETTLE_HOURS + 1), "a" * 40, "prompt"
+    )
+
+
 @pytest.mark.parametrize("state", ["queued", "admitted", "escalated", "uncertain"])
 def test_learning_diagnosis_stays_with_existing_native_owner(learning_input_db, state):
     from factory.orchestration.factory_models import FactoryReceipt

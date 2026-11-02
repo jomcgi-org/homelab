@@ -1318,7 +1318,7 @@ def build_factory_retro_prompt(instructions: str) -> str:
     return render_factory_retro_prompt(instructions, data)
 
 
-def render_factory_retro_prompt(instructions: str, data: dict) -> str:
+def render_factory_retro_prompt(instructions: str, data: dict, *, now=None) -> str:
     from factory.orchestration import learning
 
     references = ""
@@ -1333,4 +1333,4 @@ def render_factory_retro_prompt(instructions: str, data: dict) -> str:
         ]
         sources.sort(key=lambda row: (row["session_id"], row["seq"]), reverse=True)
         references = "\n\nBounded source turn references:\n" + json.dumps(sources[:32])
-    return f"{instructions.strip()}{references}\n\n{build_retro_digest(data)}"
+    return f"{instructions.strip()}{references}\n\n{build_retro_digest(data, now=now)}"
