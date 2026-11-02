@@ -334,11 +334,19 @@ refused model retained separately if truncated. No prompts or credentials appear
 
 ### Native registration and caller discovery
 
-`factory_status.control_catalog` reports only two entries from the running
-native FastMCP registry: `factory_configure_refill` and `factory_amend_policy`.
+`factory_status.control_catalog` reports five entries from the running native
+FastMCP registry: `factory_configure_refill`, `factory_amend_policy`,
+`factory_reconcile_learning_execution`, `factory_reconcile_settled_retry` and
+`factory_continue_evidence`.
 Each includes registration, schema and description hashes, bounded argument
 names and offered operations/models. It is operator-only, read-only and reports
 `caller_visibility=not_observed`. It does not return the whole tool catalogue.
+
+`factory_task_detail.nodes[].attempts[].run_id` identifies the exact persisted
+node run. Use it as `source_run_id` for evidence continuation, never the attempt
+number or session ID. Only the operator detail exposes it; the shared board
+projection is unchanged. Pagination still returns at most three attempts per
+node, so an omitted older run is not evidence of missing history.
 
 A missing native entry identifies a backend registration/deployment problem.
 A registered entry that the caller cannot invoke identifies a remaining
