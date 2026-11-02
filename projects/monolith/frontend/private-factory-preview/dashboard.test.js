@@ -49,8 +49,8 @@ test("preserves sections, keypad destinations and deduplicated daily tasks", asy
   await render();
   expect(headings()).toEqual([
     "Needs you 2",
+    "Tools",
     "Today",
-    "Tasks",
     "Shipping",
     "Ask the cluster",
   ]);
@@ -58,13 +58,18 @@ test("preserves sections, keypad destinations and deduplicated daily tasks", asy
   for (const item of launcher) {
     const link = keyFor(item.label);
     expect(link, item.label).toBeTruthy();
+    // "ask the cluster" opens the ask panel in place rather than linking.
+    if (item.href === "#ask") {
+      expect(link.tagName).toBe("BUTTON");
+      continue;
+    }
     expect(link.getAttribute("href")).toBe(
       item.dynamic === "conductor" ? conductor : item.href,
     );
     expect(link.getAttribute("target")).toBe(item.external ? "_blank" : null);
   }
   expect(keyFor("decisions").querySelector(".num").textContent).toBe("2");
-  expect(document.querySelectorAll(".keypad .key")).toHaveLength(
+  expect(document.querySelectorAll(".panel--tools .key")).toHaveLength(
     launcher.length,
   );
   expect(
@@ -76,8 +81,13 @@ test("preserves sections, keypad destinations and deduplicated daily tasks", asy
 });
 test("puts each open decision first as an answerable card", async () => {
   await render();
+  // One decision in front, the rest queued under it.
   const cards = [...document.querySelectorAll(".needs .decision")];
-  expect(cards).toHaveLength(2);
+  expect(cards).toHaveLength(1);
+  const queued = [...document.querySelectorAll(".needs .queued")];
+  expect(queued.map((b) => b.textContent.replace(/\s+/g, " ").trim())).toEqual([
+    "next #90032 Synthetic 32: retain receipt-specific notes while an operator checks the boundary between two related work items",
+  ]);
   const first = cards[0];
   expect(first.querySelector(".title").textContent).toContain("Synthetic 31");
   expect(first.querySelector(".question").textContent).toBe(
@@ -117,7 +127,9 @@ test("answers a decision in place and drops the card", async () => {
   first.querySelector(".answer.recommended").click();
   await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
   await vi.waitFor(() =>
-    expect(document.querySelectorAll(".needs .decision")).toHaveLength(1),
+    expect(
+      document.querySelector(".needs .decision .title").textContent,
+    ).toContain("Synthetic 32"),
   );
   const [url, init] = fetch.mock.calls[0];
   expect(url).toBe("/factory/escalations/decisions/31");
@@ -127,11 +139,22 @@ test("answers a decision in place and drops the card", async () => {
     decision_id: `decision:${"31".repeat(32)}`,
   });
   expect(body.request_key).toMatch(/^browser-v1:/);
-  expect(document.querySelectorAll(".needs .decision")).toHaveLength(1);
+  expect(document.querySelectorAll(".needs .queued")).toHaveLength(0);
   expect(document.querySelector(".needs .answered").textContent).toBe(
     "Recorded for #90031.",
   );
   expect(headings()[0]).toBe("Needs you 1");
+});
+test("brings a queued decision to the front", async () => {
+  await render();
+  document.querySelector(".needs .queued").click();
+  await settle();
+  expect(
+    document.querySelector(".needs .decision .title").textContent,
+  ).toContain("Synthetic 32");
+  expect(document.querySelector(".needs .queued").textContent).toContain(
+    "#90031",
+  );
 });
 test("asks before closing and keeps the card on a refusal", async () => {
   sessionStorage.clear();
@@ -153,11 +176,14 @@ test("asks before closing and keeps the card on a refusal", async () => {
   close.click();
   await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
   await vi.waitFor(() =>
-    expect(card.querySelector(".message").textContent.trim()).toBe(
+    expect(card.querySelector(".message").textContent).toContain(
       "stale decision",
     ),
   );
-  expect(document.querySelectorAll(".needs .decision")).toHaveLength(2);
+  // A refusal offers the full escalation, where a pending answer is restored.
+  expect(card.querySelector(".message a").getAttribute("href")).toBeTruthy();
+  expect(document.querySelector(".needs .decision")).toBe(card);
+  expect(document.querySelectorAll(".needs .queued")).toHaveLength(1);
 });
 test("puts a red PR and an unhealthy workload on the list, after decisions", async () => {
   const data = fixtureData("dashboard");
@@ -168,7 +194,8 @@ test("puts a red PR and an unhealthy workload on the list, after decisions", asy
   data.dashboard.github.open_prs[0].ci = "failing";
   await render("populated", data);
   expect(headings()[0]).toBe("Needs you 4");
-  expect(document.querySelectorAll(".needs .decision")).toHaveLength(2);
+  expect(document.querySelectorAll(".needs .decision")).toHaveLength(1);
+  expect(document.querySelectorAll(".needs .queued")).toHaveLength(1);
   const kinds = [...document.querySelectorAll(".needs-list dt")].map(
     (node) => node.textContent,
   );
@@ -249,7 +276,7 @@ test.each(["empty", "unavailable"])(
         ? "factory enabled · 0 in flight · 0 queued"
         : "factory unavailable",
     );
-    expect(document.querySelectorAll(".keypad .key")).toHaveLength(
+    expect(document.querySelectorAll(".panel--tools .key")).toHaveLength(
       launcher.length,
     );
     expect(keyFor("decisions").querySelector(".num")).toBeNull();

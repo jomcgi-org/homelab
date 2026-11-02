@@ -1,4 +1,5 @@
 <script>
+  import { tick } from "svelte";
   import { deserialize } from "$app/forms";
   import { launcher } from "$lib/private/launcher.js";
   import {
@@ -108,6 +109,16 @@
         !answered.has(`${item.receipt_id}:${item.decision_id}`),
     ),
   );
+  // The deck: one decision in front, the rest queued under it. Tapping a
+  // queued one brings it forward; answering the front one brings up the next.
+  let front = $state(null);
+  let deck = $derived.by(() => {
+    const keyOf = (item) => `${item.receipt_id}:${item.decision_id}`;
+    const first = decisions.find((item) => keyOf(item) === front);
+    return first
+      ? [first, ...decisions.filter((item) => keyOf(item) !== front)]
+      : decisions;
+  });
   let lastAnswer = $state("");
   function decided(item, out) {
     answered = new Set([...answered, `${item.receipt_id}:${item.decision_id}`]);
@@ -169,6 +180,105 @@
       count: key.count === "waiting" ? waiting.length : 0,
     })),
   );
+
+  // ── Sheets (phone) ────────────────────────────
+  // On a phone the page is one screen: the decision deck, and a dock in
+  // thumb reach that opens Today, Shipping, Ask and Tools as bottom sheets.
+  // A sheet scrolls inside itself, closes by swipe down, tap outside, Esc or
+  // the system back gesture (each open pushes one history entry). On a wide
+  // screen the same panels lay out inline and the dock is hidden.
+  const SHEETS = [
+    { id: "today", label: "Today" },
+    { id: "shipping", label: "Shipping" },
+    { id: "ask", label: "Ask" },
+    { id: "tools", label: "Tools" },
+  ];
+  let phone = $state(false);
+  let sheet = $state(null);
+  let dragY = $state(0);
+  let dragFrom = null;
+  let pushed = false;
+  const dockButtons = {};
+
+  async function openSheet(id) {
+    if (!phone) {
+      document.getElementById(`panel-${id}`)?.scrollIntoView();
+      return;
+    }
+    if (sheet === id) return;
+    if (sheet) history.replaceState({ dashSheet: id }, "");
+    else {
+      history.pushState({ dashSheet: id }, "");
+      pushed = true;
+    }
+    sheet = id;
+    dragY = 0;
+    await tick();
+    document.getElementById(`close-${id}`)?.focus({ preventScroll: true });
+  }
+
+  function closeSheet() {
+    if (!sheet) return;
+    const was = sheet;
+    sheet = null;
+    dragY = 0;
+    if (pushed) {
+      pushed = false;
+      history.back();
+    }
+    dockButtons[was]?.focus();
+  }
+
+  function grab(event) {
+    dragFrom = event.clientY;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+  function drag(event) {
+    if (dragFrom != null) dragY = Math.max(0, event.clientY - dragFrom);
+  }
+  function release() {
+    if (dragFrom == null) return;
+    dragFrom = null;
+    if (dragY > 90) closeSheet();
+    else dragY = 0;
+  }
+
+  $effect(() => {
+    const media = window.matchMedia("(max-width: 760px)");
+    const sync = () => {
+      phone = media.matches;
+      if (!phone) sheet = null;
+    };
+    sync();
+    media.addEventListener("change", sync);
+    const onPop = () => {
+      if (sheet) {
+        const was = sheet;
+        pushed = false;
+        sheet = null;
+        dragY = 0;
+        dockButtons[was]?.focus();
+      }
+    };
+    const onKey = (event) => {
+      if (event.key === "Escape" && sheet) closeSheet();
+    };
+    window.addEventListener("popstate", onPop);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      media.removeEventListener("change", sync);
+      window.removeEventListener("popstate", onPop);
+      window.removeEventListener("keydown", onKey);
+    };
+  });
+
+  // What each dock key carries: the count that makes it worth opening.
+  let dockCounts = $derived({
+    today: weeklyOnly.length + tasksDaily.length,
+    shipping: (github?.open_prs ?? []).length,
+    ask: 0,
+    tools: 0,
+  });
 
   // ── Schedule past/active logic ───────────────
   function timeToMinutes(timeStr) {
@@ -303,7 +413,7 @@
 {/snippet}
 
 <TechnicalDrawingChrome {trail} />
-<main class="td sheet dashboard">
+<main class="td sheet dashboard" class:sheet-open={sheet != null}>
   <div class="frame">
     <div class="journal single">
       <div class="content">
@@ -321,7 +431,38 @@
           >
         </header>
 
-        <!-- What needs a hand, then the two readings that say why or why not. -->
+        <!-- The two readings: is the cluster quiet, is the factory moving. -->
+        <ul
+          class="divided pulse"
+          class:pulse--bad={health != null && !health.healthy}
+          aria-label="Readings"
+        >
+          <li class="reading">
+            {#if health == null}
+              <span class="pulse-dot pulse-dot--unknown"></span>
+              cluster status unavailable
+            {:else if allClear}
+              <span class="pulse-dot pulse-dot--ok"></span>
+              all quiet · {health.scanned ?? 0} workloads scanned
+            {:else}
+              <span class="pulse-dot pulse-dot--bad"></span>
+              {unhealthyCount} unhealthy
+              <span class="pulse-sub"
+                >{unhealthyKinds
+                  .map(([kind, rows]) => `${rows?.length ?? 0} ${kind}`)
+                  .join(" · ")}</span
+              >
+            {/if}
+          </li>
+          <li class="reading">
+            <a href="/factory">
+              <span class="pulse-dot pulse-dot--{factoryTone}"></span>
+              {factoryLine}
+            </a>
+          </li>
+        </ul>
+
+        <!-- What needs a hand: the decision deck, then anything else red. -->
         <section class="edition needs" aria-labelledby="needs-h">
           <h2 class="ed-head" id="needs-h">
             Needs you <span class="num">{decisions.length + needs.length}</span>
@@ -329,9 +470,32 @@
           {#if lastAnswer}
             <p class="answered" role="status">{lastAnswer}</p>
           {/if}
-          {#each decisions as item (`${item.receipt_id}:${item.decision_id}`)}
-            <DecisionCard {item} ondecided={decided} />
-          {/each}
+          {#if deck.length}
+            {#key `${deck[0].receipt_id}:${deck[0].decision_id}`}
+              <div class="deck-front">
+                <DecisionCard item={deck[0]} ondecided={decided} />
+              </div>
+            {/key}
+            {#if deck.length > 1}
+              <ul class="queue" aria-label="Next decisions">
+                {#each deck.slice(1) as item (`${item.receipt_id}:${item.decision_id}`)}
+                  <li>
+                    <button
+                      type="button"
+                      class="queued"
+                      onclick={() =>
+                        (front = `${item.receipt_id}:${item.decision_id}`)}
+                    >
+                      <span class="queued-label">next</span>
+                      <span class="queued-title"
+                        >#{item.issue_number} {item.title}</span
+                      >
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          {/if}
           {#if decisions.length === 0 && needs.length === 0}
             <p class="none">
               {dash == null
@@ -365,189 +529,208 @@
               {/each}
             </dl>
           {/if}
-          <ul
-            class="divided pulse"
-            class:pulse--bad={health != null && !health.healthy}
-            aria-label="Readings"
-          >
-            <li class="reading">
-              {#if health == null}
-                <span class="pulse-dot pulse-dot--unknown"></span>
-                cluster status unavailable
-              {:else if allClear}
-                <span class="pulse-dot pulse-dot--ok"></span>
-                all quiet · {health.scanned ?? 0} workloads scanned
-              {:else}
-                <span class="pulse-dot pulse-dot--bad"></span>
-                {unhealthyCount} unhealthy
-                <span class="pulse-sub"
-                  >{unhealthyKinds
-                    .map(([kind, rows]) => `${rows?.length ?? 0} ${kind}`)
-                    .join(" · ")}</span
-                >
-              {/if}
-            </li>
-            <li class="reading">
-              <a href="/factory">
-                <span class="pulse-dot pulse-dot--{factoryTone}"></span>
-                {factoryLine}
-              </a>
-            </li>
-          </ul>
         </section>
 
-        <!-- Every private tool, one key each. The count is the decisions key. -->
-        <nav class="edition keypad" aria-label="Tools">
-          <ul class="divided keys">
-            {#each keys as key (key.label)}
-              <li>
-                <a
-                  class="key"
-                  href={key.href}
-                  target={key.external ? "_blank" : undefined}
-                  rel={key.external ? "noopener" : undefined}
-                >
-                  {key.label}
-                  {#if key.count}
-                    <span class="num">{key.count}</span>
-                  {/if}
-                  {#if key.external}
-                    <span class="ext" aria-hidden="true">↗</span>
-                  {/if}
-                </a>
-              </li>
-            {/each}
-          </ul>
-        </nav>
+        <button
+          type="button"
+          class="scrim"
+          tabindex="-1"
+          aria-label="Close"
+          onclick={closeSheet}
+        ></button>
 
-        <div class="pair">
-          <!-- Today: events + tasks -->
-          <section class="edition card card--today" aria-labelledby="today-h">
-            <h2 class="ed-head" id="today-h">Today</h2>
-            {#if events == null}
-              <p class="unavail">calendar unavailable</p>
-            {:else if events.length === 0}
-              <p class="unavail">a clear calendar</p>
-            {:else}
-              <ul class="event-list">
-                {#each events as ev}
-                  <li
-                    class="event-row"
-                    class:event-row--past={isPast(ev, now)}
-                    class:event-row--active={isActive(ev, now)}
-                    class:event-row--allday={ev.allDay}
-                  >
-                    {#if ev.allDay}
-                      <span class="event-time"></span>
-                      <span class="event-title">{ev.title}</span>
-                      <span class="event-meta">all day</span>
-                    {:else}
-                      <span class="event-time">{ev.time}</span>
-                      <span class="event-title">
-                        {ev.title}
-                        {#if ev.location}
-                          <span class="event-location">{ev.location}</span>
-                        {/if}
-                      </span>
-                      <span class="event-meta"
-                        >{ev.endTime ? ev.endTime : ""}</span
-                      >
-                    {/if}
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-
-            <h2 class="ed-head ed-head--stacked">Tasks</h2>
-            {#if weeklyOnly.length === 0 && tasksDaily.length === 0}
-              <p class="unavail">nothing due, go outside</p>
-            {:else}
-              <ul class="task-list">
-                {#each weeklyOnly as task (task.note_id)}
-                  {@render taskRow(task, true)}
-                {/each}
-                {#each tasksDaily as task (task.note_id)}
-                  {@render taskRow(task, false)}
-                {/each}
-              </ul>
-            {/if}
-            {#if taskError}
-              <p class="unavail task-error" role="alert">{taskError}</p>
-            {/if}
-          </section>
-
-          <!-- Shipping: PRs + merges -->
-          <section
-            class="edition card card--shipping"
-            aria-labelledby="shipping-h"
-          >
-            <h2 class="ed-head" id="shipping-h">Shipping</h2>
-            {#if github == null}
-              <p class="unavail">unavailable</p>
-            {:else}
-              {#if (github.open_prs ?? []).length === 0}
-                <p class="unavail">no open PRs</p>
-              {:else}
-                <ul class="plain-list">
-                  {#each github.open_prs ?? [] as pr}
-                    <li>
-                      <a
-                        class="pr-row"
-                        href={pr.url}
-                        target="_blank"
-                        rel="noopener"
-                      >
-                        <span
-                          class="ci-dot ci-dot--{ciState(pr.ci)}"
-                          aria-hidden="true"
-                        ></span>
-                        <span class="sr-only">ci {pr.ci ?? "pending"}</span>
-                        <span class="pr-num mono">#{pr.number}</span>
-                        <span class="pr-title">{pr.title}</span>
-                        {#if pr.draft}
-                          <span class="dim">draft</span>
-                        {/if}
-                      </a>
-                    </li>
-                  {/each}
-                </ul>
-              {/if}
-              {#if (github.recent_merges ?? []).length > 0}
-                <h3 class="sub-label">Merged</h3>
-                <ul class="plain-list">
-                  {#each github.recent_merges ?? [] as pr}
-                    <li>
-                      <a
-                        class="pr-row pr-row--merged"
-                        href={pr.url}
-                        target="_blank"
-                        rel="noopener"
-                      >
-                        <span class="pr-num mono">#{pr.number}</span>
-                        <span class="pr-title">{pr.title}</span>
-                        <span class="dim">{relTime(pr.merged_at)}</span>
-                      </a>
-                    </li>
-                  {/each}
-                </ul>
-              {/if}
-            {/if}
-          </section>
+        <div class="panels">
+          {@render panel("tools", "Tools", toolsBody)}
+          {@render panel("today", "Today", todayBody)}
+          {@render panel("shipping", "Shipping", shippingBody)}
+          {@render panel("ask", "Ask the cluster", askBody)}
         </div>
-
-        <!-- Ask the cluster: the conversational entry, keyed from the keypad. -->
-        <section
-          class="edition card card--chat"
-          id="ask"
-          aria-labelledby="ask-h"
-        >
-          <h2 class="ed-head" id="ask-h">Ask the cluster</h2>
-          <ClusterChatPanel />
-        </section>
       </div>
     </div>
   </div>
+
+  <nav class="dock" aria-label="Open a panel">
+    {#each SHEETS as item (item.id)}
+      <button
+        type="button"
+        class="dock-key"
+        class:on={sheet === item.id}
+        aria-expanded={sheet === item.id}
+        aria-controls="panel-{item.id}"
+        bind:this={dockButtons[item.id]}
+        onclick={() => (sheet === item.id ? closeSheet() : openSheet(item.id))}
+      >
+        {item.label}
+        {#if dockCounts[item.id]}<span class="num">{dockCounts[item.id]}</span
+          >{/if}
+      </button>
+    {/each}
+  </nav>
 </main>
+
+{#snippet panel(id, title, body)}
+  {@const open = sheet === id}
+  <section
+    id="panel-{id}"
+    class="edition card panel panel--{id}"
+    class:open
+    class:dragging={dragY > 0}
+    style:--drag="{open ? dragY : 0}px"
+    role={phone ? "dialog" : undefined}
+    aria-modal={phone && open ? "true" : undefined}
+    aria-labelledby="{id}-h"
+    inert={phone && !open}
+  >
+    <div
+      class="grab"
+      onpointerdown={grab}
+      onpointermove={drag}
+      onpointerup={release}
+      onpointercancel={release}
+    >
+      <span class="grab-bar" aria-hidden="true"></span>
+      <h2 class="ed-head" id="{id}-h">{title}</h2>
+      <button
+        type="button"
+        class="close"
+        id="close-{id}"
+        aria-label="Close {title}"
+        onclick={closeSheet}>Done</button
+      >
+    </div>
+    <div class="panel-body">{@render body()}</div>
+  </section>
+{/snippet}
+
+{#snippet toolsBody()}
+  <ul class="divided keys">
+    {#each keys as key (key.label)}
+      <li>
+        {#if key.href === "#ask"}
+          <button type="button" class="key" onclick={() => openSheet("ask")}
+            >{key.label}</button
+          >
+        {:else}
+          <a
+            class="key"
+            href={key.href}
+            target={key.external ? "_blank" : undefined}
+            rel={key.external ? "noopener" : undefined}
+          >
+            {key.label}
+            {#if key.count}
+              <span class="num">{key.count}</span>
+            {/if}
+            {#if key.external}
+              <span class="ext" aria-hidden="true">↗</span>
+            {/if}
+          </a>
+        {/if}
+      </li>
+    {/each}
+  </ul>
+{/snippet}
+
+{#snippet todayBody()}
+  {#if events == null}
+    <p class="unavail">calendar unavailable</p>
+  {:else if events.length === 0}
+    <p class="unavail">a clear calendar</p>
+  {:else}
+    <ul class="event-list">
+      {#each events as ev}
+        <li
+          class="event-row"
+          class:event-row--past={isPast(ev, now)}
+          class:event-row--active={isActive(ev, now)}
+          class:event-row--allday={ev.allDay}
+        >
+          {#if ev.allDay}
+            <span class="event-time"></span>
+            <span class="event-title">{ev.title}</span>
+            <span class="event-meta">all day</span>
+          {:else}
+            <span class="event-time">{ev.time}</span>
+            <span class="event-title">
+              {ev.title}
+              {#if ev.location}
+                <span class="event-location">{ev.location}</span>
+              {/if}
+            </span>
+            <span class="event-meta">{ev.endTime ? ev.endTime : ""}</span>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  {/if}
+
+  <h3 class="sub-label sub-label--tasks">Tasks</h3>
+  {#if weeklyOnly.length === 0 && tasksDaily.length === 0}
+    <p class="unavail">nothing due, go outside</p>
+  {:else}
+    <ul class="task-list">
+      {#each weeklyOnly as task (task.note_id)}
+        {@render taskRow(task, true)}
+      {/each}
+      {#each tasksDaily as task (task.note_id)}
+        {@render taskRow(task, false)}
+      {/each}
+    </ul>
+  {/if}
+  {#if taskError}
+    <p class="unavail task-error" role="alert">{taskError}</p>
+  {/if}
+{/snippet}
+
+{#snippet shippingBody()}
+  {#if github == null}
+    <p class="unavail">unavailable</p>
+  {:else}
+    {#if (github.open_prs ?? []).length === 0}
+      <p class="unavail">no open PRs</p>
+    {:else}
+      <ul class="plain-list">
+        {#each github.open_prs ?? [] as pr}
+          <li>
+            <a class="pr-row" href={pr.url} target="_blank" rel="noopener">
+              <span class="ci-dot ci-dot--{ciState(pr.ci)}" aria-hidden="true"
+              ></span>
+              <span class="sr-only">ci {pr.ci ?? "pending"}</span>
+              <span class="pr-num mono">#{pr.number}</span>
+              <span class="pr-title">{pr.title}</span>
+              {#if pr.draft}
+                <span class="dim">draft</span>
+              {/if}
+            </a>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+    {#if (github.recent_merges ?? []).length > 0}
+      <h3 class="sub-label">Merged</h3>
+      <ul class="plain-list">
+        {#each github.recent_merges ?? [] as pr}
+          <li>
+            <a
+              class="pr-row pr-row--merged"
+              href={pr.url}
+              target="_blank"
+              rel="noopener"
+            >
+              <span class="pr-num mono">#{pr.number}</span>
+              <span class="pr-title">{pr.title}</span>
+              <span class="dim">{relTime(pr.merged_at)}</span>
+            </a>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  {/if}
+{/snippet}
+
+{#snippet askBody()}
+  <ClusterChatPanel />
+{/snippet}
 
 {#snippet taskRow(task, weekly)}
   <li class="task-row">
