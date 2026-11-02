@@ -6,6 +6,7 @@ import hashlib
 import http.server
 import itertools
 import json
+import re
 import threading
 import traceback
 from datetime import datetime, timezone
@@ -119,7 +120,11 @@ def main():
                     return result
 
                 root = capture("root")
-                assert root["scheme"] == scheme and root["bodyOverflow"] == "auto", root
+                phone = width <= 760
+                # The phone root is one screen: the page never scrolls, and
+                # everything below the decisions lives in bottom sheets.
+                assert root["scheme"] == scheme, root
+                assert root["bodyOverflow"] == ("hidden" if phone else "auto"), root
                 assert root["backLinks"] == 0 and root["schemeControls"] == 1, root
                 page.keyboard.press("Tab")
                 focus = page.evaluate(
@@ -131,8 +136,39 @@ def main():
                     "window.scrollTo(0, document.documentElement.scrollHeight)"
                 )
                 root["scrollY"] = page.evaluate("window.scrollY")
-                assert root["scrollY"] > 0, root
+                assert (root["scrollY"] == 0) if phone else (root["scrollY"] > 0), root
+
+                def sheet(key):
+                    """Open a sheet from the dock on a phone; no-op on desktop."""
+                    if not phone:
+                        return
+                    page.locator(f'.dock-key[aria-controls="panel-{key}"]').click()
+                    expect(page.locator(f"#panel-{key}")).to_have_class(
+                        re.compile(r"\bopen\b")
+                    )
+                    expect(page.locator(f"#close-{key}")).to_be_focused()
+
+                def close(how):
+                    if not phone:
+                        return
+                    if how == "back":
+                        page.go_back()
+                    else:
+                        page.keyboard.press("Escape")
+                    expect(page.locator(".panel.open")).to_have_count(0)
+                    expect(page).to_have_url(re.compile(r"view=dashboard"))
+
+                if phone:
+                    # Closed sheets are out of reach; open ones trap the page.
+                    expect(page.locator("#panel-today")).to_have_attribute("inert", "")
+                    sheet("today")
+                    root["sheetOpen"] = measure(page)["bodyOverflow"]
+                    page.screenshot(path=str(args.output / f"{name}-sheet.png"))
+                    close("back")
+                    sheet("tools")
+                    close("escape")
                 if scenario == "populated":
+                    sheet("today")
                     task = page.get_by_role(
                         "button", name="Toggle Synthetic daily task", exact=True
                     )
@@ -176,6 +212,8 @@ def main():
                     expect(page.locator(".pulse")).to_contain_text(
                         "77 workloads scanned"
                     )
+                    close("back")
+                    sheet("ask")
                     chat = page.get_by_role("textbox", name="Ask the cluster")
                     chat.fill("Synthetic browser question")
                     chat.press("Enter")
@@ -194,6 +232,7 @@ def main():
                         "optimistic success/refusal; 60s refresh, two-miss retention, then unavailable"
                     )
                     capture("interacted")
+                    close("escape")
 
                     # Same bundle and real layouts, after a sheet has been visited.
                     for child in ("updates", "qwen", "board"):

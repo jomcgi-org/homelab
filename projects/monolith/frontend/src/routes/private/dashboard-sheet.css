@@ -100,10 +100,10 @@
   font-size: 0.85rem;
 }
 
-/* The readings row closes the panel: cluster, then factory. One cell each,
-   the dot its only colour. */
+/* The readings strip: cluster, then factory. One cell each, the dot its
+   only colour. */
 .dashboard .pulse {
-  border-top: 1px solid var(--stroke);
+  border: 1px solid var(--stroke);
 }
 .dashboard .pulse .reading {
   display: flex;
@@ -191,18 +191,96 @@
   font-size: 0.9em;
 }
 
-/* ── Today and shipping ── */
-.dashboard .pair {
+/* ── Panels ──
+   Tools across the top, today and shipping side by side, ask across the
+   foot. On a phone each becomes a bottom sheet (see Phone below). */
+.dashboard .panels {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-areas: "tools tools" "today shipping" "ask ask";
   gap: 1.5rem;
   align-items: start;
+}
+.dashboard .panel--tools {
+  grid-area: tools;
+}
+.dashboard .panel--today {
+  grid-area: today;
+}
+.dashboard .panel--shipping {
+  grid-area: shipping;
+}
+.dashboard .panel--ask {
+  grid-area: ask;
 }
 .dashboard .edition {
   min-width: 0;
 }
-.dashboard .pair > .edition {
+.dashboard .panel {
   margin: 0;
+}
+.dashboard .grab {
+  display: block;
+}
+.dashboard .grab-bar,
+.dashboard .grab .close,
+.dashboard .dock,
+.dashboard .scrim {
+  display: none;
+}
+.dashboard .sub-label--tasks {
+  border-top: 1px solid var(--stroke);
+}
+
+/* ── Deck ── */
+.dashboard .queue {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--stroke);
+}
+.dashboard .queue li + li {
+  border-top: 1px solid var(--line);
+}
+.dashboard .queued {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 48px;
+  padding: 0.6rem 1rem;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dashboard .queued:active {
+  background: var(--band);
+}
+.dashboard .queued-label {
+  flex: none;
+  color: var(--ink-2);
+  font: 0.72rem var(--font-code);
+}
+.dashboard .queued-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.9rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .dashboard .deck-front {
+    animation: deck-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+}
+@keyframes deck-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
 }
 .dashboard .event-list,
 .dashboard .task-list,
@@ -309,14 +387,14 @@
 /* ── Ask the cluster ── */
 /* The log grows with the conversation up to the panel's cap, so an empty
    panel is one line of hint and the input, not a blank window. */
-.dashboard .card--chat .cluster-chat {
+.dashboard .panel--ask .cluster-chat {
   padding: 0.75rem 1rem 0.5rem;
   min-height: 0;
 }
-.dashboard .card--chat .chat-log {
+.dashboard .panel--ask .chat-log {
   flex: 1 1 auto;
 }
-.dashboard .card--chat {
+.dashboard .panel--ask {
   scroll-margin-top: 1rem;
 }
 
@@ -325,16 +403,212 @@
   outline-offset: -2px;
 }
 
-/* ── Phone ── */
+/* ── Phone ──
+   One screen, no page scroll. The masthead and readings sit at the top, the
+   decision deck fills the middle and scrolls inside itself, and the dock
+   holds the rest in thumb reach. A dock key slides its panel up as a sheet
+   over a scrim; the sheet scrolls inside itself and follows a drag on its
+   grab bar. */
 @media (max-width: 760px) {
+  html:has(main.dashboard),
+  body:has(main.dashboard) {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  body:has(main.dashboard) .td.chrome {
+    position: absolute;
+    top: 0.6rem;
+    right: 1rem;
+    padding: 0;
+    background: none;
+  }
+  body:has(main.dashboard) .td.chrome .trail-slot {
+    display: none;
+  }
+  .dashboard.sheet {
+    height: 100dvh;
+    padding: 0;
+    overflow: hidden;
+  }
+  .dashboard .frame,
+  .dashboard .journal,
+  .dashboard .content {
+    height: 100%;
+  }
+  .dashboard .content {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    padding: 0.9rem 1rem calc(4.25rem + env(safe-area-inset-bottom, 0px));
+  }
+  .dashboard .content > * + * {
+    margin-top: 0;
+  }
   .dashboard .dashboard-trail {
     display: none;
   }
   .dashboard .masthead {
     align-items: baseline;
+    padding-right: 3.5rem;
   }
-  .dashboard .pair {
-    grid-template-columns: minmax(0, 1fr);
+  .dashboard .greeting {
+    font-size: 1.45rem;
+  }
+  .dashboard .masthead-date {
+    margin-top: 0.15rem;
+    font-size: 0.82rem;
+  }
+  .dashboard .clock {
+    display: none;
+  }
+  .dashboard .pulse .reading {
+    flex-basis: 100%;
+    min-height: 40px;
+    font-size: 0.8rem;
+  }
+  .dashboard .pulse .reading + .reading {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  .dashboard .pulse .reading a {
+    min-height: 40px;
+  }
+  .dashboard .needs {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .dashboard .needs > .ed-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+
+  /* The dock: four keys across the bottom, above the home indicator. */
+  .dashboard .dock {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    border-top: 1px solid var(--stroke);
+    background: var(--sheet);
+  }
+  .dashboard .dock-key {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4em;
+    min-height: 56px;
+    border: 0;
+    background: none;
+    color: var(--ink-2);
+    font: 500 0.8rem var(--font-code);
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .dashboard .dock-key + .dock-key {
+    border-left: 1px solid var(--line);
+  }
+  .dashboard .dock-key.on {
+    color: var(--ink);
+    box-shadow: inset 0 2px 0 var(--accent-ink);
+  }
+  .dashboard .dock-key .num {
+    padding: 0 0.35em;
+    border: 1px solid var(--stroke);
+    color: var(--ink);
+    font-size: 0.72rem;
+    line-height: 1.4;
+  }
+
+  /* Sheets. */
+  .dashboard .panels {
+    display: contents;
+  }
+  .dashboard .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: block;
+    border: 0;
+    background: color-mix(in srgb, var(--ink) 35%, transparent);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .dashboard.sheet-open .scrim {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .dashboard .panel {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    max-height: 86dvh;
+    border: 0;
+    border-top: 1px solid var(--ink);
+    background: var(--sheet);
+    /* Closed sheets wait below the fold; inert keeps them out of focus and
+       the accessibility tree. No visibility toggle: the shared
+       reduced-motion rule would transition it and leave an opening sheet
+       unfocusable for a frame. */
+    transform: translateY(100%);
+  }
+  .dashboard .panel.open {
+    transform: translateY(var(--drag, 0px));
+  }
+  .dashboard .grab {
+    position: relative;
+    flex: none;
+    touch-action: none;
+    cursor: grab;
+  }
+  .dashboard .grab-bar {
+    display: block;
+    width: 2.5rem;
+    height: 4px;
+    margin: 0.5rem auto 0;
+    background: var(--stroke);
+  }
+  .dashboard .grab .ed-head {
+    border-bottom: 1px solid var(--stroke);
+    background: none;
+    padding-right: 5rem;
+  }
+  .dashboard .grab .close {
+    position: absolute;
+    right: 0.25rem;
+    bottom: 0;
+    display: inline-flex;
+    align-items: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 0.75rem;
+    border: 0;
+    background: none;
+    color: var(--accent-ink);
+    font: 500 0.82rem var(--font-code);
+    cursor: pointer;
+  }
+  .dashboard .panel-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .dashboard .panel--ask .cluster-chat {
+    max-height: none;
   }
   .dashboard .task-row {
     flex-wrap: wrap;
@@ -342,9 +616,16 @@
   .dashboard .task-due {
     margin-left: auto;
   }
-  /* The ask panel is the last thing on the page; a key jumps to it and the
-     panel lands below the chrome row. */
-  .dashboard .card--chat {
-    scroll-margin-top: 0.5rem;
+}
+
+@media (max-width: 760px) and (prefers-reduced-motion: no-preference) {
+  .dashboard .scrim {
+    transition: opacity 0.24s ease;
+  }
+  .dashboard .panel {
+    transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .dashboard .panel.dragging {
+    transition: none;
   }
 }
