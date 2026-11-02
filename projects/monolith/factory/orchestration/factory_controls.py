@@ -5332,9 +5332,8 @@ def settle_lost_attempt(
     This applies one of the exact proofs in execution/reconciliation.py and
     refuses with a ValueError naming the first failed condition when the
     attempt is any other shape, so a live start, bound guest, captured receipt
-    or settled permit is never settled by hand here. Deliberately not gated on
-    FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED: while that flag is off this
-    is the repair, and it is a human action either way. There is no HTTP route.
+    or settled permit is never settled by hand here. It is a human action, and
+    there is no HTTP route.
     """
     from factory.execution.api import (
         inspect_lost_before_guest_factory_attempt,

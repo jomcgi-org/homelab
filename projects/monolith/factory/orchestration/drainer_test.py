@@ -40,7 +40,6 @@ SETTINGS = {
     "repo": "jomcgi-org/homelab",
     "branch": "main",
     "reasoning": True,
-    "notify_failures": True,
 }
 
 
@@ -93,7 +92,7 @@ def _run(
     claims = []
     starts = []
     completions = []
-    notifications = []
+    reported = []
     destroys = []
     queued = iter([{"routine_kind": "qwen-drain", **job} for job in jobs] + [None])
 
@@ -138,8 +137,8 @@ def _run(
     monkeypatch.setattr(drainer, "finish_drainer_job", finish)
     monkeypatch.setattr(
         drainer,
-        "notify_drainer_failure",
-        lambda *args: notifications.append(args),
+        "_report_drainer_failure",
+        lambda *args: reported.append(args),
     )
     monkeypatch.setattr(
         drainer,
@@ -148,7 +147,7 @@ def _run(
     )
 
     result = drainer.drain_cycle.__wrapped__()
-    return result, claims, starts, completions, notifications, destroys
+    return result, claims, starts, completions, reported, destroys
 
 
 @pytest.mark.parametrize("pinned", [None, False, True])
@@ -311,7 +310,7 @@ def test_grimoire_manual_or_replayed_claim_disables_before_any_session(
 
     # _run installs FakeDBOS, so retain the replay patch on that seam.
     monkeypatch.setattr(FakeDBOS, "patch", ReplayDBOS.patch)
-    result, claims, starts, completions, notifications, destroys = _run(
+    result, claims, starts, completions, reported, destroys = _run(
         monkeypatch,
         [
             {
@@ -330,7 +329,7 @@ def test_grimoire_manual_or_replayed_claim_disables_before_any_session(
     )
     assert result["processed"] == 0
     assert claims[0][1] == ("grimoire-kg-drain",)
-    assert not starts and not destroys and not notifications
+    assert not starts and not destroys and not reported
     assert completions == [
         ("campaign-job", "disabled", "tool-free Grimoire transport absent")
     ]
@@ -747,9 +746,7 @@ def test_drain_cycle_claims_then_completes(monkeypatch):
         "payload": {"prompt": "do work", "reasoning": True},
     }
 
-    result, claims, starts, completions, notifications, destroys = _run(
-        monkeypatch, [job]
-    )
+    result, claims, starts, completions, reported, destroys = _run(monkeypatch, [job])
 
     assert result == {"status": "complete", "processed": 1}
     assert claims == [
@@ -770,7 +767,7 @@ def test_drain_cycle_claims_then_completes(monkeypatch):
         )
     ]
     assert completions == [("job-1", "ok", "finished")]
-    assert notifications == []
+    assert reported == []
     assert destroys == [(101, "workflow-1:qwen-drain:job-1")]
 
 
@@ -802,7 +799,7 @@ def test_kg_job_builds_prompt_uses_kg_session_and_applies(monkeypatch):
         "payload": {"raw_id": "raw-1"},
     }
 
-    result, _, starts, completions, notifications, destroys = _run(monkeypatch, [job])
+    result, _, starts, completions, reported, destroys = _run(monkeypatch, [job])
 
     assert result == {"status": "complete", "processed": 1}
     assert prompts == [{"raw_id": "raw-1"}]
@@ -818,7 +815,7 @@ def test_kg_job_builds_prompt_uses_kg_session_and_applies(monkeypatch):
             True,
         )
     ]
-    assert notifications == []
+    assert reported == []
     assert destroys == [(101, "workflow-1:kg-drain:kg:raw-1")]
 
 
@@ -1321,7 +1318,7 @@ def test_recurring_kg_job_is_not_deregistered_on_completion(monkeypatch):
     ]
 
 
-def test_kg_daily_cap_defers_without_processing_or_notification(monkeypatch):
+def test_kg_daily_cap_defers_without_processing_or_failure_report(monkeypatch):
     monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 40)
     job = {
         "name": "kg:raw-1",
@@ -1329,12 +1326,12 @@ def test_kg_daily_cap_defers_without_processing_or_notification(monkeypatch):
         "payload": {"raw_id": "raw-1"},
     }
 
-    result, _, starts, completions, notifications, destroys = _run(monkeypatch, [job])
+    result, _, starts, completions, reported, destroys = _run(monkeypatch, [job])
 
     assert result == {"status": "complete", "processed": 0}
     assert completions == [("kg:raw-1", "deferred", "kg daily cap reached", 3600)]
     assert starts == []
-    assert notifications == []
+    assert reported == []
     assert destroys == []
 
 
@@ -1358,11 +1355,11 @@ def test_invalid_kg_output_defers_on_bounded_retry_path(monkeypatch):
         "payload": {"raw_id": "raw-1"},
     }
 
-    _, _, _, completions, notifications, destroys = _run(monkeypatch, [job])
+    _, _, _, completions, reported, destroys = _run(monkeypatch, [job])
 
     assert deferrals == [("kg:raw-1", 900)]
     assert completions == []
-    assert notifications == [("kg:raw-1", "invalid extraction")]
+    assert reported == [("kg:raw-1", "invalid extraction")]
     assert destroys == [(101, "workflow-1:kg-drain:kg:raw-1")]
 
 
@@ -1426,13 +1423,13 @@ def test_reasoning_survives_replayed_settings_without_the_key():
 
 
 def test_empty_queue_exits_immediately(monkeypatch):
-    result, claims, starts, completions, notifications, destroys = _run(monkeypatch, [])
+    result, claims, starts, completions, reported, destroys = _run(monkeypatch, [])
 
     assert result == {"status": "complete", "processed": 0}
     assert claims == [(2100, ("qwen-drain", "kg-drain"))]
     assert starts == []
     assert completions == []
-    assert notifications == []
+    assert reported == []
     assert destroys == []
 
 
@@ -1575,7 +1572,6 @@ def _run_transient_kg_failure(monkeypatch, attempts, *, terminal=False):
         "record_kg_failure",
         lambda raw_id, error, attempt: failures.append((raw_id, error, attempt)),
     )
-    monkeypatch.setattr(drainer, "notify_drainer_failure", lambda *_args: None)
     monkeypatch.setattr(
         drainer, "destroy_drainer_session", lambda *args: destroys.append(args) or True
     )
@@ -1660,13 +1656,13 @@ def test_correction_send_failure_retries_without_waiting_and_destroys(monkeypatc
         "routine_kind": "kg-drain",
         "payload": {"raw_id": "raw-1"},
     }
-    _, _, _, completions, notifications, destroys = _run(
+    _, _, _, completions, reported, destroys = _run(
         monkeypatch, [job], await_turn=first_turn, send_message=failed_send
     )
     assert waits == [(101, 0, 900)]
     assert deferrals == [("kg:raw-1", 900)]
     assert completions == []
-    assert notifications == [("kg:raw-1", "Workflow cleanup owns the correction guest")]
+    assert reported == [("kg:raw-1", "Workflow cleanup owns the correction guest")]
     assert destroys == [(101, "workflow-1:kg-drain:kg:raw-1")]
 
 
@@ -1686,7 +1682,7 @@ def test_kg_timeout_uses_pinned_override_or_legacy_fallback(monkeypatch, kg_time
         "routine_kind": "kg-drain",
         "payload": {"raw_id": "raw-1"},
     }
-    _, claims, _, _, notifications, _ = _run(
+    _, claims, _, _, reported, _ = _run(
         monkeypatch,
         [job],
         settings=settings,
@@ -1694,7 +1690,7 @@ def test_kg_timeout_uses_pinned_override_or_legacy_fallback(monkeypatch, kg_time
     )
     timeout = SETTINGS["turn_timeout_seconds"] if kg_timeout is None else kg_timeout
     assert waits == [(101, 0, timeout)]
-    assert notifications == [("kg:raw-1", f"turn timed out after {timeout} seconds")]
+    assert reported == [("kg:raw-1", f"turn timed out after {timeout} seconds")]
     # The larger mixed-kind lease also covers start backoff, two KG turns,
     # applying output and confirmed cleanup, without a second job owner.
     assert (
@@ -1714,53 +1710,40 @@ def test_kg_timeout_uses_pinned_override_or_legacy_fallback(monkeypatch, kg_time
         ({"prompt": "work", "reasoning": "yes"}, "reasoning must be a boolean"),
     ],
 )
-def test_malformed_payload_completes_error_without_notification(
+def test_malformed_payload_completes_error_without_failure_report(
     monkeypatch, payload, message
 ):
     job = {"name": "bad-payload", "payload": payload}
 
-    result, _, starts, completions, notifications, destroys = _run(monkeypatch, [job])
+    result, _, starts, completions, reported, destroys = _run(monkeypatch, [job])
 
     assert result == {"status": "complete", "processed": 1}
     assert completions == [("bad-payload", "error", message)]
     assert starts == []
-    assert notifications == []
+    assert reported == []
     assert destroys == []
 
 
-def test_failure_notifies_when_notifications_enabled_and_destroys_session(monkeypatch):
+def test_failure_reports_and_destroys_session(monkeypatch):
     job = {"name": "fails", "payload": {"prompt": "break"}}
 
     def fail_await(*_args):
         raise RuntimeError("turn failed")
 
-    result, _, _, completions, notifications, destroys = _run(
+    result, _, _, completions, reported, destroys = _run(
         monkeypatch, [job], await_turn=fail_await
     )
 
     assert result == {"status": "complete", "processed": 1}
     assert completions == [("fails", "error", "turn failed")]
-    assert notifications == [("fails", "turn failed")]
+    assert reported == [("fails", "turn failed")]
     assert destroys == [(101, "workflow-1:qwen-drain:fails")]
 
 
-def test_failure_logs_without_notification_when_notifications_disabled(
-    monkeypatch, caplog
-):
-    job = {"name": "fails-quietly", "payload": {"prompt": "break"}}
-
-    def fail_await(*_args):
-        raise RuntimeError("turn failed")
-
+def test_failure_report_logs_warning(caplog):
     with caplog.at_level("WARNING", logger="factory.orchestration.drainer"):
-        _, _, _, _, notifications, _ = _run(
-            monkeypatch,
-            [job],
-            await_turn=fail_await,
-            settings=SETTINGS | {"notify_failures": False},
-        )
+        drainer._report_drainer_failure("fails-quietly", "turn failed")
 
-    assert notifications == []
     assert "Luna drainer job fails-quietly failed: turn failed" in caplog.messages
 
 
@@ -1770,20 +1753,20 @@ def test_start_failure_cleans_up_by_stable_session_key(monkeypatch):
     def fail_start(*_args, **_kwargs):
         raise RuntimeError("start failed")
 
-    result, _, _, completions, notifications, destroys = _run(
+    result, _, _, completions, reported, destroys = _run(
         monkeypatch, [job], start_session=fail_start
     )
 
     assert result == {"status": "complete", "processed": 1}
     assert completions == [("start-fails", "error", "start failed")]
-    assert notifications == [("start-fails", "start failed")]
+    assert reported == [("start-fails", "start failed")]
     assert destroys == [(None, "workflow-1:qwen-drain:start-fails")]
 
 
-def test_terminal_turn_error_notifies_once_and_destroys(monkeypatch):
+def test_terminal_turn_error_reports_once_and_destroys(monkeypatch):
     job = {"name": "terminal-error", "payload": {"prompt": "run"}}
 
-    result, _, _, completions, notifications, destroys = _run(
+    result, _, _, completions, reported, destroys = _run(
         monkeypatch,
         [job],
         await_turn=lambda *_: {
@@ -1796,9 +1779,7 @@ def test_terminal_turn_error_notifies_once_and_destroys(monkeypatch):
     assert completions == [
         ("terminal-error", "error", "Error executing turn: transport failed")
     ]
-    assert notifications == [
-        ("terminal-error", "Error executing turn: transport failed")
-    ]
+    assert reported == [("terminal-error", "Error executing turn: transport failed")]
     assert destroys == [(101, "workflow-1:qwen-drain:terminal-error")]
 
 
@@ -1809,16 +1790,16 @@ def test_interrupted_turn_is_never_treated_as_completed():
         )
 
 
-def test_timeout_completes_error_notifies_once_and_destroys(monkeypatch):
+def test_timeout_completes_error_reports_once_and_destroys(monkeypatch):
     job = {"name": "slow", "payload": {"prompt": "take your time"}}
 
-    result, _, _, completions, notifications, destroys = _run(
+    result, _, _, completions, reported, destroys = _run(
         monkeypatch, [job], await_turn=lambda *_: None
     )
 
     assert result == {"status": "complete", "processed": 1}
     assert completions == [("slow", "error", "turn timed out after 1800 seconds")]
-    assert notifications == [("slow", "turn timed out after 1800 seconds")]
+    assert reported == [("slow", "turn timed out after 1800 seconds")]
     assert destroys == [(101, "workflow-1:qwen-drain:slow")]
 
 
@@ -1872,7 +1853,7 @@ def test_full_batch_chains_the_next_cycle(monkeypatch):
         {"name": f"job-{i}", "payload": {"prompt": "work"}}
         for i in range(SETTINGS["max_jobs_per_cycle"])
     ]
-    result, _claims, _starts, _completions, _notifications, _destroys = _run(
+    result, _claims, _starts, _completions, _reported, _destroys = _run(
         monkeypatch, jobs
     )
 
@@ -1889,7 +1870,7 @@ def test_partial_batch_does_not_chain(monkeypatch):
     monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
 
     jobs = [{"name": "job-1", "payload": {"prompt": "work"}}]
-    result, _claims, _starts, _completions, _notifications, _destroys = _run(
+    result, _claims, _starts, _completions, _reported, _destroys = _run(
         monkeypatch, jobs
     )
 
@@ -1901,9 +1882,7 @@ def test_empty_queue_does_not_chain(monkeypatch):
     chained = []
     monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
 
-    result, _claims, _starts, _completions, _notifications, _destroys = _run(
-        monkeypatch, []
-    )
+    result, _claims, _starts, _completions, _reported, _destroys = _run(monkeypatch, [])
 
     assert result == {"status": "complete", "processed": 0}
     assert chained == []
@@ -1928,7 +1907,7 @@ def test_fully_failed_batch_does_not_chain(monkeypatch):
         {"name": f"job-{i}", "payload": {"prompt": "work"}}
         for i in range(SETTINGS["max_jobs_per_cycle"])
     ]
-    result, _claims, _starts, _completions, _notifications, _destroys = _run(
+    result, _claims, _starts, _completions, _reported, _destroys = _run(
         monkeypatch, jobs, await_turn=fail_turn
     )
 
@@ -1948,9 +1927,7 @@ def test_zero_max_jobs_per_cycle_does_not_chain(monkeypatch):
     settings = SETTINGS | {"max_jobs_per_cycle": 0}
     monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: settings.copy())
 
-    result, _claims, _starts, _completions, _notifications, _destroys = _run(
-        monkeypatch, []
-    )
+    result, _claims, _starts, _completions, _reported, _destroys = _run(monkeypatch, [])
 
     assert result == {"status": "complete", "processed": 0}
     assert chained == []
@@ -3888,16 +3865,16 @@ def test_kg_provider_walled_at_the_pooled_floor_boundary(monkeypatch, used, expe
 
 
 @pytest.mark.parametrize("first", [(100.0, 30.0), (10.0, 100.0)])
-def test_kg_provider_walled_still_vetoes_an_exhausted_grant(monkeypatch, first):
+def test_kg_provider_skips_an_exhausted_grant(monkeypatch, first):
     from factory.orchestration import model_pool
 
     monkeypatch.setenv("SWARM_QUOTA_FLOORS", '{"codex": {"drainer": 25, "worker": 10}}')
-    # No floor applies to the veto: a fully used grant blocks KG on its own.
+    # The sidecar never serves a fully used grant, so admission excludes it
+    # and KG runs on the grant that has room.
     monkeypatch.setattr(
         model_pool, "quota_summary", lambda: _kg_rolled(first, (30.0, 30.0))
     )
-    walled, reason = _KG_PROVIDER_WALLED()
-    assert walled is True and "codex-cluster" in reason
+    assert _KG_PROVIDER_WALLED() == (False, "confirmed_available")
 
 
 def test_kg_provider_requires_confirmed_observation(monkeypatch):
@@ -4502,7 +4479,6 @@ def _lock_holder(engine, job):
 def test_prestart_batch_receipts_retire_only_with_proven_permit_and_lease_release(
     admission_database, monkeypatch, state, unknown
 ):
-    monkeypatch.setenv("DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED", "true")
     _, local = _lost_permit(
         admission_database,
         workflow_id="_drainer-worker:0:batch-lost",
@@ -4537,7 +4513,6 @@ def test_prestart_batch_receipts_retire_only_with_proven_permit_and_lease_releas
 def test_lost_before_session_sweep_settles_dead_workflow_permit(
     admission_database, monkeypatch
 ):
-    monkeypatch.setenv("DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED", "true")
     permit_id, _ = _lost_permit(
         admission_database, workflow_id="_drainer-worker:0:1573", job="kg:orphan"
     )
@@ -4560,7 +4535,7 @@ def test_lost_before_session_sweep_settles_dead_workflow_permit(
 
 @pytest.mark.parametrize(
     "case",
-    ["flag_off", "pending", "recent_workflow", "young_permit", "session", "unknown"],
+    ["pending", "recent_workflow", "young_permit", "session", "unknown"],
 )
 def test_lost_before_session_sweep_refuses_without_proof(
     admission_database, monkeypatch, case
@@ -4569,8 +4544,6 @@ def test_lost_before_session_sweep_refuses_without_proof(
 
     from factory.execution import store
 
-    if case != "flag_off":
-        monkeypatch.setenv("DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED", "true")
     workflow_id = "_drainer-worker:1:1522"
     permit_id, local = _lost_permit(
         admission_database,
@@ -4601,7 +4574,6 @@ def test_lost_before_session_sweep_refuses_without_proof(
 def test_lost_before_session_sweep_never_touches_its_own_workflow(
     admission_database, monkeypatch
 ):
-    monkeypatch.setenv("DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED", "true")
     permit_id, _ = _lost_permit(
         admission_database, workflow_id="_drainer-worker:0:9", job="kg:mine"
     )
@@ -4613,7 +4585,6 @@ def test_lost_before_session_sweep_never_touches_its_own_workflow(
 def test_lost_before_session_sweep_keeps_unknown_outcome_lease(
     admission_database, monkeypatch
 ):
-    monkeypatch.setenv("DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED", "true")
     permit_id, _ = _lost_permit(
         admission_database, workflow_id="_drainer-worker:0:7", job="kg:parked"
     )
@@ -4661,7 +4632,6 @@ def test_unqueued_start_recovery_releases_capacity_and_fences_late_enqueue(
     from factory.execution.models import AgentSession, AgentTurn, PendingMessage
 
     permit_id, sid, local, workflow_id = _unqueued_start(admission_database)
-    monkeypatch.setenv("DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED", "true")
     _workflow_states(monkeypatch, {workflow_id: "SUCCESS"})
     if path == "cleanup":
         monkeypatch.setattr(
@@ -4707,7 +4677,6 @@ def test_unqueued_start_recovery_releases_capacity_and_fences_late_enqueue(
         "wrong_key",
         "active_workflow",
         "recent_workflow",
-        "flag_off",
     ],
 )
 def test_unqueued_start_sweep_retains_any_execution_or_ownership_evidence(
@@ -4725,10 +4694,6 @@ def test_unqueued_start_sweep_retains_any_execution_or_ownership_evidence(
     )
 
     permit_id, sid, local, workflow_id = _unqueued_start(admission_database)
-    monkeypatch.setenv(
-        "DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED",
-        "false" if case == "flag_off" else "true",
-    )
     _workflow_states(
         monkeypatch,
         {

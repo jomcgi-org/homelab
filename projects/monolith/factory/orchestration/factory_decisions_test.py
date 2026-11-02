@@ -1115,7 +1115,6 @@ def test_fresh_context_uses_durable_requests_even_when_knowledge_is_down(
     import asyncio
     from factory.orchestration import conductor_context as context
 
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     receipt_id = escalate(db, "close")
     identity = current_decision_id()
     durable_answer(receipt_id, identity)
@@ -1151,7 +1150,6 @@ def test_committed_exchange_is_reported_deterministically_for_extraction(
     from types import SimpleNamespace
     from factory.orchestration import conductor_context as context
 
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     receipt_id = escalate(db, "close")
     identity = current_decision_id()
     durable_answer(receipt_id, identity)
@@ -1188,7 +1186,6 @@ def test_fresh_context_keeps_operator_history_isolated_and_epistemic(
     import asyncio
     from factory.orchestration import conductor_context as context
 
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     receipt_id = escalate(db, "close")
     brief_identity = current_decision_id()
     configure()
@@ -1298,7 +1295,6 @@ def test_pending_question_survives_fresh_context_with_current_queue_state(
     import asyncio
     from factory.orchestration import conductor_context as context
 
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     configure()
     receipt_id = escalate(db, "close")
     result = decisions.request_decision(
@@ -1372,7 +1368,6 @@ def test_receipt_knowledge_partitions_private_operator_exchanges(
     from types import SimpleNamespace
     from factory.orchestration import conductor_context as context
 
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     receipt_id = escalate(db, "close")
     configure()
     decisions.request_decision(
@@ -1431,7 +1426,6 @@ def test_interrupted_knowledge_maintenance_retries_without_replaying_decision(
     from types import SimpleNamespace
     from factory.orchestration import conductor_context as context
 
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     receipt_id = escalate(db, "close")
     identity = current_decision_id()
     completed = durable_answer(receipt_id, identity)
@@ -2883,7 +2877,6 @@ SPLIT_CHILDREN = [
 def test_an_operational_split_child_opens_with_needs_human(db, github, monkeypatch):
     # #6559 (receipt 724): a live-check child opened without an exclusion
     # label and intake briefed it within seconds.
-    monkeypatch.setenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", "true")
     receipt_id = escalate(db, "split")
     _split_children(db, receipt_id, SPLIT_CHILDREN)
     decisions.apply_decision(receipt_id, "split", "joe@example.test")
@@ -2893,15 +2886,6 @@ def test_an_operational_split_child_opens_with_needs_human(db, github, monkeypat
         ["needs-human"],
         None,
     ]
-
-
-def test_without_the_flag_split_children_carry_no_label(db, github, monkeypatch):
-    monkeypatch.delenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", raising=False)
-    receipt_id = escalate(db, "split")
-    _split_children(db, receipt_id, SPLIT_CHILDREN)
-    decisions.apply_decision(receipt_id, "split", "joe@example.test")
-    created = [write[2] for write in github.writes if write[1] == "issues"]
-    assert all("labels" not in child for child in created)
 
 
 def test_the_option_schema_accepts_an_operational_child():
@@ -2956,7 +2940,6 @@ MERGED_6334 = {
 
 
 def _handoff_task(db, monkeypatch, github):
-    monkeypatch.setenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", "true")
     task, _policy = envelope_task()
     github.labels = {"agent-ready"}
     _merged_pulls(monkeypatch, github, MERGED_6334)
@@ -3027,14 +3010,6 @@ def test_an_unverified_delivery_keeps_the_decision_card(db, github, monkeypatch)
     with Session(db) as session:
         row = session.exec(select(FactoryReceipt)).one()
         assert row.state == "escalated"
-
-
-def test_without_the_flag_a_delivered_gate_keeps_the_card(db, github, monkeypatch):
-    task = _handoff_task(db, monkeypatch, github)
-    monkeypatch.delenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", raising=False)
-    conductor._escalate_task(task, _delivered_pause(), "factory-decision:c_1:1", [])
-    with Session(db) as session:
-        assert session.exec(select(FactoryReceipt)).one().state == "escalated"
 
 
 def test_the_issue_reference_must_be_this_issue():

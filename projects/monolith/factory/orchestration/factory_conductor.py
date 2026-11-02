@@ -41,7 +41,6 @@ from factory.orchestration.github_read_cooldown import (
     process_memory_snapshot,
 )
 from factory.execution import EFFORT_LEVELS
-from factory.orchestration import config as swarm_config
 from factory.orchestration import deviations, graph, runtime, factory_gates
 from factory.orchestration.factory_controls import (
     CONTINUE_EFFECT,
@@ -682,33 +681,6 @@ def _task(task_id: str, *, session: Session | None = None) -> dict:
             ),
             "conductor_gates": (direction or {}).get("conductor_gates", []),
         }
-
-
-def lost_before_guest_settlement_enabled() -> bool:
-    """Whether the reconciler may settle an attempt that never bound a guest.
-
-    Off in code. The values key that turns it on is flipped in a follow-up PR,
-    after review, so a template change and a behaviour change never ship in the
-    same commit. The operator path in swarm/factory_controls.py is deliberately
-    not gated on this: while the flag is off it is the only repair available.
-    """
-    return (
-        os.environ.get("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "false").lower()
-        == "true"
-    )
-
-
-def escalation_revalidation_enabled() -> bool:
-    """Whether open escalation cards may be checked against GitHub."""
-    return (
-        os.environ.get("FACTORY_ESCALATION_REVALIDATION_ENABLED", "false").lower()
-        == "true"
-    )
-
-
-def planner_knowledge_enabled() -> bool:
-    """Whether receipt-authorized KG evidence may enter planner inputs."""
-    return flag("CONDUCTOR_CONTINUITY_ENABLED")
 
 
 def planner_preview_enabled() -> bool:
@@ -2290,10 +2262,8 @@ _PLANNER_CHARTER = (
 )
 
 
-def _load_planner_factory_context(task_id: str) -> dict | None:
-    """Refresh current factory and receipt-authorized KG evidence when staged on."""
-    if not planner_knowledge_enabled():
-        return None
+def _load_planner_factory_context(task_id: str) -> dict:
+    """Refresh current factory and receipt-authorized KG evidence."""
     from factory.orchestration.conductor_context import planner_context
 
     result = asyncio.run(planner_context(task_id))
@@ -2406,8 +2376,6 @@ def _request_planner_context(task: dict, decision: dict, cause: str) -> tuple[st
     """Execute one bounded, durable, server-authorized context follow-up."""
     from factory.orchestration.factory_models import FactoryAudit
 
-    if not planner_knowledge_enabled():
-        return "planner_knowledge_disabled", "planner knowledge is staged off"
     query = decision.get("query")
     if not isinstance(query, str) or not 2 <= len(query) <= PLANNER_CONTEXT_QUERY_CHARS:
         return "invalid_context_query", "context query is outside the server bound"
@@ -3059,8 +3027,6 @@ def revalidate_escalations() -> dict[str, int]:
         "generation_blocked": 0,
         "batches": 0,
     }
-    if not escalation_revalidation_enabled():
-        return counts
     now = _watchdog_clock()
     if (
         _last_escalation_revalidation is not None
@@ -5707,11 +5673,7 @@ def _abandon_recovering_factory_session(
     pin: dict, session_id: int | None, workflow_status: str
 ) -> bool:
     """Convert a dead factory recovery into its durable unknown outcome."""
-    if (
-        os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() != "true"
-        or workflow_status in {"PENDING", "ENQUEUED"}
-        or type(session_id) is not int
-    ):
+    if workflow_status in {"PENDING", "ENQUEUED"} or type(session_id) is not int:
         return False
 
     from factory.execution import admission, store
@@ -6332,9 +6294,7 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                             attempt=run["attempt"],
                             session_id=proof["session_id"],
                         )
-                elif (
-                    never_dispatched is None and lost_before_guest_settlement_enabled()
-                ):
+                elif never_dispatched is None:
                     # The next window along. The not-invoked proof needs a turn
                     # that never reached its model POST; this one covers a turn
                     # that was invoked and lost its executor before a guest was
@@ -8195,9 +8155,6 @@ def _expire_reconciler_pause(task_id: str, *, held_only: bool = False) -> bool:
     after the caller's snapshot. Settlement rechecks both ledgers and all pause
     holds under control-then-task locks before legacy expiry can cancel work.
     """
-    if os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() != "true":
-        return False
-
     from factory.orchestration.factory_controls import (
         _audit,
         _locked_session,
@@ -8304,9 +8261,7 @@ def _expire_reconciler_pause(task_id: str, *, held_only: bool = False) -> bool:
 
 
 def _deadline_backstop_enabled() -> bool:
-    return FACTORY_DEADLINE_BACKSTOP_RELEASE_STAGED and (
-        flag("FACTORY_DEADLINE_BACKSTOP_ENABLED")
-    )
+    return FACTORY_DEADLINE_BACKSTOP_RELEASE_STAGED
 
 
 def _deadline_backstop_due(task: dict) -> bool:
@@ -8395,9 +8350,6 @@ def _warn_deadline_tripped(task: dict) -> None:
         else "Active cessation will destroy the recorded guest "
         f"{factory_cessation.GRACE_SECONDS // 3600} hours after the deadline "
         "and release the slot once the control plane reports it gone."
-        if factory_cessation.enabled()
-        else "The deadline backstop is off, so nothing will release the lane "
-        "slot on its own."
     )
     if _notify_person_once(
         task_id,
@@ -8955,14 +8907,13 @@ def _tick(checkpoint) -> None:
     # must not starve its neighbours of their tick, and a stale issue number
     # in the policy must not stall every in-flight task behind the ingest.
     for task in active:
-        if swarm_config.factory_lost_before_session_sweep_enabled():
-            try:
-                _sweep_sessionless_starts(task, dbos)
-            except Exception:  # noqa: BLE001 - missing proof never stalls neighbours
-                logger.exception(
-                    "factory sessionless-start sweep failed for task %s",
-                    task["task_id"],
-                )
+        try:
+            _sweep_sessionless_starts(task, dbos)
+        except Exception:  # noqa: BLE001 - missing proof never stalls neighbours
+            logger.exception(
+                "factory sessionless-start sweep failed for task %s",
+                task["task_id"],
+            )
         owned = False
         cancelling = bool(task.get("cancellation_requested"))
         try:

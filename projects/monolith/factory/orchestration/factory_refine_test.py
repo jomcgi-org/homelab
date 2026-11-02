@@ -186,6 +186,15 @@ def audit_actions(db):
     return [row.action for row in audit_rows(db)]
 
 
+def digested_messages(db):
+    """Refine briefs digest instead of paging; these are the recorded texts."""
+    return [
+        json.loads(row.detail_json)["message"]
+        for row in audit_rows(db)
+        if row.action == "task_needs_person_digested"
+    ]
+
+
 def options(first="split"):
     """A valid option list whose head matches ``first``'s recommendation."""
     head = {
@@ -457,7 +466,7 @@ def test_unverified_comment_is_refused(db, monkeypatch, case):
     )
 
 
-def test_needs_human_notifies_once(db, monkeypatch):
+def test_needs_human_digests_once(db, monkeypatch):
     from agent import api as notify_module
 
     task, policy = make_task()
@@ -477,22 +486,22 @@ def test_needs_human_notifies_once(db, monkeypatch):
     nodes = graph.load_graph(task["id"])
     refine.reconcile(task, policy, nodes, [run], 1)
     refine.reconcile(task, policy, nodes, [run], 1)
-    assert len(sent) == 1 and sent[0][1] == "warn"
-    assert "recommend: split" in sent[0][0]
+    # A refine brief is a scoping question, not authority: it digests.
+    assert sent == []
+    (message,) = digested_messages(db)
+    assert "recommend: split" in message
     assert controls.task_snapshot(task["id"])["state"] == "succeeded"
 
 
-@pytest.mark.parametrize("digest", ["true", "false"])
 @pytest.mark.parametrize(
     "scope", [{"refinement_batch": [7]}, {"refine_brief_only": True}]
 )
 def test_bounded_brief_keeps_decision_without_external_notification(
-    db, monkeypatch, digest, scope
+    db, monkeypatch, scope
 ):
     from agent import api as notify_module
     from factory.orchestration import factory_notify_policy
 
-    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", digest)
     task, policy = make_task(intake={"enabled": True, "refine_enabled": True, **scope})
     add_refine_node(task, policy)
     comment = verified_github(monkeypatch, task, "needs-human")
@@ -606,28 +615,6 @@ def test_bounded_brief_does_not_execute_typed_gate(db, monkeypatch):
     assert "Do not apply agent-ready to such a gate" in prompt
     assert "Reusing existing credentials still counts as uses_credentials" in prompt
     assert refine.factory_gates.GATE_PROMPT not in prompt
-
-
-def test_notify_failure_still_settles(db, monkeypatch):
-    """#6208 uses the shared task notification audit, including failed sends."""
-    from agent import api as notify_module
-
-    task, policy = make_task()
-    add_refine_node(task, policy)
-    comment = verified_github(monkeypatch, task, "needs-human")
-
-    async def notify(*_args, **_kwargs):
-        raise RuntimeError("Discord unavailable")
-
-    monkeypatch.setattr(notify_module, "notify", notify)
-    run = settle_attempt(
-        task,
-        "succeeded",
-        human_artifact(comment["html_url"], "split", question="Choose one target"),
-    )
-    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
-    assert controls.task_snapshot(task["id"])["state"] == "succeeded"
-    assert "task_notification_failed" in audit_actions(db)
 
 
 def test_two_failed_attempts_fail_without_touching_github(db, monkeypatch):
@@ -1495,7 +1482,9 @@ def test_a_close_verdict_is_downgraded_while_closing_is_off(db, monkeypatch):
     assert snapshot["evidence"]["state"] == "refine_needs_human"
     assert "refine_close_downgraded" in audit_actions(db)
     assert "intake_closed" not in audit_actions(db)
-    assert len(sent) == 1 and "recommend: close" in sent[0][0]
+    assert sent == []
+    (message,) = digested_messages(db)
+    assert "recommend: close" in message
 
 
 def test_a_protected_issue_is_never_closed(db, monkeypatch):
@@ -1749,7 +1738,8 @@ def test_the_notification_links_the_escalations_view(db, monkeypatch):
     monkeypatch.setattr(notify_module, "notify", notify)
     run = settle_attempt(task, "succeeded", human_artifact(comment["html_url"]))
     refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
-    assert refine.ESCALATIONS_URL in sent[0]
+    assert sent == []
+    assert refine.ESCALATIONS_URL in digested_messages(db)[0]
 
 
 def test_needs_human_without_options_is_refused(db, monkeypatch):

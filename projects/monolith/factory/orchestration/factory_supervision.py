@@ -20,7 +20,6 @@ from sqlmodel import select
 from core.clock import utc_now as _now
 from factory.execution.api import (
     factory_attempt_never_posted,
-    drain_relay_continuation_enabled,
     fence_bound_zero_turn_factory_attempt,
     read_bound_zero_turn_factory_attempt,
     read_drained_lost_factory_attempt,
@@ -620,13 +619,6 @@ def _brick_restart_cessation(view, identity, saved=None):
     }
 
 
-def _invoke_failure_enabled():
-    return (
-        os.environ.get("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "false").lower()
-        == "true"
-    )
-
-
 def _invoke_failure_cessation(view, identity, saved=None):
     """Prove this attempt's guest was failed by the invoke that failed it.
 
@@ -698,15 +690,6 @@ def _invoke_failure_cessation(view, identity, saved=None):
         "updated_at": updated_at,
         "cessation_evidence": "invoke_failure",
     }
-
-
-def _never_invoked_enabled():
-    return (
-        os.environ.get(
-            "FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "false"
-        ).lower()
-        == "true"
-    )
 
 
 def _never_invoked_guest_cessation(view, identity, saved=None):
@@ -2247,12 +2230,8 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
     """One bounded supervision tick for an already terminal DBOS workflow.
 
     A live DBOS workflow still owns its deadline/cancellation path. No work is
-    started or cancelled here. The legacy conditional request budget remains
-    unless staged transient supervision is enabled; Ember owns retrying its
-    accepted durable intent.
+    started or cancelled here. Ember owns retrying its accepted durable intent.
     """
-    if os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() != "true":
-        return False
     if workflow_status not in {
         "SUCCESS",
         "ERROR",
@@ -2270,10 +2249,6 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
     )
     if bound_zero_turn:
         return settled
-    cessation_enabled = (
-        os.environ.get("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "false").lower()
-        == "true"
-    )
     try:
         with controls._locked_session() as (db, control):
             if any(action == "stop_settled" for action, _ in _records(db, pin)):
@@ -2341,14 +2316,10 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         # The control plane answered for this exact guest, so any absence run
         # in progress is over. Recorded before anything else acts on the view.
         _record_presence(pin, identity)
-        drained_dispatch = None
-        if cessation_enabled and drain_relay_continuation_enabled():
-            # Read before the relay hand-off below. read_uncertain_factory_attempt
-            # has already proved no pending row exists, so no relay can resume
-            # this dispatch and leaving it to one would hold the lane.
-            drained_dispatch = _drain_interrupted_dispatch_cessation(
-                view, identity, saved
-            )
+        # Read before the relay hand-off below. read_uncertain_factory_attempt
+        # has already proved no pending row exists, so no relay can resume
+        # this dispatch and leaving it to one would hold the lane.
+        drained_dispatch = _drain_interrupted_dispatch_cessation(view, identity, saved)
         if (
             drained_dispatch is None
             and view.get("terminal_reason") == "interrupted_for_drain"
@@ -2364,27 +2335,26 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         ):
             return False
         cessation = drained_dispatch
-        if cessation_enabled and cessation is None:
+        if cessation is None:
             cessation = _control_plane_cessation(view, identity, saved)
-            if cessation is None:
-                cessation = _brick_restart_cessation(view, identity, saved)
-            if cessation is None and _invoke_failure_enabled():
-                cessation = _invoke_failure_cessation(view, identity, saved)
-            if cessation is None and _never_invoked_enabled():
-                cessation = _never_invoked_guest_cessation(view, identity, saved)
-            if cessation is None:
-                cessation = _replacement_invocation_cessation(view, identity, saved)
+        if cessation is None:
+            cessation = _brick_restart_cessation(view, identity, saved)
+        if cessation is None:
+            cessation = _invoke_failure_cessation(view, identity, saved)
+        if cessation is None:
+            cessation = _never_invoked_guest_cessation(view, identity, saved)
+        if cessation is None:
+            cessation = _replacement_invocation_cessation(view, identity, saved)
         if cessation is not None:
             expected = None
             proof = cessation
         else:
-            if cessation_enabled:
-                with controls._locked_session() as (db, control):
-                    current, _run = _locked_attempt(
-                        db, control, pin, session_id, require_stop_due=True
-                    )
-                    if current != identity:
-                        raise ValueError("factory_attempt_changed")
+            with controls._locked_session() as (db, control):
+                current, _run = _locked_attempt(
+                    db, control, pin, session_id, require_stop_due=True
+                )
+                if current != identity:
+                    raise ValueError("factory_attempt_changed")
             if saved is None:
                 value = view.get("stop_precondition")
                 if value is None and isinstance(view.get("stop_intent"), dict):
@@ -2512,7 +2482,7 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                 "missing_stop_precondition",
                 error=str(exc),
             )
-        elif not (cessation_enabled and str(exc) == "factory_stop_not_due"):
+        elif str(exc) != "factory_stop_not_due":
             _note(
                 pin,
                 "stop_evidence_or_ownership_changed",

@@ -824,7 +824,7 @@ def test_receipt_context_has_a_stable_fresh_session_identity(monkeypatch):
         ),
     )
     monkeypatch.setattr(context, "_request_records", lambda db: {})
-    monkeypatch.setattr(context, "continuity_enabled", lambda: False)
+    monkeypatch.setattr(context, "_recent_conversation", lambda *_a: ([], []))
 
     result = context._factory_context(7, actor="joe")
 
@@ -916,7 +916,6 @@ def test_factory_context_passes_authenticated_operator_to_shared_contract(monkey
 def test_knowledge_failure_does_not_undo_a_completed_decision(monkeypatch):
     from factory.orchestration import conductor_context as context
 
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     monkeypatch.setattr(
         "factory.orchestration.factory_decisions.request_decision",
         lambda *a, **kw: {"ok": True, "state": "completed"},
@@ -930,17 +929,6 @@ def test_knowledge_failure_does_not_undo_a_completed_decision(monkeypatch):
     assert result["ok"] is True
     assert result["state"] == "completed"
     assert result["knowledge"]["status"] == "unavailable"
-
-
-def test_request_knowledge_maintenance_is_staged_off(monkeypatch):
-    monkeypatch.delenv("CONDUCTOR_CONTINUITY_ENABLED", raising=False)
-    monkeypatch.setattr(
-        "factory.orchestration.factory_decisions.request_decision",
-        lambda *a, **kw: {"ok": True, "state": "completed"},
-    )
-    result = mcp._decide(1, "decision:abc", "close", "r", None, "joe")
-    assert result["state"] == "completed"
-    assert result["knowledge"] == {"status": "disabled"}
 
 
 @pytest.mark.parametrize("action", ["stop", "enable_auto_merge", "disable_auto_merge"])

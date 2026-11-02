@@ -154,6 +154,7 @@ def github(monkeypatch):
 @pytest.fixture
 def notices(monkeypatch):
     from agent import api as notify_module
+    from factory.orchestration import factory_notify_policy
 
     sent = []
 
@@ -161,6 +162,9 @@ def notices(monkeypatch):
         sent.append((text, level))
 
     monkeypatch.setattr(notify_module, "notify", notify)
+    # These cases cover the per-task notification fence. Which kinds page and
+    # which digest is factory_notify_policy's, tested in the watchdog tests.
+    monkeypatch.setattr(factory_notify_policy, "pages", lambda _kind: True)
     return sent
 
 
@@ -507,14 +511,6 @@ def test_delivery_escalation_hashes_the_live_body_when_the_card_is_raised(
     )
 
 
-def test_revalidation_flag_defaults_off_and_toggles_independently(monkeypatch):
-    monkeypatch.delenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", raising=False)
-    monkeypatch.setenv("FACTORY_ENABLED", "false")
-    assert conductor.escalation_revalidation_enabled() is False
-    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
-    assert conductor.escalation_revalidation_enabled() is True
-
-
 def test_closed_issue_cards_are_dismissed_together_with_close_times(
     db, github, notices, monkeypatch
 ):
@@ -532,7 +528,6 @@ def test_closed_issue_cards_are_dismissed_together_with_close_times(
         },
     }
     calls = github_batch(monkeypatch, closed)
-    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
 
     result = conductor.revalidate_escalations()
 
@@ -580,7 +575,6 @@ def test_open_issue_with_unchanged_or_whitespace_only_body_stays_open(
             },
         },
     )
-    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
 
     result = conductor.revalidate_escalations()
 
@@ -604,7 +598,6 @@ def test_changed_issue_body_supersedes_card_without_inferring_an_answer(
             }
         },
     )
-    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
 
     result = conductor.revalidate_escalations()
 
@@ -663,7 +656,6 @@ def test_factory_gate_rewrite_does_not_supersede_a_paused_card(
     old_id = controls.decision_identity(before)
     rewritten = _gate_body(prose, identity="b" * 20, extra="\n- [ ] Second check")
     github_batch(monkeypatch, {ISSUE: {"state": "OPEN", "body": rewritten}})
-    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
 
     conductor.revalidate_escalations()
 
@@ -697,7 +689,6 @@ def test_body_edited_back_to_the_admission_text_still_counts_as_changed(
     _store_hash(task_id, controls.issue_body_hash("Edited after admission"))
     old_id = controls.decision_identity(controls.task_snapshot(task_id))
     github_batch(monkeypatch, {ISSUE: {"state": "OPEN", "body": "Admission text"}})
-    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
 
     conductor.revalidate_escalations()
 
@@ -726,7 +717,6 @@ def test_active_paused_body_rewrite_replaces_card_without_answer(
             )
     body = "Decision: only deliver the API path."
     github_batch(monkeypatch, {ISSUE: {"state": "OPEN", "body": body}})
-    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
 
     conductor.revalidate_escalations()
 
@@ -784,7 +774,6 @@ def test_revalidation_cannot_overwrite_concurrent_pause_owner(
         return {ISSUE: {"state": "OPEN", "body": "Changed scope"}}
 
     monkeypatch.setattr(conductor, "_github_issue_batch", read)
-    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
     with ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(conductor.revalidate_escalations)
         try:
@@ -834,7 +823,6 @@ def test_active_pause_unchanged_body_is_identity_stable(db, monkeypatch, body):
     factory_pause.pause(task_id, "test", "blocked")
     before = controls.task_snapshot(task_id)
     github_batch(monkeypatch, {ISSUE: {"state": "OPEN", "body": body}})
-    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
     for _ in range(2):
         conductor._last_escalation_revalidation = None
         conductor.revalidate_escalations()
@@ -865,7 +853,6 @@ def test_revalidation_repairs_preexisting_stale_terminal_cards_locally(
         pytest.fail("generation-stale cards need no GitHub read or write")
 
     monkeypatch.setattr(landing, "github_graphql", unexpected)
-    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
     writes = list(github.writes)
 
     result = conductor.revalidate_escalations()
@@ -930,26 +917,6 @@ def test_generation_reconciliation_is_bounded_and_idempotent(db, github, notices
         assert all(row.state == "cancelled" for row in rows)
         assert all(json.loads(row.escalation_json)["resolved"] for row in rows)
     assert github.writes == writes
-
-
-def test_revalidation_off_does_not_read_github(db, github, notices, monkeypatch):
-    task_id, _policy = escalate(db, github, notices)
-
-    def unexpected(*_args):
-        pytest.fail("revalidation is disabled")
-
-    monkeypatch.delenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", raising=False)
-    monkeypatch.setattr(landing, "github_graphql", unexpected)
-    assert conductor.revalidate_escalations() == {
-        "cards": 0,
-        "checked": 0,
-        "resolved": 0,
-        "retired": 0,
-        "generation_candidates": 0,
-        "generation_blocked": 0,
-        "batches": 0,
-    }
-    assert json.loads(receipt_of(db, task_id).escalation_json)["resolved"] is None
 
 
 def test_intervention_required_notifies_once_per_task(db, github, notices):
@@ -1573,7 +1540,6 @@ def test_revalidation_is_paced_independently_of_the_tick(monkeypatch):
     from factory.orchestration import factory_controls as controls
 
     monkeypatch.setattr(conductor, "_watchdog_clock", lambda: clock["now"])
-    monkeypatch.setattr(conductor, "escalation_revalidation_enabled", lambda: True)
     monkeypatch.setattr(
         controls,
         "reconcile_generation_stale_receipts",
@@ -2468,7 +2434,11 @@ def test_notification_fence_is_per_task_and_kind(db, github, notices):
 def test_failed_notification_does_not_consume_kind_fence(db, github, monkeypatch, kind):
     from types import SimpleNamespace
     from agent import api as notify_module
+    from factory.orchestration import factory_notify_policy
     from factory.orchestration import factory_refine as refine
+
+    # The fence is per kind whether or not the kind digests by policy.
+    monkeypatch.setattr(factory_notify_policy, "pages", lambda _kind: True)
 
     task_id, _policy = admitted(ISSUE)
     attempts = []

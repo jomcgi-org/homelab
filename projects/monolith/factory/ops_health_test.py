@@ -232,22 +232,7 @@ def test_recorder_writes_the_streak_start_only_on_the_flip(engine):
         assert not ops_health.evaluate_create_streak(latest, since, NOW)[0]
 
 
-def test_recorder_is_off_unless_enabled(monkeypatch):
-    monkeypatch.delenv(create_outcome.ENABLED_ENV, raising=False)
-    calls = []
-    monkeypatch.setattr(create_outcome, "_record_sync", lambda *a: calls.append(a))
-
-    async def run():
-        create_outcome.record(False, "x")
-        await asyncio.sleep(0)
-
-    asyncio.run(run())
-    assert calls == []
-
-
 def test_recorder_never_raises_when_the_write_fails(monkeypatch):
-    monkeypatch.setenv(create_outcome.ENABLED_ENV, "true")
-
     def boom(*_):
         raise RuntimeError("db down")
 

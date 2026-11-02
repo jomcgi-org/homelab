@@ -501,7 +501,7 @@ def _apply_split(fields: dict, option: dict, marker: str) -> dict:
         }
         from factory.orchestration import factory_operational_handoff as handoff
 
-        if handoff.enabled() and handoff.operational_child(child):
+        if handoff.operational_child(child):
             # Live checks are a person's to run. Without an exclusion label
             # intake admitted #6559 as a refine task within seconds.
             payload["labels"] = [HUMAN_LABEL]
