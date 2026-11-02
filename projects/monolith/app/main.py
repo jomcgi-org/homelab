@@ -18,19 +18,15 @@ app = build_app(PRIVATE_PROFILE, ALL_MODULES)
 if __name__ == "__main__":
     import uvicorn
     from factory.module import RolloutHandoffServer
-    from factory.execution.store import rollout_handoff_enabled
 
-    if rollout_handoff_enabled():
-        RolloutHandoffServer(
-            # Lifespan handoff follows HTTP drain. Bound that wait at 5s so
-            # the 15s executor budget fits inside the chart's 45s grace, including the 10s routing delay (#6670).
-            uvicorn.Config(
-                app,
-                host="0.0.0.0",
-                port=8000,
-                log_level="warning",
-                timeout_graceful_shutdown=5,
-            )
-        ).run()
-    else:
-        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+    RolloutHandoffServer(
+        # Lifespan handoff follows HTTP drain. Bound that wait at 5s so
+        # the 15s executor budget fits inside the chart's 45s grace, including the 10s routing delay (#6670).
+        uvicorn.Config(
+            app,
+            host="0.0.0.0",
+            port=8000,
+            log_level="warning",
+            timeout_graceful_shutdown=5,
+        )
+    ).run()

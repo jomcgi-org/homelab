@@ -114,8 +114,8 @@ class TestSingletonBotClose:
         ):
             await start_leader_singletons(app, ALL_MODULES)
 
-        # Bot, outbox, scheduled tasks, lock sweep, and eight service loops.
-        assert len(tasks) == 12
+        # Bot, outbox, scheduled tasks, lock sweep, and nine service loops.
+        assert len(tasks) == 13
 
 
 # ---------------------------------------------------------------------------

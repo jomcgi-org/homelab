@@ -40,7 +40,7 @@ async def test_singleton_tasks_all_get_done_callback():
     ):
         await start_leader_singletons(app, ALL_MODULES)
 
-    # Bot, outbox, scheduled tasks, ships, lock sweep and seven service loops.
-    assert len(task_mocks) == 12
+    # Bot, outbox, scheduled tasks, ships, lock sweep and eight service loops.
+    assert len(task_mocks) == 13
     for task in task_mocks:
         task.add_done_callback.assert_called_once_with(log_task_exception)
