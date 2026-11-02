@@ -30,6 +30,14 @@ const render = async (view, scenario = "populated") => {
   await tick();
 };
 
+test("updates keeps its own dashboard Trail without fixed back chrome", async () => {
+  await render("updates");
+  expect(document.querySelector("main.updates-page")).not.toBeNull();
+  expect(document.querySelectorAll('.trail a[href="/"]')).toHaveLength(1);
+  expect(document.querySelector(".back-to-dashboard")).toBeNull();
+  expect(document.querySelector(".scheme")).toBeNull();
+});
+
 for (const view of ["board", "escalations", "item"]) {
   for (const scenario of [
     "populated",
@@ -77,7 +85,9 @@ for (const view of ["board", "escalations", "item"]) {
 test.each([
   "/factory/escalations-extra",
   "/factory/work-items",
-  "/updates",
+  "/updates-extra",
+  "/private/updates-extra/",
+  "/updates/archive",
   "/application",
   "/reviewer",
   "/factory/escalations/extra",
@@ -103,6 +113,10 @@ test.each([
   "/",
   "/private",
   "/private/",
+  "/updates",
+  "/updates/",
+  "/private/updates",
+  "/private/updates/",
   "/app",
   "/app/tool",
   "/review/",

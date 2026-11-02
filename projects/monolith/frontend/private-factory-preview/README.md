@@ -36,6 +36,7 @@ From `projects/monolith/frontend`, on a clean tested head:
 ```sh
 pnpm exec vitest run --config private-factory-preview/vitest.config.js
 FACTORY_PREVIEW_SHA=$(git rev-parse HEAD) pnpm exec vite build --config private-factory-preview/vite.config.js
+node private-factory-preview/scheme_ssr_check.js private-factory-fixture-preview
 python private-factory-preview/browser_check.py --artifact private-factory-fixture-preview --output /tmp/private-factory-evidence --expected-sha $(git rev-parse HEAD)
 ```
 
@@ -83,6 +84,17 @@ its own compatibility stylesheet. The shared back link uses `.td-chrome`, which
 shares only palette declarations with `.td` and does not opt full-screen
 children into `body:has(.td)` scrolling. Factory pages and the execution
 console keep their own Trail and scheme control, without duplicate back chrome.
+
+The updates journal has a shared Trail linking to the dashboard and no fixed
+back link. The SSR check renders the real layouts and requires exactly one
+preference script on every private fixture page and on a standalone public
+toggle. The private layout wraps its children in `SchemePreference`; nested
+instances inherit its context and skip the head script. The bootstrap source
+stays in that component. Separate SSR renders check context isolation. Browser
+checks parse those SSR documents and record
+the restored attribute before body content, then exercise the mounted layout's
+palette with explicit, missing, invalid and denied storage at both widths and
+OS schemes. The ordinary-page fixture has no child toggle or bootstrap.
 
 ## Non-factory task integration (#7400)
 

@@ -55,7 +55,7 @@ def main():
     )
     threading.Thread(target=server.serve_forever, daemon=True).start()
     origin = f"http://127.0.0.1:{server.server_port}"
-    records, failures = [], []
+    records, failures, preferences = [], [], []
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         for width, scheme, scenario in itertools.product(
@@ -195,22 +195,16 @@ def main():
                             assert child_result["bodyOverflow"] == "auto"
                         else:
                             assert child_result["schemeControls"] == 0
-                            assert child_result["backLinks"] == (
-                                1 if child == "updates" else 0
-                            )
+                            assert child_result["backLinks"] == 0
                             if child == "updates":
                                 # The journal sits on the sheet: it follows the
                                 # stored scheme, like the dashboard.
                                 assert child_result["sheet"] == (
                                     "#ffffff" if scheme == "light" else "#181a20"
                                 ), child_result
-                                assert child_result["backInk"] == root["ink"], (
-                                    child_result
-                                )
-                                child_result["backClearsContent"] = page.evaluate(
-                                    """() => document.querySelector('.back-to-dashboard').getBoundingClientRect().bottom < document.querySelector('.spine').getBoundingClientRect().top"""
-                                )
-                                assert child_result["backClearsContent"], child_result
+                                expect(
+                                    page.locator('.trail a[href="/"]')
+                                ).to_be_visible()
                             else:
                                 # Qwen still follows the OS, opposite to the stored scheme.
                                 assert child_result["sheet"] == (
@@ -241,6 +235,10 @@ def main():
                         )
                         expect(page.locator("main")).to_be_visible()
                         fresh = capture(f"fresh-{child}")
+                        if child == "updates":
+                            expect(page.locator('.trail a[href="/"]')).to_be_visible()
+                            page.locator('.trail a[href="/"]').click()
+                            expect(page.locator("main.dashboard")).to_be_visible()
                         for field in (
                             "bodyOverflow",
                             "mainOverflow",
@@ -346,6 +344,72 @@ def main():
                 )
             finally:
                 context.close()
+        # A fresh private page with no child preference component or toggle.
+        # Exercise browser execution, CSS system fallback and storage denial.
+        for width, os_scheme, stored in itertools.product(
+            (390, 1440), ("light", "dark"), ("opposite", "missing", "invalid", "throws")
+        ):
+            context = browser.new_context(
+                viewport={"width": width, "height": 900},
+                color_scheme=os_scheme,
+                reduced_motion="reduce",
+                service_workers="block",
+            )
+            expected = (
+                ("dark" if os_scheme == "light" else "light")
+                if stored == "opposite"
+                else os_scheme
+            )
+            if stored == "throws":
+                context.add_init_script(
+                    "Storage.prototype.getItem = () => { throw new Error('Storage denied'); };"
+                )
+            elif stored != "missing":
+                value = expected if stored == "opposite" else "invalid"
+                context.add_init_script(f"localStorage.setItem('td-theme', '{value}');")
+            page = context.new_page()
+            errors = []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            try:
+                page.goto(origin + PREFIX + "?view=legacy")
+                link = page.locator(".back-to-dashboard")
+                expect(link).to_be_visible()
+                expect(link).to_have_attribute("href", "/")
+                expect(page.locator(".scheme")).to_have_count(0)
+                expect(link).to_have_css(
+                    "background-color",
+                    "rgb(255, 255, 255)" if expected == "light" else "rgb(24, 26, 32)",
+                )
+                attribute = page.evaluate(
+                    "document.documentElement.dataset.theme ?? null"
+                )
+                assert attribute == (expected if stored == "opposite" else None)
+                before_body = {}
+                for view in ("legacy", "updates", "board"):
+                    page.goto(origin + PREFIX + f"scheme-{view}.html")
+                    before_body[view] = page.evaluate("window.schemeBeforeBody")
+                    assert before_body[view] == attribute, before_body
+                assert not errors, errors
+                preferences.append(
+                    {
+                        "width": width,
+                        "os_scheme": os_scheme,
+                        "stored": stored,
+                        "expected": expected,
+                        "attribute": attribute,
+                        "ssr_before_body": before_body,
+                        "passed": True,
+                    }
+                )
+            except Exception as error:
+                failures.append(
+                    {
+                        "case": f"preference-{width}-{os_scheme}-{stored}",
+                        "error": str(error),
+                    }
+                )
+            finally:
+                context.close()
         version = browser.version
         browser.close()
     server.shutdown()
@@ -354,6 +418,7 @@ def main():
         "build": build,
         "chromium": version,
         "records": records,
+        "preferences": preferences,
         "failures": failures,
         "asset_sha256": {
             str(p.relative_to(artifact)): hashlib.sha256(p.read_bytes()).hexdigest()

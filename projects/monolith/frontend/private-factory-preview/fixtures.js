@@ -3,6 +3,7 @@ export const itemId = "100001";
 export const taskId =
   "t-synthetic-78381e85-5d08-4751-a77a-long-operator-investigation";
 export const routes = {
+  legacy: "/ordinary",
   dashboard: "/",
   updates: "/updates",
   qwen: "/qwen",
