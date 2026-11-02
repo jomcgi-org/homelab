@@ -227,6 +227,8 @@ spec:
               value: {{ .learningDailyPayloadSha256 | default "" | quote }}
             - name: FACTORY_LEARNING_HANDOFF_ENABLED
               value: {{ .learningHandoffEnabled | default false | quote }}
+            - name: FACTORY_LEARNING_INPUT_DEDUP_ENABLED
+              value: {{ .learningInputDedupEnabled | default false | quote }}
             - name: DRAINER_NOTIFY_FAILURES
               value: {{ .notifyFailures | quote }}
             - name: DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED
@@ -262,6 +264,8 @@ spec:
             {{- if .Values.swarm.enabled }}
             - name: FACTORY_ENABLED
               value: {{ .Values.swarm.factoryEnabled | default false | quote }}
+            - name: FACTORY_RECOVERY_DELEGATION_ENABLED
+              value: {{ .Values.swarm.factoryRecoveryDelegationEnabled | default false | quote }}
             - name: FACTORY_RESERVATION_REVIEW_ENABLED
               value: {{ .Values.swarm.factoryReservationReviewEnabled | default false | quote }}
             - name: FACTORY_GITHUB_WEBHOOK_ENABLED

@@ -16,7 +16,7 @@ from sqlalchemy import text
 
 REPO = "jomcgi-org/homelab"
 PREFIX = "factory-learning:"
-STAGES = {"evidence": "luna", "evaluate": "astra"}
+STAGES = {"evidence": "luna", "evaluate": "astra", "diagnose": "astra"}
 MAX_OUTPUT_BYTES = 8000
 
 
@@ -32,7 +32,7 @@ def validate_payload(payload):
         raise ValueError("Learning stage model and repository must be explicit")
     if stage == "evidence" and payload.get("digest") != "factory-retro":
         raise ValueError("Luna evidence requires the existing bounded retro digest")
-    if stage == "evaluate" and payload.get("digest") is not None:
+    if stage != "evidence" and payload.get("digest") is not None:
         raise ValueError("Astra evaluates only its pinned evidence packet")
     return stage
 
@@ -58,6 +58,22 @@ def prompt(payload):
     packet = payload.get("learning_evidence")
     if not isinstance(packet, dict):
         raise ValueError("Missing pinned learning evidence")
+    if stage == "diagnose":
+        return common + (
+            "Diagnose ONE unchanged-input stall using the pinned empty result and existing "
+            "program #6781. Verify the cited original session/turn and current collection "
+            "and output contract. Distinguish no new evidence, insufficient coverage, "
+            "productive research, and an actual reproducible defect. HTTP 502 alone does "
+            "not establish its underlying cause. Healthy quota never authorizes a breaker "
+            "reset or retry. Inspect existing issues, PRs and active ownership before "
+            "recommending a repair. Return only JSON with verdict "
+            "corroborated|duplicate|rejected|unknown, issue_number 6781, pr_number null, "
+            "and rationale (at most 4000 characters) naming evidence and one bounded "
+            "next action for that owner. No new work or publication is authorized.\n"
+            "BEGIN UNTRUSTED EVIDENCE\n"
+            + json.dumps(packet, sort_keys=True)
+            + "\nEND UNTRUSTED EVIDENCE"
+        )
     return common + (
         "Corroborate the candidate against current source, its server-supplied original turn excerpts and "
         "existing issues, PRs and active ownership. Reject stale or unsupported claims. Truncated excerpts cannot establish omitted facts; return unknown when needed evidence is omitted. "
@@ -133,7 +149,7 @@ def complete(db, name, holder):
         return
     stage = validate_payload(payload)
     if (stage == "evidence" and name != "factory-retro-daily") or (
-        stage == "evaluate" and not name.startswith(PREFIX)
+        stage != "evidence" and not name.startswith(PREFIX)
     ):
         raise ValueError("Learning completion does not own this routine identity")
     match = re.fullmatch(r"luna-drainer:(.+):[0-9]+", holder or "")
@@ -156,7 +172,11 @@ def complete(db, name, holder):
         "output_sha256": _sha(output),
         "program_issue": 6781,
     }
-    if stage == "evaluate":
+    pinned_input = payload.get("learning_input") or {}
+    if stage == "evidence" and pinned_input.get("holder") == holder:
+        lineage["input_sha256"] = pinned_input["input_sha256"]
+        lineage["head_sha"] = pinned_input["head_sha"]
+    if stage in {"evaluate", "diagnose"}:
         if (
             set(output) != {"verdict", "issue_number", "pr_number", "rationale"}
             or output["verdict"]
@@ -172,6 +192,10 @@ def complete(db, name, holder):
             raise ValueError(
                 "Evaluation requires exact existing issue/PR numbers or null"
             )
+        if stage == "diagnose" and (
+            output["issue_number"] != 6781 or output["pr_number"] is not None
+        ):
+            raise ValueError("Diagnosis remains with the existing learning program")
         # These links are model recommendations, not server-verified authority.
         payload["learning_evaluation"] = {
             **lineage,

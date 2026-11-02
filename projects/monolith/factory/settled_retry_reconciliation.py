@@ -330,7 +330,33 @@ def _proposal(request, local, payload, proof):
     return {**result, "preview_sha256": digest(result)}
 
 
-def _record_intent(request, proposal, expected_sha):
+def _admit_call(db, request, proposal, expected_sha, delegation):
+    from factory.orchestration.recovery_delegation import (
+        conflicting_retry_intent,
+        guard,
+    )
+
+    if conflicting_retry_intent(db, proposal["local"]["task_id"], request):
+        raise ValueError("settled_retry_other_owner_intent")
+    guard(db, request["actor"], "settled_retry", request, expected_sha, delegation)
+
+
+def _admit_replay(request, proposal, expected_sha, delegation):
+    with controls._locked_session() as (db, control):
+        done = _event(db, request, APPLIED)
+        if done:
+            return done["result"]
+        intent = _event(db, request, INTENT)
+        if (
+            intent is None
+            or intent["proposal"] != proposal
+            or not _same_local(_snapshot(db, control, request), proposal["local"])
+        ):
+            raise ValueError("settled_retry_pending_identity_changed")
+        _admit_call(db, request, proposal, expected_sha, delegation)
+
+
+def _record_intent(request, proposal, expected_sha, delegation=None):
     with controls._locked_session() as (db, control):
         done = _event(db, request, APPLIED)
         if done:
@@ -346,7 +372,9 @@ def _record_intent(request, proposal, expected_sha):
         if previous:
             if previous["proposal"] != proposal:
                 raise ValueError("settled_retry_intent_conflict")
+            _admit_call(db, request, proposal, expected_sha, delegation)
             return
+        _admit_call(db, request, proposal, expected_sha, delegation)
         controls._audit(
             db,
             request["actor"],
@@ -450,6 +478,7 @@ async def run(
     reason,
     request_key,
     expected_preview_sha256=None,
+    delegation=None,
 ):
     from factory.execution.transport import EmberVmShimTransport, EmberVMTransportError
 
@@ -464,6 +493,7 @@ async def run(
     )
     if replay:
         return replay
+    admitted_here = False
     transport = EmberVmShimTransport()
     guest = local["local"]["unknown_dispatch"]["guest_id"]
     if proposal is None:
@@ -500,12 +530,19 @@ async def run(
                     raise ValueError("settled_retry_identity_changed")
                 return {"ok": True, "state": "preview", **proposal}
             replay = await asyncio.to_thread(
-                _record_intent, request, proposal, expected_preview_sha256
+                _record_intent, request, proposal, expected_preview_sha256, delegation
             )
             if replay is not None:
                 return replay
+            admitted_here = True
     elif operation != "apply":
         raise ValueError("settled_retry_pending_apply_requires_same_request")
+    if not admitted_here:
+        replay = await asyncio.to_thread(
+            _admit_replay, request, proposal, expected_preview_sha256, delegation
+        )
+        if replay is not None:
+            return replay
     try:
         remote = await transport.session_recovery_fence(
             guest,

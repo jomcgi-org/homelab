@@ -159,7 +159,7 @@ def _replay(db, actor, request):
     return None
 
 
-def apply(request, *, actor, request_key, expected_preview_sha256):
+def apply(request, *, actor, request_key, expected_preview_sha256, delegation=None):
     identity = {
         **request,
         "request_key": controls._text(request_key, "request_key", 256),
@@ -180,6 +180,16 @@ def apply(request, *, actor, request_key, expected_preview_sha256):
         current = json.loads(json.dumps(_snapshot(db, control, request), default=str))
         continuation._require(
             all(proposal[k] == v for k, v in current.items()), "state_changed"
+        )
+        from factory.orchestration.recovery_delegation import guard
+
+        guard(
+            db,
+            actor,
+            "evidence_continuation",
+            request,
+            expected_preview_sha256,
+            delegation,
         )
         local, grant = proposal["local"], proposal["grant"]
         row = db.get(FactoryReceipt, request["receipt_id"])
