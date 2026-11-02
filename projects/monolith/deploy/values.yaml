@@ -294,6 +294,7 @@ metaSpark:
 # publisher and the operator prerequisites that remain before rollout are
 # documented in factory/orchestration/FACTORY.md under "Review publisher".
 swarm:
+  factoryPlannerHoldRefusalEnabled: false
   enabled: true
   # Requires the compatible sidecar exclusion from #7231 on every brick.
   # Defer stale preferred-account work before enabling B-first egress.

@@ -1261,29 +1261,8 @@ def _compatible_direction(previous, current):
         != {k: v for k, v in current.items() if k != "conductor_gates"}
     ):
         return False
-
-    def staged(gate):
-        try:
-            factory_gates.validate_gate(gate)
-        except ValueError:
-            return False
-        return (
-            gate.get("kind") == "live_validation"
-            and gate.get("leave_unmerged") is True
-            and not factory_gates.restricted(gate)
-        )
-
-    def boundary(gate):
-        return {k: v for k, v in gate.items() if k not in {"reason", "live_checks"}}
-
     return all(
-        staged(added)
-        and any(
-            staged(bound)
-            and boundary(added) == boundary(bound)
-            and set(bound["live_checks"]) <= set(added["live_checks"])
-            for bound in before
-        )
+        any(factory_gates.restates(added, bound) for bound in before)
         for added in after[len(before) :]
     )
 

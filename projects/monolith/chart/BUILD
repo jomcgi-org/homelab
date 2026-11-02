@@ -384,6 +384,8 @@ py_test(
         "//projects/monolith:module_configs",
         "//projects/monolith/deploy:deploy_values",
         "//projects/monolith/deploy:gke_values",
+        "//projects/monolith/dev/deploy:deploy_values",
+        "//projects/monolith/dev/deploy:recovery_gke_values",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",

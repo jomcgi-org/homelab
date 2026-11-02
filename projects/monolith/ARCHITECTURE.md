@@ -409,6 +409,7 @@ See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-check
 | Escalation cards survive the factory's own gate writes, declined landing recovery is named, and optimizer verdicts are final once the window ends and its attempts settle | section 4; evidence on the issue | #7495 | repository delivery; 72-hour before and after counts remain on the issue |
 | Per-sweep intake decisions, private backlog age and digest evidence | section 4; repository-only Conductor rescope | #7459 | staged repository delivery; rollout, first-sweep distribution and credential-backed follow-up remain on the issue |
 | One funding decision owns continuation, steering and stop while accounting retains reservations and unknown outcomes | Funding consolidation; repository acceptance in #7454 | #7454 | policy tests consolidated, task grant, progress and continuation decisions unified, allocation recovery folded into funding, shadow and reservation dollar-ceiling paths retired; reservation and meter decisions share the funding resolver; canonical funding audits retain rollback projections; reduction percentages are measurements |
+| Refuse planner-origin unmerged holds while preserving operator provenance and live acceptance | Joe's 2026-10-30 direction; #7450 revert lever | #7449, #7451 | repository-only staged work; flag disabled; rollout, activation, backlog triage and measurement remain |
 | Optional queue-driven inventory refill, default-off with durable advisory execution and bounded issue publication | section 4, recorded Conductor rescope and cap decision | #7376 | repository-only; operational checklist remains on the issue; no shipped policy enablement |
 | Admit agent-ready security findings under existing ownership and eligibility fences | Joe's 2026-10-28 decision, section 4 | [#7372](https://github.com/jomcgi-org/homelab/issues/7372) | repository-only staged delivery; guarded migration, rollout and natural-sweep acceptance remain |
 | Automatic pauses retain actionable questions and audit superseded cards | The factory conductor | #7165 | repository-only staged delivery under an unmerged landing hold; historical pause attribution and post-rollout checks remain |
@@ -534,6 +535,19 @@ pending work and unknown outcomes remain held. Result history, accounting,
 observer timestamps and prior lineage are preserved; this cleanup never invokes
 or deletes a guest. Only the existing bounded probe can refresh provider quota.
 (see: /projects/monolith/factory/completed_probe_cleanup.py)
+
+**Why.** Operator provenance owns landing holds (#7449): a server-supplied
+`operator:` cause or authoritative `human` issue ownership (including a durable
+operator handoff) can retain an
+unmerged hold; a true declared effect still requires the human decision path.
+Planner text supplies neither authority nor provenance. The default-off
+`FACTORY_PLANNER_HOLD_REFUSAL_ENABLED` stages refusal audits and exact-provenance
+inheritance filtering while preserving unknown and explicit operator holds.
+A planner may restate a gate already bound under such a hold, which creates
+nothing, so progress renewal still passes. Disabling it restores prior handling; #7450 adds the automated revert lever.
+A verified disabled rollout, reviewed activation coordinated with
+#7451, rollback validation, backlog triage and the 14-day measurement remain
+outstanding on #7449. Repository delivery establishes none of those outcomes.
 
 **Why.** Conflicting chart and lane ceilings starved advisory work; hourly sweeps
 then filled capacity too slowly. Factory work can wait, so shared background

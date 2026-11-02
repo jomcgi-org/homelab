@@ -305,6 +305,10 @@ def apply(
             if not overlay.get(hold):
                 continue
             previous_direction = json.loads(row.direction_json or "{}")
+            if hold == "landing_hold":
+                # An explicit operator reassertion owns this restriction even
+                # when the same hold previously had refused planner provenance.
+                previous_direction.pop("landing_hold_provenance", None)
             previous_direction.setdefault(
                 hold,
                 {

@@ -955,6 +955,14 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
                 task["id"], number, "irreversible gate requires needs-human", False
             )
             return
+        if not factory_gates.restricted(gate) and not brief_only_refinement(receipt):
+            try:
+                factory_gates.enforce_hold_origin(
+                    task, gate, f"refine-gate:{task['id']}"
+                )
+            except factory_gates.LandingHoldRefused as exc:
+                _mismatch(task["id"], number, exc.reason, False)
+                return
     invalid = _verify_artifact(artifact, outcome)
     if invalid is None:
         invalid = _verify_supersedes(repo, number, artifact, outcome)

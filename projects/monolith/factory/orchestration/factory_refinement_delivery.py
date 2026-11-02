@@ -29,7 +29,15 @@ def _inherited(row):
     # This operation carries the refinement's staging restriction only. Other
     # hold types, delivery grants and unknown direction semantics need their owner.
     if (
-        set(direction) != {"landing_hold", "conductor_gates"}
+        not {"landing_hold", "conductor_gates"} <= set(direction)
+        or set(direction)
+        - {
+            "landing_hold",
+            "conductor_gates",
+            "landing_hold_provenance",
+            "landing_hold_refusals",
+        }
+        or not controls.landing_held(row)
         or not isinstance(hold, dict)
         or hold.get("actor") != "factory:conductor"
         or hold.get("cause") != f"refine-gate:{row.task_id}"
