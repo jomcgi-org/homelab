@@ -22,7 +22,9 @@ class _Adapter:
 
 
 @pytest.fixture
-def manager(tmp_path):
+def manager(tmp_path, monkeypatch):
+    # CA transport has separate coverage; hydration tests must not contact vsock.
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
     instance = object.__new__(shim.ProcessManager)
     instance.workspace = str(tmp_path / "workspace")
     instance.claude = _Adapter(instance.workspace)
@@ -686,3 +688,71 @@ def test_github_optin_is_well_formed_even_without_gh_token(monkeypatch):
     monkeypatch.delenv("GH_TOKEN", raising=False)
     encoded = shim._github_basic_optin()
     assert base64.b64decode(encoded).decode() == "x-access-token:"
+
+
+@pytest.mark.parametrize("failure", [None, "fetch", "mismatch"])
+def test_commit_hydration_verifies_exact_head_before_model(
+    manager, monkeypatch, failure
+):
+    sha = "a" * 40
+    checkout = os.path.join(manager.workspace, "src")
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[1] == "clone":
+            assert "--no-checkout" in command and "--branch" not in command
+            assert "--single-branch" in command and "--filter=blob:none" in command
+            _materialize_checkout(checkout)
+        if "fetch" in command:
+            assert command[-3:] == ["--no-tags", "origin", sha]
+            if failure == "fetch":
+                raise subprocess.CalledProcessError(128, command)
+        if "checkout" in command:
+            assert command[-2:] == ["--detach", sha]
+        result = _GitProcess()
+        if "rev-parse" in command:
+            if not os.path.isdir(checkout):
+                raise subprocess.CalledProcessError(128, command)
+            result.stdout = (
+                ("b" * 40 if failure == "mismatch" else sha) + "\n"
+            ).encode()
+        return result
+
+    monkeypatch.setattr(shim.subprocess, "run", run)
+    result = manager.turn("inspect", repo="owner/repo", branch="commit:" + sha)
+    assert any("fetch" in cmd for cmd in commands)
+    if failure:
+        assert result["terminal_reason"] == "workspace_preflight_failed"
+        assert manager.claude.calls == []
+    else:
+        assert manager.claude.calls
+        assert result["result"] == "ok"
+
+
+def test_restored_commit_checkout_mismatch_does_not_run_or_replace_source(
+    manager, monkeypatch
+):
+    checkout = os.path.join(manager.workspace, "src")
+    _materialize_checkout(checkout)
+    manager._hydration_status = "ok"
+    manager._checkout_dir = checkout
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert (
+            "clone" not in command
+            and "fetch" not in command
+            and "checkout" not in command
+        )
+        result = _GitProcess()
+        result.stdout = ("b" * 40 + "\n").encode()
+        return result
+
+    monkeypatch.setattr(shim.subprocess, "run", run)
+    result = manager.turn("inspect", repo="owner/repo", branch="commit:" + "a" * 40)
+    assert result["terminal_reason"] == "workspace_preflight_failed"
+    assert result["workspace_preflight"]["observed_sha"] == "b" * 40
+    assert manager.claude.calls == []
+    assert os.path.isdir(checkout)

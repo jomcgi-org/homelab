@@ -317,11 +317,18 @@ def _role_run(db, start, node_key, run_id):
         or pin.get("node_key") != node_key
         or pin.get("attempt") != 1
         or pin.get("read_only") is not True
-        or pin.get("artifact_schema") != refill.schema(node_key)
+        or pin.get("artifact_schema") != refill.role_schema(start, node_key, session=db)
         or pin.get("workflow_id") != run.dispatch_key
         or resolve_node_session_id(pin, session=db) != run.session_id
     ):
         raise ValueError("refill role pin mismatch")
+    if "inspection_contract" in start:
+        source = refill.inspection_source(start, session=db)
+        if (
+            pin.get("branch") != "commit:" + source["sha"]
+            or pin.get("hydration_branch") != "commit:" + source["sha"]
+        ):
+            raise ValueError("refill role source mismatch")
     grant = db.exec(
         select(FactoryStart).where(
             FactoryStart.task_id == owner.task_id,
@@ -344,7 +351,11 @@ def collection(run_id, value, *, collector_run_id=None):
     """Validate the bounded artifact before storing any publication authority."""
     if (
         not isinstance(value, dict)
-        or set(value) != {"summary", "findings"}
+        or set(value)
+        not in (
+            {"summary", "findings"},
+            {"summary", "findings", "status", "source_sha"},
+        )
         or not isinstance(value["summary"], str)
         or not 1 <= len(value["summary"]) <= 60000
         or not isinstance(value["findings"], list)
@@ -383,7 +394,11 @@ def collection(run_id, value, *, collector_run_id=None):
         if reviewed_contract:
             from jsonschema import Draft202012Validator
 
-            if list(Draft202012Validator(refill.COLLECT_SCHEMA).iter_errors(value)):
+            if list(
+                Draft202012Validator(
+                    refill.role_schema(detail, refill.NODE, session=db)
+                ).iter_errors(value)
+            ):
                 raise ValueError("invalid bounded refill collection")
             _run, artifact = _role_run(db, detail, refill.NODE, collector_run_id)
             if artifact != value:
@@ -424,16 +439,27 @@ def review(run_id, reviewer_run_id):
         if (
             value != collected["collection"]
             or collector.session_id == reviewer.session_id
-            or list(Draft202012Validator(refill.REVIEW_SCHEMA).iter_errors(verdict))
+            or list(
+                Draft202012Validator(
+                    refill.role_schema(detail, refill.REVIEW_NODE, session=db)
+                ).iter_errors(verdict)
+            )
             or verdict["collection_digest"] != refill.digest(value)
             or "\u2014" in json.dumps(verdict, ensure_ascii=False)
             or "<!-- factory-" in json.dumps(verdict)
         ):
             raise ValueError("invalid independent refill review")
+        inspection = "inspection_contract" in detail
+        if inspection and value["status"] != "completed":
+            raise ValueError("blocked refill collection cannot authorize review")
+        blocked = inspection and verdict["status"] == "blocked"
         decisions = {item["key"]: item for item in verdict["decisions"]}
         if (
             len(decisions) != len(verdict["decisions"])
-            or set(decisions) != {item["key"] for item in value["findings"]}
+            or (
+                not blocked
+                and set(decisions) != {item["key"] for item in value["findings"]}
+            )
             or any(
                 not item[field].strip()
                 for item in verdict["decisions"]
@@ -443,6 +469,8 @@ def review(run_id, reviewer_run_id):
             raise ValueError("refill review must decide every finding")
         accepted = []
         for finding in value["findings"]:
+            if blocked:
+                break
             decision = decisions[finding["key"]]
             if decision["approved"]:
                 accepted.append(
@@ -463,6 +491,8 @@ def review(run_id, reviewer_run_id):
             + verdict["summary"],
             "findings": accepted,
         }
+        if inspection:
+            approved.update(status=verdict["status"], source_sha=verdict["source_sha"])
         if len(approved["summary"]) > 60000:
             raise ValueError("refill reviewed summary exceeds bound")
         result = {
@@ -538,6 +568,13 @@ def advance(start, *, allow_new=True):
     if row is None:
         return None
     value = refill._detail(row)["collection"]
+    if "inspection_contract" in start and value["status"] != "completed":
+        return {
+            "success": False,
+            "inconclusive": False,
+            "new_issues": 0,
+            "summary": value["summary"][:4000],
+        }
     results = []
     for finding in value["findings"]:
         item = output(

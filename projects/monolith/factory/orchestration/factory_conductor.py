@@ -7844,6 +7844,11 @@ def _dispatch_ready(
             ),
         }
 
+        if refilling:
+            source = artifact_schema.get("x-factory-refill-inspection")
+            if source is not None:
+                context["branch"] = "commit:" + source["sha"]
+                context["hydration_branch"] = "commit:" + source["sha"]
         if scouting:
             context["read_only"] = True
             reviewer = "sol"  # Exact subscription model; no quota/provider fallback.

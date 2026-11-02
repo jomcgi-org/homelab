@@ -6655,6 +6655,9 @@ class ProcessManager:
             self._record_turn_phase("hydration", hydration_start, status)
 
     def _hydrate_workspace_inner(self, repo, branch, hydration_start):
+        pinned_commit = (
+            branch[7:] if re.fullmatch(r"commit:[0-9a-f]{40}", branch) else None
+        )
         if self._hydration_status in ("ok", "skipped_existing"):
             if _checkout_is_usable(self._checkout_dir):
                 self._hydration_status = "skipped_existing"
@@ -6741,6 +6744,10 @@ class ProcessManager:
             "https://github.com/%s.git" % repo,
             checkout_dir,
         ]
+        if pinned_commit:
+            # Clone with the existing credential/proxy configuration, then
+            # fetch the exact commit. Never pass a commit to clone --branch.
+            clone_command[3:5] = ["--no-checkout"]
         failure = None
         try:
             clone_start = _turn_timing_now()
@@ -6764,6 +6771,18 @@ class ProcessManager:
                     "git command failed with exit code %s%s"
                     % (result.returncode, ": " + stderr if stderr else "")
                 )
+            if pinned_commit:
+                for args in (
+                    ["fetch", "--no-tags", "origin", pinned_commit],
+                    ["checkout", "--detach", pinned_commit],
+                ):
+                    subprocess.run(
+                        ["git", "-C", checkout_dir, *args],
+                        capture_output=True,
+                        check=True,
+                        timeout=GIT_CLONE_TIMEOUT_SECONDS,
+                        **_cli_privilege_kwargs(),
+                    )
             validation = subprocess.run(
                 ["git", "-C", checkout_dir, "rev-parse", "--verify", "HEAD"],
                 capture_output=True,
@@ -6772,6 +6791,8 @@ class ProcessManager:
             )
             if validation.returncode != 0:
                 raise RuntimeError("cloned directory validation failed: HEAD not found")
+            if pinned_commit and validation.stdout.decode().strip() != pinned_commit:
+                raise RuntimeError("cloned directory does not match pinned commit")
         except Exception as exc:
             failure = exc
             # A partial clone from a failed attempt must not survive. A retry
@@ -6998,6 +7019,37 @@ class ProcessManager:
                     "", ["cloning %s@%s" % (repo, branch)]
                 )
             self._hydrate_workspace(repo, branch)
+            if re.fullmatch(r"commit:[0-9a-f]{40}", branch):
+                # Restored volumes and repeated turns must prove the same HEAD
+                # too. Refuse without changing an existing mismatched checkout.
+                checkout = os.path.join(self.workspace, "src")
+                try:
+                    observed = (
+                        subprocess.run(
+                            ["git", "-C", checkout, "rev-parse", "--verify", "HEAD"],
+                            capture_output=True,
+                            check=True,
+                            timeout=5,
+                            **_cli_privilege_kwargs(),
+                        )
+                        .stdout.decode()
+                        .strip()
+                    )
+                except (OSError, subprocess.SubprocessError, UnicodeError):
+                    observed = None
+                if observed != branch[7:]:
+                    return {
+                        "is_error": True,
+                        "result": "Pinned inspection checkout unavailable before model execution",
+                        "terminal_reason": "workspace_preflight_failed",
+                        "workspace_preflight": {
+                            "status": "blocked",
+                            "expected_sha": branch[7:],
+                            "observed_sha": observed,
+                        },
+                        "dispatch_id": dispatch_id,
+                        "turn_seq": turn_seq,
+                    }
         adapter = self._adapter(model)
         if runtime_meter is not None and adapter is not self.codex:
             raise RuntimeError("runtime metering requires the supported Codex adapter")
