@@ -886,6 +886,7 @@ def test_learning_changed_inputs_allow_new_observation(
     "change",
     [
         "unknown",
+        "error",
         "changed_result",
         "missing",
         "wrong_holder",
@@ -904,6 +905,10 @@ def test_learning_dedup_requires_exact_completed_evidence(
             text(
                 "UPDATE agent_turns SET terminal_reason='failed', stop_reason='invocation_outcome_unknown' WHERE session_id=1"
             )
+        )
+    elif change == "error":
+        db.execute(
+            text("UPDATE agent_turns SET terminal_reason='error' WHERE session_id=1")
         )
     elif change == "changed_result":
         db.execute(text("UPDATE agent_turns SET result_text='{}' WHERE session_id=1"))
@@ -1043,11 +1048,18 @@ def test_learning_pins_evidence_and_never_rearms_duplicate(learning_db):
     assert payload["learning_evidence"]["sources"][0]["result_sha256"] == learning._sha(
         "original evidence"
     )
+    # A retained evaluator from before typed observations has the same identity.
+    legacy_sources = [
+        {k: v for k, v in source.items() if k != "observation"}
+        for source in payload["learning_evidence"]["sources"]
+    ]
+    assert job.name == learning.PREFIX + learning._sha({"sources": legacy_sources})
+    payload["learning_evidence"]["sources"] = legacy_sources
     db.execute(
         text(
-            "UPDATE routine_jobs SET next_run_at=NULL,last_status='ok' WHERE name=:name"
+            "UPDATE routine_jobs SET next_run_at=NULL,last_status='ok',payload=:payload WHERE name=:name"
         ),
-        {"name": job.name},
+        {"name": job.name, "payload": json.dumps(payload)},
     )
     _learn(db, _finding())
     assert len(_learning_jobs(db)) == 1
@@ -1086,7 +1098,21 @@ def test_learning_pending_blocks_new_fingerprint(learning_db):
 
 
 @pytest.mark.parametrize(
-    "change", ["missing", "self", "stale", "foreign", "incomplete", "oversized"]
+    "change",
+    [
+        "missing",
+        "self",
+        "stale",
+        "future",
+        "foreign",
+        "incomplete",
+        "oversized",
+        "empty_result",
+        "invalid_stop",
+        "completed_unknown",
+        "duplicate",
+        "boolean_id",
+    ],
 )
 def test_learning_rejects_bad_evidence(learning_db, change):
     db = learning_db
@@ -1099,17 +1125,229 @@ def test_learning_rejects_bad_evidence(learning_db, change):
         db.execute(
             text("UPDATE agent_turns SET created_at='2000-01-01' WHERE session_id=2")
         )
+    if change == "future":
+        db.execute(
+            text("UPDATE agent_turns SET created_at='2999-01-01' WHERE session_id=2")
+        )
     if change == "foreign":
         db.execute(text("UPDATE agent_sessions SET repo='other/repo' WHERE id=2"))
     if change == "incomplete":
         db.execute(
-            text("UPDATE agent_turns SET terminal_reason='error' WHERE session_id=2")
+            text("UPDATE agent_turns SET terminal_reason='running' WHERE session_id=2")
         )
+    if change == "empty_result":
+        db.execute(text("UPDATE agent_turns SET result_text=' ' WHERE session_id=2"))
+    if change == "invalid_stop":
+        db.execute(
+            text(
+                "UPDATE agent_turns SET terminal_reason='error',stop_reason='' WHERE session_id=2"
+            )
+        )
+    if change == "completed_unknown":
+        db.execute(
+            text(
+                "UPDATE agent_turns SET stop_reason='invocation_outcome_unknown' WHERE session_id=2"
+            )
+        )
+    if change == "duplicate":
+        output["findings"][0]["sources"] *= 2
+    if change == "boolean_id":
+        output["findings"][0]["sources"][0]["session_id"] = True
     if change == "oversized":
         output["findings"][0]["hypothesis"] = "x" * 8001
     with pytest.raises(ValueError):
         _learn(db, output)
     assert _learning_jobs(db) == []
+
+
+@pytest.mark.parametrize("stop", [None, "invocation_outcome_unknown"])
+def test_learning_error_observation_preserves_unknown_source_and_deduplicates(
+    learning_db, stop
+):
+    db = learning_db
+    source_result = (
+        "EmberVM invoke returned HTTP 502; invocation outcome unknown. " * 50
+    )
+    db.execute(text("UPDATE agent_sessions SET status='warn' WHERE id=2"))
+    db.execute(
+        text(
+            "UPDATE agent_turns SET terminal_reason='error',stop_reason=:stop,result_text=:result WHERE session_id=2"
+        ),
+        {"stop": stop, "result": source_result},
+    )
+    before = db.execute(text("SELECT * FROM agent_turns WHERE session_id=2")).one()
+    _learn(db, _finding())
+    job = _learning_jobs(db)[0]
+    payload = json.loads(job.payload)
+    source = payload["learning_evidence"]["sources"][0]
+    assert source["observation"] == {
+        "version": 1,
+        "origin": "stored_agent_turn",
+        "repo": learning.REPO,
+        "model": "astra",
+        "terminal_reason": "error",
+        "stop_reason": stop,
+    }
+    assert (source["session_id"], source["turn_seq"]) == (2, 1)
+    assert source["excerpt"] == source_result[:2000] and source["truncated"]
+    assert source["result_sha256"] == learning._sha(source_result)
+    assert "observations authorize no retry or settlement" in learning.prompt(payload)
+    assert "does not establish a root cause" in learning.prompt(payload)
+    # Unknown evaluation and different model wording never rearm its one-shot.
+    payload["learning_evaluation"] = {"verdict": "unknown"}
+    db.execute(
+        text(
+            "UPDATE routine_jobs SET next_run_at=NULL,last_status='ok',payload=:payload WHERE name=:name"
+        ),
+        {"name": job.name, "payload": json.dumps(payload)},
+    )
+    finding = _finding()
+    finding["findings"][0].update(hypothesis="Reworded claim", code_sha="b" * 40)
+    _learn(db, finding)
+    assert len(_learning_jobs(db)) == 1
+    assert (
+        db.execute(
+            text("SELECT next_run_at FROM routine_jobs WHERE name=:name"),
+            {"name": job.name},
+        ).scalar()
+        is None
+    )
+    assert (
+        db.execute(text("SELECT * FROM agent_turns WHERE session_id=2")).one() == before
+    )
+    assert (
+        db.execute(text("SELECT status FROM agent_sessions WHERE id=2")).scalar_one()
+        == "warn"
+    )
+    # A changed persisted stop reason is new evidence, still fenced by that evaluator.
+    db.execute(
+        text("UPDATE agent_turns SET stop_reason=:stop WHERE session_id=2"),
+        {"stop": "invocation_outcome_unknown" if stop is None else "response_lost"},
+    )
+    _learn(db, finding)
+    parent = json.loads(
+        db.execute(
+            text("SELECT payload FROM routine_jobs WHERE name='factory-retro-daily'")
+        ).scalar_one()
+    )["learning_last_evidence"]
+    assert parent["disposition"] == "evaluation_pending"
+    assert parent["evaluation_job"] != job.name
+    assert len(_learning_jobs(db)) == 1
+
+
+@pytest.mark.parametrize("stage", ["evidence", "evaluate"])
+def test_learning_owned_error_output_never_completes(learning_db, stage):
+    db = learning_db
+    name = "factory-retro-daily"
+    output = {"findings": []}
+    if stage == "evaluate":
+        _learn(db, _finding())
+        name = _learning_jobs(db)[0].name
+        db.execute(
+            text(
+                "UPDATE agent_sessions SET model='astra',local_session_id=:local WHERE id=1"
+            ),
+            {"local": "w:qwen-drain:" + name},
+        )
+        output = {
+            "verdict": "unknown",
+            "issue_number": 6781,
+            "pr_number": None,
+            "rationale": "Uncertain",
+        }
+    before = db.execute(
+        text("SELECT payload FROM routine_jobs WHERE name=:name"), {"name": name}
+    ).scalar_one()
+    db.execute(
+        text(
+            "UPDATE agent_turns SET terminal_reason='error',result_text=:output WHERE session_id=1"
+        ),
+        {"output": json.dumps(output)},
+    )
+    with pytest.raises(ValueError, match="incomplete"):
+        learning.complete(db, name, "luna-drainer:w:0")
+    assert (
+        db.execute(
+            text("SELECT payload FROM routine_jobs WHERE name=:name"), {"name": name}
+        ).scalar_one()
+        == before
+    )
+
+
+@pytest.mark.parametrize("failure", [None, "invalid_source", "after_handoff"])
+def test_learning_error_handoff_and_job_completion_are_atomic(
+    learning_db, monkeypatch, failure
+):
+    from agent import routine_jobs
+
+    db = learning_db
+    for column in ("last_run_at", "last_summary", "locked_at"):
+        db.execute(text(f"ALTER TABLE routine_jobs ADD COLUMN {column} TEXT"))
+    holder = "luna-drainer:w:0"
+    finding = _finding()
+    if failure == "invalid_source":
+        finding["findings"][0]["sources"].append({"session_id": 99, "turn_seq": 1})
+    db.execute(
+        text("UPDATE agent_turns SET result_text=:output WHERE session_id=1"),
+        {"output": json.dumps(finding)},
+    )
+    db.execute(
+        text(
+            "UPDATE agent_turns SET terminal_reason='error',stop_reason='invocation_outcome_unknown' WHERE session_id=2"
+        )
+    )
+    db.execute(
+        text(
+            "UPDATE routine_jobs SET routine_kind='qwen-drain',locked_by=:holder,last_status='pending' WHERE name='factory-retro-daily'"
+        ),
+        {"holder": holder},
+    )
+    db.commit()
+    monkeypatch.setattr(routine_jobs, "get_engine", db.get_bind)
+    before = db.execute(
+        text("SELECT * FROM routine_jobs WHERE name='factory-retro-daily'")
+    ).one()
+    db.rollback()
+
+    def finalize(transaction):
+        learning.complete(transaction, "factory-retro-daily", holder)
+        if failure == "after_handoff":
+            raise ValueError("simulated failure after inserting evaluator")
+
+    def finish():
+        return routine_jobs.complete_job(
+            "factory-retro-daily",
+            "ok",
+            expected_holder=holder,
+            transaction_finalize=finalize,
+        )
+
+    if failure:
+        with pytest.raises(ValueError):
+            finish()
+        assert (
+            db.execute(
+                text("SELECT * FROM routine_jobs WHERE name='factory-retro-daily'")
+            ).one()
+            == before
+        )
+        assert not _learning_jobs(db)
+    else:
+        assert finish()
+        saved = (
+            db.execute(
+                text("SELECT * FROM routine_jobs WHERE name='factory-retro-daily'")
+            )
+            .mappings()
+            .one()
+        )
+        assert saved["last_status"] == "ok" and saved["locked_by"] is None
+        evidence = json.loads(saved["payload"])["learning_last_evidence"]
+        assert evidence["disposition"] == "queued"
+        assert evidence["evaluation_job"] == _learning_jobs(db)[0].name
+    assert db.execute(
+        text("SELECT terminal_reason,stop_reason FROM agent_turns WHERE session_id=2")
+    ).one() == ("error", "invocation_outcome_unknown")
 
 
 def test_learning_disabled_and_wrong_owner_fail_closed(learning_db, monkeypatch):

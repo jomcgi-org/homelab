@@ -77,6 +77,10 @@ def prompt(payload):
     return common + (
         "Corroborate the candidate against current source, its server-supplied original turn excerpts and "
         "existing issues, PRs and active ownership. Reject stale or unsupported claims. Truncated excerpts cannot establish omitted facts; return unknown when needed evidence is omitted. "
+        "Source observations retain the stored terminal and stop reasons. An error observation "
+        "does not establish whether the guest invocation ran or what it returned. Preserve unknown "
+        "outcomes; observations authorize no retry or settlement. HTTP 502/503 alone does not "
+        "establish a root cause. "
         "A cited SHA is a claim to verify, not proof. Deduplicate against existing work. "
         'Return only JSON {"verdict":"corroborated|duplicate|rejected|unknown",'
         '"issue_number":6781,"pr_number":null,"rationale":"evidence and next bounded action"}. '
@@ -115,7 +119,7 @@ def _output(value):
     return result
 
 
-def _turn(db, sid, seq):
+def _read_turn(db, sid, seq):
     sessions = _table(db, "agent_sessions", "agent_sessions")
     turns = _table(db, "agent_sessions", "agent_turns")
     rows = _rows(
@@ -123,12 +127,7 @@ def _turn(db, sid, seq):
         f"SELECT s.repo,s.model,t.result_text,t.terminal_reason,t.stop_reason,t.created_at FROM {sessions} s JOIN {turns} t ON t.session_id=s.id WHERE s.id=:sid AND t.seq=:seq",
         {"sid": sid, "seq": seq},
     )
-    if (
-        len(rows) != 1
-        or rows[0]["repo"] != REPO
-        or rows[0]["terminal_reason"] != "completed"
-        or rows[0]["stop_reason"] is not None
-    ):
+    if len(rows) != 1 or rows[0]["repo"] != REPO:
         raise ValueError("Learning source is missing, incomplete or outside repository")
     if (
         not isinstance(rows[0]["result_text"], str)
@@ -136,6 +135,46 @@ def _turn(db, sid, seq):
     ):
         raise ValueError("Learning source has no readable result")
     return rows[0]
+
+
+def _turn(db, sid, seq):
+    """Owned model outputs and empty-result dedup require completed execution."""
+    row = _read_turn(db, sid, seq)
+    if row["terminal_reason"] != "completed" or row["stop_reason"] is not None:
+        raise ValueError("Learning source is missing, incomplete or outside repository")
+    return row
+
+
+def _source_observation(db, sid, seq):
+    """Read persisted evidence without reconciling its invocation outcome."""
+    row = _read_turn(db, sid, seq)
+    reason = row["terminal_reason"]
+    stop = row["stop_reason"]
+    if (
+        reason not in {"completed", "error"}
+        or (reason == "completed" and stop is not None)
+        or (
+            stop is not None
+            and (not isinstance(stop, str) or not 1 <= len(stop) <= 1000)
+        )
+    ):
+        raise ValueError("Invalid learning source observation")
+    return row
+
+
+def _source_fingerprint(evidence):
+    # Completed sources keep their pre-observation identity, including retained
+    # one-shot evaluator jobs. Error sources include their exact failure state.
+    return _sha(
+        {
+            "sources": [
+                {k: v for k, v in source.items() if k != "observation"}
+                if source["observation"]["terminal_reason"] == "completed"
+                else source
+                for source in evidence
+            ]
+        }
+    )
 
 
 def complete(db, name, holder):
@@ -240,7 +279,7 @@ def complete(db, name, holder):
                 if identity in seen:
                     raise ValueError("Duplicate source reference")
                 seen.add(identity)
-                source = _turn(db, ref["session_id"], ref["turn_seq"])
+                source = _source_observation(db, ref["session_id"], ref["turn_seq"])
                 observed = source["created_at"]
                 if isinstance(observed, str):
                     observed = datetime.fromisoformat(observed)
@@ -261,11 +300,19 @@ def complete(db, name, holder):
                         "observed_at": observed.isoformat(),
                         "excerpt": (source["result_text"] or "")[:2000],
                         "truncated": len(source["result_text"] or "") > 2000,
+                        "observation": {
+                            "version": 1,
+                            "origin": "stored_agent_turn",
+                            "repo": source["repo"],
+                            "model": source["model"],
+                            "terminal_reason": source["terminal_reason"],
+                            "stop_reason": source["stop_reason"],
+                        },
                     }
                 )
             evidence = sorted(evidence, key=lambda r: (r["session_id"], r["turn_seq"]))
             # Model wording and claimed code revisions are not new evidence.
-            fingerprint = _sha({"sources": evidence})
+            fingerprint = _source_fingerprint(evidence)
             target = PREFIX + fingerprint
             packet = {
                 "finding": finding,
