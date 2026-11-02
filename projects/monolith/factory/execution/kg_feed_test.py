@@ -466,6 +466,7 @@ def test_enqueue_failure_sweep_then_next_feed_advances_watermark(
                     interval_secs INTEGER,
                     next_run_at TIMESTAMP,
                     last_status TEXT,
+                    locked_by TEXT,
                     payload TEXT,
                     created_by TEXT
                 )
