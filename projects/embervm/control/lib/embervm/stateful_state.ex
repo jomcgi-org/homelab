@@ -200,9 +200,9 @@ defmodule Embervm.StatefulState do
     # Banked-TTL GC / broken-pair eviction: only a banked instance holds an
     # evictable snapshot bundle. reason is pair_broken or ttl.
     {:banked, :evict} => :evicted,
-    # Destroy: from every non-terminal state. The direct edge is today's behaviour;
-    # the begin_destroy -> destroying -> destroy path is the node-confirmed shape
-    # (ADR embervm/014 decision 5), gated by EMBERVM_NODE_CONFIRMED_DESTROY.
+    # Destroy: from every non-terminal state. The begin_destroy -> destroying ->
+    # destroy path is the node-confirmed shape (ADR embervm/014 decision 5) the
+    # manager takes; the direct edge serves the sweeper's destroy.
     {:starting, :destroy} => :destroyed,
     {:serving, :destroy} => :destroyed,
     {:banking, :destroy} => :destroyed,

@@ -219,7 +219,6 @@ defmodule Embervm.GroupSweeper do
       # dials the real NodeService stub.
       evict_artifact_fun: Keyword.get(opts, :evict_artifact_fun, &default_evict_artifact/2),
       # ADR embervm/014 decision 5: node-confirmed destroy config plumbing.
-      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
       destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
       orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
       # status.group {state, members{live,degraded}, setId, subnetCidr} + groupSummary
@@ -1015,52 +1014,13 @@ defmodule Embervm.GroupSweeper do
 
   # -- destroy / evict RPCs + durable ops --------------------------------------
 
-  # Destroy a LIVE group: unpublish the entry endpoint (if running), StopGroupMember
-  # DESTROY every live member, DeleteGroupNetwork, then the durable
-  # group_destroyed{reason}. The publisher re-derive is batched by the caller for the
-  # forced-roll path; a lifetime destroy re-derives here (a single instance) so the
-  # activator swap lands.
+  # Destroy a LIVE group (ADR embervm/014 decision 5): persist the destroying
+  # intent before contacting the node, StopGroupMember DESTROY every live member,
+  # DeleteGroupNetwork, then record group_destroyed{reason} only after every
+  # reachable member confirms its teardown. The terminal group_destroyed clears the
+  # entry endpoint, and the re-publish swaps in the activator, so a racing
+  # connection parks rather than hitting a dead socket.
   defp destroy_live_group(state, instance, reason) do
-    if state.node_confirmed_destroy do
-      destroy_live_group_node_confirmed(state, instance, reason)
-    else
-      destroy_live_group_legacy(state, instance, reason)
-    end
-  end
-
-  # Gate-off path: preserve the existing member teardown, network delete, then
-  # record-destroyed ordering exactly.
-  defp destroy_live_group_legacy(state, instance, reason) do
-    # The terminal group_destroyed clears the entry endpoint (the store's
-    # post_transition_endpoint nils it on a terminal), and the re-publish below swaps
-    # in the activator, so a racing connection parks rather than hitting a dead socket.
-    _ = destroy_all_members(state, instance)
-    _ = delete_network(state, instance)
-
-    _ =
-      GroupStore.transition(
-        state.store,
-        instance.instance_id,
-        :destroy,
-        :group_destroyed,
-        %{reason: reason},
-        %{}
-      )
-
-    Embervm.EndpointPublisher.publish(state.publisher)
-
-    Logger.info("embervm group destroyed",
-      workload: instance.workload,
-      instance_id: instance.instance_id,
-      reason: reason
-    )
-
-    state
-  end
-
-  # Gate-on path: persist the destroying intent before contacting the node, then
-  # record destroyed only after every reachable member confirms its teardown.
-  defp destroy_live_group_node_confirmed(state, instance, reason) do
     intent =
       GroupStore.transition(
         state.store,
@@ -1140,14 +1100,6 @@ defmodule Embervm.GroupSweeper do
     state
   end
 
-  defp destroy_all_members(state, instance) do
-    GroupStore.members(state.store, instance.instance_id)
-    |> Enum.filter(fn m -> is_binary(m.vm_id) and m.vm_id != "" end)
-    |> Enum.each(fn m -> _ = stop_group_member_destroy(state, instance, m) end)
-
-    :ok
-  end
-
   defp destroy_all_members_node_confirmed(state, instance) do
     confirmations =
       state.store
@@ -1164,31 +1116,8 @@ defmodule Embervm.GroupSweeper do
   end
 
   # StopGroupMember DESTROY dials the INSTANCE's node (a composite group is anchored to
-  # one node; members carry no per-member node_id).
-  defp stop_group_member_destroy(state, instance, member) do
-    req = %StopGroupMemberRequest{
-      trace: %Trace{workload: nil},
-      vm_id: member.vm_id,
-      mode: :STOP_GROUP_MEMBER_MODE_DESTROY,
-      set_id: "",
-      member_name: member.member_name
-    }
-
-    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_for_group(state, instance)) do
-      try do
-        state.stop_group_member_fun.(channel, req)
-      rescue
-        _ -> :error
-      catch
-        _, _ -> :error
-      end
-    end
-
-    :ok
-  end
-
-  # The node-confirmed path issues the same real StopGroupMember(DESTROY) RPC as
-  # the legacy path and accepts only teardown_confirmed=true from the daemon.
+  # one node; members carry no per-member node_id) and accepts only
+  # teardown_confirmed=true from the daemon.
   defp stop_group_member_destroy_confirmed(state, instance, member) do
     req = %StopGroupMemberRequest{
       trace: %Trace{workload: nil},

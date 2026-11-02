@@ -346,13 +346,9 @@ defmodule Embervm.StatefulSweeper do
       bank_backoff_cap_ms: Keyword.get(opts, :bank_backoff_cap_ms, @bank_backoff_cap_ms),
       # Memory-pressure banking shares this process's tick. NodeCapacity remains
       # the sole sensor and the existing session/stateful owners remain the sole
-      # bank executors. Tests inject every external lookup and action below.
-      pressure_banking_enabled:
-        Keyword.get(
-          opts,
-          :pressure_banking_enabled,
-          Application.get_env(:embervm, :stateful_pressure_banking_enabled, false)
-        ),
+      # bank executors. Tests inject every external lookup and action below. An
+      # invalid tuning configuration turns it off (validate_pressure_config).
+      pressure_banking_enabled: true,
       high_water_fraction:
         Keyword.get(
           opts,

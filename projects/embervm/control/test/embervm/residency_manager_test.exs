@@ -306,7 +306,7 @@ defmodule Embervm.ResidencyManagerTest do
 
   test "qualified cross-node recovery preserves verified workspace fingerprint" do
     parent = self()
-    ctx = stack(cross_node_rejoin: true, restore_artifact_fun: fn _, req ->
+    ctx = stack(restore_artifact_fun: fn _, req ->
       send(parent, {:workspace_request, req})
       {:ok, %RestoreArtifactResponse{content_fingerprint: req.expected_fingerprint}}
     end)

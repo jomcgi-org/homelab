@@ -482,7 +482,6 @@ defmodule Embervm.StatefulManager do
       wake_window_ms: Keyword.get(opts, :wake_window_ms, @default_wake_window_ms),
       park_cap: Keyword.get(opts, :park_cap, @default_park_cap),
       # ADR embervm/014 decision 5: node-confirmed destroy config plumbing.
-      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
       destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
       destroying_escape_ms: Keyword.get(opts, :destroying_escape_ms, 600_000),
       orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
@@ -1113,8 +1112,7 @@ defmodule Embervm.StatefulManager do
   # placement so later wakes proceed, but it stays pending and keeps retrying
   # DESTROY against that exact dial_id every reconcile. Absence is not proof of
   # death (a drain, a partition or a same-pod_uid re-registration brings the
-  # owner back with the stale VM still holding its attach lock), and with
-  # node_confirmed_destroy off nothing else would ever destroy it. A resolvable
+  # owner back with the stale VM still holding its attach lock). A resolvable
   # owner resets the absence clock.
   defp track_stale_cleanup_owner(state, facts, cleanup, now) do
     absent? =
@@ -3011,35 +3009,9 @@ defmodule Embervm.StatefulManager do
     end
   end
 
+  # Persist the destroying intent before contacting the node, then record
+  # destroyed only after the node confirms the teardown (ADR embervm/014).
   defp force_destroy_live(state, instance) do
-    if state.node_confirmed_destroy do
-      force_destroy_live_node_confirmed(state, instance)
-    else
-      force_destroy_live_legacy(state, instance)
-    end
-  end
-
-  # Gate-off path: preserve today's best-effort teardown then record-destroyed
-  # ordering exactly.
-  defp force_destroy_live_legacy(state, instance) do
-    _ = stop_stateful_destroy(state, instance)
-
-    _ =
-      StatefulStore.transition(
-        state.store,
-        instance.instance_id,
-        :destroy,
-        :stateful_destroyed,
-        %{reason: "forced_destroy"},
-        %{}
-      )
-
-    {state, true}
-  end
-
-  # Gate-on path: persist the destroying intent before contacting the node, then
-  # record destroyed only after the node confirms the teardown.
-  defp force_destroy_live_node_confirmed(state, instance) do
     intent =
       StatefulStore.transition(
         state.store,
@@ -3390,13 +3362,9 @@ defmodule Embervm.StatefulManager do
     state = withdraw_unreported_resident_health(state)
 
     state =
-      if state.node_confirmed_destroy do
-        state
-        |> redrive_destroying(live_vms)
-        |> destroy_orphan_stateful_vms(facts, live_vms)
-      else
-        state
-      end
+      state
+      |> redrive_destroying(live_vms)
+      |> destroy_orphan_stateful_vms(facts, live_vms)
 
     EndpointPublisher.publish(state.publisher)
 

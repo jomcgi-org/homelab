@@ -215,10 +215,7 @@ defmodule Embervm.Application do
       # AFTER NodeRegistry (whose live address set it reads to form the keep-set) and
       # AFTER NodeChannel (which reads the same node config). Duplicates on live
       # addresses are kept (expected when multiple components dial independently); the
-      # predicate is "target not in live set", never "more than one per address". Gate
-      # OFF by default (EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED): the sweep runs and logs
-      # but does not terminate, so merging is inert and arming is a separate values
-      # change after observing the logs.
+      # predicate is "target not in live set", never "more than one per address".
       {Embervm.GrpcConnectionSweeper, grpc_connection_sweeper_opts()},
 
       # Metering, audit, and quotas (Task 12). Owns the public per-principal daily
@@ -1093,17 +1090,13 @@ defmodule Embervm.Application do
       reconcile_interval_ms: session_reconcile_interval_ms(),
       sweep_interval_ms: session_sweep_interval_ms(),
       disk_low_watermark_bytes: session_disk_low_watermark_bytes(),
-      node_confirmed_destroy: node_confirmed_destroy_enabled(),
-      drain_instance_scoped: drain_instance_scoped_sessions_enabled(),
-      cross_node_rejoin: cross_node_rejoin_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       orphan_grace_ms: orphan_grace_ms(),
       create_concurrency: session_create_concurrency(),
       # #4355 pressure-parked wake retry cadence and bound.
       pressure_retry_interval_ms: session_pressure_retry_interval_ms(),
       pressure_wait_bound_ms: session_pressure_wait_bound_ms(),
-      residency_restore_limit: residency_positive_limit("EMBERVM_RESIDENCY_RESTORE_LIMIT", 2),
-      restart_flush_inflight_invokes: restart_flush_inflight_invokes_enabled()
+      residency_restore_limit: residency_positive_limit("EMBERVM_RESIDENCY_RESTORE_LIMIT", 2)
     ] ++ wake_opts()
   end
 
@@ -1141,43 +1134,6 @@ defmodule Embervm.Application do
       "" -> Embervm.SessionManager.default_pressure_wait_bound_ms()
       raw -> String.to_integer(raw)
     end
-  end
-
-  # EMBERVM_NODE_CONFIRMED_DESTROY (ADR embervm/014 decision 5). UNSET or
-  # "0"/"false"/"" (the default, and what this PR ships) => destruction records
-  # destroyed first and tears the VM down asynchronously (today's behaviour).
-  # "1"/"true" => destruction records a destroying intent, runs the node-confirmed
-  # teardown RPC, and records destroyed ONLY on node confirmation, with fail-closed
-  # reconciliation toward destruction. Wired here so it flips via a deploy values env
-  # change, no code change. Nothing sets it on in this PR.
-  defp node_confirmed_destroy_enabled do
-    case trimmed_env("EMBERVM_NODE_CONFIRMED_DESTROY") do
-      v when v in ["1", "true", "TRUE", "True"] -> true
-      _ -> false
-    end
-  end
-
-  # EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS. UNSET or "0"/"false"/"" (the chart
-  # default) => a brick drain edge interrupts and banks every running session on
-  # the NODE. "1"/"true" => only sessions placed on the draining brick instance
-  # (node + pod_uid) are drained, so an autoscaler idle drain of an empty brick
-  # no longer interrupts live turns on a co-located sibling brick.
-  defp drain_instance_scoped_sessions_enabled do
-    case trimmed_env("EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS") do
-      v when v in ["1", "true", "TRUE", "True"] -> true
-      _ -> false
-    end
-  end
-
-  defp cross_node_rejoin_enabled do
-    case trimmed_env("EMBERVM_CROSS_NODE_REJOIN") do
-      v when v in ["1", "true", "TRUE", "True"] -> true
-      _ -> false
-    end
-  end
-
-  defp restart_flush_inflight_invokes_enabled do
-    System.get_env("EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES") == "true"
   end
 
   # Alarm threshold for an instance stuck in destroying (EMBERVM_DESTROYING_ALARM_MS);
@@ -1274,27 +1230,10 @@ defmodule Embervm.Application do
     ]
   end
 
-  # GrpcConnectionSweeper config: the destructive gate and sweep cadence from env.
-  # Default is gate OFF (the sweep runs but only logs, leaving connections untouched).
+  # GrpcConnectionSweeper config: the sweep cadence from env.
   defp grpc_connection_sweeper_opts do
-    [
-      sweep_enabled: grpc_connection_sweep_enabled(),
-      sweep_interval_ms: int_env_or_nil("EMBERVM_GRPC_CONNECTION_SWEEP_INTERVAL_MS")
-    ]
+    [sweep_interval_ms: int_env_or_nil("EMBERVM_GRPC_CONNECTION_SWEEP_INTERVAL_MS")]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
-  end
-
-  # The destructive gate for the GrpcConnectionSweeper, from
-  # EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED. UNSET or "0"/"false"/"" (the default,
-  # and what the chart defaults to) => the sweep runs but only logs a dry-run plan,
-  # leaving no children terminated. "1"/"true" => the sweep terminates orchestrators
-  # holding dead addresses or wedged in init. Wired here so it flips via a deploy
-  # values env change, no code change.
-  defp grpc_connection_sweep_enabled do
-    case trimmed_env("EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED") do
-      v when v in ["1", "true", "TRUE", "True"] -> true
-      _ -> false
-    end
   end
 
   # The activator endpoint the node Envoy routes to when a serving workload has no
@@ -1347,7 +1286,6 @@ defmodule Embervm.Application do
     [
       op_log_mod: op_log_mod(),
       reconcile_interval_ms: serving_reconcile_interval_ms(),
-      node_confirmed_destroy: node_confirmed_destroy_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       orphan_grace_ms: orphan_grace_ms()
     ] ++ serving_wake_opts()
@@ -1389,18 +1327,6 @@ defmodule Embervm.Application do
     end
   end
 
-  # Public only so a test can pin the empty-value fall-through: an env var that
-  # renders empty must take the caller's default, and which default that is
-  # decides whether a lane lands armed.
-  @doc false
-  def boolean_env(name, default) do
-    case trimmed_env(name) do
-      "" -> default
-      value when value in ["1", "true", "TRUE", "True"] -> true
-      _ -> false
-    end
-  end
-
   defp float_env(name, default) do
     case Float.parse(trimmed_env(name)) do
       {value, ""} -> value
@@ -1417,7 +1343,6 @@ defmodule Embervm.Application do
   defp serving_sweeper_opts do
     [
       op_log_mod: op_log_mod(),
-      node_confirmed_destroy: node_confirmed_destroy_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       orphan_grace_ms: orphan_grace_ms(),
       sweep_interval_ms: serving_sweep_interval_ms(),
@@ -1464,7 +1389,6 @@ defmodule Embervm.Application do
       stats_base: sweeper_stats_base(),
       bank_concurrency: int_env_or_nil("EMBERVM_STATEFUL_BANK_CONCURRENCY"),
       lifetime_drain_max_ms: int_env_or_nil("EMBERVM_STATEFUL_LIFETIME_DRAIN_MAX_MS"),
-      pressure_banking_enabled: boolean_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", false),
       high_water_fraction: float_env("EMBERVM_STATEFUL_PRESSURE_HIGH_WATER_FRACTION", 0.85),
       low_water_fraction: float_env("EMBERVM_STATEFUL_PRESSURE_LOW_WATER_FRACTION", 0.70),
       pressure_idle_floor_ms: int_env_or_nil("EMBERVM_STATEFUL_PRESSURE_IDLE_FLOOR_MS"),
@@ -1490,7 +1414,6 @@ defmodule Embervm.Application do
   defp group_sweeper_opts do
     [
       op_log_mod: op_log_mod(),
-      node_confirmed_destroy: node_confirmed_destroy_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       orphan_grace_ms: orphan_grace_ms(),
       sweep_interval_ms: group_sweep_interval_ms(),
@@ -1517,7 +1440,6 @@ defmodule Embervm.Application do
     [
       op_log_mod: op_log_mod(),
       reconcile_interval_ms: stateful_reconcile_interval_ms(),
-      node_confirmed_destroy: node_confirmed_destroy_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       destroying_escape_ms: stateful_destroying_escape_ms(),
       orphan_grace_ms: orphan_grace_ms()
@@ -1841,7 +1763,6 @@ defmodule Embervm.Application do
   # run still allocates from a sane /16.
   defp group_manager_supervisor_opts do
     [
-      node_confirmed_destroy: node_confirmed_destroy_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       orphan_grace_ms: orphan_grace_ms(),
       defaults: [
@@ -1860,7 +1781,6 @@ defmodule Embervm.Application do
   defp group_wake_manager_opts do
     [
       op_log_mod: op_log_mod(),
-      node_confirmed_destroy: node_confirmed_destroy_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       orphan_grace_ms: orphan_grace_ms(),
       reconcile_interval_ms: group_reconcile_interval_ms(),

@@ -95,7 +95,7 @@ defmodule Embervm.StatefulManagerTest do
         channel_fun: Keyword.get(opts, :channel_fun, fn _node -> {:ok, :ch} end),
         invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _node, _chan -> :ok end),
         start_stateful_fun: start_stateful_fun,
-        stop_stateful_fun: Keyword.get(opts, :stop_stateful_fun, fn _ch, _req -> {:ok, %Embervm.Node.V1.StopStatefulResponse{}} end),
+        stop_stateful_fun: Keyword.get(opts, :stop_stateful_fun, fn _ch, _req -> {:ok, %Embervm.Node.V1.StopStatefulResponse{teardown_confirmed: true}} end),
         delete_volume_fun: Keyword.get(opts, :delete_volume_fun, fn _ch, _req -> {:ok, %{}} end),
         get_secret_fun: get_secret_fun,
         op_log: op_log,
@@ -111,7 +111,6 @@ defmodule Embervm.StatefulManagerTest do
           :wake_timeout_margin_ms,
           :restore_artifact_fun,
           :evict_artifact_fun,
-          :node_confirmed_destroy,
           :destroying_alarm_ms,
           :destroying_escape_ms,
           :orphan_grace_ms,
@@ -1562,7 +1561,15 @@ defmodule Embervm.StatefulManagerTest do
   end
 
   test "adoption SKIPS a :destroying instance even though the node still reports its live VM" do
-    ctx = start_stack()
+    # An unconfirming teardown keeps the redrive from terminalizing the row, so the
+    # assertion below observes adoption alone.
+    ctx =
+      start_stack(
+        stop_stateful_fun: fn _ch, _req ->
+          {:ok, %Embervm.Node.V1.StopStatefulResponse{teardown_confirmed: false}}
+        end
+      )
+
     stateful_workload(ctx, "wl-a")
 
     {:ok, _} =
@@ -1588,7 +1595,7 @@ defmodule Embervm.StatefulManagerTest do
 
     :ok = StatefulManager.reconcile(ctx.mgr)
 
-    # NOT re-adopted to :serving; stays destroying for the (gated) redrive to own.
+    # NOT re-adopted to :serving; stays destroying for the redrive to own.
     {:ok, inst} = StatefulStore.get(ctx.store, "stf-destroying")
     assert inst.state == :destroying
     assert Agent.get(ctx.starts, & &1) == 0
@@ -1682,11 +1689,10 @@ defmodule Embervm.StatefulManagerTest do
   test "ADR embervm/018 Phase 2: adopts an origin-ACTIVATOR stateful VM by relighting the banked instance, no orphan-destroy" do
     parent = self()
 
-    # node_confirmed_destroy on so the orphan-destroy pass is live: an ordinary
+    # The orphan-destroy pass is live: an ordinary
     # rowless node VM would be destroyed, but a node-woken (ACTIVATOR) VM is adopted.
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         stop_stateful_fun: fn _ch, _req ->
           send(parent, :stop_stateful_called)
           {:ok, %Embervm.Node.V1.StopStatefulResponse{teardown_confirmed: true}}
@@ -1929,12 +1935,11 @@ defmodule Embervm.StatefulManagerTest do
     assert live == []
   end
 
-  # -- node-confirmed destroy (ADR embervm/014 decision 5, gated) -------------
+  # -- node-confirmed destroy (ADR embervm/014 decision 5) --------------------
 
-  test "gated: a confirming teardown records the stateful instance destroyed" do
+  test "a confirming teardown records the stateful instance destroyed" do
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         stop_stateful_fun: fn _ch, _req -> {:ok, %{teardown_confirmed: true}} end
       )
 
@@ -1947,13 +1952,12 @@ defmodule Embervm.StatefulManagerTest do
     assert instance.state == :destroyed
   end
 
-  test "gated: destroy dials the reporting VM owner's instance key" do
+  test "destroy dials the reporting VM owner's instance key" do
     {:ok, dialed} = Agent.start_link(fn -> [] end)
     {:ok, stopped} = Agent.start_link(fn -> [] end)
 
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         channel_fun: fn dial_id ->
           Agent.update(dialed, &[dial_id | &1])
           {:ok, dial_id}
@@ -1985,13 +1989,12 @@ defmodule Embervm.StatefulManagerTest do
     assert req.mode == :STOP_STATEFUL_MODE_DESTROY
   end
 
-  test "gated: destroy with absent ownership facts does not dial a bare node alias" do
+  test "destroy with absent ownership facts does not dial a bare node alias" do
     {:ok, dialed} = Agent.start_link(fn -> [] end)
     parent = self()
 
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         channel_fun: fn dial_id ->
           Agent.update(dialed, &[dial_id | &1])
           {:ok, dial_id}
@@ -2015,13 +2018,12 @@ defmodule Embervm.StatefulManagerTest do
     assert [%{state: :destroying}] = StatefulStore.list(ctx.store, "wl-a")
   end
 
-  test "gated: a replacement pod is dialed only after it reports the destroying VM" do
+  test "a replacement pod is dialed only after it reports the destroying VM" do
     {:ok, dialed} = Agent.start_link(fn -> [] end)
     {:ok, stopped} = Agent.start_link(fn -> [] end)
 
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         channel_fun: fn dial_id ->
           Agent.update(dialed, &[dial_id | &1])
           {:ok, dial_id}
@@ -2065,12 +2067,11 @@ defmodule Embervm.StatefulManagerTest do
     assert {:ok, %{state: :destroyed}} = StatefulStore.get(ctx.store, instance.instance_id)
   end
 
-  test "gated: an unconfirmed teardown stays destroying and reconcile re-drives it" do
+  test "an unconfirmed teardown stays destroying and reconcile re-drives it" do
     {:ok, confirmations} = Agent.start_link(fn -> [false, true] end)
 
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         stop_stateful_fun: fn _ch, _req ->
           Agent.get_and_update(confirmations, fn [confirmed | rest] ->
             {{:ok, %{teardown_confirmed: confirmed}}, rest}
@@ -2095,10 +2096,9 @@ defmodule Embervm.StatefulManagerTest do
     assert instance.state == :destroyed
   end
 
-  test "gated: a destroying instance is confirmed destroyed by owner-reported absence" do
+  test "a destroying instance is confirmed destroyed by owner-reported absence" do
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         stop_stateful_fun: fn _ch, _req -> {:ok, %{teardown_confirmed: false}} end
       )
 
@@ -2120,7 +2120,6 @@ defmodule Embervm.StatefulManagerTest do
 
       ctx =
         start_stack(
-          node_confirmed_destroy: true,
           clock: fn -> Agent.get(manager_clock, & &1) end,
           destroying_escape_ms: 100,
           stop_stateful_fun: fn _ch, _req -> {:ok, %{teardown_confirmed: false}} end
@@ -2149,7 +2148,6 @@ defmodule Embervm.StatefulManagerTest do
 
       ctx =
         start_stack(
-          node_confirmed_destroy: true,
           clock: fn -> Agent.get(manager_clock, & &1) end,
           destroying_escape_ms: 100,
           stop_stateful_fun: fn _ch, _req -> {:ok, %{teardown_confirmed: false}} end
@@ -2185,7 +2183,6 @@ defmodule Embervm.StatefulManagerTest do
 
       ctx =
         start_stack(
-          node_confirmed_destroy: true,
           clock: fn -> Agent.get(manager_clock, & &1) end,
           destroying_alarm_ms: 100,
           destroying_escape_ms: 10_000,
@@ -2216,7 +2213,6 @@ defmodule Embervm.StatefulManagerTest do
 
       ctx =
         start_stack(
-          node_confirmed_destroy: true,
           clock: fn -> Agent.get(manager_clock, & &1) end,
           stop_stateful_fun: fn _ch, _req -> {:ok, %{teardown_confirmed: false}} end
         )
@@ -2256,7 +2252,6 @@ defmodule Embervm.StatefulManagerTest do
 
       ctx =
         start_stack(
-          node_confirmed_destroy: true,
           clock: fn -> Agent.get(manager_clock, & &1) end,
           stop_stateful_fun: fn _ch, _req -> {:ok, %{teardown_confirmed: false}} end
         )
@@ -2284,27 +2279,6 @@ defmodule Embervm.StatefulManagerTest do
       assert :sys.get_state(ctx.mgr).destroying_alarmed[instance.instance_id] == 301_000
       assert {:ok, %{state: :destroying}} = StatefulStore.get(ctx.store, instance.instance_id)
     end
-  end
-
-  test "gate-off destroy records destroyed before an unconfirmed teardown" do
-    parent = self()
-
-    ctx =
-      start_stack(
-        stop_stateful_fun: fn _ch, _req ->
-          send(parent, :stop_stateful_called)
-          {:ok, %{teardown_confirmed: false}}
-        end
-      )
-
-    stateful_workload(ctx, "wl-a")
-    stateful_node(ctx, "node-4")
-    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
-
-    assert %{destroyed: 1, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
-    assert_received :stop_stateful_called
-    assert [instance] = StatefulStore.list(ctx.store, "wl-a")
-    assert instance.state == :destroyed
   end
 
   test "destroy_instance leaves the volume row intact" do
@@ -4185,7 +4159,7 @@ defmodule Embervm.StatefulManagerTest do
     end
 
     ctx = start_stack(start_stateful_fun: gated_fun, stop_stateful_fun: stop_fun,
-      channel_fun: fn key -> {:ok, key} end, node_confirmed_destroy: false, wake_bound_ms: 40)
+      channel_fun: fn key -> {:ok, key} end, wake_bound_ms: 40)
     stateful_workload(ctx, "wl-a")
     stateful_node(ctx, "node-4", instance_id: "node-4/owner")
 
@@ -4427,7 +4401,7 @@ defmodule Embervm.StatefulManagerTest do
 
   test "gate-on stale cleanup and orphan reconcile share one confirmed teardown" do
     parent = self()
-    ctx = start_stack(node_confirmed_destroy: true, channel_fun: fn key -> {:ok, key} end,
+    ctx = start_stack(channel_fun: fn key -> {:ok, key} end,
       stop_stateful_fun: fn ch, req ->
         send(parent, {:stop, ch, req.vm_id})
         {:ok, %{teardown_confirmed: true}}
@@ -4448,7 +4422,7 @@ defmodule Embervm.StatefulManagerTest do
 
   test "gate-on orphan confirmation before a late worker result neither reclaims nor releases twice" do
     parent = self()
-    ctx = start_stack(node_confirmed_destroy: true, wake_bound_ms: 5_000,
+    ctx = start_stack(wake_bound_ms: 5_000,
       channel_fun: fn key -> {:ok, key} end,
       start_stateful_fun: fn _ch, _req ->
         send(parent, {:worker, self()})
@@ -4486,7 +4460,7 @@ defmodule Embervm.StatefulManagerTest do
 
   test "stale cleanup preserves activator-origin adoption" do
     parent = self()
-    ctx = start_stack(node_confirmed_destroy: true, stop_stateful_fun: fn _ch, req ->
+    ctx = start_stack(stop_stateful_fun: fn _ch, req ->
       send(parent, {:stop, req.vm_id})
       {:ok, %{teardown_confirmed: true}}
     end)
@@ -4556,7 +4530,6 @@ defmodule Embervm.StatefulManagerTest do
       start_stack(
         clock: fn -> Agent.get(manager_clock, & &1) end,
         destroying_escape_ms: 100,
-        node_confirmed_destroy: false,
         channel_fun: fn
           "node-4/owner" -> if Agent.get(owner_up, & &1), do: {:ok, "node-4/owner"}, else: {:error, :connect_timeout}
           key -> {:ok, key}
@@ -4599,7 +4572,6 @@ defmodule Embervm.StatefulManagerTest do
       start_stack(
         clock: fn -> Agent.get(manager_clock, & &1) end,
         destroying_escape_ms: 100,
-        node_confirmed_destroy: false,
         channel_fun: fn key -> {:ok, key} end,
         stop_stateful_fun: fn ch, req ->
           send(parent, {:destroyed, ch, req.vm_id})

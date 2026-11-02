@@ -188,7 +188,6 @@ defmodule Embervm.GroupWakeManager do
       # module. Defaults to the selected backend module.
       op_log_mod: op_log_mod,
       # ADR embervm/014 decision 5: node-confirmed destroy config plumbing.
-      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
       destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
       orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
       # Ids already alarmed for being stuck in destroying (log once per id, not per tick).
@@ -709,13 +708,9 @@ defmodule Embervm.GroupWakeManager do
     _ = GroupStore.evict_partial_sets(state.store, reported_sets)
 
     state =
-      if state.node_confirmed_destroy do
-        state
-        |> redrive_destroying(live_members)
-        |> destroy_orphan_group_vms(facts)
-      else
-        state
-      end
+      state
+      |> redrive_destroying(live_members)
+      |> destroy_orphan_group_vms(facts)
 
     EndpointPublisher.publish(state.publisher)
     state
