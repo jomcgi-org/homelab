@@ -227,7 +227,7 @@ func TestOutputSchemasMatchOpenAPIAndStructuredContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	schemas := doc["components"].(map[string]any)["schemas"].(map[string]any)
-	_, _, listing := post(t, handler(), `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{`+modernMeta+`}}`, modern("tools/list", ""))
+	_, _, listing := post(t, auroraHandler(), `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{`+modernMeta+`}}`, modern("tools/list", ""))
 	if listing.Error != nil {
 		t.Fatal(listing.Error)
 	}

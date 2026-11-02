@@ -248,6 +248,10 @@ func TestLightFixtureCloudAndProvenance(t *testing.T) {
 	if len(encoded)*2 > originalBytes {
 		t.Fatalf("full envelope %d exceeds half of baseline %d", len(encoded), originalBytes)
 	}
+	notes := strings.Join(env.Meta.Notes, " ")
+	if !strings.Contains(notes, "Missing rows prove neither cloud nor clear sky") || strings.Contains(notes, "acceptance") {
+		t.Fatalf("compact notes lost the answer-quality correction: %s", notes)
+	}
 	r := env.Data.(connector.LightResult)
 	if len(r.Days) != 7 || r.Site == nil || r.Site.ID != "scotland-0001" || r.Site.Truncated || env.Meta.DataVersion == "" || env.Meta.ForecastFetchedAt == nil || !strings.Contains(sourceNames(env.Meta), "MET Norway") {
 		t.Fatal("fixture provenance", r.Site, env.Meta)

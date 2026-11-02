@@ -538,7 +538,7 @@ answers are `no-store`.
 ### Compact typed answers (#7523)
 
 Light canonicalizes its optional kinds filter in the shared service and
-includes it in the `light-v2` cache identity. Omission and an empty MCP array
+includes it in the `light-v3` cache identity. Omission and an empty MCP array
 mean all kinds; REST rejects an empty string. Duplicate entries and order
 do not change identity. Existing window kind labels and daily geometry stay
 unchanged. Each day carries `cloud_why` once. Omitted window cloud means
@@ -547,16 +547,19 @@ Detailed numerical method notes live in the shared method resource.
 
 The deterministic seven-day fixture at b807b9ac4 serialized to 32,564 bytes
 with all kinds at its fixed 2026-10-19T15:20:00Z clock. The compact full
-envelope is 16,276 bytes. The regression measures `json.Marshal(env)`, including
+envelope is 16,264 bytes. The regression measures `json.Marshal(env)`, including
 all data and metadata once. It never counts the duplicated MCP transport.
 
-Plan uses `plan-v2` and exposes separate dataset hourly horizons. Only the
+Plan uses `plan-v3` and exposes separate dataset hourly horizons. Only the
 beyond-horizon sentence collapses into a requested date range. Partial
 coverage and date-specific lunar advice remain per day; individual entities
 can expire before their dataset horizon.
 
-Every advertised tool expands its output schema from the embedded OpenAPI
-response component at startup, including aurora while its data source is
+Both prefixes advance past the `v2` answer-quality fixes already on main,
+so compact answers cannot revalidate responses with the previous shape.
+
+Every tool expands its output schema from the embedded OpenAPI response
+component at startup, including unlisted aurora while its data source is
 disabled. Unknown or cyclic references fail startup. Prompts and resources
 use the existing stateless dispatcher. Method and spec resources reuse the
 HTTP package's documentation helper without fetching data. HTTP and MCP

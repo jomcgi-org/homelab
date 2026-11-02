@@ -34,8 +34,12 @@ func (auroraStore) Current() *aurora.Snapshot { return nil }
 func auroraHandler() *Handler {
 	svc := fixture.Service(true)
 	svc.AuroraData = auroraStore{}
-	return New(svc, meter.New(prometheus.NewRegistry()), slog.New(slog.NewTextHandler(io.Discard, nil)),
-		ServerInfo{Name: "scotland-connector", Version: "test"}, []string{"https://claude.ai"})
+	h, err := New(svc, meter.New(prometheus.NewRegistry()), slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ServerInfo{Name: "scotland-connector", Version: "test"}, []string{"https://claude.ai"}, "")
+	if err != nil {
+		panic(err)
+	}
+	return h
 }
 
 // aurora is listed, and named in the instructions, only when its store is
@@ -437,24 +441,39 @@ func TestDiscoveryInstructionsIncludeLightScope(t *testing.T) {
 		{"initialize", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}`, nil},
 		{"server/discover", `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + modernMeta + `}}`, modern("server/discover", "")},
 	} {
-		t.Run(tc.method, func(t *testing.T) {
-			code, _, r := post(t, auroraHandler(), tc.body, tc.headers)
-			if code != http.StatusOK || r.Error != nil {
-				t.Fatalf("status %d error %+v", code, r.Error)
-			}
-			instructions, ok := r.Result["instructions"].(string)
-			if !ok || instructions != Instructions {
-				t.Fatalf("instructions missing or inconsistent: %v", r.Result["instructions"])
-			}
-			for _, guidance := range []string{"Use light", "no top-level verdict", "cloud_why", "omitted window cloud means unknown with zero support", "nearby-site hourly sample support", "nights", "interval cloud forecasts", "For plan, check and aurora", "meta.sources"} {
-				if !strings.Contains(instructions, guidance) {
-					t.Errorf("discovery instructions omit %q", guidance)
+		for _, deployment := range []struct {
+			name         string
+			handler      *Handler
+			instructions string
+		}{
+			{"aurora-enabled", auroraHandler(), Instructions},
+			{"aurora-disabled", handler(), InstructionsWithoutAurora},
+		} {
+			t.Run(tc.method+"/"+deployment.name, func(t *testing.T) {
+				code, _, r := post(t, deployment.handler, tc.body, tc.headers)
+				if code != http.StatusOK || r.Error != nil {
+					t.Fatalf("status %d error %+v", code, r.Error)
 				}
-			}
-			if strings.Contains(instructions, "Lead with each answer's verdict") {
-				t.Error("discovery requires a verdict from light")
-			}
-		})
+				instructions, ok := r.Result["instructions"].(string)
+				if !ok || instructions != deployment.instructions {
+					t.Fatalf("instructions missing or inconsistent: %v", r.Result["instructions"])
+				}
+				for _, guidance := range []string{"Use light", "no top-level verdict", "cloud_why", "omitted window cloud means unknown with zero support", "nearby-site hourly sample support", "nights", "interval cloud forecasts", "For plan", "meta.sources"} {
+					if !strings.Contains(instructions, guidance) {
+						t.Errorf("discovery instructions omit %q", guidance)
+					}
+				}
+				if strings.Contains(instructions, "Lead with each answer's verdict") {
+					t.Error("discovery requires a verdict from light")
+				}
+				caps := r.Result["capabilities"].(map[string]any)
+				for _, capability := range []string{"tools", "prompts", "resources"} {
+					if _, ok := caps[capability]; !ok {
+						t.Errorf("discovery omits %s capability", capability)
+					}
+				}
+			})
+		}
 	}
 }
 
