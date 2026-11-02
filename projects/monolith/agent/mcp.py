@@ -34,47 +34,43 @@ from agent import checks, locks
 from agent import factory_goals as goals_mod
 from agent import notify as notify_mod
 from agent import routine_jobs
+from core.clock import isoformat_or_none
 from core.mcp_app import mcp
 from auth.api import current_principal
 from factory.api import operator_access_error
 import chat.api as chat_api
 
 
-def _iso(dt: datetime | None) -> str | None:
-    """Serialize a ``datetime`` to ISO 8601, or return None if absent."""
-    return dt.isoformat() if dt else None
-
-
 def _serialize_lock(row: dict) -> dict:
     return {
         "key": row["key"],
         "holder": row["holder"],
-        "acquired_at": _iso(row["acquired_at"]),
-        "expires_at": _iso(row["expires_at"]),
+        "acquired_at": isoformat_or_none(row["acquired_at"]),
+        "expires_at": isoformat_or_none(row["expires_at"]),
     }
 
 
 def _serialize_routine_job(row: dict) -> dict:
     return {
         **row,
-        "next_run_at": _iso(row.get("next_run_at")),
-        "last_run_at": _iso(row.get("last_run_at")),
-        "locked_at": _iso(row.get("locked_at")),
-        "created_at": _iso(row.get("created_at")),
+        "next_run_at": isoformat_or_none(row.get("next_run_at")),
+        "last_run_at": isoformat_or_none(row.get("last_run_at")),
+        "locked_at": isoformat_or_none(row.get("locked_at")),
+        "created_at": isoformat_or_none(row.get("created_at")),
     }
 
 
 def _serialize_scheduled_job(row: dict) -> dict:
     return {
         **row,
-        "next_run_at": _iso(row.get("next_run_at")),
-        "last_run_at": _iso(row.get("last_run_at")),
-        "locked_at": _iso(row.get("locked_at")),
+        "next_run_at": isoformat_or_none(row.get("next_run_at")),
+        "last_run_at": isoformat_or_none(row.get("last_run_at")),
+        "locked_at": isoformat_or_none(row.get("locked_at")),
     }
 
 
 def _serialize_dead_letter(row: dict) -> dict:
-    return {**row, "last_failed_at": _iso(row.get("last_failed_at"))}
+    return {**row, "last_failed_at": isoformat_or_none(row.get("last_failed_at"))}
 
 
 @mcp.tool
@@ -122,7 +118,7 @@ async def monolith_agent_lock(
         return {
             "acquired": result.acquired,
             "lock_id": str(result.lock_id) if result.lock_id else None,
-            "expires_at": _iso(result.expires_at),
+            "expires_at": isoformat_or_none(result.expires_at),
         }
     if lock_id is None:
         raise ValueError(f"{action} requires lock_id")
@@ -130,7 +126,10 @@ async def monolith_agent_lock(
         if ttl_secs is None:
             raise ValueError("extend requires ttl_secs")
         new_expires = locks.extend(UUID(lock_id), ttl_secs)
-        return {"ok": new_expires is not None, "new_expires_at": _iso(new_expires)}
+        return {
+            "ok": new_expires is not None,
+            "new_expires_at": isoformat_or_none(new_expires),
+        }
     return {"ok": locks.release(UUID(lock_id))}
 
 

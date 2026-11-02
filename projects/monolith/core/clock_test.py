@@ -1,6 +1,15 @@
 from datetime import datetime, timedelta, timezone
 
-from core.clock import as_utc, aware, aware_iso, iso, iso_or_str, iso_z, utc_now
+from core.clock import (
+    as_utc,
+    aware,
+    aware_iso,
+    iso,
+    iso_or_str,
+    iso_z,
+    isoformat_or_none,
+    utc_now,
+)
 
 _BST = timezone(timedelta(hours=1))
 
@@ -63,3 +72,12 @@ def test_utc_now_is_aware_utc():
     stamp = utc_now()
     assert stamp.tzinfo is timezone.utc
     assert abs((datetime.now(timezone.utc) - stamp).total_seconds()) < 5
+
+
+def test_isoformat_or_none_keeps_offsets_and_passes_none_through():
+    assert isoformat_or_none(None) is None
+    assert isoformat_or_none(datetime(2026, 1, 2, 3, 4, 5)) == "2026-01-02T03:04:05"
+    assert (
+        isoformat_or_none(datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc))
+        == "2026-01-02T03:04:05+00:00"
+    )
