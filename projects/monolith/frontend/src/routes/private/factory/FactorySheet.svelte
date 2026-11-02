@@ -106,7 +106,13 @@
   /* Every disclosure on these pages shows whether it opens: the same plus
      and minus the sheet's index groups wear, parked at the row's end. */
   .factory-sheet :global(details > summary) {
+    display: flex;
+    align-items: center;
     list-style: none;
+  }
+  /* A summary's one-line content keeps its ellipsis as a flex item. */
+  .factory-sheet :global(details > summary > *) {
+    min-width: 0;
   }
   .factory-sheet :global(details > summary::-webkit-details-marker) {
     display: none;

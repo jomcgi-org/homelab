@@ -995,6 +995,12 @@
     .escape-btn .hotkey {
       display: none;
     }
+    .stats {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .stats > div:nth-child(2) {
+      border-right: 0;
+    }
     .option,
     .escape-btn {
       grid-template-columns: minmax(0, 1fr);
