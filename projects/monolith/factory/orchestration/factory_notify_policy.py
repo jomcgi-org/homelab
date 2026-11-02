@@ -1,8 +1,8 @@
 """Which factory notifications page the operator, and the daily digest.
 
 Every human-needed notice goes through ``factory_conductor._notify_person_once``
-with a kind. With ``FACTORY_NOTIFY_DIGEST_ENABLED`` only the kinds that need a
-person's authority page Discord at once; the rest are recorded as
+with a kind. Only the kinds that need a person's authority page Discord at
+once; the rest are recorded as
 ``task_needs_person_digested`` and sent once a day in one message, together
 with what the factory decided on its own (merit funding grants, watchdog
 resumes, live checks handed off). Decision cards are untouched: every one of
@@ -16,13 +16,11 @@ What pages:
 - ``watchdog:*``: a looping verdict, or two unreadable answers.
 - ``landing``: a pull request left for a person to merge.
 - ``rollout``: a merged delivery still blocked on rollout after 60 minutes.
-- ``intervention`` and ``deadline``, but only while nothing will release the
-  slot on its own. With active cessation or the deadline backstop on, the
-  factory settles these without a person (every one of the 24 intervention
-  pages in the week to 2026-10-01 was settled automatically), so they digest.
 
 What digests: ``refine`` needs-human briefs (a one-minute scoping question on
-advisory work, not authority) and the self-releasing kinds above.
+advisory work, not authority), and ``intervention`` and ``deadline``. Active
+cessation settles those without a person (every one of the 24 intervention
+pages in the week to 2026-10-01 was settled automatically).
 """
 
 from __future__ import annotations
@@ -32,13 +30,11 @@ from datetime import timedelta
 
 from sqlmodel import select
 
-from core.env import flag
 from core.clock import aware, utc_now as _now
 from factory.orchestration import factory_controls as controls
 
 logger = logging.getLogger(__name__)
 
-ENABLED_ENV = "FACTORY_NOTIFY_DIGEST_ENABLED"
 DIGESTED = "task_needs_person_digested"
 SENT = "factory_digest_sent"
 FAILED = "factory_digest_failed"
@@ -51,27 +47,9 @@ DIGEST_KINDS = frozenset({"refine"})
 SELF_RELEASING_KINDS = frozenset({"intervention", "deadline"})
 
 
-def enabled() -> bool:
-    return flag(ENABLED_ENV)
-
-
-def automatic_release() -> bool:
-    """Whether a stranded attempt is settled without a person."""
-    from factory.orchestration import factory_cessation
-    from factory.orchestration.factory_conductor import _deadline_backstop_enabled
-
-    return factory_cessation.enabled() or _deadline_backstop_enabled()
-
-
 def pages(kind: str) -> bool:
     """Whether a notice of this kind should reach Discord immediately."""
-    if not enabled():
-        return True
-    if kind in DIGEST_KINDS:
-        return False
-    if kind in SELF_RELEASING_KINDS:
-        return not automatic_release()
-    return True
+    return kind not in DIGEST_KINDS and kind not in SELF_RELEASING_KINDS
 
 
 def _latest(db, action):
@@ -208,8 +186,6 @@ def compose(groups: dict[str, list[str]]) -> str | None:
 
 def digest_tick() -> str:
     """Send at most one digest a day. Returns what it did."""
-    if not enabled():
-        return "disabled"
     from factory.orchestration.factory_controls import (
         _audit,
         _locked_session,

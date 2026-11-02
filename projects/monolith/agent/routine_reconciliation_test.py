@@ -731,9 +731,7 @@ def test_supervision_recovers_held_kg_correction_atomically(
             )
         ],
     )
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
-    monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     request, _ = held(engine, applied=True, delivery_error=True)
     sid = request["session_id"]
@@ -1319,7 +1317,6 @@ def test_factory_supervision_atomically_reconciles_terminal_held_job(
         ],
     )
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     now = datetime.now(timezone.utc)
 
@@ -1626,7 +1623,6 @@ def unbound_held(database, monkeypatch, *, applied=False, outcome="lease_expired
         ],
     )
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     with Session(engine) as db, db.begin():
         agent = db.get(AgentSession, request["session_id"])
@@ -1868,7 +1864,6 @@ def interrupted_dispatch(database, monkeypatch):
     for module in (store, admission, reconciliation):
         monkeypatch.setattr(module, "datetime", Clock)
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervision, "_now", lambda: attempt["clock"])
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _: None)
 
@@ -1936,8 +1931,18 @@ def interrupted_dispatch(database, monkeypatch):
         }
     with Session(engine) as db:
         store.create_pending_message(db, attempt["sid"], attempt["prompt"], "luna")
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(mcp._execute_pending_message(attempt["sid"]))
+
+    # A cancellation before any POST is normally recorded not_invoked and
+    # settles at once. These cases cover the fallback when that bounded write
+    # fails inside the termination grace: the turn is left as an unknown
+    # outcome for supervision to settle.
+    def not_invoked_write_fails(*_args, **_kwargs):
+        raise TimeoutError("lock timeout inside the termination grace")
+
+    with monkeypatch.context() as during_shutdown:
+        during_shutdown.setattr(store, "mark_turn_error_sync", not_invoked_write_fails)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(mcp._execute_pending_message(attempt["sid"]))
     assert routine_jobs.hold_job_for_unknown_outcome(
         attempt["name"], attempt["sid"], "executor cancelled", **attempt["guard"]
     )
@@ -2734,7 +2739,6 @@ def test_recovered_review_redispatch_settles_only_exact_audited_attempt(
         ],
     )
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
     now = datetime.now(timezone.utc)
 

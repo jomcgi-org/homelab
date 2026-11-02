@@ -70,7 +70,6 @@ def database(tmp_path, monkeypatch):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
     monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "true")
     monkeypatch.setenv("FACTORY_RUNTIME_METER_TASK_IDS", "task")
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     policy = {
         "repo": "org/repo",
         "issue_numbers": [7001],

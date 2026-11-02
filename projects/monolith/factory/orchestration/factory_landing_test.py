@@ -2120,7 +2120,6 @@ def test_rollout_page_real_notification_dedupe_and_failed_send_retry(db, monkeyp
     monkeypatch.setattr(conductor, "get_engine", lambda: db)
     merged_delivery(db)
     pending_rollout(monkeypatch)
-    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "true")
     sent = []
 
     async def notify(message, *, level):

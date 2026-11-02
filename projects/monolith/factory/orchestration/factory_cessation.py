@@ -30,8 +30,8 @@ ceiling unless the exact lost-before-guest proof also holds, which is the only
 evidence this codebase accepts for a measured zero.
 
 Deadline expiry chooses which attempts are worth this; it never settles one.
-The automatic path is off behind FACTORY_ACTIVE_CESSATION_ENABLED. An operator
-can drive the same steps for one exact attempt with ``request_cessation``.
+An operator can drive the same steps for one exact attempt with
+``request_cessation``.
 """
 
 from __future__ import annotations
@@ -45,7 +45,6 @@ from opentelemetry import trace
 from sqlmodel import Session, select
 
 from core.clock import utc_now as _now
-from core.env import flag
 from factory.execution.api import (
     inspect_lost_before_guest_factory_attempt,
     read_stranded_factory_attempt,
@@ -96,8 +95,8 @@ _GUEST_EVIDENCE_ACTIONS = (
 
 # One span per stranded attempt considered, on every path: the conductor tick
 # (supervise_task) and the operator repair (request_cessation). Before it, an
-# attempt skipped because the flag was off, the deadline grace had not passed,
-# its workflow was still live or its session id was unresolved left no trace.
+# attempt skipped because the deadline grace had not passed, its workflow was
+# still live or its session id was unresolved left no trace.
 SPAN = "factory.cessation.advance"
 # Refusal codes are fixed identifiers; anything else (a stray ValueError
 # message) collapses to one value so the attribute stays low-cardinality.
@@ -127,10 +126,6 @@ def _span_outcome(span, outcome, reason=None):
         {"factory.cessation.outcome": outcome, "factory.cessation.reason": reason},
     )
     return outcome
-
-
-def enabled() -> bool:
-    return flag("FACTORY_ACTIVE_CESSATION_ENABLED")
 
 
 def _records(db, pin):
@@ -734,39 +729,32 @@ def _has_intent(pin) -> bool:
 def supervise_task(task: dict, dbos) -> int:
     """Advance every stranded attempt on one task; return how many settled.
 
-    An operator intent advances whatever the flag says: a person asked for
-    it. A new intent is recorded here only while the flag is on and the task
-    is more than GRACE_SECONDS past its deadline, paused or not. A pause holds
+    An operator intent advances at once: a person asked for it. A new intent
+    is recorded here only while the task is more than GRACE_SECONDS past its
+    deadline, paused or not. A pause holds
     admission, and this admits nothing: it produces the evidence that lets the
     attempt the pause is holding settle.
     """
     from factory.orchestration.node_workflows import resolve_node_session_id
 
     task_id = task["task_id"]
-    automatic = enabled() and _deadline_due(task)
+    automatic = _deadline_due(task)
     settled = 0
     for run in graph.node_runs(task_id):
         if run["status"] != "uncertain":
             continue
         pin = run["pin"]
         if not automatic and not _has_intent(pin):
-            # The common silent case: the flag is off or the deadline grace
-            # has not passed, and no operator intent exists. Recorded so an
-            # attempt held uncertain for hours shows why nothing acted on it.
+            # The common silent case: the deadline grace has not passed and
+            # no operator intent exists. Recorded so an attempt held uncertain
+            # for hours shows why nothing acted on it.
             with tracer.start_as_current_span(SPAN) as span:
                 _span_attributes(span, pin, None, None)
                 set_attributes(
                     span,
-                    {
-                        "factory.cessation.enabled": enabled(),
-                        "factory.cessation.deadline_due": _deadline_due(task),
-                    },
+                    {"factory.cessation.deadline_due": _deadline_due(task)},
                 )
-                _span_outcome(
-                    span,
-                    "not_applicable",
-                    "flag_disabled" if not enabled() else "deadline_grace_pending",
-                )
+                _span_outcome(span, "not_applicable", "deadline_grace_pending")
             continue
         state = dbos.get_workflow_status(pin["workflow_id"])
         workflow_status = None if state is None else state.status
@@ -805,9 +793,8 @@ def request_cessation(
     The #6025 item 2 action, called in process from a backend pod the way
     factory_controls.settle_lost_attempt is. It records the intent under the
     identity the operator reviewed (``read_cessation`` returns it), then takes
-    the first step at once. Later steps run on every conductor tick whatever
-    FACTORY_ACTIVE_CESSATION_ENABLED says, because a person asked for this
-    attempt, until the recorded guest has been observed gone for the sampled
+    the first step at once. Later steps run on every conductor tick, because a
+    person asked for this attempt, until the recorded guest has been observed gone for the sampled
     window and the attempt settles. The receipt is never cancelled: only this
     attempt is settled, and normal reconciliation then decides retry,
     re-plan or escalation under max_attempts.

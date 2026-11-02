@@ -59,10 +59,6 @@ def _records(db, task_ids, actions):
 
 def bind(db, receipt, agent, request_body):
     """Called inside the control -> pool -> session lock before physical POST."""
-    from factory.orchestration.factory_attempt_stop import enabled as stop_enabled
-
-    if not stop_enabled():
-        raise result_receipts.ReceiptRejected(409, "meter_requires_stop_supervision")
     start = db.exec(
         select(FactoryStart).where(FactoryStart.start_key == agent.workflow_id)
     ).one_or_none()

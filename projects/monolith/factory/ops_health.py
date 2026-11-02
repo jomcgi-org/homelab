@@ -730,8 +730,6 @@ def evaluate_cnpg_backups(document, required, optional, now: datetime) -> dict:
 
 
 async def _cnpg_backups() -> dict:
-    if os.environ.get("CNPG_BACKUP_HEALTH_ENABLED", "").lower() != "true":
-        return _unknown("CNPG backup advisory disabled")
     try:
         from kubernetes_asyncio import client, config
 

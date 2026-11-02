@@ -10,7 +10,6 @@ import asyncio
 import contextvars
 import json
 import logging
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timezone
@@ -38,20 +37,8 @@ RECENT_EXCHANGE_LIMIT = 10
 KNOWLEDGE_RETRIEVAL_TIMEOUT_SECONDS = 4
 
 
-def continuity_enabled() -> bool:
-    """Whether receipt continuity maintenance and retrieval are staged on."""
-    return os.environ.get("CONDUCTOR_CONTINUITY_ENABLED", "").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
 def report_with_deadline(actor: str, request_key: str) -> dict:
     """KG availability cannot hold an already committed factory acknowledgement."""
-    if not continuity_enabled():
-        return {"status": "disabled"}
     if not _REPORT_SLOTS.acquire(blocking=False):
         return {"status": "unavailable", "retry": "repeat the same request"}
 
@@ -79,8 +66,6 @@ def with_request_knowledge(result: dict, actor: str, request_key: str) -> dict:
 
 def report_receipt_with_deadline(receipt_id: int) -> dict:
     """Queue a new Conductor brief without holding its factory settlement."""
-    if not continuity_enabled():
-        return {"status": "disabled"}
     if not _REPORT_SLOTS.acquire(blocking=False):
         return {"status": "unavailable", "retry": "next reconciliation"}
 
@@ -417,10 +402,7 @@ def _factory_context(receipt_id: int, *, actor: str) -> dict:
             if item["request"]["receipt_id"] == receipt_id and request_actor == actor
         ]
         requests.sort(key=lambda item: item.get("timestamp") or "")
-        continuity = continuity_enabled()
-        exchanges, summaries = (
-            _recent_conversation(row, actor) if continuity else ([], [])
-        )
+        exchanges, summaries = _recent_conversation(row, actor)
         return {
             "ok": True,
             "observed_at": _now(),
@@ -454,9 +436,7 @@ def _factory_context(receipt_id: int, *, actor: str) -> dict:
             "request_count": len(requests),
             "summaries": summaries,
             "coverage": {
-                "durable_factory_conversation": (
-                    "covered" if continuity else "staged_off"
-                ),
+                "durable_factory_conversation": "covered",
                 "decision_requests": "covered",
                 "generic_agent_turns": "excluded_without_conductor_identity",
                 "standalone_conductor_conversations": "unavailable_no_shared_owner",
@@ -697,12 +677,10 @@ async def read_context(
     if not context["ok"]:
         return context
     receipt = context["receipt"]
-    scopes: str | tuple[str, ...] = "repo:" + receipt["repo"]
-    if continuity_enabled():
-        scopes = (
-            f"personal:{actor}:factory-receipt:{receipt_id}",
-            f"session:factory-receipt:{receipt_id}",
-        )
+    scopes = (
+        f"personal:{actor}:factory-receipt:{receipt_id}",
+        f"session:factory-receipt:{receipt_id}",
+    )
     context["knowledge"] = await retrieve_knowledge(
         query or receipt["title"], scopes, limit
     )
@@ -870,8 +848,6 @@ def maintain_request_knowledge(actor: str, request_key: str) -> dict:
     from core.db import get_engine
     from knowledge.api import ingest_raw_with_status
 
-    if not continuity_enabled():
-        return {"status": "disabled"}
     with controls._read_session() as db:
         item = _request_records(db).get((actor, request_key))
         if item is None or item["result"]["state"] != "completed":

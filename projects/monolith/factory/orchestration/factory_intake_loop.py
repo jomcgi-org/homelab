@@ -1076,15 +1076,14 @@ def intake_tick(
                     else "oldest"
                 )
                 lane = lane_for(task_class)
-                if handoff.enabled():
-                    # Finished repository work with only live checks left is
-                    # delivered, whatever generation re-read its labels (#6288).
-                    handed_off = handoff.intake_exclusion(
-                        slug, number, rows, delivery_check_budget
-                    )
-                    if handed_off is not None:
-                        exclude(handed_off)
-                        continue
+                # Finished repository work with only live checks left is
+                # delivered, whatever generation re-read its labels (#6288).
+                handed_off = handoff.intake_exclusion(
+                    slug, number, rows, delivery_check_budget
+                )
+                if handed_off is not None:
+                    exclude(handed_off)
+                    continue
                 if delivery and "agent-ready" in labels:
                     eligible.add((slug, number))
                 if not room.get(lane):

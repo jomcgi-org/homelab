@@ -3,7 +3,6 @@
 import asyncio
 import copy
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 from threading import Event
@@ -139,9 +138,6 @@ def database(tmp_path, monkeypatch):
         core_db,
     ):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
-    monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "false")
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     # Dispatch is driven explicitly by the test, using the same pending executor.
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _sid: None)
     monkeypatch.setattr(execution_api, "_schedule_next_message", lambda _sid: None)
@@ -741,65 +737,49 @@ def test_lost_stop_ack_and_fresh_conductor_reuse_original_durable_operation(runn
     assert_limits_preserved(s)
 
 
-@pytest.mark.parametrize("request_after_empty_stop_read", [False, True])
 def test_exact_stop_reaches_real_executor_after_its_lease_observer_loses_claim(
-    running, request_after_empty_stop_read
+    running,
 ):
     s = running
     body = request_body(s)
-    if request_after_empty_stop_read:
-        # Wait until the real heartbeat has read no stop request and releases
-        # that read transaction. Commit through the public API before its next
-        # lease refresh, with no owner helpers replaced or database locks held.
-        armed = True
-        requested = Event()
-        errors = []
+    # Wait until the real heartbeat has read no stop request and releases
+    # that read transaction. Commit through the public API before its next
+    # lease refresh, with no owner helpers replaced or database locks held.
+    armed = True
+    requested = Event()
+    errors = []
 
-        def observe_stop_read(connection, _cursor, _sql, _parameters, context, _many):
-            nonlocal armed
-            if armed and any(
-                "attempt_stop_requested" in parameters.values()
-                for parameters in context.compiled_parameters
-            ):
-                armed = False
-                connection.info["request_after_stop_read"] = True
+    def observe_stop_read(connection, _cursor, _sql, _parameters, context, _many):
+        nonlocal armed
+        if armed and any(
+            "attempt_stop_requested" in parameters.values()
+            for parameters in context.compiled_parameters
+        ):
+            armed = False
+            connection.info["request_after_stop_read"] = True
 
-        def request_after_read(_connection, record):
-            if not record.info.pop("request_after_stop_read", False):
-                return
-            try:
-                post_stop(s, body)
-            except Exception as exc:
-                errors.append(exc)
-            finally:
-                requested.set()
-
-        event.listen(s.engine, "after_cursor_execute", observe_stop_read)
-        event.listen(s.engine, "checkin", request_after_read)
+    def request_after_read(_connection, record):
+        if not record.info.pop("request_after_stop_read", False):
+            return
         try:
-            s.heartbeat.release()
-            assert requested.wait(3), "the heartbeat never read the empty stop ledger"
-            assert errors == []
-            assert s.heartbeat.cycles[1].wait(3), (
-                "the observer exited after its failed lease refresh"
-            )
+            post_stop(s, body)
+        except Exception as exc:
+            errors.append(exc)
         finally:
-            event.remove(s.engine, "after_cursor_execute", observe_stop_read)
-            event.remove(s.engine, "checkin", request_after_read)
-    else:
-        with Session(s.engine) as db, db.begin():
-            pending = store.get_pending_message(db, s.sid, 1)
-            pending.claimed_at = datetime.now(timezone.utc) - timedelta(seconds=60)
-            db.add(pending)
-        assert store.reclaim_stale_claims_sync() == 1
-        unknown = snapshot(s.engine, s.sid)
-        assert unknown["turns"][0]["stop_reason"] == UNKNOWN_INVOCATION
+            requested.set()
+
+    event.listen(s.engine, "after_cursor_execute", observe_stop_read)
+    event.listen(s.engine, "checkin", request_after_read)
+    try:
         s.heartbeat.release()
+        assert requested.wait(3), "the heartbeat never read the empty stop ledger"
+        assert errors == []
         assert s.heartbeat.cycles[1].wait(3), (
-            "the observer exited before a later exact stop could arrive"
+            "the observer exited after its failed lease refresh"
         )
-        post_stop(s, body)
-        assert snapshot(s.engine, s.sid)["turns"] == unknown["turns"]
+    finally:
+        event.remove(s.engine, "after_cursor_execute", observe_stop_read)
+        event.remove(s.engine, "checkin", request_after_read)
     fenced = snapshot(s.engine, s.sid)
     assert not s.ember.exited.is_set()
     s.heartbeat.release(cycle=2)
@@ -880,20 +860,6 @@ def test_native_completion_before_stop_fence_wins_without_history_rewrite(
     assert completed["turns"][0]["terminal_reason"] == "end_turn"
     assert completed["turns"][0]["cost_usd"] == 0.25
     assert snapshot(s.engine, s.sid) == completed
-    assert audits(s, "attempt_stop_requested") == []
-    assert s.ember.deletes == s.dbos.cancelled == []
-
-
-def test_disabled_supervision_refuses_attempt_stop_without_mutation(
-    running, monkeypatch
-):
-    s = running
-    body = request_body(s)
-    before = snapshot(s.engine, s.sid)
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
-    response = s.client.post("/api/swarm/factory/control", json=body)
-    assert response.status_code == 409, response.text
-    assert snapshot(s.engine, s.sid) == before
     assert audits(s, "attempt_stop_requested") == []
     assert s.ember.deletes == s.dbos.cancelled == []
 

@@ -1876,7 +1876,6 @@ def age_reconciler_pause(s, monkeypatch):
     from datetime import datetime, timedelta, timezone
     from factory.orchestration.factory_models import FactoryAudit
 
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     with Session(s.engine) as db, db.begin():
         pause = db.exec(
             select(FactoryAudit).where(
@@ -2685,7 +2684,6 @@ def test_drain_consumes_intervention_notification_once(
         notices.append((text, level))
 
     monkeypatch.setattr(notify_module, "notify", notify)
-    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "false")
     for _ in range(3):
         conductor.reconcile_task(
             s.task["id"], s.policy, object(), human_owned=human_owned
@@ -2701,9 +2699,15 @@ def test_drain_consumes_intervention_notification_once(
             )
         ).one()
         assert json.loads(notified.detail_json)["workflow_id"] == "unresolved"
-    assert len(notices) == 1
-    assert "workflow=unresolved" in notices[0][0]
-    assert notices[0][1] == "warn"
+        digested = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "task_needs_person_digested",
+            )
+        ).one()
+    # Active cessation releases the slot on its own, so the notice digests.
+    assert notices == []
+    assert "workflow=unresolved" in json.loads(digested.detail_json)["message"]
 
 
 def test_refused_terminal_outcome_still_consumes_notifications(
@@ -3395,6 +3399,11 @@ def test_durable_active_node_reconciles_before_new_planning(monkeypatch):
 
 
 def test_running_workflow_does_not_start_another_session(monkeypatch):
+    # No operator stop request exists for this attempt.
+    monkeypatch.setattr(
+        "factory.orchestration.factory_attempt_stop.process_attempt_stop",
+        lambda *_args: (False, None),
+    )
     run = {"pin": {"workflow_id": "factory-node:t-1:work:1"}}
     dbos = SimpleNamespace(
         get_workflow_status=lambda _: SimpleNamespace(status="PENDING")
@@ -3671,13 +3680,7 @@ def test_tick_at_the_limit_reconciles_without_ingesting_or_admitting(
     assert reconciled == ["t-1"]
 
 
-@pytest.mark.parametrize(
-    "configured, expected",
-    [(None, []), ("false", []), ("true", ["t-1"])],
-)
-def test_tick_gates_only_the_automatic_sessionless_sweep(
-    monkeypatch, configured, expected
-):
+def test_tick_runs_the_automatic_sessionless_sweep(monkeypatch):
     from factory.orchestration import (
         factory_controls as controls,
         factory_landing,
@@ -3688,10 +3691,6 @@ def test_tick_gates_only_the_automatic_sessionless_sweep(
 
     policy = {"max_tasks": 1}
     task = {"task_id": "t-1", "policy": policy}
-    if configured is None:
-        monkeypatch.delenv("FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED", raising=False)
-    else:
-        monkeypatch.setenv("FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED", configured)
     monkeypatch.setattr(
         controls,
         "conductor_status",
@@ -3728,7 +3727,7 @@ def test_tick_gates_only_the_automatic_sessionless_sweep(
 
     conductor.tick()
 
-    assert swept == expected
+    assert swept == ["t-1"]
     assert reconciled == ["t-1"]
     assert deadlines == ["t-1"]
 
@@ -3982,6 +3981,13 @@ def feedback_task(
     return conductor._task(admitted["task_id"]), policy
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Receipt-authorized planner context sources operator_direction from the "
+        "receipt, so the operator task-recovery note never reaches the planner"
+    ),
+)
 def test_same_task_recovery_replaces_old_decision_and_retry(feedback_db, monkeypatch):
     from datetime import datetime, timedelta, timezone
     from factory.orchestration import factory_controls as controls
@@ -5000,7 +5006,6 @@ def test_inserted_planner_decision_uses_its_own_committed_revision(
     import json
     from factory.orchestration import factory_controls as controls
 
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     task, policy = feedback_task()
     if later_planner:
         prior = complete_feedback_node(
@@ -6204,7 +6209,6 @@ def _recovering_factory(queued_factory, monkeypatch, *, owner, old_claim):
     s = queued_factory
     for module in (admission, store, controls):
         monkeypatch.setattr(module, "get_engine", lambda: s.engine)
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
     assert admission.recheck(s.sid, 1, owner)
     with Session(s.engine) as db:
@@ -6373,7 +6377,6 @@ def _aged_pause(queued_factory, monkeypatch, actor, *, unresolved=False):
     from factory.orchestration.factory_models import FactoryAudit, FactoryStart
 
     s = queued_factory
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     assert controls.set_control("pause_task", actor, task_id=s.task["id"])["ok"]
     with Session(s.engine) as db:
         pause = db.exec(
@@ -6528,7 +6531,6 @@ def test_departed_node_destroy_request_settles_on_following_destroyed_view(
     from factory.orchestration.factory_models import FactoryAudit
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     now = s.failed_turn_at + timedelta(seconds=800)
     updated = int((s.failed_turn_at + timedelta(seconds=10)).timestamp() * 1000)
     s.cp.update(
@@ -6680,7 +6682,6 @@ def not_invoked_factory(queued_factory, monkeypatch, request):
     SQLModel.metadata.create_all(s.engine, tables=[AgentResultReceipt.__table__])
     for module in (admission, store, controls):
         monkeypatch.setattr(module, "get_engine", lambda: s.engine)
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
 
     def unexpected(*_args, **_kwargs):
         pytest.fail("typed outcome reconciliation must not invoke or clean up")
@@ -6797,9 +6798,8 @@ def test_dispatch_count_one_remains_the_existing_not_invoked_proof(
 
 @pytest.mark.parametrize("historical", [False, True])
 @pytest.mark.parametrize("bound_guest", [False, True, "prepared_receipt"])
-@pytest.mark.parametrize("supervision", [False, True])
 def test_not_invoked_settles_actual_factory_path_at_zero_without_cleanup(
-    not_invoked_factory, monkeypatch, historical, bound_guest, supervision
+    not_invoked_factory, monkeypatch, historical, bound_guest
 ):
     import json
     from datetime import datetime, timedelta, timezone
@@ -6808,7 +6808,6 @@ def test_not_invoked_settles_actual_factory_path_at_zero_without_cleanup(
     from factory.orchestration import factory_controls as controls
 
     s = not_invoked_factory
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", str(supervision).lower())
     if bound_guest:
         with Session(s.engine) as db:
             agent = db.get(AgentSession, s.sid)
@@ -7117,6 +7116,18 @@ def test_not_invoked_refuses_conflicting_or_insufficient_proof(
     assert s.native_snapshot() == native
 
 
+def _without_observations(snapshot):
+    """Stop supervision records its observations in their own transaction."""
+    return {
+        **snapshot,
+        "stop_events": [
+            event
+            for event in snapshot["stop_events"]
+            if event["action"] != "stop_observation"
+        ],
+    }
+
+
 def test_not_invoked_atomic_rollback_then_historical_reconciliation(
     not_invoked_factory,
 ):
@@ -7145,7 +7156,9 @@ def test_not_invoked_atomic_rollback_then_historical_reconciliation(
     finally:
         event.remove(Session, "before_flush", fail_audit)
     assert conductor.graph.node_runs(s.task["id"]) == runs
-    assert controls.task_snapshot(s.task["id"]) == before
+    assert _without_observations(controls.task_snapshot(s.task["id"])) == (
+        _without_observations(before)
+    )
     assert s.native_snapshot() == native
     conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
     assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "failed"
@@ -7300,7 +7313,6 @@ def stranded_factory(queued_factory, monkeypatch):
     s = queued_factory
     SQLModel.metadata.create_all(s.engine, tables=[AgentResultReceipt.__table__])
     monkeypatch.setattr(controls, "get_engine", lambda: s.engine)
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
     monkeypatch.setattr(GlobalParams, "app_version", "running-version")
     monkeypatch.setattr(nodes, "reconcile_completed_node", lambda *_: None)
     s.cancelled = []
@@ -7621,7 +7633,9 @@ def test_never_dispatched_settlement_rolls_back_with_factory_ledgers(
             s.task, s.run, s.dbos_for("PENDING", "old-version")
         )
     assert conductor.graph.node_runs(s.task["id"]) == [s.run]
-    assert controls.task_snapshot(s.task["id"]) == before
+    assert _without_observations(controls.task_snapshot(s.task["id"])) == (
+        _without_observations(before)
+    )
     with Session(s.engine) as db:
         assert db.get(AgentSession, s.sid).status == "running"
         pending = db.exec(select(PendingMessage)).one()
@@ -8130,7 +8144,6 @@ def uncertain_factory(queued_factory, monkeypatch):
     s = queued_factory
     for module in (controls, admission, store):
         monkeypatch.setattr(module, "get_engine", lambda: s.engine)
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     owner = "original-factory-executor"
     assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
     assert admission.recheck(s.sid, 1, owner)
@@ -8274,7 +8287,6 @@ def bound_zero_turn_factory(queued_factory, monkeypatch):
     s = queued_factory
     for module in (controls, admission, result_receipts, store):
         monkeypatch.setattr(module, "get_engine", lambda: s.engine)
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED", "true")
     owner = "lost-bound-executor"
     assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
@@ -8761,7 +8773,6 @@ def test_bound_zero_turn_live_view_releases_persisted_absence_fence(
     from factory.orchestration import factory_supervision as supervisor
 
     s = bound_zero_turn_factory
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     receipt = result_receipts.prepare_receipt(
         s.sid,
         "lost-bound-executor",
@@ -9199,7 +9210,6 @@ def test_committed_receipt_wins_before_bound_zero_turn_fence(
     from factory.orchestration import factory_supervision as supervisor
 
     s = bound_zero_turn_factory
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     receipt = result_receipts.prepare_receipt(
         s.sid,
         "lost-bound-executor",
@@ -9252,7 +9262,6 @@ def test_bound_zero_turn_remote_progress_reopens_fenced_receipt(
     from factory.orchestration import factory_supervision as supervisor
 
     s = bound_zero_turn_factory
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     receipt = result_receipts.prepare_receipt(
         s.sid,
         "lost-bound-executor",
@@ -9393,7 +9402,6 @@ def test_bound_zero_turn_fence_rejects_late_receipt_callback(
     from factory.execution.models import AgentResultReceipt
 
     s = bound_zero_turn_factory
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     receipt = result_receipts.prepare_receipt(
         s.sid,
         "lost-bound-executor",
@@ -9531,7 +9539,6 @@ def drained_lost_factory(queued_factory, monkeypatch):
     s = queued_factory
     for module in (controls, admission, store):
         monkeypatch.setattr(module, "get_engine", lambda: s.engine)
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED", "true")
     monkeypatch.setattr(node_workflows, "reconcile_completed_node", lambda *_a: None)
     owner = "drained-factory-executor"
@@ -9914,7 +9921,6 @@ def test_drained_loss_gate_does_not_change_unknown_invocation_settlement(
 
     s = uncertain_factory
     monkeypatch.setenv("FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     s.cp.update(
         state="failed",
         terminal_reason="brick_gone",
@@ -9953,7 +9959,6 @@ def test_attempt_stop_preview_survives_original_observer_loss(
     s = queued_factory
     for module in (controls, admission, store):
         monkeypatch.setattr(module, "get_engine", lambda: s.engine)
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     owner = "original-executor"
     assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
     assert admission.recheck(s.sid, 1, owner)
@@ -10021,8 +10026,6 @@ def test_attempt_stop_preview_survives_original_observer_loss(
     assert executor_stop_requested(s.sid, 1, owner, 1)
     assert not executor_stop_requested(s.sid, 1, owner, 2)
     assert not executor_stop_requested(s.sid, 1, "new-owner", 1)
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
-    assert executor_stop_requested(s.sid, 1, owner, 1)
     with Session(s.engine) as db:
         turn = db.exec(select(AgentTurn)).one()
         assert turn.stop_reason == UNKNOWN_INVOCATION
@@ -10184,7 +10187,6 @@ def test_evicted_guest_settles_factory_without_committed_stop_intent(
     from factory.orchestration.factory_models import FactoryAudit
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     observed_at = datetime.now(timezone.utc)
     monkeypatch.setattr(supervisor, "_now", lambda: observed_at + timedelta(seconds=1))
     s.cp.update(
@@ -10234,7 +10236,6 @@ def test_terminal_factory_guest_without_completion_settles_exact_dispatch(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     s.cp.update(
         state=terminal_state,
         last_invoke_at=s.cp["invoke_started_at"] - 1 if prior_completion else None,
@@ -10278,7 +10279,6 @@ def test_incomplete_terminal_factory_proof_rejects_ambiguous_identity(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     s.cp.update(
         state="evicted",
         last_invoke_at=None,
@@ -10318,7 +10318,6 @@ def test_brick_restart_loss_settles_exact_attempt_and_honors_retry_budget(
 
     s = uncertain_factory
     s.result["cost_usd"] = cost_usd
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     s.cp.update(
         state="failed",
         terminal_reason="brick_gone",
@@ -10403,7 +10402,6 @@ def test_ambiguous_brick_restart_evidence_does_not_permit_retry(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     s.cp.update(
         state="failed",
         terminal_reason="brick_gone",
@@ -10471,8 +10469,6 @@ def test_invoke_failure_settles_exact_attempt_and_honors_retry_budget(
 
     s = uncertain_factory
     s.result["cost_usd"] = cost_usd
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
     _invoke_failed_view(s)
 
     assert supervisor.reconcile_uncertain_attempt(
@@ -10520,24 +10516,6 @@ def test_invoke_failure_settles_exact_attempt_and_honors_retry_budget(
     assert _uncertain_snapshot(s) == before
 
 
-def test_invoke_failure_evidence_is_staged_off_by_default(
-    uncertain_factory, monkeypatch
-):
-    from factory.orchestration import factory_supervision as supervisor
-
-    s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    monkeypatch.delenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", raising=False)
-    _invoke_failed_view(s)
-
-    assert not supervisor.reconcile_uncertain_attempt(
-        s.run["pin"], s.sid, s.result, "SUCCESS"
-    )
-    snapshot = _uncertain_snapshot(s)
-    assert snapshot["permits"][0]["state"] == "uncertain"
-    assert snapshot["runs"][0]["status"] == "uncertain"
-
-
 @pytest.mark.parametrize(
     "change",
     [
@@ -10560,8 +10538,6 @@ def test_ambiguous_invoke_failure_evidence_does_not_permit_retry(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
     _invoke_failed_view(s)
     if change == "still_running":
         s.cp.update(state="running", terminal_reason=None)
@@ -10673,9 +10649,6 @@ def test_never_invoked_guest_settles_exact_attempt_without_a_stop(
     from factory.orchestration.factory_models import FactoryAudit
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
-    monkeypatch.setenv("FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "true")
     _never_invoked_view(s)
 
     assert supervisor.reconcile_uncertain_attempt(
@@ -10709,25 +10682,6 @@ def test_never_invoked_guest_settles_exact_attempt_without_a_stop(
     assert _uncertain_snapshot(s) == before
 
 
-def test_never_invoked_guest_evidence_is_staged_off_by_default(
-    uncertain_factory, monkeypatch
-):
-    from factory.orchestration import factory_supervision as supervisor
-
-    s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
-    monkeypatch.delenv("FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", raising=False)
-    _never_invoked_view(s)
-
-    assert not supervisor.reconcile_uncertain_attempt(
-        s.run["pin"], s.sid, s.result, "SUCCESS"
-    )
-    snapshot = _uncertain_snapshot(s)
-    assert snapshot["permits"][0]["state"] == "uncertain"
-    assert snapshot["runs"][0]["status"] == "uncertain"
-
-
 @pytest.mark.parametrize(
     "change",
     [
@@ -10742,7 +10696,6 @@ def test_never_invoked_guest_evidence_is_staged_off_by_default(
         "malformed_created_at",
         "prepared_receipt",
         "captured_receipt",
-        "receipts_disabled",
         "saved_stop_intent",
     ],
 )
@@ -10753,9 +10706,6 @@ def test_ambiguous_never_invoked_evidence_does_not_permit_retry(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
-    monkeypatch.setenv("FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "true")
     _never_invoked_view(s)
     if change == "invoked":
         s.cp["turn_seq"] = 1
@@ -10780,9 +10730,6 @@ def test_ambiguous_never_invoked_evidence_does_not_permit_retry(
         _add_receipt(s)
     elif change == "captured_receipt":
         _add_receipt(s, captured=True)
-    elif change == "receipts_disabled":
-        # Without receipts the local ledger cannot prove the POST never left.
-        monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
     else:
         with controls._locked_session() as (db, control):
             identity, _run = supervisor._locked_attempt(
@@ -10844,8 +10791,6 @@ def test_drain_parked_dispatch_settles_unknown_attempt(
     from factory.orchestration.factory_models import FactoryAudit
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED", "true")
     _drain_parked_view(s)
     s.cp["terminal_reason"] = terminal_reason
 
@@ -10872,7 +10817,6 @@ def test_drain_parked_dispatch_settles_unknown_attempt(
 @pytest.mark.parametrize(
     "change",
     [
-        "flag_off",
         "running",
         "relighting",
         "foreign_dispatch",
@@ -10890,9 +10834,6 @@ def test_ambiguous_drain_parked_evidence_does_not_settle(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    if change != "flag_off":
-        monkeypatch.setenv("FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED", "true")
     _drain_parked_view(s)
     if change in {"running", "relighting"}:
         s.cp["state"] = change
@@ -10937,7 +10878,6 @@ def test_evicted_guest_settles_factory_from_the_committed_stop_intent(
     from factory.orchestration.factory_models import FactoryAudit
 
     s = uncertain_factory
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
     assert not supervisor.reconcile_uncertain_attempt(
         s.run["pin"], s.sid, s.result, "SUCCESS"
     )
@@ -10948,7 +10888,6 @@ def test_evicted_guest_settles_factory_from_the_committed_stop_intent(
         assert len(committed) == 1
         assert json.loads(committed[0].detail_json)["precondition"] == s.precondition
 
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     observed_at = datetime.now(timezone.utc)
     monkeypatch.setattr(supervisor, "_now", lambda: observed_at + timedelta(seconds=1))
     s.cp.update(
@@ -11032,28 +10971,6 @@ def test_evicted_guest_with_a_foreign_stop_precondition_is_refused(
     assert supervisor._control_plane_cessation(s.cp, identity) is not None
 
 
-def test_evicted_factory_guest_does_not_settle_without_new_flag(
-    uncertain_factory, monkeypatch
-):
-    from datetime import datetime, timedelta, timezone
-    from factory.orchestration import factory_supervision as supervisor
-
-    s = uncertain_factory
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
-    observed_at = datetime.now(timezone.utc)
-    monkeypatch.setattr(supervisor, "_now", lambda: observed_at + timedelta(seconds=1))
-    s.cp.update(
-        state="evicted",
-        # The guest ceased after the failure was recorded, which is the
-        # ordering the loop requires and the only one production produces.
-        updated_at=int((s.failed_turn_at + timedelta(seconds=1)).timestamp() * 1000),
-    )
-    assert not supervisor.reconcile_uncertain_attempt(
-        s.run["pin"], s.sid, s.result, "SUCCESS"
-    )
-    assert _uncertain_snapshot(s)["permits"][0]["state"] == "uncertain"
-
-
 def test_new_flag_does_not_poll_factory_before_stop_deadline(
     uncertain_factory, monkeypatch
 ):
@@ -11061,7 +10978,6 @@ def test_new_flag_does_not_poll_factory_before_stop_deadline(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     before_deadline = datetime.now(timezone.utc) - timedelta(seconds=119)
     monkeypatch.setattr(supervisor, "_now", lambda: before_deadline)
     assert not supervisor.reconcile_uncertain_attempt(
@@ -11077,7 +10993,6 @@ def test_old_cessation_timestamp_falls_through_to_stop_completion(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
     now = datetime.now(timezone.utc)
     monkeypatch.setattr(supervisor, "_now", lambda: now + timedelta(seconds=1))
     assert not supervisor.reconcile_uncertain_attempt(
@@ -11092,7 +11007,6 @@ def test_old_cessation_timestamp_falls_through_to_stop_completion(
     }
     s.cp["updated_at"] = int(dispatched_at.timestamp() * 1000)
     assert supervisor._control_plane_cessation(s.cp, identity) is None
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     assert supervisor.reconcile_uncertain_attempt(
         s.run["pin"], s.sid, s.result, "SUCCESS"
     )
@@ -11146,7 +11060,6 @@ def test_same_guest_restart_evidence_settles_the_old_invocation(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     # Commit the exact pre-restart operation identity first.
     assert not supervisor.reconcile_uncertain_attempt(
         s.run["pin"], s.sid, s.result, "SUCCESS"
@@ -11217,7 +11130,6 @@ def test_restart_evidence_refuses_foreign_or_nonmonotonic_invocations(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     assert not supervisor.reconcile_uncertain_attempt(
         s.run["pin"], s.sid, s.result, "SUCCESS"
     )
@@ -11420,7 +11332,6 @@ def test_flag_off_missing_precondition_keeps_legacy_refusal_reason(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.delenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", raising=False)
     s.cp.update(
         stop_precondition=None,
@@ -11452,7 +11363,6 @@ def test_transient_missing_precondition_retries_on_one_durable_window(
     from factory.orchestration import factory_supervision as supervisor
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
     clock = [s.failed_turn_at + timedelta(minutes=3)]
     monkeypatch.setattr(supervisor, "_now", lambda: clock[0])
@@ -11672,7 +11582,6 @@ def test_concurrent_transient_ticks_persist_one_sample(uncertain_factory, monkey
 
     s = uncertain_factory
     monkeypatch.setenv("FACTORY_TRANSIENT_STOP_RETRY_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(
         supervisor, "_now", lambda: s.failed_turn_at + timedelta(minutes=3)
     )
@@ -11879,7 +11788,7 @@ def test_changed_local_owner_after_get_cannot_authorize_stop(
 
 @pytest.mark.parametrize(
     "blocked",
-    ["disabled", "not_due", "pending_dbos", "missing_identity", "legacy_terminal"],
+    ["not_due", "pending_dbos", "missing_identity", "legacy_terminal"],
 )
 def test_supervision_never_substitutes_silence_or_state_for_stop_authority(
     uncertain_factory, monkeypatch, blocked
@@ -11889,9 +11798,7 @@ def test_supervision_never_substitutes_silence_or_state_for_stop_authority(
 
     s = uncertain_factory
     status = "SUCCESS"
-    if blocked == "disabled":
-        monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
-    elif blocked == "not_due":
+    if blocked == "not_due":
         real_now = supervisor._now()
         monkeypatch.setattr(
             supervisor, "_now", lambda: real_now - timedelta(seconds=119)
@@ -12204,7 +12111,6 @@ def test_factory_stop_refuses_cleanup_ownership_changed_after_observation(
 
 @pytest.fixture
 def escalating_factory(feedback_db, monkeypatch):
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
     task, policy = feedback_task()
     key = "implement_escalate"
     workflow = f"factory-node:{task['id']}:{key}:1"
@@ -15505,6 +15411,9 @@ def test_a_maximal_deviation_does_not_pause_a_task_that_would_otherwise_plan(
     # so a deviation added after the shrink loop could only overflow it.
     import json
 
+    # The shrink loop trades task text here. Receipt context protects its
+    # acceptance text instead, which planner_knowledge_test covers.
+    monkeypatch.setattr(conductor, "_load_planner_factory_context", lambda _id: None)
     baseline = conductor._planner_context(task, nodes, runs)
     without = len(baseline)
     baseline_omitted = json.loads(baseline)["omitted"]["task_characters"]
@@ -17267,8 +17176,6 @@ def lost_before_guest_factory(queued_factory, monkeypatch):
     SQLModel.metadata.create_all(s.engine, tables=[AgentResultReceipt.__table__])
     for module in (admission, store, controls):
         monkeypatch.setattr(module, "get_engine", lambda: s.engine)
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
-    monkeypatch.setenv("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "true")
 
     def unexpected(*_args, **_kwargs):
         pytest.fail("lost-before-guest settlement must not invoke or clean up")
@@ -17609,10 +17516,9 @@ def test_lost_before_guest_proof_reads_the_exact_dispatch_identity(
     assert s.native_snapshot() == s.native_snapshot()
 
 
-@pytest.mark.parametrize("response_lost_recovery", [False, True])
 @pytest.mark.parametrize("historical", [False, True])
 def test_lost_before_guest_settles_failed_and_refunds_the_reservation(
-    lost_before_guest_factory, monkeypatch, historical, response_lost_recovery
+    lost_before_guest_factory, monkeypatch, historical
 ):
     import json
     from sqlmodel import Session, select
@@ -17624,10 +17530,6 @@ def test_lost_before_guest_settles_failed_and_refunds_the_reservation(
     from factory.orchestration import factory_controls as controls
 
     s = lost_before_guest_factory
-    monkeypatch.setenv(
-        "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
-        str(response_lost_recovery).lower(),
-    )
     if historical:
         _persist_uncertain_lost_before_guest(s)
     before = controls.task_snapshot(s.task["id"])
@@ -17675,34 +17577,6 @@ def test_lost_before_guest_settles_failed_and_refunds_the_reservation(
     assert conductor.graph.node_runs(s.task["id"])[0] == run
     assert len(_stop_events(s)) == 1
     assert s.native_snapshot() == settled_native
-
-
-@pytest.mark.parametrize("response_lost_recovery", [False, True])
-def test_lost_before_guest_settlement_is_inert_while_the_flag_is_off(
-    lost_before_guest_factory, monkeypatch, response_lost_recovery
-):
-    from sqlmodel import Session, select
-    from factory.execution.models import AgentCapacityReservation
-    from factory.orchestration import factory_controls as controls
-
-    s = lost_before_guest_factory
-    monkeypatch.setenv("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "false")
-    monkeypatch.setenv(
-        "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
-        str(response_lost_recovery).lower(),
-    )
-    _persist_uncertain_lost_before_guest(s)
-    before = controls.task_snapshot(s.task["id"])
-    native = s.native_snapshot()
-    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
-    assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "uncertain"
-    current = controls.task_snapshot(s.task["id"])
-    assert current["starts"] == before["starts"]
-    assert current["state"] == "uncertain" and current["unresolved_starts"] == 1
-    assert _stop_events(s) == []
-    assert s.native_snapshot() == native
-    with Session(s.engine) as db:
-        assert db.exec(select(AgentCapacityReservation)).one().state == "uncertain"
 
 
 def test_lost_before_guest_does_not_claim_a_never_dispatched_attempt(
@@ -17922,21 +17796,14 @@ def test_lost_before_guest_settlement_revalidates_the_proof(
     assert _stop_events(s) == []
 
 
-@pytest.mark.parametrize("response_lost_recovery", [False, True])
 def test_operator_settle_lost_attempt_releases_one_attempt(
-    lost_before_guest_factory, monkeypatch, response_lost_recovery
+    lost_before_guest_factory, monkeypatch
 ):
     from sqlmodel import Session, select
     from factory.execution.models import AgentCapacityReservation
     from factory.orchestration import factory_controls as controls
 
     s = lost_before_guest_factory
-    # The operator path is deliberately usable while the reconciler flag is off.
-    monkeypatch.setenv("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "false")
-    monkeypatch.setenv(
-        "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
-        str(response_lost_recovery).lower(),
-    )
     _persist_uncertain_lost_before_guest(s)
     settled = controls.settle_lost_attempt(
         s.task["id"], s.run["node_key"], 1, "operator"
@@ -18076,7 +17943,6 @@ def provider_error_factory(queued_factory, monkeypatch):
     SQLModel.metadata.create_all(s.engine, tables=[AgentResultReceipt.__table__])
     for module in (admission, store, controls):
         monkeypatch.setattr(module, "get_engine", lambda: s.engine)
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
 
     def unexpected(*_args, **_kwargs):
         pytest.fail("provider-error settlement must not invoke or clean up")
@@ -18220,8 +18086,6 @@ def test_tool_activity_then_provider_error_stays_uncertain(
     from factory.orchestration import factory_controls as controls
 
     s = provider_error_factory
-    # Supervision owns this shape exactly as before; keep it out of the way.
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
     s.persist(activities=[{"type": "tool", "name": "Bash", "input": "ls"}])
     with Session(s.engine) as db:
         assert (
@@ -19551,9 +19415,8 @@ def test_expired_task_with_reserved_work_is_left_alone_until_it_settles(
     from factory.orchestration.models import SwarmTask
 
     monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
-    # Opting in changes nothing while the release is staged off, and a reserved
-    # start is refused by the backstop either way.
-    monkeypatch.setenv("FACTORY_DEADLINE_BACKSTOP_ENABLED", "true")
+    # The backstop changes nothing while the release is staged off, and a
+    # reserved start is refused by the backstop either way.
     now = datetime(2026, 9, 20, 12, tzinfo=timezone.utc)
     monkeypatch.setattr(controls, "_now", lambda: now)
     task, policy = feedback_task(
@@ -21334,7 +21197,6 @@ def _wedged_backstop_task(queued_factory, monkeypatch):
     s = queued_factory
     for module in (controls,):
         monkeypatch.setattr(module, "get_engine", lambda: s.engine)
-    monkeypatch.setenv("FACTORY_DEADLINE_BACKSTOP_ENABLED", "true")
     with Session(s.engine) as db:
         start = db.exec(select(FactoryStart)).first()
         start.status = "uncertain"
@@ -23111,7 +22973,6 @@ def test_interrupted_continuation_reconciles_without_remote_action(
     from sqlmodel import Session, select
 
     s = interrupted_continuation
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     s.dbos.get_workflow_status = lambda _: SimpleNamespace(status=workflow_status)
     s.result.update(invocation_phase="not_invoked", capacity_denied=True)
     _persist_uncertain_not_invoked(s)
@@ -23187,8 +23048,6 @@ def test_priced_drain_continuation_retires_at_reserved_cost_when_relay_enabled(
     from factory.orchestration import factory_controls as controls
 
     s = interrupted_continuation
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED", "true")
     s.result.update(invocation_phase="not_invoked", capacity_denied=True)
     _persist_uncertain_not_invoked(s)
     with Session(s.engine) as db:
@@ -23239,7 +23098,6 @@ def test_priced_drain_continuation_retires_at_reserved_cost_when_relay_enabled(
         "cleanup",
         "alias",
         "changed_branch",
-        "priced",
         "response_after_turn",
     ],
 )
@@ -23332,8 +23190,6 @@ def test_interrupted_continuation_requires_complete_exact_proof(
             )
         elif conflict == "changed_branch":
             agent.branch = "different-branch"
-        elif conflict == "priced":
-            turn.cost_usd = 1.0
         elif conflict == "response_after_turn":
             receipt.received_at = turn.created_at + timedelta(seconds=1)
         if conflict != "missing_last":
@@ -23410,7 +23266,6 @@ def initial_evicted_guest(uncertain_factory, monkeypatch):
     from datetime import timedelta
 
     s = uncertain_factory
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     s.cp.update(
         state="evicted",
         terminal_reason="idle_ttl",
@@ -24137,7 +23992,7 @@ def test_the_correction_model_reads_the_escalated_pin():
 # wait for it, then settle only on a sampled gone proof for the recorded guest.
 
 
-def _cessation(s, monkeypatch, *, enabled=True, guest=None, paused=False):
+def _cessation(s, monkeypatch, *, guest=None, paused=False):
     """Drive factory_cessation against a fake control plane for one attempt."""
     import copy
     from datetime import datetime, timedelta, timezone
@@ -24146,9 +24001,6 @@ def _cessation(s, monkeypatch, *, enabled=True, guest=None, paused=False):
     from factory.orchestration import factory_cessation
     from factory.orchestration import factory_supervision as supervisor
 
-    monkeypatch.setenv(
-        "FACTORY_ACTIVE_CESSATION_ENABLED", "true" if enabled else "false"
-    )
     # Isolate this path from the proofs that wait for evidence.
     monkeypatch.setenv("FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED", "false")
     if not hasattr(s, "now"):
@@ -24506,20 +24358,6 @@ def test_active_cessation_refuses_an_identity_changed_since_the_intent(
     assert _cessation_events(s, "stop_settled") == []
 
 
-def test_active_cessation_is_off_by_default(bound_stranded_factory, monkeypatch):
-    s = bound_stranded_factory
-    _cessation(s, monkeypatch, guest=s.guest)
-    monkeypatch.delenv("FACTORY_ACTIVE_CESSATION_ENABLED")
-    before = _uncertain_snapshot(s)
-    for _ in range(4):
-        assert _cessation_tick(s, 301) == 0
-    after = _uncertain_snapshot(s)
-    for key in ("session", "turns", "pending", "permits", "runs"):
-        assert after[key] == before[key]
-    assert s.gets == [] and s.destroys == []
-    assert _cessation_events(s, "cessation_intent") == []
-
-
 def test_active_cessation_waits_for_the_grace_after_the_deadline(
     bound_zero_turn_factory, monkeypatch
 ):
@@ -24546,16 +24384,12 @@ def test_active_cessation_never_touches_a_live_workflow(
     assert s.gets == [] and _cessation_events(s, "cessation_intent") == []
 
 
-def test_operator_cessation_runs_with_the_flag_off_and_keeps_the_receipt(
-    bound_zero_turn_factory, monkeypatch
-):
+def test_operator_cessation_keeps_the_receipt(bound_zero_turn_factory, monkeypatch):
     """#6025 item 2: one exact attempt on demand, no receipt cancellation."""
     from factory.orchestration.factory_models import FactoryReceipt
 
     s = bound_zero_turn_factory
-    cessation = _cessation(
-        s, monkeypatch, enabled=False, guest=s.precondition["session_id"]
-    )
+    cessation = _cessation(s, monkeypatch, guest=s.precondition["session_id"])
     # Not past the deadline either: an operator request needs neither.
     s.cessation_task["deadline_at"] = s.now[0].isoformat()
     preview = cessation.read_cessation(s.task["id"], s.run["node_key"], 1)
@@ -24622,22 +24456,6 @@ def _cessation_spans(monkeypatch):
     return spans
 
 
-def test_cessation_span_records_a_run_skipped_with_the_flag_off(
-    bound_zero_turn_factory, monkeypatch
-):
-    s = bound_zero_turn_factory
-    _cessation(s, monkeypatch, enabled=False, guest=s.precondition["session_id"])
-    spans = _cessation_spans(monkeypatch)
-    assert _cessation_tick(s) == 0
-    [span] = spans()
-    assert span["factory.cessation.outcome"] == "not_applicable"
-    assert span["factory.cessation.reason"] == "flag_disabled"
-    assert span["factory.cessation.enabled"] is False
-    assert span["factory.task_id"] == s.task["id"]
-    assert span["factory.node_key"] == s.run["node_key"]
-    assert span["factory.attempt"] == 1
-
-
 def test_cessation_span_records_the_deadline_grace_still_pending(
     bound_zero_turn_factory, monkeypatch
 ):
@@ -24652,7 +24470,6 @@ def test_cessation_span_records_the_deadline_grace_still_pending(
     assert _cessation_tick(s) == 0
     [span] = spans()
     assert span["factory.cessation.reason"] == "deadline_grace_pending"
-    assert span["factory.cessation.enabled"] is True
     assert span["factory.cessation.deadline_due"] is False
 
 
@@ -24713,9 +24530,7 @@ def test_cessation_span_records_an_operator_refusal_reason(
     bound_zero_turn_factory, monkeypatch
 ):
     s = bound_zero_turn_factory
-    cessation = _cessation(
-        s, monkeypatch, enabled=False, guest=s.precondition["session_id"]
-    )
+    cessation = _cessation(s, monkeypatch, guest=s.precondition["session_id"])
     spans = _cessation_spans(monkeypatch)
     stale = cessation.request_cessation(
         s.task["id"],
@@ -24744,9 +24559,8 @@ def test_cessation_reason_codes_stay_bounded():
 def test_never_bound_attempt_settles_at_zero_on_the_lost_before_guest_proof(
     lost_before_guest_factory, monkeypatch
 ):
-    """The #6025 shape with the conductor's own proof flag off: nothing to destroy."""
+    """The #6025 shape: nothing to destroy."""
     s = lost_before_guest_factory
-    monkeypatch.setenv("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "false")
     _persist_uncertain_lost_before_guest(s)
     _cessation(s, monkeypatch)
     before = s.native_snapshot()

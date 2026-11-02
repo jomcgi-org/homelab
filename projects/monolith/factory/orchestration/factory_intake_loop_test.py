@@ -3090,7 +3090,6 @@ def _pulls(monkeypatch, pulls):
 
 
 def test_merged_rescoped_repository_work_is_not_admitted_again(db, monkeypatch):
-    monkeypatch.setenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", "true")
     _rescoped_history(db)
     reads = _pulls(
         monkeypatch,
@@ -3118,7 +3117,6 @@ def test_merged_rescoped_repository_work_is_not_admitted_again(db, monkeypatch):
 
 
 def test_an_unmerged_rescoped_pr_leaves_the_issue_admissible(db, monkeypatch):
-    monkeypatch.setenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", "true")
     _rescoped_history(db)
     _pulls(monkeypatch, {"pulls/6401": {"merged": False, "body": "Refs #11"}})
     fake_pages(monkeypatch, [issue(11, ["agent-ready"])])
@@ -3127,7 +3125,6 @@ def test_an_unmerged_rescoped_pr_leaves_the_issue_admissible(db, monkeypatch):
 
 
 def test_a_failed_delivery_check_defers_rather_than_admits(db, monkeypatch):
-    monkeypatch.setenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", "true")
     _rescoped_history(db)
 
     def broken(_repo, _suffix):
@@ -3140,14 +3137,6 @@ def test_a_failed_delivery_check_defers_rather_than_admits(db, monkeypatch):
     assert intake_loop.intake_tick(policy(), generation=2) == []
     detail = json.loads(audits(db, "intake_idle")[0].detail_json)
     assert detail["excluded"] == {"delivery_check_deferred": 1}
-
-
-def test_without_the_flag_rescoped_work_is_admitted_as_before(db, monkeypatch):
-    monkeypatch.delenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", raising=False)
-    _rescoped_history(db)
-    fake_pages(monkeypatch, [issue(11, ["agent-ready"])])
-    admitted = intake_loop.intake_tick(policy(), generation=2)
-    assert [row["receipt"]["issue_number"] for row in admitted] == [11]
 
 
 def test_a_capped_loom_never_starves_homelab_delivery_intake(db, monkeypatch):
@@ -3185,7 +3174,6 @@ def test_the_delivered_scope_check_reads_each_candidates_own_repo(db, monkeypatc
     # Under the per-repo loop the hand-off check runs against the candidate's
     # repo, out of one read budget shared by the whole sweep. A merged loom PR
     # proves loom's issue delivered; homelab's candidate is still admitted.
-    monkeypatch.setenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", "true")
     _rescoped_history(db, repo="weave-hand/loom")
     from factory.orchestration import factory_conductor
 
@@ -3221,7 +3209,6 @@ def test_the_delivered_scope_check_reads_each_candidates_own_repo(db, monkeypatc
 def test_one_delivery_check_budget_covers_every_repo_in_a_sweep(db, monkeypatch):
     # The checks spend the shared GitHub budget, so a second repo does not
     # get a fresh allowance: once it is spent, the next candidate defers.
-    monkeypatch.setenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", "true")
     monkeypatch.setattr(intake_loop.handoff, "INTAKE_READS_PER_SWEEP", 1)
     _rescoped_history(db, number=3, task_id="t-home", pr=6401)
     _rescoped_history(db, number=11, task_id="t-loom", pr=6402, repo="weave-hand/loom")

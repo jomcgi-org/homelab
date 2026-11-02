@@ -574,7 +574,6 @@ def test_admission_recall_reuses_sqlite_session(db, policy, monkeypatch, caplog)
     from knowledge import recall_cache
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.setenv("KNOWLEDGE_RECALL_ENABLED", "true")
     engine_calls = []
     submissions = []
 

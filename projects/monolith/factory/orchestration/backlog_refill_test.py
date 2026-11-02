@@ -3622,7 +3622,6 @@ def preflight_run(reviewed_run, monkeypatch, request):
 
     for module in (admission, store, result_receipts, core.db):
         monkeypatch.setattr(module, "get_engine", lambda: s.engine)
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
     pin = s.collector["pin"]
     with Session(s.engine) as db:
         agent = AgentSession(
