@@ -425,6 +425,18 @@ def test_optimizer_loader_bounds_windows_at_proven_deployment(monkeypatch):
         if sql == retro._OPTIMIZER_COUNTS:
             assert params["end"] - params["start"] == retro.timedelta(hours=72)
             assert params["as_of"] == NOW
+    from factory.orchestration import learning_inputs
+
+    later = retro._load_optimizer(object(), NOW + retro.timedelta(hours=1))
+    assert later["outcomes_and_cost_as_of"] != loaded["outcomes_and_cost_as_of"]
+    first = learning_inputs.fingerprint({"optimizer": loaded}, "a" * 40, "prompt")
+    assert first == learning_inputs.fingerprint(
+        {"optimizer": later}, "a" * 40, "prompt"
+    )
+    later["post"]["unknown_reservation_usd"] = 0
+    assert first != learning_inputs.fingerprint(
+        {"optimizer": later}, "a" * 40, "prompt"
+    )
 
 
 def test_optimizer_merge_without_provenance_never_loads_windows(monkeypatch):
@@ -936,7 +948,7 @@ def test_learning_diagnosis_stays_with_existing_native_owner(learning_input_db, 
             url="https://github.com/jomcgi-org/homelab/issues/6781",
             actor="operator",
             state=state,
-            task_id="existing-learning-owner",
+            task_id=None if state == "queued" else "existing-learning-owner",
         )
     )
     db.flush()
@@ -944,8 +956,16 @@ def test_learning_diagnosis_stays_with_existing_native_owner(learning_input_db, 
     _learn(db, {"findings": []})
     _prepare_learning(db)
     assert not _learning_jobs(db)
+    if state == "queued":
+        assert not diagnostic_context(db, "existing-learning-owner")
+        db.execute(
+            text(
+                "UPDATE factory_receipt SET state='admitted',task_id='existing-learning-owner' WHERE issue_number=6781"
+            )
+        )
     context = diagnostic_context(db, "existing-learning-owner")
     assert len(context) == 1 and context[0]["source"]["session_id"] == 1
+    assert not diagnostic_context(db, "unrelated-owner")
 
 
 def test_learning_diagnosis_completion_records_report_without_new_work(

@@ -29,6 +29,7 @@ VOLATILE = {
     "age_seconds",
     "age_days",
     "generated_at",
+    "outcomes_and_cost_as_of",
 }
 
 
@@ -161,7 +162,7 @@ def _diagnose(db, payload, fingerprint_value, previous):
 
 
 def prepare(db, name, holder, data, head):
-    from agent.routine_jobs import lock_claim
+    from agent.api import lock_claim
 
     if not enabled() or name != JOB or not holder or not lock_claim(db, name, holder):
         raise ValueError("learning_input_owner_changed_or_disabled")

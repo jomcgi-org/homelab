@@ -13,7 +13,7 @@ import os
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import BigInteger, cast, func
+from sqlalchemy import BigInteger, and_, cast, func, or_
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import select
 
@@ -466,10 +466,17 @@ def _diagnose(db, grant, state):
 
 
 def diagnostic_context(db, task_id):
+    receipts = select(FactoryReceipt.id).where(FactoryReceipt.task_id == task_id)
     rows = db.exec(
         select(FactoryAudit)
         .where(
-            FactoryAudit.task_id == task_id,
+            or_(
+                FactoryAudit.task_id == task_id,
+                and_(
+                    FactoryAudit.task_id.is_(None),
+                    _field(db, "owner_receipt_id", integer=True).in_(receipts),
+                ),
+            ),
             FactoryAudit.action.in_((DIAGNOSIS, "learning_diagnosis_required")),
         )
         .order_by(FactoryAudit.id.desc())
