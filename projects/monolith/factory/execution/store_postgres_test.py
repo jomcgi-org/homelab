@@ -113,7 +113,8 @@ def _pause_after_session_lock(lane, monkeypatch, actor):
     """Pause only after production SQL acquired the winner's real row lock."""
     locked = Queue(maxsize=1)
     proceed = Event()
-    original = store._lock_session
+    # Every lane writer reaches the row lock here, with or without the pool.
+    original = store._lock_session_row
 
     def lock(session, session_id):
         row = original(session, session_id)
@@ -125,7 +126,7 @@ def _pause_after_session_lock(lane, monkeypatch, actor):
             assert proceed.wait(HOLDER_WAIT_SECONDS), "row-lock holder was not released"
         return row
 
-    monkeypatch.setattr(store, "_lock_session", lock)
+    monkeypatch.setattr(store, "_lock_session_row", lock)
     return locked, proceed
 
 
