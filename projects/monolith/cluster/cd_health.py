@@ -80,6 +80,10 @@ def _env_seconds(name: str, default: float) -> float:
         return default
 
 
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _parse_ts(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -554,11 +558,13 @@ def _observation_timeout_s() -> float:
 async def run_deployment_observation_cycle(poll_time: datetime) -> None:
     """Write this poll's deployment observations, bounded and fully isolated.
 
-    Runs AFTER the cd probe
+    Default off (DEPLOYMENT_OBSERVATIONS_ENABLED). Runs AFTER the cd probe
     latch is written, under a timeout, so a slow GitHub lookup or an embedding
     retry can never delay the latch past the public reader's staleness bound.
     Failures and timeouts are logged and never touch the cd result.
     """
+    if not _env_enabled("DEPLOYMENT_OBSERVATIONS_ENABLED"):
+        return
     timeout_s = _observation_timeout_s()
     try:  # nosemgrep: no-broad-except-swallow - isolated observation lane
         await asyncio.wait_for(

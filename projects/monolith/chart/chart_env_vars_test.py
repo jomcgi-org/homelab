@@ -358,18 +358,11 @@ def test_repo_diff_reconcile_enabled_in_deploy(chart_context):
     )
 
 
-def test_knowledge_recall_enabled_in_deploy_with_five_notes(chart_context):
-    """The API deployment receives both knowledge recall controls.
-
-    The chart default is off; production flips it on in deploy/values.yaml
-    (#5680 read side), and this renders with the deploy values.
-    """
+def test_knowledge_recall_limit_in_deploy_is_five_notes(chart_context):
+    """Recall always runs (#5680 read side); the deploy values set its limit."""
     rendered = chart_context["rendered"]
 
-    assert re.search(
-        r'- name: KNOWLEDGE_RECALL_ENABLED\n\s+value: "true"',
-        rendered,
-    )
+    assert "name: KNOWLEDGE_RECALL_ENABLED" not in rendered
     assert re.search(
         r'- name: KNOWLEDGE_RECALL_LIMIT\n\s+value: "5"',
         rendered,
