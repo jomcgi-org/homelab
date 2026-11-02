@@ -5,15 +5,14 @@ Thin async wrappers that call into the corresponding operation module
 directive-autopilot surface) and serialize datetimes
 / UUIDs as strings for JSON transport. The Python function names use
 underscores; FastMCP's wire identifiers use the dashed form
-(``monolith-agent-acquire-lock`` etc.).
+(``monolith-agent-lock`` etc.).
 
-  Locks    : acquire_lock, extend_lock, release_lock, list_locks
+  Locks    : lock (acquire | extend | release), list_locks
   Notify   : notify
   Check    : check_stuck_jobs, check_dead_letters
   Trigger  : trigger_job  (Argo CronWorkflow one-off submission)
-  Routine  : list_routine_jobs, claim_routine_job, complete_routine_job,
-             register_routine_job, deregister_routine_job,
-             trigger_routine_job  (claude_agent.routine_jobs)
+  Routine  : list_routine_jobs, routine_job (claim | complete | register |
+             deregister | trigger)  (claude_agent.routine_jobs)
   Directives: chat_list_directives, chat_directive_history, chat_set_directive,
              chat_pin_directive, chat_revert_directive (introspect + tune the
              silent directive autopilot, manual writes win precedence)
