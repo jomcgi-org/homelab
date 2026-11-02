@@ -1,5 +1,47 @@
 # Local Grimoire table
 
+## Rolling-deployment recovery status
+
+Issue #7565 remains open. The BFF's GET retry is staged behind the frontend
+environment variable `GRIMOIRE_ROLLOUT_RECOVERY_ENABLED=true`, which defaults
+off and is not enabled in the deployment chart. It permits one additional
+attempt for a fetch connection failure or HTTP 502/503/504. Both attempts share
+a 1.5-second deadline. Caller cancellation still applies. Mutations retain
+their ten-second deadline and are never automatically retried. Authorization,
+validation, application errors and invalid JSON are not retried.
+
+Run the focused regression from the repository root:
+
+```bash
+pnpm --dir projects/monolith/frontend exec vitest run src/lib/server/grimoire-auth.test.js src/lib/server/grimoire-session.test.js
+```
+
+The existing `//projects/monolith/frontend:test` Linux target discovers the
+new test through its `src/**/*.test.js` glob. These are unit tests, not browser
+or rollout evidence. Do not enable this staged behavior as completed #7565
+delivery: the three-seat built-asset swap and backend-restart rehearsal,
+deployment-reload draft preservation, and resumed-polling coverage are still
+outstanding. The current launcher below uses a dev frontend and cannot prove
+built-chunk replacement recovery. Its backend also creates a fresh disposable
+signing key on startup; a restart rehearsal must retain that local key and
+database without using live credentials.
+
+Operational acceptance remains separate after repository work is finished.
+Within 72 hours of an authorized rollout, its owner must call
+`verify_deployment` with `app="monolith"` and
+`expected_revision="<CI-produced chart version containing the delivered head>"`
+and retain the verified revision and timestamps. The owner must also read a
+revision-bound report of one actual rollout during an active DM/two-player
+session. That report must include rollout start/end times, each client's
+recovery duration, before/after values for every exercised draft, exact event
+and request IDs (including a committed send whose response was lost), stored
+event deduplication results, and error/sign-out observations. Require no lost
+or duplicate events, every draft retained, and all clients Live within ten
+seconds. Local reports cannot satisfy this live acceptance. A command for
+collecting that live report has not yet been implemented.
+
+## Start a disposable table
+
 Run the friends UI against the real Grimoire router and a disposable Postgres
 16 database with pgvector. Three signed demo identities share one campaign:
 Rowan (DM), Elowen (ranger), and Bram (fighter). Each launch starts fresh.
