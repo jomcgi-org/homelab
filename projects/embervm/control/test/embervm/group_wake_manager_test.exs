@@ -205,7 +205,6 @@ defmodule Embervm.GroupWakeManagerTest do
           :wake_bound_ms,
           :mono_clock,
           :restore_artifact_fun,
-          :node_confirmed_destroy,
           :destroying_alarm_ms,
           :orphan_grace_ms
         ])
@@ -527,7 +526,14 @@ defmodule Embervm.GroupWakeManagerTest do
   end
 
   test "adoption SKIPS a :destroying group even though the node still reports live members" do
-    ctx = start_stack()
+    # An unconfirming teardown keeps the redrive from terminalizing the group, so
+    # the assertion below observes adoption alone.
+    ctx =
+      start_stack(
+        stop_group_member_fun: fn _channel, _req ->
+          {:ok, %Embervm.Node.V1.StopGroupMemberResponse{teardown_confirmed: false}}
+        end
+      )
     instance_id = "g-destroying"
 
     # Seed an instance, then force it into :destroying: mid node-confirmed teardown
@@ -543,13 +549,13 @@ defmodule Embervm.GroupWakeManagerTest do
 
     :ok = GroupWakeManager.reconcile(ctx.mgr)
 
-    # NOT re-adopted to :running; stays destroying for the (gated) redrive to own.
+    # NOT re-adopted to :running; stays destroying for the redrive to own.
     {:ok, inst} = GroupStore.get(ctx.store, instance_id)
     assert inst.state == :destroying
   end
 
-  test "gated reconcile re-drives a destroying group and records it destroyed" do
-    ctx = start_stack(node_confirmed_destroy: true)
+  test "reconcile re-drives a destroying group and records it destroyed" do
+    ctx = start_stack()
     instance_id = "g-redrive"
 
     _ = seed_banked(ctx, instance_id)
@@ -580,8 +586,8 @@ defmodule Embervm.GroupWakeManagerTest do
            ] = stop_calls(ctx)
   end
 
-  test "gated reconcile confirms a destroying group by owner-reported absence" do
-    ctx = start_stack(node_confirmed_destroy: true)
+  test "reconcile confirms a destroying group by owner-reported absence" do
+    ctx = start_stack()
     instance_id = "g-absent"
 
     _ = seed_banked(ctx, instance_id)
@@ -594,8 +600,8 @@ defmodule Embervm.GroupWakeManagerTest do
     assert stop_calls(ctx) == []
   end
 
-  test "gated reconcile leaves a destroying group when its owner is not reporting" do
-    ctx = start_stack(node_confirmed_destroy: true)
+  test "reconcile leaves a destroying group when its owner is not reporting" do
+    ctx = start_stack()
     instance_id = "g-disconnected"
 
     _ = seed_banked(ctx, instance_id)
@@ -607,8 +613,8 @@ defmodule Embervm.GroupWakeManagerTest do
     assert stop_calls(ctx) == []
   end
 
-  test "gated reconcile destroys a node-reported group member with no CP row" do
-    ctx = start_stack(node_confirmed_destroy: true)
+  test "reconcile destroys a node-reported group member with no CP row" do
+    ctx = start_stack()
 
     seed_node(ctx, %{
       group_member_vms: [

@@ -141,12 +141,10 @@ defmodule Embervm.ServingState do
     # Banked-TTL GC / disk-pressure eviction: only a banked instance holds an
     # evictable serving snapshot.
     {:banked, :evict} => :evicted,
-    # Destroy: from every non-terminal state. The direct edge is today's behaviour;
-    # the begin_destroy -> destroying -> destroy path is the node-confirmed shape
-    # (ADR embervm/014 decision 5), gated by EMBERVM_NODE_CONFIRMED_DESTROY. Serving
-    # destruction is sweeper-driven today, so the node-confirmed manager wiring is a
-    # follow-up; the state + edges exist so a destroying row rebuilds and the FSM is
-    # coherent across all stores.
+    # Destroy: from every non-terminal state. The begin_destroy -> destroying ->
+    # destroy path is the node-confirmed shape (ADR embervm/014 decision 5) the
+    # sweeper takes for a live instance; ServingManager reconciliation re-drives a
+    # row left destroying.
     {:starting, :destroy} => :destroyed,
     {:published, :destroy} => :destroyed,
     {:draining, :destroy} => :destroyed,

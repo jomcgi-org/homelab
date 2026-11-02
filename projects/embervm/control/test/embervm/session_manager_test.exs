@@ -263,7 +263,6 @@ defmodule Embervm.SessionManagerTest do
         expected_instances_fun: Keyword.get(opts, :expected_instances_fun,
           fn -> %{"node-4" => %{configured_id: "node-4"}} end),
         session_opts: session_opts,
-        restart_flush_inflight_invokes: Keyword.get(opts, :restart_flush_inflight_invokes, false),
         metering: Keyword.get(opts, :metering, Embervm.Metering),
         op_log: manager_op_log,
         op_log_mod: Keyword.get(opts, :op_log_mod, SQLite),
@@ -280,9 +279,6 @@ defmodule Embervm.SessionManagerTest do
           :reserve_session_vm_fun,
           :commit_session_vm_fun,
           :release_session_vm_fun,
-          :node_confirmed_destroy,
-          :drain_instance_scoped,
-          :cross_node_rejoin,
           :destroying_alarm_ms,
           :orphan_grace_ms,
           :departure_retry_interval_ms,
@@ -617,7 +613,6 @@ defmodule Embervm.SessionManagerTest do
   # already parked drain after capacity has forgotten its draining owner.
   defp cross_node_stack(opts \\ []) do
     opts = Keyword.merge([
-      cross_node_rejoin: true,
       channel_fun: fn dial -> {:ok, {:channel, dial}} end,
       prime_fun: fake_prime_fun("vm-cross-node"),
       restore_artifact_fun: fn _ch, req ->
@@ -651,7 +646,6 @@ defmodule Embervm.SessionManagerTest do
       parent = self()
       {:ok, active} = Agent.start_link(fn -> nil end)
       ctx = start_stack(
-        cross_node_rejoin: true,
         clock: fn -> 1_000 end,
         channel_fun: fn dial -> {:ok, {:channel, dial}} end,
         prime_fun: fn ch, _req ->
@@ -732,26 +726,6 @@ defmodule Embervm.SessionManagerTest do
       refute_receive {:unproved_restore, {:channel, "node-b/pod-target"}}, 100
       refute Map.has_key?(:sys.get_state(ctx.mgr).workspace_evidence, created.session_id)
     end
-  end
-
-  test "cross-node flag off uses ArchiveVolume and ignores export evidence" do
-    parent = self()
-    ctx = start_stack(prime_fun: fake_prime_fun("vm-off"),
-      archive_volume_fun: fn _, _ -> send(parent, :legacy_archive); {:ok, %{}} end,
-      export_artifact_fun: fn _, _ -> send(parent, :unexpected_export); {:ok, %{content_fingerprint: "proof"}} end)
-    created = create_persistence_session(ctx, instance_id: "node-4/pod-owner")
-    parked = park_session(ctx, created)
-    NodeCapacity.put(ctx.cap_table, {"node-4", "pod-owner"}, %{node_id: "node-4", configured_id: "node-4",
-      instance_id: "node-4/pod-owner", session_volumes: [%{workload: parked.workload, lineage_id: parked.lineage_id}]})
-    SessionManager.drain_node(ctx.mgr, "node-4")
-    assert_receive :legacy_archive, 1_000
-    refute_receive :unexpected_export, 100
-    NodeCapacity.drop(ctx.cap_table, "node-4")
-    NodeCapacity.drop(ctx.cap_table, {"node-4", "pod-owner"})
-    cross_node_target(ctx, parked)
-    assert {:error, {:relight_failed, {:volume_node_gone, "node-4"}}} =
-      SessionManager.invoke(ctx.mgr, created.session_id, %{body: "{}"})
-    assert :sys.get_state(ctx.mgr).attach_epochs == %{}
   end
 
   for reply <- [{:error, %GRPC.RPCError{status: 5}}, {:ok, %{content_fingerprint: "wrong"}}, {:ok, %{}}] do
@@ -861,7 +835,7 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, %{state: :parked, volume_node_id: "node-4"}} = SessionStore.get(rebuilt_store, created.session_id)
     {:ok, restarted_manager} = SessionManager.start_link(name: nil, session_store: rebuilt_store,
       capacity_table: ctx.cap_table, catalog_table: ctx.cat_table, registry: ctx.registry,
-      cross_node_rejoin: true, node_inventory_fun: fn -> {:error, :not_configured} end)
+      node_inventory_fun: fn -> {:error, :not_configured} end)
     assert :sys.get_state(restarted_manager).workspace_evidence == %{}
     assert :sys.get_state(restarted_manager).attach_epochs == %{}
   end
@@ -2119,7 +2093,6 @@ defmodule Embervm.SessionManagerTest do
 
     ctx =
       discard_stack(
-        node_confirmed_destroy: true,
         monotonic_clock: fn -> Agent.get(mono, & &1) end
       )
 
@@ -2164,7 +2137,7 @@ defmodule Embervm.SessionManagerTest do
 
   test "an unowned primed VM on a stale fact is left alone" do
     {:ok, mono} = Agent.start_link(fn -> 1_000_000 end)
-    ctx = discard_stack(node_confirmed_destroy: true, monotonic_clock: fn -> Agent.get(mono, & &1) end)
+    ctx = discard_stack(monotonic_clock: fn -> Agent.get(mono, & &1) end)
     put_session_workload(ctx, "wl-reap-stale", persistence_workload_opts(floor: 0))
     NodeCapacity.drop(ctx.cap_table, "node-4")
     put_brick(ctx, "wl-reap-stale", "pod-a", primed_ids: ["vm-stale"], updated_at: 1_000_000)
@@ -2432,7 +2405,6 @@ defmodule Embervm.SessionManagerTest do
   test "node-confirmed destroy retires a persistence volume after confirmation" do
     parent = self()
     ctx = start_stack(
-      node_confirmed_destroy: true,
       prime_fun: fake_prime_fun("vm-persist-confirmed-destroy"),
       channel_fun: fake_channel_fun(),
       retire_volume_fun: fn _ch, req ->
@@ -2542,7 +2514,7 @@ defmodule Embervm.SessionManagerTest do
     assert Enum.map(destroy_records, & &1["action"]) == ["begin_destroy", "confirm_destroy"]
     [begin_destroy, _confirm_destroy] = destroy_records
     assert begin_destroy["vars"]["session_id"] == created.session_id
-    assert begin_destroy["vars"]["gate"] == false
+    assert begin_destroy["vars"]["gate"] == true
     assert begin_destroy["vars"]["resumed"] == false
   end
 
@@ -5835,16 +5807,12 @@ defmodule Embervm.SessionManagerTest do
              SessionStore.get(ctx.store, banked.session_id)
   end
 
-  test "failed archival and a disabled persistence flag cannot strand a departed parked session" do
+  test "a disabled persistence flag cannot strand a departed parked session" do
     parent = self()
 
     ctx =
       start_stack(
         prime_fun: fake_prime_fun("vm-archive-failed"),
-        archive_volume_fun: fn _channel, request ->
-          send(parent, {:archive_failed, request.lineage_id})
-          {:error, :store_unavailable}
-        end,
         retire_volume_fun: fn _channel, request ->
           send(parent, {:retire_attempted, request.lineage_id})
           {:error, :node_gone}
@@ -5856,29 +5824,7 @@ defmodule Embervm.SessionManagerTest do
 
     created = create_persistence_session(ctx, workload: "wl-archive-failed")
     parked = park_session(ctx, created)
-    watch_archive_results(ctx)
-
-    # The draining instance reports the lineage, so the drain archive has an
-    # owner to dial (a miss keeps the volume without dialing at all).
-    NodeCapacity.put(ctx.cap_table, {"node-4", "pod-dead"}, %{
-      node_id: "node-4",
-      configured_id: "node-4",
-      instance_id: "node-4/pod-dead",
-      pod_uid: "pod-dead",
-      workloads: %{},
-      session_vms: [],
-      session_snapshots: [],
-      session_volumes: [%{lineage_id: parked.lineage_id, workload: parked.workload}],
-      live_vms: 0,
-      max_live_vms: 8,
-      updated_at: 5_000_001
-    })
-
-    assert SessionManager.drain_node(ctx.mgr, "node-4") == 0
-    assert_receive {:archive_failed, lineage_id}, 1_000
-    assert_receive {:archive_result, _, %{result: {:error, {:error, :store_unavailable}}}}, 1_000
-    assert lineage_id == parked.lineage_id
-    NodeCapacity.drop(ctx.cap_table, {"node-4", "pod-dead"})
+    lineage_id = parked.lineage_id
 
     # A rollback may disable persistence after the volume was created. Cleanup
     # follows the artifact, not the current flag, and terminalization still wins.
@@ -5923,19 +5869,22 @@ defmodule Embervm.SessionManagerTest do
     })
   end
 
-  test "draining persistence park records its off-manager archive result" do
-    ctx = start_stack(prime_fun: fake_prime_fun("vm-drain-park"))
+  test "draining persistence park records its off-manager workspace export evidence" do
+    parent = self()
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-drain-park"),
+      channel_fun: fn dial -> {:ok, {:channel, dial}} end,
+      export_artifact_fun: fn channel, req ->
+        send(parent, {:exported, channel, req.artifact.ref})
+        {:ok, %{content_fingerprint: "current-workspace"}}
+      end)
     created = create_persistence_session(ctx)
     report_archive_owner(ctx, created)
-    watch_archive_results(ctx)
     assert SessionManager.drain_node(ctx.mgr, "node-4") == 1
-    assert_receive {:archive_result, %{count: 1}, %{result: :ok, lineage_id: lineage}}, 1_000
-    assert lineage == created.lineage_id
-    entry = :sys.get_state(ctx.mgr).archive_acks[{"node-4", lineage}]
-    assert entry.requested_at == -800_000
-    assert entry.acked_at == -800_000
-    assert entry.last_result == :ok
-    refute entry.in_flight
+    lineage = created.lineage_id
+    assert_receive {:exported, {:channel, "node-4/archive-owner"}, ^lineage}, 1_000
+    evidence = await_workspace_evidence(ctx, created.session_id)
+    assert evidence.lineage_id == lineage
+    assert evidence.fingerprint == "current-workspace"
     assert wait_for_state(ctx, created.session_id, :parked).state == :parked
   end
 
@@ -6053,7 +6002,7 @@ defmodule Embervm.SessionManagerTest do
   # with :unknown_node and parked workspaces never reached the store. The
   # permissive fake_channel_fun hides that, so this stub refuses anything that
   # is not an instance id, like the fleet does.
-  test "drain archives a parked lineage through its owning instance, never the bare node" do
+  test "drain exports a parked lineage through its owning instance, never the bare node" do
     parent = self()
     {:ok, dialed} = Agent.start_link(fn -> %{strict: false, dials: []} end)
     on_exit(fn -> Embervm.TestProcess.stop_safely(dialed) end)
@@ -6073,9 +6022,9 @@ defmodule Embervm.SessionManagerTest do
       start_stack(
         channel_fun: strict_channel_fun,
         prime_fun: fake_prime_fun("vm-archive-owner"),
-        archive_volume_fun: fn channel, request ->
-          send(parent, {:archived, channel, request.lineage_id})
-          {:ok, %{skipped: false}}
+        export_artifact_fun: fn channel, req ->
+          send(parent, {:exported, channel, req.artifact.ref})
+          {:ok, %{content_fingerprint: "current-workspace"}}
         end
       )
 
@@ -6102,16 +6051,14 @@ defmodule Embervm.SessionManagerTest do
     Agent.update(dialed, fn _ -> %{strict: true, dials: []} end)
 
     # The pre-fix dial is refused by this stub: dialing the bare node could
-    # never have reached ArchiveVolume.
+    # never have reached the owner's volume.
     assert strict_channel_fun.(parked.volume_node_id) == {:error, :unknown_node}
     Agent.update(dialed, fn st -> %{st | dials: []} end)
 
-    watch_archive_results(ctx)
     assert SessionManager.drain_node(ctx.mgr, "node-4") == 0
     lineage_id = parked.lineage_id
-    assert_receive {:archived, {:channel, "node-4/pod-owner"}, ^lineage_id}, 1_000
-    assert_receive {:archive_result, _, %{result: :ok, lineage_id: ^lineage_id}}, 1_000
-    assert :sys.get_state(ctx.mgr).archive_acks[{"node-4", lineage_id}].last_result == :ok
+    assert_receive {:exported, {:channel, "node-4/pod-owner"}, ^lineage_id}, 1_000
+    assert await_workspace_evidence(ctx, parked.session_id).lineage_id == lineage_id
 
     dials = Agent.get(dialed, & &1.dials)
     assert "node-4/pod-owner" in dials
@@ -6142,9 +6089,9 @@ defmodule Embervm.SessionManagerTest do
       start_stack(
         channel_fun: strict_channel_fun,
         prime_fun: fake_prime_fun("vm-archive-orphan"),
-        archive_volume_fun: fn channel, request ->
-          send(parent, {:archived, channel, request.lineage_id})
-          {:ok, %{skipped: false}}
+        export_artifact_fun: fn channel, req ->
+          send(parent, {:exported, channel, req.artifact.ref})
+          {:ok, %{content_fingerprint: "current-workspace"}}
         end
       )
 
@@ -6170,17 +6117,15 @@ defmodule Embervm.SessionManagerTest do
 
     Agent.update(dialed, fn _ -> %{strict: true, dials: []} end)
 
-    watch_archive_results(ctx)
-
     log =
       capture_log(fn ->
         assert SessionManager.drain_node(ctx.mgr, "node-4") == 0
-        assert_receive {:archive_result, _, %{result: {:error, :no_owning_instance}}}, 1_000
-        refute_receive {:archived, _, _}, 500
+        refute_receive {:exported, _, _}, 500
+        _ = :sys.get_state(ctx.mgr)
       end)
 
-    assert log =~ "embervm drain archive skipped, no instance reports the lineage; keeping volume"
-    refute log =~ "embervm session workspace archive failed"
+    assert log =~ "embervm workspace export result dropped"
+    refute Map.has_key?(:sys.get_state(ctx.mgr).workspace_evidence, parked.session_id)
 
     dials = Agent.get(dialed, & &1.dials)
     refute "node-4" in dials
@@ -6263,12 +6208,12 @@ defmodule Embervm.SessionManagerTest do
 
   # 2026-10-01 00:44:42 and 02:04:42: the autoscaler idle-drained an EMPTY 2gi
   # and then 4gi brick, and the node-scoped drain interrupted every live turn on
-  # the co-located 8gi brick. With the gate on, a drain edge for one instance
-  # leaves sessions placed on a sibling instance running.
+  # the co-located 8gi brick. A drain edge for one instance leaves sessions
+  # placed on a sibling instance running.
   defp drain_deadline, do: System.system_time(:millisecond) + 180_000
 
   test "instance-scoped drain leaves a session on a co-located sibling brick running" do
-    ctx = start_stack(drain_instance_scoped: true)
+    ctx = start_stack()
     put_session_workload(ctx, "wl-drain-sibling")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-drain-sibling", "p1")
     assert [{pid, _}] = Registry.lookup(ctx.registry, created.session_id)
@@ -6289,7 +6234,7 @@ defmodule Embervm.SessionManagerTest do
   end
 
   test "instance-scoped drain still drains a session whose placement is unknown" do
-    ctx = start_stack(drain_instance_scoped: true)
+    ctx = start_stack()
     put_session_workload(ctx, "wl-drain-unknown")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-drain-unknown", "p1")
     refute Map.has_key?(:sys.get_state(ctx.mgr).session_dials, created.session_id)
@@ -6301,7 +6246,7 @@ defmodule Embervm.SessionManagerTest do
   end
 
   test "instance-scoped drain spares a missing-dial session a sibling reports" do
-    ctx = start_stack(drain_instance_scoped: true)
+    ctx = start_stack()
     put_session_workload(ctx, "wl-drain-reported")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-drain-reported", "p1")
     {:ok, row} = SessionStore.get(ctx.store, created.session_id)
@@ -6323,19 +6268,6 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
     assert [{pid, _}] = Registry.lookup(ctx.registry, created.session_id)
     refute :sys.get_state(pid).draining
-  end
-
-  test "with the gate off an instance drain keeps draining the whole node" do
-    ctx = start_stack()
-    put_session_workload(ctx, "wl-drain-gate-off")
-    {:ok, created} = SessionManager.create(ctx.mgr, "wl-drain-gate-off", "p1")
-
-    :sys.replace_state(ctx.mgr, fn st ->
-      %{st | session_dials: Map.put(st.session_dials, created.session_id, "node-4/pod-8gi")}
-    end)
-
-    assert SessionManager.drain_instance(ctx.mgr, "node-4", "pod-2gi", drain_deadline()) == 1
-    assert wait_for_state(ctx, created.session_id, :banked).state == :banked
   end
 
   test "interrupt outcome carries recovery fields without recording a completed invoke" do
@@ -6977,7 +6909,6 @@ defmodule Embervm.SessionManagerTest do
 
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         relight_fun: fn _channel, _req ->
           send(parent, {:relight_started, self()})
 
@@ -7092,11 +7023,11 @@ defmodule Embervm.SessionManagerTest do
     assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
   end
 
-  # -- node-confirmed destroy (ADR embervm/014 decision 5, gated) -------------
+  # -- node-confirmed destroy (ADR embervm/014 decision 5) --------------------
 
-  test "destroy with node_confirmed_destroy gate ON emits begin_destroy then confirm_destroy" do
+  test "destroy emits begin_destroy then confirm_destroy" do
     {trace_store, writer} = start_spec_trace()
-    ctx = start_stack(node_confirmed_destroy: true)
+    ctx = start_stack()
     put_session_workload(ctx, "wl-trace-on")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-trace-on", "p1")
 
@@ -7122,39 +7053,11 @@ defmodule Embervm.SessionManagerTest do
     assert confirm_destroy["mono"] > begin_destroy["mono"]
   end
 
-  test "destroy with node_confirmed_destroy gate OFF emits begin_destroy then confirm_destroy" do
-    {trace_store, writer} = start_spec_trace()
-    ctx = start_stack(node_confirmed_destroy: false)
-    put_session_workload(ctx, "wl-trace-off")
-    {:ok, created} = SessionManager.create(ctx.mgr, "wl-trace-off", "p1")
-
-    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
-    assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
-    :ok = Embervm.SpecTrace.drain(writer)
-    {:ok, records} = Embervm.SpecTrace.Store.SQLite.read_window(trace_store)
-    destroy_records = Enum.filter(records, &(&1["action"] in ["begin_destroy", "confirm_destroy"]))
-
-    assert Enum.map(destroy_records, & &1["action"]) == ["begin_destroy", "confirm_destroy"]
-    [begin_destroy, confirm_destroy] = destroy_records
-    assert begin_destroy["vars"]["session_id"] == created.session_id
-    assert begin_destroy["vars"]["gate"] == false
-    assert begin_destroy["vars"]["resumed"] == false
-    assert confirm_destroy["vars"]["session_id"] == created.session_id
-    assert confirm_destroy["vars"]["gate"] == false
-    assert confirm_destroy["vars"]["node_confirmed"] == true
-    # had_vm asserted HERE, against the real emitter, not only in a fixture. Both
-    # destroy invariants filter on it, so if a site stopped setting it they would
-    # go permanently vacuous in production while the suite stayed green.
-    assert confirm_destroy["vars"]["had_vm"] == true
-    assert confirm_destroy["vars"]["confirmed_by"] == "none"
-  end
-
-  test "gated: destroy with a confirming node records destroying then destroyed" do
+  test "destroy with a confirming node records destroying then destroyed" do
     # A destroy_fun that confirms teardown drives the full destroying -> destroyed
     # sequence; both ops land in order and the session ends destroyed.
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         destroy_fun: fn _ch, _vm -> {:ok, %{teardown_confirmed: true}} end
       )
 
@@ -7172,16 +7075,15 @@ defmodule Embervm.SessionManagerTest do
     # destroying is appended BEFORE destroyed.
     assert index_of(kinds, :session_destroying) < index_of(kinds, :session_destroyed)
     # ...and exactly once: the intent is written by the destroy call, never again
-    # by the gated teardown path (#4804).
+    # by the node-confirmed teardown path (#4804).
     assert Enum.count(kinds, &(&1 == :session_destroying)) == 1
   end
 
-  test "gated: destroy with an unconfirming node stays destroying, no destroyed op" do
+  test "destroy with an unconfirming node stays destroying, no destroyed op" do
     # teardown_confirmed=false (an old daemon, or a partial reap) must NOT record
     # destroyed; the session stays destroying for the reconcile loop.
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         destroy_fun: fn _ch, _vm -> {:ok, %{teardown_confirmed: false}} end
       )
 
@@ -7202,7 +7104,7 @@ defmodule Embervm.SessionManagerTest do
     refute :session_destroyed in kinds
   end
 
-  test "gated: reconcile re-drives a destroying session to destroyed once confirmed" do
+  test "reconcile re-drives a destroying session to destroyed once confirmed" do
     # First destroy leaves it destroying (unconfirmed); a later reconcile with a
     # confirming node completes it. The node keeps reporting the VM, so the reconcile
     # retries the teardown RPC.
@@ -7211,7 +7113,6 @@ defmodule Embervm.SessionManagerTest do
 
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         session_channel_fun: fn _node -> {:ok, :ch} end,
         destroy_fun: fn _ch, _vm ->
           send(parent, :destroy_called)
@@ -7247,7 +7148,6 @@ defmodule Embervm.SessionManagerTest do
 
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         channel_fun: fn dial_key ->
           Agent.update(dials, &[dial_key | &1])
           {:ok, :ch}
@@ -7310,13 +7210,12 @@ defmodule Embervm.SessionManagerTest do
     refute :session_destroyed in op_kinds_for(ctx, created.session_id)
   end
 
-  test "gated: a session stuck in destroying alarms ONCE across reconciles, not every tick" do
+  test "a session stuck in destroying alarms ONCE across reconciles, not every tick" do
     # Unconfirming teardown so the session stays destroying across both reconciles.
     # store_clock: fn -> 0 end sets updated_at before the manager's fixed 5_000_000
     # clock, so elapsed exceeds the alarm threshold and the alarm is eligible each tick.
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         destroying_alarm_ms: 100,
         store_clock: fn -> 0 end,
         session_channel_fun: fn _node -> {:ok, :ch} end,
@@ -7348,7 +7247,7 @@ defmodule Embervm.SessionManagerTest do
     assert MapSet.member?(:sys.get_state(ctx.mgr).destroying_alarmed, created.session_id)
   end
 
-  # #6004: under the node-confirmed gate a destroy waits for the owning node to
+  # #6004: a node-confirmed destroy waits for the owning node to
   # confirm teardown, so a node that has left the fleet leaves the session in
   # destroying forever and holds every downstream reservation bound to it. These
   # four tests pin the exact predicate: the two ways a node counts as gone, and
@@ -7356,12 +7255,11 @@ defmodule Embervm.SessionManagerTest do
   #
   # store_clock: fn -> 0 end puts the session row before the manager's fixed
   # 5_000_000 clock, so elapsed-since-intent exceeds a small alarm threshold.
-  test "gated: destroy on an unregistered node completes as node_gone without a teardown RPC" do
+  test "destroy on an unregistered node completes as node_gone without a teardown RPC" do
     parent = self()
 
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         store_clock: fn -> 0 end,
         brick_status_fun: fn _node ->
           %{health: :unknown, draining: false, registered: false, tombstoned: false, pod_uid: nil}
@@ -7402,7 +7300,7 @@ defmodule Embervm.SessionManagerTest do
     assert index_of(kinds, :session_destroying) < index_of(kinds, :session_destroyed)
   end
 
-  test "gated: a session already stuck in destroying is finished by the sweep once its node departs" do
+  test "a session already stuck in destroying is finished by the sweep once its node departs" do
     status =
       start_supervised!(
         {Agent, fn -> %{health: :healthy, draining: false, registered: true, tombstoned: false, pod_uid: "pod-node-4"} end}
@@ -7410,7 +7308,6 @@ defmodule Embervm.SessionManagerTest do
 
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         destroying_alarm_ms: 100,
         store_clock: fn -> 0 end,
         brick_status_fun: fn _node -> Agent.get(status, & &1) end,
@@ -7444,10 +7341,9 @@ defmodule Embervm.SessionManagerTest do
     assert index_of(kinds, :session_destroying) < index_of(kinds, :session_destroyed)
   end
 
-  test "gated: a registered healthy node that is slow keeps the confirmation wait and still alarms" do
+  test "a registered healthy node that is slow keeps the confirmation wait and still alarms" do
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         destroying_alarm_ms: 100,
         store_clock: fn -> 0 end,
         brick_status_fun: fn _node ->
@@ -7477,7 +7373,7 @@ defmodule Embervm.SessionManagerTest do
     refute log =~ "node gone"
   end
 
-  test "gated: a status blip on a still registered node never completes an old destroy" do
+  test "a status blip on a still registered node never completes an old destroy" do
     # The discriminating case for the predicate, and the one a health-plus-elapsed
     # test gets wrong. NodeRegistry ages an instance to :unknown after 5s of
     # silence and retracts its capacity row while KEEPING it registered, so a
@@ -7487,7 +7383,6 @@ defmodule Embervm.SessionManagerTest do
     # would fire and record destroyed for a VM that is still running.
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         destroying_alarm_ms: 100,
         store_clock: fn -> 0 end,
         brick_status_fun: fn _node ->
@@ -7514,7 +7409,7 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, %{state: :destroying}} = SessionStore.get(ctx.store, created.session_id)
   end
 
-  test "gated: an exact stop finished node_gone at request time keeps the destroy ordering invariant" do
+  test "an exact stop finished node_gone at request time keeps the destroy ordering invariant" do
     # The exact-stop handler writes its durable intent through begin_exact_destroy
     # but used to emit no begin_destroy record, because every path that consumed
     # that intent reached a terminal record through the sweep, which emits its own
@@ -7532,7 +7427,6 @@ defmodule Embervm.SessionManagerTest do
 
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         brick_status_fun: fn _node ->
           %{health: :unknown, draining: false, registered: false, tombstoned: false, pod_uid: nil}
         end,
@@ -7568,7 +7462,7 @@ defmodule Embervm.SessionManagerTest do
     end
   end
 
-  test "gated: an exact stop whose node departs completes as node_gone with a null completion" do
+  test "an exact stop whose node departs completes as node_gone with a null completion" do
     # The node-gone arm precedes the exact-stop replay arm in the sweep. Without
     # that ordering an exact stop whose brick departed replays forever against a
     # node that can never return the completion tuple it waits for, which is the
@@ -7578,7 +7472,6 @@ defmodule Embervm.SessionManagerTest do
 
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         brick_status_fun: fn _node ->
           case Agent.get(status, & &1) do
             :live -> %{health: :healthy, draining: false, registered: true, tombstoned: false, pod_uid: "pod-node-4"}
@@ -7699,12 +7592,11 @@ defmodule Embervm.SessionManagerTest do
     assert hits == 0
   end
 
-  test "gated: reconcile destroys an orphan reported session VM with no CP row" do
+  test "reconcile destroys an orphan reported session VM with no CP row" do
     parent = self()
 
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         destroy_fun: fn _ch, vm ->
           send(parent, {:orphan_destroyed, vm})
           {:ok, %{teardown_confirmed: true}} end
@@ -7721,13 +7613,12 @@ defmodule Embervm.SessionManagerTest do
     assert :error = SessionStore.get(ctx.store, "s-orphan")
   end
 
-  test "gated: unconfirmed rowless cleanup is retried without creating ownership" do
+  test "unconfirmed rowless cleanup is retried without creating ownership" do
     parent = self()
     {:ok, confirmation} = Agent.start_link(fn -> false end)
 
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         destroy_fun: fn _ch, vm ->
           confirmed = Agent.get(confirmation, & &1)
           send(parent, {:destroy_attempt, vm, confirmed})
@@ -7746,14 +7637,13 @@ defmodule Embervm.SessionManagerTest do
     assert :error = SessionStore.get(ctx.store, "s-orphan2")
   end
 
-  test "gated: reconcile never destroys a primed-pool VM" do
+  test "reconcile never destroys a primed-pool VM" do
     # A primed VM is reported in primed_vm_ids, never in session_vms, so the orphan
     # destroy pass (which only walks session_vms) never touches it.
     parent = self()
 
     ctx =
       start_stack(
-        node_confirmed_destroy: true,
         destroy_fun: fn _ch, vm ->
           send(parent, {:destroyed, vm})
           {:ok, %{teardown_confirmed: true}} end
@@ -7828,7 +7718,7 @@ defmodule Embervm.SessionManagerTest do
         {:begin_destroy, :session_destroying, :destroying, :destroyed}
       ] do
     test "#{pending} requires a complete owner report newer than its intent" do
-      ctx = start_stack(node_confirmed_destroy: true, store_clock: fn -> 4_000_000 end)
+      ctx = start_stack(store_clock: fn -> 4_000_000 end)
       put_session_workload(ctx, "wl-absence")
       {:ok, created} = SessionManager.create(ctx.mgr, "wl-absence", "p1")
       {:ok, _} = SessionStore.transition(ctx.store, created.session_id, unquote(event), unquote(kind),
@@ -7870,7 +7760,7 @@ defmodule Embervm.SessionManagerTest do
   end
 
   test "real node projection orders absence against durable wall time without changing its monotonic clock" do
-    ctx = start_stack(node_confirmed_destroy: true, store_clock: fn -> System.system_time(:millisecond) - 1_000 end)
+    ctx = start_stack(store_clock: fn -> System.system_time(:millisecond) - 1_000 end)
     put_session_workload(ctx, "wl-clock-domains")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-clock-domains", "p1")
     {:ok, _} = SessionStore.transition(ctx.store, created.session_id, :begin_destroy, :session_destroying, %{}, %{})
@@ -7890,7 +7780,7 @@ defmodule Embervm.SessionManagerTest do
 
   test "restart rebinds a destroying VM and waits for the real teardown response" do
     parent = self()
-    ctx = start_stack(node_confirmed_destroy: true, destroy_fun: fn _ch, vm ->
+    ctx = start_stack(destroy_fun: fn _ch, vm ->
       send(parent, {:recovered_destroy, self(), vm})
       receive do
         :confirm -> {:ok, %{teardown_confirmed: true}}
@@ -7931,7 +7821,7 @@ defmodule Embervm.SessionManagerTest do
 
   test "destroy can take over a parking worker without duplicate teardown" do
     parent = self()
-    ctx = start_stack(node_confirmed_destroy: true, destroy_fun: fn _ch, vm ->
+    ctx = start_stack(destroy_fun: fn _ch, vm ->
       send(parent, {:parking_destroy, self(), vm})
       receive do
         :confirm -> {:ok, %{teardown_confirmed: true}}
@@ -8160,7 +8050,7 @@ defmodule Embervm.SessionManagerTest do
       node: "node-4", pod_uid: "pod-node-4", completed_at_unix_ms: 5_000_001}}
   end
 
-  # -- gated-destroy test helpers --------------------------------------------
+  # -- node-confirmed destroy test helpers ----------------------------------------
 
   # SessionManager's invoke failure path replies before the :session_failed
   # transition lands in SessionStore, so a bare read after invoke returns races
@@ -8225,7 +8115,7 @@ defmodule Embervm.SessionManagerTest do
 
   test "claimed primed adoption never flushes even with an unfinished durable invoke" do
     parent = self()
-    ctx = start_stack(restart_flush_inflight_invokes: true,
+    ctx = start_stack(
       interrupt_fun: fn _, _ -> send(parent, :unexpected_primed_flush); {:error, :bad} end)
     put_session_workload(ctx, "wl-primed-no-flush")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-primed-no-flush", "p1")
@@ -8275,7 +8165,7 @@ defmodule Embervm.SessionManagerTest do
 
   test "restart adoption flush parks exact evidence and relight resumes the interrupted turn" do
     parent = self()
-    ctx = start_stack(restart_flush_inflight_invokes: true, drain_flush_ms: 240_000,
+    ctx = start_stack(drain_flush_ms: 240_000,
       prime_fun: fake_prime_fun("vm-adoption"),
       interrupt_fun: fn _, req ->
         send(parent, {:adoption_interrupt, self(), req})
@@ -8326,7 +8216,7 @@ defmodule Embervm.SessionManagerTest do
   test "adoption queues invokes and blocks idle, pressure and drain banking until settlement" do
     for draining <- [false, true] do
       parent = self()
-      ctx = start_stack(restart_flush_inflight_invokes: true,
+      ctx = start_stack(
         prime_fun: fake_prime_fun("vm-pending-#{draining}"),
         interrupt_fun: fn _, req ->
           send(parent, {:pending_flush, self(), req})
@@ -8363,11 +8253,11 @@ defmodule Embervm.SessionManagerTest do
     end
   end
 
-  for mode <- [:flag_off, :legacy, :completed, :wrong_dispatch, :empty_path, :empty_cli, :timeout, :hang, :fence, :append_error, :unavailable, :no_channel] do
+  for mode <- [:legacy, :completed, :wrong_dispatch, :empty_path, :empty_cli, :timeout, :hang, :fence, :append_error, :unavailable, :no_channel] do
     test "adoption flush fails closed for #{mode}" do
       mode = unquote(mode)
       parent = self()
-      ctx = start_stack(restart_flush_inflight_invokes: mode != :flag_off, drain_flush_ms: 180,
+      ctx = start_stack(drain_flush_ms: 180,
         store_op_log_mod: if(mode == :append_error, do: UnavailableInvokeCompletionOpLog, else: SQLite),
         session_channel_fun: if(mode == :no_channel, do: fn _ -> {:error, :unavailable} end, else: fn _ -> {:ok, :ch} end),
         prime_fun: fake_prime_fun("vm-fail-closed"),
@@ -8401,7 +8291,7 @@ defmodule Embervm.SessionManagerTest do
       {:ok, row} = SessionStore.get(ctx.store, created.session_id)
       ctx = restart_for_adoption(ctx, row)
       [{pid, _}] = Registry.lookup(ctx.registry, started.session_id)
-      if mode in [:flag_off, :legacy, :completed] do
+      if mode in [:legacy, :completed] do
         assert Embervm.Session.quiescent?(pid)
         refute_receive {:fail_closed_flush, _, _}, 30
       else

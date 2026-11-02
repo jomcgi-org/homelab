@@ -246,7 +246,6 @@ defmodule Embervm.ServingManager do
       wake_window_ms: Keyword.get(opts, :wake_window_ms, @default_wake_window_ms),
       park_cap: Keyword.get(opts, :park_cap, @default_park_cap),
       # ADR embervm/014 decision 5: node-confirmed destroy config plumbing.
-      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
       destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
       orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
       # Ids already alarmed for being stuck in destroying (log once per id, not per tick).
@@ -1217,17 +1216,13 @@ defmodule Embervm.ServingManager do
     # bound.
     state = withdraw_unreported_resident_health(state)
 
-    # Fail-closed reconciliation toward destruction (ADR embervm/014 decision 5),
-    # gated: re-drive stuck destroying instances and destroy reported serving VMs
-    # with no CP row. Gate off is inert, preserving today's adoption behavior.
+    # Fail-closed reconciliation toward destruction (ADR embervm/014 decision 5):
+    # re-drive stuck destroying instances and destroy reported serving VMs with no
+    # CP row.
     state =
-      if state.node_confirmed_destroy do
-        state
-        |> redrive_destroying(live_vms)
-        |> destroy_orphan_serving_vms(facts, live_vms)
-      else
-        state
-      end
+      state
+      |> redrive_destroying(live_vms)
+      |> destroy_orphan_serving_vms(facts, live_vms)
 
     # Re-derive + re-push after adoption so the fan-out reflects the healed facts.
     EndpointPublisher.publish(state.publisher)

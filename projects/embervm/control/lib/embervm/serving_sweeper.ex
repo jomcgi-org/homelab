@@ -194,7 +194,6 @@ defmodule Embervm.ServingSweeper do
       # lets the test send {:bank_drained, id} by hand.
       timer_fun: Keyword.get(opts, :timer_fun, &default_timer/2),
       # ADR embervm/014 decision 5: node-confirmed destroy config plumbing.
-      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
       destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
       orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
       # status.serving {live,banked,published} writer (Task 10). Defaults to the K8s
@@ -1131,35 +1130,10 @@ defmodule Embervm.ServingSweeper do
 
   # -- destroy / evict RPCs + durable ops ------------------------------------
 
-  # Destroy a live instance. The gate-off branch is the existing best-effort
-  # StopServing(DESTROY) followed by serving_destroyed path. The ADR embervm/014
-  # branch durably records destroying first and waits for the daemon's real
-  # teardown_confirmed response before recording serving_destroyed.
+  # Destroy a live instance (ADR embervm/014 decision 5): durably record
+  # destroying first and wait for the daemon's real teardown_confirmed response
+  # before recording serving_destroyed.
   defp destroy_instance(state, instance, reason) do
-    if state.node_confirmed_destroy do
-      destroy_instance_node_confirmed(state, instance, reason)
-    else
-      destroy_instance_legacy(state, instance, reason)
-    end
-  end
-
-  defp destroy_instance_legacy(state, instance, reason) do
-    _ = stop_serving_destroy(state, instance)
-
-    _ =
-      ServingStore.transition(
-        state.store,
-        instance.instance_id,
-        :destroy,
-        :serving_destroyed,
-        %{reason: reason},
-        %{}
-      )
-
-    state
-  end
-
-  defp destroy_instance_node_confirmed(state, instance, reason) do
     intent =
       ServingStore.transition(
         state.store,
@@ -1267,34 +1241,13 @@ defmodule Embervm.ServingSweeper do
 
   defp evict_remote_bundle(_state, _instance), do: :ok
 
-  defp stop_serving_destroy(state, %{node_id: node_id, vm_id: vm_id})
-       when is_binary(node_id) and is_binary(vm_id) do
-    req = %StopServingRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_SERVING_MODE_DESTROY}
-    # Dial the OWNING instance running this serving vm_id, not the node-name alias.
-    dial_key = dial_for_serving_vm(state, node_id, vm_id)
-
-    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_key) do
-      try do
-        state.stop_serving_fun.(channel, req)
-      rescue
-        _ -> :error
-      catch
-        _, _ -> :error
-      end
-    end
-
-    :ok
-  end
-
-  defp stop_serving_destroy(_state, _instance), do: :ok
-
-  # The node-confirmed destroy path uses the same real StopServing(DESTROY) RPC as
-  # the legacy sweeper path, but requires the daemon's explicit confirmation. RPC,
-  # dial, and fault failures are all unconfirmed and leave the durable row in
-  # destroying for ServingManager reconciliation to re-drive.
+  # The real StopServing(DESTROY) RPC, requiring the daemon's explicit
+  # confirmation. RPC, dial, and fault failures are all unconfirmed and leave the
+  # durable row in destroying for ServingManager reconciliation to re-drive.
   defp stop_serving_destroy_confirmed(state, %{node_id: node_id, vm_id: vm_id})
        when is_binary(node_id) and is_binary(vm_id) do
     req = %StopServingRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_SERVING_MODE_DESTROY}
+    # Dial the OWNING instance running this serving vm_id, not the node-name alias.
     dial_key = dial_for_serving_vm(state, node_id, vm_id)
 
     with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_key) do

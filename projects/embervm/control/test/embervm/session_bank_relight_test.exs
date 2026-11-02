@@ -561,6 +561,9 @@ defmodule Embervm.SessionBankRelightTest do
     fact = node_fact("wl", session_vms: [], session_snapshots: [], updated_at: -850_000)
     NodeCapacity.put(ctx.cap_table, "node-4", Map.put(fact, :observed_at_unix_ms, 2_000_000))
 
+    # Past the orphan grace (ADR embervm/014 decision 5): a just-created VM that
+    # is momentarily missing from the owner's report is never terminalized.
+    advance(ctx.clock_pid, 60_000)
     :ok = SessionManager.reconcile(ctx.mgr)
 
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
