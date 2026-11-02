@@ -27,6 +27,35 @@ from pathlib import Path
 import pytest
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("overlay", ["chart", "hub", "dev", "recovery"])
+def test_planner_hold_refusal_is_default_off_and_configurable(enabled, overlay):
+    chart = find_chart_dir()
+    command = [os.environ.get("HELM_BIN", "helm"), "template", "test", str(chart)]
+    if overlay == "hub":
+        files = [
+            chart.parent / "deploy" / name
+            for name in ("values.yaml", "values-gke.yaml")
+        ]
+    elif overlay in ("dev", "recovery"):
+        files = [chart.parent / "dev/deploy/values.yaml"]
+        if overlay == "recovery":
+            files.append(chart.parent / "dev/deploy/values-recovery-gke.yaml")
+    else:
+        files = []
+    for path in files:
+        command += ["--values", str(path)]
+    command += ["--set", "swarm.enabled=true"]
+    if enabled:
+        command += ["--set", "swarm.factoryPlannerHoldRefusalEnabled=true"]
+    rendered = subprocess.check_output(command, text=True)
+    expected = str(enabled).lower()
+    assert re.search(
+        rf'- name: FACTORY_PLANNER_HOLD_REFUSAL_ENABLED\n\s+value: "{expected}"',
+        rendered,
+    )
+
+
 def find_config_modules():
     """Discover all config.py files in the monolith directory tree.
 

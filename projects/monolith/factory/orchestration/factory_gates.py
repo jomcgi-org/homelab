@@ -9,8 +9,9 @@ import re
 
 from sqlmodel import select
 
+from core.env import flag
 from factory.orchestration.factory_controls import _audit, _locked_session, _now
-from factory.orchestration.factory_models import FactoryReceipt
+from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt, WorkItem
 
 logger = logging.getLogger(__name__)
 
@@ -124,8 +125,7 @@ GATE_PROMPT = (
     "including credential use. Any true effect sends the gate to a person, "
     "and `reason` cannot override effects. Never weaken acceptance: state a "
     "rescope in the PR body and drop closing keywords while operational work "
-    "remains. Set leave_unmerged: true only for explicitly unmerged delivery "
-    "scope, not merely outstanding live checks. Existing holds remain binding; only the authorized landing owner "
+    "remains. Existing holds remain binding; only the authorized landing owner "
     "may merge or deploy. "
 )
 
@@ -236,6 +236,129 @@ def restricted(gate: dict) -> bool:
     )
 
 
+class LandingHoldRefused(ValueError):
+    code = "landing_hold_refused"
+    reason = (
+        "A planner cannot create an unmerged landing hold. Remove leave_unmerged "
+        "and return the staged live_validation scope and acceptance checklist. "
+        "Required CI, exact-head review and the merge queue still apply. "
+        "An explicit operator hold requires server-observed operator provenance."
+    )
+
+    def __init__(self):
+        super().__init__(self.reason)
+
+
+def gate_identity(gate: dict) -> str:
+    return hashlib.sha256(json.dumps(gate, sort_keys=True).encode()).hexdigest()[:20]
+
+
+def restates(gate: dict, bound: dict) -> bool:
+    """A staged unmerged gate repeating a bound one's scope and effects."""
+
+    def staged(item):
+        try:
+            validate_gate(item)
+        except ValueError:
+            return False
+        return (
+            item.get("kind") == "live_validation"
+            and item.get("leave_unmerged") is True
+            and not restricted(item)
+        )
+
+    def boundary(item):
+        return {k: v for k, v in item.items() if k not in {"reason", "live_checks"}}
+
+    return (
+        staged(gate)
+        and staged(bound)
+        and boundary(gate) == boundary(bound)
+        and set(bound["live_checks"]) <= set(gate["live_checks"])
+    )
+
+
+def enforce_hold_origin(task: dict, gate: dict, cause: str) -> str:
+    """Only server-owned inputs establish provenance; artifact prose cannot."""
+    if not gate.get("leave_unmerged"):
+        return "none"
+    refused = False
+    with _locked_session() as (db, _control):
+        row = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        item = db.get(WorkItem, row.work_item_id) if row.work_item_id else None
+        if item is None:
+            item = db.exec(
+                select(WorkItem).where(
+                    WorkItem.github_repo == row.repo,
+                    WorkItem.github_issue_number == row.issue_number,
+                )
+            ).first()
+        human = item is not None and "human" in {label.lower() for label in item.labels}
+        human = (
+            human
+            or db.exec(
+                select(FactoryAudit.id).where(
+                    FactoryAudit.task_id == row.task_id,
+                    FactoryAudit.action == "human_handoff",
+                )
+            ).first()
+            is not None
+        )
+        origin = (
+            "operator"
+            if cause.startswith("operator:")
+            else ("human_issue" if human else "planner")
+        )
+        direction = json.loads(row.direction_json or "{}")
+        from factory.orchestration.factory_controls import landing_held
+
+        # Restating a gate already bound under a binding operator or legacy hold
+        # creates nothing; resolve() keeps the hold unchanged. A planner-made
+        # hold stays refusable.
+        provenance = direction.get("landing_hold_provenance")
+        repeat = (
+            landing_held({"direction": direction})
+            and not (
+                isinstance(provenance, dict) and provenance.get("origin") == "planner"
+            )
+            and any(
+                restates(gate, bound) for bound in direction.get("conductor_gates", [])
+            )
+        )
+        if (
+            flag("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED")
+            and origin == "planner"
+            and not repeat
+        ):
+            identity = gate_identity(gate)
+            # Refusal metadata is server-owned, separate from accepted gates.
+            evidence = {"cause": cause, "gate_id": identity}
+            refusals = direction.setdefault("landing_hold_refusals", [])
+            if evidence not in refusals:
+                refusals.append(evidence)
+                row.direction_json = json.dumps(direction)
+                row.updated_at = _now()
+                db.add(row)
+                _audit(
+                    db,
+                    "factory:conductor",
+                    "landing_hold_refused",
+                    task_id=task["id"],
+                    cause=cause,
+                    gate_id=identity,
+                    refusal_code=LandingHoldRefused.code,
+                    reason=LandingHoldRefused.reason,
+                )
+            refused = True
+    # Raise after the transaction commits, including on replay.
+    if refused:
+        task["landing_hold"] = landing_held({"direction": direction})
+        raise LandingHoldRefused()
+    return origin
+
+
 def resolve(task: dict, artifact: dict, cause: str) -> bool:
     """True only after a typed reversible gate has been durably decided."""
     from factory.orchestration import factory_conductor as conductor
@@ -251,6 +374,7 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
     # Reasons can explain safety without requesting operational authority.
     if restricted(gate):
         return False
+    origin = enforce_hold_origin(task, gate, cause)
     if gate["kind"] == "repository_delivered":
         # Delivery tasks only. A refine that resolves a gate goes on to apply
         # agent-ready, which is the opposite of handing the checks off.
@@ -275,9 +399,7 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
             )
         return adopted
     number, repo = task["issue_number"], task["repo"]
-    identity = hashlib.sha256(json.dumps(gate, sort_keys=True).encode()).hexdigest()[
-        :20
-    ]
+    identity = gate_identity(gate)
     marker = f"<!-- factory-gate:{task['id']}:{identity} -->"
     text = (
         f"Decided by the conductor: {gate['value']}, because {gate['reason']}; reversible"
@@ -295,6 +417,14 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
         if gate not in saved:
             saved.append(gate)
         if gate.get("leave_unmerged"):
+            created = "landing_hold" not in direction
+            if (
+                created
+                and origin == "planner"
+                and flag("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED")
+            ):
+                # The hold was released after enforce_hold_origin read it.
+                raise LandingHoldRefused()
             direction.setdefault(
                 "landing_hold",
                 {
@@ -303,11 +433,24 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
                     "reason": gate["reason"],
                 },
             )
+            if created:
+                direction["landing_hold_provenance"] = {
+                    "origin": origin,
+                    "cause": cause,
+                    "gate_id": identity,
+                    "hold": direction["landing_hold"],
+                }
+            elif origin in {"operator", "human_issue"}:
+                # A trusted reassertion must remain binding even if this exact
+                # restriction previously had refused planner provenance.
+                direction.pop("landing_hold_provenance", None)
         row.direction_json = json.dumps(direction)
         row.updated_at = _now()
         db.add(row)
     task["conductor_gates"] = saved
-    task["landing_hold"] = "landing_hold" in direction
+    from factory.orchestration.factory_controls import landing_held
+
+    task["landing_hold"] = landing_held({"direction": direction})
     conductor._post_decision_card(repo, number, marker, text)
     if gate["kind"] == "live_validation":
         from factory.orchestration.factory_gate_blocks import render, rewrite
@@ -339,8 +482,6 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
             task, artifact.get("pr_number") or task.get("delivery_pr_number"), gate
         )
     with _locked_session() as (db, _control):
-        from factory.orchestration.factory_models import FactoryAudit
-
         prior = db.exec(
             select(FactoryAudit.detail_json).where(
                 FactoryAudit.task_id == task["id"],

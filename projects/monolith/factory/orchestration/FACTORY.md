@@ -108,7 +108,7 @@ Each intake class sets verification, implementer floor and gate:
 
 Issue labels select the class: `security-finding` and `needs-thought` give `judgment-analysis`, `bug` gives `bug-fix`, `documentation` gives `docs`, `todo` gives `mechanical-refactor`; unclassified `agent-ready` defaults to `bug-fix`.
 
-A refine task runs one planner-class node, at most two attempts and no DAG, posts one `## Agent brief` comment and reaches one of five verdicts: `agent-ready`, `defer` (`needs-thought`), `needs-human` (`recommend:` plus one question), `reject` (`wontfix`) or `stale`; the last two close as `not_planned`. The server settles from a re-read of the issue, never from the node artifact alone. A new `leave_unmerged` hold needs an explicit unmerged-delivery scope.
+A refine task runs one planner-class node, at most two attempts and no DAG, posts one `## Agent brief` comment and reaches one of five verdicts: `agent-ready`, `defer` (`needs-thought`), `needs-human` (`recommend:` plus one question), `reject` (`wontfix`) or `stale`; the last two close as `not_planned`. The server settles from a re-read of the issue, never from the node artifact alone. A new `leave_unmerged` hold needs server-observed operator provenance when `FACTORY_PLANNER_HOLD_REFUSAL_ENABLED` is on.
 
 ### GitHub read pacing
 
@@ -299,6 +299,8 @@ Bounded factory status exposes refill/receipt-amendment hashes and argument name
 `FACTORY_WORK_ITEM_POINTER_ENABLED` and `FACTORY_WORK_ITEM_BASE_URL` enable one GitHub comment per GitHub-sourced work item, linking its durable factory record. It is display-only and never read back.
 
 ### Conductor-owned reversible gates
+
+**Why.** A landing hold is an operator act (#7449). With `FACTORY_PLANNER_HOLD_REFUSAL_ENABLED=true` the server accepts an unmerged hold only from an `operator:` cause, an authoritative work-item `human` label or a durable operator handoff; model prose cannot establish provenance. Refused planner gates persist `landing_hold_refused` evidence and actionable feedback before any gate or hold is written, and admission excludes only holds with matching planner provenance. Unknown and operator holds stay binding, including an operator reassertion after a refusal. The flag ships false everywhere and disabling it restores prior handling; a verified disabled rollout, reviewed activation coordinated with #7451 and the measurement remain on #7449.
 
 Refine, investigate and planner artifacts carry a typed `gate` when a missing parameter, unavailable live check or existing delivery target would otherwise raise a card. A `reversible` gate carries its proposed `value` and `reason`; `spending`, `prod_deletion` and `external_account` keep the human decision path, as does any true flag in the four-boolean `effects` object. A recorded live-validation scope and checklist never authorizes performing the checks: the conductor records a default-off or staged repository `scope`, appends `live_checks` as unchecked issue lines, and the PR body follows the `Conductor rescope:` rule under Execution.
 
