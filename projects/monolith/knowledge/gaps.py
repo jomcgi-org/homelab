@@ -124,10 +124,9 @@ def list_gaps_for_review(
     """Return gaps for the private review page, filtered by ``mode``.
 
     ``mode='pending'`` — gaps awaiting user attention (``state='in_review'``,
-    ``human_verified IS FALSE``). Oldest first.
-    This is the same queue that backs the original ``list_review_queue``
-    helper plus the ``human_verified`` filter so verified gaps drop out of
-    the queue immediately after a ``/verify`` call.
+    ``human_verified IS FALSE``). Oldest first. The ``human_verified``
+    filter drops verified gaps out of the queue immediately after a
+    ``/verify`` call.
 
     ``mode='audit'`` — terminal gaps (``committed|rejected|parked``) where
     ``human_verified IS FALSE``, most-recently-resolved first. NULL
@@ -164,20 +163,6 @@ def list_gaps_for_review(
 
     rows = session.execute(stmt).scalars().all()
     return [_gap_to_dict(gap, session=session) for gap in rows]
-
-
-def list_review_queue(session: Session) -> list[dict]:
-    """Return user-actionable gaps awaiting attention (internal and hybrid
-    gaps await an answer from Joe, external gaps are drained directly by the
-    research routine with no approval step), oldest first.
-
-    Thin wrapper around :func:`list_gaps_for_review` for backward
-    compatibility — preserved for the small number of in-tree callers
-    (gap_lifecycle_test, gap_end_to_end_test, router test mocks) that
-    expect the original signature. New code should call
-    :func:`list_gaps_for_review` directly.
-    """
-    return list_gaps_for_review(session, mode="pending", limit=50)
 
 
 def _get_gap_or_raise(session: Session, gap_id: int) -> Gap:

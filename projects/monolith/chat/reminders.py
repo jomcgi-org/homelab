@@ -1,4 +1,4 @@
-"""Reminder CRUD and due-drain core (ambient-assistant parity, Phase 2).
+"""Reminder due-drain core (ambient-assistant parity, Phase 2).
 
 Every function here is synchronous and session-parameterized: unlike
 directives.py (which opens its own session per call), these take an explicit
@@ -10,76 +10,13 @@ the rest of the chat write API (see chat.outbox.enqueue_message).
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 from sqlmodel import Session, select
 
 from core.clock import aware
 from chat.models import Reminder
 from chat.outbox import enqueue_message
-
-# A user can only have this many reminders pending at once; past this, new
-# ones are rejected rather than silently queued forever.
-MAX_PENDING_PER_USER = 10
-# A reminder cannot be scheduled further out than this many days; a typo'd
-# year (or an LLM hallucinating a far-future date) would otherwise wait
-# unnoticed for a very long time.
-MAX_HORIZON_DAYS = 366
-
-
-def create_reminder(
-    session: Session,
-    channel_id: str,
-    author_id: str,
-    content: str,
-    due_at: datetime,
-) -> Reminder | str:
-    """Insert a pending reminder, or return an error string instead of
-    raising if due_at is not in the future, is more than MAX_HORIZON_DAYS
-    out, or the author already has MAX_PENDING_PER_USER pending reminders.
-    Caller commits."""
-    now = datetime.now(timezone.utc)
-    if aware(due_at) <= now:
-        return "due_at must be in the future"
-    if aware(due_at) > now + timedelta(days=MAX_HORIZON_DAYS):
-        return f"due_at cannot be more than {MAX_HORIZON_DAYS} days out"
-    if len(list_pending(session, author_id)) >= MAX_PENDING_PER_USER:
-        return f"you already have {MAX_PENDING_PER_USER} pending reminders"
-
-    reminder = Reminder(
-        channel_id=channel_id,
-        author_id=author_id,
-        content=content,
-        due_at=due_at,
-    )
-    session.add(reminder)
-    return reminder
-
-
-def list_pending(session: Session, author_id: str) -> list[Reminder]:
-    """The author's pending reminders, earliest due first."""
-    return list(
-        session.exec(
-            select(Reminder)
-            .where(Reminder.author_id == author_id)
-            .where(Reminder.status == "pending")
-            .order_by(Reminder.due_at)
-        ).all()
-    )
-
-
-def cancel_reminder(session: Session, author_id: str, reminder_id: int) -> bool:
-    """Flip a still-pending reminder owned by author_id to cancelled. Returns
-    False (no-op) if the row is missing, already resolved, or owned by
-    someone else. Caller commits."""
-    reminder = session.get(Reminder, reminder_id)
-    if reminder is None:
-        return False
-    if reminder.author_id != author_id or reminder.status != "pending":
-        return False
-    reminder.status = "cancelled"
-    session.add(reminder)
-    return True
 
 
 def deliver_due(session: Session, now: datetime) -> int:

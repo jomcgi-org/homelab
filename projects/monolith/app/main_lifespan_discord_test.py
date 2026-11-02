@@ -1,10 +1,11 @@
 """Coverage for the background singletons (Discord bot, scheduler, ships, sweep).
 
 These used to start unconditionally in the lifespan; they now live in
-app.main._start_singletons / _stop_singletons, invoked only on the elected
-leader replica (see app/leadership.py). The lifespan itself just starts the
-leader-election task, so the task-count assertions target _start_singletons
-directly. A separate test covers the lifespan wiring + tracer shutdown.
+framework.start_leader_singletons / stop_leader_singletons, invoked only on
+the elected leader replica (see app/leadership.py). The lifespan itself just
+starts the leader-election task, so the task-count assertions target
+start_leader_singletons directly. A separate test covers the lifespan wiring +
+tracer shutdown.
 """
 
 import os
@@ -15,7 +16,16 @@ import pytest
 # Ensure no valid STATIC_DIR is set (matches main_test.py approach)
 os.environ.pop("STATIC_DIR", None)
 
-from app.main import _start_singletons, _stop_singletons, app, lifespan  # noqa: E402
+from app.main import app  # noqa: E402
+from app.modules_private import ALL_MODULES  # noqa: E402
+from framework import (  # noqa: E402
+    PRIVATE_PROFILE,
+    build_private_lifespan,
+    start_leader_singletons,
+    stop_leader_singletons,
+)
+
+lifespan = build_private_lifespan(PRIVATE_PROFILE, ALL_MODULES)
 
 
 class _AwaitableTask(MagicMock):
@@ -34,7 +44,7 @@ def _reset_leader_shutdown_state():
 
 
 def _singleton_patches_no_discord():
-    """Patches for _start_singletons without a discord token."""
+    """Patches for start_leader_singletons without a discord token."""
     mock_session = MagicMock()
     mock_session.__enter__ = MagicMock(return_value=mock_session)
     mock_session.__exit__ = MagicMock(return_value=False)
@@ -45,7 +55,7 @@ def _singleton_patches_no_discord():
 
 
 def _singleton_patches_with_discord(mock_bot):
-    """Patches for _start_singletons with a discord token."""
+    """Patches for start_leader_singletons with a discord token."""
     mock_session = MagicMock()
     mock_session.__enter__ = MagicMock(return_value=mock_session)
     mock_session.__exit__ = MagicMock(return_value=False)
@@ -86,7 +96,7 @@ class TestSingletons:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
         # Bot, outbox, scheduled tasks, lock sweep, and eight service loops.
         assert len(created) == 12
@@ -108,14 +118,14 @@ class TestSingletons:
             patches[0],
             patches[1],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
         # Ships, pending-message sweep, titles, KG feed, guest cleanup, retention, cd and quota probes.
         assert len(created) == 8
 
     @pytest.mark.asyncio
     async def test_stop_singletons_closes_and_cancels(self):
-        """_stop_singletons closes the bot and cancels every started task."""
+        """stop_leader_singletons closes the bot and cancels every started task."""
         created, cap = _capture()
         mock_bot = MagicMock()
         mock_bot.close = AsyncMock()
@@ -129,8 +139,8 @@ class TestSingletons:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
-            await _stop_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
+            await stop_leader_singletons(app, ALL_MODULES)
 
         mock_bot.close.assert_called_once()
         for task in created:

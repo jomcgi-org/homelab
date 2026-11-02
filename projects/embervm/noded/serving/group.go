@@ -269,16 +269,6 @@ func nftGroupRuleset(bridges []string, servingBridge, podIP string, entries []gr
 	return b.String()
 }
 
-// nftGroupTeardownArgs returns the argv to remove the dedicated group table
-// entirely (scoped: only our table). Provided for teardown symmetry with
-// nftTeardownArgs; `nft delete table` errors on an absent table, so a caller must
-// tolerate that. The GroupManager does not use it in the happy path (it rebuilds
-// the whole table on every create/delete), but it names the scoped-teardown
-// contract. Pure for table testing.
-func nftGroupTeardownArgs() []string {
-	return []string{"nft", "delete", "table", "inet", nftGroupTable}
-}
-
 // groupNet is one live per-group network the GroupManager holds: its bridge, its
 // /24, the gateway (.1), a per-group IP allocator (member IPs are index-pinned,
 // so the allocator is used only to reserve/track, mirroring the serving pin
@@ -619,37 +609,38 @@ func (m *GroupManager) List() []GroupNetworkInfo {
 // member lifecycle lands. A group that is not held, or an index outside the /24,
 // is an error. The reservation is released via ReleaseMember.
 func (m *GroupManager) MemberAddressing(groupInstanceID, memberName string, memberIndex uint32) (tap, mac string, ip net.IP, err error) {
-	m.mu.Lock()
-	g, ok := m.groups[groupInstanceID]
-	m.mu.Unlock()
-	if !ok {
-		return "", "", nil, fmt.Errorf("serving: group %q not found", groupInstanceID)
-	}
-	ip, err = groupMemberIP(g.cidr, memberIndex)
+	g, tap, mac, ip, err := m.lookupMemberAddressing(groupInstanceID, memberName, memberIndex)
 	if err != nil {
 		return "", "", nil, err
 	}
 	if rerr := g.alloc.reserve(ip); rerr != nil {
 		return "", "", nil, rerr
 	}
-	return groupTapName(groupInstanceID, memberName), groupMemberMAC(groupInstanceID, memberName), ip, nil
+	return tap, mac, ip, nil
 }
 
 // MemberAddressingFor derives the deterministic (tap, mac, ip) for a member
 // WITHOUT reserving the IP (a pure derivation, for a relight re-pin or a
 // read-only lookup). It errors only on an unknown group or an out-of-range index.
 func (m *GroupManager) MemberAddressingFor(groupInstanceID, memberName string, memberIndex uint32) (tap, mac string, ip net.IP, err error) {
+	_, tap, mac, ip, err = m.lookupMemberAddressing(groupInstanceID, memberName, memberIndex)
+	return tap, mac, ip, err
+}
+
+// lookupMemberAddressing finds a held group and derives a member's (tap, mac,
+// ip) without reserving the IP.
+func (m *GroupManager) lookupMemberAddressing(groupInstanceID, memberName string, memberIndex uint32) (g *groupNet, tap, mac string, ip net.IP, err error) {
 	m.mu.Lock()
 	g, ok := m.groups[groupInstanceID]
 	m.mu.Unlock()
 	if !ok {
-		return "", "", nil, fmt.Errorf("serving: group %q not found", groupInstanceID)
+		return nil, "", "", nil, fmt.Errorf("serving: group %q not found", groupInstanceID)
 	}
 	ip, err = groupMemberIP(g.cidr, memberIndex)
 	if err != nil {
-		return "", "", nil, err
+		return nil, "", "", nil, err
 	}
-	return groupTapName(groupInstanceID, memberName), groupMemberMAC(groupInstanceID, memberName), ip, nil
+	return g, groupTapName(groupInstanceID, memberName), groupMemberMAC(groupInstanceID, memberName), ip, nil
 }
 
 // ReleaseMember returns a member IP to its group's allocator (idempotent). Used by

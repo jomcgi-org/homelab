@@ -8,12 +8,16 @@ import pytest
 # Ensure no valid STATIC_DIR is set (mirrors main_coverage_test.py approach)
 os.environ.pop("STATIC_DIR", None)
 
-from app.main import (  # noqa: E402
-    _start_singletons,
-    _stop_singletons,
-    app,
-    lifespan,
+from app.main import app  # noqa: E402
+from app.modules_private import ALL_MODULES  # noqa: E402
+from framework import (  # noqa: E402
+    PRIVATE_PROFILE,
+    build_private_lifespan,
+    start_leader_singletons,
+    stop_leader_singletons,
 )
+
+lifespan = build_private_lifespan(PRIVATE_PROFILE, ALL_MODULES)
 
 
 class _AwaitableTask(MagicMock):
@@ -50,17 +54,6 @@ def _make_task_capturer():
     return tasks, capture
 
 
-def _lifespan_patches_no_discord():
-    """Return patches needed for lifespan without discord token."""
-    mock_session = MagicMock()
-    mock_session.__enter__ = MagicMock(return_value=mock_session)
-    mock_session.__exit__ = MagicMock(return_value=False)
-    return [
-        patch("core.db.get_engine", return_value=MagicMock()),
-        patch("sqlmodel.Session", return_value=mock_session),
-    ]
-
-
 def _lifespan_patches_with_discord(mock_bot):
     """Return patches needed for lifespan with discord token."""
     mock_session = MagicMock()
@@ -81,7 +74,7 @@ def _lifespan_patches_with_discord(mock_bot):
 class TestSingletonBotClose:
     @pytest.mark.asyncio
     async def test_bot_close_exception_is_swallowed_on_stop(self):
-        """_stop_singletons logs and swallows bot.close() errors so a resign or
+        """stop_leader_singletons logs and swallows bot.close() errors so a resign or
         shutdown never crashes (the leader must be able to step down cleanly)."""
         tasks, capture = _make_task_capturer()
 
@@ -97,8 +90,8 @@ class TestSingletonBotClose:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
-            await _stop_singletons(app)  # must NOT raise
+            await start_leader_singletons(app, ALL_MODULES)
+            await stop_leader_singletons(app, ALL_MODULES)  # must NOT raise
 
         mock_bot.close.assert_called_once()
 
@@ -119,7 +112,7 @@ class TestSingletonBotClose:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
         # Bot, outbox, scheduled tasks, lock sweep, and eight service loops.
         assert len(tasks) == 12

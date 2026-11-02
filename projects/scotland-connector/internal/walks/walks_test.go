@@ -242,13 +242,18 @@ func TestDayForDropsElapsedHours(t *testing.T) {
 	}
 }
 
+// dayName formats a LocalDay as YYYY-MM-DD.
+func dayName(day int32) string {
+	return time.Unix(int64(day)*86400, 0).UTC().Format("2006-01-02")
+}
+
 func TestLocalDayUsesUKCivilDate(t *testing.T) {
 	// 23:30 UTC on 15 June is 00:30 BST on 16 June.
-	if got := DayName(LocalDay(time.Date(2026, 6, 15, 23, 30, 0, 0, time.UTC))); got != "2026-06-16" {
+	if got := dayName(LocalDay(time.Date(2026, 6, 15, 23, 30, 0, 0, time.UTC))); got != "2026-06-16" {
 		t.Fatalf("got %s", got)
 	}
 	// In winter UTC and UK time agree.
-	if got := DayName(LocalDay(time.Date(2026, 12, 15, 23, 30, 0, 0, time.UTC))); got != "2026-12-15" {
+	if got := dayName(LocalDay(time.Date(2026, 12, 15, 23, 30, 0, 0, time.UTC))); got != "2026-12-15" {
 		t.Fatalf("got %s", got)
 	}
 }
@@ -356,7 +361,7 @@ func TestCoverageIndexMatchesTheRule(t *testing.T) {
 		ds.indexCoverage()
 		for day := LocalDay(base) - 3; day <= LocalDay(base)+5; day++ {
 			if got, want := ds.CoverageOf(day), ds.coverage(day); got != want {
-				t.Errorf("horizon +%dh day %s: index %s, rule %s", h, DayName(day), got, want)
+				t.Errorf("horizon +%dh day %s: index %s, rule %s", h, dayName(day), got, want)
 			}
 		}
 	}

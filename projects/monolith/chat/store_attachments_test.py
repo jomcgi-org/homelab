@@ -7,7 +7,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from chat.models import Attachment, Blob, Message
+from chat.models import Attachment, Blob
 from chat.store import MessageStore
 
 

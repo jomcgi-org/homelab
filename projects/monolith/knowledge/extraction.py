@@ -1478,22 +1478,10 @@ def _insert_no_new_notes_pending(session: Session, raw: RawInput) -> None:
     )
 
 
-def apply_extraction(
-    session: Session,
-    raw_id: str,
-    result_text: str,
-    *,
-    correction: bool = False,
-    transaction_guard: Callable[[Session], None] | None = None,
-    transaction_finalize: Callable[[Session, dict], None] | None = None,
-) -> dict:
-    """Validate output, then guard and atomically apply its knowledge changes.
-
-    The optional caller guard must raise on lost ownership and retain its lock
-    in this session. It runs after preparation releases the original transaction,
-    before the authoritative reread and all writes. A finalizer may record caller
-    completion in the same transaction; it must not commit or perform network I/O.
-    """
+def _unhandled_raw(
+    session: Session, raw_id: str, correction: bool
+) -> tuple[RawInput, int] | None:
+    """Return the raw row and its pass count, or None when already handled."""
     raw = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
     if raw is None:
         raise ExtractionInputMissing(f"raw not found: {raw_id}")
@@ -1510,8 +1498,29 @@ def apply_extraction(
     ).first()
     if correction:
         if passes != 1:
-            return _replayed_result(raw_id)
+            return None
     elif passes > 0 or handled is not None:
+        return None
+    return raw, passes
+
+
+def apply_extraction(
+    session: Session,
+    raw_id: str,
+    result_text: str,
+    *,
+    correction: bool = False,
+    transaction_guard: Callable[[Session], None] | None = None,
+    transaction_finalize: Callable[[Session, dict], None] | None = None,
+) -> dict:
+    """Validate output, then guard and atomically apply its knowledge changes.
+
+    The optional caller guard must raise on lost ownership and retain its lock
+    in this session. It runs after preparation releases the original transaction,
+    before the authoritative reread and all writes. A finalizer may record caller
+    completion in the same transaction; it must not commit or perform network I/O.
+    """
+    if _unhandled_raw(session, raw_id, correction) is None:
         return _replayed_result(raw_id)
     session.rollback()
     parsed = _parse_result(result_text)
@@ -1567,25 +1576,10 @@ def apply_extraction(
     try:
         if transaction_guard is not None:
             transaction_guard(session)
-        raw = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
-        if raw is None:
-            raise ExtractionInputMissing(f"raw not found: {raw_id}")
-        passes = int((raw.extra or {}).get("extraction_passes", 0) or 0)
-        handled = session.exec(
-            select(AtomRawProvenance).where(
-                AtomRawProvenance.raw_fk == raw.id,
-                AtomRawProvenance.gardener_version == EXTRACTION_VERSION,
-                (
-                    AtomRawProvenance.derived_note_id.is_(None)
-                    | (AtomRawProvenance.derived_note_id != "failed")
-                ),
-            )
-        ).first()
-        if correction:
-            if passes != 1:
-                return _replayed_result(raw_id)
-        elif passes > 0 or handled is not None:
+        unhandled = _unhandled_raw(session, raw_id, correction)
+        if unhandled is None:
             return _replayed_result(raw_id)
+        raw, passes = unhandled
         authoritative_scope = _authoritative_raw_scope(raw)
 
         if session.get_bind().dialect.name == "postgresql":

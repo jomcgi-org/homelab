@@ -512,7 +512,7 @@ defmodule Embervm.Dispatcher do
   # and drain happen on that ensuing message; nothing else to do here.
   def handle_info({:retry_task, task_id}, state) do
     state = %{state | retry_timers: Map.delete(state.retry_timers, task_id)}
-    _ = safe(fn -> Embervm.TaskStore.retry(state.task_store, task_id) end)
+    _ = Embervm.SafeCall.run(fn -> Embervm.TaskStore.retry(state.task_store, task_id) end)
     {:noreply, state}
   end
 
@@ -643,7 +643,7 @@ defmodule Embervm.Dispatcher do
   # `expires_at` the submit stamped.
   defp commit(state, wl, entry, node_id, mode, snapshot_ref, candidates, task_id, pr) do
     if expired?(state, task_id) do
-      _ = safe(fn -> Embervm.TaskStore.expire(state.task_store, task_id) end)
+      _ = Embervm.SafeCall.run(fn -> Embervm.TaskStore.expire(state.task_store, task_id) end)
       release_depth(state, wl, pr)
       state = Map.update!(state, :queued_ids, &MapSet.delete(&1, task_id))
       drain_loop(state, wl, entry)
@@ -1031,7 +1031,7 @@ defmodule Embervm.Dispatcher do
   # request env) so EmberVM's spans nest under the caller's trace; else the
   # dispatcher's captured context.
   defp restore_trace_ctx(req_env, ctx) do
-    case parse_traceparent(Map.get(req_env, "traceparent")) do
+    case SessionTrace.parse_traceparent(Map.get(req_env, "traceparent")) do
       {trace_id, span_id, flags} ->
         # Set the CALLER's span as the remote parent so the dispatch/guest_exec
         # spans nest under the caller's trace (parse the W3C traceparent directly
@@ -1050,27 +1050,6 @@ defmodule Embervm.Dispatcher do
         OpenTelemetry.Ctx.attach(Map.get(ctx, :otel_ctx, :undefined))
     end
   end
-
-  # Parse a W3C `traceparent` (`<ver>-<32hex trace>-<16hex span>-<2hex flags>`)
-  # into integer ids, or :error for anything malformed/absent.
-  defp parse_traceparent(tp) when is_binary(tp) do
-    case String.split(tp, "-") do
-      [_ver, trace_hex, span_hex, flags_hex]
-      when byte_size(trace_hex) == 32 and byte_size(span_hex) == 16 ->
-        with {trace_id, ""} <- Integer.parse(trace_hex, 16),
-             {span_id, ""} <- Integer.parse(span_hex, 16),
-             {flags, ""} <- Integer.parse(flags_hex, 16) do
-          {trace_id, span_id, flags}
-        else
-          _ -> :error
-        end
-
-      _ ->
-        :error
-    end
-  end
-
-  defp parse_traceparent(_), do: :error
 
   defp do_run_assign(ctx, req_env, channel_fun, invalidate_fun, assign_fun, prime_fun) do
     # Resolve the VM to Assign and the {node_id, channel} it actually lives on. Warm
@@ -1467,7 +1446,7 @@ defmodule Embervm.Dispatcher do
       node_id: meta.node_id
     )
 
-    _ = safe(fn -> state.note_denial_fun.(meta.workload, Map.get(meta, :need_mib, 0)) end)
+    _ = Embervm.SafeCall.run(fn -> state.note_denial_fun.(meta.workload, Map.get(meta, :need_mib, 0)) end)
 
     state
     |> bump_denial(:pressure)
@@ -1862,7 +1841,7 @@ defmodule Embervm.Dispatcher do
     if Map.has_key?(state.retry_timers, tid) do
       state
     else
-      _ = safe(fn -> Embervm.TaskStore.retry(state.task_store, tid) end)
+      _ = Embervm.SafeCall.run(fn -> Embervm.TaskStore.retry(state.task_store, tid) end)
       state
     end
   end
@@ -2103,16 +2082,6 @@ defmodule Embervm.Dispatcher do
   defp safe_call(fun) do
     try do
       {:ok, fun.()}
-    rescue
-      _ -> :error
-    catch
-      _, _ -> :error
-    end
-  end
-
-  defp safe(fun) do
-    try do
-      fun.()
     rescue
       _ -> :error
     catch

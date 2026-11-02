@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +21,7 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/driver"
 	"github.com/jomcgi/homelab/projects/embervm/noded/snapshotmeta"
 	"github.com/jomcgi/homelab/projects/embervm/noded/store"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
@@ -819,7 +819,7 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 		if !ok {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: restore base %q: runtime image %q not provisioned on this node", prefix, storedImageRef)
 		}
-		localRootfsID, rootfsErr := ext4UUID(img.RootfsPath)
+		localRootfsID, rootfsErr := driver.Ext4UUID(img.RootfsPath)
 		if rootfsErr != nil {
 			if pendingErr := s.refuseIfRootfsPending(img.RootfsPath); pendingErr != nil {
 				return nil, pendingErr
@@ -1476,20 +1476,6 @@ func (u *unexportableSet) contains(artifact string) bool {
 		return false
 	}
 	return true
-}
-
-func (u *unexportableSet) snapshot() []unexportableArtifact {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.purgeExpiredLocked(u.now())
-	out := make([]unexportableArtifact, 0, len(u.entries))
-	for _, entry := range u.entries {
-		out = append(out, entry)
-	}
-	slices.SortFunc(out, func(a, b unexportableArtifact) int {
-		return strings.Compare(a.Artifact, b.Artifact)
-	})
-	return out
 }
 
 func (u *unexportableSet) purgeExpiredLocked(now time.Time) {

@@ -38,9 +38,10 @@ import os
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from core.clock import aware
+from core.clock import utc_now as _now
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +80,6 @@ KG_DISPUTE_NOTE_LIMIT = 5
 # scanner or database writer runs in this process.
 BACKUP_MAX_AGE_S = 129600
 BACKUP_OBSERVATION_MAX_AGE_S = 7200
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _minutes(delta: timedelta) -> str:

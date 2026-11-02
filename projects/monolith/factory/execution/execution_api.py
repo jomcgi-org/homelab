@@ -610,11 +610,6 @@ def _sessions_for_workflow(workflow_id: str):
         return store.sessions_for_workflow(db_session, workflow_id)
 
 
-def _session_cleanup_hold(session_id: int, guest_id: str) -> str | None:
-    with Session(get_engine()) as db_session:
-        return store.guest_cleanup_hold(db_session, session_id, guest_id)
-
-
 def _begin_guest_cleanup(session_id: int, guest_id: str, workflow_id: str) -> dict:
     with Session(get_engine()) as db_session:
         return store.begin_guest_cleanup(db_session, session_id, guest_id, workflow_id)

@@ -8,7 +8,6 @@ export const PHASES = {
   out: [0.96, 1],
 };
 
-export const CHAT_REVEAL = 0.022;
 export const CHAT_SCHEDULE = [
   [0.08, "wake"],
   [0.14, "wake"],

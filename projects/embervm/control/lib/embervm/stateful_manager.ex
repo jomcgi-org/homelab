@@ -836,8 +836,8 @@ defmodule Embervm.StatefulManager do
 
       # First miss: apply the per-workload wake-rate limit, then park + kick
       # ONE wake worker.
-      wake_allowed?(state, principal) ->
-        state = record_wake(state, principal)
+      Embervm.WakeLimit.allowed?(state, principal) ->
+        state = Embervm.WakeLimit.record(state, principal)
         state = park_new_wake(state, workload, principal, from)
         {:noreply, start_wake(state, workload)}
 
@@ -1146,7 +1146,7 @@ defmodule Embervm.StatefulManager do
   end
 
   defp stale_cleanup_channel_dead?(state, dial_id) do
-    match?({:error, _}, safe_channel(state.channel_fun, dial_id))
+    match?({:error, _}, Embervm.NodeChannel.safe_dial(state.channel_fun, dial_id))
   end
 
   # Re-alarm once per alarm interval. This keeps a persistent wedge visible
@@ -3097,7 +3097,7 @@ defmodule Embervm.StatefulManager do
   defp stop_stateful_destroy_on(state, dial_id, vm_id) do
     req = %StopStatefulRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_STATEFUL_MODE_DESTROY}
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_id) do
       try do
         case state.stop_stateful_fun.(channel, req) do
           {:ok, %{teardown_confirmed: true}} ->
@@ -3267,7 +3267,7 @@ defmodule Embervm.StatefulManager do
     req = %DeleteVolumeRequest{trace: %Trace{workload: workload}, workload: workload}
     dial = dial_id_for(state, node_id)
 
-    case safe_channel(state.channel_fun, dial) do
+    case Embervm.NodeChannel.safe_dial(state.channel_fun, dial) do
       {:ok, channel} ->
         try do
           case state.delete_volume_fun.(channel, req) do
@@ -4189,29 +4189,6 @@ defmodule Embervm.StatefulManager do
     end
   end
 
-  # -- wake-rate limit -----------------------------------------------------
-
-  defp wake_allowed?(%{wake_max: max}, _principal) when not is_integer(max) or max <= 0, do: true
-
-  defp wake_allowed?(state, principal) do
-    now = state.clock.()
-    length(recent_wakes(state, principal, now)) < state.wake_max
-  end
-
-  defp record_wake(state, principal) do
-    now = state.clock.()
-    recent = recent_wakes(state, principal, now)
-    %{state | wake_events: Map.put(state.wake_events, principal, [now | recent])}
-  end
-
-  defp recent_wakes(state, principal, now) do
-    cutoff = now - state.wake_window_ms
-
-    state.wake_events
-    |> Map.get(principal, [])
-    |> Enum.filter(&(&1 > cutoff))
-  end
-
   # -- catalog helpers -------------------------------------------------------
 
   defp stateful_workload?(state, workload) do
@@ -4235,7 +4212,7 @@ defmodule Embervm.StatefulManager do
   defp safe_start_stateful(state, node_id, workload, req) do
     timeout_ms = wake_bound_ms(state, workload) + @start_rpc_margin_ms
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, node_id) do
       try do
         case call_start_stateful(state.start_stateful_fun, channel, req, timeout_ms) do
           {:error, reason} = err ->
@@ -4269,14 +4246,6 @@ defmodule Embervm.StatefulManager do
           {:error, {:start_stateful_raised, {kind, reason}}}
       end
     end
-  end
-
-  defp safe_channel(channel_fun, node_id) do
-    channel_fun.(node_id)
-  rescue
-    e -> {:error, {:channel_raised, e}}
-  catch
-    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
   end
 
   # -- restore-on-miss RPC (R6, Task 8) ---------------------------------------
@@ -4345,90 +4314,10 @@ defmodule Embervm.StatefulManager do
     end
   end
 
-  # Dial the restore on `dial_id` (the boot's instance, Step 4) but stamp the vendor
-  # off `node_id` (the node-name anchor RestoreVendor can resolve). Invalidation on a
-  # dead transport is also keyed on `dial_id` (the channel we actually dialled).
   defp safe_restore_artifact(state, dial_id, node_id, %ArtifactRef{} = ref, ctx) do
     req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: ref.workload}}
-    req = Embervm.RestoreVendor.stamp(state.capacity_table, node_id, req)
-    brick = restore_brick(state.capacity_table, dial_id, node_id)
-
-    with {:ok, req} <- Embervm.RestoreCapability.stamp(req, brick, ctx),
-         {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
-      # The `artifact_restore` span (Task 11): a child span around the
-      # RestoreArtifact RPC (the restore-on-miss read path). Carries the artifact
-      # identity up front and stamps bytes-moved/skipped from the response, so the
-      # Task 12 restore-on-miss gate reads its evidence off the span alone.
-      Tracer.with_span "embervm.artifact_restore",
-                       %{
-                         attributes: %{
-                           "ember.workload" => ref.workload,
-                           "ember.artifact_kind" => artifact_kind_string(ref.kind),
-                           "ember.artifact_ref" => ref.ref
-                         }
-                       } do
-        result = restore_rpc(state, dial_id, channel, req)
-        stamp_restore_span(result)
-        result
-      end
-    end
+    Embervm.ArtifactRestore.run(state, dial_id, node_id, req, ctx, artifact_kind_string(ref.kind), state.invalidate_fun)
   end
-
-  defp restore_brick(table, dial_id, node_id) do
-    case Enum.find(NodeCapacity.all(table), &(Map.get(&1, :instance_id) == dial_id)) do
-      nil when dial_id == node_id ->
-        case NodeCapacity.fetch(table, node_id) do
-          {:ok, brick} -> brick
-          :error -> %{node_id: node_id, pod_uid: ""}
-        end
-
-      nil ->
-        %{node_id: node_id, pod_uid: ""}
-
-      brick ->
-        brick
-    end
-  end
-
-  # The RestoreArtifact RPC with transport-death channel invalidation. Extracted so
-  # the `artifact_restore` span wraps exactly the call and its result. Invalidates by
-  # `dial_id` (the instance the channel was dialled on, Step 4).
-  defp restore_rpc(state, dial_id, channel, req) do
-    try do
-      case state.restore_artifact_fun.(channel, req) do
-        {:error, reason} = err ->
-          if Embervm.NodeChannel.transport_dead?(reason) do
-            _ = state.invalidate_fun.(dial_id, channel)
-          end
-
-          err
-
-        other ->
-          other
-      end
-    rescue
-      e -> {:error, {:restore_artifact_raised, e}}
-    catch
-      :exit, reason ->
-        _ = state.invalidate_fun.(dial_id, channel)
-        {:error, {:restore_artifact_raised, {:exit, reason}}}
-
-      kind, reason ->
-        {:error, {:restore_artifact_raised, {kind, reason}}}
-    end
-  end
-
-  # Stamp bytes-moved/skipped onto the current `artifact_restore` span from a
-  # successful RestoreArtifact response. A failure result leaves the span with only
-  # its identity attributes (the error itself surfaces in the caller's warning log).
-  defp stamp_restore_span({:ok, resp}) do
-    Tracer.set_attributes(%{
-      "ember.bytes_moved" => Map.get(resp, :bytes_moved, 0),
-      "ember.skipped" => Map.get(resp, :skipped, false)
-    })
-  end
-
-  defp stamp_restore_span(_other), do: :ok
 
   # Append the audit-only :artifact_restored op (no projection table; the log itself
   # is the record). Best-effort: an append failure must never fail the wake, which
@@ -4477,7 +4366,7 @@ defmodule Embervm.StatefulManager do
     dial_id = store_eviction_node(state, anchor, workload)
 
     result =
-      case safe_channel(state.channel_fun, dial_id) do
+      case Embervm.NodeChannel.safe_dial(state.channel_fun, dial_id) do
         {:ok, channel} ->
           try do
             case state.evict_artifact_fun.(channel, req) do

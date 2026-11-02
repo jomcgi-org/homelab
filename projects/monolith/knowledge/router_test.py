@@ -563,7 +563,7 @@ class TestListGapsEndpoint:
         assert r.json() == {"gaps": []}
 
     def test_no_filters_passes_none_to_store(self, note_client):
-        """Omitting state/gap_class passes states=None, classes=None to the store."""
+        """Omitting all params passes states=None, classes=None, limit=100."""
         with patch("knowledge.router.KnowledgeStore") as MockStore:
             MockStore.return_value.list_gaps.return_value = []
             note_client.get("/api/knowledge/gaps")

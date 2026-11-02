@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import json
 
-import httpx
 import typer
 
-from tools.cli.auth import clear_cf_token, get_cf_token
+from tools.cli.api import request as _request
 from tools.cli.output import scheduler_line
-
-API_BASE = "https://private.jomcgi.dev"
 
 scheduler_app = typer.Typer(
     name="scheduler",
@@ -23,30 +20,6 @@ jobs_app = typer.Typer(
     no_args_is_help=True,
 )
 scheduler_app.add_typer(jobs_app)
-
-
-def _client() -> httpx.Client:
-    token = get_cf_token()
-    return httpx.Client(
-        base_url=API_BASE,
-        cookies={"CF_Authorization": token},
-        follow_redirects=False,
-        timeout=30.0,
-    )
-
-
-def _request(method: str, path: str, **kwargs) -> httpx.Response:
-    """Make a request with automatic re-auth on 3xx (expired CF token)."""
-    with _client() as client:
-        resp = getattr(client, method)(path, **kwargs)
-
-    if resp.is_redirect:
-        typer.echo("Token expired, re-authenticating...", err=True)
-        clear_cf_token()
-        with _client() as client:
-            resp = getattr(client, method)(path, **kwargs)
-
-    return resp
 
 
 def _print_job(job: dict) -> None:

@@ -176,6 +176,48 @@ func TestStartServingRejectsUnderMemPressure(t *testing.T) {
 	}
 }
 
+// underPressure is admit's verdict without the reservation, counter or log: the
+// first reason that trips, or ("", false) to admit. It reads the same facts
+// admit does (in-flight boots included).
+func (s *Server) underPressure(needMib uint64, class pressureClass) (rejectReason, bool) {
+	if s.memExhausted(needMib) {
+		return reasonPressureMem, true
+	}
+	if class == classTapBearing && s.tapsExhausted() {
+		return reasonPressureTaps, true
+	}
+	return "", false
+}
+
+// memExhausted reports whether a boot declaring needMib fails the memory
+// predicate of the configured model (admittableMib), boots in flight included.
+func (s *Server) memExhausted(needMib uint64) bool {
+	s.admission.mu.Lock()
+	defer s.admission.mu.Unlock()
+	return !s.admissionFactsLocked().memAdmits(needMib)
+}
+
+// memPressured is the observed half of the predicate on its own: whether known
+// cgroup headroom, less the boots in flight it does not yet reflect, is below
+// the workload's need plus the reject floor. An unknown headroom (unlimited or unreadable cgroup) fails
+// open; a known but exhausted cgroup reads at least 1 MiB (parseMemHeadroomMib)
+// and refuses.
+func (s *Server) memPressured(needMib uint64) bool {
+	s.admission.mu.Lock()
+	defer s.admission.mu.Unlock()
+	f := s.admissionFactsLocked()
+	f.model = "observed"
+	return !f.memAdmits(needMib)
+}
+
+// slotsExhausted reports whether live VMs plus boots in flight already fill the
+// live-VM backstop. A zero ceiling is unlimited.
+func (s *Server) slotsExhausted() bool {
+	s.admission.mu.Lock()
+	defer s.admission.mu.Unlock()
+	return s.admissionFactsLocked().slotsFull()
+}
+
 // TestUnderPressureFloorFallback: a zero/unset configured floor still applies
 // minSlotWorkloadMib (the floor is never accidentally disabled). With need 0 and
 // a headroom below the fallback floor, the predicate trips on `pressure:mem`.

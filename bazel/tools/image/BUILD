@@ -156,6 +156,7 @@ genrule(
     srcs = [
         "//tools:__init__.py",
         "//tools/cli:__init__.py",
+        "//tools/cli:api.py",
         "//tools/cli:auth.py",
         "//tools/cli:knowledge_cmd.py",
         "//tools/cli:main.py",
@@ -174,6 +175,7 @@ genrule(
         mkdir -p "$$DEST/tools/cli"
         cp $(location //tools:__init__.py) "$$DEST/tools/__init__.py"
         cp $(location //tools/cli:__init__.py) "$$DEST/tools/cli/__init__.py"
+        cp $(location //tools/cli:api.py) "$$DEST/tools/cli/api.py"
         cp $(location //tools/cli:auth.py) "$$DEST/tools/cli/auth.py"
         cp $(location //tools/cli:knowledge_cmd.py) "$$DEST/tools/cli/knowledge_cmd.py"
         cp $(location //tools/cli:main.py) "$$DEST/tools/cli/main.py"

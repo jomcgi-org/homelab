@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .models import Block, Session, Turn
+from .models import Block, Session, Turn, read_jsonl_records, token_count
 from .redact import Redactor
 
 FORMAT_VERSION = "claude-v2"
@@ -23,10 +23,6 @@ USAGE_FIELDS = (
     ("cache_read_input_tokens", "cache_read_tokens"),
     ("cache_creation_input_tokens", "cache_write_tokens"),
 )
-
-
-def _token_count(value: object) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _texts(content: object) -> list[str]:
@@ -49,15 +45,7 @@ def _tool_result(item: dict[str, Any]) -> str:
 
 
 def parse(path: Path) -> Session:
-    records: list[dict[str, Any]] = []
-    with path.open(encoding="utf-8", errors="replace") as stream:
-        for line in stream:
-            try:
-                value = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(value, dict):
-                records.append(value)
+    records = read_jsonl_records(path)
 
     timestamps = [
         r["timestamp"] for r in records if isinstance(r.get("timestamp"), str)
@@ -101,12 +89,12 @@ def parse(path: Path) -> Session:
         if not isinstance(message_usage, dict):
             continue
         usage = {
-            target: _token_count(message_usage.get(source))
+            target: token_count(message_usage.get(source))
             for source, target in USAGE_FIELDS
         }
         output_details = message_usage.get("output_tokens_details")
         usage["reasoning_tokens"] = (
-            _token_count(output_details.get("thinking_tokens"))
+            token_count(output_details.get("thinking_tokens"))
             if isinstance(output_details, dict)
             else 0
         )

@@ -21,7 +21,7 @@ from grimoire.models import CharacterFact, Embedding, GameSession, SessionEvent
 from grimoire.play_embeddings import (
     collect_play_inputs,
     persist_play_vectors,
-    sync_event_embeddings,
+    sync_events_embeddings,
     sync_fact_embeddings,
 )
 from grimoire.testing.leak_harness import sqlite_harness
@@ -463,7 +463,7 @@ def test_retraction_cascade_and_embedding_sync_never_touch_knowledge(harness):
         sync_fact_embeddings(h.session, only)
         event = h.rows["event_table"]
         event.retracted_at = datetime.now(UTC)
-        sync_event_embeddings(h.session, event)
+        sync_events_embeddings(h.session, [event])
         h.session.commit()
         assert only.status == "retracted"
         assert both.status == "active"
@@ -475,7 +475,7 @@ def test_retraction_cascade_and_embedding_sync_never_touch_knowledge(harness):
         ).all()
         other = h.rows["event_character_a"]
         other.retracted_at = datetime.now(UTC)
-        sync_event_embeddings(h.session, other)
+        sync_events_embeddings(h.session, [other])
         h.session.commit()
         assert both.status == "retracted"
         assert not h.session.exec(
@@ -559,7 +559,7 @@ def test_partial_grouped_reveal_revocation_invalidates_ambiguous_evidence(harnes
     assert "Unchanged shared item" in json.dumps(payload)
     assert write(h, [candidate(h, "reveal_partial", entity_id=other.id)]).rejections
     h.rows["event_table"].retracted_at = datetime.now(UTC)
-    sync_event_embeddings(h.session, h.rows["event_table"])
+    sync_events_embeddings(h.session, [h.rows["event_table"]])
     h.session.commit()
     assert other_support.status == "retracted"
 
@@ -704,7 +704,7 @@ def test_retraction_rolls_back_fact_and_vector_together(harness):
     fact = write(h, [candidate(h)]).written[0]
     embed_fact(h, fact)
     h.rows["event_table"].retracted_at = datetime.now(UTC)
-    sync_event_embeddings(h.session, h.rows["event_table"])
+    sync_events_embeddings(h.session, [h.rows["event_table"]])
     assert fact.status == "retracted"
     h.session.rollback()
     assert fact.status == "active"
@@ -720,7 +720,7 @@ def test_event_retraction_cascades_in_same_commit(harness):
     fact_id = fact.id
     event = h.rows["event_table"]
     event.retracted_at = datetime.now(UTC)
-    sync_event_embeddings(h.session, event)
+    sync_events_embeddings(h.session, [event])
     h.session.commit()
     with Session(h.session.get_bind()) as fresh:
         assert fresh.get(CharacterFact, fact_id).status == "retracted"

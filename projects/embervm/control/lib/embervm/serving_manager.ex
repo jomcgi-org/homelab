@@ -328,8 +328,8 @@ defmodule Embervm.ServingManager do
 
       # First miss: apply the per-principal wake-rate limit, then park + kick ONE
       # wake worker.
-      wake_allowed?(state, principal) ->
-        state = record_wake(state, principal)
+      Embervm.WakeLimit.allowed?(state, principal) ->
+        state = Embervm.WakeLimit.record(state, principal)
         state = park_new_wake(state, workload, req, principal, from)
         {:noreply, start_wake(state, workload)}
 
@@ -1614,29 +1614,6 @@ defmodule Embervm.ServingManager do
     end
   end
 
-  # -- wake-rate limit -------------------------------------------------------
-
-  defp wake_allowed?(%{wake_max: max}, _principal) when not is_integer(max) or max <= 0, do: true
-
-  defp wake_allowed?(state, principal) do
-    now = state.clock.()
-    length(recent_wakes(state, principal, now)) < state.wake_max
-  end
-
-  defp record_wake(state, principal) do
-    now = state.clock.()
-    recent = recent_wakes(state, principal, now)
-    %{state | wake_events: Map.put(state.wake_events, principal, [now | recent])}
-  end
-
-  defp recent_wakes(state, principal, now) do
-    cutoff = now - state.wake_window_ms
-
-    state.wake_events
-    |> Map.get(principal, [])
-    |> Enum.filter(&(&1 > cutoff))
-  end
-
   # -- catalog + placement helpers -------------------------------------------
 
   defp serving_workload?(state, workload) do
@@ -1669,7 +1646,7 @@ defmodule Embervm.ServingManager do
   # -- daemon seams ----------------------------------------------------------
 
   defp safe_start_serving(state, node_id, req) do
-    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, node_id) do
       case state.start_serving_fun.(channel, req) do
         {:error, reason} = err ->
           # A wake that failed because the channel's transport is dead (a replaced
@@ -1692,14 +1669,6 @@ defmodule Embervm.ServingManager do
     kind, reason -> {:error, {:start_serving_raised, {kind, reason}}}
   end
 
-  defp safe_channel(channel_fun, node_id) do
-    channel_fun.(node_id)
-  rescue
-    e -> {:error, {:channel_raised, e}}
-  catch
-    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
-  end
-
   # StartServing blocks server-side for the whole readiness gate (noded's
   # EMBERVM_NODED_BOOT_READY_TIMEOUT, 180 s in production). grpc-elixir's default
   # unary deadline is 10 s, so without an explicit timeout a healthy boot slower
@@ -1718,7 +1687,7 @@ defmodule Embervm.ServingManager do
     req = %StopServingRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_SERVING_MODE_DESTROY}
     dial_key = Embervm.WakeInstance.dial_for_serving_vm(state.capacity_table, node_id, vm_id)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_key) do
       try do
         case state.stop_serving_fun.(channel, req) do
           {:ok, %{teardown_confirmed: true}} ->
@@ -1785,88 +1754,10 @@ defmodule Embervm.ServingManager do
     end
   end
 
-  # Dial the restore on `dial_id` (the relight's instance, Step 4) but stamp the
-  # vendor off `node_id` (the node-name anchor RestoreVendor can resolve). Transport-
-  # death invalidation is keyed on `dial_id` (the channel we actually dialled).
   defp safe_restore_artifact(state, dial_id, node_id, %ArtifactRef{} = ref, ctx) do
     req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: ref.workload}}
-    req = Embervm.RestoreVendor.stamp(state.capacity_table, node_id, req)
-    brick = restore_brick(state.capacity_table, dial_id, node_id)
-
-    with {:ok, req} <- Embervm.RestoreCapability.stamp(req, brick, ctx),
-         {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
-      # The `artifact_restore` span (Task 11): a child span around the
-      # RestoreArtifact RPC (the restore-on-miss read path). Identity up front,
-      # bytes-moved/skipped stamped from the response.
-      Tracer.with_span "embervm.artifact_restore",
-                       %{
-                         attributes: %{
-                           "ember.workload" => ref.workload,
-                           "ember.artifact_kind" => artifact_kind_string(ref.kind),
-                           "ember.artifact_ref" => ref.ref
-                         }
-                       } do
-        result = restore_rpc(state, dial_id, channel, req)
-        stamp_restore_span(result)
-        result
-      end
-    end
+    Embervm.ArtifactRestore.run(state, dial_id, node_id, req, ctx, artifact_kind_string(ref.kind), state.invalidate_fun)
   end
-
-  defp restore_brick(table, dial_id, node_id) do
-    case Enum.find(NodeCapacity.all(table), &(Map.get(&1, :instance_id) == dial_id)) do
-      nil when dial_id == node_id ->
-        case NodeCapacity.fetch(table, node_id) do
-          {:ok, brick} -> brick
-          :error -> %{node_id: node_id, pod_uid: ""}
-        end
-
-      nil ->
-        %{node_id: node_id, pod_uid: ""}
-
-      brick ->
-        brick
-    end
-  end
-
-  # The RestoreArtifact RPC with transport-death channel invalidation. Extracted so
-  # the `artifact_restore` span wraps exactly the call and its result. Invalidates by
-  # `dial_id` (the instance the channel was dialled on, Step 4).
-  defp restore_rpc(state, dial_id, channel, req) do
-    try do
-      case state.restore_artifact_fun.(channel, req) do
-        {:error, reason} = err ->
-          if Embervm.NodeChannel.transport_dead?(reason) do
-            _ = state.invalidate_fun.(dial_id, channel)
-          end
-
-          err
-
-        other ->
-          other
-      end
-    rescue
-      e -> {:error, {:restore_artifact_raised, e}}
-    catch
-      :exit, reason ->
-        _ = state.invalidate_fun.(dial_id, channel)
-        {:error, {:restore_artifact_raised, {:exit, reason}}}
-
-      kind, reason ->
-        {:error, {:restore_artifact_raised, {kind, reason}}}
-    end
-  end
-
-  # Stamp bytes-moved/skipped onto the current `artifact_restore` span from a
-  # successful RestoreArtifact response. A failure leaves only the identity attrs.
-  defp stamp_restore_span({:ok, resp}) do
-    Tracer.set_attributes(%{
-      "ember.bytes_moved" => Map.get(resp, :bytes_moved, 0),
-      "ember.skipped" => Map.get(resp, :skipped, false)
-    })
-  end
-
-  defp stamp_restore_span(_other), do: :ok
 
   # Append the audit-only :artifact_restored op (no projection table; the log itself
   # is the record). Best-effort: an append failure must never fail the wake, which

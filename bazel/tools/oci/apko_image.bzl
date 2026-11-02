@@ -17,7 +17,6 @@ def apko_image(
         visibility = ["//bazel/images:__pkg__"],
         tars = None,
         multiarch_tars = None,
-        multiplatform_tars = None,
         arm64 = True):
     """Create a multi-platform apko OCI image, optionally with additional tar layers.
 
@@ -63,9 +62,6 @@ def apko_image(
         multiarch_tars: Optional list of multiarch tar base names.
                        For each base name, apko_image will use {base}_amd64 and {base}_arm64.
                        Example: [":ttyd_tar"] will use :ttyd_tar_amd64 and :ttyd_tar_arm64
-        multiplatform_tars: DEPRECATED. Use tars and multiarch_tars instead.
-                           Optional list of multiplatform tar dicts from multiplatform_tar().
-                           Each dict should have "amd64" and/or "arm64" keys with tar targets.
 
     Creates:
         :{name} - The apko image target (or oci_image_index if tars are provided)
@@ -95,11 +91,6 @@ def apko_image(
             tars = [":node_modules_tar"],
             multiarch_tars = [":ttyd_tar"],
         )
-
-    Notes:
-        When multiplatform_tars are provided, separate platform-specific apko images are created
-        and layered, then combined into a multi-platform index. This is necessary because apko's
-        native multi-platform support doesn't allow adding platform-specific files after the fact.
     """
 
     # Build platform-specific tar lists
@@ -116,14 +107,6 @@ def apko_image(
         for tar_base in multiarch_tars:
             tars_amd64.append(tar_base + "_amd64")
             tars_arm64.append(tar_base + "_arm64")
-
-    # Handle deprecated multiplatform_tars format
-    if multiplatform_tars:
-        for tar_dict in multiplatform_tars:
-            if "amd64" in tar_dict:
-                tars_amd64.append(tar_dict["amd64"])
-            if "arm64" in tar_dict:
-                tars_arm64.append(tar_dict["arm64"])
 
     # Build EVERY apko image via rules_oci (oci_image per arch + oci_image_index
     # for multi-arch), even when no extra tars are layered. This gives every image

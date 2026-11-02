@@ -1,10 +1,10 @@
-"""Tests for app.main lifespan app.state assignments and _wait_for_sidecar timeout kwarg.
+"""Tests for lifespan app.state assignments and the wait_for_sidecar timeout kwarg.
 
 Covers gaps not addressed by existing main_* test files:
 
 1. app.state.bot is set to the created bot instance when DISCORD_BOT_TOKEN is set.
 2. app.state.bot remains None when DISCORD_BOT_TOKEN is absent.
-3. _wait_for_sidecar passes timeout=2 as a keyword argument to client.get().
+3. wait_for_sidecar passes timeout=2 as a keyword argument to client.get().
 
 These complement the existing tests in main_sidecar_test.py and main_coverage_test.py
 which verify task counts, callbacks, and URL forwarding but not the specific state
@@ -22,7 +22,16 @@ from fastapi.routing import iter_route_contexts
 # Ensure no valid static directory is set before importing main
 os.environ.pop("STATIC_DIR", None)
 
-from app.main import _start_singletons, _wait_for_sidecar, app, lifespan  # noqa: E402
+from app.main import app  # noqa: E402
+from app.modules_private import ALL_MODULES  # noqa: E402
+from chat.leader import wait_for_sidecar  # noqa: E402
+from framework import (  # noqa: E402
+    PRIVATE_PROFILE,
+    build_private_lifespan,
+    start_leader_singletons,
+)
+
+lifespan = build_private_lifespan(PRIVATE_PROFILE, ALL_MODULES)
 
 
 class _AwaitableTask(MagicMock):
@@ -86,7 +95,7 @@ def _lifespan_patches_with_discord(mock_bot):
 
 
 # ---------------------------------------------------------------------------
-# _wait_for_sidecar() — timeout kwarg forwarded to client.get()
+# wait_for_sidecar(): timeout kwarg forwarded to client.get()
 # ---------------------------------------------------------------------------
 
 
@@ -99,7 +108,7 @@ class TestWaitForSidecarTimeoutKwarg:
         with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
             with patch("httpx.AsyncClient", return_value=mock_cm):
                 with patch("asyncio.sleep", new_callable=AsyncMock):
-                    await _wait_for_sidecar()
+                    await wait_for_sidecar()
 
         # Verify keyword argument
         kwargs = mock_client.get.call_args[1]
@@ -118,7 +127,7 @@ class TestWaitForSidecarTimeoutKwarg:
         with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
             with patch("httpx.AsyncClient", return_value=mock_cm):
                 with patch("asyncio.sleep", new_callable=AsyncMock):
-                    await _wait_for_sidecar()
+                    await wait_for_sidecar()
 
         assert mock_client.get.call_count == 2
         for call in mock_client.get.call_args_list:
@@ -154,7 +163,7 @@ class TestLifespanAppStateBotAssignment:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
             assert app.state.bot is mock_bot, (
                 "app.state.bot was not set to the bot created by create_bot()"
             )

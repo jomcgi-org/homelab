@@ -2,7 +2,6 @@
 
 import pytest
 from pydantic import ValidationError
-from sqlmodel import SQLModel
 
 from chat.models import (
     Attachment,

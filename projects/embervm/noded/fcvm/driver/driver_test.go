@@ -254,6 +254,38 @@ func writeTestExt4Rootfs(t *testing.T, path, identity string) {
 	}
 }
 
+func TestExt4UUID_Happy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rootfs.ext4")
+	writeTestExt4Rootfs(t, path, testBundleRootfsIdentity)
+	got, err := Ext4UUID(path)
+	if err != nil {
+		t.Fatalf("Ext4UUID: %v", err)
+	}
+	if got != testBundleRootfsIdentity {
+		t.Fatalf("Ext4UUID = %q, want %q", got, testBundleRootfsIdentity)
+	}
+}
+
+func TestExt4UUID_ShortFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "short.ext4")
+	if err := os.WriteFile(path, make([]byte, ext4MagicOffset), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Ext4UUID(path); err == nil {
+		t.Fatal("Ext4UUID accepted a short file")
+	}
+}
+
+func TestExt4UUID_BadMagic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-ext4.img")
+	if err := os.WriteFile(path, make([]byte, ext4HeaderSize), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Ext4UUID(path); err == nil || !strings.Contains(err.Error(), "magic") {
+		t.Fatalf("Ext4UUID bad magic error = %v", err)
+	}
+}
+
 func TestBankableClassesWriteV1RootfsIdentity(t *testing.T) {
 	for _, class := range []string{"session", "serving", "stateful", "composite"} {
 		t.Run(class, func(t *testing.T) {
@@ -2603,30 +2635,6 @@ func TestBootArgsForMmdsEnv(t *testing.T) {
 	wantValid := "ember.env.VALID_KEY=" + base64.RawURLEncoding.EncodeToString([]byte("ok"))
 	if !strings.Contains(mixed, wantValid) {
 		t.Fatalf("bootArgsFor(mmdsEnv with invalid keys) = %q, want %q present", mixed, wantValid)
-	}
-}
-
-// TestMmdsEnvKeyNamesRedactsValues asserts the logging helper returns ONLY
-// sorted key names, never values, so a caller logging its output cannot
-// accidentally leak an mmds_env secret (D-R4.PR-7.1's redaction requirement).
-func TestMmdsEnvKeyNamesRedactsValues(t *testing.T) {
-	keys := mmdsEnvKeyNames(map[string]string{
-		"POSTGRES_PASSWORD": "hunter2",
-		"POSTGRES_USER":     "app",
-	})
-	want := []string{"POSTGRES_PASSWORD", "POSTGRES_USER"}
-	if len(keys) != len(want) {
-		t.Fatalf("mmdsEnvKeyNames() = %v, want %v", keys, want)
-	}
-	for i := range want {
-		if keys[i] != want[i] {
-			t.Fatalf("mmdsEnvKeyNames() = %v, want %v", keys, want)
-		}
-	}
-	for _, k := range keys {
-		if k == "hunter2" || k == "app" {
-			t.Fatalf("mmdsEnvKeyNames() leaked a value: %v", keys)
-		}
 	}
 }
 

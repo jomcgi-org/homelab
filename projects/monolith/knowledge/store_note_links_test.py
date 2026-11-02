@@ -166,11 +166,6 @@ class TestGetNoteLinks:
         links = store.get_note_links("does-not-exist")
         assert links == []
 
-    def test_nonexistent_note_id_on_empty_db_returns_empty_list(self, store):
-        """get_note_links on an empty database returns []."""
-        links = store.get_note_links("ghost")
-        assert links == []
-
     def test_returns_only_links_for_specified_note(self, store):
         """Links from other notes are not included in the result."""
         _upsert(

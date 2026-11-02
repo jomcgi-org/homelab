@@ -49,4 +49,4 @@ def eligible_lanes(
     return tuple(lane for lane in original if f"blocker:lane:{lane}" not in blocked)
 
 
-__all__ = ["eligible_lanes", "poll_enabled"]
+__all__ = ["eligible_lanes"]

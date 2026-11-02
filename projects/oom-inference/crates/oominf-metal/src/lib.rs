@@ -88,7 +88,6 @@ impl Gpu {
                 "rmsnorm",
                 "l2norm",
                 "gated_norm",
-                "embedding",
                 "causal_conv",
                 "delta_step",
                 "rope_half",

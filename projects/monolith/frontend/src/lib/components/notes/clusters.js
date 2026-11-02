@@ -24,7 +24,7 @@ export const SHEET_CLUSTER_COLORS = {
 // "gap" reads as a perceptual negative ("missing knowledge"); the
 // vault's `_researching/` directory naming is what the user sees in
 // their filesystem, so mirror that here.
-export const CLUSTER_LABELS = {
+const CLUSTER_LABELS = {
   atom: "atom",
   fact: "fact",
   raw: "raw",

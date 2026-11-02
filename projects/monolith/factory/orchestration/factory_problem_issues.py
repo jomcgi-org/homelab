@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 import hashlib
 import json
 import logging
-import os
 import re
 
 import httpx
@@ -20,7 +19,7 @@ from sqlalchemy import and_, or_
 from sqlmodel import Session, select
 
 from core.clock import aware
-from core.github import GITHUB_API
+from core.github import GITHUB_API, github_headers
 from factory.orchestration.factory_controls import (
     PROBLEM_ISSUE_SOURCES,
     _audit,
@@ -62,18 +61,6 @@ def github_list(repo: str, suffix: str) -> list:
     return read(repo, suffix)
 
 
-def _headers() -> dict[str, str]:
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "monolith-factory-problem-issues",
-    }
-    token = os.environ.get("GITHUB_API_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
-
-
 def github_write(repo: str, payload: dict) -> object:
     """Create one issue in the configured repository with bounded I/O."""
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
@@ -82,7 +69,7 @@ def github_write(repo: str, payload: dict) -> object:
         with client.stream(
             "POST",
             f"{GITHUB_API}/repos/{repo}/issues",
-            headers=_headers(),
+            headers=github_headers("monolith-factory-problem-issues"),
             json=payload,
         ) as response:
             response.raise_for_status()

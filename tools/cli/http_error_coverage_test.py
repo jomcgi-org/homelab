@@ -26,14 +26,14 @@ def runner():
 
 
 # ---------------------------------------------------------------------------
-# Helper: build a _client() replacement that returns an HTTP error response
+# Helper: build a client() replacement that returns an HTTP error response
 #
 # Mirrors the pattern in knowledge_unit_test.py so tests are consistent.
 # ---------------------------------------------------------------------------
 
 
 def _make_error_client(status_code: int):
-    """Return a _client replacement that raises HTTPStatusError on raise_for_status."""
+    """Return a client() replacement that raises HTTPStatusError on raise_for_status."""
     mock_resp = MagicMock()
     mock_resp.status_code = status_code
     mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
@@ -145,19 +145,19 @@ class TestGetCfTokenCloudflaredFails:
 class TestSearchHttp5xxErrors:
     def test_search_500_exits_nonzero(self, runner):
         """500 Internal Server Error during search results in a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_error_client(500)):
+        with patch("tools.cli.api.client", _make_error_client(500)):
             result = runner.invoke(app, ["knowledge", "search", "query"])
         assert result.exit_code != 0
 
     def test_search_502_exits_nonzero(self, runner):
         """502 Bad Gateway during search results in a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_error_client(502)):
+        with patch("tools.cli.api.client", _make_error_client(502)):
             result = runner.invoke(app, ["knowledge", "search", "query"])
         assert result.exit_code != 0
 
     def test_search_503_exits_nonzero(self, runner):
         """503 Service Unavailable during search results in a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_error_client(503)):
+        with patch("tools.cli.api.client", _make_error_client(503)):
             result = runner.invoke(app, ["knowledge", "search", "query"])
         assert result.exit_code != 0
 
@@ -171,7 +171,7 @@ class TestTasksAddErrors:
             raise httpx.ReadTimeout("Response lost", request=request)
 
         with patch(
-            "tools.cli.tasks_cmd._client",
+            "tools.cli.api.client",
             return_value=httpx.Client(
                 base_url="https://tasks.test", transport=httpx.MockTransport(handle)
             ),
@@ -196,7 +196,7 @@ class TestTasksAddErrors:
             )
 
         with patch(
-            "tools.cli.tasks_cmd._client",
+            "tools.cli.api.client",
             return_value=httpx.Client(
                 base_url="https://tasks.test", transport=httpx.MockTransport(handle)
             ),
@@ -214,19 +214,19 @@ class TestTasksAddErrors:
 class TestNoteHttp5xxErrors:
     def test_note_500_exits_nonzero(self, runner):
         """500 Internal Server Error during note fetch results in a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_error_client(500)):
+        with patch("tools.cli.api.client", _make_error_client(500)):
             result = runner.invoke(app, ["knowledge", "note", "n1"])
         assert result.exit_code != 0
 
     def test_note_502_exits_nonzero(self, runner):
         """502 Bad Gateway during note fetch results in a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_error_client(502)):
+        with patch("tools.cli.api.client", _make_error_client(502)):
             result = runner.invoke(app, ["knowledge", "note", "n1"])
         assert result.exit_code != 0
 
     def test_note_503_exits_nonzero(self, runner):
         """503 Service Unavailable during note fetch results in a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_error_client(503)):
+        with patch("tools.cli.api.client", _make_error_client(503)):
             result = runner.invoke(app, ["knowledge", "note", "n1"])
         assert result.exit_code != 0
 
@@ -234,19 +234,19 @@ class TestNoteHttp5xxErrors:
 class TestDeadLettersHttp5xxErrors:
     def test_dead_letters_500_exits_nonzero(self, runner):
         """500 Internal Server Error during dead-letters results in a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_error_client(500)):
+        with patch("tools.cli.api.client", _make_error_client(500)):
             result = runner.invoke(app, ["knowledge", "dead-letters"])
         assert result.exit_code != 0
 
     def test_dead_letters_502_exits_nonzero(self, runner):
         """502 Bad Gateway during dead-letters results in a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_error_client(502)):
+        with patch("tools.cli.api.client", _make_error_client(502)):
             result = runner.invoke(app, ["knowledge", "dead-letters"])
         assert result.exit_code != 0
 
     def test_dead_letters_503_exits_nonzero(self, runner):
         """503 Service Unavailable during dead-letters results in a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_error_client(503)):
+        with patch("tools.cli.api.client", _make_error_client(503)):
             result = runner.invoke(app, ["knowledge", "dead-letters"])
         assert result.exit_code != 0
 
@@ -259,7 +259,7 @@ class TestDeadLettersHttp5xxErrors:
 class TestSearchHttp403:
     def test_search_403_exits_nonzero(self, runner):
         """403 Forbidden during search results in a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_error_client(403)):
+        with patch("tools.cli.api.client", _make_error_client(403)):
             result = runner.invoke(app, ["knowledge", "search", "query"])
         assert result.exit_code != 0
 
@@ -267,7 +267,7 @@ class TestSearchHttp403:
 class TestNoteHttp403:
     def test_note_403_exits_nonzero(self, runner):
         """403 Forbidden during note fetch results in a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_error_client(403)):
+        with patch("tools.cli.api.client", _make_error_client(403)):
             result = runner.invoke(app, ["knowledge", "note", "n1"])
         assert result.exit_code != 0
 
@@ -275,6 +275,6 @@ class TestNoteHttp403:
 class TestDeadLettersHttp403:
     def test_dead_letters_403_exits_nonzero(self, runner):
         """403 Forbidden during dead-letters results in a non-zero exit."""
-        with patch("tools.cli.knowledge_cmd._client", _make_error_client(403)):
+        with patch("tools.cli.api.client", _make_error_client(403)):
             result = runner.invoke(app, ["knowledge", "dead-letters"])
         assert result.exit_code != 0

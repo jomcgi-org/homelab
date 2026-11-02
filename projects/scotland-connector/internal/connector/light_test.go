@@ -151,7 +151,7 @@ func TestLightDatesAndMissingEvents(t *testing.T) {
 			if from.Before(start) || until.After(end) || !from.Before(until) || w.From < last {
 				t.Fatalf("%s unordered/unclipped %+v", date, w)
 			}
-			if w.Night != stars.NightOf(from.Add(until.Sub(from)/2)) {
+			if w.Night != stars.NightName(stars.NightDay(from.Add(until.Sub(from)/2))) {
 				t.Fatalf("night mismatch %+v", w)
 			}
 			last = w.From
