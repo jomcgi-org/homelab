@@ -23,16 +23,27 @@
   // A refresh replaces the sections it brings and keeps the last good
   // reading of one it lacks for a couple of minutes (dashboard-read.js), so
   // a blip does not blank the page and a dead source still reads as dead.
-  // A failed refresh is a miss for every section.
+  // A failed refresh is a miss for every section. One refresh runs at a
+  // time, and a return to the page refreshes only when the last attempt is
+  // REOPEN_GAP_MS old, so misses stay spaced in time and switching apps
+  // during a short restart cannot age the page out in seconds.
+  const REOPEN_GAP_MS = 30_000;
   let misses = {};
+  let inFlight = false;
+  let lastAttempt = Date.now();
 
   async function refresh() {
+    if (inFlight) return;
+    inFlight = true;
+    lastAttempt = Date.now();
     let next = null;
     try {
       const res = await fetch("/dashboard-data");
       if (res.ok) next = await res.json();
     } catch {
       // no read this tick
+    } finally {
+      inFlight = false;
     }
     const merged = mergeRead(dash, next, misses);
     dash = merged.read;
@@ -43,10 +54,14 @@
     const id = setInterval(() => {
       if (document.visibilityState === "visible") refresh();
     }, 60_000);
-    // Reopening the installed app or the tab reads now, not up to a minute
-    // later: hidden ticks are skipped above.
+    // Reopening the installed app or the tab reads now rather than up to a
+    // minute later (hidden ticks are skipped above), unless it just read.
     const onVisible = () => {
-      if (document.visibilityState === "visible") refresh();
+      if (
+        document.visibilityState === "visible" &&
+        Date.now() - lastAttempt >= REOPEN_GAP_MS
+      )
+        refresh();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
