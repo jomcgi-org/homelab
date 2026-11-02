@@ -185,6 +185,9 @@ agents:
     # until the control plane sends x-ember-invoke-outcome.
     guestAnswerSettlementEnabled: true
   drainer:
+    # Skip unchanged input only after a verified completed empty retrospective.
+    # Keep one report-only diagnosis per fingerprint under the existing limits.
+    learningInputDedupEnabled: true
     # Settle drainer permits lost between reserve_start and session creation
     # once their DBOS workflow is terminal (permit 10732 held a KG slot and a
     # daily-allowance unit from 01:59 to 07:00 on 2026-10-01).
