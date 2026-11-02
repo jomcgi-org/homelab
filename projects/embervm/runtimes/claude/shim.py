@@ -7035,18 +7035,38 @@ class ProcessManager:
                         .stdout.decode()
                         .strip()
                     )
+                    clean = (
+                        subprocess.run(
+                            ["git", "-C", checkout, "diff", "--quiet", "HEAD", "--"],
+                            capture_output=True,
+                            timeout=5,
+                            check=False,
+                            **_cli_privilege_kwargs(),
+                        ).returncode
+                        == 0
+                    )
                 except (OSError, subprocess.SubprocessError, UnicodeError):
                     observed = None
-                if observed != branch[7:]:
+                    clean = False
+                if observed != branch[7:] or not clean:
+                    evidence = {
+                        "version": 1,
+                        "expected_sha": branch[7:],
+                        "observed_sha": observed,
+                        "tracked_clean": clean,
+                        "invocation_started": False,
+                        "dispatch_id": dispatch_id,
+                        "turn_seq": turn_seq,
+                    }
                     return {
                         "is_error": True,
                         "result": "Pinned inspection checkout unavailable before model execution",
-                        "terminal_reason": "workspace_preflight_failed",
-                        "workspace_preflight": {
-                            "status": "blocked",
-                            "expected_sha": branch[7:],
-                            "observed_sha": observed,
-                        },
+                        "terminal_reason": "error",
+                        "stop_reason": "refill_inspection_preflight_failed",
+                        "num_turns": 0,
+                        "activities": [],
+                        "permission_denials": [],
+                        "usage": {"refill_inspection_preflight": evidence},
                         "dispatch_id": dispatch_id,
                         "turn_seq": turn_seq,
                     }

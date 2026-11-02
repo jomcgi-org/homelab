@@ -1171,6 +1171,17 @@ def reviewed_run(world, github, monkeypatch, request):
     if "inspection_contract" in detail:
         collection.update(status="completed", source_sha="a" * 40)
     scenario = getattr(request, "param", None)
+    if scenario == "preflight":
+        return SimpleNamespace(
+            engine=engine,
+            task_id=task_id,
+            task=task,
+            policy=policy,
+            start=detail,
+            collector=collector,
+            reconcile=reconcile,
+            github=github,
+        )
     if scenario in {"empty", "blocked", "source_mismatch"}:
         collection["findings"] = []
     if scenario == "blocked":
@@ -3571,3 +3582,289 @@ def test_concurrent_source_preparation_keeps_first_pinned_commit(world, monkeypa
         assert len(refill._events(db, "inspection_pinned")) == 1
         assert db.exec(select(FactoryStart)).all() == []
     assert refill.inspection_source(detail)["sha"] in {"a" * 40, "b" * 40}
+
+
+@pytest.fixture
+def preflight_run(reviewed_run, monkeypatch):
+    """Persist an authenticated guest preflight error through the real writer."""
+    import hashlib
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    from factory.execution import admission, store, result_receipts
+    from factory.execution.constants import exact_dispatch_id
+    from factory.execution.models import (
+        AgentSession,
+        AgentTurn,
+        AgentCapacityPool,
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        PendingMessage,
+    )
+    from factory.execution.transport import parse_native_turn
+    from factory.orchestration import factory_conductor as conductor, node_workflows
+
+    s = reviewed_run
+    SQLModel.metadata.create_all(
+        s.engine,
+        tables=[
+            m.__table__
+            for m in (
+                AgentTurn,
+                AgentCapacityPool,
+                AgentCapacityReservation,
+                AgentResultReceipt,
+                PendingMessage,
+            )
+        ],
+    )
+    import core.db
+
+    for module in (admission, store, result_receipts, core.db):
+        monkeypatch.setattr(module, "get_engine", lambda: s.engine)
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
+    pin = s.collector["pin"]
+    with Session(s.engine) as db:
+        agent = AgentSession(
+            **node_workflows._expected_session_identity(pin),
+            workspace="guest",
+            admission_tier="project",
+            ember_session_id="preflight-guest",
+        )
+        db.add(agent)
+        db.flush()
+        s.sid = agent.id
+        db.add(
+            PendingMessage(
+                session_id=s.sid, seq=1, message_text="inspect", model="opus"
+            )
+        )
+        db.commit()
+    owner = "preflight-executor"
+    assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
+    assert admission.recheck(s.sid, 1, owner, "claude-runtime")
+    dispatch = exact_dispatch_id(s.sid, "preflight-guest", 1, owner, 1)
+    s.native = {
+        "result": "Pinned inspection checkout unavailable before model execution",
+        "terminal_reason": "error",
+        "stop_reason": "refill_inspection_preflight_failed",
+        "is_error": True,
+        "num_turns": 0,
+        "activities": [],
+        "permission_denials": [],
+        "dispatch_id": dispatch,
+        "turn_seq": 1,
+        "usage": {
+            "refill_inspection_preflight": {
+                "version": 1,
+                "expected_sha": "a" * 40,
+                "observed_sha": None,
+                "tracked_clean": False,
+                "invocation_started": False,
+                "dispatch_id": dispatch,
+                "turn_seq": 1,
+            }
+        },
+    }
+    envelope = result_receipts.prepare_receipt(
+        s.sid, owner, 1, "preflight-guest", b"request"
+    )
+    s.receipt_id = envelope["id"]
+    with Session(s.engine) as db:
+        receipt = db.get(AgentResultReceipt, s.receipt_id)
+        body = dumps(s.native).encode()
+        receipt.result_body = body
+        receipt.result_sha256 = hashlib.sha256(body).hexdigest()
+        receipt.received_at = datetime.now(timezone.utc)
+        receipt.response_observed_at = receipt.received_at
+        db.add(receipt)
+        db.commit()
+        captured = result_receipts._result(
+            db, result_receipts._receipt_metadata(db, s.receipt_id)
+        )
+    turn = parse_native_turn(s.native, "preflight-guest")._replace(
+        native_receipt={
+            **captured["provenance"],
+            "cli_session_id": None,
+            "artifact_path": None,
+        }
+    )
+    store.persist_turn_from_pending_sync(
+        s.sid,
+        1,
+        "inspect",
+        turn,
+        s.native["result"],
+        store.turn_status(turn),
+        claim_owner=owner,
+        dispatch_count=1,
+    )
+    assert conductor.graph.record_dispatch(s.task_id, refill.NODE, 1, s.sid, None).ok
+    s.result = {
+        "status": "uncertain",
+        "session_id": s.sid,
+        "attempt": 1,
+        "cost_usd": None,
+        "head_sha": None,
+        "artifact": None,
+        "value": None,
+        "reason": "terminal reason does not confirm clean completion; reconcile before retry",
+        "cost_basis": "unknown",
+        "accounting": "reserved_cost",
+    }
+    s.dbos = SimpleNamespace(
+        get_workflow_status=lambda _: SimpleNamespace(status="SUCCESS"),
+        retrieve_workflow=lambda _: SimpleNamespace(get_result=lambda: s.result),
+    )
+    return s
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize("reviewed_run", ["preflight"], indirect=True)
+def test_authenticated_refill_preflight_settles_failure_without_refunding_unknown_spend(
+    preflight_run,
+):
+    import json
+    from factory.execution.models import AgentTurn, AgentCapacityReservation
+    from factory.orchestration import factory_conductor as conductor
+
+    s = preflight_run
+    conductor.reconcile_task(s.task_id, s.policy, s.dbos)
+    [run] = conductor.graph.node_runs(s.task_id)
+    assert run["status"] == "failed"
+    outcome = json.loads(run["outcome_json"])
+    assert outcome["invocation_phase"] == "refill_inspection_preflight_failed"
+    assert outcome["cost_usd"] is None and outcome["cost_basis"] == "unknown"
+    snapshot = controls.task_snapshot(s.task_id)
+    assert snapshot["unresolved_starts"] == 0
+    assert snapshot["starts"][0]["status"] == "failed"
+    assert snapshot["committed_cost_usd"] > 0  # consumed reservation, never free work
+    with Session(s.engine) as db:
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert permit.state == "settled"
+        assert permit.outcome == "error"  # preserve the native permit settlement
+        turn = db.exec(select(AgentTurn)).one()
+        assert turn.terminal_reason == "error" and turn.cost_usd is None
+        assert (
+            json.loads(turn.usage_json)["refill_inspection_preflight"]
+            == s.native["usage"]["refill_inspection_preflight"]
+        )
+    # Reconciliation replay cannot consume another attempt or fabricate an audit.
+    conductor.reconcile_task(s.task_id, s.policy, s.dbos)
+    assert len(conductor.graph.node_runs(s.task_id)) == 1
+    assert not s.github[1]
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize("reviewed_run", ["preflight"], indirect=True)
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing_receipt",
+        "digest",
+        "unobserved",
+        "new_dispatch",
+        "wrong_guest",
+        "wrong_source",
+        "wrong_dispatch",
+        "invoked",
+        "recovery",
+        "activity",
+        "fence",
+        "pending",
+        "missing_contract",
+        "changed_pin",
+        "usage_forgery",
+        "unknown",
+    ],
+)
+def test_refill_preflight_refuses_incomplete_or_changed_proof(preflight_run, case):
+    import json
+    import hashlib
+    from factory.execution.models import (
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from factory.execution.api import read_refill_preflight_factory_attempt
+    from factory.execution import result_receipts
+
+    s = preflight_run
+    pin = dict(s.collector["pin"])
+    with Session(s.engine) as db:
+        receipt = db.get(AgentResultReceipt, s.receipt_id)
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn)).one()
+        usage = json.loads(turn.usage_json)
+        if case == "missing_receipt":
+            db.delete(receipt)
+        elif case == "digest":
+            receipt.result_sha256 = "b" * 64
+        elif case == "unobserved":
+            receipt.response_observed_at = None
+        elif case == "new_dispatch":
+            receipt.dispatch_count = 2
+        elif case == "wrong_guest":
+            agent.ember_session_id = "successor"
+        elif case in {"wrong_source", "wrong_dispatch", "invoked"}:
+            field, value = {
+                "wrong_source": ("expected_sha", "b" * 40),
+                "wrong_dispatch": ("dispatch_id", "b" * 64),
+                "invoked": ("invocation_started", True),
+            }[case]
+            s.native["usage"]["refill_inspection_preflight"][field] = value
+            receipt.result_body = dumps(s.native).encode()
+            receipt.result_sha256 = hashlib.sha256(receipt.result_body).hexdigest()
+            db.flush()
+            usage["native_result_receipt"] = result_receipts._result(
+                db, result_receipts._receipt_metadata(db, s.receipt_id)
+            )["provenance"]
+            usage["refill_inspection_preflight"] = s.native["usage"][
+                "refill_inspection_preflight"
+            ]
+        elif case == "recovery":
+            usage["recovery"] = {}
+        elif case == "activity":
+            usage["activities"] = ["ran a tool"]
+        elif case == "fence":
+            agent.result_receipt_fence_id = s.receipt_id
+        elif case == "pending":
+            db.add(PendingMessage(session_id=s.sid, seq=2, message_text="new work"))
+        elif case == "missing_contract":
+            event = refill.latest_event(db, "started", run_id=s.start["run_id"])
+            detail = json.loads(event.detail_json)
+            detail.pop("inspection_contract")
+            event.detail_json = dumps(detail)
+        elif case == "changed_pin":
+            pin["artifact_schema"] = {}
+        elif case == "usage_forgery":
+            usage["native_result_receipt"] = {}
+        elif case == "unknown":
+            from factory.execution.constants import UNKNOWN_INVOCATION
+
+            turn.stop_reason = UNKNOWN_INVOCATION
+        turn.usage_json = dumps(usage)
+        db.commit()
+        assert read_refill_preflight_factory_attempt(db, pin, s.sid, "SUCCESS") is None
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize("reviewed_run", ["preflight"], indirect=True)
+def test_refill_preflight_settlement_rechecks_receipt_after_read(preflight_run):
+    from factory.execution.models import AgentResultReceipt, AgentCapacityReservation
+    from factory.execution.api import (
+        read_refill_preflight_factory_attempt,
+        settle_refill_preflight_factory_attempt,
+    )
+
+    s = preflight_run
+    with Session(s.engine) as db:
+        proof = read_refill_preflight_factory_attempt(
+            db, s.collector["pin"], s.sid, "SUCCESS"
+        )
+        assert proof is not None
+        db.get(AgentResultReceipt, s.receipt_id).superseded_at = NOW
+        db.flush()
+        with pytest.raises(ValueError, match="factory_attempt_changed"):
+            settle_refill_preflight_factory_attempt(db, s.collector["pin"], proof)
+        assert db.exec(select(AgentCapacityReservation)).one().outcome == "error"

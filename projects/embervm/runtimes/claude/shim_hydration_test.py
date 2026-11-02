@@ -723,7 +723,7 @@ def test_commit_hydration_verifies_exact_head_before_model(
     result = manager.turn("inspect", repo="owner/repo", branch="commit:" + sha)
     assert any("fetch" in cmd for cmd in commands)
     if failure:
-        assert result["terminal_reason"] == "workspace_preflight_failed"
+        assert result["terminal_reason"] == "error"
         assert manager.claude.calls == []
     else:
         assert manager.claude.calls
@@ -752,7 +752,77 @@ def test_restored_commit_checkout_mismatch_does_not_run_or_replace_source(
 
     monkeypatch.setattr(shim.subprocess, "run", run)
     result = manager.turn("inspect", repo="owner/repo", branch="commit:" + "a" * 40)
-    assert result["terminal_reason"] == "workspace_preflight_failed"
-    assert result["workspace_preflight"]["observed_sha"] == "b" * 40
+    assert result["terminal_reason"] == "error"
+    assert result["usage"]["refill_inspection_preflight"]["observed_sha"] == "b" * 40
     assert manager.claude.calls == []
     assert os.path.isdir(checkout)
+
+
+def test_commit_hydration_uses_old_commit_after_main_moves_and_rejects_dirty_restore(
+    manager, monkeypatch, tmp_path
+):
+    from pathlib import Path
+
+    run = subprocess.run
+    remote = tmp_path / "remote"
+    remote.mkdir()
+
+    def git(*args):
+        return (
+            run(["git", "-C", str(remote), *args], check=True, capture_output=True)
+            .stdout.decode()
+            .strip()
+        )
+
+    git("init", "-b", "main")
+    (remote / "source.txt").write_text("pinned\n")
+    git("add", "source.txt")
+    git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-m",
+        "initial",
+    )
+    sha = git("rev-parse", "HEAD")
+    (remote / "source.txt").write_text("new main\n")
+    git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-am",
+        "moved",
+    )
+    assert git("rev-parse", "HEAD") != sha
+
+    def local_transport(command, **kwargs):
+        command = [
+            str(remote) if arg == "https://github.com/owner/repo.git" else arg
+            for arg in command
+        ]
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(shim.subprocess, "run", local_transport)
+    monkeypatch.setattr(shim, "_cli_privilege_kwargs", lambda: {})
+    result = manager.turn("inspect", repo="owner/repo", branch="commit:" + sha)
+    assert result["result"] == "ok"
+    checkout = Path(manager.workspace) / "src"
+    assert (checkout / "source.txt").read_text() == "pinned\n"
+    assert len(manager.claude.calls) == 1
+    # Transient artifacts are allowed; staged and unstaged source changes are not.
+    (checkout / "artifact.json").write_text("{}")
+    assert (
+        manager.turn("again", repo="owner/repo", branch="commit:" + sha)["result"]
+        == "ok"
+    )
+    (checkout / "source.txt").write_text("dirty\n")
+    result = manager.turn("blocked", repo="owner/repo", branch="commit:" + sha)
+    assert result["terminal_reason"] == "error"
+    assert result["usage"]["refill_inspection_preflight"]["observed_sha"] == sha
+    assert result["usage"]["refill_inspection_preflight"]["tracked_clean"] is False
+    assert len(manager.claude.calls) == 2
+    assert (checkout / "source.txt").read_text() == "dirty\n"
