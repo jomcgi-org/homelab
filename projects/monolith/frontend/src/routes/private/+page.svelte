@@ -7,6 +7,7 @@
     missingReadings,
   } from "$lib/private/dashboard-read.js";
   import ClusterChatPanel from "$lib/private/components/ClusterChatPanel.svelte";
+  import DecisionCard from "$lib/private/components/DecisionCard.svelte";
   import TechnicalDrawingChrome from "$lib/public/components/TechnicalDrawingChrome.svelte";
   import Trail from "$lib/public/components/Trail.svelte";
   import "$lib/public/styles/technical-drawing.css";
@@ -97,17 +98,25 @@
   // Everything that needs a hand from Joe, in the order it needs it:
   // decisions the factory stopped for, workloads the cluster reports
   // unhealthy, open PRs whose CI is red. One list, each row a place to go.
+  // Decisions answered here leave the list at once; the board drops them on
+  // its next read (the answer invalidates the server's cached board).
+  let answered = $state(new Set());
+  let decisions = $derived(
+    waiting.filter(
+      (item) =>
+        item.decision_id &&
+        !answered.has(`${item.receipt_id}:${item.decision_id}`),
+    ),
+  );
+  let lastAnswer = $state("");
+  function decided(item, out) {
+    answered = new Set([...answered, `${item.receipt_id}:${item.decision_id}`]);
+    lastAnswer = out.message;
+  }
+
+  // Everything else that needs a hand: workloads the cluster reports
+  // unhealthy, open PRs whose CI is red. One list, each row a place to go.
   let needs = $derived([
-    ...waiting.map((item, index) => ({
-      key: `decision:${item.receipt_id ?? item.work_item_id ?? `i${index}`}`,
-      kind: "decision",
-      href: "/factory/escalations",
-      title:
-        item.issue_number != null
-          ? `#${item.issue_number} ${item.title}`
-          : item.title || "untitled decision",
-      detail: item.question,
-    })),
     ...unhealthyKinds.flatMap(([kind, rows]) =>
       (rows ?? []).map((row) => ({
         key: `unhealthy:${kind}:${row.namespace}/${row.name}`,
@@ -315,9 +324,15 @@
         <!-- What needs a hand, then the two readings that say why or why not. -->
         <section class="edition needs" aria-labelledby="needs-h">
           <h2 class="ed-head" id="needs-h">
-            Needs you <span class="num">{needs.length}</span>
+            Needs you <span class="num">{decisions.length + needs.length}</span>
           </h2>
-          {#if needs.length === 0}
+          {#if lastAnswer}
+            <p class="answered" role="status">{lastAnswer}</p>
+          {/if}
+          {#each decisions as item (`${item.receipt_id}:${item.decision_id}`)}
+            <DecisionCard {item} ondecided={decided} />
+          {/each}
+          {#if decisions.length === 0 && needs.length === 0}
             <p class="none">
               {dash == null
                 ? "No reading. The dashboard is unavailable."
@@ -325,7 +340,7 @@
                   ? `Nothing waiting in what answered. No reading from ${missing.join(", ")}.`
                   : "Nothing is waiting on you."}
             </p>
-          {:else}
+          {:else if needs.length}
             <dl class="spec needs-list">
               {#each needs as item (item.key)}
                 <div class="row">
