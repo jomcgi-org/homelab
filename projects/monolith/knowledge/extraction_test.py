@@ -125,6 +125,7 @@ def _create_routine_jobs(session: Session) -> None:
                 interval_secs INTEGER,
                 next_run_at TIMESTAMP,
                 last_status TEXT,
+                locked_by TEXT,
                 payload TEXT,
                 created_by TEXT
             )
@@ -140,7 +141,9 @@ def test_sweep_queues_raw_missed_by_ingest(session):
 
     assert sweep_unqueued_raws(session) == 1
 
-    job = session.execute(text("SELECT * FROM routine_jobs")).one()
+    job = session.execute(
+        text("SELECT * FROM routine_jobs WHERE name LIKE 'kg:%'")
+    ).one()
     assert job.name == f"kg:{raw.raw_id}"
 
 
@@ -158,7 +161,10 @@ def test_sweep_skips_raw_at_retry_ceiling(session):
     session.commit()
 
     assert sweep_unqueued_raws(session) == 0
-    assert session.execute(text("SELECT * FROM routine_jobs")).all() == []
+    assert (
+        session.execute(text("SELECT * FROM routine_jobs WHERE name LIKE 'kg:%'")).all()
+        == []
+    )
 
 
 def test_sweep_skips_no_new_notes_sentinel(session):
@@ -174,7 +180,10 @@ def test_sweep_skips_no_new_notes_sentinel(session):
     session.commit()
 
     assert sweep_unqueued_raws(session) == 0
-    assert session.execute(text("SELECT * FROM routine_jobs")).all() == []
+    assert (
+        session.execute(text("SELECT * FROM routine_jobs WHERE name LIKE 'kg:%'")).all()
+        == []
+    )
 
 
 def _patch_prompt(monkeypatch, body: str, related=None):
@@ -1004,7 +1013,6 @@ def test_docfix_jobs_are_enabled_named_and_idempotent(session, monkeypatch):
         "knowledge.repo_docs.load_manifest",
         lambda: _manifest_with("docs/guide.md"),
     )
-    monkeypatch.setenv("DRAINER_DOCFIX_ENABLED", "true")
     monkeypatch.setattr("knowledge.atoms.EmbeddingClient", _Embedder)
     _create_routine_jobs(session)
     assertion = {

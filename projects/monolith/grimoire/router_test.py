@@ -45,7 +45,6 @@ def session_fixture(tmp_path):
 
 @pytest.fixture(name="client")
 def client_fixture(session, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session

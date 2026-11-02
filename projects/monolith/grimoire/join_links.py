@@ -29,16 +29,7 @@ TTL = timedelta(days=7)
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
 
-def links_enabled() -> bool:
-    return os.getenv("GRIMOIRE_INVITATION_LINKS_ENABLED", "") == "true"
-
-
-def require_enabled():
-    if not links_enabled():
-        raise HTTPException(503, "Invitation links are not enabled yet.")
-
-
-router = APIRouter(dependencies=[Depends(require_enabled)])
+router = APIRouter()
 DatabaseSession = Annotated[Session, Depends(get_session)]
 Identity = Annotated[Principal, Depends(get_authenticated_identity)]
 AuthEmail = Annotated[str, Depends(get_authenticated_email)]

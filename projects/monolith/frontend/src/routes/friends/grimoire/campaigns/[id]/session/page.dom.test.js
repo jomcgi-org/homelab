@@ -1011,7 +1011,6 @@ describe("private session events from server projections", () => {
   async function renderViewers(projections, assertions) {
     vi.useFakeTimers();
     vi.stubEnv("API_BASE", "http://backend.test");
-    vi.stubEnv("GRIMOIRE_PLAY_ENABLED", "true");
     const servers = viewers.map((viewer) => {
       const [initial, polled] = projections[viewer.id];
       return projectedServer(viewer, initial, polled);

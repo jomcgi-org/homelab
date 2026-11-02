@@ -39,7 +39,6 @@ async function sent({ fetch, response }) {
 
 beforeEach(() => {
   process.env.API_BASE = "http://backend.test";
-  process.env.GRIMOIRE_PLAY_ENABLED = "true";
 });
 
 describe("inventory proxy", () => {
@@ -215,12 +214,6 @@ describe("inventory proxy", () => {
       expect(fetch).not.toHaveBeenCalled();
     },
   );
-
-  it("keeps both inventory reads and writes behind the play gate", async () => {
-    process.env.GRIMOIRE_PLAY_ENABLED = "false";
-    await expect(get("inventory=items")).rejects.toMatchObject({ status: 404 });
-    await expect(post(give).response).rejects.toMatchObject({ status: 404 });
-  });
 });
 
 describe("knowledge search proxy", () => {
@@ -433,15 +426,6 @@ describe("voice preset operations", () => {
       expect(fetch).not.toHaveBeenCalled();
     },
   );
-  it("keeps voice operations behind the existing play-enable gate", async () => {
-    delete process.env.GRIMOIRE_PLAY_ENABLED;
-    const { fetch, response } = post({
-      operation: "saveVoice",
-      speakerKey: "narrator",
-    });
-    await expect(response).rejects.toMatchObject({ status: 404 });
-    expect(fetch).not.toHaveBeenCalled();
-  });
 });
 
 describe("reveal payload", () => {

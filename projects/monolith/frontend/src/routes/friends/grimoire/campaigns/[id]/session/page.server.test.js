@@ -77,7 +77,6 @@ const dmOnlyKeys = [
 describe("session page load", () => {
   beforeEach(() => {
     process.env.API_BASE = "http://backend.test";
-    process.env.GRIMOIRE_PLAY_ENABLED = "true";
   });
 
   it("keeps a search-linked session in both the initial load and the state BFF", async () => {
@@ -112,15 +111,6 @@ describe("session page load", () => {
         .filter(([url]) => url.includes("/events"))
         .every(([url]) => url.includes(historical.id)),
     ).toBe(true);
-  });
-
-  it("is unavailable while play is disabled", async () => {
-    delete process.env.GRIMOIRE_PLAY_ENABLED;
-    const fetch = backend("dm");
-    await expect(
-      load({ fetch, cookies, params: { id: "campaign" }, setHeaders: vi.fn() }),
-    ).rejects.toMatchObject({ status: 404 });
-    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("gives a player no DM-only controls or audience roster", async () => {

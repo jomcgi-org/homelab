@@ -6,7 +6,7 @@ need ArgoCD reads and a GitHub token, both private-tier only) and writes the
 result to the platform_probe latch. The public tier reads that latch, because
 it is the tier UptimeRobot can reach and the tier that must not hold privilege.
 
-The default-off deployment observation writer runs in the same cycle but only
+The deployment observation writer runs in the same cycle but only
 AFTER the latch is written, and only on a fresh poll (a cache hit records
 nothing), bounded by DEPLOYMENT_OBSERVATIONS_TIMEOUT_S. The latch must never
 wait on it: its probe interval plus that timeout stays under the reader's

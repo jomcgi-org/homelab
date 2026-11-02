@@ -22,7 +22,6 @@ from grimoire.testing.leak_harness import (
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     monkeypatch.setattr(search, "knn_embeddings", fake_knn)
     with sqlite_harness(tmp_path / "knowledge.db") as h:
         yield h
@@ -317,12 +316,6 @@ def test_live_fact_owner_and_status_override_forged_embedding_copies(harness):
 def test_query_and_limit_validation(harness, params):
     with TestClient(harness.app()) as client:
         assert request(client, harness, "player_a", **params).status_code == 422
-
-
-def test_knowledge_search_is_play_gated(harness, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "false")
-    with TestClient(harness.app()) as client:
-        assert request(client, harness, "player_a").status_code == 404
 
 
 def test_knn_seam_composes_candidate_clause_and_model_before_limit():

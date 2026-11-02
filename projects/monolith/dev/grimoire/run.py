@@ -23,7 +23,7 @@ def main():
     parser.add_argument(
         "--join-links",
         action="store_true",
-        help="Enable registered-player links in this disposable fixture only",
+        help="Rehearse registered-player links instead of the session table",
     )
     parser.add_argument("--output", default="/tmp/grimoire-rehearsal")
     args = parser.parse_args()
@@ -105,7 +105,6 @@ def main():
                 "PYTHONPATH": str(ROOT / "projects/monolith"),
                 "DATABASE_URL": "postgresql://grimoire_local@127.0.0.1:55477/postgres",
                 "GRIMOIRE_LOCAL_PLAYGROUND": "true",
-                "GRIMOIRE_PLAY_ENABLED": "true",
                 "GRIMOIRE_AUTH_ISSUER": "http://127.0.0.1:8177/__local/",
                 "GRIMOIRE_AUTH_JWKS_URL": "http://127.0.0.1:8177/__local/jwks",
                 "GRIMOIRE_AUTH_AUDIENCE": "grimoire-local",
@@ -113,7 +112,6 @@ def main():
                 "GRIMOIRE_LOCAL_FRONTEND": "http://friends.localhost:4177",
                 # The playground's deterministic embedder; never a live model.
                 "EMBEDDING_URL": "http://127.0.0.1:8177/__local",
-                "GRIMOIRE_INVITATION_LINKS_ENABLED": str(args.join_links).lower(),
                 # Never inherit a live enrollment provider into this fixture.
                 "GRIMOIRE_INVITATION_ENROLLMENT_ENABLED": "false",
                 "GRIMOIRE_INVITATION_API_TOKEN": "",

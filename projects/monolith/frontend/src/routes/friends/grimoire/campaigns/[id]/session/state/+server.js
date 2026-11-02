@@ -1,11 +1,9 @@
-import { error, json } from "@sveltejs/kit";
+import { json } from "@sveltejs/kit";
 import { grimoireJson } from "$lib/server/grimoire-auth.js";
 import { sessionState } from "$lib/server/grimoire-session.js";
 import { handoutEvent } from "$lib/grimoire/handout.js";
 
 export async function GET({ fetch, cookies, params, url }) {
-  if (process.env.GRIMOIRE_PLAY_ENABLED !== "true")
-    error(404, "Session play is not enabled.");
   try {
     if (url.searchParams.has("inventory")) {
       const view = url.searchParams.get("inventory");
@@ -141,8 +139,6 @@ function initiativeBody(input) {
 }
 
 export async function POST({ request, fetch, cookies, params }) {
-  if (process.env.GRIMOIRE_PLAY_ENABLED !== "true")
-    error(404, "Session play is not enabled.");
   try {
     const input = await request.json();
     const base = `/campaigns/${params.id}/sessions`;

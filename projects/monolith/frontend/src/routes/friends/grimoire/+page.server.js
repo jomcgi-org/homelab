@@ -6,7 +6,6 @@ import {
   JOIN_UNAVAILABLE,
   joinMetadata,
   joinToken,
-  linksEnabled,
   safeJoinMessage,
 } from "$lib/server/grimoire-join-links.js";
 
@@ -28,8 +27,6 @@ function characterName(data) {
 export async function load({ fetch, cookies, setHeaders }) {
   setHeaders({ "cache-control": "private, no-store" });
   const lobby = await grimoireJson(fetch, cookies, "/lobby");
-  const invitation_links_enabled =
-    linksEnabled() && lobby.invitation_links_enabled === true;
   const campaigns = await Promise.all(
     lobby.campaigns.map(async (campaign) => {
       const needs_character =
@@ -45,7 +42,7 @@ export async function load({ fetch, cookies, setHeaders }) {
               `/campaigns/${campaign.id}/invitations`,
             )
           : [],
-        campaign.is_owner && invitation_links_enabled
+        campaign.is_owner
           ? grimoireJson(
               fetch,
               cookies,
@@ -73,10 +70,7 @@ export async function load({ fetch, cookies, setHeaders }) {
   return {
     ...lobby,
     campaigns,
-    invitation_links_enabled,
-    invitation_enrollment_enabled:
-      invitation_links_enabled && lobby.invitation_enrollment_enabled === true,
-    playEnabled: process.env.GRIMOIRE_PLAY_ENABLED === "true",
+    invitation_enrollment_enabled: lobby.invitation_enrollment_enabled === true,
   };
 }
 
@@ -107,7 +101,6 @@ function action(run, invitationAction = false) {
 
 export const actions = {
   createLink: action(async (data, api, url) => {
-    if (!linksEnabled()) throw new JoinLinkError(JOIN_UNAVAILABLE);
     const campaignId = id(data, "campaign_id");
     const email = data.get("email");
     if (
@@ -136,7 +129,6 @@ export const actions = {
     };
   }, true),
   revokeLink: action(async (data, api) => {
-    if (!linksEnabled()) throw new JoinLinkError(JOIN_UNAVAILABLE);
     await api(
       `/campaigns/${id(data, "campaign_id")}/join-links/${id(data, "join_link_id")}`,
       "DELETE",

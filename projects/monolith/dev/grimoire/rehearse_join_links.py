@@ -200,7 +200,6 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
 
     dm, a, b, guest = (seat(role) for role in ("dm", "a", "b", "guest"))
     lobby = api(dm, "get", "/lobby").json()
-    assert lobby["invitation_links_enabled"] is True
     assert lobby["invitation_enrollment_enabled"] is False
     dm.get_by_label("Campaign name", exact=True).fill(CAMPAIGN)
     dm.get_by_role("button", name="Create campaign", exact=True).click()

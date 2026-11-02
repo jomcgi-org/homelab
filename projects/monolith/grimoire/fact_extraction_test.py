@@ -23,7 +23,6 @@ from grimoire.testing.sql_capture import assert_no_knowledge_sql, capture_sql
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     with sqlite_harness(tmp_path / "fact-lens.db") as h:
         yield h
 
