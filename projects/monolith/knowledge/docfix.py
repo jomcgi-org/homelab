@@ -147,10 +147,6 @@ Finish with a JSON summary block
 as the last thing in the message."""
 
 
-def _review_enabled() -> bool:
-    return flag("KG_DOCFIX_REVIEW_ENABLED")
-
-
 def _auto_merge_enabled() -> bool:
     return flag("DRAINER_DOCFIX_AUTO_MERGE")
 
@@ -159,8 +155,6 @@ def schedule_docfix_review(
     session: Session, pr_numbers: list[int], delay_seconds: int
 ) -> bool:
     """Register a debounced, one-shot docfix review job."""
-    if not _review_enabled():
-        return False
     numbers = list(dict.fromkeys(pr_numbers))[:DOCFIX_REVIEW_MAX_PRS]
     if not numbers:
         return False
@@ -261,8 +255,6 @@ def _github_get(url: str) -> httpx.Response:
 def find_reviewable_docfix_prs(session: Session) -> list[int]:
     """Return up to ten open docs PRs that still need docfix review."""
     del session
-    if not _review_enabled():
-        return []
     if not os.environ.get("GITHUB_API_TOKEN"):
         logger.warning(
             "docfix-review sweep unavailable without GITHUB_API_TOKEN; "

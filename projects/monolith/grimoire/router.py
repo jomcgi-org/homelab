@@ -79,7 +79,6 @@ from grimoire.handouts import (
 )
 from grimoire import initiative as initiative_logic
 from grimoire.invitation_provider import enrollment_enabled
-from grimoire.join_links import links_enabled
 from grimoire.join_links import router as join_links_router
 from grimoire.journal import Journal, journal, narration_entity_ids, visible_rows
 from grimoire.models import (
@@ -126,8 +125,6 @@ from grimoire.session_events import (
     InvalidEventAudienceError,
     SessionEndedError,
     append_event,
-    play_enabled,
-    require_play_enabled,
     require_transcript_enabled,
 )
 from grimoire.sheets import CharacterSheetV1, SheetValidationError, derive_sheet
@@ -1967,8 +1964,6 @@ def _get_character_in_campaign_or_404(
 
 
 def _current_reveal_session(session: Session, campaign_id: str) -> GameSession | None:
-    if not play_enabled():
-        return None
     return session.exec(
         select(GameSession).where(
             GameSession.campaign_id == campaign_id,
@@ -2026,7 +2021,6 @@ def _append_reveal(
 @router.post(
     "/campaigns/{campaign_id}/grants/bulk",
     response_model=list[GrantView],
-    dependencies=[Depends(require_play_enabled)],
 )
 def create_bulk_grants(
     campaign_id: str,
@@ -2184,8 +2178,7 @@ def update_grant(
     if grant.grant_scope != previous_scope or (
         grant.grant_scope == "partial" and grant.revealed_details != previous_details
     ):
-        if play_enabled():
-            _retract_grant_history(session, grant)
+        _retract_grant_history(session, grant)
         current = _current_reveal_session(session, campaign_id)
         if current is not None:
             session.flush()
@@ -2217,8 +2210,7 @@ def delete_grant(
     grant = session.get(KnowledgeGrant, grant_id)
     if grant is None or grant.campaign_id != campaign_id:
         raise HTTPException(status_code=404, detail="grant not found")
-    if play_enabled():
-        _retract_grant_history(session, grant)
+    _retract_grant_history(session, grant)
     current = _current_reveal_session(session, campaign_id)
     if current is not None:
         body = {"retracted": True, "silent": silent}
@@ -2286,7 +2278,6 @@ def _authorize_reveal_filter(
 ) -> None:
     if not_granted_to is None:
         return
-    require_play_enabled()
     if member.role != "dm":
         raise HTTPException(status_code=403, detail="campaign DM role required")
     _validate_reveal_id(not_granted_to, "player character not found in this campaign")
@@ -2515,7 +2506,6 @@ def get_chunk_image(
 
 @router.get(
     "/campaigns/{campaign_id}/knowledge/search",
-    dependencies=[Depends(require_play_enabled)],
 )
 async def search_knowledge_route(
     campaign_id: str,
@@ -2538,7 +2528,6 @@ async def search_knowledge_route(
 
 @router.post(
     "/campaigns/{campaign_id}/facts/{fact_id}/dispute",
-    dependencies=[Depends(require_play_enabled)],
 )
 def dispute_character_fact(
     campaign_id: str,
@@ -2591,7 +2580,6 @@ class GameSessionView(BaseModel):
 @router.get(
     "/campaigns/{campaign_id}/sessions",
     response_model=list[GameSessionView],
-    dependencies=[Depends(require_play_enabled)],
 )
 def list_game_sessions(
     campaign_id: str,
@@ -3347,7 +3335,6 @@ def _journal_events(session, campaign_id, session_ids, viewer, member, view):
     "/campaigns/{campaign_id}/sessions/{session_id}/journal",
     response_model=Journal,
     dependencies=[
-        Depends(require_play_enabled),
         Depends(_require_journal_session_scope),
     ],
 )
@@ -3416,7 +3403,6 @@ def _read_journal_cursor(cursor: str) -> tuple[datetime, str]:
     "/campaigns/{campaign_id}/journal",
     response_model=CampaignJournalView,
     dependencies=[
-        Depends(require_play_enabled),
         Depends(_require_journal_campaign_scope),
     ],
 )
@@ -3487,7 +3473,7 @@ def get_campaign_journal(
 @router.post(
     "/campaigns/{campaign_id}/sessions/{session_id}/rolls",
     response_model=SessionEventView,
-    dependencies=[Depends(require_play_enabled), Depends(_require_roll_scope)],
+    dependencies=[Depends(_require_roll_scope)],
 )
 def create_roll(
     campaign_id: str,
@@ -3539,7 +3525,6 @@ def create_roll(
 @router.post(
     "/campaigns/{campaign_id}/sessions/{session_id}/events",
     response_model=SessionEventView,
-    dependencies=[Depends(require_play_enabled)],
 )
 def create_session_event(
     campaign_id: str,
@@ -3597,7 +3582,6 @@ def create_session_event(
 @router.get(
     "/campaigns/{campaign_id}/sessions/{session_id}/events",
     response_model=list[SessionEventView],
-    dependencies=[Depends(require_play_enabled)],
 )
 def list_session_events(
     campaign_id: str,
@@ -3648,7 +3632,7 @@ class HandoutUploadView(BaseModel):
     "/campaigns/{campaign_id}/handouts/uploads",
     response_model=HandoutUploadView,
     status_code=201,
-    dependencies=[Depends(require_play_enabled), Depends(_require_handout_dm)],
+    dependencies=[Depends(_require_handout_dm)],
 )
 def upload_handout_image(
     campaign_id: str, file: UploadFile = File(...)
@@ -3683,7 +3667,6 @@ def upload_handout_image(
 
 @router.get(
     "/campaigns/{campaign_id}/sessions/{session_id}/events/{event_id}/image",
-    dependencies=[Depends(require_play_enabled)],
 )
 def get_handout_image(
     campaign_id: str,
@@ -3793,7 +3776,6 @@ def _append_turn_event(
 
 @router.get(
     "/campaigns/{campaign_id}/sessions/{session_id}/initiative",
-    dependencies=[Depends(require_play_enabled)],
 )
 def get_initiative(
     campaign_id: str,
@@ -3808,7 +3790,6 @@ def get_initiative(
 
 @router.put(
     "/campaigns/{campaign_id}/sessions/{session_id}/initiative",
-    dependencies=[Depends(require_play_enabled)],
 )
 def put_initiative(
     campaign_id: str,
@@ -3867,7 +3848,6 @@ def put_initiative(
 
 @router.post(
     "/campaigns/{campaign_id}/sessions/{session_id}/initiative/advance",
-    dependencies=[Depends(require_play_enabled)],
 )
 def advance_initiative(
     campaign_id: str,
@@ -3897,7 +3877,6 @@ def advance_initiative(
 
 @router.delete(
     "/campaigns/{campaign_id}/sessions/{session_id}/initiative",
-    dependencies=[Depends(require_play_enabled)],
 )
 def end_initiative(
     campaign_id: str,
@@ -3948,7 +3927,6 @@ class InvitationView(BaseModel):
 
 class LobbyView(BaseModel):
     can_administer_accounts: bool
-    invitation_links_enabled: bool = False
     invitation_enrollment_enabled: bool = False
     can_create_game: bool = True
     user: LobbyUserView
@@ -4022,7 +4000,6 @@ def get_lobby(
             can_create = False
     return LobbyView(
         can_create_game=can_create,
-        invitation_links_enabled=links_enabled(),
         invitation_enrollment_enabled=enrollment_enabled(),
         can_administer_accounts=principal.has_group("operators"),
         user=LobbyUserView(

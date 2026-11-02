@@ -379,14 +379,14 @@ async def test_result_is_cached(monkeypatch):
     assert len(calls) == 1
 
 
-async def _run_cycle(monkeypatch, *, enabled, writer, timeout="0.05"):
+async def _quiet_writer(events, poll_time):
+    """A writer that records nothing: the baseline for probe comparisons."""
+
+
+async def _run_cycle(monkeypatch, *, writer, timeout="0.05"):
     """One cd_leader cycle with a healthy lag check; returns (events, probes)."""
     mod._cache = None
     monkeypatch.delenv("GITHUB_API_TOKEN", raising=False)
-    if enabled:
-        monkeypatch.setenv("DEPLOYMENT_OBSERVATIONS_ENABLED", "true")
-    else:
-        monkeypatch.delenv("DEPLOYMENT_OBSERVATIONS_ENABLED", raising=False)
     monkeypatch.setenv("DEPLOYMENT_OBSERVATIONS_TIMEOUT_S", timeout)
     events: list = []
 
@@ -423,8 +423,8 @@ async def test_hanging_writer_cannot_delay_or_change_the_probe(monkeypatch):
             state["cancelled"] = True
             raise
 
-    events = await _run_cycle(monkeypatch, enabled=True, writer=_hang)
-    baseline = await _run_cycle(monkeypatch, enabled=False, writer=_hang)
+    events = await _run_cycle(monkeypatch, writer=_hang)
+    baseline = await _run_cycle(monkeypatch, writer=_quiet_writer)
 
     assert [e[0] for e in events] == ["probe", "observe"]
     assert state == {"entered": True, "cancelled": True}
@@ -446,8 +446,8 @@ async def test_raising_writer_leaves_probe_unchanged_and_warns(monkeypatch, capl
         raise RuntimeError("embed exploded")
 
     with caplog.at_level(logging.WARNING, logger=mod.logger.name):
-        events = await _run_cycle(monkeypatch, enabled=True, writer=_boom)
-    baseline = await _run_cycle(monkeypatch, enabled=False, writer=_boom)
+        events = await _run_cycle(monkeypatch, writer=_boom)
+    baseline = await _run_cycle(monkeypatch, writer=_quiet_writer)
 
     assert _probes(events) == _probes(baseline)
     assert len(_probes(events)) == 1
@@ -460,22 +460,9 @@ async def test_timed_out_writer_logs_a_warning(monkeypatch, caplog):
         await asyncio.Event().wait()
 
     with caplog.at_level(logging.WARNING, logger=mod.logger.name):
-        await _run_cycle(monkeypatch, enabled=True, writer=_hang)
+        await _run_cycle(monkeypatch, writer=_hang)
 
     assert "deployment observation cycle timed out after 0.05s" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_deployment_observations_are_default_off(monkeypatch):
-    calls = []
-
-    async def _record(events, poll_time):
-        calls.append(poll_time)
-
-    events = await _run_cycle(monkeypatch, enabled=False, writer=_record)
-
-    assert calls == []
-    assert len(_probes(events)) == 1
 
 
 @pytest.mark.asyncio
@@ -485,7 +472,7 @@ async def test_only_cache_misses_record_deployment_observations(monkeypatch):
     async def _record(events, poll_time):
         calls.append(poll_time)
 
-    await _run_cycle(monkeypatch, enabled=True, writer=_record)
+    await _run_cycle(monkeypatch, writer=_record)
     # Second cycle inside the 60 s TTL: _run_cycle resets the cache, so drive
     # the leader cycle directly against the still-warm cache instead.
     await asyncio.wait_for(cd_leader._cycle(), 2.0)

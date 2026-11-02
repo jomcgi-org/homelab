@@ -16,7 +16,6 @@ from grimoire.voices import speaker_ref, validate_speaker_key
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     with sqlite_harness(tmp_path / "voices.db") as h:
         h.prepare("play")
         with TestClient(h.app()) as client:

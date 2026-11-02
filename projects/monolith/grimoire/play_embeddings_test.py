@@ -26,7 +26,6 @@ from grimoire.testing.leak_harness import sqlite_harness
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     with sqlite_harness(tmp_path / "play.db") as h:
         # These tests control embedding insertion and reveal-event creation.
         # Retrieval tests separately exercise the harness's seeded stale rows.

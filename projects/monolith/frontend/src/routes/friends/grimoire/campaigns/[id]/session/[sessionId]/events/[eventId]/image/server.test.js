@@ -19,7 +19,6 @@ function get({ upstream, params } = {}) {
 
 beforeEach(() => {
   process.env.API_BASE = "http://backend.test";
-  process.env.GRIMOIRE_PLAY_ENABLED = "true";
 });
 
 describe("handout image proxy", () => {
@@ -69,13 +68,6 @@ describe("handout image proxy", () => {
       expect(fetch).not.toHaveBeenCalled();
     },
   );
-
-  it("is not served while play is disabled", async () => {
-    process.env.GRIMOIRE_PLAY_ENABLED = "false";
-    const { fetch, response } = get();
-    await expect(response).rejects.toMatchObject({ status: 404 });
-    expect(fetch).not.toHaveBeenCalled();
-  });
 
   it("answers 401 without a grimoire token", async () => {
     const fetch = vi.fn();

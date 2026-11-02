@@ -12,8 +12,7 @@ from grimoire.testing.leak_harness import ROLES, sqlite_harness
 
 
 @pytest.fixture
-def http(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "false")
+def http(tmp_path):
     with sqlite_harness(tmp_path / "notes.db") as h:
         with TestClient(h.app()) as client:
             yield h, client

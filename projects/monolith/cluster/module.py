@@ -5,33 +5,20 @@ not pull the framework or FastAPI: standalone binaries that reuse domain code
 (e.g. trips_backfill, the knowledge tools) glob only their own sources.
 """
 
-import os
-
 from framework import Module as _Module
 
 
 async def _leader_start(app):
-    """Start enabled cluster loops (lazy imports keep __init__ light)."""
-    tasks = []
-    if os.environ.get("CD_PROBE_ENABLED", "").strip().lower() not in {
-        "false",
-        "0",
-        "no",
-    }:
-        from cluster.cd_leader import leader_start as start_cd  # noqa: PLC0415
+    """Start the cluster loops (lazy imports keep __init__ light)."""
+    from cluster.cd_leader import leader_start as start_cd  # noqa: PLC0415
 
-        tasks = await start_cd(app)
+    tasks = await start_cd(app)
 
-    if os.environ.get("POD_RESTART_WATCH_ENABLED", "").strip().lower() in {
-        "true",
-        "1",
-        "yes",
-    }:
-        from cluster.pod_restart_leader import (  # noqa: PLC0415
-            leader_start as start_pod_restart_watch,
-        )
+    from cluster.pod_restart_leader import (  # noqa: PLC0415
+        leader_start as start_pod_restart_watch,
+    )
 
-        tasks.extend(await start_pod_restart_watch(app))
+    tasks.extend(await start_pod_restart_watch(app))
     return tasks
 
 

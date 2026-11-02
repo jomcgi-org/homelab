@@ -357,22 +357,9 @@ def enqueue_extraction(session: Session, raw_id: str, *, commit: bool = True) ->
 
 
 def ensure_repo_diff_job(session: Session) -> bool:
-    """Reconcile the recurring repository scout job with its feature flag."""
-    from shared.invocation_outcomes import UNKNOWN_INVOCATION
-
-    enabled = flag("KG_REPO_DIFF_ENABLED")
+    """Register the recurring repository scout job if it is missing."""
     dialect = session.get_bind().dialect.name
     table = "routine_jobs" if dialect == "sqlite" else "claude_agent.routine_jobs"
-    if not enabled:
-        result = session.execute(
-            text(
-                f"DELETE FROM {table} WHERE name = :name "
-                "AND (last_status IS NULL OR last_status != :unknown_outcome)"
-            ),
-            {"name": REPO_DIFF_JOB_NAME, "unknown_outcome": UNKNOWN_INVOCATION},
-        )
-        return result.rowcount > 0
-
     payload_expr = ":payload" if dialect == "sqlite" else "CAST(:payload AS JSONB)"
     result = session.execute(
         text(
@@ -1783,7 +1770,7 @@ def apply_extraction(
         raw.extra = extra
         session.add(raw)
 
-        if flag("DRAINER_DOCFIX_ENABLED") and raw.source == "repo-diff":
+        if raw.source == "repo-diff":
             base_sha = extra.get("base_sha")
             head_sha = extra.get("head_sha")
             if isinstance(base_sha, str) and isinstance(head_sha, str):

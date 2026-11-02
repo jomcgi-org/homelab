@@ -152,8 +152,8 @@ snippets.
 
 ## Transcripts
 
-The transcript routes require both `GRIMOIRE_PLAY_ENABLED` and
-`GRIMOIRE_TRANSCRIPT_ENABLED` to be exactly `true`, read on every request.
+The transcript routes require `GRIMOIRE_TRANSCRIPT_ENABLED` to be exactly
+`true`, read on every request.
 `grimoire.transcript.enabled` defaults to false until the capture surface is
 ready. No deploy override enables it.
 
@@ -192,7 +192,7 @@ utterance text. Ingest forbids unknown fields, including raw audio.
 Every campaign member can read retention settings. The DM sets
 `transcript_retention_days` from 1 to 365 days, with a default of 30. The daily
 `grimoire-redact-transcripts` CronWorkflow in `monolith-workflows` runs at 03:32
-UTC regardless of the play and transcript flags. It redacts utterances older than the campaign window by
+UTC regardless of the transcript flag. It redacts utterances older than the campaign window by
 server `created_at`, preserving a stub with `redacted: true`, timing, source
 and speaker label when present. The speaker remains in `author_member_id`.
 Event ids, sequence numbers and check-in state stay unchanged. Stubs retain
@@ -252,18 +252,14 @@ refreshes the game-session row, refuses ended sessions, validates the audience
 against that campaign, and allocates `max(seq) + 1` inside the caller's
 transaction. The helper flushes; the caller commits or rolls back. Grant
 updates and deletes lock matching reveal rows and retract the affected reveal
-history when play is enabled. Rows and sequence numbers are retained.
+history. Rows and sequence numbers are retained.
 
 **Why.** A Postgres sequence consumes numbers on rollback and would leave gaps.
 Locking the existing session row serializes writers within one session while
 other sessions can append independently. Allocation and insertion roll back
 together. The unique index also rejects a writer that bypasses serialization.
 
-The play HTTP routes require `GRIMOIRE_PLAY_ENABLED` to equal the lowercase
-string `true`, read on each request before identity and membership checks.
-`grimoire.play.enabled` defaults to false in the chart; deployment values stay
-off. Existing session creation and status updates are unaffected. Campaign
-members may list sessions and poll events. DMs may append every kind except
+The play HTTP routes are always on. Campaign members may list sessions and poll events. DMs may append every kind except
 `utterance` and `roll`; players may append only `action` with `dm` or `table`
 audience. HTTP utterances are refused for every caller because #6618 owns
 ingest. Generic event writes refuse `roll` for every caller with 403 because
@@ -301,9 +297,7 @@ results or seeds. A dependency override lets tests use a seeded RNG and assert
 the exact stored body without changing production randomness. Characterless
 players' table-only rule keeps every accepted roll visible to its roller.
 
-Part of #6610, which owns coordinated enablement of `grimoire.play.enabled`
-and live audience checks after the #6612 play surface is ready. Deployment
-values remain off. No operational flag flip belongs to this change.
+Part of #6610, which owns live audience checks.
 
 ### Handouts
 
@@ -439,10 +433,8 @@ Failures roll back both grants and events.
 On the entity list, DM-only `not_granted_to` means "hide entities that PC
 already knows": exclude global entities and any grant scope using a
 correlated grant alias in the shared visibility query. Knowledge search does
-not accept this filter. Authorization checks membership, play flag, DM role,
-then PC campaign membership, in that order. With the flag off, the new filters and
-bulk route return 404 and existing grant and read behavior is unchanged.
-Live enablement and live audience checks remain in #6610.
+not accept this filter. Authorization checks membership, DM role, then PC
+campaign membership, in that order. Live audience checks remain in #6610.
 
 **Why.** The grantee projection bounds the stored feed snapshot. One
 transaction keeps knowledge and feed changes together; an identity-free
@@ -509,8 +501,7 @@ unknown kinds and deleted rows are invisible to everyone, including the DM.
 Every query also filters the campaign. Seeded SQLite and PostgreSQL agreement
 matrices pin the SQL and Python policies against an independent oracle.
 
-The notes API works independently of `GRIMOIRE_PLAY_ENABLED`. Membership and
-the current character determine the viewer. Players with a character may create
+Membership and the current character determine the viewer. Players with a character may create
 either kind; DMs may create party notes only. Character notes may be edited or
 deleted only by their author; party notes by their author or the DM. Only a
 character note's author may change its DM sharing flag. The stored campaign
@@ -663,10 +654,9 @@ unassigned.
 moving knowledge between accounts. Campaign-scoped roles let a DM seat their
 own table without operator access.
 
-### Optional single-use campaign links (disabled)
+### Single-use campaign links
 
-`grimoire.invitationLinks.enabled` defaults to false. When enabled, campaign
-owners create a seven-day, single-recipient link for a registered player and
+Campaign owners create a seven-day, single-recipient link for a registered player and
 copy it themselves. The raw capability is shown once, carried in a URL
 fragment, then exchanged for a Secure, HttpOnly, SameSite=Lax resume cookie.
 The database stores only its SHA-256 digest. Opening the link does not grant
@@ -685,7 +675,7 @@ self-contained, no-store landing page with no telemetry or authenticated assets.
 The authenticated `/grimoire/join/accept` route and every other Grimoire route
 keep their existing OIDC policy. No private API is exposed on the friends host.
 
-New-account enrollment has a second default-off flag,
+New-account enrollment has a default-off flag,
 `grimoire.invitationLinks.enrollmentEnabled`. Issuance requires both campaign
 ownership and the existing `operators` account-administration entitlement.
 Ordinary campaign owners cannot create account-enrollment invitations. The
@@ -737,10 +727,10 @@ boundaries. Keeping a single-use app capability until the final Join provides
 atomic membership, safe retries and revocation without treating Authentik's
 partially completed enrollment as campaign acceptance.
 
-### Optional-link enablement checks
+### Link enrollment enablement checks
 
 Human-owned access review and activation are tracked in [#6858](https://github.com/jomcgi-org/homelab/issues/6858).
-Keep both flags off until reviewed provisioning and normal CI have passed.
+Keep enrollment off until reviewed provisioning and normal CI have passed.
 Before enabling, test the exact pinned Authentik version and Envoy routing with
 disposable accounts: fresh signup, existing-account sign-in, interrupted signup,
 Back/Close/reopen, wrong-account rejection, duplicate submission, expiry,

@@ -288,7 +288,6 @@ def test_clear_keeps_character_sheets_and_grants(harness):
 
 
 def test_grants_follow_character_through_real_entity_endpoints(harness, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     h, client = harness
     character = unassigned_character(h)
     entity_id = h.rows["private"].id

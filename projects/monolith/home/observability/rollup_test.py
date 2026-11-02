@@ -65,18 +65,10 @@ async def test_prime_snapshots_swallows_errors():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("enabled", [None, "true", "false", "0", " NO "])
-async def test_home_module_startup_preserves_snapshot_priming(monkeypatch, enabled):
+async def test_home_module_startup_preserves_snapshot_priming():
     from home.module import MODULE
 
-    if enabled is None:
-        monkeypatch.delenv("HOME_OBSERVABILITY_PRIME_ENABLED", raising=False)
-    else:
-        monkeypatch.setenv("HOME_OBSERVABILITY_PRIME_ENABLED", enabled)
     with patch.object(rollup, "prime_snapshots", new_callable=AsyncMock) as prime:
         assert MODULE.startup is not None
         await MODULE.startup(None)
-    if enabled in (None, "true"):
-        prime.assert_awaited_once_with()
-    else:
-        prime.assert_not_awaited()
+    prime.assert_awaited_once_with()

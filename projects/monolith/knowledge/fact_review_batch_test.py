@@ -185,7 +185,6 @@ def test_streamed_blob_envelope_bound_is_enforced_without_stopping_batch(
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
-    monkeypatch.setenv("KG_FACT_REVIEW_ENABLED", "true")
     monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "20000")
     engine = create_engine(f"sqlite:///{tmp_path / 'batch.db'}").execution_options(
         schema_translate_map={

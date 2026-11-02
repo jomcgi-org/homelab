@@ -59,9 +59,8 @@ Rehearse single-use links for registered players in a fresh local campaign:
 grimoire.venv/bin/python projects/monolith/dev/grimoire/run.py --rehearse --join-links --output /tmp/grimoire-join-links
 ```
 
-The opt-in flag enables links only in this disposable frontend and backend.
-The default table and its 33 session checks keep links disabled. Enrollment
-stays disabled in both modes, and the launcher clears inherited provider token
+The flag selects the link rehearsal instead of the default table and its 33
+session checks. Enrollment stays disabled in both modes, and the launcher clears inherited provider token
 and flow settings. These checks use signed local identities and never enroll a
 real account.
 

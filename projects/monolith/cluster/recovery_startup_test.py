@@ -1,6 +1,5 @@
-"""Recovery can disable unrelated I/O without disabling leader composition."""
+"""Cluster leader and home startup hooks call through to their dependencies."""
 
-import asyncio
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock
@@ -9,153 +8,34 @@ import cluster.module as cluster_module
 import home.module as home_module
 import pytest
 
-from framework import Module, start_leader_singletons, stop_leader_singletons
 
-
-_HOOKS = [
-    (
-        cluster_module.MODULE.leader_start,
-        "CD_PROBE_ENABLED",
-        "cluster.cd_leader",
-        "leader_start",
-        [],
-    ),
-    (
-        home_module.MODULE.startup,
-        "HOME_OBSERVABILITY_PRIME_ENABLED",
-        "home.observability.rollup",
-        "prime_snapshots",
-        None,
-    ),
-]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("hook,flag,dependency,call_name,disabled_result", _HOOKS)
-@pytest.mark.parametrize("value", ["false", "0", "no", " FALSE ", " No "])
-async def test_disabled_hook_does_not_import_dependency(
-    monkeypatch, hook, flag, dependency, call_name, disabled_result, value
-):
-    monkeypatch.setenv(flag, value)
-    # Importing this dependency raises even if another test loaded it earlier.
-    monkeypatch.setitem(sys.modules, dependency, None)
-
-    assert await hook(SimpleNamespace()) == disabled_result
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("hook,flag,dependency,call_name,disabled_result", _HOOKS)
-@pytest.mark.parametrize("value", [None, "", "true", "1", "yes"])
-async def test_enabled_hook_preserves_call_through(
-    monkeypatch, hook, flag, dependency, call_name, disabled_result, value
-):
-    if value is None:
-        monkeypatch.delenv(flag, raising=False)
-    else:
-        monkeypatch.setenv(flag, value)
-    result = [object()] if call_name == "leader_start" else None
+def _fake(monkeypatch, dependency, call_name, result):
     callback = AsyncMock(return_value=result)
     fake = ModuleType(dependency)
     setattr(fake, call_name, callback)
     monkeypatch.setitem(sys.modules, dependency, fake)
-    app = SimpleNamespace()
-
-    assert await hook(app) is result
-    if call_name == "leader_start":
-        callback.assert_awaited_once_with(app)
-    else:
-        callback.assert_awaited_once_with()
+    return callback
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("hook,flag,dependency,call_name,disabled_result", _HOOKS)
-async def test_hook_reads_configuration_on_each_invocation(
-    monkeypatch, hook, flag, dependency, call_name, disabled_result
+async def test_cluster_leader_start_starts_cd_probe_and_pod_restart_watch(
+    monkeypatch,
 ):
-    callback = AsyncMock(return_value=disabled_result)
-    fake = ModuleType(dependency)
-    setattr(fake, call_name, callback)
-    monkeypatch.setitem(sys.modules, dependency, fake)
+    cd_task, watch_task = object(), object()
+    start_cd = _fake(monkeypatch, "cluster.cd_leader", "leader_start", [cd_task])
+    start_watch = _fake(
+        monkeypatch, "cluster.pod_restart_leader", "leader_start", [watch_task]
+    )
     app = SimpleNamespace()
 
-    monkeypatch.setenv(flag, "false")
-    await hook(app)
-    callback.assert_not_awaited()
-    monkeypatch.setenv(flag, "true")
-    await hook(app)
-    callback.assert_awaited_once()
-    monkeypatch.setenv(flag, "false")
-    await hook(app)
-    callback.assert_awaited_once()
+    assert await cluster_module.MODULE.leader_start(app) == [cd_task, watch_task]
+    start_cd.assert_awaited_once_with(app)
+    start_watch.assert_awaited_once_with(app)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("value", [None, "", "false", "0", "no", "unexpected"])
-async def test_pod_restart_watch_defaults_disabled(monkeypatch, value):
-    monkeypatch.setenv("CD_PROBE_ENABLED", "false")
-    if value is None:
-        monkeypatch.delenv("POD_RESTART_WATCH_ENABLED", raising=False)
-    else:
-        monkeypatch.setenv("POD_RESTART_WATCH_ENABLED", value)
-    monkeypatch.setitem(sys.modules, "cluster.pod_restart_leader", None)
+async def test_home_startup_primes_snapshots(monkeypatch):
+    prime = _fake(monkeypatch, "home.observability.rollup", "prime_snapshots", None)
 
-    assert await cluster_module.MODULE.leader_start(SimpleNamespace()) == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("value", ["true", "1", "yes", " TRUE ", " Yes "])
-async def test_pod_restart_watch_requires_explicit_truthy_value(monkeypatch, value):
-    monkeypatch.setenv("CD_PROBE_ENABLED", "false")
-    monkeypatch.setenv("POD_RESTART_WATCH_ENABLED", value)
-    callback = AsyncMock(return_value=[object()])
-    fake = ModuleType("cluster.pod_restart_leader")
-    fake.leader_start = callback
-    monkeypatch.setitem(sys.modules, "cluster.pod_restart_leader", fake)
-    app = SimpleNamespace()
-
-    result = await cluster_module.MODULE.leader_start(app)
-
-    assert len(result) == 1
-    callback.assert_awaited_once_with(app)
-
-
-@pytest.mark.asyncio
-async def test_disabled_cd_preserves_other_leader_start_and_stop(monkeypatch):
-    monkeypatch.setenv("CD_PROBE_ENABLED", "false")
-    monkeypatch.setitem(sys.modules, "cluster.cd_leader", None)
-    app = SimpleNamespace(state=SimpleNamespace())
-    started = asyncio.Event()
-    released = asyncio.Event()
-    tasks = []
-
-    async def run_other():
-        started.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            released.set()
-
-    async def start_other(app):
-        task = asyncio.create_task(run_other())
-        tasks.append(task)
-        return [task]
-
-    stop_other = AsyncMock()
-    other = Module(name="other", leader_start=start_other, leader_stop=stop_other)
-    modules = [cluster_module.MODULE, other]
-    try:
-        await start_leader_singletons(app, modules)
-        await asyncio.wait_for(started.wait(), timeout=1)
-        assert app.state.singleton_tasks == tasks
-        assert len(tasks) == 1
-        assert app.state.leader_singleton_failures == set()
-        await stop_leader_singletons(app, modules)
-        await asyncio.gather(*tasks, return_exceptions=True)
-        stop_other.assert_awaited_once_with(app)
-        assert released.is_set()
-        assert tasks[0].cancelled()
-        assert app.state.singleton_tasks == []
-    finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+    assert await home_module.MODULE.startup(SimpleNamespace()) is None
+    prime.assert_awaited_once_with()
