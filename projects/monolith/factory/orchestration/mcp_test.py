@@ -128,6 +128,7 @@ def test_factory_tools_are_registered():
         "factory_amend_policy",
         "factory_configure_refill",
         "factory_reconcile_settled_retry",
+        "factory_continue_evidence",
         "factory_release_landing_hold",
         "factory_find_receipts",
         "factory_prepare_validation",
@@ -150,6 +151,7 @@ def test_status_distinguishes_native_registration_from_caller_catalog(monkeypatc
         "factory_amend_policy",
         "factory_reconcile_learning_execution",
         "factory_reconcile_settled_retry",
+        "factory_continue_evidence",
     }
     refill = catalog["tools"]["factory_configure_refill"]
     assert refill["registered"] is True
@@ -157,21 +159,29 @@ def test_status_distinguishes_native_registration_from_caller_catalog(monkeypatc
     assert refill["models"] == ["astra", "opus"]
     assert len(refill["schema_sha256"]) == 64
     assert len(refill["description_sha256"]) == 64
-    assert len(json.dumps(catalog)) < 2500
+    continuation = catalog["tools"]["factory_continue_evidence"]
+    assert continuation["registered"] is True
+    assert continuation["operations"] == ["preview", "apply"]
+    assert "source_run_id" in continuation["arguments"]
+    assert len(json.dumps(catalog)) < 3500
 
 
+@pytest.mark.parametrize(
+    "missing_name", ["factory_configure_refill", "factory_continue_evidence"]
+)
 def test_status_reports_missing_native_control_without_inventing_visibility(
     monkeypatch,
+    missing_name,
 ):
     monkeypatch.setattr(mcp, "_status_payload", lambda *_: {"ok": True})
     original = mcp.mcp.get_tool
 
     async def missing(name):
-        return None if name == "factory_configure_refill" else await original(name)
+        return None if name == missing_name else await original(name)
 
     monkeypatch.setattr(mcp.mcp, "get_tool", missing)
     catalog = _as(_principal(), mcp.factory_status)["control_catalog"]
-    assert catalog["tools"]["factory_configure_refill"] == {"registered": False}
+    assert catalog["tools"][missing_name] == {"registered": False}
     assert catalog["tools"]["factory_amend_policy"]["registered"] is True
 
 
@@ -1361,10 +1371,19 @@ def test_detail_pages_nodes_and_bounds_attempt_history(monkeypatch):
     )
     monkeypatch.setattr(
         "factory.orchestration.graph.node_runs",
-        lambda task, session: [
-            {"node_key": "node-1", "attempt": i, "status": "failed", "session_id": i}
-            for i in range(1, 6)
-        ],
+        lambda task, session: (
+            [
+                {
+                    "id": 100 + i,
+                    "node_key": "node-1",
+                    "attempt": i,
+                    "status": "failed",
+                    "session_id": i,
+                }
+                for i in range(5, 0, -1)
+            ]
+            + [{"id": 205, "node_key": "node-2", "attempt": 5, "status": "failed"}]
+        ),
     )
     monkeypatch.setattr(
         mcp, "_work_item_context", lambda *args: {"status": "not_linked"}
@@ -1393,6 +1412,17 @@ def test_detail_pages_nodes_and_bounds_attempt_history(monkeypatch):
     assert node["deps"] == ["node-0"]
     assert node["attempt_count"] == 5
     assert [a["session_id"] for a in node["attempts"]] == [3, 4, 5]
+    assert [a["run_id"] for a in node["attempts"]] == [103, 104, 105]
+    assert result["nodes"][1]["attempts"][0]["run_id"] == 205
+    from factory.private_view import shape_node
+
+    display = shape_node(
+        {"node_key": "node-1"},
+        [{"id": 105, "node_key": "node-1", "attempt": 5, "session_id": 5}],
+        {},
+    )
+    assert "run_id" not in display["attempts"][0]
+    assert "id" not in display["attempts"][0]
     assert node["state"] == "failed"
     assert result["updated_at"] == "2026-09-14T00:00:00+00:00"
     assert result["lifecycle"]["deployment"]["status"] == "unknown"

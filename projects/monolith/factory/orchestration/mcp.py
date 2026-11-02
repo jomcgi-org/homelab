@@ -780,6 +780,7 @@ async def _control_catalog() -> dict:
         "factory_amend_policy",
         "factory_reconcile_learning_execution",
         "factory_reconcile_settled_retry",
+        "factory_continue_evidence",
     ):
         tool = await mcp.get_tool(name)
         if tool is None:
@@ -1232,6 +1233,7 @@ def _detail_payload(
         snapshot = controls._snapshot(db, row)
         nodes = graph.load_graph(row.task_id, session=db) if row.task_id else []
         runs = graph.node_runs(row.task_id, session=db) if row.task_id else []
+        run_ids = {(run["node_key"], run["attempt"]): run["id"] for run in runs}
         shaped = [
             shape_node(node, [r for r in runs if r["node_key"] == node["node_key"]], {})
             for node in nodes
@@ -1240,6 +1242,10 @@ def _detail_payload(
         for node in page:
             node["attempt_count"] = len(node["attempts"])
             node["attempts"] = node["attempts"][-3:]
+            # The shared display projection intentionally omits database IDs.
+            # Only this operator detail exposes the exact recovery CAS identity.
+            for attempt in node["attempts"]:
+                attempt["run_id"] = run_ids[(node["node_key"], attempt["attempt"])]
         work_item = _work_item_context(db, row, history_limit)
         return {
             "ok": True,
@@ -1281,6 +1287,8 @@ async def factory_task_detail(
     Use receipt_id from factory_status or factory_submit_issue, including for
     queued work without a task_id. Nodes include dependencies, current state
     and their last three attempts with session IDs for further inspection.
+    Each attempt's run_id is its exact source_run_id for evidence continuation,
+    distinct from the session ID and attempt number.
     Follow next_node_offset for more nodes. Node success alone is not evidence
     of accepted delivery or deployment. This read requires a human operator.
     history_limit bounds work-item edges and correction history independently.
