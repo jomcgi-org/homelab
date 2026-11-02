@@ -150,9 +150,8 @@ type sessionDriver interface {
 	// bundle (memfile + snapfile, the base-bundle format) under sessions/<ref>. It
 	// does NOT resume: the caller Releases the VM immediately after (Bank destroys).
 	SnapshotSession(ctx context.Context, h substrate.Handle, snapshotRef string) (substrate.SnapshotRef, error)
-	// RestoreSession launches a fresh VM from a banked session bundle, optionally
-	// re-arms dirty tracking, and resumes it.
-	RestoreSession(ctx context.Context, workload, snapshotRef string, trackDirtyPages bool) (substrate.Handle, error)
+	// RestoreSession launches a fresh VM from a banked session bundle and resumes it.
+	RestoreSession(ctx context.Context, workload, snapshotRef string) (substrate.Handle, error)
 	// RemoveSessionBundle deletes a banked session bundle from disk (idempotent).
 	RemoveSessionBundle(snapshotRef string) error
 	// SessionsDir is the directory holding banked session bundles, rescanned on start.
@@ -1498,10 +1497,9 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	readyTimeout := primeReadyTimeout(s.cfg, volumeDiskPath)
 
 	spec := substrate.ClaimSpec{
-		Workload:        base.workload,
-		Arch:            s.cfg.Arch,
-		ThreadID:        newID("vm"),
-		TrackDirtyPages: s.cfg.DiffBanking && diffBankingWorkload(s.cfg.DiffBankingWorkloads, base.workload),
+		Workload: base.workload,
+		Arch:     s.cfg.Arch,
+		ThreadID: newID("vm"),
 		BaseSnapshotRef: substrate.SnapshotRef{
 			ID:             ref,
 			Node:           s.cfg.Node,
@@ -1598,15 +1596,6 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	s.vmLifecycleMu.Unlock()
 	s.signalChange()
 	return &nodev1.PrimeResponse{VmId: h.ID}, nil
-}
-
-func diffBankingWorkload(workloads []string, workload string) bool {
-	for _, candidate := range workloads {
-		if candidate == workload {
-			return true
-		}
-	}
-	return false
 }
 
 func primeReadyTimeout(cfg config.Config, volumeDiskPath string) time.Duration {
@@ -2186,8 +2175,7 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 		return nil, err
 	}
 	defer ticket.release()
-	trackDirtyPages := s.cfg.DiffBanking && diffBankingWorkload(s.cfg.DiffBankingWorkloads, workload)
-	h, err := s.sessionDriver.RestoreSession(ctx, workload, ref, trackDirtyPages)
+	h, err := s.sessionDriver.RestoreSession(ctx, workload, ref)
 	ticket.release()
 	if err != nil {
 		// The snapshot is left on disk (never deleted on a failed restore).

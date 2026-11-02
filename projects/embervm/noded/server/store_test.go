@@ -2109,10 +2109,13 @@ func TestRestoreArtifactRoundTrip(t *testing.T) {
 		t.Fatalf("rm volume: %v", err)
 	}
 
-	// Restore the bundle.
+	// Restore the bundle. Principal exports are enveloped, so each restore
+	// carries a capability.
+	bundleArtifact := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "scratch-postgres", Ref: bundleRef}
 	resp, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{
-		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "scratch-postgres", Ref: bundleRef},
-		Vendor:   "amd",
+		Artifact:   bundleArtifact,
+		Vendor:     "amd",
+		Capability: restoreCapabilityForTest(t, s, bundleArtifact, 4, nil),
 	})
 	if err != nil {
 		t.Fatalf("restore bundle: %v", err)
@@ -2137,8 +2140,10 @@ func TestRestoreArtifactRoundTrip(t *testing.T) {
 	}
 
 	// Restore the volume pair.
+	volumeArtifact := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: "scratch-postgres"}
 	if _, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{
-		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: "scratch-postgres"},
+		Artifact:   volumeArtifact,
+		Capability: restoreCapabilityForTest(t, s, volumeArtifact, 1, nil),
 	}); err != nil {
 		t.Fatalf("restore volume: %v", err)
 	}
@@ -2155,14 +2160,12 @@ func TestRestoreArtifactCapabilityGate(t *testing.T) {
 	tests := []struct {
 		name        string
 		encrypted   bool
-		require     bool
 		capability  func(*testing.T, *Server, *nodev1.ArtifactRef, uint64) []byte
 		wantCode    codes.Code
 		wantRestore bool
 	}{
 		{
 			name:        "plaintext_ignores_capability",
-			require:     true,
 			capability:  func(*testing.T, *Server, *nodev1.ArtifactRef, uint64) []byte { return []byte("invalid but ignored") },
 			wantCode:    codes.OK,
 			wantRestore: true,
@@ -2177,20 +2180,13 @@ func TestRestoreArtifactCapabilityGate(t *testing.T) {
 			wantRestore: true,
 		},
 		{
-			name:      "enveloped_missing_capability_enforcement_off",
+			name:      "enveloped_missing_capability",
 			encrypted: true,
-			wantCode:  codes.FailedPrecondition,
-		},
-		{
-			name:      "enveloped_missing_capability_enforcement_on",
-			encrypted: true,
-			require:   true,
 			wantCode:  codes.PermissionDenied,
 		},
 		{
 			name:      "enveloped_capability_for_another_node",
 			encrypted: true,
-			require:   true,
 			capability: func(t *testing.T, s *Server, ref *nodev1.ArtifactRef, generation uint64) []byte {
 				return restoreCapabilityForTest(t, s, ref, generation, func(scope *capabilityScope) {
 					scope.Node = "node-other"
@@ -2204,7 +2200,6 @@ func TestRestoreArtifactCapabilityGate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fs := newFakeStore()
 			s := newStoreTestServer(t, fs)
-			s.cfg.RequireRestoreCapability = tt.require
 			const generation = 9
 			ref := &nodev1.ArtifactRef{
 				Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL,
@@ -2253,7 +2248,6 @@ func TestRestoreArtifactCapabilityGate(t *testing.T) {
 func TestExportPathsApplyPrincipalEncryptionPolicy(t *testing.T) {
 	fs := newFakeStore()
 	s := newStoreTestServer(t, fs)
-	s.cfg.StoreEncrypt = true
 	ctx := context.Background()
 
 	syncSession := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, Workload: "sandbox-session", Ref: "sync-session"}
@@ -2349,7 +2343,6 @@ func TestSuccessfulArtifactAccessSchedulesLazyEnvelopeRewrap(t *testing.T) {
 func TestRefusedRestoreDoesNotScheduleLazyEnvelopeRewrap(t *testing.T) {
 	fs := newFakeStore()
 	s := newStoreTestServer(t, fs)
-	s.cfg.RequireRestoreCapability = true
 	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "sandbox", Ref: "state-denied"}
 	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
 	fs.seedEncryptedArtifact(prefix, map[string]string{"memfile": "state"}, 2, s.cfg.CpuVendor, s.cfg.CpuTemplate)
@@ -2797,7 +2790,7 @@ func TestRestoreSessionWorkspaceWaitsForPendingRetirementExport(t *testing.T) {
 	}
 	restored := make(chan restoreResult, 1)
 	go func() {
-		resp, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: ref})
+		resp, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: ref, Capability: restoreCapabilityForTest(t, s, ref, 0, nil)})
 		restored <- restoreResult{resp: resp, err: err}
 	}()
 
@@ -2922,7 +2915,6 @@ func TestRunExportJob404WrapRefusalIsTerminalAndRetiresWorkspace(t *testing.T) {
 	fs := newFakeStore()
 	fs.dataKeyErr = &WrapRejectedError{StatusCode: 404, Reason: "unknown_artifact"}
 	s := newStoreTestServer(t, fs)
-	s.cfg.StoreEncrypt = true
 	s.exportCh = make(chan exportJob, 1)
 	var logs bytes.Buffer
 	s.logger = slog.New(slog.NewTextHandler(&logs, nil))
@@ -2971,7 +2963,6 @@ func TestRunExportJob404WrapRefusalIsTerminalAndRetiresWorkspace(t *testing.T) {
 func TestRunExportJobSkipsJobMarkedUnexportableAfterEnqueue(t *testing.T) {
 	fs := newFakeStore()
 	s := newStoreTestServer(t, fs)
-	s.cfg.StoreEncrypt = true
 	s.exportCh = make(chan exportJob, 1)
 
 	ref := &nodev1.ArtifactRef{
@@ -3012,7 +3003,6 @@ func TestRunExportJobWrapRefusalStaysRetryable(t *testing.T) {
 			fs := newFakeStore()
 			fs.dataKeyErr = &WrapRejectedError{StatusCode: tc.status, Reason: tc.reason}
 			s := newStoreTestServer(t, fs)
-			s.cfg.StoreEncrypt = true
 			s.exportCh = make(chan exportJob, 1)
 			var logs bytes.Buffer
 			s.logger = slog.New(slog.NewTextHandler(&logs, nil))
@@ -3055,7 +3045,6 @@ func TestRunExportJobWrapRefusalStaysRetryable(t *testing.T) {
 func TestSuccessfulDataKeyClearsUnexportableEntry(t *testing.T) {
 	fs := newFakeStore()
 	s := newStoreTestServer(t, fs)
-	s.cfg.StoreEncrypt = true
 	ref := &nodev1.ArtifactRef{
 		Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE,
 		Workload: "sbx",
@@ -3082,7 +3071,6 @@ func TestUnexportableTTLExpiryAllowsRetry(t *testing.T) {
 	fs := newFakeStore()
 	fs.dataKeyErr = &WrapRejectedError{StatusCode: 404, Reason: "unknown_artifact"}
 	s := newStoreTestServer(t, fs)
-	s.cfg.StoreEncrypt = true
 	s.exportCh = make(chan exportJob, 1)
 	base := time.Unix(1_800_000_000, 0)
 	now := base
@@ -3887,7 +3875,7 @@ func TestDrainExportsSurviveShutdownSignal(t *testing.T) {
 	fs := newFakeStore()
 	s := newStoreTestServer(t, fs)
 	signalCtx, sigterm := context.WithCancel(context.Background())
-	exportCtx, cancelExports := DrainExportContext(signalCtx, true)
+	exportCtx, cancelExports := DrainExportContext(signalCtx)
 	defer cancelExports()
 	s.startExportQueue(exportCtx)
 	sigterm()
@@ -3909,23 +3897,18 @@ func TestDrainExportsSurviveShutdownSignal(t *testing.T) {
 	}
 }
 
-// TestDrainExportContextDisabledFollowsSignal pins the flag-off behaviour: the
-// export context is the signal context itself, so it is cancelled with it.
-func TestDrainExportContextDisabledFollowsSignal(t *testing.T) {
+// TestDrainExportContextOutlivesSignal pins the export context lifetime: it
+// survives the signal and stops only when the returned cancel runs.
+func TestDrainExportContextOutlivesSignal(t *testing.T) {
 	signalCtx, sigterm := context.WithCancel(context.Background())
-	exportCtx, cancel := DrainExportContext(signalCtx, false)
-	defer cancel()
+	detached, cancelDetached := DrainExportContext(signalCtx)
 	sigterm()
-	if exportCtx.Err() == nil {
-		t.Fatal("flag off: export context must be cancelled by the signal")
-	}
-	detached, cancelDetached := DrainExportContext(signalCtx, true)
 	if detached.Err() != nil {
-		t.Fatal("flag on: export context must outlive the signal")
+		t.Fatal("export context must outlive the signal")
 	}
 	cancelDetached()
 	if detached.Err() == nil {
-		t.Fatal("flag on: the returned cancel must stop the export context")
+		t.Fatal("the returned cancel must stop the export context")
 	}
 }
 
@@ -4039,7 +4022,7 @@ func TestWorkspaceLineageFenceKeepsNewerStoreContent(t *testing.T) {
 	fingerprintX := resp.GetContentFingerprint()
 
 	// S moves to B: guarded restore of X, then new work Y, exported.
-	if _, err := b.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: ref, ExpectedFingerprint: fingerprintX}); err != nil {
+	if _, err := b.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: ref, ExpectedFingerprint: fingerprintX, Capability: restoreCapabilityForTest(t, b, ref, 0, nil)}); err != nil {
 		t.Fatalf("restore X on B: %v", err)
 	}
 	writeBundleFiles(t, b.artifactLocalDir(ref), map[string]string{"workspace.img": "content Y"})
@@ -4109,7 +4092,7 @@ func TestWorkspaceLineageFenceKeepsNewerStoreContent(t *testing.T) {
 	// Guarded and unguarded restores elsewhere still see Y.
 	for _, expected := range []string{fingerprintY, ""} {
 		c := newStoreTestServer(t, fs)
-		if _, err := c.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: ref, ExpectedFingerprint: expected}); err != nil {
+		if _, err := c.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: ref, ExpectedFingerprint: expected, Capability: restoreCapabilityForTest(t, c, ref, 0, nil)}); err != nil {
 			t.Fatalf("restore (expected=%q): %v", expected, err)
 		}
 		if got, err := os.ReadFile(filepath.Join(c.artifactLocalDir(ref), "workspace.img")); err != nil || string(got) != "content Y" {

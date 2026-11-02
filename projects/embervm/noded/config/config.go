@@ -257,11 +257,6 @@ type Config struct {
 	// mechanism can be verified live before a deployment values flip. Env
 	// EMBERVM_NODED_PREEMPTION_NOTICE_ENABLED.
 	PreemptionNoticeEnabled bool
-	// DrainExportsOutliveSignal keeps the artifact export and restore workers
-	// running after SIGTERM, until the daemon exits, so the drain's workspace and
-	// session exports can finish. Default false (workers stop with the signal,
-	// which cancels every drain export). Env EMBERVM_NODED_DRAIN_EXPORTS_OUTLIVE_SIGNAL.
-	DrainExportsOutliveSignal bool
 	// PreemptionDrainTimeout is the deadline published after the GCE preemption
 	// notice. Default 20s: GCE Spot provides an approximately 30s best-effort
 	// shutdown period, less notice-observation latency and the daemon's own final
@@ -358,16 +353,6 @@ type Config struct {
 	// (see _noded-pod.tpl). The live experiment is issue #4371. Env var:
 	// EMBERVM_NODED_WARM_RESTORE_WITH_VOLUME.
 	WarmRestoreWithVolume bool
-	// DiffBanking enables dirty-page diff snapshots for session VMs restored from
-	// a prior bank. The driver always keeps the committed bundle as a full memory
-	// image and falls back to a full snapshot on every diff-path error. Default
-	// false. Env EMBERVM_NODED_DIFF_BANKING.
-	DiffBanking bool
-	// DiffBankingWorkloads names the memory-banking workloads whose Prime and
-	// Relight paths must enable dirty tracking. Task and park-only session VMs keep
-	// tracking off. Env
-	// EMBERVM_NODED_DIFF_BANKING_WORKLOADS.
-	DiffBankingWorkloads []string
 	// EnforceBundleRootfsIdentity rejects invalid stamped v1 bundles before
 	// Firecracker restore. Missing sidecars remain grandfathered v0. Default
 	// false for the write-and-observe rollout stage.
@@ -480,27 +465,10 @@ type Config struct {
 	// EMBERVM_NODED_STORE_ACCESS_KEY_ID / EMBERVM_NODED_STORE_SECRET_ACCESS_KEY.
 	StoreAccessKeyID     string
 	StoreSecretAccessKey string
-	// StoreCompress enables zstd encoding of newly exported store objects. The
-	// reader always honors each file's marker, so this stays false until every
-	// daemon in the fleet can read compressed objects. Env
-	// EMBERVM_NODED_STORE_COMPRESS. Default false.
-	StoreCompress bool
-	// StoreEncrypt enables envelope encryption of newly exported principal
-	// artifacts. This is a two-phase rollout: the reader ships everywhere with
-	// the writer OFF, then the writer is armed only after every daemon can read
-	// encrypted objects. Env EMBERVM_NODED_STORE_ENCRYPT. Default false.
-	StoreEncrypt bool
 	// UnexportableTTL suppresses reconcile retries after an artifact-specific
 	// control-plane wrap refusal. Default 24h. Env
 	// EMBERVM_NODED_UNEXPORTABLE_TTL.
 	UnexportableTTL time.Duration
-
-	// RequireRestoreCapability refuses an enveloped artifact restore unless its
-	// request carries a valid, tuple-scoped capability. This is a two-phase
-	// rollout: validation ships everywhere with enforcement OFF, then enforcement
-	// is armed only after the control plane mints capabilities. Env
-	// EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY. Default false.
-	RequireRestoreCapability bool
 }
 
 // Load resolves configuration from the environment, applying defaults for all
@@ -564,9 +532,6 @@ func Load() (Config, error) {
 		PodUID:                      os.Getenv("EMBERVM_POD_UID"),
 		SizeClass:                   os.Getenv("EMBERVM_NODED_SIZE_CLASS"),
 		WarmRestoreWithVolume:       boolDefault("EMBERVM_NODED_WARM_RESTORE_WITH_VOLUME", false),
-		DiffBanking:                 boolDefault("EMBERVM_NODED_DIFF_BANKING", false),
-		DrainExportsOutliveSignal:   boolDefault("EMBERVM_NODED_DRAIN_EXPORTS_OUTLIVE_SIGNAL", false),
-		DiffBankingWorkloads:        csvDefault("EMBERVM_NODED_DIFF_BANKING_WORKLOADS"),
 		EnforceBundleRootfsIdentity: boolDefault("EMBERVM_NODED_ENFORCE_BUNDLE_ROOTFS_IDENTITY", false),
 		ControlPlaneURL:             os.Getenv("EMBERVM_NODED_CONTROL_PLANE_URL"),
 		ControlPlaneTokenPath:       getenvDefault("EMBERVM_NODED_CONTROL_PLANE_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
@@ -589,13 +554,9 @@ func Load() (Config, error) {
 
 		StoreEndpoint:        os.Getenv("EMBERVM_NODED_STORE_ENDPOINT"),
 		StoreBucket:          getenvDefault("EMBERVM_NODED_STORE_BUCKET", "embervm"),
-		StoreCompress:        boolDefault("EMBERVM_NODED_STORE_COMPRESS", false),
-		StoreEncrypt:         boolDefault("EMBERVM_NODED_STORE_ENCRYPT", false),
 		UnexportableTTL:      DefaultUnexportableTTL,
 		StoreAccessKeyID:     os.Getenv("EMBERVM_NODED_STORE_ACCESS_KEY_ID"),
 		StoreSecretAccessKey: os.Getenv("EMBERVM_NODED_STORE_SECRET_ACCESS_KEY"),
-
-		RequireRestoreCapability: boolDefault("EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY", false),
 	}
 	if err := parseDuration("EMBERVM_NODED_GUEST_MEMORY_FEEDBACK_INTERVAL", &c.GuestMemoryFeedbackInterval); err != nil {
 		return Config{}, err
@@ -635,6 +596,18 @@ func Load() (Config, error) {
 	}
 	if c.StoreAccessKeyID != "" && c.StoreSecretAccessKey == "" {
 		return Config{}, fmt.Errorf("EMBERVM_NODED_STORE_SECRET_ACCESS_KEY is required when EMBERVM_NODED_STORE_ACCESS_KEY_ID is set")
+	}
+	// A configured store always encrypts principal exports with control-plane
+	// data keys and always requires a verified capability for an enveloped
+	// restore. Refuse to start without either input rather than export
+	// plaintext or fail every restore.
+	if c.StoreEndpoint != "" {
+		if c.ControlPlaneURL == "" {
+			return Config{}, fmt.Errorf("EMBERVM_NODED_CONTROL_PLANE_URL is required when EMBERVM_NODED_STORE_ENDPOINT is set: principal exports are encrypted with control-plane data keys")
+		}
+		if c.RestoreCapabilityKey == "" && c.BearerToken == "" {
+			return Config{}, fmt.Errorf("EMBERVM_NODED_RESTORE_CAPABILITY_KEY or EMBERVM_NODED_BEARER_TOKEN is required when EMBERVM_NODED_STORE_ENDPOINT is set: enveloped restores require a verified capability")
+		}
 	}
 	statefulActivatorRangeRaw := "5400-5409"
 	if raw, ok := os.LookupEnv("EMBERVM_NODED_STATEFUL_ACTIVATOR_PORT_RANGE"); ok {
