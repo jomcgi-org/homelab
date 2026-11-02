@@ -39,6 +39,16 @@ claudeRuntimeWorkload:
 # safe store-disabled mode, and no object-store credentials are rendered.
 noded:
   enforceBundleRootfsIdentity: false
+  # Phase 2b of #5706 (#5757): serve the SPIFFE mTLS NodeService listener on
+  # 9443 beside the plaintext one, which stays on for the dual window. The
+  # empty allowlist derives the control-plane ServiceAccount's SPIFFE ID.
+  # The control-plane dial is a separate, later step (#5706). Rollback is
+  # this line.
+  spiffe:
+    enabled: true
+  # Telemetry only (#5805): report guest memory pressure per activation.
+  guestMemoryFeedback:
+    enabled: true
   jailer:
     # Disarmed again on 2026-09-06 after the arming (#5843) broke every VM
     # restore on the rolled bricks: the jailed Firecracker cannot open the
@@ -323,3 +333,8 @@ rootfsBuilder:
   inPodBake:
     # This flag flip rolls bricks once. Delete this enabled line to roll back.
     enabled: true
+
+# Background data-key envelope rotation (#4976): metadata-only, ETag
+# compare-and-swap writes, capped per sweep. Rollback is this flag.
+envelopeRewrap:
+  enabled: true

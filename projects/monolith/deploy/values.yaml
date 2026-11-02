@@ -161,8 +161,11 @@ knowledge:
     maxRunCostUsd: 2.0
     clarityRepairs:
       enabled: false
+    # Process feedback: open a bounded issue when a defect pattern repeats
+    # across audit runs (threshold, window and weekly cap below). The audit
+    # itself has run since 2026-10-16.
     issues:
-      enabled: false
+      enabled: true
       thresholdDefects: 5
       thresholdRuns: 3
       windowDays: 28
@@ -192,6 +195,11 @@ knowledge:
     # Hourly scout over the main diff since the last processed SHA (#5570).
     repoDiff:
       enabled: true
+      # Backfill authoritative raws for ranges first ingested from placeholder
+      # evidence. Idempotent: covered ranges are filtered, so a later pass
+      # writes nothing and makes no source calls.
+      reconcile:
+        enabled: true
     # Demand-driven verification of docfix PRs against main; comments only
     # while docFixAutoMerge is off.
     docFixReview:
