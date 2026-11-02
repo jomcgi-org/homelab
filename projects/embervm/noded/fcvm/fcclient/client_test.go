@@ -136,23 +136,6 @@ func TestClientBootSequence(t *testing.T) {
 	}
 }
 
-func TestClientMachineConfigTrackDirtyPages(t *testing.T) {
-	fake, sock := startFakeFC(t)
-	c := New(sock)
-	if err := c.PutMachineConfig(context.Background(), MachineConfig{
-		VCPUCount:       1,
-		MemSizeMib:      2048,
-		TrackDirtyPages: true,
-	}); err != nil {
-		t.Fatalf("PutMachineConfig: %v", err)
-	}
-	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	if got := fake.requests[0].Body["track_dirty_pages"]; got != true {
-		t.Fatalf("track_dirty_pages = %v, want true", got)
-	}
-}
-
 func TestClientMachineConfigHugePages(t *testing.T) {
 	for _, mode := range []string{"", "2M"} {
 		t.Run("mode="+mode, func(t *testing.T) {

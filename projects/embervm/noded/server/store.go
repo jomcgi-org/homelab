@@ -468,15 +468,10 @@ func (s *Server) StartStoreLoops(ctx context.Context) {
 	s.StartStoreLoopsWithExportContext(ctx, ctx)
 }
 
-// DrainExportContext returns the context the export workers run under. When
-// outliveSignal is false it returns signalCtx unchanged (the old behaviour).
-// When true it returns a context that keeps signalCtx's values but not its
-// cancellation, cancelled only by the returned func, which the daemon defers
-// until after the drain has finished.
-func DrainExportContext(signalCtx context.Context, outliveSignal bool) (context.Context, context.CancelFunc) {
-	if !outliveSignal {
-		return signalCtx, func() {}
-	}
+// DrainExportContext returns the context the export workers run under: it
+// keeps signalCtx's values but not its cancellation, and is cancelled only by
+// the returned func, which the daemon defers until after the drain has finished.
+func DrainExportContext(signalCtx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithCancel(context.WithoutCancel(signalCtx))
 }
 
@@ -939,12 +934,7 @@ func (s *Server) restoreDataKey(raw []byte, ref *nodev1.ArtifactRef, generation 
 	if err == nil {
 		return key, nil
 	}
-	if s.cfg.RequireRestoreCapability {
-		return nil, status.Errorf(codes.PermissionDenied, "noded: restore capability check failed: %v", err)
-	}
-	s.logger.Warn("noded: restore capability check failed while enforcement is inert",
-		"artifact", artifactPrefix(ref, s.cfg.CpuVendor), "detail", err)
-	return nil, status.Errorf(codes.FailedPrecondition, "noded: %v: restore capability check failed: %v", store.ErrKeyRequired, err)
+	return nil, status.Errorf(codes.PermissionDenied, "noded: restore capability check failed: %v", err)
 }
 
 func (s *Server) exportWithKeys(ctx context.Context, ref *nodev1.ArtifactRef, prefix, localDir string, files []string, generation uint64, fingerprintOut ...*string) (int64, bool, error) {
@@ -952,7 +942,7 @@ func (s *Server) exportWithKeys(ctx context.Context, ref *nodev1.ArtifactRef, pr
 	if len(fingerprintOut) > 0 {
 		opts.ContentFingerprint = fingerprintOut[0]
 	}
-	if s.cfg.StoreEncrypt && isPrincipalKind(ref.GetKind()) {
+	if isPrincipalKind(ref.GetKind()) {
 		opts.Kind = artifactKindStr(ref.GetKind())
 		opts.Workload = ref.GetWorkload()
 		opts.Ref = ref.GetRef()
