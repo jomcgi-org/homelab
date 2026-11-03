@@ -752,6 +752,8 @@ def test_grant_session_provenance_must_belong_to_campaign(session, client):
 
 def test_query_viewpoint_tampering_never_changes_player_authority(session, client):
     seed = _seed_table(session, client)
+    seed.chunk.book_id = "system-reference-doc-5-1"
+    session.commit()
     player = _auth(PLAYER_EMAIL)
     base = f"/api/grimoire/campaigns/{seed.campaign_a['id']}"
 

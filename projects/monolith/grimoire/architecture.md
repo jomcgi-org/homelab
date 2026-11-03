@@ -476,7 +476,7 @@ inserts all grants, appends one event per distinct PC with
 Failures roll back both grants and events.
 
 On the entity list, DM-only `not_granted_to` means "hide entities that PC
-already knows": exclude global entities and any grant scope using a
+already knows": exclude common-knowledge entities and any grant scope using a
 correlated grant alias in the shared visibility query. Knowledge search does
 not accept this filter. Authorization checks membership, DM role, then PC
 campaign membership, in that order. Live audience checks remain in #6610.

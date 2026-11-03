@@ -1961,7 +1961,9 @@ def preview_grants(
             raise HTTPException(status_code=404, detail="entity not found")
         detail_model = ENTITY_DETAIL_MODELS.get(entity.entity_type)
         detail = session.get(detail_model, entity.id) if detail_model else None
-        grant = KnowledgeGrant(campaign_id=campaign_id, **item.model_dump())
+        grant = knowledge_sources.preview_manual(
+            session, KnowledgeGrant(campaign_id=campaign_id, **item.model_dump())
+        )
         previews.append(
             {
                 "player_character_id": item.player_character_id,
@@ -2064,6 +2066,9 @@ def create_bulk_grants(
         if explicit is None or explicit.campaign_id != campaign_id:
             raise HTTPException(status_code=404, detail="session not found")
     validated: list[tuple[BulkGrantItem, str, str]] = []
+    for pc_id in sorted({item.player_character_id for item in body.grants}):
+        _get_character_in_campaign_or_404(session, campaign_id, pc_id)
+        knowledge_sources.lock_player(session, campaign_id, pc_id)
     for item in body.grants:
         _validate_reveal_id(
             item.player_character_id, "player character not found in this campaign"
@@ -2072,7 +2077,6 @@ def create_bulk_grants(
         character = _get_character_in_campaign_or_404(
             session, campaign_id, item.player_character_id
         )
-        knowledge_sources.lock_player(session, campaign_id, character.id)
         entity = session.get(Entity, item.entity_id)
         if entity is None or not entity_belongs_to_campaign(
             session, campaign_id, entity
@@ -2205,7 +2209,9 @@ def update_grant(
         raise HTTPException(status_code=404, detail="grant not found")
 
     knowledge_sources.lock_player(session, campaign_id, grant.player_character_id)
-    session.refresh(grant)
+    grant = session.get(KnowledgeGrant, grant_id, populate_existing=True)
+    if grant is None:
+        raise HTTPException(status_code=404, detail="grant not found")
     knowledge_sources.preserve_manual(session, grant)
 
     previous_scope = grant.grant_scope
@@ -2258,14 +2264,15 @@ def delete_grant(
 ) -> None:
     """Revoke a grant (the grant editor's "none" scope). Idempotent-ish: a
     missing grant is a 404, matching update_grant's not-found semantics. Removing
-    a grant on a non-global entity returns it to invisible for that character;
-    on a global entity it drops the character back to the default full view."""
+    a manual source preserves automatic sources and the common baseline."""
     member = _require_dm(session, campaign_id, email)
     grant = session.get(KnowledgeGrant, grant_id)
     if grant is None or grant.campaign_id != campaign_id:
         raise HTTPException(status_code=404, detail="grant not found")
     knowledge_sources.lock_player(session, campaign_id, grant.player_character_id)
-    session.refresh(grant)
+    grant = session.get(KnowledgeGrant, grant_id, populate_existing=True)
+    if grant is None:
+        raise HTTPException(status_code=404, detail="grant not found")
     _retract_grant_history(session, grant)
     survives = knowledge_sources.remove_manual(session, grant)
     current = _current_reveal_session(session, campaign_id)

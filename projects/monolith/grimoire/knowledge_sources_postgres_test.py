@@ -6,7 +6,7 @@ from threading import Event
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, text
+from sqlalchemy import text
 from sqlalchemy.pool import NullPool
 from sqlmodel import Session, create_engine, select
 
@@ -65,29 +65,8 @@ def lane(pg):
     try:
         yield engine, ids
     finally:
-        campaign_id, pc_id, version_id, entity_ids = ids
-        with engine.begin() as connection:
-            grant_ids = select(KnowledgeGrant.id).where(
-                KnowledgeGrant.campaign_id == campaign_id
-            )
-            connection.execute(
-                delete(KnowledgeContribution).where(
-                    KnowledgeContribution.grant_id.in_(grant_ids)
-                )
-            )
-            connection.execute(
-                delete(KnowledgeGrant).where(KnowledgeGrant.campaign_id == campaign_id)
-            )
-            connection.execute(
-                delete(CharacterSheetVersion).where(
-                    CharacterSheetVersion.id == version_id
-                )
-            )
-            connection.execute(
-                delete(PlayerCharacter).where(PlayerCharacter.id == pc_id)
-            )
-            connection.execute(delete(Campaign).where(Campaign.id == campaign_id))
-            connection.execute(delete(Entity).where(Entity.id.in_(entity_ids)))
+        # Approved history is immutable even to the fixture owner. The shared
+        # pg fixture destroys this disposable database after the test session.
         engine.dispose()
 
 

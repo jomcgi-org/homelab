@@ -148,6 +148,104 @@ def test_name_only_identity_card_excludes_reveal_text(harness):
     assert h.rows["reveal_name_only"].body["reveals"][0]["text"] not in response.text
 
 
+def test_adventure_current_scope_rechecks_feed_journal_and_source_routes(harness):
+    h = harness
+    h.prepare("play")
+    npc = h.rows["adventure_npc"]
+    base = f"/api/grimoire/campaigns/{h.rows['campaign'].id}"
+    session_path = f"{base}/sessions/{h.rows['campaign_session'].id}"
+    with TestClient(h.app()) as client:
+        created = client.post(
+            f"{base}/grants/bulk",
+            headers=h.headers("dm"),
+            json={
+                "grants": [
+                    {
+                        "entity_id": npc.id,
+                        "player_character_id": h.rows["character_a"].id,
+                        "grant_scope": "full",
+                    }
+                ]
+            },
+        )
+        assert created.status_code == 200, created.text
+        grant = h.session.get(KnowledgeGrant, created.json()[0]["id"])
+        # Deliberately leave the full reveal snapshot and embedding untouched.
+        for scope in ("full", "partial", "name_only", None):
+            if scope is None:
+                h.session.delete(grant)
+            else:
+                grant.grant_scope = scope
+                grant.revealed_details = (
+                    {"clue": "A merchant"} if scope == "partial" else None
+                )
+            h.session.commit()
+            for viewer in ROLES:
+                headers = h.headers(viewer)
+                response = client.get(f"{base}/entities/{npc.id}", headers=headers)
+                member = viewer not in ("outsider", "other_campaign")
+                known = viewer == "dm" or viewer == "player_a" and scope is not None
+                assert response.status_code == (200 if known else 404)
+                if viewer == "player_a" and scope == "name_only":
+                    assert set(response.json()) == {
+                        "id",
+                        "name",
+                        "entity_type",
+                        "recognition_only",
+                    }
+                for path in (
+                    f"{base}/entities?q=Gundren",
+                    f"{base}/knowledge/search?q=Gundren&k=50",
+                    f"{session_path}/events",
+                    f"{session_path}/journal",
+                ):
+                    response = client.get(path, headers=headers)
+                    assert response.status_code == (200 if member else 404), (
+                        response.text
+                    )
+                    if viewer != "dm" and not (
+                        viewer == "player_a" and scope == "full"
+                    ):
+                        assert (
+                            h.rows["adventure_detail"].description not in response.text
+                        )
+                    if not known:
+                        assert npc.name not in response.text
+                    assert (
+                        h.rows["adventure_chunk"].content not in response.text
+                        or viewer == "dm"
+                    )
+                chunk = client.get(
+                    f"/api/grimoire/chunks/{h.rows['adventure_chunk'].id}?campaign={h.rows['campaign'].id}",
+                    headers=headers,
+                )
+                assert chunk.status_code == (200 if viewer == "dm" else 404)
+                for path in (
+                    "/books",
+                    "/books/lost-mine-of-phandelver/read",
+                    f"/chunks/{h.rows['adventure_chunk'].id}/image",
+                ):
+                    response = client.get("/api/grimoire" + path, headers=headers)
+                    if viewer not in ("dm", "other_campaign"):
+                        assert response.status_code in (403, 404)
+            context = asyncio.run(
+                search.search_knowledge(
+                    h.session,
+                    FakeEmbedClient(),
+                    h.rows["campaign"].id,
+                    h.rows["character_a"].id,
+                    h.rows["member_player_a"],
+                    "Gundren",
+                    50,
+                    for_context=True,
+                )
+            )
+            rendered = str(context)
+            assert h.rows["adventure_chunk"].content not in rendered
+            if scope != "full":
+                assert h.rows["adventure_detail"].description not in rendered
+
+
 @pytest.mark.parametrize("grouped", (False, True))
 def test_name_only_feed_preserves_recognition_without_text(harness, grouped):
     h = harness

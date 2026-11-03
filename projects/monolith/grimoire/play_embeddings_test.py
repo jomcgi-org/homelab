@@ -148,6 +148,9 @@ def test_failed_note_route_commit_rolls_back_embedding(harness, monkeypatch):
 
 def test_grouped_reveal_revocation_invalidates_embedding_in_route_transaction(harness):
     h = harness
+    # These explicit clues need private sources, not the full common baseline.
+    for key in ("ancestry", "class"):
+        h.rows[key].source_book = "unclassified-adventure"
     h.prepare("play")
     with TestClient(h.app()) as client:
         response = client.post(
