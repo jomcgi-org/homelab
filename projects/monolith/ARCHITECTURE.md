@@ -1541,6 +1541,34 @@ tracks live acceptance; the legacy stylesheets leave the tree under #7160,
 the brutalist one once the Grimoire rehearsal clears its removal from the
 root error page.
 
+### UKV repository staging (#7525)
+
+`hikes/ukv.py` materializes the independent version-1 `summits.json` snapshot
+from bounded local UKV extracts. `sample_grid` samples a predecoded Scotland
+crop and converts explicit m/s wind/gust units to km/h. It preserves missing
+values, model run and valid-hour clocks, requested and sampled WGS84 points,
+and cloud-height reference separately from point elevation. No GRIB decoder
+or provider downloader is installed. Real provider adaptation and snapshot
+validation remain outstanding before controlled activation.
+
+`ukv.producerEnabled=false` in defaults and production/dev/recovery overlays
+omits `CronWorkflow/hikes-ukv-materialize`. The entrypoint command is
+`hikes-ukv-materialize`; `UKV_PRODUCER_ENABLED` must be exactly `true` before
+any input or storage work, including manual dispatch. The opt-in resource
+remains suspended, with a 300-second deadline and 512 MiB memory limit.
+An enabled command requires `UKV_SAMPLED_INPUT`, a bounded local JSON extract
+or `{grid, points}` input. No input is mounted by this delivery. Existing
+`hikes.materialize._s3_client` and stars bucket configuration are referenced
+only after validation and explicit enablement. There is no new secret.
+
+Real points remain `walk_start` until DoBIH-backed coverage ships separately.
+The `fixture` seam is unavailable in the runtime entrypoint and labels all
+synthetic summit output. The connector's independent consumption flag and
+the shared contract limits are documented in
+`projects/scotland-connector/ARCHITECTURE.md`. Operational acceptance stays
+on #7525, including both verified rollouts, disabled-state inspection,
+controlled activation, real snapshot validation and DoBIH summit coverage.
+
 ## 9. Observability and health
 
 `/healthz` is process liveness. `/api/health` executes a database query and all

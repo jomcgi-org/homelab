@@ -1,6 +1,9 @@
 {{- if not .Values.config.r2Endpoint }}
 {{- fail "config.r2Endpoint is required" }}
 {{- end }}
+{{- if not (kindIs "bool" .Values.config.ukvEnabled) }}
+{{- fail "config.ukvEnabled must be a boolean" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -79,6 +82,10 @@ spec:
               value: {{ .Values.config.walksKey | quote }}
             - name: AURORA_ENABLED
               value: {{ .Values.config.auroraEnabled | quote }}
+            - name: UKV_CONSUMER_ENABLED
+              value: {{ .Values.config.ukvEnabled | quote }}
+            - name: UKV_SUMMITS_KEY
+              value: {{ .Values.config.summitsKey | quote }}
             - name: STARS_AURORA_KEY
               value: {{ .Values.config.auroraKey | quote }}
             - name: REFRESH_INTERVAL

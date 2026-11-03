@@ -1,3 +1,7 @@
+# Repository-only UKV delivery. Activation and real provider validation remain separate.
+ukv:
+  producerEnabled: false
+
 # Optional Kubernetes integrations. Disable all four for a DBOS-only recovery
 # lane; these grants are independent of leader singletons and database leases.
 rbac:
@@ -757,6 +761,22 @@ jobs:
           cpu: 250m
           memory: 512Mi
         limits:
+          memory: 512Mi
+    # Repository-only UKV staging. Independent execution switch remains off.
+    - name: hikes-ukv-materialize
+      ukv: true
+      args: ["hikes-ukv-materialize"]
+      schedule: "0 0 1 1 *"
+      suspend: true
+      s3: true
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 300
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
           memory: 512Mi
     - name: hikes-prune-windows
       replaces: hikes.prune_windows

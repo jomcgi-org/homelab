@@ -67,6 +67,35 @@ func TestAuroraActivationIsIndependentOfReadiness(t *testing.T) {
 	}
 }
 
+func TestUKVActivationIsIndependentAndStrict(t *testing.T) {
+	t.Setenv("R2_ENDPOINT", "https://storage.invalid")
+	t.Setenv("S3_ACCESS_KEY_ID", "fixture-key")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "fixture-secret")
+	t.Setenv("UKV_CONSUMER_ENABLED", "false")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a, err := newApp(cfg, log, &http.Client{})
+	if err != nil || a.summits != nil {
+		t.Fatal("disabled wiring", err)
+	}
+	t.Setenv("UKV_CONSUMER_ENABLED", "true")
+	cfg, err = loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err = newApp(cfg, log, &http.Client{})
+	if err != nil || a.summits == nil || a.summits.Current() != nil {
+		t.Fatal("enabled wiring", err)
+	}
+	t.Setenv("UKV_CONSUMER_ENABLED", "typo")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("invalid flag accepted")
+	}
+}
+
 // End to end through the real wiring: a fake R2 serves the fixture
 // snapshots, the store loads them, and both public surfaces answer.
 func TestAppServesFromR2Snapshots(t *testing.T) {

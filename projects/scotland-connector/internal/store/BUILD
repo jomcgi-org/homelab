@@ -12,6 +12,7 @@ go_library(
     srcs = [
         "aurora.go",
         "store.go",
+        "summits.go",
         "walks.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/scotland-connector/internal/store",
@@ -20,6 +21,7 @@ go_library(
         "//projects/scotland-connector/internal/aurora",
         "//projects/scotland-connector/internal/r2",
         "//projects/scotland-connector/internal/stars",
+        "//projects/scotland-connector/internal/summits",
         "//projects/scotland-connector/internal/walks",
     ],
 )
@@ -29,14 +31,16 @@ go_test(
     srcs = [
         "refresh_bench_test.go",
         "store_test.go",
+        "summits_test.go",
         "walks_test.go",
     ],
-    data = glob(["testdata/**"]),
+    data = glob(["testdata/**"]) + ["//projects/scotland-connector/internal/summits:snapshot_fixture"],
     embed = [":store"],
     embedsrcs = ["testdata/connector-sites.json"],
     deps = [
         "//projects/scotland-connector/internal/connector",
         "//projects/scotland-connector/internal/r2",
+        "//projects/scotland-connector/internal/summits",
         "//projects/scotland-connector/internal/verdict",
     ],
 )

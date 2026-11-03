@@ -521,3 +521,21 @@ py_test(
     env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
     deps = ["@pip//pyyaml"],
 )
+
+py_test(
+    name = "ukv_job_test",
+    srcs = ["ukv_job_test.py"],
+    data = [
+        ":docfix_review_test_data",
+        "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/deploy:gke_values",
+        "//projects/monolith/dev/deploy:deploy_values",
+        "//projects/monolith/dev/deploy:recovery_gke_values",
+        "@multitool//tools/helm",
+    ],
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)

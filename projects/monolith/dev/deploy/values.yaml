@@ -1,4 +1,7 @@
 # Dev overlay for the monolith chart.
+ukv:
+  producerEnabled: false
+
 #
 # This file is applied AFTER projects/monolith/deploy/values.yaml, so it is a
 # diff against production rather than a second configuration. Keep it that way.

@@ -465,7 +465,14 @@
           "attribution": { "type": "string" },
           "license": { "type": "string" },
           "url": { "type": "string" },
-          "use": { "type": "string" }
+          "use": { "type": "string" },
+          "fields": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Exact response field paths covered by this source's reuse terms."
+          },
+          "license_uri": { "type": "string", "format": "uri" },
+          "adaptation": { "type": "string" }
         }
       },
       "Meta": {
@@ -1068,6 +1075,105 @@
         },
         "additionalProperties": false
       },
+      "UKVHour": {
+        "type": "object",
+        "required": [
+          "valid_at",
+          "wind_kmh",
+          "gust_kmh",
+          "cloud_base_m",
+          "freezing_level_m_asl"
+        ],
+        "properties": {
+          "valid_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Whole UTC valid hour from the model run, without interpolation."
+          },
+          "wind_kmh": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 500
+          },
+          "gust_kmh": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 500
+          },
+          "cloud_base_m": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 20000,
+            "description": "Metres in the point's cloud_base_reference, never implicitly a summit elevation."
+          },
+          "freezing_level_m_asl": {
+            "type": ["number", "null"],
+            "minimum": -1000,
+            "maximum": 20000
+          }
+        }
+      },
+      "UKVPoint": {
+        "type": "object",
+        "required": [
+          "id",
+          "walk_id",
+          "kind",
+          "lat",
+          "lon",
+          "sample_lat",
+          "sample_lon",
+          "sampling",
+          "elevation_m_asl",
+          "orography_m_asl",
+          "cloud_base_reference",
+          "hours"
+        ],
+        "properties": {
+          "id": { "type": "string" },
+          "walk_id": { "type": "string" },
+          "kind": {
+            "enum": ["walk_start", "summit"],
+            "description": "Real samples remain walk_start until DoBIH coverage. Summit is exercised only by labelled synthetic fixtures in this staged delivery."
+          },
+          "lat": { "type": "number" },
+          "lon": { "type": "number" },
+          "sample_lat": { "type": "number" },
+          "sample_lon": { "type": "number" },
+          "sampling": { "const": "nearest_grid_point" },
+          "elevation_m_asl": {
+            "type": ["number", "null"],
+            "description": "Explicit point elevation in metres above mean sea level. Never route ascent."
+          },
+          "orography_m_asl": {
+            "type": ["number", "null"],
+            "description": "Model grid surface height, required to convert above-ground cloud base before comparing with point elevation."
+          },
+          "cloud_base_reference": {
+            "enum": ["mean_sea_level", "above_ground", "unknown"]
+          },
+          "hours": {
+            "type": "array",
+            "maxItems": 121,
+            "items": { "$ref": "#/components/schemas/UKVHour" }
+          }
+        }
+      },
+      "UKVSupport": {
+        "type": "object",
+        "required": ["status", "note"],
+        "description": "Staged optional support on the checked walk's slot only, absent when disabled. Sampled does not mean safe. Unsupported elevation, stale or missing values cannot establish summit safety. Plan and alternatives retain existing forecasts.",
+        "properties": {
+          "status": { "enum": ["sampled", "unavailable", "stale"] },
+          "note": { "type": "string" },
+          "run_at": { "type": "string", "format": "date-time" },
+          "points": {
+            "type": "array",
+            "maxItems": 8,
+            "items": { "$ref": "#/components/schemas/UKVPoint" }
+          }
+        }
+      },
       "OtherDay": {
         "type": "object",
         "required": ["date", "verdict", "why"],
@@ -1095,6 +1201,7 @@
               {
                 "type": "object",
                 "properties": {
+                  "ukv": { "$ref": "#/components/schemas/UKVSupport" },
                   "also_matched": {
                     "type": "array",
                     "items": { "type": "string" },

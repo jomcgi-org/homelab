@@ -28,6 +28,14 @@ from observability.merged_prs import MergedPR
 runner = CliRunner()
 
 
+def test_disabled_ukv_manual_dispatch_has_no_io(monkeypatch):
+    monkeypatch.delenv("UKV_PRODUCER_ENABLED", raising=False)
+    monkeypatch.setenv("UKV_SAMPLED_INPUT", "/must/not/read")
+    with mock.patch("builtins.open", side_effect=AssertionError("disabled input read")):
+        result = runner.invoke(jobs_main.app, ["hikes-ukv-materialize"])
+    assert result.exit_code == 0, result.exception
+
+
 def test_configure_logging_includes_trace_context():
     with mock.patch.object(jobs_main, "_configure_shared_logging") as configure:
         jobs_main.configure_logging()

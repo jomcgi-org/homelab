@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/stars"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/summits"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
 )
@@ -41,6 +42,7 @@ type OtherDay struct {
 // CheckWalk is a checked walk.
 type CheckWalk struct {
 	WalkOption
+	UKV *summits.Support `json:"ukv,omitempty"`
 	// AlsoMatched lists other walks walk_name matched, best first.
 	AlsoMatched []string `json:"also_matched,omitempty"`
 	// MatchNote says when walk_name matched several routes equally well, so
@@ -191,6 +193,24 @@ func (s *Service) checkWalk(ds *walks.Dataset, cp checkPlan, now time.Time, lim 
 	o, _ := walkOption(ds, w, cp.day, now, walkAsk{lim: lim, hours: true})
 	r.Verdict, r.Why = o.Verdict, o.Why
 	r.Walk = &CheckWalk{WalkOption: o, AlsoMatched: also, MatchNote: note}
+	if s.UKVEnabled {
+		var snapshot *summits.Snapshot
+		if s.SummitData != nil {
+			snapshot = s.SummitData.Current()
+		}
+		var start, end time.Time
+		if o.Slot != nil {
+			start, _ = time.Parse(time.RFC3339, o.Slot.Start)
+			end, _ = time.Parse(time.RFC3339, o.Slot.End)
+		}
+		support, hazard := snapshot.Assess(w.ID, w.Lat, w.Lon, start, end, now)
+		r.Walk.UKV = &support
+		if r.Verdict == verdict.Go && hazard != "" {
+			r.Verdict = verdict.Marginal
+			r.Why += " " + hazard + "."
+			r.Walk.Verdict, r.Walk.Why = r.Verdict, r.Why
+		}
+	}
 	sky := skyAt(cp.day, w.Lat, w.Lon)
 	r.Sky = &sky
 	today := walks.LocalDay(now)
@@ -398,6 +418,10 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 	meta.Notes = []string{noteVerdicts}
 	if wk != nil {
 		meta.Notes = append(meta.Notes, noteWalkStart)
+	}
+	if s.UKVEnabled && walk {
+		meta.Notes = append(meta.Notes, "Optional UKV support covers only the checked walk's returned slot. Alternatives and plan use existing walk-start forecasts. Missing UKV evidence never establishes safe summit conditions.")
+		meta.Sources = append(meta.Sources, ukvSources(res.Items)...)
 	}
 	// No ETag: check is a POST, which no cache keys on.
 	return &Envelope{Data: res, Meta: meta, Results: results}, nil

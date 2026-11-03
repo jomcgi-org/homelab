@@ -2,6 +2,7 @@
 # cluster, so there is no values-gke.yaml overlay.
 
 config:
+  ukvEnabled: false
   # Cloudflare R2 account endpoint, the one the monolith's stars-refresh job
   # writes stars/sites.json and stars/history-map.json to.
   r2Endpoint: https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com

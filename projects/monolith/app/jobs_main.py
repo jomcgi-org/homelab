@@ -1059,6 +1059,14 @@ def hikes_prune_windows() -> None:
     _run_job("hikes-prune-windows", "hikes.jobs", "prune_windows_handler")
 
 
+@app.command("hikes-ukv-materialize")
+def hikes_ukv_materialize() -> None:
+    """Staged local UKV extract materializer; disabled before any I/O."""
+    from hikes.ukv import materialize_sync
+
+    materialize_sync()
+
+
 @app.command("stars-prune-hours")
 def stars_prune_hours() -> None:
     """Prune stale stars live-hours rows (one-shot of stars.prune_hours)."""
