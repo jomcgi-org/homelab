@@ -8,6 +8,7 @@ app's import closure (app/main_public_imports_test.py).
 """
 
 import os
+from functools import lru_cache
 
 
 def path_style_client(endpoint: str):
@@ -29,3 +30,15 @@ def path_style_client(endpoint: str):
         region_name=os.environ.get("AWS_REGION", "us-east-1"),
         config=Config(s3={"addressing_style": "path"}),
     )
+
+
+@lru_cache(maxsize=4)
+def shared_client(endpoint: str):
+    """Return one process-wide client per endpoint, for request paths.
+
+    boto3 clients are thread-safe but costly to build: each holds loaders and
+    event handlers in reference cycles, so one per request added about 55 MiB
+    of resident memory under concurrent load before the cycle collector ran.
+    Credentials come from the pod environment, fixed for the process lifetime.
+    """
+    return path_style_client(endpoint)
