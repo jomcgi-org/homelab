@@ -1,9 +1,14 @@
 import { startPublicSnapshotPrewarm } from "./lib/server/public-snapshots.js";
-import { startPrivatePrewarm } from "./lib/private/backend-cache.js";
 
-export function init() {
+// The public build leaves out src/lib/private, so the private prewarm is
+// found by glob: an empty map there, a lazy import in the private build.
+const privateCache = import.meta.glob("./lib/private/backend-cache.js");
+
+export async function init() {
   startPublicSnapshotPrewarm();
-  startPrivatePrewarm();
+  for (const load of Object.values(privateCache)) {
+    (await load()).startPrivatePrewarm();
+  }
 }
 
 // SvelteKit server hook: negotiated response compression.

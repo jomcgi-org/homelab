@@ -142,11 +142,13 @@ def main():
                     """Open a sheet from the dock on a phone; no-op on desktop."""
                     if not phone:
                         return
-                    page.locator(f'.dock-key[aria-controls="panel-{key}"]').click()
+                    page.locator(f'[aria-controls="panel-{key}"]').click()
                     expect(page.locator(f"#panel-{key}")).to_have_class(
                         re.compile(r"\bopen\b")
                     )
-                    expect(page.locator(f"#close-{key}")).to_be_focused()
+                    # Ask opens to its question box; the rest to Done.
+                    target = "#panel-ask input" if key == "ask" else f"#close-{key}"
+                    expect(page.locator(target)).to_be_focused()
 
                 def close(how):
                     if not phone:
@@ -172,7 +174,7 @@ def main():
                     sheet("today")
                     # Behind an open sheet nothing takes focus or a tap.
                     contained = page.evaluate(
-                        """() => [...document.querySelectorAll('.dashboard .needs, .dashboard .pulse, .dashboard .dock')].every(el => el.inert)"""
+                        """() => [...document.querySelectorAll('.dashboard .needs, .dashboard .pulse, .dashboard .glance, .dashboard .dock')].every(el => el.inert)"""
                     )
                     assert contained, "content behind the open sheet is not inert"
                     root["sheetOpen"] = measure(page)["bodyOverflow"]
@@ -180,7 +182,7 @@ def main():
                     page.screenshot(path=str(args.output / f"{name}-sheet.png"))
                     close("back")
                     expect(
-                        page.locator('.dock-key[aria-controls="panel-today"]')
+                        page.locator('[aria-controls="panel-today"]')
                     ).to_be_focused()
                     sheet("tools")
                     close("escape")

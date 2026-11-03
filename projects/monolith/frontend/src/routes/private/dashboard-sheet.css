@@ -255,6 +255,7 @@
 .dashboard .grab-bar,
 .dashboard .grab .close,
 .dashboard .dock,
+.dashboard .glance,
 .dashboard .scrim {
   display: none;
 }
@@ -470,11 +471,12 @@
   .dashboard .content {
     height: 100%;
   }
+  /* One calm column: type and hairlines carry the structure, not boxes. */
   .dashboard .content {
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
-    padding: 0.9rem 1rem calc(4.25rem + env(safe-area-inset-bottom, 0px));
+    gap: 1.25rem;
+    padding: 1rem 1.25rem calc(4.5rem + env(safe-area-inset-bottom, 0px));
   }
   .dashboard .content > * + * {
     margin-top: 0;
@@ -484,81 +486,215 @@
   }
   .dashboard .masthead {
     align-items: baseline;
-    padding-right: 3.5rem;
+    padding: 0 2.75rem 0 0;
+    border: 0;
   }
   .dashboard .greeting {
-    font-size: 1.45rem;
+    font-size: 1.2rem;
+    letter-spacing: -0.01em;
   }
   .dashboard .masthead-date {
-    margin-top: 0.15rem;
-    font-size: 0.82rem;
+    margin-top: 0.1rem;
+    color: var(--ink-2);
+    font-size: 0.78rem;
   }
   .dashboard .clock {
     display: none;
   }
-  .dashboard .pulse .reading {
-    flex-basis: 100%;
-    min-height: 40px;
-    font-size: 0.8rem;
+  body:has(main.dashboard) .td.chrome .scheme {
+    border-color: transparent;
+    background: none;
   }
+
+  /* Readings: two quiet lines. */
+  .dashboard .pulse {
+    display: grid;
+    gap: 0.15rem;
+    border: 0;
+  }
+  .dashboard .pulse .reading,
   .dashboard .pulse .reading + .reading {
-    border-left: 0;
-    border-top: 1px solid var(--line);
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    font-size: 0.76rem;
   }
   .dashboard .pulse .reading a {
-    min-height: 40px;
+    min-height: 32px;
   }
-  /* As tall as what it holds, scrolling inside itself past that; the sheet
-     shows below it, not an empty box. */
+  .dashboard .pulse .reading:first-child {
+    min-height: 32px;
+  }
+
+  /* Needs you: a label, then rows on hairlines. As tall as what it holds,
+     scrolling inside itself past that. */
   .dashboard .needs {
     flex: 0 1 auto;
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
+    border: 0;
+    background: none;
   }
   .dashboard .needs > .ed-head {
     position: sticky;
     top: 0;
     z-index: 1;
+    padding: 0 0 0.4rem;
+    border: 0;
+    background: var(--sheet);
+    color: var(--ink-2);
+    font: 500 0.68rem var(--font-code);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .dashboard .needs .none {
+    padding: 0.5rem 0;
+    font-size: 0.85rem;
+  }
+  .dashboard .needs .answered {
+    padding: 0.4rem 0;
+    border: 0;
+  }
+  .dashboard .needs-list,
+  .dashboard .needs .queue {
+    border-top: 1px solid var(--line);
+  }
+  .dashboard .needs .decision + .needs-list,
+  .dashboard .needs .queue + .needs-list {
+    border-top: 1px solid var(--line);
+  }
+  .dashboard .need,
+  .dashboard .needs .queued {
+    min-height: 44px;
+    padding: 0.45rem 0;
+  }
+  .dashboard .need-title {
+    font-size: 0.86rem;
+  }
+  .dashboard .need-title.mono {
+    font-size: 0.8rem;
+  }
+  .dashboard .need-tag {
+    font-size: 0.68rem;
   }
 
-  /* The dock: four keys across the bottom, above the home indicator. */
+  /* The decision card, sized for a thumb, not a poster. */
+  .dashboard .needs .decision {
+    padding: 0 0 0.75rem;
+  }
+  .dashboard .decision .ref a {
+    min-height: 32px;
+  }
+  .dashboard .decision .title {
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--ink-2);
+  }
+  .dashboard .decision .question {
+    margin-top: 0.3rem;
+    font-size: 0.98rem;
+  }
+  .dashboard .decision summary {
+    min-height: 36px;
+    font-size: 0.72rem;
+  }
+  .dashboard .decision .answers {
+    gap: 0;
+    margin-top: 0.4rem;
+    border-top: 1px solid var(--line);
+  }
+  .dashboard .decision .answer {
+    min-height: 48px;
+    padding: 0.55rem 0 0.55rem 0.75rem;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-left: 2px solid transparent;
+    background: none;
+  }
+  .dashboard .decision .answer.recommended {
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-left: 2px solid var(--ink);
+  }
+  .dashboard .decision .label {
+    font-size: 0.9rem;
+  }
+  .dashboard .decision .effect {
+    font-size: 0.76rem;
+  }
+
+  /* Today and shipping: one line each, a label and what is in it. */
+  .dashboard .glance {
+    display: grid;
+    border-top: 1px solid var(--line);
+  }
+  .dashboard .glance-row {
+    display: grid;
+    grid-template-columns: 5.5rem minmax(0, 1fr);
+    align-items: center;
+    min-height: 44px;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    background: none;
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .dashboard .glance-label {
+    color: var(--ink-2);
+    font: 500 0.68rem var(--font-code);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .dashboard .glance-line {
+    overflow: hidden;
+    font-size: 0.86rem;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* The ask bar and Tools, in thumb reach above the home indicator. */
   .dashboard .dock {
     position: fixed;
     right: 0;
     bottom: 0;
     left: 0;
     z-index: 30;
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-    border-top: 1px solid var(--stroke);
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.5rem 1.25rem calc(0.5rem + env(safe-area-inset-bottom, 0px));
     background: var(--sheet);
   }
-  .dashboard .dock-key {
-    display: inline-flex;
+  .dashboard .ask-bar {
+    display: flex;
+    flex: 1;
     align-items: center;
-    justify-content: center;
-    gap: 0.4em;
-    min-height: 56px;
+    justify-content: space-between;
+    min-height: 44px;
+    padding: 0 0.9rem;
+    border: 1px solid var(--line);
+    background: none;
+    color: var(--ink-2);
+    font: inherit;
+    font-size: 0.88rem;
+    text-align: left;
+    cursor: text;
+    touch-action: manipulation;
+  }
+  .dashboard .dock-key {
+    min-height: 44px;
+    padding: 0 0.5rem;
     border: 0;
     background: none;
     color: var(--ink-2);
-    font: 500 0.8rem var(--font-code);
+    font: 500 0.76rem var(--font-code);
     cursor: pointer;
     touch-action: manipulation;
-  }
-  .dashboard .dock-key + .dock-key {
-    border-left: 1px solid var(--line);
-  }
-  .dashboard .dock-key.on {
-    color: var(--ink);
-    box-shadow: inset 0 2px 0 var(--accent-ink);
-  }
-  .dashboard .dock-key .num {
-    color: var(--ink);
-    font-size: 0.72rem;
   }
 
   /* Sheets. */
