@@ -100,6 +100,10 @@ def rehearse_adventure_knowledge(dm, a, b, output, report):
         assert "ADVENTURE_NPC_SECRET" not in payload
         assert "ADVENTURE_CHUNK_SECRET" not in payload
     assert "Gundren" not in state_text(b, "?q=Gundren")
+    expect(a.get_by_text("Gundren Rockseeker", exact=True).first).to_be_visible(
+        timeout=5000
+    )
+    expect(a.get_by_text("You recognize this name.", exact=True).first).to_be_visible()
     a.screenshot(path=str(output / "adventure-name-only.png"), full_page=True)
     token = next(
         cookie["value"]
@@ -124,6 +128,10 @@ def rehearse_adventure_knowledge(dm, a, b, output, report):
     for viewer in (a, b):
         assert "Gundren" not in state_text(viewer, "?q=Gundren")
         assert not viewer.request.get(viewer.url + f"/state?entity={npc['id']}").ok
+    expect(a.get_by_text("Gundren Rockseeker", exact=True)).to_have_count(
+        0, timeout=5000
+    )
+    a.screenshot(path=str(output / "adventure-retracted.png"), full_page=True)
     report["checks"].append(
         "Global adventure hidden from both players, name-only card for Elowen only, retraction removes access without source spoilers"
     )
@@ -319,9 +327,11 @@ def main():
             ).to_be_visible()
             assert "DM_ONLY_INNKEEPER_SECRET" not in drawer.inner_text()
             entity_id = next(
-                (row["body"].get("reveals", [row["body"]])[0])["entity_id"]
+                item["entity_id"]
                 for row in a.request.get(a.url + "/state").json()["events"]
-                if row["kind"] == "reveal"
+                if row["kind"] == "reveal" and row["body"]
+                for item in row["body"].get("reveals", [row["body"]])
+                if item.get("name") == "Mara, the innkeeper"
             )
             entity_page = a.url.rsplit("/", 1)[0] + "/entities/" + entity_id
             page_response = a.request.get(entity_page)
@@ -455,7 +465,7 @@ def main():
             sheet_roll = next(
                 row
                 for row in sheet_state["events"]
-                if row["body"].get("label") == "Strength save"
+                if (row["body"] or {}).get("label") == "Strength save"
             )
             approved_bonus = sheet_state["characters"][0]["approved"][
                 "saving_throw_bonuses"
@@ -486,7 +496,7 @@ def main():
             expect(a.get_by_text(public_label, exact=False)).to_be_visible(timeout=5000)
             rows = a.request.get(a.url + "/state").json()["events"]
             rolled = next(
-                row for row in rows if row["body"].get("label") == public_label
+                row for row in rows if (row["body"] or {}).get("label") == public_label
             )
             assert 5 <= rolled["body"]["total"] <= 15
             assert rolled["body"]["total"] == sum(rolled["body"]["kept"]) + 3
@@ -1424,7 +1434,7 @@ def main():
                 next(
                     row["body"]["modifier"]
                     for row in fresh_state["events"]
-                    if row["body"].get("label") == "Strength check"
+                    if (row["body"] or {}).get("label") == "Strength check"
                 )
                 == 2
             )

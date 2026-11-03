@@ -141,6 +141,11 @@ DM editor searches knowledge, filters previously granted entities, selects
 recipients and shares a name, selected detail or full knowledge. It also
 retracts grants, with a silent option. The rehearsal exercises the editor,
 retraction and sharing one entity with both players in a single transaction.
+The book-backed Gundren fixture starts hidden from both players. A name-only
+reveal gives Elowen an identity card without the adventure description or source
+text; Bram cannot discover it. Silent retraction hides the card and lookup again.
+Inspect `adventure-name-only.png` and `adventure-retracted.png`. The initial
+approved sheets also reconcile ancestry and class source contributions.
 The bulk API groups several entities for one character into one reveal event.
 The rehearsal seeds a two-entity batch through that API, inspects and pins the
 result through the player UI, then retracts one item through the DM editor.

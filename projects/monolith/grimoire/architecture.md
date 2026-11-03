@@ -25,7 +25,8 @@ chunks are readable by players. DM and public corpus contracts are separate.
 `knowledge_contribution` records independent manual and approved-sheet sources
 under the effective `knowledge_grant` row. The migration backfills every
 existing grant as manual without changing its scope, details or session.
-Effective scope is the maximum source scope; partial details are combined.
+Effective scope is the maximum source scope; revealed details remain attached
+to their independent sources and are combined in the effective cache.
 Sheet approval replaces the effective approved-sheet contribution for that PC,
 preserving manual sources. Ancestry and class resolve against allowlisted
 reference entities before approval creates grants. Only one-hop `SUBRACE_OF`
