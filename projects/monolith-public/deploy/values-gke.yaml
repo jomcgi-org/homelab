@@ -97,7 +97,7 @@ web:
     # outage until the pod reschedules, which is what happened at 12:03 on
     # 2026-09-15. Two replicas make that a degraded tier instead, and the PDB
     # (maxUnavailable 1) then keeps a drain to one pod at a time. Costs one
-    # permanently running 384Mi pod.
+    # permanently running 512Mi pod.
     minReplicas: 2
 
 frontend:
