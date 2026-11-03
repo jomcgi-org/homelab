@@ -264,11 +264,11 @@ The operation does not reclassify ambiguous PR references or renew old work.
 
 ### Claude quota probe diagnosis
 
-`factory_quota_probe_status` is a standing-operator read. It locates the latest
+`factory_diagnostics` kind `quota_probes` is a standing-operator read. It locates the latest
 Claude probe audit and session and pages every unresolved probe, including older
 ones. Pass `next_after_session_id` as `after_session_id` to continue. The global
 `unresolved_probe_present` flag is independent of that page. Use returned session
-and turn IDs with `factory_session_dispatch_diagnostics` for exact dispatch state.
+and turn IDs with kind `session_dispatch` for exact dispatch state.
 No prompt, result, credential or guest token is returned. Missing sessions or an
 empty page do not authorize retry, cancellation or release of a fence. This tool
 neither refreshes provider observations nor starts inference. The normal probe
@@ -332,10 +332,9 @@ refused model retained separately if truncated. No prompts or credentials appear
 
 ### Native registration and caller discovery
 
-`factory_status.control_catalog` reports five entries from the running native
+`factory_status.control_catalog` reports four entries from the running native
 FastMCP registry: `factory_configure_refill`, `factory_amend_policy`,
-`factory_reconcile_learning_execution`, `factory_reconcile_settled_retry` and
-`factory_continue_evidence`.
+`factory_reconcile` and `factory_continue_evidence`.
 Each includes registration, schema and description hashes, bounded argument
 names and offered operations/models. It is operator-only, read-only and reports
 `caller_visibility=not_observed`. It does not return the whole tool catalogue.
@@ -427,7 +426,7 @@ local regression fixtures, not claims of live continuation or activation.
 
 ### Inspecting historical cessation
 
-`factory_reconcile_settled_retry` previews or applies one exact receipt/session/
+`factory_reconcile` kind `settled_retry` previews or applies one exact receipt/session/
 permit recovery with the same stable request key. It covers only an empty first
 response receipt whose observer released ownership, followed by a settled
 uninvoked second dispatch. It does not accept the learning or quota-probe shapes.
@@ -447,7 +446,7 @@ This path shares the single-writer CP authority assumption below and does not
 claim that orphan workspace-upload RPCs ceased; those cannot dispatch work and
 the durable fence prevents their bytes from restoring the retired lineage.
 
-`factory_permit_diagnostics` projects `observation.recorded_cessation` from the
+`factory_diagnostics` kind `permits` projects `observation.recorded_cessation` from the
 saved supervisor audit: its identity hash, guest identity, generation, invocation
 timestamps, observation time, terminal state, cessation marker and response hash.
 Only those typed, bounded fields leave the query. The free-form evidence document
@@ -462,7 +461,7 @@ supervision. The stored identity hash covered the pre-settlement state; it is
 not a signature or a recomputable hash of the now-settled permit.
 
 Historical settlement and a current recovery preview answer different questions.
-`factory_reconcile_learning_execution` requires fresh positive authority evidence
+`factory_reconcile` kind `learning_execution` requires fresh positive authority evidence
 for the exact guest, generation and invocation in both preview and apply. When
 the ordinary guest read returns a typed 404/410, it may read EmberVM's bounded
 `cessation-evidence` projection. Permission failures and timeouts do not select
