@@ -316,15 +316,18 @@ web:
   # CPU request is sized so the HPA's per-container CPU utilization is a
   # meaningful signal (idle is ~1m). No CPU limit: let it burst (the HPA scales
   # out on sustained CPU rather than throttling).
-  # Memory request == limit (was 160/384) per the sizing convention: req<limit
-  # risks an overcommit OOM-kill below the limit under node memory pressure. 384
-  # is ~1.6x the historical 7-day working-set peak of 238Mi.
+  # Memory request == limit per the sizing convention: req<limit risks an
+  # overcommit OOM-kill below the limit under node memory pressure. 384 (1.6x a
+  # 238Mi peak measured before public chat, grimoire and FaaS joined this tier)
+  # OOMKilled after 15h of light traffic on 2026-11-03; the app idles near
+  # 130Mi, so that was growth over time. 512 is a stopgap until the
+  # k8s-metrics working set shows the climb and its cause.
   resources:
     requests:
       cpu: 100m
-      memory: 384Mi
+      memory: 512Mi
     limits:
-      memory: 384Mi
+      memory: 512Mi
   service:
     type: ClusterIP
     port: 8000
