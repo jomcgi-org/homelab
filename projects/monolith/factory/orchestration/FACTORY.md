@@ -216,7 +216,7 @@ The deadline-release implementation stays hard-staged off, and agent workloads h
 
 ### Supervised cessation
 
-`factory_reconcile_settled_retry` is an explicit standing-operator recovery for
+`factory_reconcile` kind `settled_retry` is an explicit standing-operator recovery for
 one missing first-dispatch response followed by a proven uninvoked second
 dispatch. Preview binds the receipt, session, permit, released observer, terminal
 workflow and exact CP dispatch. Apply records intent before requesting a durable
@@ -314,11 +314,11 @@ Refine, investigate and planner artifacts carry a typed `gate` when a missing pa
 
 ### Settled learning execution
 
-`factory_reconcile_learning_execution` lets a standing operator preview and acknowledge one exact `factory-retro-daily` execution after a fresh positive control-plane cessation read; missing remote records never prove.
+`factory_reconcile` kind `learning_execution` lets a standing operator preview and acknowledge one exact `factory-retro-daily` execution after a fresh positive control-plane cessation read; missing remote records never prove.
 
 ### Settled quota-probe reconciliation
 
-`factory_reconcile_quota_probe` gives standing operators an exact preview and apply for a failed Claude probe whose permit supervision proved no guest delivery. It appends a resolution audit and never rewrites the unknown turn, permit or accounting.
+`factory_reconcile` kind `quota_probe` gives standing operators an exact preview and apply for a failed Claude probe whose permit supervision proved no guest delivery. It appends a resolution audit and never rewrites the unknown turn, permit or accounting.
 
 ## Factory evolution follows delivery authority
 

@@ -765,8 +765,7 @@ async def _control_catalog() -> dict:
     for name in (
         "factory_configure_refill",
         "factory_amend_policy",
-        "factory_reconcile_learning_execution",
-        "factory_reconcile_settled_retry",
+        "factory_reconcile",
         "factory_continue_evidence",
     ):
         tool = await mcp.get_tool(name)
@@ -2028,7 +2027,7 @@ async def factory_find_routine_permits(
     """Locate permits by exact routine job name as a standing human operator.
 
     Follow next_offset for older attempts, then inspect exact returned IDs with
-    factory_permit_diagnostics. Does not contact guests or authorize recovery.
+    factory_diagnostics kind permits. Does not contact guests or authorize recovery.
     Empty results do not prove non-dispatch. No payloads or results are returned.
     """
     refusal = _refuse(current_principal())
@@ -2042,27 +2041,74 @@ async def factory_find_routine_permits(
 
 
 @mcp.tool
-async def factory_permit_diagnostics(
+async def factory_diagnostics(
+    kind: Literal["permits", "session_dispatch", "raw_extraction", "quota_probes"],
     permit_ids: Annotated[
         list[Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)]],
         Field(min_length=1, max_length=20),
-    ],
+    ]
+    | None = None,
+    session_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)] | None = None,
+    seq: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)] | None = None,
+    job_name: Annotated[
+        str, Field(pattern=r"^kg:[0-9a-f]{64}$", min_length=67, max_length=67)
+    ]
+    | None = None,
+    after_session_id: Annotated[MCPInteger, Field(ge=0)] = 0,
+    limit: Annotated[MCPInteger, Field(ge=1, le=50)] = 20,
 ) -> dict:
-    """Read exact permit, session, lease and supervision refusal metadata.
+    """Read bounded factory execution metadata as a standing human operator.
 
-    Requires a standing human operator. Supply up to twenty distinct permit IDs.
-    Returns persisted metadata without prompts, results, payloads or credentials.
-    Does not contact guests, reconcile permits, rearm jobs or authorize recovery.
-    Recorded cessation fields are historical supervisor observations, not
-    independent verification. Missing or old observations and hashes alone
-    do not prove current cessation or authorize recovery.
+    Every kind only reads. None contacts guests, retries, reconciles, changes
+    reservations, schedules work or authorizes recovery. No prompts, results,
+    payloads, raw content or credentials are returned. Missing records and old
+    observations never prove nonexecution or authorize retry or recovery.
+
+    permits takes up to twenty distinct permit_ids and returns permit, session,
+    lease and supervision refusal metadata. Recorded cessation fields are
+    historical supervisor observations, not independent verification.
+
+    session_dispatch takes session_id and seq and returns the turn's queue and
+    dispatch metadata, including pending messages before a turn or permit
+    exists: bounded claim, capacity, fence and linked permit metadata.
+
+    raw_extraction takes one job_name (kg: plus 64 hex) and returns up to five
+    permit attempts plus counts and timestamps for up to 1000 current-version
+    provenance rows. Provenance is not attributed to an attempt.
+
+    quota_probes shows the latest Claude quota probe start and a page of all
+    blocking probe session fences, older sessions included. Page with
+    after_session_id and limit, following next_after_session_id. It does not
+    refresh provider quota, invoke a model or clear fences.
     """
     refusal = _refuse(current_principal())
     if refusal is not None:
         return refusal
-    from factory.execution.admission_diagnostics import inspect_permits
+    from factory.execution import admission_diagnostics
 
-    return await asyncio.to_thread(inspect_permits, permit_ids)
+    if kind == "permits":
+        if not permit_ids:
+            return {"ok": False, "reason": "permits_requires_permit_ids"}
+        return await asyncio.to_thread(
+            admission_diagnostics.inspect_permits, permit_ids
+        )
+    if kind == "session_dispatch":
+        if session_id is None or seq is None:
+            return {"ok": False, "reason": "session_dispatch_requires_session_and_seq"}
+        return await asyncio.to_thread(
+            admission_diagnostics.inspect_session_turn, session_id, seq
+        )
+    if kind == "raw_extraction":
+        if job_name is None:
+            return {"ok": False, "reason": "raw_extraction_requires_job_name"}
+        return await asyncio.to_thread(
+            admission_diagnostics.inspect_raw_extraction, job_name
+        )
+    from factory.quota_probe import probe_status
+
+    return await asyncio.to_thread(
+        probe_status, after_session_id=after_session_id, limit=limit
+    )
 
 
 @mcp.tool
@@ -2173,26 +2219,6 @@ async def factory_prepare_validation(
     return await asyncio.to_thread(prepare)
 
 
-@mcp.tool
-async def factory_session_dispatch_diagnostics(
-    session_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
-    seq: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
-) -> dict:
-    """Read exact session-turn queue and dispatch metadata as a human operator.
-
-    Covers pending messages before a turn or permit exists. Returns bounded
-    claim, capacity, fence and linked permit metadata without prompts, results
-    or credentials. Does not contact guests, retry, reconcile or change state.
-    Missing records and old observations never authorize retry or recovery.
-    """
-    refusal = _refuse(current_principal())
-    if refusal is not None:
-        return refusal
-    from factory.execution.admission_diagnostics import inspect_session_turn
-
-    return await asyncio.to_thread(inspect_session_turn, session_id, seq)
-
-
 def _refinement_delivery(
     operation, receipt_id, reason, actor, request_key=None, digest=None
 ):
@@ -2257,51 +2283,6 @@ async def factory_refinement_delivery(
         principal.subject,
         request_key,
         expected_preview_sha256,
-    )
-
-
-@mcp.tool
-async def factory_raw_extraction_diagnostics(
-    job_name: Annotated[
-        str, Field(pattern=r"^kg:[0-9a-f]{64}$", min_length=67, max_length=67)
-    ],
-) -> dict:
-    """Read bounded outcome metadata for one exact raw extraction job.
-
-    Requires a standing human operator. Returns up to five permit attempts and
-    counts/timestamps for up to 1000 current-version provenance rows. No raw
-    content, results, error text or credentials. Does not contact guests,
-    change reservations, schedule work or authorize recovery. Missing evidence
-    does not establish nonexecution. Provenance is not attributed to an attempt.
-    """
-    refusal = _refuse(current_principal())
-    if refusal is not None:
-        return refusal
-    from factory.execution.admission_diagnostics import inspect_raw_extraction
-
-    return await asyncio.to_thread(inspect_raw_extraction, job_name)
-
-
-@mcp.tool
-async def factory_quota_probe_status(
-    after_session_id: Annotated[MCPInteger, Field(ge=0)] = 0,
-    limit: Annotated[MCPInteger, Field(ge=1, le=50)] = 20,
-) -> dict:
-    """Read Claude quota probe identity and unresolved session fences as an operator.
-
-    Shows the latest recorded start and a bounded page of all blocking probes,
-    including older sessions. Follow next_after_session_id for more blockers.
-    Session and turn IDs can be inspected with session dispatch diagnostics.
-    No prompts, results, credentials or guest tokens are returned. This does
-    not refresh provider quota, invoke a model, clear fences or authorize retry.
-    """
-    refusal = _refuse(current_principal())
-    if refusal is not None:
-        return refusal
-    from factory.quota_probe import probe_status
-
-    return await asyncio.to_thread(
-        probe_status, after_session_id=after_session_id, limit=limit
     )
 
 
@@ -2412,38 +2393,102 @@ async def factory_backlog_intake(
 
 
 @mcp.tool
-async def factory_reconcile_quota_probe(
+async def factory_reconcile(
+    kind: Literal["quota_probe", "settled_retry", "learning_execution"],
     operation: Literal["preview", "apply"],
     session_id: Annotated[MCPInteger, Field(ge=1)],
-    seq: Annotated[MCPInteger, Field(ge=1)],
     permit_id: Annotated[MCPInteger, Field(ge=1)],
     reason: Annotated[str, Field(min_length=1, max_length=4000)],
-    request_key: str | None = None,
+    seq: Annotated[MCPInteger, Field(ge=1)] | None = None,
+    receipt_id: Annotated[MCPInteger, Field(ge=1)] | None = None,
+    request_key: Annotated[str, Field(min_length=1, max_length=128)] | None = None,
     expected_preview_sha256: str | None = None,
 ) -> dict:
-    """Resolve one settled undelivered Claude quota probe as a standing operator.
+    """Reconcile one exact settled factory attempt as a standing operator.
 
-    Preview first, then apply identical identity and reason with its digest and
-    a stable request key. Rechecks no binding, delivery, pending work or changed
-    settlement under lock. Records separate audited resolution while preserving
-    the unknown turn and accounting. Does not dispatch or refresh quota itself.
-    Only the normal bounded probe can provide a fresh provider observation.
+    Preview first, then apply identical arguments with the preview digest and
+    a stable request key. Each kind rechecks state under lock and leaves the
+    unknown turn, its accounting and unrelated holds unchanged. None dispatches,
+    retries directly, infers a result, deletes guests or refreshes quota.
+    Replay identical arguments after an uncertain apply response.
+
+    quota_probe takes session_id, seq and permit_id for one settled undelivered
+    Claude quota probe. It rechecks no binding, delivery, pending work or
+    changed settlement and records a separate audited resolution. Only the
+    normal bounded probe can provide a fresh provider observation.
+
+    settled_retry takes receipt_id, session_id, permit_id and a request_key in
+    both phases for one unknown first dispatch plus a proven uninvoked retry.
+    The private control plane must prove positive cessation, complete
+    journal/successor coverage and durably exclude restoring this exact
+    lineage. Only then can the exact factory run/start fail with reserved
+    unknown cost. Existing factory policy decides continuation.
+
+    learning_execution takes session_id, seq and permit_id to acknowledge one
+    ceased factory-retro-daily attempt. Both phases read fresh positive
+    cessation authority and recheck ownership. A pruned guest needs complete
+    retained journal and successor/restore proof. Missing records alone never
+    qualify. Only the hourly learning cadence guard may disregard this exact
+    attempt. Its failed session and execution fences remain. It does not
+    rearm, change cadence, enable refill or clear any other hold.
     """
     principal = current_principal()
     refusal = _refuse(principal)
     if refusal is not None:
         return refusal
-    from factory import probe_reconciliation
+    if kind == "settled_retry":
+        if receipt_id is None or not request_key:
+            return {
+                "ok": False,
+                "reason": "settled_retry_requires_receipt_and_request_key",
+            }
+        from factory import settled_retry_reconciliation
+        from factory.execution.transport import EmberVMTransportError
 
+        try:
+            return await settled_retry_reconciliation.run(
+                operation,
+                principal.subject,
+                receipt_id,
+                session_id,
+                permit_id,
+                reason,
+                request_key,
+                expected_preview_sha256,
+            )
+        except (ValueError, EmberVMTransportError) as exc:
+            return {"ok": False, "reason": str(exc)}
+    if seq is None:
+        return {"ok": False, "reason": f"{kind}_requires_seq"}
     try:
-        if operation == "preview":
+        if kind == "quota_probe":
+            from factory import probe_reconciliation
+
+            if operation == "preview":
+                return await asyncio.to_thread(
+                    probe_reconciliation.preview, session_id, seq, permit_id, reason
+                )
+            if not request_key or not expected_preview_sha256:
+                return {"ok": False, "reason": "probe_preview_required"}
             return await asyncio.to_thread(
-                probe_reconciliation.preview, session_id, seq, permit_id, reason
+                probe_reconciliation.apply,
+                principal.subject,
+                session_id,
+                seq,
+                permit_id,
+                reason,
+                request_key,
+                expected_preview_sha256,
+            )
+        from factory import learning_reconciliation
+
+        if operation == "preview":
+            return await learning_reconciliation.preview(
+                session_id, seq, permit_id, reason
             )
         if not request_key or not expected_preview_sha256:
-            return {"ok": False, "reason": "probe_preview_required"}
-        return await asyncio.to_thread(
-            probe_reconciliation.apply,
+            return {"ok": False, "reason": "learning_preview_required"}
+        return await learning_reconciliation.apply(
             principal.subject,
             session_id,
             seq,
@@ -2514,97 +2559,6 @@ async def factory_configure_refill(
             expected_preview_sha256,
             reset_breaker=reset_breaker,
             min_new_issues=min_new_issues,
-        )
-    except ValueError as exc:
-        return {"ok": False, "reason": str(exc)}
-
-
-@mcp.tool
-async def factory_reconcile_settled_retry(
-    operation: Literal["preview", "apply"],
-    receipt_id: Annotated[MCPInteger, Field(ge=1)],
-    session_id: Annotated[MCPInteger, Field(ge=1)],
-    permit_id: Annotated[MCPInteger, Field(ge=1)],
-    reason: Annotated[str, Field(min_length=1, max_length=4000)],
-    request_key: Annotated[str, Field(min_length=1, max_length=128)],
-    expected_preview_sha256: str | None = None,
-) -> dict:
-    """Reconcile one unknown first dispatch plus a proven uninvoked retry.
-
-    Standing operators preview the exact receipt/session/permit and stable key.
-    Apply the reviewed digest with identical arguments. The private control
-    plane must prove positive cessation, complete journal/successor coverage,
-    and durably exclude restoring this exact lineage. Only then can the exact
-    factory run/start fail with reserved unknown cost. Historical native results,
-    turn, permit accounting and unrelated holds stay unchanged. No inference,
-    guest deletion, quota change or direct retry. Existing factory policy decides
-    continuation. Replay identical apply after an uncertain fence response.
-    """
-    principal = current_principal()
-    refusal = _refuse(principal)
-    if refusal is not None:
-        return refusal
-    from factory import settled_retry_reconciliation
-    from factory.execution.transport import EmberVMTransportError
-
-    try:
-        return await settled_retry_reconciliation.run(
-            operation,
-            principal.subject,
-            receipt_id,
-            session_id,
-            permit_id,
-            reason,
-            request_key,
-            expected_preview_sha256,
-        )
-    except (ValueError, EmberVMTransportError) as exc:
-        return {"ok": False, "reason": str(exc)}
-
-
-@mcp.tool
-async def factory_reconcile_learning_execution(
-    operation: Literal["preview", "apply"],
-    session_id: Annotated[MCPInteger, Field(ge=1)],
-    seq: Annotated[MCPInteger, Field(ge=1)],
-    permit_id: Annotated[MCPInteger, Field(ge=1)],
-    reason: Annotated[str, Field(min_length=1, max_length=4000)],
-    request_key: str | None = None,
-    expected_preview_sha256: str | None = None,
-) -> dict:
-    """Acknowledge one ceased factory-retro-daily attempt as a standing operator.
-
-    Preview exact session, turn and permit identity. Apply the reviewed digest
-    with identical arguments and a stable request key. Both phases read fresh
-    positive cessation authority and recheck current ownership under lock. A
-    pruned guest needs complete retained journal and successor/restore proof.
-    Missing records alone never qualify. Only the
-    hourly learning cadence guard may disregard this exact historical attempt.
-    Its unknown outcome, failed session and execution fences remain unchanged.
-    Does not dispatch, retry, rearm, change cadence, enable refill or clear any
-    other hold. Replay identical arguments after an uncertain apply response.
-    """
-    principal = current_principal()
-    refusal = _refuse(principal)
-    if refusal is not None:
-        return refusal
-    from factory import learning_reconciliation
-
-    try:
-        if operation == "preview":
-            return await learning_reconciliation.preview(
-                session_id, seq, permit_id, reason
-            )
-        if not request_key or not expected_preview_sha256:
-            return {"ok": False, "reason": "learning_preview_required"}
-        return await learning_reconciliation.apply(
-            principal.subject,
-            session_id,
-            seq,
-            permit_id,
-            reason,
-            request_key,
-            expected_preview_sha256,
         )
     except ValueError as exc:
         return {"ok": False, "reason": str(exc)}
