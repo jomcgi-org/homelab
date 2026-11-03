@@ -2059,10 +2059,12 @@ async def factory_diagnostics(
 ) -> dict:
     """Read bounded factory execution metadata as a standing human operator.
 
-    Every kind only reads. None contacts guests, retries, reconciles, changes
-    reservations, schedules work or authorizes recovery. No prompts, results,
-    payloads, raw content or credentials are returned. Missing records and old
-    observations never prove nonexecution or authorize retry or recovery.
+    Every kind only reads. None contacts guests, retries, reconciles, rearms
+    jobs, changes reservations, schedules work or authorizes recovery. No
+    prompts, results, payloads, raw content, error text, credentials or guest
+    tokens are returned. Missing records, old observations and hashes alone
+    never prove nonexecution or current cessation, or authorize retry or
+    recovery.
 
     permits takes up to twenty distinct permit_ids and returns permit, session,
     lease and supervision refusal metadata. Recorded cessation fields are
@@ -2401,15 +2403,16 @@ async def factory_reconcile(
     reason: Annotated[str, Field(min_length=1, max_length=4000)],
     seq: Annotated[MCPInteger, Field(ge=1)] | None = None,
     receipt_id: Annotated[MCPInteger, Field(ge=1)] | None = None,
-    request_key: Annotated[str, Field(min_length=1, max_length=128)] | None = None,
+    request_key: Annotated[str, Field(min_length=1, max_length=256)] | None = None,
     expected_preview_sha256: str | None = None,
 ) -> dict:
     """Reconcile one exact settled factory attempt as a standing operator.
 
     Preview first, then apply identical arguments with the preview digest and
     a stable request key. Each kind rechecks state under lock and leaves the
-    unknown turn, its accounting and unrelated holds unchanged. None dispatches,
-    retries directly, infers a result, deletes guests or refreshes quota.
+    unknown turn, its accounting, historical native results and unrelated holds
+    unchanged. None dispatches, retries directly, infers a result, deletes
+    guests, changes or refreshes quota.
     Replay identical arguments after an uncertain apply response.
 
     quota_probe takes session_id, seq and permit_id for one settled undelivered
@@ -2417,8 +2420,8 @@ async def factory_reconcile(
     changed settlement and records a separate audited resolution. Only the
     normal bounded probe can provide a fresh provider observation.
 
-    settled_retry takes receipt_id, session_id, permit_id and a request_key in
-    both phases for one unknown first dispatch plus a proven uninvoked retry.
+    settled_retry takes receipt_id, session_id, permit_id and a request_key of
+    at most 128 characters in both phases for one unknown first dispatch plus a proven uninvoked retry.
     The private control plane must prove positive cessation, complete
     journal/successor coverage and durably exclude restoring this exact
     lineage. Only then can the exact factory run/start fail with reserved
@@ -2437,7 +2440,7 @@ async def factory_reconcile(
     if refusal is not None:
         return refusal
     if kind == "settled_retry":
-        if receipt_id is None or not request_key:
+        if receipt_id is None or not request_key or len(request_key) > 128:
             return {
                 "ok": False,
                 "reason": "settled_retry_requires_receipt_and_request_key",

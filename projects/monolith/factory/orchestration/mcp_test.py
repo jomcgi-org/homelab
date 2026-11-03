@@ -3286,6 +3286,11 @@ def test_diagnostics_kind_requires_its_selector_before_read(
             {"receipt_id": 1047},
             "settled_retry_requires_receipt_and_request_key",
         ),
+        (
+            "settled_retry",
+            {"receipt_id": 1047, "request_key": "k" * 129},
+            "settled_retry_requires_receipt_and_request_key",
+        ),
     ],
 )
 def test_reconcile_kind_requires_its_identity_before_owner(
