@@ -135,9 +135,11 @@ def check(root, output, expected_sha):
                             normal_text = text
                         assert text == normal_text, "static paths lost content"
 
-                        # The footer uses text cells, not the sheet's link cells.
-                        # Check their real paint and the figure joins in every
-                        # viewport, scheme and script/motion mode before capture.
+                        # The footer is text, not the sheet's links, in the
+                        # same spaced row under one rule: no cell padding, no
+                        # divider. Check its real paint and the figure joins in
+                        # every viewport, scheme and script/motion mode before
+                        # capture.
                         layout = page.evaluate("""() => {
                             const style = el => getComputedStyle(el);
                             const figures = [...document.querySelectorAll('.agent-phase .prose > .fig')];
@@ -147,8 +149,9 @@ def check(root, output, expected_sha):
                                     padding: ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft'].map(key => parseFloat(style(el)[key])),
                                     divider: style(el).borderRightWidth,
                                     dividerStyle: style(el).borderRightStyle,
-                                    dividerColor: style(el).borderRightColor,
-                                    frameColor: style(el.parentElement).borderTopColor
+                                    gap: parseFloat(style(el.parentElement).columnGap),
+                                    frameRule: style(el.parentElement).borderTopWidth,
+                                    frameStyle: style(el.parentElement).borderTopStyle
                                 })),
                                 figureCounter: style(document.querySelector('.agent-sheet .editions')).counterReset,
                                 panelCounters: [...document.querySelectorAll('.agent-phase .prose')].map(el => style(el).counterReset),
@@ -161,10 +164,12 @@ def check(root, output, expected_sha):
                         }""")
                         assert len(layout["footerCells"]) == 2, layout
                         for cell in layout["footerCells"]:
-                            assert all(value > 0 for value in cell["padding"]), layout
-                            assert cell["divider"] == "1px", layout
-                            assert cell["dividerStyle"] == "solid", layout
-                            assert cell["dividerColor"] == cell["frameColor"], layout
+                            assert all(value == 0 for value in cell["padding"]), layout
+                            assert cell["divider"] == "0px", layout
+                            assert cell["dividerStyle"] == "none", layout
+                            assert cell["gap"] > 0, layout
+                            assert cell["frameRule"] == "1px", layout
+                            assert cell["frameStyle"] == "solid", layout
                         assert layout["figureCounter"] == "fig 0", layout
                         assert layout["panelCounters"] == ["none"] * 5, layout
                         assert len(layout["figureJoins"]) == 6, layout
