@@ -34,10 +34,10 @@ from grimoire.play_embeddings import (
     event_text,
     play_embedding_predicate,
 )
+from grimoire.reveals import current_reveal_body
 from grimoire.visibility import (
-    COMMON_KNOWLEDGE_BOOK_IDS,
     Viewer,
-    campaign_player_predicate,
+    can_read_book,
     project_entity,
     visible_entities_query,
 )
@@ -103,15 +103,10 @@ def _resolve_chunk_hit(
     viewer: Viewer,
 ) -> dict[str, Any] | None:
     """Recheck the current source; entity grants never grant book text."""
-    chunk = session.get(KnowledgeChunk, chunk_id)
+    chunk = session.get(KnowledgeChunk, chunk_id, populate_existing=True)
     if chunk is None:
         return None
-    if viewer != "dm" and (
-        chunk.book_id not in COMMON_KNOWLEDGE_BOOK_IDS
-        or not session.exec(
-            select(campaign_player_predicate(campaign_id, viewer))
-        ).one()
-    ):
+    if not can_read_book(session, campaign_id, viewer, chunk.book_id):
         return None
     # Resolve the book's display name so the omnibox can title chunk hits with a
     # human name (and link into the reader) instead of showing the raw book_id.
@@ -149,7 +144,9 @@ def _resolve_entity_hit(
     module to wire the endpoint, so importing back would be circular).
     """
     rows = session.exec(
-        visible_entities_query(campaign_id, viewer).where(Entity.id == entity_id)
+        visible_entities_query(campaign_id, viewer)
+        .where(Entity.id == entity_id)
+        .execution_options(populate_existing=True)
     ).all()
     if not rows:
         return None
@@ -258,7 +255,7 @@ def _resolve_knowledge_hits(
                     "source": {"fact_id": fact.id},
                 }
         elif kind in ("event", "transcript"):
-            event = session.get(SessionEvent, source_id)
+            event = session.get(SessionEvent, source_id, populate_existing=True)
             if (
                 event is not None
                 and event.campaign_id == campaign_id
@@ -271,6 +268,9 @@ def _resolve_knowledge_hits(
                 # and journal projections, so a raw speaker UUID never reaches
                 # a preview.
                 body = event.body
+                if viewer != "dm" and event.kind == "reveal":
+                    body = current_reveal_body(session, campaign_id, viewer, body)
+                    event = event.model_copy(update={"body": body})
                 if viewer != "dm" and body and isinstance(body.get("speaker_key"), str):
                     body = {
                         **body,

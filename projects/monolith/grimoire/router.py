@@ -118,7 +118,7 @@ from grimoire.play_embeddings import (
     sync_fact_embeddings,
     sync_note_embeddings,
 )
-from grimoire.reveals import reveal_items
+from grimoire.reveals import current_reveal_body, reveal_items
 from grimoire.search import search_knowledge
 from grimoire.session_events import (
     EventRequestConflictError,
@@ -697,7 +697,7 @@ def create_note(
         if event is None or event.retracted_at is not None:
             raise HTTPException(404, detail="event not found")
         visible = _visible_handout_entities(session, campaign_id, viewer, [event])
-        projection = _event_view(event, member, visible).body
+        projection = _event_view(event, member, visible, session=session).body
         if not projection or projection.get("retracted"):
             raise HTTPException(404, detail="event not found")
         body.markdown = _event_note_markdown(projection, event.kind)
@@ -2367,14 +2367,10 @@ def list_entities(
     knowledge/router.py.
 
     DM-only ``not_granted_to`` means "hide entities that PC already knows",
-    including global entities and grants of any scope, behind the play flag.
+    including common knowledge and grants of any scope, behind the play flag.
 
-    The projection (DM grant-aggregation, player grant-filtering, name_only
-    suppression) has to run in Python before the page is known, so the full
-    visible set is materialised and then sliced by ``cursor``/``limit``. At v1
-    corpus scale (hundreds of entities) this stays cheap; keyset pagination
-    would have to reconcile the DM view's one-row-per-grant fan-out and is not
-    worth it yet.
+    Distinct visible entity IDs are counted and paginated in SQL before
+    hydrating the bounded page and aggregating its grant annotations.
     """
     member = _get_member_or_404(session, campaign_id, email)
     _authorize_reveal_filter(session, campaign_id, member, not_granted_to)
@@ -2435,10 +2431,7 @@ def get_entity(
 ) -> dict[str, Any]:
     """Single entity, scope-projected, with typed detail hydrated.
 
-    Existence must not leak past the grant predicate: both a non-visible
-    entity and a name_only grant return a plain 404 (project_entity()
-    returns None for name_only in lookup context, so both cases collapse to
-    the same check below).
+    Unknown entities return 404. A name-only grant returns an identity card.
     """
     member = _get_member_or_404(session, campaign_id, email)
     viewer = _viewer_for_member(session, campaign_id, member)
@@ -2473,14 +2466,33 @@ def get_entity(
 # thin.
 
 
-@router.get("/books")
+def _require_corpus_dm(
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> None:
+    """Unscoped private corpus inspection belongs to DMs, never entity grantees."""
+    user = _request_user(session, email)
+    if (
+        user is None
+        or session.exec(
+            select(CampaignMember.id).where(
+                CampaignMember.app_user_id == user.id,
+                CampaignMember.role == "dm",
+            )
+        ).first()
+        is None
+    ):
+        raise HTTPException(403, detail="DM corpus access required")
+
+
+@router.get("/books", dependencies=[Depends(_require_corpus_dm)])
 def list_books(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
     """Per-book coverage rows for the Library (counts, extraction progress,
     entity yield, timestamps). See library.list_books."""
     return library.list_books(session)
 
 
-@router.get("/books/{book_id}/sections")
+@router.get("/books/{book_id}/sections", dependencies=[Depends(_require_corpus_dm)])
 def list_book_sections(
     book_id: str, session: Session = Depends(get_session)
 ) -> list[dict[str, Any]]:
@@ -2488,7 +2500,7 @@ def list_book_sections(
     return library.list_sections(session, book_id)
 
 
-@router.get("/books/{book_id}/read")
+@router.get("/books/{book_id}/read", dependencies=[Depends(_require_corpus_dm)])
 def read_book(
     book_id: str,
     cursor: str | None = Query(default=None),
@@ -2552,7 +2564,7 @@ def _stream_s3_image(
     )
 
 
-@router.get("/chunks/{chunk_id}/image")
+@router.get("/chunks/{chunk_id}/image", dependencies=[Depends(_require_corpus_dm)])
 def get_chunk_image(
     chunk_id: str, session: Session = Depends(get_session)
 ) -> StreamingResponse:
@@ -3071,6 +3083,8 @@ def _event_view(
     row: SessionEvent,
     member: CampaignMember,
     handout_entities: Collection[str] = frozenset(),
+    *,
+    session: Session | None = None,
 ) -> SessionEventView:
     """Project retractions and avoid exposing other members' administrative ids.
 
@@ -3079,6 +3093,10 @@ def _event_view(
     """
     dm = member.role == "dm"
     body = row.body if dm or row.retracted_at is None else None
+    if not dm and body and row.kind == "reveal" and session is not None:
+        body = current_reveal_body(
+            session, row.campaign_id, member.player_character_id, body
+        )
     if not dm and body and ("reveals" in body or row.kind == "reveal"):
         items = [
             {
@@ -3404,6 +3422,14 @@ def _journal_events(session, campaign_id, session_ids, viewer, member, view):
     for row in rows:
         counts[row.session_id] = counts.get(row.session_id, 0) + 1
         if counts[row.session_id] <= JOURNAL_EVENTS_PER_SESSION:
+            if viewer != "dm" and row.kind == "reveal":
+                row = row.model_copy(
+                    update={
+                        "body": current_reveal_body(
+                            session, campaign_id, viewer, row.body
+                        )
+                    }
+                )
             events.append(row)
     truncated = {
         session_id: counts.get(session_id, 0) > JOURNAL_EVENTS_PER_SESSION
@@ -3691,7 +3717,7 @@ def list_session_events(
         if viewer == "dm"
         else _visible_handout_entities(session, campaign_id, viewer, rows)
     )
-    return [_event_view(row, member, visible) for row in rows]
+    return [_event_view(row, member, visible, session=session) for row in rows]
 
 
 def _require_handout_dm(

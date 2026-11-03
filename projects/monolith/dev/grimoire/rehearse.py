@@ -72,6 +72,63 @@ def state_text(page, query=""):
     return response.text()
 
 
+def rehearse_adventure_knowledge(dm, a, b, output, report):
+    """A global adventure stays hidden until a scoped reveal, then retracts."""
+    state = dm.request.get(dm.url + "/state").json()
+    pc_id = next(
+        pc["id"] for pc in state["characters"] if pc["character_name"] == "Elowen"
+    )
+    npc = dm.request.get(dm.url + "/state?q=Gundren").json()["items"][0]
+    for viewer in (a, b):
+        assert "Gundren" not in state_text(viewer, "?q=Gundren")
+        assert not viewer.request.get(viewer.url + f"/state?entity={npc['id']}").ok
+    open_reveal(dm)
+    dm.get_by_label("Find knowledge").fill("Gundren")
+    dm.get_by_role("button", name="Search knowledge", exact=True).click()
+    dm.get_by_role("button", name="Gundren Rockseeker npc", exact=True).click()
+    dm.get_by_label("Elowen", exact=True).check()
+    dm.get_by_label("Knowledge scope").select_option("name_only")
+    dm.get_by_role("button", name="Preview knowledge", exact=True).click()
+    dm.get_by_role("button", name="Share knowledge", exact=True).click()
+    expect(dm.get_by_text("Knowledge shared.", exact=True)).to_be_visible()
+    close_reveal(dm)
+    card = a.request.get(a.url + f"/state?entity={npc['id']}")
+    assert card.ok and card.json()["recognition_only"] is True
+    assert "description" not in card.json() and "source_book" not in card.json()
+    for viewer in (a, b):
+        payload = state_text(viewer)
+        assert "ADVENTURE_NPC_SECRET" not in payload
+        assert "ADVENTURE_CHUNK_SECRET" not in payload
+    assert "Gundren" not in state_text(b, "?q=Gundren")
+    a.screenshot(path=str(output / "adventure-name-only.png"), full_page=True)
+    token = next(
+        cookie["value"]
+        for cookie in dm.context.cookies()
+        if cookie["name"] == "grimoire-id-token"
+    )
+    grants = dm.request.get(
+        f"http://friends.localhost:8177/api/grimoire/campaigns/{state['campaign']['id']}/grants",
+        headers={"x-grimoire-token": token},
+    )
+    assert grants.ok
+    grant = next(
+        item
+        for item in grants.json()
+        if item["entity_id"] == npc["id"] and item["player_character_id"] == pc_id
+    )
+    revoked = dm.request.post(
+        dm.url + "/state",
+        data={"operation": "revoke", "grantId": grant["id"], "silent": True},
+    )
+    assert revoked.ok
+    for viewer in (a, b):
+        assert "Gundren" not in state_text(viewer, "?q=Gundren")
+        assert not viewer.request.get(viewer.url + f"/state?entity={npc['id']}").ok
+    report["checks"].append(
+        "Global adventure hidden from both players, name-only card for Elowen only, retraction removes access without source spoilers"
+    )
+
+
 def open_campaign_players(page, article):
     # The lobby's controlled details can be reset during hydration. Wait until
     # navigation has settled, then open it only if it is currently closed.
@@ -148,6 +205,7 @@ def main():
                     path=str(args.output / f"{role}-empty-feed.png"), full_page=True
                 )
             stamp = str(time.time_ns())
+            rehearse_adventure_knowledge(dm, a, b, args.output, report)
             scene = f"A stranger leaves a sealed letter at your table. ({stamp})"
             dm.get_by_label("Set the scene", exact=True).fill(scene)
             dm.get_by_label("Send to").select_option("table")

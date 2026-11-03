@@ -189,7 +189,7 @@ capture into it. This delivery does not capture audio.
 ## Visibility and public access
 
 Private DM routes can read the complete corpus. Player-scoped reads centralize
-the `is_global OR granted-to-player` rule and apply the grant scope when
+the `common-knowledge OR granted-to-player` rule and apply the grant scope when
 projecting details. Public corpus routes are read-only. Full text and page
 images fail closed unless the book is explicitly classified as open-licensed;
 copyrighted books expose only derived entities, graph structure, and bounded

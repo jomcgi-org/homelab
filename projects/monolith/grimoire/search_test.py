@@ -110,7 +110,12 @@ def seed_scenario(session: Session) -> Seed:
     session.refresh(game_session)
     seed.alice_email = alice_user.email
 
-    creature = Entity(entity_type="creature", name="Umbrasyl", is_global=True)
+    creature = Entity(
+        entity_type="creature",
+        name="Umbrasyl",
+        is_global=True,
+        source_book="system-reference-doc-5-1",
+    )
     session.add(creature)
     session.commit()
     session.refresh(creature)
@@ -169,13 +174,13 @@ def seed_scenario(session: Session) -> Seed:
     session.commit()
 
     chunk1 = KnowledgeChunk(
-        book_id="phb",
+        book_id="system-reference-doc-5-1",
         chunk_ref="phb-c1",
         content="A" * 250,
         section_path="Chapter 1 > Intro",
     )
     chunk2 = KnowledgeChunk(
-        book_id="phb",
+        book_id="system-reference-doc-5-1",
         chunk_ref="phb-c2",
         content="a much shorter chunk",
         section_path=None,
@@ -287,14 +292,14 @@ class TestSearchKnowledgeCorpus:
         hit = body[0]
         assert hit["kind"] == "chunk"
         assert hit["id"] == seed.chunk1.id
-        assert hit["book_id"] == "phb"
+        assert hit["book_id"] == "system-reference-doc-5-1"
         # No grimoire.book row for "phb" in this fixture, so display_name falls
         # back to the book_id (the loader would have upserted a real name).
-        assert hit["display_name"] == "phb"
+        assert hit["display_name"] == "system-reference-doc-5-1"
         assert hit["section_path"] == "Chapter 1 > Intro"
         assert len(hit["preview"]) == 200
 
-    def test_name_only_entity_dropped_for_player(self, session, monkeypatch):
+    def test_name_only_entity_is_identity_card_for_player(self, session, monkeypatch):
         seed = seed_scenario(session)
         _patch_knn(monkeypatch, [(_embedding("entity", seed.spell.id), 0.1)])
         r = asyncio.run(
@@ -308,7 +313,9 @@ class TestSearchKnowledgeCorpus:
                 10,
             )
         )
-        assert r == []
+        assert len(r) == 1
+        assert r[0]["recognition_only"] is True
+        assert "source_book" not in r[0]
 
     def test_ungranted_entity_dropped_for_player(self, session, monkeypatch):
         seed = seed_scenario(session)
