@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.pool import NullPool
 from sqlmodel import Session, create_engine, select
+from shared.testing.plugin import _find_migrations_dir
 
 from grimoire import knowledge_sources
 from grimoire.models import (
@@ -171,5 +172,49 @@ def test_source_table_has_no_public_role_privileges(pg):
                 ).scalar_one()
                 == 0
             )
+    finally:
+        engine.dispose()
+
+
+def test_migration_backfills_manual_scope_details_and_session_without_deletion(pg):
+    engine = create_engine(pg.url)
+    schema = f"source_backfill_{uuid4().hex}"
+    migration = (
+        (_find_migrations_dir() / "20261103120000_grimoire_knowledge_sources.sql")
+        .read_text()
+        .replace("grimoire.", f"{schema}.")
+    )
+    try:
+        with engine.connect() as connection:
+            transaction = connection.begin()
+            try:
+                connection.exec_driver_sql(f"CREATE SCHEMA {schema}")
+                connection.exec_driver_sql(
+                    f"CREATE TABLE {schema}.knowledge_grant (id UUID PRIMARY KEY, grant_scope TEXT NOT NULL, revealed_details JSONB, granted_in_session UUID)"
+                )
+                connection.exec_driver_sql(
+                    f"CREATE TABLE {schema}.character_sheet_version (id UUID PRIMARY KEY)"
+                )
+                connection.exec_driver_sql(
+                    f"INSERT INTO {schema}.knowledge_grant SELECT gen_random_uuid(), scope, '{{\"clue\": \"existing manual\"}}'::jsonb, gen_random_uuid() FROM unnest(ARRAY['name_only', 'partial', 'full']) scope"
+                )
+                before = connection.exec_driver_sql(
+                    f"SELECT * FROM {schema}.knowledge_grant ORDER BY id"
+                ).all()
+                connection.exec_driver_sql(migration)
+                assert (
+                    connection.exec_driver_sql(
+                        f"SELECT * FROM {schema}.knowledge_grant ORDER BY id"
+                    ).all()
+                    == before
+                )
+                assert (
+                    connection.exec_driver_sql(
+                        f"SELECT grant_id, grant_scope, revealed_details, granted_in_session FROM {schema}.knowledge_contribution WHERE source_key = 'manual' AND source_sheet_version_id IS NULL ORDER BY grant_id"
+                    ).all()
+                    == before
+                )
+            finally:
+                transaction.rollback()
     finally:
         engine.dispose()
