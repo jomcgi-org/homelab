@@ -2174,9 +2174,9 @@ request that reached the application.
 
 **Why bounded permit diagnostics.** Unknown execution retains admission capacity
 until exact cessation evidence is reconciled. The operator-only
-`factory_diagnostics` `permits` read accepts at most twenty exact permit IDs and
-projects reservation, session, pending-claim, DBOS status, routine lease and
-stored supervision refusal metadata, bounded dispatch ownership and up to five
+`factory_diagnostics` kind `permits` read accepts at most twenty exact permit
+IDs and projects reservation, session, pending-claim, DBOS status, routine
+lease and stored supervision refusal metadata, bounded dispatch ownership and up to five
 result-receipt metadata rows. Receipt presence is not validity or adoption proof.
 It excludes prompts, results, payloads,
 credentials and raw evidence. Observation timestamps describe persisted evidence,
