@@ -73,31 +73,61 @@
   color: var(--ok);
   font-size: 0.88rem;
 }
-.dashboard .needs .decision + .spec,
-.dashboard .needs .decision + .none {
+.dashboard .needs .decision + .needs-list,
+.dashboard .needs .decision + .none,
+.dashboard .needs .queue + .needs-list {
   border-top: 1px solid var(--stroke);
 }
-.dashboard .needs .spec {
-  border-top: 0;
+/* Anything else red: one line each, mark, name, what it is. The whole row
+   is the target: a failing PR opens the PR, a workload asks the cluster. */
+.dashboard .needs-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
-.dashboard .needs .need {
+.dashboard .needs-list li + li {
+  border-top: 1px solid var(--line);
+}
+.dashboard .need {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  min-height: 48px;
+  padding: 0.55rem 1rem;
+  border: 0;
+  background: none;
   color: var(--ink);
-  font-weight: 600;
+  font: inherit;
+  text-align: left;
   text-decoration: none;
-  overflow-wrap: anywhere;
+  cursor: pointer;
 }
-.dashboard .needs a.need {
-  color: var(--accent-ink);
+.dashboard .need:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
 }
-.dashboard .needs a.need:hover {
-  text-decoration: underline;
-  text-underline-offset: 0.18em;
+.dashboard .need-mark {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  background: var(--tone-disk);
 }
-.dashboard .need-detail {
-  display: block;
-  margin-top: 0.2em;
+.dashboard .need-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.92rem;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.dashboard .need-title.mono {
+  font: 500 0.86rem var(--font-code);
+}
+.dashboard .need-tag {
+  flex: none;
   color: var(--ink-2);
-  font-size: 0.85rem;
+  font: 0.72rem var(--font-code);
 }
 
 /* The readings strip: cluster, then factory. One cell each, the dot its
@@ -426,6 +456,10 @@
   body:has(main.dashboard) .td.chrome .trail-slot {
     display: none;
   }
+  /* An open sheet dims everything behind it, the scheme switch included. */
+  body:has(main.dashboard.sheet-open) .td.chrome {
+    z-index: 0;
+  }
   .dashboard.sheet {
     height: 100dvh;
     padding: 0;
@@ -474,8 +508,10 @@
   .dashboard .pulse .reading a {
     min-height: 40px;
   }
+  /* As tall as what it holds, scrolling inside itself past that; the sheet
+     shows below it, not an empty box. */
   .dashboard .needs {
-    flex: 1;
+    flex: 0 1 auto;
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -521,11 +557,8 @@
     box-shadow: inset 0 2px 0 var(--accent-ink);
   }
   .dashboard .dock-key .num {
-    padding: 0 0.35em;
-    border: 1px solid var(--stroke);
     color: var(--ink);
     font-size: 0.72rem;
-    line-height: 1.4;
   }
 
   /* Sheets. */

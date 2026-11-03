@@ -14,6 +14,13 @@ const full = {
 };
 
 describe("mergeRead", () => {
+  it("carries whether a board read is on its way from this refresh only", () => {
+    const first = mergeRead({}, { factory: null, factory_pending: true });
+    expect(first.read.factory_pending).toBe(true);
+    const next = mergeRead(first.read, { factory: { ok: true } }, first.misses);
+    expect(next.read).not.toHaveProperty("factory_pending");
+  });
+
   it("replaces the sections a refresh brings", () => {
     const next = { ...full, health: { healthy: false, unhealthy: {} } };
     const { read, misses } = mergeRead(full, next);

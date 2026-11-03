@@ -48,7 +48,12 @@ describe("loadDashboard", () => {
       "/api/agents/factory": () => new Promise(() => {}),
     });
     const { dashboard } = await loadDashboard("http://b", { cache });
-    expect(dashboard).toEqual({ ...home, factory: null });
+    // The board is on its way: "reading", not "unavailable".
+    expect(dashboard).toEqual({
+      ...home,
+      factory: null,
+      factory_pending: true,
+    });
   });
 
   it("is null only when neither source has a reading", async () => {
@@ -72,6 +77,26 @@ describe("loadDashboard", () => {
     await loadDashboard("http://b", { cache });
     await tick();
     const { dashboard } = await loadDashboard("http://b", { cache });
-    expect(dashboard).toEqual({ ...home, factory: null });
+    expect(dashboard).toEqual({
+      ...home,
+      factory: null,
+      factory_pending: false,
+    });
+  });
+
+  it("says how old the held board is", async () => {
+    let clock = 1_000;
+    const fetchImpl = vi.fn(async (url) =>
+      url.endsWith("/api/agents/factory")
+        ? jsonResponse(board)
+        : jsonResponse(home),
+    );
+    const cache = createBackendCache({ fetchImpl, now: () => clock });
+    await loadDashboard("http://b", { cache });
+    await tick();
+    clock += 90_000;
+    const { dashboard } = await loadDashboard("http://b", { cache });
+    expect(dashboard.factory.readAgoMs).toBe(90_000);
+    expect(dashboard.factory_pending).toBe(false);
   });
 });

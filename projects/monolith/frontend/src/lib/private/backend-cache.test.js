@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createBackendCache } from "./backend-cache.js";
+import { createBackendCache, startPrivatePrewarm } from "./backend-cache.js";
 
 const ok = (body) => ({ ok: true, json: async () => body });
 const down = () => ({ ok: false, json: async () => ({}) });
@@ -99,5 +99,63 @@ describe("createBackendCache", () => {
     await tick();
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(await cache.read("k", "/k")).toEqual({ v: 2 });
+  });
+
+  it("reports the held value's age and an in-flight read", async () => {
+    const c = clock();
+    let resolve;
+    const fetchImpl = vi.fn(
+      () => new Promise((r) => (resolve = () => r(ok({ v: 1 })))),
+    );
+    const cache = createBackendCache({ fetchImpl, now: c.now });
+    expect(cache.status("k")).toEqual({ ageMs: null, pending: false });
+    await cache.read("k", "/k");
+    expect(cache.status("k")).toEqual({ ageMs: null, pending: true });
+    resolve();
+    await tick();
+    c.advance(5000);
+    expect(cache.status("k")).toEqual({ ageMs: 5000, pending: false });
+  });
+});
+
+describe("startPrivatePrewarm", () => {
+  it("does nothing unless enabled with an API base", () => {
+    const fetchImpl = vi.fn();
+    const cache = createBackendCache({ fetchImpl });
+    expect(
+      startPrivatePrewarm({ enabled: false, apiBase: "http://b", cache }),
+    ).toBeNull();
+    expect(
+      startPrivatePrewarm({ enabled: true, apiBase: "", cache }),
+    ).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("reads the board and home at once and on each tick", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn(async () => ok({ v: 1 }));
+      let t = 0;
+      const cache = createBackendCache({ fetchImpl, now: () => t });
+      const timer = startPrivatePrewarm({
+        enabled: true,
+        apiBase: "http://b",
+        everyMs: 1000,
+        cache,
+      });
+      const urls = () => fetchImpl.mock.calls.map(([url]) => url).sort();
+      expect(urls()).toEqual([
+        "http://b/api/agents/factory",
+        "http://b/api/home/dashboard",
+      ]);
+      // Let the first reads land before the clock moves on.
+      await vi.advanceTimersByTimeAsync(10);
+      t += 120_000;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetchImpl).toHaveBeenCalledTimes(4);
+      clearInterval(timer);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

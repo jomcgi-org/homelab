@@ -198,13 +198,42 @@ test("puts a red PR and an unhealthy workload on the list, after decisions", asy
   expect(headings()[0]).toBe("Needs you 4");
   expect(document.querySelectorAll(".needs .decision")).toHaveLength(1);
   expect(document.querySelectorAll(".needs .queued")).toHaveLength(1);
-  const kinds = [...document.querySelectorAll(".needs-list dt")].map(
+  const tags = [...document.querySelectorAll(".needs-list .need-tag")].map(
     (node) => node.textContent,
   );
-  expect(kinds).toEqual(["unhealthy", "ci failed"]);
-  const ci = [...document.querySelectorAll(".needs-list a")].at(-1);
+  expect(tags).toEqual(["pod · ask", "ci failed ↗"]);
+  const ci = [...document.querySelectorAll(".needs-list a.need")].at(-1);
   expect(ci.getAttribute("href")).toBe("https://example.test/pull/90001");
   expect(ci.getAttribute("target")).toBe("_blank");
+});
+test("an unhealthy workload asks the cluster why, in the Ask sheet", async () => {
+  const data = fixtureData("dashboard");
+  data.dashboard.health = {
+    healthy: false,
+    scanned: 42,
+    unhealthy: { pods: [{ namespace: "synthetic", name: "pending-pod" }] },
+  };
+  await render("populated", data);
+  expect(document.querySelector(".pulse").textContent).toMatch(
+    /1 unhealthy\s+· 41 healthy/,
+  );
+  document.querySelector("button.need").click();
+  await settle();
+  expect(document.querySelector("#panel-ask input").value).toBe(
+    "Why is the pod synthetic/pending-pod unhealthy, and what would fix it?",
+  );
+});
+test("a board on its way reads as reading, and nothing else waiting", async () => {
+  const data = fixtureData("dashboard", "attention");
+  data.dashboard.health = { healthy: true, scanned: 42 };
+  data.dashboard.github.open_prs = [];
+  await render("attention", data);
+  expect(document.querySelector(".pulse").textContent).toContain(
+    "factory reading…",
+  );
+  expect(document.querySelector(".needs .none").textContent).toContain(
+    "Reading the factory board",
+  );
 });
 test("loads the dashboard typeface outside the bundled fixture font", async () => {
   await render();
@@ -326,6 +355,34 @@ test("updates at 60 seconds, ages out a dead backend and cleans up", async () =>
   await vi.advanceTimersByTimeAsync(120000);
   expect(fetch).toHaveBeenCalledTimes(4);
   expect(vi.getTimerCount()).toBe(0);
+});
+test("asks again within seconds while the board is on its way", async () => {
+  vi.useFakeTimers();
+  const pending = fixtureData("dashboard", "attention").dashboard;
+  const arrived = {
+    ...fixtureData("dashboard").dashboard,
+    factory_pending: false,
+  };
+  const fetch = vi
+    .fn()
+    .mockResolvedValueOnce(response(pending))
+    .mockResolvedValueOnce(response(arrived));
+  vi.stubGlobal("fetch", fetch);
+  await render("attention");
+  expect(document.body.textContent).toContain("factory reading…");
+  await vi.advanceTimersByTimeAsync(4999);
+  expect(fetch).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);
+  await settle();
+  expect(fetch).toHaveBeenCalledTimes(1);
+  // Still on its way: one more quick read, then the board is there.
+  await vi.advanceTimersByTimeAsync(5000);
+  await settle();
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(document.body.textContent).toContain("factory enabled");
+  // Once it has landed, reads go back to the minute.
+  await vi.advanceTimersByTimeAsync(30000);
+  expect(fetch).toHaveBeenCalledTimes(2);
 });
 test("reads on return to the page, at most every 30 seconds, and stops on unmount", async () => {
   vi.useFakeTimers();

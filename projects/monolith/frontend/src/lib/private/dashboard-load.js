@@ -4,7 +4,12 @@
 // the page answers from memory and never waits on a slow or stalled backend.
 // Each source fails soft on its own: a dead factory leaves the calendar
 // standing, and a dead home aggregate still reports the factory.
-import { readBoard, readHome } from "./backend-cache.js";
+import {
+  backendCache,
+  boardStatus,
+  readBoard,
+  readHome,
+} from "./backend-cache.js";
 import { summarizeBoard } from "./factory-summary.js";
 
 /**
@@ -18,8 +23,22 @@ export async function loadDashboard(apiBase, { cache } = {}) {
     readBoard(apiBase, options),
   ]);
   const factory = summarize(board);
-  if (home == null && factory == null) return { dashboard: null };
-  return { dashboard: { ...(home ?? {}), factory } };
+  const status = boardStatus(cache ?? backendCache);
+  // No board yet but one on the way: the page says "reading", not
+  // "unavailable", and asks again shortly.
+  const factory_pending = factory == null && status.pending;
+  if (home == null && factory == null && !factory_pending)
+    return { dashboard: null };
+  return {
+    dashboard: {
+      ...(home ?? {}),
+      factory:
+        factory && status.ageMs != null
+          ? { ...factory, readAgoMs: status.ageMs }
+          : factory,
+      factory_pending,
+    },
+  };
 }
 
 // A malformed board reads as no factory reading, never as a broken page.

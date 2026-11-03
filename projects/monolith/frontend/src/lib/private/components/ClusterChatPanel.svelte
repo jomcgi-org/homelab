@@ -4,8 +4,15 @@
   // component state, capped to the last 12 turns when sent upstream.
   const HISTORY_CAP = 12;
 
+  // `seed` ({ text, at }) fills the box with a question to send, e.g. from a
+  // Needs-you row; each new `at` fills it again. Sending stays one tap.
+  let { seed = null } = $props();
+
   let messages = $state([]);
   let input = $state("");
+  $effect(() => {
+    if (seed?.text) input = seed.text;
+  });
   let streaming = $state(false);
   let logEl = $state(null);
 

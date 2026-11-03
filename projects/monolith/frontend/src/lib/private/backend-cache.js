@@ -94,7 +94,19 @@ export function createBackendCache({
     entry(key).forced = true;
   }
 
-  return { read, invalidate };
+  /**
+   * How old the held value of `key` is in ms (null when none is held), and
+   * whether a read of it is in flight.
+   */
+  function status(key) {
+    const e = entry(key);
+    return {
+      ageMs: e.value === MISSING ? null : Math.max(0, now() - e.at),
+      pending: e.pending != null,
+    };
+  }
+
+  return { read, invalidate, status };
 }
 
 /** The process-wide cache the private pages share. */
@@ -102,18 +114,27 @@ export const backendCache = createBackendCache();
 
 /**
  * The full factory board (`/api/agents/factory`, task-less). Fresh for a
- * minute: the backend does one board read a minute per process.
+ * minute: the backend does one board read a minute per process. A reading
+ * is kept for half an hour, so a page opened after a quiet spell shows the
+ * last board (with its age) rather than none; the page says how old it is.
  */
+export const BOARD_STALE_MS = 30 * 60_000;
+
 export function readBoard(
   apiBase,
   { coldWaitMs = 0, cache = backendCache } = {},
 ) {
   return cache.read("board", `${apiBase}/api/agents/factory`, {
     freshMs: 60000,
-    staleMs: 300000,
+    staleMs: BOARD_STALE_MS,
     timeoutMs: 90000,
     coldWaitMs,
   });
+}
+
+/** `{ ageMs, pending }` for the held board (see `status`). */
+export function boardStatus(cache = backendCache) {
+  return cache.status("board");
 }
 
 export function invalidateBoard(cache = backendCache) {
@@ -153,4 +174,27 @@ export function readTasks(
 export function invalidateTasks(cache = backendCache) {
   cache.invalidate("tasks:daily");
   cache.invalidate("tasks:weekly");
+}
+
+/**
+ * Keep the private root's reads warm in this process, so the first visit
+ * after a deploy or a quiet spell answers with a reading, not a wait. Each
+ * tick only refreshes what is past its freshness window. Opt-in: only the
+ * private frontend sets PRIVATE_DASHBOARD_PREWARM.
+ */
+export function startPrivatePrewarm({
+  apiBase = process.env.API_BASE,
+  enabled = process.env.PRIVATE_DASHBOARD_PREWARM === "true",
+  everyMs = 120_000,
+  cache = backendCache,
+} = {}) {
+  if (!enabled || !apiBase) return null;
+  const tick = () => {
+    void readBoard(apiBase, { cache });
+    void readHome(apiBase, { coldWaitMs: 0, cache });
+  };
+  tick();
+  const timer = setInterval(tick, everyMs);
+  timer.unref?.();
+  return timer;
 }

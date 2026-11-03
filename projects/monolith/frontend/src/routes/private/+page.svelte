@@ -39,8 +39,9 @@
   // Monotonic, so a wall clock stepping backwards cannot hold refreshes.
   let lastAttempt = performance.now();
 
-  async function refresh() {
-    if (inFlight || performance.now() - lastAttempt < MIN_GAP_MS) return;
+  async function refresh({ soon = false } = {}) {
+    if (inFlight) return;
+    if (!soon && performance.now() - lastAttempt < MIN_GAP_MS) return;
     inFlight = true;
     lastAttempt = performance.now();
     let next = null;
@@ -57,6 +58,25 @@
     const merged = mergeRead(dash, next, misses);
     dash = merged.read;
     misses = merged.misses;
+    followUp();
+  }
+
+  // A board read on its way lands in seconds, not a minute: ask again soon,
+  // a few times, rather than showing "reading" until the next tick.
+  const SOON_MS = 5_000;
+  const SOON_TRIES = 6;
+  let soonTries = 0;
+  let soonTimer = null;
+  function followUp() {
+    clearTimeout(soonTimer);
+    if (!dash?.factory_pending || soonTries >= SOON_TRIES) {
+      if (!dash?.factory_pending) soonTries = 0;
+      return;
+    }
+    soonTries += 1;
+    soonTimer = setTimeout(() => {
+      if (document.visibilityState === "visible") refresh({ soon: true });
+    }, SOON_MS);
   }
 
   $effect(() => {
@@ -69,8 +89,10 @@
       if (document.visibilityState === "visible") refresh();
     };
     document.addEventListener("visibilitychange", onVisible);
+    untrack(followUp);
     return () => {
       clearInterval(id);
+      clearTimeout(soonTimer);
       document.removeEventListener("visibilitychange", onVisible);
     };
   });
@@ -131,33 +153,52 @@
   // unhealthy, open PRs whose CI is red. One list, each row a place to go.
   let needs = $derived([
     ...unhealthyKinds.flatMap(([kind, rows]) =>
-      (rows ?? []).map((row) => ({
-        key: `unhealthy:${kind}:${row.namespace}/${row.name}`,
-        kind: "unhealthy",
-        href: null,
-        title: `${row.namespace ? `${row.namespace}/` : ""}${row.name}`,
-        detail: kind,
-      })),
+      (rows ?? []).map((row) => {
+        const name = `${row.namespace ? `${row.namespace}/` : ""}${row.name}`;
+        return {
+          key: `unhealthy:${kind}:${name}`,
+          tag: singular(kind),
+          title: name,
+          // No page of its own: ask the cluster agent why, in the Ask sheet.
+          ask: `Why is the ${singular(kind)} ${name} unhealthy, and what would fix it?`,
+        };
+      }),
     ),
     ...failingPrs.map((pr) => ({
       key: `ci:${pr.number}`,
-      kind: "ci failed",
-      href: pr.url,
-      external: true,
+      tag: "ci failed",
       title: `#${pr.number} ${pr.title}`,
-      detail: "",
+      href: pr.url,
     })),
   ]);
+
+  // "applications" -> "application": the health rollup names kinds plurally.
+  function singular(kind) {
+    return kind.endsWith("s") ? kind.slice(0, -1) : kind;
+  }
+
+  let askSeed = $state(null);
+  function askAbout(item) {
+    askSeed = { text: item.ask, at: Date.now() };
+    openSheet("ask");
+  }
 
   // The factory cell of the status row: state and lane counts, or the
   // reason there is no reading. A missing summary is said, never zeroed.
   let factoryLine = $derived(
     factory == null
-      ? "factory unavailable"
+      ? dash?.factory_pending
+        ? "factory reading…"
+        : "factory unavailable"
       : !factory.ok
         ? `factory ${factory.reason}`
-        : `factory ${factory.state} · ${factory.inFlight} in flight · ${factory.queued} queued`,
+        : `factory ${factory.state} · ${factory.inFlight} in flight · ${factory.queued} queued${age(factory.readAgoMs)}`,
   );
+  // A board kept from a while ago says so; a fresh one says nothing.
+  function age(ms) {
+    if (!(ms >= 3 * 60_000)) return "";
+    return ` · ${Math.round(ms / 60_000)} min ago`;
+  }
   // Green for an open lane, amber for a lane held (paused, draining), red
   // for a board that is not ready, grey for no reading.
   let factoryTone = $derived(
@@ -452,11 +493,11 @@
               all quiet · {health.scanned ?? 0} workloads scanned
             {:else}
               <span class="pulse-dot pulse-dot--bad"></span>
-              {unhealthyCount} unhealthy
-              <span class="pulse-sub"
-                >{unhealthyKinds
-                  .map(([kind, rows]) => `${rows?.length ?? 0} ${kind}`)
-                  .join(" · ")}</span
+              <span
+                >{unhealthyCount} unhealthy{#if health.scanned > unhealthyCount}<span
+                    class="pulse-sub"
+                    >{` · ${health.scanned - unhealthyCount} healthy`}</span
+                  >{/if}</span
               >
             {/if}
           </li>
@@ -512,32 +553,39 @@
                 ? "No reading. The dashboard is unavailable."
                 : missing.length
                   ? `Nothing waiting in what answered. No reading from ${missing.join(", ")}.`
-                  : "Nothing is waiting on you."}
+                  : dash.factory_pending
+                    ? "Nothing else waiting. Reading the factory board…"
+                    : "Nothing is waiting on you."}
             </p>
           {:else if needs.length}
-            <dl class="spec needs-list">
+            <ul class="needs-list" aria-label="Also red">
               {#each needs as item (item.key)}
-                <div class="row">
-                  <dt>{item.kind}</dt>
-                  <dd>
-                    {#if item.href}
-                      <a
-                        class="need"
-                        href={item.href}
-                        target={item.external ? "_blank" : undefined}
-                        rel={item.external ? "noopener" : undefined}
-                        >{item.title}</a
-                      >
-                    {:else}
-                      <span class="need mono">{item.title}</span>
-                    {/if}
-                    {#if item.detail}
-                      <span class="need-detail">{item.detail}</span>
-                    {/if}
-                  </dd>
-                </div>
+                <li>
+                  {#if item.href}
+                    <a
+                      class="need"
+                      href={item.href}
+                      target="_blank"
+                      rel="noopener"
+                    >
+                      <span class="need-mark" aria-hidden="true"></span>
+                      <span class="need-title">{item.title}</span>
+                      <span class="need-tag">{item.tag} ↗</span>
+                    </a>
+                  {:else}
+                    <button
+                      type="button"
+                      class="need"
+                      onclick={() => askAbout(item)}
+                    >
+                      <span class="need-mark" aria-hidden="true"></span>
+                      <span class="need-title mono">{item.title}</span>
+                      <span class="need-tag">{item.tag} · ask</span>
+                    </button>
+                  {/if}
+                </li>
               {/each}
-            </dl>
+            </ul>
           {/if}
         </section>
 
@@ -739,7 +787,7 @@
 {/snippet}
 
 {#snippet askBody()}
-  <ClusterChatPanel />
+  <ClusterChatPanel seed={askSeed} />
 {/snippet}
 
 {#snippet taskRow(task, weekly)}
