@@ -13,6 +13,8 @@ from grimoire.access import get_authenticated_identity
 from grimoire.models import AppUser, CampaignMember
 from grimoire.models import CharacterSheetVersion, Entity, PlayerCharacter
 from grimoire.router import router
+from grimoire import knowledge_sources
+from grimoire.models import KnowledgeContribution, KnowledgeGrant, Relationship
 
 DM = "dm@example.test"
 PLAYER = "player@example.test"
@@ -130,6 +132,7 @@ def table_fixture(session: Session, client: TestClient):
         Entity(
             entity_type="race",
             name="Human",
+            source_book="system-reference-doc-5-1",
             is_global=True,
             detail={"speed": "30 feet"},
         )
@@ -138,6 +141,7 @@ def table_fixture(session: Session, client: TestClient):
         Entity(
             entity_type="class",
             name="Fighter",
+            source_book="system-reference-doc-5-1",
             is_global=True,
             detail={"hit_die": "d10", "saves": "Strength, Constitution"},
         )
@@ -161,6 +165,130 @@ def _version_path(campaign: dict, character: dict, version_id: str) -> str:
         f"/api/grimoire/campaigns/{campaign['id']}"
         f"/characters/{character['id']}/sheets/{version_id}"
     )
+
+
+def _submitted(client, table, body=None):
+    campaign, character = table
+    created = _post(client, _draft_path(campaign, character), PLAYER, body or _sheet())
+    assert created.status_code == 200, created.text
+    base = _version_path(campaign, character, created.json()["id"])
+    assert _post(client, f"{base}/submit", PLAYER).status_code == 200
+    return base, created.json()["id"]
+
+
+def test_approval_sources_repeat_return_and_manual_fallback(session, client, table):
+    campaign, character = table
+    ancestry = session.exec(select(Entity).where(Entity.entity_type == "race")).one()
+    manual = KnowledgeGrant(
+        campaign_id=campaign["id"],
+        player_character_id=character["id"],
+        entity_id=ancestry.id,
+        grant_scope="partial",
+        revealed_details={"clue": "Independent manual clue"},
+    )
+    session.add(manual)
+    session.commit()
+    base, version_id = _submitted(client, table)
+    approved = _post(client, f"{base}/approve", DM, {})
+    assert approved.status_code == 200, approved.text
+    assert _post(client, f"{base}/approve", DM, {}).status_code == 200
+    session.refresh(manual)
+    assert manual.grant_scope == "full"
+    sources = knowledge_sources.contributions(session, manual)
+    assert {source.source_key for source in sources} == {
+        "manual",
+        f"sheet:{version_id}",
+    }
+    assert next(
+        source for source in sources if source.source_key == "manual"
+    ).revealed_details == {"clue": "Independent manual clue"}
+
+    # Returning a different draft must preserve the active approved source.
+    returned, _ = _submitted(client, table, _sheet(6))
+    assert (
+        _post(client, f"{returned}/return", DM, {"comment": "Revise"}).status_code
+        == 200
+    )
+    assert {
+        source.source_key for source in knowledge_sources.contributions(session, manual)
+    } == {"manual", f"sheet:{version_id}"}
+    assert (
+        _post(client, f"{base}/return", DM, {"comment": "Withdraw"}).status_code == 409
+    )
+
+    # A replacement ancestry removes only the obsolete automatic source.
+    session.add(
+        Entity(entity_type="race", name="Elf", source_book="system-reference-doc-5-1")
+    )
+    session.commit()
+    replacement, replacement_id = _submitted(
+        client, table, {**_sheet(), "ancestry": "Elf"}
+    )
+    assert _post(client, f"{replacement}/approve", DM, {}).status_code == 200
+    session.refresh(manual)
+    assert manual.grant_scope == "partial"
+    assert manual.revealed_details == {"clue": "Independent manual clue"}
+    assert {
+        source.source_key for source in knowledge_sources.contributions(session, manual)
+    } == {"manual"}
+    auto = session.exec(
+        select(KnowledgeContribution).where(
+            KnowledgeContribution.source_sheet_version_id.is_not(None)
+        )
+    ).all()
+    assert {source.source_sheet_version_id for source in auto} == {replacement_id}
+
+
+def test_creation_links_are_typed_bounded_and_not_adventures(session, client, table):
+    parent = session.exec(select(Entity).where(Entity.entity_type == "class")).one()
+    safe = Entity(
+        entity_type="class_feature",
+        name="Second Wind",
+        source_book="system-reference-doc-5-1",
+        detail={"level": 1},
+    )
+    late = Entity(
+        entity_type="class_feature",
+        name="Later feature",
+        source_book="system-reference-doc-5-1",
+        detail={"level": 20},
+    )
+    adventure = Entity(
+        entity_type="class_feature",
+        name="Adventure secret",
+        source_book="lost-mine-of-phandelver",
+        detail={"level": 1},
+    )
+    arbitrary = Entity(
+        entity_type="npc", name="Secret NPC", source_book="lost-mine-of-phandelver"
+    )
+    session.add_all([safe, late, adventure, arbitrary])
+    session.flush()
+    session.add_all(
+        [
+            Relationship(
+                from_entity_id=entity.id, to_entity_id=parent.id, rel_type="FEATURE_OF"
+            )
+            for entity in (safe, late, adventure, arbitrary)
+        ]
+    )
+    session.commit()
+    base, _ = _submitted(client, table)
+    assert _post(client, f"{base}/approve", DM, {}).status_code == 200
+    granted = {grant.entity_id for grant in session.exec(select(KnowledgeGrant)).all()}
+    assert safe.id in granted
+    assert not granted.intersection({late.id, adventure.id, arbitrary.id})
+
+
+def test_approval_revalidates_changed_source_and_rolls_back(session, client, table):
+    base, version_id = _submitted(client, table)
+    entity = session.exec(select(Entity).where(Entity.entity_type == "race")).one()
+    entity.source_book = "lost-mine-of-phandelver"
+    session.commit()
+    assert _post(client, f"{base}/approve", DM, {}).status_code == 422
+    assert session.get(CharacterSheetVersion, version_id).status == "submitted"
+    assert session.exec(select(KnowledgeGrant)).all() == []
+    assert session.exec(select(KnowledgeContribution)).all() == []
 
 
 def test_approved_history_is_immutable_and_later_edits_create_new_draft(

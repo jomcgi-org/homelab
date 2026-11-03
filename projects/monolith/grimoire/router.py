@@ -50,7 +50,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, or_, select
 
-from grimoire import aliases, images, library
+from grimoire import aliases, images, knowledge_sources, library
 from grimoire.access import (
     get_authenticated_email,
     get_authenticated_identity,
@@ -1599,13 +1599,22 @@ def _decide_character_sheet(
     status: Literal["approved", "returned"],
     comment: str | None,
 ) -> CharacterSheetVersion:
-    _require_dm(session, campaign_id, email)
+    member = _require_dm(session, campaign_id, email)
     character = _get_character_in_campaign_or_404(
         session, campaign_id, player_character_id
     )
+    character = session.exec(
+        select(PlayerCharacter)
+        .where(PlayerCharacter.id == character.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
     version = _get_sheet_version_or_404(
         session, campaign_id, player_character_id, sheet_version_id
     )
+    session.refresh(version)
+    if version.status == status and version.decision_comment == comment:
+        return version
     if version.status != "submitted":
         raise HTTPException(
             status_code=409, detail="only a submitted sheet can be decided"
@@ -1620,6 +1629,25 @@ def _decide_character_sheet(
     version.decided_at = now
     version.updated_at = now
     if status == "approved":
+        try:
+            reconciled = knowledge_sources.reconcile_sheet(session, version)
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        for grant, survives in reconciled:
+            _retract_grant_history(session, grant)
+            current = _current_reveal_session(session, campaign_id)
+            if survives and current is not None:
+                session.flush()
+                _append_reveal(
+                    session,
+                    current,
+                    member,
+                    player_character_id,
+                    _reveal_body(session, grant),
+                )
+            if not survives:
+                session.delete(grant)
         character.class_name = version.sheet["class_name"]
         character.level = version.sheet["level"]
         character.sheet = version.sheet
@@ -2044,6 +2072,7 @@ def create_bulk_grants(
         character = _get_character_in_campaign_or_404(
             session, campaign_id, item.player_character_id
         )
+        knowledge_sources.lock_player(session, campaign_id, character.id)
         entity = session.get(Entity, item.entity_id)
         if entity is None or not entity_belongs_to_campaign(
             session, campaign_id, entity
@@ -2080,6 +2109,14 @@ def create_bulk_grants(
     ]
     session.add_all(grants)
     session.flush()
+    for grant in grants:
+        knowledge_sources.set_manual(
+            session,
+            grant,
+            scope=grant.grant_scope,
+            details=grant.revealed_details,
+            game_session=grant.granted_in_session,
+        )
     if current is not None:
         reveals: dict[str, list[dict[str, Any]]] = {}
         for grant in grants:
@@ -2167,12 +2204,29 @@ def update_grant(
     if grant is None or grant.campaign_id != campaign_id:
         raise HTTPException(status_code=404, detail="grant not found")
 
+    knowledge_sources.lock_player(session, campaign_id, grant.player_character_id)
+    session.refresh(grant)
+    knowledge_sources.preserve_manual(session, grant)
+
     previous_scope = grant.grant_scope
     previous_details = grant.revealed_details
-    if body.grant_scope is not None:
-        grant.grant_scope = body.grant_scope
-    if body.revealed_details is not None:
-        grant.revealed_details = body.revealed_details
+    manual = next(
+        (
+            source
+            for source in knowledge_sources.contributions(session, grant)
+            if source.source_key == "manual"
+        ),
+        None,
+    )
+    knowledge_sources.set_manual(
+        session,
+        grant,
+        scope=body.grant_scope or (manual.grant_scope if manual else "name_only"),
+        details=body.revealed_details
+        if body.revealed_details is not None
+        else (manual.revealed_details if manual else None),
+        game_session=manual.granted_in_session if manual else grant.granted_in_session,
+    )
 
     session.add(grant)
     if grant.grant_scope != previous_scope or (
@@ -2210,14 +2264,22 @@ def delete_grant(
     grant = session.get(KnowledgeGrant, grant_id)
     if grant is None or grant.campaign_id != campaign_id:
         raise HTTPException(status_code=404, detail="grant not found")
+    knowledge_sources.lock_player(session, campaign_id, grant.player_character_id)
+    session.refresh(grant)
     _retract_grant_history(session, grant)
+    survives = knowledge_sources.remove_manual(session, grant)
     current = _current_reveal_session(session, campaign_id)
     if current is not None:
-        body = {"retracted": True, "silent": silent}
-        if not silent:
+        body = (
+            _reveal_body(session, grant)
+            if survives
+            else {"retracted": True, "silent": silent}
+        )
+        if not survives and not silent:
             body.update(_reveal_identity(session.get(Entity, grant.entity_id), grant))
         _append_reveal(session, current, member, grant.player_character_id, body)
-    session.delete(grant)
+    if not survives:
+        session.delete(grant)
     session.commit()
 
 
@@ -2288,10 +2350,11 @@ def _authorize_reveal_filter(
 def list_entities(
     campaign_id: str,
     entity_type: EntityType | None = Query(default=None, alias="type"),
-    q: str | None = Query(default=None),
+    q: str | None = Query(default=None, max_length=120),
     limit: int = Query(default=100, ge=1, le=500),
     cursor: str | None = Query(default=None),
     not_granted_to: str | None = Query(default=None),
+    granted_only: bool = Query(default=False),
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
@@ -2316,6 +2379,8 @@ def list_entities(
     member = _get_member_or_404(session, campaign_id, email)
     _authorize_reveal_filter(session, campaign_id, member, not_granted_to)
     viewer = _viewer_for_member(session, campaign_id, member)
+    if granted_only and viewer != "dm":
+        raise HTTPException(status_code=403, detail="campaign DM role required")
 
     query = visible_entities_query(
         campaign_id, viewer, not_granted_to=not_granted_to
@@ -2324,8 +2389,27 @@ def list_entities(
         query = query.where(Entity.entity_type == entity_type)
     if q:
         query = query.where(func.lower(Entity.name).contains(q.lower()))
+    if granted_only:
+        query = query.where(KnowledgeGrant.id.is_not(None))
 
-    rows = session.exec(query).all()
+    # Page distinct entity IDs in SQL before hydrating DM grant fan-out.
+    eligible = query.order_by(None).with_only_columns(Entity.id).distinct().subquery()
+    total = session.exec(select(func.count()).select_from(eligible)).one()
+    offset = _parse_offset(cursor)
+    page_ids = session.exec(
+        select(Entity.id)
+        .where(Entity.id.in_(select(eligible.c.id)))
+        .order_by(Entity.name, Entity.id)
+        .offset(offset)
+        .limit(limit)
+    ).all()
+    rows = (
+        session.exec(
+            query.where(Entity.id.in_(page_ids)).order_by(Entity.name, Entity.id)
+        ).all()
+        if page_ids
+        else []
+    )
 
     if viewer == "dm":
         aggregated, order = _aggregate_dm_rows(rows, context="lookup")
@@ -2337,12 +2421,9 @@ def list_entities(
             if projected is not None:
                 items.append(projected)
 
-    total = len(items)
-    offset = _parse_offset(cursor)
-    page = items[offset : offset + limit]
     next_offset = offset + limit
     next_cursor = str(next_offset) if next_offset < total else None
-    return {"items": page, "total": total, "next_cursor": next_cursor}
+    return {"items": items, "total": total, "next_cursor": next_cursor}
 
 
 @router.get("/campaigns/{campaign_id}/entities/{entity_id}")

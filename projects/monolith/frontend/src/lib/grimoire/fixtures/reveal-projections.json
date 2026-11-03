@@ -28,7 +28,7 @@
       "name": "Captain Ardent",
       "source_type": "extracted",
       "is_global": true,
-      "source_book": "Example Gazetteer",
+      "source_book": "system-reference-doc-5-1",
       "created_in_session": null,
       "created_at": "2026-01-02T03:04:05+00:00"
     }
@@ -118,7 +118,7 @@
         "name": "Captain Ardent",
         "source_type": "extracted",
         "is_global": true,
-        "source_book": "Example Gazetteer",
+        "source_book": "system-reference-doc-5-1",
         "created_in_session": null,
         "created_at": "2026-01-02T03:04:05+00:00",
         "race": "Human",

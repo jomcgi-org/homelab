@@ -1,5 +1,50 @@
 # Grimoire architecture
 
+## Campaign knowledge is explicit
+
+Campaign players need an assigned character in the same campaign. Global
+corpus membership grants DM visibility; it conveys no player permission.
+Unknown sources, source-less entities and adventure books fail closed.
+`visibility.COMMON_KNOWLEDGE_BOOK_IDS` is the exact allowlist of open rules
+sources: `system-reference-doc-5-1`, `system-reference-doc-5-2`,
+`black-flag-reference-document` and `a5e-srd`. These identifiers are already
+classified as reference documents in ingestion. Copyright flags, titles and
+filename patterns never establish common knowledge. PHB, DMG and MM remain
+closed until a separate reviewed classification explicitly includes their
+actual corpus identifiers. No campaign-adventure binding is needed.
+
+The canonical entity predicate and projection apply to campaign lookup,
+pagination, relationships, entity search and indirect entity labels. Scope
+is monotonic: name-only returns an identity card, partial returns identity
+plus explicitly revealed details, and full returns typed detail. Common
+knowledge supplies a full baseline that narrower grants cannot reduce.
+Entity access never authorizes a book or chunk preview. Campaign knowledge
+search rechecks each candidate's current source; only allowlisted reference
+chunks are readable by players. DM and public corpus contracts are separate.
+
+`knowledge_contribution` records independent manual and approved-sheet sources
+under the effective `knowledge_grant` row. The migration backfills every
+existing grant as manual without changing its scope, details or session.
+Effective scope is the maximum source scope; partial details are combined.
+Sheet approval replaces the effective approved-sheet contribution for that PC,
+preserving manual sources. Ancestry and class resolve against allowlisted
+reference entities before approval creates grants. Only one-hop `SUBRACE_OF`
+parent races and `FEATURE_OF` class features at or below the approved level
+are eligible, with a fixed 100-link bound per query. Every target must itself
+be common knowledge. Arbitrary links and adventure targets are excluded.
+
+Decisions serialize on the character row. A repeated identical decision is
+idempotent; conflicting decisions fail. Sheet state, source changes and reveal
+history share one transaction. Returning another submitted draft leaves the
+active approved sheet's contributions intact. Existing decided-sheet
+immutability remains binding: returning an already approved sheet is refused.
+Replacing it requires approving a new submitted version. Future background or
+home-region choices can extend the explicit creation-root mapping.
+
+The DM grants matrix loads one 100-entity granted page plus at most 50
+server-side search matches. Searching retains the current granted page.
+Entity pagination selects distinct IDs in SQL before hydrating grant rows.
+
 Grimoire is a domain of the Python Monolith. The former standalone Go API,
 React frontend, WebSocket gateway, Redis service, Helm chart, and GCP bootstrap
 have been retired. Their implementation remains available in git history.

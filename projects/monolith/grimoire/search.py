@@ -34,7 +34,13 @@ from grimoire.play_embeddings import (
     event_text,
     play_embedding_predicate,
 )
-from grimoire.visibility import Viewer, project_entity, visible_entities_query
+from grimoire.visibility import (
+    COMMON_KNOWLEDGE_BOOK_IDS,
+    Viewer,
+    campaign_player_predicate,
+    project_entity,
+    visible_entities_query,
+)
 from grimoire.voices import speaker_ref
 
 # How many extra candidates to pull past ``k`` before visibility filtering and
@@ -89,11 +95,23 @@ def knn_embeddings(
 
 
 def _resolve_chunk_hit(
-    session: Session, chunk_id: str, distance: float
+    session: Session,
+    chunk_id: str,
+    distance: float,
+    *,
+    campaign_id: str,
+    viewer: Viewer,
 ) -> dict[str, Any] | None:
-    """Sync: shape a chunk hit. Chunks are always visible in v1 (global corpus)."""
+    """Recheck the current source; entity grants never grant book text."""
     chunk = session.get(KnowledgeChunk, chunk_id)
     if chunk is None:
+        return None
+    if viewer != "dm" and (
+        chunk.book_id not in COMMON_KNOWLEDGE_BOOK_IDS
+        or not session.exec(
+            select(campaign_player_predicate(campaign_id, viewer))
+        ).one()
+    ):
         return None
     # Resolve the book's display name so the omnibox can title chunk hits with a
     # human name (and link into the reader) instead of showing the raw book_id.
@@ -186,7 +204,9 @@ def _resolve_knowledge_hits(
                 resolved["type"] = "entity"
                 resolved["source"] = {"entity_id": source_id}
         elif kind == "chunk":
-            resolved = _resolve_chunk_hit(session, source_id, distance)
+            resolved = _resolve_chunk_hit(
+                session, source_id, distance, campaign_id=campaign_id, viewer=viewer
+            )
             if resolved is not None:
                 resolved["type"] = "chunk"
                 resolved["source"] = {
