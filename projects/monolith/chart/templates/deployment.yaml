@@ -962,6 +962,11 @@ spec:
               value: "20"
             - name: API_BASE
               value: "http://localhost:8000"
+            # Keep the private root's board and home reads warm, so the
+            # phone dashboard answers with a reading after a deploy or a
+            # quiet spell instead of "factory reading".
+            - name: PRIVATE_DASHBOARD_PREWARM
+              value: "true"
             # adapter-node refuses request bodies over 512K by default; the
             # grimoire handout upload proxy accepts a 5 MiB image plus
             # multipart framing. The backend enforces the real 5 MiB cap.

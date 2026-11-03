@@ -1,7 +1,9 @@
 import { startPublicSnapshotPrewarm } from "./lib/server/public-snapshots.js";
+import { startPrivatePrewarm } from "./lib/private/backend-cache.js";
 
 export function init() {
   startPublicSnapshotPrewarm();
+  startPrivatePrewarm();
 }
 
 // SvelteKit server hook: negotiated response compression.

@@ -40,6 +40,9 @@ export function mergeRead(previous, next, misses = {}) {
       if (counted[key] >= STALE_AFTER) read[key] = null;
     }
   }
+  // Whether a board read is on its way is a fact about this refresh only.
+  if (next.factory_pending === true) read.factory_pending = true;
+  else delete read.factory_pending;
   return { read, misses: counted };
 }
 
@@ -64,7 +67,10 @@ export function missingReadings(read) {
   const missing = [];
   if (read.health == null || read.health.error) missing.push("cluster");
   // A board that answered "not ready" cannot say what is waiting either.
-  if (read.factory == null || read.factory.ok === false)
+  if (
+    (read.factory == null && !read.factory_pending) ||
+    read.factory?.ok === false
+  )
     missing.push("factory");
   if (read.github == null || read.github.error) missing.push("github");
   return missing;
