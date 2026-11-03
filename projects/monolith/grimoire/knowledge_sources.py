@@ -110,6 +110,41 @@ def remove_manual(session: Session, grant: KnowledgeGrant) -> bool:
     return recompute(session, grant)
 
 
+def preview_manual(session: Session, grant: KnowledgeGrant) -> KnowledgeGrant:
+    """Project a proposed manual source together with surviving automatic ones."""
+    existing = session.exec(
+        select(KnowledgeGrant).where(
+            KnowledgeGrant.campaign_id == grant.campaign_id,
+            KnowledgeGrant.player_character_id == grant.player_character_id,
+            KnowledgeGrant.entity_id == grant.entity_id,
+        )
+    ).first()
+    sources = (
+        [
+            source
+            for source in contributions(session, existing)
+            if source.source_key != "manual"
+        ]
+        if existing
+        else []
+    )
+    scope = max(
+        [grant.grant_scope, *(source.grant_scope for source in sources)],
+        key=_RANK.__getitem__,
+    )
+    details = {}
+    for source in sources:
+        details.update(source.revealed_details or {})
+    details.update(grant.revealed_details or {})
+    return KnowledgeGrant(
+        campaign_id=grant.campaign_id,
+        player_character_id=grant.player_character_id,
+        entity_id=grant.entity_id,
+        grant_scope=scope,
+        revealed_details=details or None,
+    )
+
+
 def creation_entities(session: Session, version: CharacterSheetVersion) -> set[str]:
     """One-hop typed links only. Never follow arbitrary adventure links."""
     selected = {}

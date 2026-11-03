@@ -202,6 +202,34 @@ def test_approval_sources_repeat_return_and_manual_fallback(session, client, tab
     assert next(
         source for source in sources if source.source_key == "manual"
     ).revealed_details == {"clue": "Independent manual clue"}
+    preview = _post(
+        client,
+        f"/api/grimoire/campaigns/{campaign['id']}/grants/preview",
+        DM,
+        {
+            "grants": [
+                {
+                    "entity_id": ancestry.id,
+                    "player_character_id": character["id"],
+                    "grant_scope": "name_only",
+                }
+            ]
+        },
+    )
+    assert preview.status_code == 200, preview.text
+    assert "recognition_only" not in preview.json()[0]["projection"]
+    assert (
+        knowledge_sources.preview_manual(
+            session,
+            KnowledgeGrant(
+                campaign_id=campaign["id"],
+                player_character_id=character["id"],
+                entity_id=ancestry.id,
+                grant_scope="name_only",
+            ),
+        ).grant_scope
+        == "full"
+    )
 
     # Returning a different draft must preserve the active approved source.
     returned, _ = _submitted(client, table, _sheet(6))
