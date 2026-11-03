@@ -1312,3 +1312,69 @@ def test_gke_log_agent_workload_shape():
     role = next(d for d in docs if d["kind"] == "ClusterRole")
     for rule in role["rules"]:
         assert set(rule["verbs"]) <= {"get", "list", "watch"}
+
+
+def test_container_metrics_are_absent_unless_enabled():
+    docs = _render_overlay(
+        "values", ["--set", "logs.enabled=true", "--set", "logs.namespaces={monolith}"]
+    )
+    config = _named_collector_config(docs, LOGS)
+    assert "metrics" not in config["service"]["pipelines"]
+    assert "kubelet_stats" not in config["receivers"]
+    role = next(d for d in docs if d["kind"] == "ClusterRole")
+    assert not any("nodes/stats" in rule["resources"] for rule in role["rules"])
+
+
+def test_container_metrics_require_namespaces():
+    result = _run_render(
+        ["values"],
+        [
+            "--set",
+            "logs.enabled=true",
+            "--set",
+            "logs.namespaces={monolith}",
+            "--set",
+            "logs.containerMetrics.enabled=true",
+        ],
+    )
+    assert result.returncode != 0
+    assert "logs.containerMetrics.namespaces" in result.stderr
+
+
+def test_gke_container_metrics_pipeline():
+    docs = _render_overlay("values-gke")
+    config = _named_collector_config(docs, LOGS)
+    _assert_pipelines_reference_defined_components(config)
+
+    receiver = config["receivers"]["kubelet_stats"]
+    assert receiver["auth_type"] == "serviceAccount"
+    assert receiver["endpoint"] == "https://${env:K8S_NODE_IP}:10250"
+    assert receiver["metric_groups"] == ["container"]
+
+    metrics = config["service"]["pipelines"]["metrics"]
+    assert metrics["receivers"] == ["kubelet_stats"]
+    processors = metrics["processors"]
+    assert processors[0] == "memory_limiter"
+    assert processors[-1] == "batch"
+    # Drop before the API-backed enrichment, as the logs pipeline does.
+    assert processors.index("filter/container-metrics") < processors.index(
+        "k8s_attributes"
+    )
+    conditions = config["processors"]["filter/container-metrics"]["metrics"]["metric"]
+    assert any("monolith-public" in c for c in conditions)
+    assert any("working_set" in c for c in conditions)
+
+    (exporter,) = metrics["exporters"]
+    assert exporter == "otlphttp/honeycomb-metrics"
+    headers = config["exporters"][exporter]["headers"]
+    assert headers["x-honeycomb-team"] == "${env:HONEYCOMB_API_KEY}"
+    assert headers["x-honeycomb-dataset"] == "k8s-metrics"
+
+    ds = next(d for d in docs if d["kind"] == "DaemonSet")
+    env = {e["name"]: e for e in ds["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["K8S_NODE_IP"]["valueFrom"]["fieldRef"]["fieldPath"] == "status.hostIP"
+
+    role = next(d for d in docs if d["kind"] == "ClusterRole")
+    assert {"apiGroups": [""], "resources": ["nodes/stats"], "verbs": ["get"]} in role[
+        "rules"
+    ]

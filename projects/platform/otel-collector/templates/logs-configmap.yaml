@@ -2,9 +2,15 @@
 {{- if not .Values.logs.namespaces }}
 {{- fail "logs.enabled requires at least one entry in logs.namespaces" }}
 {{- end }}
+{{- $cm := .Values.logs.containerMetrics }}
+{{- if and $cm.enabled (not $cm.namespaces) }}
+{{- fail "logs.containerMetrics.enabled requires at least one entry in logs.containerMetrics.namespaces" }}
+{{- end }}
 {{- $hcExporter := "otlp/honeycomb-logs" }}
+{{- $hcMetricsExporter := "otlp/honeycomb-metrics" }}
 {{- if eq (.Values.honeycomb.protocol | default "grpc") "http" }}
 {{- $hcExporter = "otlphttp/honeycomb-logs" }}
+{{- $hcMetricsExporter = "otlphttp/honeycomb-metrics" }}
 {{- end }}
 apiVersion: v1
 kind: ConfigMap
@@ -45,6 +51,18 @@ data:
           # and k8s.container.restart_count from the file path.
           - type: container
             id: container-parser
+      {{- if $cm.enabled }}
+
+      # This node's kubelet only. The kubelet serves a self-signed certificate
+      # on GKE, so verification is skipped; the request still authenticates
+      # with the agent's token and only reads stats.
+      kubelet_stats:
+        auth_type: serviceAccount
+        endpoint: https://${env:K8S_NODE_IP}:10250
+        insecure_skip_verify: true
+        collection_interval: {{ $cm.interval }}
+        metric_groups: [container]
+      {{- end }}
 
     processors:
       memory_limiter:
@@ -162,6 +180,17 @@ data:
             value: {{ .Values.environment | quote }}
             action: upsert
       {{- end }}
+      {{- if $cm.enabled }}
+
+      # Keep the listed namespaces and the three metrics that explain an
+      # OOMKill; drop the rest before enrichment and export.
+      filter/container-metrics:
+        error_mode: ignore
+        metrics:
+          metric:
+            - 'not IsMatch(resource.attributes["k8s.namespace.name"], "^({{ join "|" $cm.namespaces }})$")'
+            - 'not IsMatch(metric.name, "^container\\.(memory\\.(working_set|rss)|cpu\\.usage)$")'
+      {{- end }}
       batch:
         timeout: 5s
         send_batch_size: 512
@@ -182,6 +211,18 @@ data:
         sending_queue:
           enabled: true
           storage: file_storage/logs
+      {{- if $cm.enabled }}
+      {{- if eq $hcMetricsExporter "otlphttp/honeycomb-metrics" }}
+      otlphttp/honeycomb-metrics:
+        endpoint: {{ .Values.honeycomb.httpEndpoint | default "https://api.honeycomb.io" | quote }}
+      {{- else }}
+      otlp/honeycomb-metrics:
+        endpoint: {{ .Values.honeycomb.endpoint | quote }}
+      {{- end }}
+        headers:
+          x-honeycomb-team: ${env:HONEYCOMB_API_KEY}
+          x-honeycomb-dataset: {{ $cm.dataset | quote }}
+      {{- end }}
 
     service:
       extensions: [health_check, file_storage/logs]
@@ -190,4 +231,10 @@ data:
           receivers: [file_log]
           processors: [memory_limiter, transform/parse, filter/severity, k8s_attributes, transform/service{{ if .Values.environment }}, resource/environment{{ end }}, batch]
           exporters: [{{ $hcExporter }}]
+        {{- if $cm.enabled }}
+        metrics:
+          receivers: [kubelet_stats]
+          processors: [memory_limiter, filter/container-metrics, k8s_attributes{{ if .Values.environment }}, resource/environment{{ end }}, batch]
+          exporters: [{{ $hcMetricsExporter }}]
+        {{- end }}
 {{- end }}
