@@ -2066,8 +2066,13 @@ def create_bulk_grants(
         if explicit is None or explicit.campaign_id != campaign_id:
             raise HTTPException(status_code=404, detail="session not found")
     validated: list[tuple[BulkGrantItem, str, str]] = []
-    for pc_id in sorted({item.player_character_id for item in body.grants}):
-        _get_character_in_campaign_or_404(session, campaign_id, pc_id)
+    character_ids = set()
+    for supplied_id in {item.player_character_id for item in body.grants}:
+        _validate_reveal_id(supplied_id, "player character not found in this campaign")
+        character_ids.add(
+            _get_character_in_campaign_or_404(session, campaign_id, supplied_id).id
+        )
+    for pc_id in sorted(character_ids):
         knowledge_sources.lock_player(session, campaign_id, pc_id)
     for item in body.grants:
         _validate_reveal_id(
