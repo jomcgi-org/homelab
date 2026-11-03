@@ -41,6 +41,8 @@ export function createBackendCache({
         attemptedAt: -Infinity,
         pending: null,
         forced: false,
+        // Whether the last finished read came back without a value.
+        failed: false,
       });
     return entries.get(key);
   }
@@ -52,7 +54,8 @@ export function createBackendCache({
     e.forced = false;
     e.pending = readJson(fetchImpl, url, timeoutMs)
       .then((value) => {
-        if (value !== MISSING) {
+        e.failed = value === MISSING;
+        if (!e.failed) {
           e.value = value;
           e.at = now();
         }
@@ -95,14 +98,16 @@ export function createBackendCache({
   }
 
   /**
-   * How old the held value of `key` is in ms (null when none is held), and
-   * whether a read of it is in flight.
+   * How old the held value of `key` is in ms (null when none is held),
+   * whether a read of it is in flight, and whether the last finished read
+   * failed.
    */
   function status(key) {
     const e = entry(key);
     return {
       ageMs: e.value === MISSING ? null : Math.max(0, now() - e.at),
       pending: e.pending != null,
+      failed: e.failed,
     };
   }
 
@@ -132,7 +137,7 @@ export function readBoard(
   });
 }
 
-/** `{ ageMs, pending }` for the held board (see `status`). */
+/** `{ ageMs, pending, failed }` for the held board (see `status`). */
 export function boardStatus(cache = backendCache) {
   return cache.status("board");
 }
@@ -185,7 +190,9 @@ export function invalidateTasks(cache = backendCache) {
 export function startPrivatePrewarm({
   apiBase = process.env.API_BASE,
   enabled = process.env.PRIVATE_DASHBOARD_PREWARM === "true",
-  everyMs = 120_000,
+  // The board build is uncached on the backend (20-35s); every five
+  // minutes keeps a reading well inside its half-hour window.
+  everyMs = 300_000,
   cache = backendCache,
 } = {}) {
   if (!enabled || !apiBase) return null;

@@ -39,8 +39,10 @@
   // Monotonic, so a wall clock stepping backwards cannot hold refreshes.
   let lastAttempt = performance.now();
 
+  let destroyed = false;
+
   async function refresh({ soon = false } = {}) {
-    if (inFlight) return;
+    if (inFlight || destroyed) return;
     if (!soon && performance.now() - lastAttempt < MIN_GAP_MS) return;
     inFlight = true;
     lastAttempt = performance.now();
@@ -55,9 +57,22 @@
     } finally {
       inFlight = false;
     }
-    const merged = mergeRead(dash, next, misses);
-    dash = merged.read;
-    misses = merged.misses;
+    if (destroyed) return;
+    if (soon) {
+      // A quick follow-up only asks after the board: it never counts a miss
+      // against the other readings, which keep their minute cadence.
+      if (next?.factory != null) {
+        dash = { ...dash, factory: next.factory };
+        delete dash.factory_pending;
+      } else if (next && !next.factory_pending) {
+        dash = { ...dash };
+        delete dash.factory_pending;
+      }
+    } else {
+      const merged = mergeRead(dash, next, misses);
+      dash = merged.read;
+      misses = merged.misses;
+    }
     followUp();
   }
 
@@ -69,6 +84,7 @@
   let soonTimer = null;
   function followUp() {
     clearTimeout(soonTimer);
+    if (destroyed) return;
     if (!dash?.factory_pending || soonTries >= SOON_TRIES) {
       if (!dash?.factory_pending) soonTries = 0;
       return;
@@ -91,6 +107,7 @@
     document.addEventListener("visibilitychange", onVisible);
     untrack(followUp);
     return () => {
+      destroyed = true;
       clearInterval(id);
       clearTimeout(soonTimer);
       document.removeEventListener("visibilitychange", onVisible);
@@ -194,9 +211,11 @@
         ? `factory ${factory.reason}`
         : `factory ${factory.state} · ${factory.inFlight} in flight · ${factory.queued} queued${age(factory.readAgoMs)}`,
   );
-  // A board kept from a while ago says so; a fresh one says nothing.
+  // A board kept from a while ago says so; a fresh one says nothing. The
+  // prewarm reads every five minutes, so past six the reading is old.
+  const OLD_BOARD_MS = 6 * 60_000;
   function age(ms) {
-    if (!(ms >= 3 * 60_000)) return "";
+    if (!(ms >= OLD_BOARD_MS)) return "";
     return ` · ${Math.round(ms / 60_000)} min ago`;
   }
   // Green for an open lane, amber for a lane held (paused, draining), red
@@ -225,24 +244,19 @@
   );
 
   // ── Sheets (phone) ────────────────────────────
-  // On a phone the page is one screen: the decision deck, and a dock in
-  // thumb reach that opens Today, Shipping, Ask and Tools as bottom sheets.
-  // A sheet scrolls inside itself, closes by swipe down, tap outside, Esc or
-  // the system back gesture (each open pushes one history entry). On a wide
-  // screen the same panels lay out inline and the dock is hidden.
-  const SHEETS = [
-    { id: "today", label: "Today" },
-    { id: "shipping", label: "Shipping" },
-    { id: "ask", label: "Ask" },
-    { id: "tools", label: "Tools" },
-  ];
+  // On a phone the page is one screen: what needs Joe, a line each for
+  // today and shipping, and an ask bar in thumb reach. Each opens its panel
+  // as a bottom sheet that scrolls inside itself and closes by swipe down,
+  // tap outside, Esc or the system back gesture (each open pushes one
+  // history entry). On a wide screen the same panels lay out inline.
   let phone = $state(false);
   // The open sheet lives in SvelteKit's shallow-routing state, so the back
   // gesture closes it and a link followed from inside it comes back to it.
   let sheet = $derived(phone ? (page.state.sheet ?? null) : null);
   let dragY = $state(0);
   let dragFrom = null;
-  const dockButtons = {};
+  // What opened each sheet, so focus goes back there when it closes.
+  const openers = {};
 
   function openSheet(id) {
     if (!phone) {
@@ -271,9 +285,14 @@
     const now = sheet;
     closing = null;
     if (now) {
-      document.getElementById(`close-${now}`)?.focus({ preventScroll: true });
+      // Ask opens to its question box; every other sheet to its Done key.
+      const target =
+        now === "ask"
+          ? document.querySelector("#panel-ask input")
+          : document.getElementById(`close-${now}`);
+      target?.focus({ preventScroll: true });
     } else if (lastSheet && phone) {
-      dockButtons[lastSheet]?.focus();
+      openers[lastSheet]?.focus();
     }
     lastSheet = now;
   });
@@ -317,11 +336,33 @@
   });
 
   // What each dock key carries: the count that makes it worth opening.
-  let dockCounts = $derived({
-    today: weeklyOnly.length + tasksDaily.length,
-    shipping: (github?.open_prs ?? []).length,
-    ask: 0,
-    tools: 0,
+  // The glance lines: the next thing on the calendar and the open tasks,
+  // and what is shipping. Each opens its sheet.
+  let openTasks = $derived(
+    [...weeklyOnly, ...tasksDaily].filter((task) => !isDone(task)).length,
+  );
+  let nextEvent = $derived(
+    (events ?? []).find((ev) => !ev.allDay && !isPast(ev, now)) ??
+      (events ?? []).find((ev) => ev.allDay) ??
+      null,
+  );
+  let todayLine = $derived(
+    [
+      events == null
+        ? "calendar unavailable"
+        : nextEvent == null
+          ? "clear calendar"
+          : nextEvent.allDay
+            ? nextEvent.title
+            : `${nextEvent.time} ${nextEvent.title}`,
+      openTasks ? `${openTasks} task${openTasks === 1 ? "" : "s"}` : "no tasks",
+    ].join(" · "),
+  );
+  let shippingLine = $derived.by(() => {
+    if (github == null) return "github unavailable";
+    const open = (github.open_prs ?? []).length;
+    if (!open) return "nothing open";
+    return `${open} open${failingPrs.length ? ` · ${failingPrs.length} failing` : ""}`;
   });
 
   // ── Schedule past/active logic ───────────────
@@ -555,10 +596,12 @@
                   ? `Nothing waiting in what answered. No reading from ${missing.join(", ")}.`
                   : dash.factory_pending
                     ? "Nothing else waiting. Reading the factory board…"
-                    : "Nothing is waiting on you."}
+                    : factory?.readAgoMs >= OLD_BOARD_MS
+                      ? `Nothing was waiting ${Math.round(factory.readAgoMs / 60_000)} min ago.`
+                      : "Nothing is waiting on you."}
             </p>
           {:else if needs.length}
-            <ul class="needs-list" aria-label="Also red">
+            <ul class="needs-list" aria-label="Also needs you">
               {#each needs as item (item.key)}
                 <li>
                   {#if item.href}
@@ -589,6 +632,36 @@
           {/if}
         </section>
 
+        <!-- A line each for today and shipping; each opens its sheet. -->
+        <nav
+          class="glance"
+          aria-label="Today and shipping"
+          inert={sheet != null}
+        >
+          <button
+            type="button"
+            class="glance-row"
+            aria-controls="panel-today"
+            aria-expanded={sheet === "today"}
+            bind:this={openers.today}
+            onclick={() => openSheet("today")}
+          >
+            <span class="glance-label">Today</span>
+            <span class="glance-line">{todayLine}</span>
+          </button>
+          <button
+            type="button"
+            class="glance-row"
+            aria-controls="panel-shipping"
+            aria-expanded={sheet === "shipping"}
+            bind:this={openers.shipping}
+            onclick={() => openSheet("shipping")}
+          >
+            <span class="glance-label">Shipping</span>
+            <span class="glance-line">{shippingLine}</span>
+          </button>
+        </nav>
+
         <button
           type="button"
           class="scrim"
@@ -607,22 +680,26 @@
     </div>
   </div>
 
-  <nav class="dock" aria-label="Open a panel" inert={sheet != null}>
-    {#each SHEETS as item (item.id)}
-      <button
-        type="button"
-        class="dock-key"
-        class:on={sheet === item.id}
-        aria-expanded={sheet === item.id}
-        aria-controls="panel-{item.id}"
-        bind:this={dockButtons[item.id]}
-        onclick={() => (sheet === item.id ? closeSheet() : openSheet(item.id))}
-      >
-        {item.label}
-        {#if dockCounts[item.id]}<span class="num">{dockCounts[item.id]}</span
-          >{/if}
-      </button>
-    {/each}
+  <nav class="dock" aria-label="Ask and tools" inert={sheet != null}>
+    <button
+      type="button"
+      class="ask-bar"
+      aria-controls="panel-ask"
+      aria-expanded={sheet === "ask"}
+      bind:this={openers.ask}
+      onclick={() => openSheet("ask")}
+    >
+      <span>Ask the cluster…</span>
+      <span aria-hidden="true">→</span>
+    </button>
+    <button
+      type="button"
+      class="dock-key"
+      aria-controls="panel-tools"
+      aria-expanded={sheet === "tools"}
+      bind:this={openers.tools}
+      onclick={() => openSheet("tools")}>Tools</button
+    >
   </nav>
 </main>
 

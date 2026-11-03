@@ -108,13 +108,25 @@ describe("createBackendCache", () => {
       () => new Promise((r) => (resolve = () => r(ok({ v: 1 })))),
     );
     const cache = createBackendCache({ fetchImpl, now: c.now });
-    expect(cache.status("k")).toEqual({ ageMs: null, pending: false });
+    expect(cache.status("k")).toEqual({
+      ageMs: null,
+      pending: false,
+      failed: false,
+    });
     await cache.read("k", "/k");
-    expect(cache.status("k")).toEqual({ ageMs: null, pending: true });
+    expect(cache.status("k")).toEqual({
+      ageMs: null,
+      pending: true,
+      failed: false,
+    });
     resolve();
     await tick();
     c.advance(5000);
-    expect(cache.status("k")).toEqual({ ageMs: 5000, pending: false });
+    expect(cache.status("k")).toEqual({
+      ageMs: 5000,
+      pending: false,
+      failed: false,
+    });
   });
 });
 

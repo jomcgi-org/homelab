@@ -99,4 +99,28 @@ describe("loadDashboard", () => {
     expect(dashboard.factory.readAgoMs).toBe(90_000);
     expect(dashboard.factory_pending).toBe(false);
   });
+
+  it("reads a stalled board as unavailable once a read has failed", async () => {
+    let clock = 1_000;
+    let calls = 0;
+    let failFirst;
+    const fetchImpl = vi.fn(async (url) => {
+      if (!url.endsWith("/api/agents/factory")) return jsonResponse(home);
+      calls += 1;
+      // The first read fails when told to; the retry never answers.
+      return calls === 1
+        ? new Promise((r) => (failFirst = () => r(jsonResponse({}, false))))
+        : new Promise(() => {});
+    });
+    const cache = createBackendCache({ fetchImpl, now: () => clock });
+    const first = await loadDashboard("http://b", { cache });
+    expect(first.dashboard.factory_pending).toBe(true);
+    failFirst();
+    await tick();
+    clock += 60_000;
+    const { dashboard } = await loadDashboard("http://b", { cache });
+    expect(calls).toBe(2);
+    expect(dashboard.factory).toBeNull();
+    expect(dashboard.factory_pending).toBe(false);
+  });
 });

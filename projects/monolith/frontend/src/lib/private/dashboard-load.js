@@ -24,9 +24,10 @@ export async function loadDashboard(apiBase, { cache } = {}) {
   ]);
   const factory = summarize(board);
   const status = boardStatus(cache ?? backendCache);
-  // No board yet but one on the way: the page says "reading", not
-  // "unavailable", and asks again shortly.
-  const factory_pending = factory == null && status.pending;
+  // No board yet but a first read on the way: the page says "reading", not
+  // "unavailable", and asks again shortly. Once a read has failed, a board
+  // still missing is unavailable, however many retries are in flight.
+  const factory_pending = factory == null && status.pending && !status.failed;
   if (home == null && factory == null && !factory_pending)
     return { dashboard: null };
   return {

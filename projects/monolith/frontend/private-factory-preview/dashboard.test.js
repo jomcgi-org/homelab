@@ -384,6 +384,52 @@ test("asks again within seconds while the board is on its way", async () => {
   await vi.advanceTimersByTimeAsync(30000);
   expect(fetch).toHaveBeenCalledTimes(2);
 });
+test("a quick follow-up never ages out the other readings", async () => {
+  vi.useFakeTimers();
+  const pending = fixtureData("dashboard", "attention").dashboard;
+  // Cold pod: no home aggregate and no board yet.
+  const cold = { factory: null, factory_pending: true };
+  const fetch = vi.fn().mockResolvedValue(response(cold));
+  vi.stubGlobal("fetch", fetch);
+  await render("attention");
+  for (let i = 0; i < 6; i++) {
+    await vi.advanceTimersByTimeAsync(5000);
+    await settle();
+  }
+  expect(fetch).toHaveBeenCalledTimes(6);
+  expect(document.querySelector(".pulse").textContent).toContain(
+    `${pending.health.unhealthy.applications.length} unhealthy`,
+  );
+  // Six tries, then back to the minute.
+  await vi.advanceTimersByTimeAsync(20000);
+  expect(fetch).toHaveBeenCalledTimes(6);
+});
+test("stops asking after the page goes", async () => {
+  vi.useFakeTimers();
+  const fetch = vi
+    .fn()
+    .mockResolvedValue(
+      response(fixtureData("dashboard", "attention").dashboard),
+    );
+  vi.stubGlobal("fetch", fetch);
+  await render("attention");
+  await unmount(instance);
+  instance = null;
+  await vi.advanceTimersByTimeAsync(60000);
+  expect(fetch).not.toHaveBeenCalled();
+});
+test("an old board says how old the all-clear is", async () => {
+  const data = fixtureData("dashboard", "empty");
+  data.dashboard.factory = {
+    ...data.dashboard.factory,
+    readAgoMs: 12 * 60_000,
+  };
+  await render("empty", data);
+  expect(document.querySelector(".pulse").textContent).toContain("12 min ago");
+  expect(document.querySelector(".needs .none").textContent).toBe(
+    "Nothing was waiting 12 min ago.",
+  );
+});
 test("reads on return to the page, at most every 30 seconds, and stops on unmount", async () => {
   vi.useFakeTimers();
   const next = fixtureData("dashboard").dashboard;
