@@ -50,12 +50,14 @@
         const chunkError =
           /dynamically imported module|Importing a module script failed/i;
         const here = new URL(location.href);
+        let recovering = false;
         if (here.searchParams.has("_fresh")) {
           here.searchParams.delete("_fresh");
           history.replaceState(history.state, "", here);
         }
-        window.__freshReload = (error, target = location.href) => {
+        window.__freshReload = (error, target = location.href, recover) => {
           if (!chunkError.test(String(error?.message ?? error))) return false;
+          if (recovering) return true;
           try {
             const last = Number(sessionStorage.getItem("fresh-reload"));
             if (Date.now() - last < 30000) return false;
@@ -64,8 +66,45 @@
             return false; // No loop guard without storage, so no reload.
           }
           const url = new URL(target, location.href);
-          url.searchParams.set("_fresh", Date.now().toString(36));
-          location.replace(url);
+          const reload = () => {
+            url.searchParams.set("_fresh", Date.now().toString(36));
+            location.replace(url);
+          };
+          const session = window.__grimoireRecovery;
+          if (session) {
+            const from = location.href;
+            // A failed save prevents a location replacement.
+            if (!session.save()) return false;
+            recovering = true;
+            Promise.resolve()
+              .then(() => recover?.(url, session) ?? false)
+              .catch(() => false)
+              .then(async (recovered) => {
+                // Kit may unmount the failed route for its error page while
+                // this runs. Its saved snapshot still applies. A different
+                // user navigation, however, must not be replaced.
+                if (location.href !== from && location.href !== url.href)
+                  return;
+                if (recovered === "cancelled") return;
+                if (
+                  recovered &&
+                  window.__grimoireRecovery === session &&
+                  (await session.restore?.()) === false
+                ) {
+                  // A reused component changed viewer/session/permissions.
+                  // Fresh initialization must clear the old private controls.
+                  reload();
+                  return;
+                }
+                if (!recovered) {
+                  if (window.__grimoireRecovery !== session || session.save())
+                    reload();
+                }
+              })
+              .finally(() => {
+                recovering = false;
+              });
+          } else reload();
           return true;
         };
         addEventListener("unhandledrejection", (event) => {

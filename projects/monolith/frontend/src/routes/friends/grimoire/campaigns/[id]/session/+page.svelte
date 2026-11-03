@@ -1,5 +1,12 @@
 <script>
-  import { onMount, untrack, tick } from "svelte";
+  import { onMount, setContext, untrack, tick } from "svelte";
+  import {
+    RECOVERY,
+    createRecovery,
+    fields,
+    recoveryScope,
+    registerDraft,
+  } from "$lib/grimoire/rollout-recovery.js";
   import { sheetRolls } from "$lib/grimoire/sheet-rolls.js";
   import { composeMessage } from "$lib/grimoire/session-compose.js";
   import {
@@ -46,9 +53,11 @@
   let inventoryPrefill = $state(null);
   let busy = $state(false);
   let failure = $state("");
+  let uncertainSend = $state("");
   let pendingMessage = null;
   let connection = $state("Live");
   let signedOut = $state("");
+  let root;
   $effect(() => {
     state = data;
     draft = "";
@@ -129,7 +138,79 @@
     pending: pendingMessage,
   });
 
-  const viewer = () => ({ id: state.user?.id, role: state.campaign.role });
+  const viewer = () => ({
+    id: state.user?.id,
+    role: state.campaign.role,
+    ...(data.rolloutRecoveryEnabled === true
+      ? { sessionId: state.session?.id }
+      : {}),
+  });
+  const recovery = createRecovery({
+    enabled: () => data.rolloutRecoveryEnabled === true,
+    scope: () => recoveryScope(state),
+    keepComposer: () => keepDraft(state.campaign.id, viewer(), composer()),
+    dropComposer: () => dropDraft(state.campaign.id),
+    reconnect: () => reconnect(),
+  });
+  setContext(RECOVERY, recovery);
+  registerDraft(
+    "page",
+    () => ({
+      activeTab,
+      journalView,
+      formula,
+      rollLabel,
+      rollVisibility,
+      rollMode,
+      rollKind,
+      details: [
+        ...(root?.querySelectorAll(
+          ".initiative-panel, .voice-presets, .dice-tray",
+        ) || []),
+      ].map((el) => el.open),
+      scroll: window.scrollY,
+    }),
+    async (saved, current) => {
+      const kept = fields(saved, {
+        activeTab: "",
+        journalView: "",
+        formula: "",
+        rollLabel: "",
+        rollVisibility: "",
+        rollMode: "",
+        rollKind: "",
+        scroll: 0,
+      });
+      activeTab = ["story", "notes", "inventory", "journal"].includes(
+        kept.activeTab,
+      )
+        ? kept.activeTab
+        : "story";
+      journalView = kept.journalView === "party" ? "party" : "mine";
+      formula = kept.formula;
+      rollLabel = kept.rollLabel;
+      rollVisibility = ["table", "dm", "self"].includes(kept.rollVisibility)
+        ? kept.rollVisibility
+        : "dm";
+      rollMode = ["normal", "adv", "dis"].includes(kept.rollMode)
+        ? kept.rollMode
+        : "normal";
+      rollKind = ["checks", "saves", "attacks"].includes(kept.rollKind)
+        ? kept.rollKind
+        : "checks";
+      await tick();
+      if (!current()) return;
+      if (Array.isArray(saved.details))
+        [
+          ...root.querySelectorAll(
+            ".initiative-panel, .voice-presets, .dice-tray",
+          ),
+        ].forEach((el, index) => {
+          el.open = saved.details[index] === true;
+        });
+      window.scrollTo(0, Math.max(0, kept.scroll));
+    },
+  );
   // Another account signing in on this browser changes who the poll answers
   // for. Panels keep their own state, so only a full load is safe.
   const identity = (view) =>
@@ -139,6 +220,13 @@
       view.campaign?.player_character_id,
     ].join("|");
   const expiry = expiryCheck();
+  const recovering = () => data.rolloutRecoveryEnabled === true;
+  const transientResponse = (response) =>
+    recovering() && [502, 503, 504].includes(response.status);
+  function reconnect() {
+    expiry.reset();
+    if (!signedOut) connection = "Reconnecting";
+  }
 
   // Only a full page load can pass the login again, so keep the composer and
   // reload. If this tab reloaded within the last minute, stop and ask instead.
@@ -175,6 +263,7 @@
         { redirect: "manual" },
       );
       if (signInExpired(response)) return signInSignal();
+      if (transientResponse(response)) return reconnect();
       expiry.reset();
       const next = await response.json();
       if (!response.ok) throw new Error(next.error);
@@ -194,6 +283,7 @@
         dropDraft(state.campaign.id);
       }
     } catch {
+      if (recovering()) expiry.reset();
       if (!signedOut) connection = "Reconnecting";
     }
   }
@@ -205,6 +295,7 @@
     if (busy) return;
     busy = true;
     failure = "";
+    uncertainSend = "";
     try {
       const response = await fetch(endpoint(), {
         method: "POST",
@@ -217,6 +308,13 @@
       if (signInExpired(response)) {
         signInSignal();
         if (!signedOut) failure = interrupted;
+        return;
+      }
+      // A proxy can return HTML, or lose a response after the write committed.
+      // Keep the exact pending request id for the user's explicit retry.
+      if (transientResponse(response)) {
+        reconnect();
+        if (input.operation === "post") uncertainSend = interrupted;
         return;
       }
       expiry.reset();
@@ -234,6 +332,14 @@
       await refresh();
       return result;
     } catch (error) {
+      if (
+        recovering() &&
+        (error instanceof TypeError || error.name === "AbortError")
+      ) {
+        reconnect();
+        if (input.operation === "post") uncertainSend = interrupted;
+        return;
+      }
       failure =
         error instanceof TypeError
           ? interrupted
@@ -339,21 +445,45 @@
   }
 
   onMount(() => {
-    const kept = takeDraft(state.campaign.id, viewer(), {
-      dm,
-      characters: state.characters,
-      speakers: ["narrator", ...speakers.map((row) => row.key), FREE_LABEL],
-    });
-    if (kept) {
-      draft = kept.text;
-      audience = kept.audience;
-      replyTo = kept.replyTo;
-      resolved = kept.resolved;
-      speakerKey = kept.speakerKey;
-      speakerLabel = kept.speakerLabel;
-      pendingMessage = kept.pending;
-    }
     let stopped = false;
+    // Initial page and child effects run before restored form assignments.
+    async function restore() {
+      await tick();
+      if (stopped) return;
+      await recovery.restore();
+      if (stopped || !playing) return;
+      const kept = takeDraft(state.campaign.id, viewer(), {
+        dm,
+        characters: state.characters,
+        speakers: ["narrator", ...speakers.map((row) => row.key), FREE_LABEL],
+      });
+      if (kept) {
+        draft = kept.text;
+        audience = kept.audience;
+        replyTo = kept.replyTo;
+        resolved = kept.resolved;
+        speakerKey = kept.speakerKey;
+        speakerLabel = kept.speakerLabel;
+        pendingMessage = kept.pending;
+        if (kept.pending) uncertainSend = interrupted;
+      }
+    }
+    void restore();
+    const callback = {
+      restore: async () => {
+        if (!recovery.sameScope()) return false;
+        await restore();
+        return true;
+      },
+      save: () => {
+        const saved = recovery.save();
+        if (!saved)
+          uncertainSend =
+            "Could not keep all drafts. Copy them before reloading.";
+        return saved;
+      },
+    };
+    if (recovering()) window.__grimoireRecovery = callback;
     let timer;
     async function poll() {
       if (!document.hidden) await refresh();
@@ -368,13 +498,15 @@
       stopped = true;
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", visible);
+      if (window.__grimoireRecovery === callback)
+        delete window.__grimoireRecovery;
     };
   });
 </script>
 
 <svelte:head><title>{state.campaign.name} · Grimoire</title></svelte:head>
 
-<main class="grimoire table">
+<main class="grimoire table" bind:this={root}>
   <header>
     <a href="/grimoire">← Your campaigns</a>
     <p class="eyebrow">
@@ -686,6 +818,7 @@
               >{busy ? "Sending…" : "Send"}</button
             >
           </div>
+          {#if uncertainSend}<p role="status">{uncertainSend}</p>{/if}
           {#if replyTo}<label class="resolve-choice"
               ><input type="checkbox" bind:checked={resolved} />Mark action
               resolved</label

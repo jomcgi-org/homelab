@@ -11,11 +11,54 @@ export function grimoireHeaders(cookies) {
 }
 
 export async function grimoireJson(fetch, cookies, path, options = {}) {
-  const response = await fetch(`${process.env.API_BASE}/api/grimoire${path}`, {
+  const retryGet =
+    process.env.GRIMOIRE_ROLLOUT_RECOVERY_ENABLED === "true" &&
+    (options.method ?? "GET").toUpperCase() === "GET";
+  // Both attempts share a deadline. A terminating pod cannot double the
+  // old ten-second wait and hold the next two-second session poll behind it.
+  const deadline = AbortSignal.timeout(retryGet ? 1500 : 10_000);
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, deadline])
+    : deadline;
+  const headers = new Headers(options.headers);
+  for (const [name, value] of Object.entries(grimoireHeaders(cookies)))
+    headers.set(name, value);
+  const request = {
     ...options,
-    signal: AbortSignal.timeout(10_000),
-    headers: { ...options.headers, ...grimoireHeaders(cookies) },
-  });
+    signal,
+    headers: Object.fromEntries(headers),
+  };
+  const url = `${process.env.API_BASE}/api/grimoire${path}`;
+  let response;
+  for (let attempt = 0; attempt < (retryGet ? 2 : 1); attempt += 1) {
+    signal.throwIfAborted();
+    try {
+      response = await fetch(url, request);
+    } catch (error) {
+      // Fetch connection failures are TypeErrors. Caller aborts and deadline
+      // expiry must not start another request, even if a fetch wraps the abort.
+      if (
+        retryGet &&
+        attempt === 0 &&
+        error instanceof TypeError &&
+        !signal.aborted
+      )
+        continue;
+      throw error;
+    }
+    if (
+      retryGet &&
+      attempt === 0 &&
+      [502, 503, 504].includes(response.status) &&
+      !signal.aborted
+    ) {
+      // Release the discarded response without parsing it. JSON/application
+      // failures below are outside the retry loop.
+      await response.body?.cancel().catch(() => {});
+      continue;
+    }
+    break;
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     const error = new Error(

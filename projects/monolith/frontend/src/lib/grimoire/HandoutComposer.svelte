@@ -1,6 +1,13 @@
 <script>
   import HandoutText from "./HandoutText.svelte";
   import {
+    fields,
+    pendingRequest,
+    registerDraft,
+    panelRecovery,
+  } from "./rollout-recovery.js";
+  const recovery = panelRecovery();
+  import {
     HANDOUT_IMAGE_MAX_BYTES,
     HANDOUT_MARKDOWN_MAX,
     HANDOUT_TITLE_MAX,
@@ -19,6 +26,51 @@
   let uploading = $state(false);
   let problem = $state("");
   let pending = null;
+  registerDraft(
+    "handout",
+    () => {
+      // An upload still in flight has no durable key. Keep the page open.
+      if (uploading) throw new Error("upload in flight");
+      return {
+        title,
+        markdown,
+        toTable,
+        picked,
+        image: image
+          ? {
+              key: image.key,
+              name: image.name,
+              content_type: image.content_type,
+              size: image.size,
+            }
+          : null,
+        pending,
+      };
+    },
+    (saved) => {
+      const kept = fields(saved, { title: "", markdown: "", toTable: true });
+      if (
+        !Array.isArray(saved.picked) ||
+        !saved.picked.every((id) => characters.some((row) => row.id === id))
+      )
+        return;
+      const upload =
+        saved.image === null
+          ? null
+          : fields(saved.image, {
+              key: "",
+              name: "",
+              content_type: "",
+              size: 0,
+            });
+      pending = pendingRequest(saved.pending);
+      title = kept.title;
+      markdown = kept.markdown;
+      toTable = kept.toTable;
+      picked = saved.picked;
+      image = upload;
+    },
+  );
 
   const audience = $derived(toTable ? "table" : picked.map((id) => `pc:${id}`));
   const ready = $derived(
@@ -38,7 +90,7 @@
     try {
       const form = new FormData();
       form.set("file", file);
-      const response = await fetch(
+      const response = await recovery.fetch(
         `/grimoire/campaigns/${campaignId}/handouts/uploads`,
         {
           method: "POST",
@@ -50,6 +102,7 @@
         throw new Error(result.error || "Could not upload that image.");
       image = { ...result, name: file.name };
     } catch (error) {
+      if (recovery.transient(error)) return;
       problem = error.message || "Could not upload that image.";
     } finally {
       uploading = false;
