@@ -13,7 +13,7 @@ importing this module never pulls boto3 into the public app's import closure
 
 import os
 
-from core.s3 import path_style_client
+from core.s3 import shared_client
 
 # Public-image-safe: a single object key per artifact id. Index naming keeps the
 # door open for multi-file artifacts later without changing the id space.
@@ -33,7 +33,7 @@ def _client():
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "")
     if not endpoint:
         raise RuntimeError("SEAWEEDFS_S3_ENDPOINT unset; cannot read artifact")
-    return path_style_client(endpoint)
+    return shared_client(endpoint)
 
 
 def get_artifact(artifact_id: str) -> tuple[bytes, str] | None:

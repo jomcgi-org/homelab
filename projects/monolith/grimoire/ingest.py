@@ -33,7 +33,7 @@ from typing import Any, Protocol
 
 from sqlmodel import Session, select
 
-from core.s3 import path_style_client
+from core.s3 import shared_client
 from grimoire.models import Book, Embedding, KnowledgeChunk
 
 logger = logging.getLogger("monolith.grimoire.ingest")
@@ -102,7 +102,7 @@ def build_s3_client():
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "")
     if not endpoint:
         raise RuntimeError("SEAWEEDFS_S3_ENDPOINT unset; cannot load grimoire chunks")
-    return path_style_client(endpoint)
+    return shared_client(endpoint)
 
 
 def parse_manifest_lines(book_id: str, lines: Iterable[str]) -> tuple[list[dict], int]:
