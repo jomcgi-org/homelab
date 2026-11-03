@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
 
+from core.db import query_rows
+
 REPO = "jomcgi-org/homelab"
 PREFIX = "factory-learning:"
 STAGES = {"evidence": "luna", "evaluate": "astra", "diagnose": "astra"}
@@ -106,10 +108,6 @@ def _table(db, schema, name):
     return name if db.get_bind().dialect.name == "sqlite" else f"{schema}.{name}"
 
 
-def _rows(db, sql, params):
-    return [dict(row) for row in db.execute(text(sql), params).mappings()]
-
-
 def _output(value):
     if not isinstance(value, str) or len(value.encode()) > MAX_OUTPUT_BYTES:
         raise ValueError("Learning output exceeds its bound")
@@ -122,7 +120,7 @@ def _output(value):
 def _read_turn(db, sid, seq):
     sessions = _table(db, "agent_sessions", "agent_sessions")
     turns = _table(db, "agent_sessions", "agent_turns")
-    rows = _rows(
+    rows = query_rows(
         db,
         f"SELECT s.repo,s.model,t.result_text,t.terminal_reason,t.stop_reason,t.created_at FROM {sessions} s JOIN {turns} t ON t.session_id=s.id WHERE s.id=:sid AND t.seq=:seq",
         {"sid": sid, "seq": seq},
@@ -180,7 +178,7 @@ def _source_fingerprint(evidence):
 def complete(db, name, holder):
     """Run inside the exact-owner job completion transaction, no network I/O."""
     jobs = _table(db, "claude_agent", "routine_jobs")
-    row = _rows(
+    row = query_rows(
         db, f"SELECT payload,interval_secs FROM {jobs} WHERE name=:name", {"name": name}
     )[0]
     payload = _json(row["payload"]) or {}
@@ -196,7 +194,7 @@ def complete(db, name, holder):
         raise ValueError("Missing exact drainer owner")
     sessions = _table(db, "agent_sessions", "agent_sessions")
     local = f"{match[1]}:qwen-drain:{name}"
-    owners = _rows(
+    owners = query_rows(
         db,
         f"SELECT id,model FROM {sessions} WHERE local_session_id=:local AND workflow_id=:workflow AND node_key='qwen-drain' AND status='completed'",
         {"local": local, "workflow": match[1]},
@@ -322,7 +320,7 @@ def complete(db, name, holder):
             }
             # The retained unique job name is the cross-run replay fence. An
             # unknown evaluator also blocks new candidates; it is not retried.
-            existing = _rows(
+            existing = query_rows(
                 db, f"SELECT name FROM {jobs} WHERE name=:name", {"name": target}
             )
             verdict = (
@@ -330,7 +328,7 @@ def complete(db, name, holder):
                 if db.get_bind().dialect.name == "sqlite"
                 else "payload->'learning_evaluation'->>'verdict'"
             )
-            pending = _rows(
+            pending = query_rows(
                 db,
                 f"SELECT name FROM {jobs} WHERE name LIKE :prefix AND (next_run_at IS NOT NULL OR locked_by IS NOT NULL OR COALESCE(last_status,'pending') != 'ok' OR {verdict}='unknown') LIMIT 1",
                 {"prefix": PREFIX + "%"},
@@ -393,7 +391,7 @@ def reconcile_daily_payload(db, *, default_repo=None, default_branch=None):
         return "disabled"
     jobs = _table(db, "claude_agent", "routine_jobs")
     lock = "" if db.get_bind().dialect.name == "sqlite" else " FOR UPDATE"
-    rows = _rows(
+    rows = query_rows(
         db,
         f"SELECT * FROM {jobs} WHERE name=:name{lock}",
         {"name": "factory-retro-daily"},
@@ -436,20 +434,20 @@ def reconcile_daily_payload(db, *, default_repo=None, default_branch=None):
     permits = _table(db, "agent_sessions", "capacity_reservations")
     sessions = _table(db, "agent_sessions", "agent_sessions")
     pending = _table(db, "agent_sessions", "pending_messages")
-    if _rows(
+    if query_rows(
         db,
         f"SELECT id FROM {permits} WHERE routine_job_name=:name AND state!='settled' LIMIT 1",
         {"name": row["name"]},
     ):
         return "active_permit"
-    latest = _rows(
+    latest = query_rows(
         db,
         f"SELECT status FROM {sessions} WHERE node_key='qwen-drain' AND local_session_id=workflow_id||:suffix ORDER BY id DESC LIMIT 1",
         {"suffix": ":qwen-drain:" + row["name"]},
     )
     if not latest or latest[0]["status"] != "completed":
         return "unsettled_session"
-    if _rows(
+    if query_rows(
         db,
         f"SELECT p.session_id FROM {pending} p JOIN {sessions} s ON s.id=p.session_id WHERE s.node_key='qwen-drain' AND s.local_session_id=s.workflow_id||:suffix LIMIT 1",
         {"suffix": ":qwen-drain:" + row["name"]},

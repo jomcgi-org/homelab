@@ -204,3 +204,11 @@ class TestGetSession:
                     gen.throw(RuntimeError("caller error"))
                 # The with-Session context manager must have called close() on exit
                 mock_close.assert_called_once()
+
+
+def test_query_rows_returns_plain_dicts():
+    engine = create_engine("sqlite://", poolclass=StaticPool)
+    with Session(engine) as session:
+        assert db_module.query_rows(session, "SELECT :n AS n, 'x' AS s", {"n": 1}) == [
+            {"n": 1, "s": "x"}
+        ]
