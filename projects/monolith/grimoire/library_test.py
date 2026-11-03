@@ -65,7 +65,12 @@ def client_fixture(session):
 
     app.dependency_overrides[get_authenticated_email] = authenticated_email
     app.dependency_overrides[get_game_creator_email] = authenticated_email
-    yield TestClient(app)
+    client = TestClient(app)
+    assert (
+        client.post("/api/grimoire/campaigns", json={"name": "Library DM"}).status_code
+        == 200
+    )
+    yield client
     app.dependency_overrides.clear()
 
 
@@ -444,7 +449,7 @@ class TestGetChunk:
             f"/api/grimoire/chunks/{seed.c0.id}?campaign={campaign['id']}",
             headers={"X-Test-Auth-Email": player_email},
         ).json()
-        assert chunk["entities"] == []
+        assert chunk == {"detail": "chunk not found"}
 
         # The DM still sees it.
         dm = client.get(

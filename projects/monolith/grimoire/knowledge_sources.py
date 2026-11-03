@@ -66,8 +66,7 @@ def recompute(session: Session, grant: KnowledgeGrant) -> bool:
     ).grant_scope
     details = {}
     for source in sorted(sources, key=lambda source: source.source_key):
-        if source.grant_scope == "partial":
-            details.update(source.revealed_details or {})
+        details.update(source.revealed_details or {})
     grant.revealed_details = details or None
     manual = next((source for source in sources if source.source_key == "manual"), None)
     grant.granted_in_session = manual.granted_in_session if manual else None
@@ -113,7 +112,7 @@ def remove_manual(session: Session, grant: KnowledgeGrant) -> bool:
 
 def creation_entities(session: Session, version: CharacterSheetVersion) -> set[str]:
     """One-hop typed links only. Never follow arbitrary adventure links."""
-    roots = set()
+    selected = {}
     for field, entity_type in (("ancestry", "race"), ("class_name", "class")):
         matches = session.exec(
             select(Entity)
@@ -127,13 +126,14 @@ def creation_entities(session: Session, version: CharacterSheetVersion) -> set[s
         ).all()
         if len(matches) != 1:
             raise ValueError(f"{field} must resolve to one common-knowledge entity")
-        roots.add(matches[0].id)
+        selected[field] = matches[0].id
+    roots = set(selected.values())
     links = session.exec(
         select(Entity, Relationship)
         .join(Relationship, Relationship.from_entity_id == Entity.id)
         .where(
             common_knowledge_predicate(),
-            Relationship.to_entity_id.in_(roots),
+            Relationship.to_entity_id == selected["class_name"],
             Relationship.rel_type == "FEATURE_OF",
             Entity.entity_type == "class_feature",
         )
@@ -153,7 +153,7 @@ def creation_entities(session: Session, version: CharacterSheetVersion) -> set[s
         .join(Relationship, Relationship.to_entity_id == Entity.id)
         .where(
             common_knowledge_predicate(),
-            Relationship.from_entity_id.in_(roots),
+            Relationship.from_entity_id == selected["ancestry"],
             Relationship.rel_type == "SUBRACE_OF",
             Entity.entity_type == "race",
         )

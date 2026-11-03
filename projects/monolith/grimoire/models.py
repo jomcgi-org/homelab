@@ -1606,7 +1606,9 @@ class KnowledgeContribution(SQLModel, table=True):
         sa_column=_uuid_column(primary_key=True),
     )
     grant_id: str = Field(
-        sa_column=_uuid_column(nullable=False, fk="grimoire.knowledge_grant.id")
+        sa_column=_uuid_column(
+            nullable=False, fk="grimoire.knowledge_grant.id", ondelete="CASCADE"
+        )
     )
     source_key: str
     source_sheet_version_id: str | None = Field(
