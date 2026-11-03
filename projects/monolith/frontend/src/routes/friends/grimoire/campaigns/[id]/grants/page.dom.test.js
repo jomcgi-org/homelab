@@ -18,7 +18,13 @@ const pcs = [
 ];
 const entities = [
   { id: "e1", name: "Mara", entity_type: "npc", is_global: false },
-  { id: "e2", name: "Old Road", entity_type: "location", is_global: true },
+  {
+    id: "e2",
+    name: "Old Road",
+    entity_type: "location",
+    is_global: true,
+    common_knowledge: true,
+  },
   { id: "e3", name: "Forbiddance", entity_type: "spell", is_global: false },
 ];
 const data = {

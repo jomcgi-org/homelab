@@ -1587,6 +1587,36 @@ class KnowledgeGrant(SQLModel, table=True):
     )
 
 
+class KnowledgeContribution(SQLModel, table=True):
+    """Independent manual or sheet source for an effective knowledge grant."""
+
+    __tablename__ = "knowledge_contribution"
+    __table_args__ = (
+        UniqueConstraint(
+            "grant_id", "source_key", name="knowledge_contribution_source_key"
+        ),
+        CheckConstraint(
+            "grant_scope IN ('full', 'partial', 'name_only')",
+            name="knowledge_contribution_scope_chk",
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    grant_id: str = Field(
+        sa_column=_uuid_column(nullable=False, fk="grimoire.knowledge_grant.id")
+    )
+    source_key: str
+    source_sheet_version_id: str | None = Field(
+        default=None, sa_column=_uuid_column(fk="grimoire.character_sheet_version.id")
+    )
+    grant_scope: GrantScope = Field(sa_column=Column(String, nullable=False))
+    revealed_details: dict | None = Field(default=None, sa_column=Column(_JSONB))
+    granted_in_session: str | None = Field(default=None, sa_column=_uuid_column())
+
+
 # Entity types with no row here (faction, deity, item) are spine-only per
 # ADR 011: extraction can emit them but no typed detail table exists yet.
 ENTITY_DETAIL_MODELS: dict[str, type[SQLModel]] = {

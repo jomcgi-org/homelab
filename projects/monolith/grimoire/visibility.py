@@ -16,10 +16,44 @@ from typing import Any, Literal
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, SQLModel, and_, or_, select
 
-from grimoire.models import Entity, GameSession, KnowledgeGrant
+from grimoire.models import Entity, GameSession, KnowledgeGrant, PlayerCharacter
 
 Viewer = str | None  # "dm", a player_character_id, or None before association
 Context = Literal["lookup", "relationship"]
+
+# Exact corpus identifiers, reviewed as rules/reference sources. Copyright is
+# a separate public-reader policy and never establishes campaign knowledge.
+# Unknown sources (including source-less globals) fail closed.
+COMMON_KNOWLEDGE_BOOK_IDS = frozenset(
+    {
+        "system-reference-doc-5-1",
+        "system-reference-doc-5-2",
+        "black-flag-reference-document",
+        "a5e-srd",
+    }
+)
+
+
+def common_knowledge_predicate():
+    return and_(
+        Entity.is_global.is_(True), Entity.source_book.in_(COMMON_KNOWLEDGE_BOOK_IDS)
+    )
+
+
+def is_common_knowledge(entity: Entity) -> bool:
+    return entity.is_global and entity.source_book in COMMON_KNOWLEDGE_BOOK_IDS
+
+
+def campaign_player_predicate(campaign_id: str, viewer: Viewer):
+    return (
+        select(PlayerCharacter.id)
+        .where(
+            PlayerCharacter.id == viewer,
+            PlayerCharacter.campaign_id == campaign_id,
+        )
+        .exists()
+    )
+
 
 # Spine identity fields returned even for the most restrictive scope
 # (partial/name_only): enough to name and link the entity, nothing typed.
@@ -91,7 +125,7 @@ def visible_entities_query(
                 .correlate(Entity)
                 .exists()
             )
-            query = query.where(Entity.is_global.is_(False), ~known)
+            query = query.where(~common_knowledge_predicate(), ~known)
         return query
 
     join_condition = and_(
@@ -102,7 +136,10 @@ def visible_entities_query(
     query = (
         select(Entity, KnowledgeGrant)
         .join(KnowledgeGrant, join_condition, isouter=True)
-        .where(or_(Entity.is_global, KnowledgeGrant.id.is_not(None)))
+        .where(
+            campaign_player_predicate(campaign_id, viewer),
+            or_(common_knowledge_predicate(), KnowledgeGrant.id.is_not(None)),
+        )
     )
     return query
 
@@ -171,6 +208,7 @@ def project_entity(
 
     if viewer == "dm":
         result = {**spine, **_flatten_detail(detail)}
+        result["common_knowledge"] = is_common_knowledge(entity)
         result["grant"] = (
             None
             if grant is None
@@ -184,16 +222,20 @@ def project_entity(
 
     scope = grant.grant_scope if grant is not None else None
 
-    if scope is None or scope == "full":
+    if viewer is None:
+        return None
+
+    if is_common_knowledge(entity) or scope == "full":
         return {**spine, **_flatten_detail(detail)}
+
+    if scope is None:
+        return None
 
     if scope == "partial":
         identity = {field: getattr(entity, field) for field in _SPINE_IDENTITY_FIELDS}
         return {**identity, "revealed_details": grant.revealed_details}
 
     if scope == "name_only":
-        if context == "lookup":
-            return None
         return {
             "id": entity.id,
             "name": entity.name,

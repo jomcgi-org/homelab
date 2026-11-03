@@ -25,7 +25,7 @@
       const result = await response.json();
       if (!response.ok) throw new Error(result.error);
       entity = result;
-      if (!grant && entity.is_global) scope = "full";
+      if (entity.common_knowledge) scope = "full";
     } catch (error) {
       failure = error.message;
     }
