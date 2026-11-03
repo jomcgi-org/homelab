@@ -38,6 +38,13 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            {{- if .Values.logs.containerMetrics.enabled }}
+            # kubelet_stats scrapes this node's kubelet by IP.
+            - name: K8S_NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            {{- end }}
             {{- if .Values.onepassword.enabled }}
             # Same Secret and keys as the gateway Deployment.
             - name: HONEYCOMB_API_KEY
