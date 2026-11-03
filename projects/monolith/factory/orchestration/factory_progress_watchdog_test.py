@@ -816,6 +816,17 @@ def test_only_authority_kinds_page_once_the_digest_is_on(monkeypatch):
     assert policy.pages("intervention") and policy.pages("deadline")
 
 
+def test_automatic_release_follows_active_cessation(monkeypatch):
+    from factory.orchestration import factory_notify_policy as policy
+
+    monkeypatch.setenv("FACTORY_ACTIVE_CESSATION_ENABLED", "true")
+    assert policy.automatic_release() is True
+    monkeypatch.setenv("FACTORY_ACTIVE_CESSATION_ENABLED", "false")
+    assert policy.automatic_release() is False
+    monkeypatch.delenv("FACTORY_ACTIVE_CESSATION_ENABLED", raising=False)
+    assert policy.automatic_release() is False
+
+
 def test_a_digested_notice_is_recorded_once_and_not_sent(db, notices, monkeypatch):
     from factory.orchestration import factory_notify_policy as policy
 
