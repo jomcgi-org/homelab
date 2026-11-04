@@ -2254,6 +2254,22 @@ the race; retries cover a transient connection failure without re-executing a
 request that reached the application.
 
 
+**Why receipt preparation does not retire an attempt.** Receipt preparation runs
+in a worker thread that can outlive cancellation. Retiring the previous receipt
+there let a rollout record a first response-loss hold whose exact receipt was
+subsequently superseded by an unposted retry. The staged protocol adds nullable
+`attempt_phase` without rewriting legacy rows. Prepared rows remain excluded by
+the existing `superseded_at` reader fence; promotion under the original ownership
+locks and a bounded executor handoff guard alone records conservative attempt
+intent and retires the predecessor. An indeterminate commit retains uncertainty;
+it never supplies cessation or zero-execution proof. The callback boundary still
+requires its exact credential, and only a fresh empty preparation can promote.
+This additive representation keeps prepared rows inert to old binaries during
+rollback. The chart defaults off until migration and complete receiver/executor
+rollout are verified; the activation and live acceptance sequence is in
+[FACTORY.md](factory/orchestration/FACTORY.md#execution-and-evidence), tracked by
+[#7583](https://github.com/jomcgi-org/homelab/issues/7583).
+
 **Why bounded permit diagnostics.** Unknown execution retains admission capacity
 until exact cessation evidence is reconciled. The operator-only
 `factory_diagnostics` kind `permits` read accepts at most twenty exact permit

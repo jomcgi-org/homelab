@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "bc1d4dfa2",
+  "commit": "52a8dde2a7",
   "nodes": [
     {
       "key": "console-caller",
@@ -338,6 +338,14 @@
       "layer": "store",
       "maturity": "built",
       "evidence": "projects/monolith/factory/orchestration/factory_landing.py:606"
+    },
+    {
+      "key": "receipt-attempt",
+      "label": "Exact receipt preparation and attempt-intent owner",
+      "view": "logical",
+      "layer": "enforcement",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/result_receipts.py:97,160,230"
     }
   ],
   "control_actions": [
@@ -754,6 +762,33 @@
       "to": "github-pulls",
       "maturity": "built",
       "evidence": "projects/monolith/factory/orchestration/factory_landing.py:902"
+    },
+    {
+      "key": "receipt-attempt.prepare",
+      "label": "Stage a receipt without retiring the last attempted receipt",
+      "view": "logical",
+      "from": "agent-runner",
+      "to": "receipt-attempt",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/result_receipts.py:160"
+    },
+    {
+      "key": "receipt-attempt.promote",
+      "label": "Promote the exact empty preparation under ownership locks and the handoff guard",
+      "view": "logical",
+      "from": "agent-runner",
+      "to": "receipt-attempt",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/result_receipts.py:230; projects/monolith/factory/execution/transport.py:1980"
+    },
+    {
+      "key": "receipt-attempt.hold",
+      "label": "Persist the first exact response-loss hold before cancellation",
+      "view": "logical",
+      "from": "agent-runner",
+      "to": "receipt-attempt",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/mcp.py:915,954"
     }
   ],
   "feedback": [
@@ -950,6 +985,20 @@
       "from": "repair-delegation",
       "to": "factory-landing",
       "signal": "Exact candidate matches durable repair grant, or explicit refusal"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "receipt-attempt",
+      "signal": "Legacy NULL, inert prepared or conservative attempted phase with exact owner, superseded fence and first-hold identity",
+      "evidence": "projects/monolith/factory/execution/result_receipts.py:230,435,962"
+    },
+    {
+      "view": "logical",
+      "from": "receipt-attempt",
+      "to": "agent-runner",
+      "signal": "Pending or published attempt intent survives cancellation; neither proves guest receipt or cessation",
+      "evidence": "projects/monolith/factory/execution/transport.py:1980,2014; projects/monolith/factory/execution/mcp.py:1483"
     }
   ]
 }

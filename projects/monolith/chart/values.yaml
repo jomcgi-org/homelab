@@ -1582,6 +1582,9 @@ sandbox:
   workloadPrefix: "sandbox-"
 
 agentSessions:
+  # Enable only after the additive receipt phase migration and compatible
+  # executors/readers have rolled out. False retains legacy preparation.
+  stagedReceiptsEnabled: false
   # EmberVM workload the pi-spark family creates its guest sessions on.
   # Empty means "use the code default" (pi-runtime). This is the REVERT
   # LEVER for routing pi-spark back to the claude-runtime lane: set it to

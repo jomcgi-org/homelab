@@ -7,6 +7,7 @@ import logging
 import platform
 import re
 import secrets
+import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -852,6 +853,9 @@ async def _execute_pending_message(session_id: int) -> None:
     # delivery made. It outlives the exception that loses the response, so this
     # executor can name the exact receipt the guest was told to publish to.
     invocation_record: dict = {}
+    from factory.execution.result_receipts import staged_preparation_enabled
+
+    invocation_guard = threading.Lock() if staged_preparation_enabled() else None
     response_lost_held = False
     executor_cancelled = False
     factory_owned = str(getattr(factory_row, "local_session_id", "")).startswith(
@@ -908,7 +912,7 @@ async def _execute_pending_message(session_id: int) -> None:
             )
             stolen_exit_logged = True
 
-    def _record_response_lost(
+    def _record_response_lost_locked(
         reason: str, state: dict, lock_timeout_seconds: float | None = None
     ) -> bool:
         """Hold this attempt rather than settling it unknown.
@@ -946,6 +950,18 @@ async def _execute_pending_message(session_id: int) -> None:
                 invocation_record["receipt_id"],
             )
         return response_lost_held
+
+    def _record_response_lost(
+        reason: str, state: dict, lock_timeout_seconds: float | None = None
+    ) -> bool:
+        if invocation_guard is None:
+            return _record_response_lost_locked(reason, state, lock_timeout_seconds)
+        if not invocation_guard.acquire(timeout=lock_timeout_seconds or 2.0):
+            return False
+        try:
+            return _record_response_lost_locked(reason, state, lock_timeout_seconds)
+        finally:
+            invocation_guard.release()
 
     def _response_lost_eligible() -> bool:
         return bool(
@@ -1158,6 +1174,8 @@ async def _execute_pending_message(session_id: int) -> None:
                     raise asyncio.CancelledError
 
             deliver_kwargs["admission_check"] = shared_admission_check
+            if invocation_guard is not None:
+                deliver_kwargs["invocation_guard"] = invocation_guard
             from factory.orchestration.api import declared_artifact_path
 
             artifact_path = await asyncio.to_thread(
@@ -1462,6 +1480,7 @@ async def _execute_pending_message(session_id: int) -> None:
             and not response_lost_held
             and claimed_dispatch_count is not None
             and not invocation_record.get("attempted")
+            and not invocation_record.get("attempt_pending")
         ):
             try:
                 claim_released = store.mark_turn_error_sync(
