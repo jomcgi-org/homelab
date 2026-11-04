@@ -13,6 +13,7 @@ from core.clock import aware
 from sqlmodel import select
 
 from factory.orchestration import factory_controls as controls
+from factory.orchestration import factory_improvement_fence as fence
 from factory.orchestration.factory_improvement_preview import (
     PreviewPolicy,
     digest,
@@ -143,7 +144,7 @@ def _database_context(db, control, *, scout_receipt_id=None):
     progressing = [
         row
         for row in active
-        if row.state in ("queued", "admitted", "landing") and not row.task_paused
+        if row.state in fence.PROGRESSING_STATES and not row.task_paused
     ]
     sweep = db.exec(
         select(FactoryAudit)

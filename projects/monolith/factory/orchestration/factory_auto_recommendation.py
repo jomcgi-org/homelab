@@ -48,6 +48,17 @@ MAX_PER_RECEIPT = 3
 # A repair issue the factory generated never spawns a repair of its own.
 REPAIR_MARKER = "factory-problem:"
 HUMAN_OWNED_LABELS = frozenset({"human", "security-finding", "security"})
+# The only card origins that may be defaulted. Everything else, including
+# every unstamped or historical card, waits for a person.
+ROUTINE_ORIGINS = frozenset({"planner_pause", "deadline_pause"})
+# Direction keys owned by an explicit human or operator constraint.
+RESTRICTION_KEYS = (
+    "landing_hold",
+    "landing_hold_provenance",
+    "model_restriction",
+    "nonrenewable_recovery",
+)
+MAX_REVIEW_PAGES = 5
 # Text that routes a card to a person: access and secrets, destructive scope.
 SENSITIVE = re.compile(
     r"secret|credential|token|password|api[ -]?key|private key|\bssh\b|\bcert"
@@ -59,6 +70,7 @@ SENSITIVE = re.compile(
     re.IGNORECASE,
 )
 
+EVIDENCE = "\n\nevidence: "
 NOTE = (
     "Applied the validated recommendation: no hold, access or destructive "
     "scope, and no open review objection."
@@ -75,13 +87,9 @@ def _norm(text: object) -> str:
     return " ".join(str(text or "").lower().split())
 
 
-def blocker_key(row: FactoryReceipt, escalation: dict) -> str:
-    """Stable identity of the problem a card asks about, not of one task."""
-    raw = f"{row.repo}#{row.issue_number}:{_norm(escalation.get('question'))}"
-    return hashlib.sha256(raw.encode()).hexdigest()
-
-
 def _sensitive(escalation: dict, option: dict) -> bool:
+    """Defence in depth only. A miss is never authorization: the structured
+    origin allowlist and the shared restriction owners decide first."""
     text = " ".join(
         str(part or "")
         for part in (
@@ -95,25 +103,76 @@ def _sensitive(escalation: dict, option: dict) -> bool:
     return SENSITIVE.search(text) is not None
 
 
-def screen(row: FactoryReceipt, escalation: dict | None, now) -> str | None:
-    """Local, read-free reasons a card is not routine. None means it may pass."""
+def _origin(row: FactoryReceipt, escalation: dict) -> str | None:
+    """The server-stamped class of a routine card, or None when unclassified."""
+    from factory.orchestration.factory_refine import TASK_CLASS
+
+    stamped = (escalation.get("origin") or {}).get("class")
+    if stamped in ROUTINE_ORIGINS:
+        return stamped
+    # A refinement of an issue the factory generated for its own repair.
+    if row.task_class == TASK_CLASS and REPAIR_MARKER in (row.body or ""):
+        return "repair_refine"
+    return None
+
+
+def _runs(db, row: FactoryReceipt) -> list[dict]:
+    if not row.task_id:
+        return []
+    from factory.orchestration import graph
+
+    return graph.node_runs(row.task_id, session=db)
+
+
+def failure_identity(db, row: FactoryReceipt, origin: str) -> tuple[str, int]:
+    """Stable blocker key and the newest server-observed success watermark.
+
+    The key names the problem (issue, card class and the nodes that failed),
+    not the prose a planner wrote about it, so rewording cannot reset it.
+    """
+    runs = _runs(db, row)
+    failed = sorted(
+        {r["node_key"] for r in runs if r["status"] in ("failed", "escalated")}
+    )
+    raw = f"{row.repo}#{row.issue_number}:{origin}:{','.join(failed)}"
+    watermark = max((r["id"] for r in runs if r["status"] == "succeeded"), default=0)
+    return hashlib.sha256(raw.encode()).hexdigest(), watermark
+
+
+def screen(db, row: FactoryReceipt, escalation: dict | None, now) -> str | None:
+    """Reasons a card is not routine. None means it may proceed.
+
+    Runs both before the live read and again under the claim lock.
+    """
     from factory.orchestration import factory_pause
 
     if not isinstance(escalation, dict) or escalation.get("resolved") is not None:
         return "not_open"
     if row.state != controls.ESCALATED or row.task_paused or row.cancellation_requested:
         return "receipt_held"
-    if factory_pause.is_card(escalation) or escalation.get("kind") not in (
-        "delivery",
-        "refine",
-        None,
-    ):
+    if factory_pause.is_card(escalation):
         return "not_routine_kind"
+    origin = _origin(row, escalation)
+    if origin is None:
+        return "unclassified"
     if escalation.get("dispatch_refusal"):
         return "funding_gate"
     direction = json.loads(row.direction_json) if row.direction_json else {}
-    if direction.get("landing_hold") or direction.get("model_restriction"):
+    if (
+        any(key in direction for key in RESTRICTION_KEYS)
+        or controls.nonrenewable_recovery(row)
+        or (row.task_id and controls.review_recovery_held(row.task_id, session=db))
+        or (row.task_id and controls.task_recovery_grant(row.task_id, session=db))
+    ):
         return "explicit_hold"
+    tasks = [row.task_id, *(direction.get("previous_task_ids") or [])]
+    if db.exec(
+        select(FactoryAudit.id).where(
+            FactoryAudit.action == "human_handoff",
+            FactoryAudit.task_id.in_([t for t in tasks if t]),
+        )
+    ).first():
+        return "human_handoff"
     options = escalation.get("options")
     if controls.verify_option_list(options, subject="escalation") is not None:
         return "invalid_options"
@@ -122,11 +181,12 @@ def screen(row: FactoryReceipt, escalation: dict | None, now) -> str | None:
         return "recommendation_not_continue"
     if _sensitive(escalation, option):
         return "sensitive_scope"
-    updated = row.updated_at
-    if updated.tzinfo is None:
-        updated = updated.replace(tzinfo=timezone.utc)
-    if (now - updated).total_seconds() < GRACE_SECONDS:
-        return "grace"
+    if now is not None:
+        updated = row.updated_at
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        if (now - updated).total_seconds() < GRACE_SECONDS:
+            return "grace"
     return None
 
 
@@ -136,8 +196,7 @@ def _prior(db, receipt_id: int) -> list[dict]:
         .where(FactoryAudit.action == APPLIED)
         .order_by(FactoryAudit.id)
     ).all()
-    details = [json.loads(raw) for raw in rows]
-    return [d for d in details if d.get("receipt_id") == receipt_id]
+    return [d for d in map(json.loads, rows) if d.get("receipt_id") == receipt_id]
 
 
 def _live(row: FactoryReceipt, escalation: dict) -> tuple[str | None, str | None]:
@@ -161,12 +220,23 @@ def _live(row: FactoryReceipt, escalation: dict) -> tuple[str | None, str | None
         number = escalation.get("pr_number")
         if type(number) is not int or number <= 0:
             return None, None
-        head = github_get(row.repo, f"pulls/{number}").get("head", {}).get("sha")
+        pull = github_get(row.repo, f"pulls/{number}")
+        if pull.get("state") not in (None, "open"):
+            return "pull_request_closed", None
+        head = pull.get("head", {}).get("sha")
         latest: dict[str, str] = {}
-        for review in github_list(row.repo, f"pulls/{number}/reviews?per_page=100"):
-            user = (review.get("user") or {}).get("login", "")
-            if review.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
-                latest[user] = review["state"]
+        for page in range(1, MAX_REVIEW_PAGES + 1):
+            reviews = github_list(
+                row.repo, f"pulls/{number}/reviews?per_page=100&page={page}"
+            )
+            for review in reviews:
+                user = (review.get("user") or {}).get("login", "")
+                if review.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+                    latest[user] = review["state"]
+            if len(reviews) < 100:
+                break
+        else:
+            return "evidence_unreadable", head
         if "CHANGES_REQUESTED" in latest.values():
             return "review_objection", head
         return None, head
@@ -197,70 +267,114 @@ def _emit_blocker(db, row: FactoryReceipt, key: str, reason: str) -> None:
     )
 
 
+def _note(head: str | None) -> str:
+    return NOTE + EVIDENCE + json.dumps({"head": head})
+
+
+def _head_of(note: str | None) -> str | None:
+    try:
+        return json.loads((note or "").split(EVIDENCE, 1)[1]).get("head")
+    except (IndexError, ValueError, AttributeError):
+        return None
+
+
+def revalidate_claim(db, control, row, escalation, option, note) -> None:
+    """Run inside the decision claim, under the control lock.
+
+    Re-screens against the shared restriction owners, requires an enabled
+    lane, applies the progress and answer-cap rules, and writes the ledger row
+    in the claim's own transaction. A refusal that signals a repeat also
+    records the single repair signal before raising.
+    """
+    from factory.orchestration.factory_decisions import DecisionError
+
+    def refuse(code: str):
+        raise DecisionError(409, f"auto:{code}")
+
+    from factory.orchestration.factory_models import FactoryControl
+
+    control = control or db.get(FactoryControl, "factory")
+    if control is None or control.state != "enabled":
+        refuse("lane_not_enabled")
+    if not enabled():
+        refuse("disabled")
+    reason = screen(db, row, escalation, None)
+    if reason is not None:
+        refuse(reason)
+    if option != escalation["options"][0]:
+        refuse("not_the_recommendation")
+    origin = _origin(row, escalation)
+    key, watermark = failure_identity(db, row, origin)
+    head = _head_of(note)
+    prior = _prior(db, row.id)
+    gate = None
+    if len(prior) >= MAX_PER_RECEIPT:
+        gate = "auto_limit"
+    elif prior and prior[-1]["blocker_key"] == key:
+        last = prior[-1]
+        moved = head is not None and head != last.get("head_sha")
+        if not (moved and watermark > last.get("watermark", 0)):
+            gate = "no_progress"
+    if gate is not None:
+        _emit_blocker(db, row, key, gate)
+        refuse(gate)
+    controls._audit(
+        db,
+        ACTOR,
+        APPLIED,
+        task_id=row.task_id,
+        receipt_id=row.id,
+        blocker_key=key,
+        head_sha=head,
+        watermark=watermark,
+        origin=origin,
+    )
+
+
 def _consider(row_id: int, now) -> str:
     from factory.orchestration import factory_decisions as decisions
 
     with controls._read_session() as db:
         row = db.get(FactoryReceipt, row_id)
         escalation = decisions.escalation_of(row)
-        reason = screen(row, escalation, now)
+        reason = screen(db, row, escalation, now)
         if reason is not None:
             return reason
         db.expunge(row)
-    key = blocker_key(row, escalation)
     reason, head = _live(row, escalation)
     if reason is not None:
         return reason
-    with controls._locked_session() as (db, _control):
-        prior = _prior(db, row.id)
-        gate = None
-        if len(prior) >= MAX_PER_RECEIPT:
-            gate = "auto_limit"
-        elif (
-            prior
-            and prior[-1]["blocker_key"] == key
-            and (head is None or prior[-1].get("head_sha") == head)
-        ):
-            gate = "no_progress"
-        if gate is not None:
-            _emit_blocker(db, row, key, gate)
-            return gate
     fields = decisions._fields(row)
     option = escalation["options"][0]
+    with controls._read_session() as db:
+        key, watermark = failure_identity(db, row, _origin(row, escalation))
+        answered = len(_prior(db, row.id))
     result = decisions.request_decision(
         row.id,
         fields["decision_id"],
         option["key"],
         ACTOR,
-        request_key=f"auto:{fields['decision_id']}",
-        note=NOTE,
+        # New server-observed evidence is a new request; identical evidence
+        # replays the stored outcome without another GitHub read or effect.
+        request_key=f"auto:{fields['decision_id']}:{head}:{watermark}:{answered}",
+        note=_note(head),
     )
     if result.get("state") == "refused":
-        return f"refused:{result.get('reason')}"
+        reason = str(result.get("reason") or "")
+        return reason.removeprefix("auto:") if reason.startswith("auto:") else (
+            f"refused:{reason}"
+        )
     if result.get("state") != "completed":
         # Accepted or outcome-unknown: the request fence owns the outcome.
-        # It is neither counted as an answer nor a repeated blocker.
         return "unconfirmed"
-    with controls._locked_session() as (db, _control):
-        controls._audit(
-            db,
-            ACTOR,
-            APPLIED,
-            task_id=row.task_id,
-            receipt_id=row.id,
-            decision_id=fields["decision_id"],
-            blocker_key=key,
-            head_sha=head,
-            state=result.get("state"),
-        )
     return "applied"
 
 
-def tick() -> dict[str, int]:
+def tick(state: str | None = None) -> dict[str, int]:
     """Answer at most a few routine cards per interval. Safe to call often."""
     global _last_run
     counts: dict[str, int] = {}
-    if not enabled():
+    if not enabled() or state != "enabled":
         return counts
     mark = time.monotonic()
     if _last_run is not None and mark - _last_run < INTERVAL_SECONDS:

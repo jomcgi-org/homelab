@@ -1202,7 +1202,7 @@ def test_scout_context_excludes_only_exact_durable_owner(improvements):
                 body="",
                 url="https://github.com/jomcgi-org/homelab/issues/999",
                 actor="operator",
-                state="queued",
+                state="admitted",
             )
         )
         session.commit()
@@ -1216,6 +1216,7 @@ def test_scout_context_excludes_only_exact_durable_owner(improvements):
     [
         ("escalated", False, True),
         ("uncertain", False, True),
+        ("queued", False, True),
         ("admitted", True, True),
         ("admitted", False, False),
         ("landing", False, False),
@@ -1295,3 +1296,18 @@ def test_scout_review_requires_successful_independent_sessions(improvements):
         session.commit()
         with pytest.raises(ValueError, match="scout_review_not_verified"):
             service._verify_scout_review(session, receipt_id, batch)
+
+
+def test_stalled_owner_still_yields_a_repair_candidate(improvements):
+    """Stalled owner -> complete context -> reviewed candidate drafts."""
+    service, engine, _clock, _policy, batch, _inventory, _quota, _writes = improvements
+    with Session(engine) as session:
+        row = session.exec(select(FactoryReceipt)).first()
+        row.repo, row.state = service.REPO, "escalated"
+        session.commit()
+    current = service.context()
+    assert current["intake_complete"] is True and current["owners"]
+    batch["review_digest"] = current["review_digest"]
+    result = service.submit(batch, actor="operator:test")
+    assert result["reason"] == "candidates"
+    assert result["drafts"]

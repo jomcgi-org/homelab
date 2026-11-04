@@ -21,6 +21,7 @@ from factory.orchestration import (
 )
 from factory.orchestration.factory_models import (
     FactoryAudit,
+    FactoryControl,
     FactoryReceipt,
     WorkItem,
     FUNDING_AUDIT_ALIASES,
@@ -638,7 +639,7 @@ def request(task, reason, *, recover=False, progress=False):
             "There is no fixed number of extensions. Approve a reasonable finite tranche, steer to a better plan, or stop if the objective is no longer worthwhile. "
             "A failed guest invocation is not proof the feature is worthless. Explain how the next plan addresses the failure. "
             "Dollar charges are recorded for reporting, not a hard runtime cutoff; judge on progress and value, not price. "
-            "task_budget_usd is a proposal: increasing the current task policy's budget requires an explicit operator amendment and pauses the task before granting the next tranche. "
+            "task_budget_usd is a proposal recorded as accounting; only an explicit operator budget restriction makes an increase pause the task for an amendment. "
             "Continue within the approved budget when feasible. additional_work_turns is a finite next tranche (1-20), "
             "lease_minutes is its review horizon (1-30). Stop uses zeroes. Never change product scope or bypass independent review. "
             "You are a decision-only reviewer. Do not modify files, call factory controls, create another task, or send messages. "
@@ -789,6 +790,14 @@ def settle(task, run, request):
             # current accounting below fence this completed decision's authority.
             merit = request.get("merit")
             policy = effective_policy(db, row)
+            # A restriction set after admission still binds this task.
+            live = db.get(FactoryControl, "factory")
+            live_policy = json.loads(live.policy_json or "{}") if live else {}
+            policy = {
+                **policy,
+                "task_budget_binding": policy.get("task_budget_binding") is True
+                or live_policy.get("task_budget_binding") is True,
+            }
             spent = controls._accounting(controls._starts(db, task["id"]))
             resolved = decide(
                 decision,
