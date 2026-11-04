@@ -1439,7 +1439,8 @@ def _boundary(
         + (
             "You are an independent reviewer. Inspect the exact pushed PR head, "
             "report its SHA and verdict, and do not modify source. "
-            "Also report landing_scope with the exact base_sha and complete changed paths, "
+            "Also report landing_scope with the PR's exact merge-base commit as base_sha "
+            "and complete changed paths, "
             "classification private_internal_reversible or requires_operator, boolean "
             "public_facing, security_sensitive, authentication_or_credentials and destructive, "
             "and evidence explaining the scope. Authority, permission, credential, safety-gate "

@@ -488,11 +488,13 @@ pause qualify. The initial fixed paths are `.py` and `_test.py` files for
 `factory_problem_issues`, `factory_intake_loop`, `factory_progress_watchdog` and
 `factory_feedback` under `projects/monolith/factory/orchestration/`. Changes must
 modify existing regular non-executable UTF-8 files. A separate independent
-exact-head review must provide `landing_scope`, including the exact base commit
+exact-head review must provide `landing_scope`, including the PR's exact merge-base commit
 and complete path list, and positively classify the change as private, internal
 and reversible. Its public/security/credential/destructive flags must all be
 false. Authority or safety-gate changes and ambiguous scope require an operator.
 Required CI, protected merge queue and source/repair holds remain binding.
+Unrelated main-tip movement preserves that reviewed diff. A changed merge base,
+head or file evidence refuses and needs fresh independent scope review.
 
 Unsupported automatic scope includes arbitrary stranded workflows without
 node-bound machine-pause proof, historical cards, authority-owner repairs

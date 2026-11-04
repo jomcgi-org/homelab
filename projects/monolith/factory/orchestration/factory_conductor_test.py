@@ -20953,6 +20953,7 @@ def native_repair_landing_case(monkeypatch, *, enabled=True, max_repairs=3):
         auto_merge=None,
     )
     changed = dict(filename=path, status="modified", sha="c" * 40)
+    comparison = {"files": [changed], "merge_base_commit": {"sha": base}}
     trees = {}
     for revision in (base, head):
         parts = path.split("/")
@@ -20983,7 +20984,7 @@ def native_repair_landing_case(monkeypatch, *, enabled=True, max_repairs=3):
         if suffix == "pulls/72":
             return pull
         if suffix.startswith("compare/"):
-            return {"files": [changed]}
+            return comparison
         if suffix.startswith("git/commits/"):
             return {"tree": {"sha": suffix.split("/")[-1]}}
         if suffix.startswith("git/trees/"):
@@ -21034,6 +21035,7 @@ def native_repair_landing_case(monkeypatch, *, enabled=True, max_repairs=3):
         issues=issues,
         pull=pull,
         changed=changed,
+        comparison=comparison,
         trees=trees,
         checks=checks,
         review=review,
@@ -21087,6 +21089,26 @@ def test_delegated_repair_lands_through_native_scope_and_queue(
         assert controls._receipt(db, case.source["id"]).task_paused
 
 
+def test_delegated_repair_main_progress_keeps_reviewed_diff_authority(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    case = native_repair_landing_case(monkeypatch)
+    case.pull["base"]["sha"] = "e" * 40
+    landing._arm(case.repair["repo"], case.item)
+    assert case.queue == {"repair-pr"}
+    case.pull["base"]["sha"] = "f" * 40
+    assert not landing._fence_ungranted_queue_entry(case.repair["repo"], case.item)
+    with controls._read_session() as db:
+        proof = json.loads(delegation._latest(db, delegation.GRANT).detail_json)
+        assert proof["files"]["base_sha"] == "a" * 40
+
+
 @pytest.mark.parametrize(
     "hold",
     [
@@ -21095,7 +21117,8 @@ def test_delegated_repair_lands_through_native_scope_and_queue(
         "expired",
         "policy",
         "head",
-        "base",
+        "merge_base",
+        "base_branch",
         "paths",
         "symlink",
         "delete",
@@ -21228,8 +21251,10 @@ def test_delegated_repair_native_landing_refuses(feedback_db, monkeypatch, hold)
         case.pull["base"] = None
     elif hold == "ownership":
         case.issues[71]["assignees"] = [{"login": "somebody"}]
-    elif hold == "base":
-        case.pull["base"]["sha"] = "e" * 40
+    elif hold == "merge_base":
+        case.comparison["merge_base_commit"]["sha"] = "e" * 40
+    elif hold == "base_branch":
+        case.pull["base"]["ref"] = "other-branch"
     elif hold == "paths":
         case.changed["filename"] = "projects/monolith/auth/api.py"
     elif hold == "delete":

@@ -412,9 +412,18 @@ def _candidate(db, row, number, head):
         and pull.get("base", {}).get("ref") == task.base_branch,
         "pull_identity_changed",
     )
-    _require(scope["base_sha"] == pull["base"]["sha"], "review_scope_changed")
+    # GitHub's base branch tip advances independently of this PR. Bind the
+    # reviewed diff to its immutable merge base so unrelated main commits do
+    # not strand an approved head. A changed merge base still needs new review.
+    comparison = landing.github_get(row.repo, f"compare/{pull['base']['sha']}...{head}")
+    _require(
+        scope["base_sha"] == comparison["merge_base_commit"]["sha"],
+        "review_scope_changed",
+    )
     files = releases.regular_file_evidence(
-        pull, ALLOWED_PATHS, "repair_landing_paths_require_operator"
+        {**pull, "base": {**pull["base"], "sha": scope["base_sha"]}},
+        ALLOWED_PATHS,
+        "repair_landing_paths_require_operator",
     )
     _require(
         scope["base_sha"] == files["base_sha"]
