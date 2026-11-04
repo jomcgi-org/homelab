@@ -1432,11 +1432,24 @@ def reconcile(task, policy, runs, permission):
             return True
         # A retry of a routed pause keeps its provenance, so the locked
         # routine hold and enabled-lane checks apply to the retry too.
-        return request(
-            task,
-            "Retry funding decision after " + last["refusal"],
-            routine=_routed_pause(task["id"]),
+        routed = _routed_pause(task["id"])
+        retried = request(
+            task, "Retry funding decision after " + last["refusal"], routine=routed
         )
+        if retried or routed is None:
+            return retried
+        # Refused by a hold or a no-progress blocker: the question goes to a
+        # person now. A transient refusal (capacity, lane) just retries.
+        with controls._read_session() as db:
+            held = routine_hold(db, controls._receipt(db, task["id"]), task["id"])
+            blocked = funding_blocker(db, task["id"], runs)
+        if (held and held != "task_held") or blocked:
+            try:
+                c._escalate_task(task, routed["decision"], routed["cause"], runs)
+                return True
+            except c._EditRefused:
+                pass
+        return False
     snapshot = controls.task_snapshot(task["id"])
     nodes = graph.load_graph(task["id"])
     legacy = controls.continuation_grant(task["id"])
