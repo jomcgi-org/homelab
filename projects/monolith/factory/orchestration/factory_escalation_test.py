@@ -709,7 +709,6 @@ def test_active_paused_body_rewrite_replaces_card_without_answer(
     before = controls.task_snapshot(task_id)
     old_id = controls.decision_identity(before)
     if pinned_generation:
-        monkeypatch.setenv("FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED", "true")
         with controls._locked_session() as (session, control):
             current = json.loads(control.policy_json)
             control.policy_json = json.dumps(

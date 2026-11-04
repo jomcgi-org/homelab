@@ -6,7 +6,6 @@ this primitive takes no further locks and never performs network I/O.
 """
 
 import json
-import os
 from datetime import timedelta
 
 from sqlmodel import select
@@ -14,7 +13,7 @@ from sqlmodel import select
 from core.clock import aware
 from core.jsonio import dumps
 from factory.orchestration import factory_controls as controls
-from factory.orchestration.factory_models import FactoryAudit, FactoryControl, WorkItem
+from factory.orchestration.factory_models import FactoryAudit, WorkItem
 
 KIND = "automatic_pause"
 EXPIRY_ACTOR = "factory:pause-expiry"
@@ -99,15 +98,6 @@ def actionable(db, row, document, *, in_flight: bool | None = None):
     if in_flight is None:
         in_flight = controls.decision_in_flight(db, row.id)
     if in_flight:
-        return False
-    control = db.get(FactoryControl, "factory")
-    generation = json.loads(control.policy_json or "{}").get("generation")
-    if (
-        type(generation) is int
-        and row.generation != generation
-        and os.getenv("FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED", "false").lower()
-        != "true"
-    ):
         return False
     return (decidable(row, document) and document.get("options") == [STOP]) or (
         _watchdog_owns_pause(db, row, document) and bool(document.get("options"))

@@ -55,10 +55,6 @@ swarm:
   # Repository-staged for #6266. Live brick-roll, restart, and uncertain DELETE
   # checks must pass before this hub behavior is enabled.
   factoryTransientStopRetryEnabled: false
-  # Cards on still-active receipts are decidable across a generation bump.
-  # On 2026-10-01 receipts 700/703 (generation 13, admitted) had watchdog
-  # cards factory_decide refused once the policy moved to 14.
-  factoryActiveReceiptDecisionsEnabled: true
   factoryRoutinePauseFundingEnabled: true
   # Per-class floors on remaining quota percent (#5974). A floor only bites
   # for a role whose stored factory policy carries a model_pools entry with
