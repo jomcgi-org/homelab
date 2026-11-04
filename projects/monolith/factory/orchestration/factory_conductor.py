@@ -8887,6 +8887,14 @@ def _tick(checkpoint) -> None:
         revalidate_escalations()
     except Exception:  # noqa: BLE001 - card checks cannot stop task reconciliation
         logger.exception("factory escalation revalidation failed")
+    # Before any occupancy return: a lane full of waiting work must still be
+    # able to answer the routine card that is holding it.
+    try:
+        from factory.orchestration import factory_auto_recommendation
+
+        factory_auto_recommendation.tick()
+    except Exception:  # noqa: BLE001 - defaulting cards cannot stop reconciliation
+        logger.exception("factory auto-recommendation failed")
     active = list(snapshot["active_tasks"])
     if snapshot["state"] == "stopped":
         checkpoint("stop_reconciliation")
@@ -9023,6 +9031,16 @@ def _tick(checkpoint) -> None:
             generation=snapshot["policy"].get("generation", 0),
             observe_only=True,
         )
+        # The scout only queues an advisory receipt and admits nothing, so a
+        # full or stalled lane is exactly when repair discovery must still run.
+        try:
+            from factory.orchestration.factory_improvement_scout import (
+                tick as scout_tick,
+            )
+
+            scout_tick(snapshot["policy"])
+        except Exception:  # noqa: BLE001 - discovery cannot stall the lane
+            logger.exception("factory scout failed with a full lane")
         return
     checkpoint("intake")
     staged_sweeps = []

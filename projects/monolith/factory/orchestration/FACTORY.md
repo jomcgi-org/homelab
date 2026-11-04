@@ -138,6 +138,12 @@ Optional `problem_issues` creates GitHub issues from: `node_stalled`, `workflow_
 
 A `needs-human` verdict arrives as two to four options, recommendation first; `effect` is one of `agent-ready`, `close`, `split`, `defer`, `hold`, `supersede`. Every unresolved escalation also carries the fixed escape group, of which only the dismiss is non-final. Deciding uses `POST /api/swarm/factory/decisions/{receipt_id}` with an exact `decision_id` and a stable `request_key`. `FACTORY_OPERATOR_EMAILS` is empty by default. The derived allowance is `max_attempts` over live unsucceeded nodes plus spent turns plus engine-insertable rounds; an edit exceeding the envelope refuses with `envelope_exceeded`, never for dollars.
 
+### Default recommendations
+
+`FACTORY_AUTO_RECOMMENDATION_ENABLED` (chart false) lets the conductor tick, even with a full lane, answer a routine escalation through `request_decision` with request key `auto:<decision_id>` as `factory:auto-recommendation`. It applies only a validated first option whose effect is `agent-ready`, after a 15-minute grace, and only when the card is open, not a pause, watchdog or funding card, the issue is open, unedited and not `human`/`security-finding`, no landing hold or model restriction is pinned, the text names no access, secret or destructive scope, and the pull request has no standing changes-requested review. Unreadable evidence fails closed. Re-admission keeps receipt, task lineage, PR and accounting.
+
+Progress is a different question or a moved pull request head. The same question at the same head, or a fourth answer on a receipt, is not answered: one `recurring_blocker` audit feeds the `recurring_blocker` problem-issue source (default off), which deduplicates by blocker identity and marker. A receipt whose body carries a factory problem marker never emits another, so repair does not recurse. A full lane also runs the improvement scout, which admits nothing.
+
 ## Execution and evidence
 
 The reconciler expands only active receipts from a fresh control row. Source nodes receive a server-authored push-format contract for the exact task, node, attempt and dispatch key; a chained pre-push hook validates the outgoing commit in a detached linked worktree and refuses the push on missing tools or changed outputs. [Experiment #7458](https://github.com/jomcgi-org/homelab/issues/7458) stages repository-only.

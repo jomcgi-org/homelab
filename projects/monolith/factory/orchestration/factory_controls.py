@@ -246,6 +246,7 @@ PROBLEM_ISSUE_SOURCES = (
     "node_stalled",
     "workflow_stranded",
     "landing_recovery_exhausted",
+    "recurring_blocker",
 )
 DEFAULT_PROBLEM_ISSUES = {
     "enabled": False,
