@@ -3632,9 +3632,7 @@ def test_hold_inside_request_before_its_lock_still_wins(db, routine, monkeypatch
 
 
 @pytest.mark.parametrize("control", ["pause_admissions", "stop"])
-def test_lane_paused_between_request_and_settle_never_grants(
-    db, routine, control
-):
+def test_lane_paused_between_request_and_settle_never_grants(db, routine, control):
     task, policy, state = routine
     pause(task, policy, routine_pause())
     request = _pending(task)
