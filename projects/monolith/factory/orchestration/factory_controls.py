@@ -227,6 +227,8 @@ DEFAULT_INTAKE = {
     "refine_brief_only": False,
     # Author authority permits inspection, never approval or merge.
     "dependency_pr_authors": [],
+    # Verified login plus immutable GitHub user ID; discovery grants no scope.
+    "owner_pr_author": None,
     # Numeric IDs force security evidence; they grant no intake authority.
     "dependency_pr_author_ids": [],
     # Closing an issue is the one refine outcome that destroys something an
@@ -827,6 +829,19 @@ def _validate_intake(value: object) -> dict:
     if not isinstance(value, dict) or not set(value) <= set(DEFAULT_INTAKE):
         raise ValueError("invalid intake")
     result = {}
+    owner = value.get("owner_pr_author")
+    if owner is not None and (
+        not isinstance(owner, dict)
+        or set(owner) != {"login", "id"}
+        or not isinstance(owner.get("login"), str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", owner["login"]) is None
+        or type(owner.get("id")) is not int
+        or owner["id"] <= 0
+    ):
+        raise ValueError("invalid owner_pr_author")
+    result["owner_pr_author"] = (
+        {"login": owner["login"].lower(), "id": owner["id"]} if owner else None
+    )
     authors = value.get("dependency_pr_authors", [])
     if (
         not isinstance(authors, list)
@@ -3122,6 +3137,7 @@ def intake_state(policy: dict, *, session: Session | None = None) -> dict:
             "last_swept": latest("intake_swept"),
             "last_evaluated": latest("intake_evaluated"),
             "last_error": latest("intake_error"),
+            "owner_pr_backlog": latest("owner_pr_backlog"),
         }
 
 

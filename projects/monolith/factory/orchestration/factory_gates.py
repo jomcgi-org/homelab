@@ -165,8 +165,11 @@ def guidance(task: dict) -> str:
     if task.get("delivery_adoption") and not task.get("dependency_review"):
         parts.append(
             f"Adopted PR #{task['delivery_pr_number']} on {task['delivery_branch']}. "
-            "Rebase onto main, repair, push to this branch and independently "
-            "re-review the resulting head. Update this PR."
+            "Inspect fresh PR checks, reviews, draft status and conflicts. Finish the "
+            "draft, repair failing checks or review findings, and rebase only for "
+            "conflicts or CI writeback. Push to this branch, update this PR and "
+            "independently re-review the resulting head. Preserve explicit holds "
+            "and remaining operational acceptance. Never create a replacement PR."
         )
     return "\n".join(parts)
 

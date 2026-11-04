@@ -387,3 +387,31 @@ pipeline keep their existing contracts. See the activation and limitations in
 
 The Conductor pursues continuous self-improvement and delivery velocity toward Joe goals. Factory-owned budgets and workflow policies evolve through their owning interfaces; dollars stay accounting. Root `AGENTS.md` defines standing delivery authority; the [evolution contract](../../../../docs/agents/evolution.md) defines how improvements evaluate and retain.
 (see: /projects/monolith/factory/orchestration/factory_improvements.py)
+
+### Owner-authored PR backlog
+
+`intake.owner_pr_author` is omitted by default. A verified `{login, id}` enables
+owner PR discovery on the existing intake sweep, including drafts; dependency
+bots retain their separate policy. `factory_configure_owner_prs` previews and
+applies only this field with version CAS, a preview digest and replay-safe request
+key. Existing intake and refinement must already be enabled, without a refinement
+batch. Disabling discovery does not discard already owned work.
+
+A PR closing one accepted issue adopts that issue's work item and existing branch.
+An unlinked PR becomes a PR-backed work item and enters the existing bounded
+advisory lane. A server-verified `agent-ready` brief, citing an accepted goal or
+standing maintenance policy, permits delivery on that same PR without another
+issue. A label or author identity alone is not a scope grant. Older histories,
+active/queued ownership, explicit holds and unknown execution win over discovery.
+The feed prefers finishing PRs over fresh implementation candidates. It never
+imports prior approval: independent review and required CI must cover the current
+head, followed by the existing merge queue and rollout owner.
+
+Fresh PR/discussion holds fence dispatch and verification. The private
+`intake.owner_pr_backlog` projection reports the latest sweep's states, age,
+receipt owners and blockers, alongside merged and verified delivery counts.
+Superseded or closed PRs keep their history; advisory refinement cannot close a
+PR. External merges retain the existing merged-delivery verification owner and
+its review/operational fences. #7428 owns that owner's remaining external-review
+handoff. Activation, rollout and a pre-existing PR reaching reviewed, merged and
+verified delivery without manual selection remain open on #7597.

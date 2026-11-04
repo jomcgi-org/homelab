@@ -128,6 +128,7 @@ def test_factory_tools_are_registered():
         "factory_amend_policy",
         "factory_configure_refill",
         "factory_configure_problem_issues",
+        "factory_configure_owner_prs",
         "factory_reconcile",
         "factory_diagnostics",
         "factory_continue_evidence",
@@ -152,6 +153,7 @@ def test_status_distinguishes_native_registration_from_caller_catalog(monkeypatc
     assert set(catalog["tools"]) == {
         "factory_configure_refill",
         "factory_configure_problem_issues",
+        "factory_configure_owner_prs",
         "factory_amend_policy",
         "factory_reconcile",
         "factory_continue_evidence",
@@ -160,7 +162,7 @@ def test_status_distinguishes_native_registration_from_caller_catalog(monkeypatc
     assert refill["registered"] is True
     assert refill["operations"] == ["preview", "apply"]
     assert refill["models"] == ["astra", "opus"]
-    assert refill["targets"] == ["refill", "problem_issues"]
+    assert refill["targets"] == ["refill", "problem_issues", "owner_prs"]
     assert {"target", "recurring_blocker", "workflow_stranded"} <= set(
         refill["arguments"]
     )
@@ -3611,3 +3613,95 @@ def test_reconcile_and_diagnostics_refuse_unauthorized_before_selector_checks(
             )["error"]
             == mcp.OPERATOR_REQUIRED
         )
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+        _principal(groups=()),
+    ],
+)
+def test_owner_pr_control_requires_standing_operator(monkeypatch, principal):
+    from factory.orchestration import owner_pr_control
+
+    monkeypatch.setattr(
+        owner_pr_control, "preview", lambda *_: pytest.fail("unauthorized control")
+    )
+    assert (
+        _as(
+            principal,
+            lambda: mcp.factory_configure_owner_prs("preview", 0, "reason", "joe", 42),
+        )["error"]
+        == mcp.OPERATOR_REQUIRED
+    )
+
+
+def test_owner_pr_adapter_binds_actor_and_requires_preview(monkeypatch):
+    from factory.orchestration import owner_pr_control
+
+    calls = []
+    monkeypatch.setattr(
+        owner_pr_control, "apply", lambda *args: calls.append(args) or {"ok": True}
+    )
+    principal = _principal()
+    assert (
+        _as(
+            principal,
+            lambda: mcp.factory_configure_owner_prs("apply", 0, "reason", "joe", 42),
+        )["reason"]
+        == "owner_pr_preview_required"
+    )
+    assert not calls
+    assert _as(
+        principal,
+        lambda: mcp.factory_configure_owner_prs(
+            "apply", 0, "reason", "joe", 42, "key", "digest"
+        ),
+    )["ok"]
+    assert calls == [
+        (principal.subject, {"login": "joe", "id": 42}, 0, "reason", "key", "digest")
+    ]
+
+
+def test_existing_refill_name_dispatches_only_owner_pr_target(monkeypatch):
+    from factory.orchestration import owner_pr_control
+
+    calls = []
+    monkeypatch.setattr(
+        owner_pr_control, "preview", lambda *args: calls.append(args) or {"ok": True}
+    )
+    result = _as(
+        _principal(),
+        lambda: mcp.factory_configure_refill(
+            "preview",
+            True,
+            "astra",
+            False,
+            8,
+            "Enable owner feed",
+            target="owner_prs",
+            owner_login="joe",
+            owner_id=42,
+        ),
+    )
+    assert result["ok"]
+    assert calls == [({"login": "joe", "id": 42}, 8, "Enable owner feed")]
+    refused = _as(
+        _principal(),
+        lambda: mcp.factory_configure_refill(
+            "preview",
+            True,
+            "astra",
+            False,
+            8,
+            "bad mixed target",
+            target="owner_prs",
+            owner_login="joe",
+            owner_id=42,
+            recurring_blocker=True,
+        ),
+    )
+    assert refused["reason"] == "owner_pr_target_arguments_invalid"
+    assert len(calls) == 1

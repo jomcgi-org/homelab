@@ -511,6 +511,14 @@ expose credentials or query content. See [read pacing](factory/orchestration/FAC
 observable on GitHub. Judgment work has no machine oracle, so quota pressure must
 preserve its capability floor (agents/038, #6002). See [intake](factory/orchestration/FACTORY.md#autonomous-intake-and-refine).
 
+**Why.** Open owner-authored PRs are unfinished delivery, so intake should finish
+or refine them before generating fresh implementation. The same work-item,
+receipt, branch and landing owners preserve holds and history. Verified numeric
+author identity discovers work; an accepted objective or server-verified brief
+establishes scope, and fresh independent review still gates the current head.
+See [owner PR backlog](factory/orchestration/FACTORY.md#owner-authored-pr-backlog).
+Activation and operational acceptance remain on #7597.
+
 **Why.** Security risk and human ownership are different labels. Excluding every
 security finding discarded otherwise eligible work; custom eligibility fences
 must survive migration (#7372). See [intake](factory/orchestration/FACTORY.md#autonomous-intake-and-refine).
