@@ -280,8 +280,8 @@ spec:
               value: {{ .Values.swarm.factoryPlannerHoldRefusalEnabled | default false | quote }}
             - name: FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED
               value: {{ .Values.swarm.factoryActiveReceiptDecisionsEnabled | default false | quote }}
-            - name: FACTORY_AUTO_RECOMMENDATION_ENABLED
-              value: {{ .Values.swarm.factoryAutoRecommendationEnabled | default false | quote }}
+            - name: FACTORY_ROUTINE_PAUSE_FUNDING_ENABLED
+              value: {{ .Values.swarm.factoryRoutinePauseFundingEnabled | default false | quote }}
             - name: FACTORY_MAX_CONCURRENT_TASKS
               value: {{ .Values.swarm.factoryMaxConcurrentTasks | default 1 | quote }}
             - name: FACTORY_BACKGROUND_RESERVE

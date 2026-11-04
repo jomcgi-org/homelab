@@ -3159,3 +3159,212 @@ def test_judge_separates_transport_missing_output_and_code_failure():
         "failures": 1,
     }
     assert progress(runs)["failure_causes"]["unknown_execution"] == 1
+
+
+# Routine planner pauses: the funding judge answers on the same task.
+
+
+def routine_pause(**changes):
+    return {
+        "action": "pause",
+        "reason": "The fix and its tests pass; carrying on is the natural next step.",
+        "question": "Carry on with the working fix, or wait for direction?",
+        "options": [
+            {
+                "key": "carry-on",
+                "label": "Carry on with the working fix",
+                "effect": "agent-ready",
+                "detail": {"scope": "Finish the same fix and request review."},
+            },
+            {"key": "hold", "label": "Wait for direction", "effect": "hold"},
+        ],
+        **changes,
+    }
+
+
+@pytest.fixture
+def routine(db, monkeypatch):
+    task, policy = envelope_task(max_turns=20)
+    _merit_judge(monkeypatch)
+    monkeypatch.setenv(funding.ROUTINE_PAUSE_ENV, "true")
+    state = {"labels": [], "state": "open", "cards": []}
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda _repo, _suffix: {
+            "state": state["state"],
+            "labels": [{"name": name} for name in state["labels"]],
+        },
+    )
+    monkeypatch.setattr(
+        conductor,
+        "_escalate_task",
+        lambda *args, **kwargs: state["cards"].append(args[1]["question"]),
+    )
+    return task, policy, state
+
+
+def pause(task, policy, decision, ordinal=1):
+    conductor._apply_decision(
+        task, policy, decision, f"factory-decision:conductor_{ordinal}:1", []
+    )
+
+
+def audits_of(db, action):
+    with Session(db) as session:
+        return [
+            json.loads(row.detail_json)
+            for row in session.exec(
+                select(FactoryAudit).where(FactoryAudit.action == action)
+            )
+        ]
+
+
+def test_routine_pause_is_answered_by_the_judge_on_the_same_task(db, routine):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+
+    assert state["cards"] == []
+    request = _pending(task)
+    assert "recommends continuing" in request["trigger"]
+    rejected = audits_of(db, "conductor_rejected")
+    assert rejected[-1]["refusal_code"] == "routine_pause_funding_requested"
+    assert conductor._decision_processed(task["id"], "factory-decision:conductor_1:1")
+
+    settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
+    grant = _grant(task)
+    assert grant is not None and grant["granted_work_turns"] >= 1
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        # Same receipt, same task: no re-admission and no reset lineage.
+        assert row.task_id == task["id"] and row.state == "admitted"
+        assert row.escalation_json is None
+
+
+@pytest.mark.parametrize(
+    ("change", "env"),
+    [
+        ({}, "false"),
+        ({"gate": {"kind": "parameter"}}, "true"),
+        ({"options": [routine_pause()["options"][1], routine_pause()["options"][0]]}, "true"),
+        ({"question": "Rotate the deploy token before continuing?"}, "true"),
+        ({"question": "Grant the agent access to the cluster?"}, "true"),
+        ({"reason": "This would delete the old bucket."}, "true"),
+        ({"question": "This is a security finding; continue?"}, "true"),
+    ],
+)
+def test_non_routine_pauses_keep_their_card(db, routine, monkeypatch, change, env):
+    task, policy, state = routine
+    monkeypatch.setenv(funding.ROUTINE_PAUSE_ENV, env)
+    pause(task, policy, routine_pause(**change))
+    assert len(state["cards"]) == 1
+    assert audits_of(db, "funding_review_requested") == []
+
+
+@pytest.mark.parametrize(
+    "label", ["human", "needs-human", "needs-thought", "security-finding"]
+)
+def test_held_issue_labels_keep_the_card(db, routine, label):
+    task, policy, state = routine
+    state["labels"] = [label]
+    pause(task, policy, routine_pause())
+    assert len(state["cards"]) == 1
+    assert audits_of(db, "funding_review_requested") == []
+
+
+@pytest.mark.parametrize(
+    "direction",
+    [{"nonrenewable_recovery": {"actor": "operator"}}, {"landing_hold": {"actor": "op"}}],
+)
+def test_shared_holds_keep_the_card_without_mutating_the_receipt(
+    db, routine, direction
+):
+    task, policy, state = routine
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        row.direction_json = json.dumps(direction)
+        session.add(row)
+        session.commit()
+    pause(task, policy, routine_pause())
+    assert len(state["cards"]) == 1
+    assert audits_of(db, "funding_review_requested") == []
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        assert json.loads(row.direction_json) == direction
+        assert not row.task_paused
+
+
+def test_recorded_human_handoff_keeps_the_card(db, routine):
+    task, policy, state = routine
+    with controls._locked_session() as (session, _control):
+        controls._audit(session, "operator", "human_handoff", task_id=task["id"])
+    pause(task, policy, routine_pause())
+    assert len(state["cards"]) == 1
+
+
+@pytest.mark.parametrize("control", ["pause_admissions", "stop"])
+def test_paused_or_stopped_lane_never_routes_a_pause(db, routine, control):
+    task, policy, state = routine
+    assert controls.set_control(control, "operator")["ok"]
+    pause(task, policy, routine_pause())
+    assert audits_of(db, "funding_review_requested") == []
+    assert len(state["cards"]) == 1
+
+
+def test_repeat_without_new_work_is_one_repair_signal_and_a_card(db, routine):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    settle_funding_request(task, _pending(task), funding_decision(assessment=ASSESSMENT))
+    assert _grant(task) is not None
+
+    # The same question again, reworded, with no new artifact or head.
+    pause(task, policy, routine_pause(question="Still carry on with the fix?"), 2)
+    pause(task, policy, routine_pause(), 3)
+
+    assert len(state["cards"]) == 2
+    blockers = audits_of(db, funding.BLOCKER)
+    assert len(blockers) == 1
+    assert blockers[0]["reason"] == "funding_without_progress"
+    assert blockers[0]["blocker_key"] == funding.blocker_key(
+        REPO, ISSUE, task["id"], "funding_without_progress"
+    )
+    # The allocation is not paused behind the person's card.
+    assert not controls.task_snapshot(task["id"])["task_paused"]
+    assert len(audits_of(db, "funding_review_requested")) == 1
+
+
+def test_repair_issue_stall_never_spawns_another_repair(db, routine):
+    task, policy, state = routine
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        row.body = "<!-- factory-problem:" + "a" * 64 + " -->\nrepair"
+        session.add(row)
+        session.commit()
+    pause(task, policy, routine_pause())
+    settle_funding_request(task, _pending(task), funding_decision(assessment=ASSESSMENT))
+    pause(task, policy, routine_pause(), 2)
+    assert len(state["cards"]) == 1
+    assert audits_of(db, funding.BLOCKER) == []
+
+
+def test_concurrent_routine_pauses_request_one_review(db, routine):
+    import threading
+
+    task, policy, state = routine
+    barrier = threading.Barrier(3)
+    results = []
+
+    def attempt():
+        barrier.wait()
+        try:
+            results.append(funding.routine_pause(task, routine_pause()))
+        except Exception as exc:  # noqa: BLE001 - a lost lock race may raise
+            results.append(type(exc).__name__)
+
+    threads = [threading.Thread(target=attempt) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(audits_of(db, "funding_review_requested")) == 1
+    assert results.count(True) >= 1

@@ -33,10 +33,11 @@ ACTOR = "factory:improvement-scout"
 TASK_CLASS = "advisory-diagnosis"
 REPO = "jomcgi-org/homelab"
 SOURCE = "quota_improvement"
-# Owned work that is actually delivering. Queued, escalated, uncertain and
-# paused receipts stay owned and untouched but do not make read-only repair
-# preparation wait; one definition keeps context and transport in agreement.
-PROGRESSING_STATES = ("admitted", "landing")
+# Owned work that keeps first claim. Queued work is about to be admitted and
+# keeps priority; escalated, uncertain and paused receipts stay owned and
+# untouched but do not make read-only repair preparation wait. One definition
+# keeps improvement context and scout transport in agreement.
+PROGRESSING_STATES = ("queued", "admitted", "landing")
 MODEL = "sol"
 COLLECT_KEY = "scout_collect_1"
 REVIEW_KEY = "scout_review_1"
@@ -214,7 +215,7 @@ def transport_allowed(task_id: str, node_key: str, attempt: int) -> bool:
 
     Exceptions propagate to the existing API's fail-closed wrapper. Broker I/O
     runs after the DB read session closes, with no control lock held. A scout's
-    own receipt is the sole ownership exclusion; unrelated owners block it.
+    own receipt is excluded; only unrelated progressing owners block it.
     """
     with controls._read_session() as db:
         receipt = db.exec(

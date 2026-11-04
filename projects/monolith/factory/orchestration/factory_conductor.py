@@ -3303,7 +3303,6 @@ def _escalate_task(
     runs: list[dict],
     *,
     paused_deadline: bool = False,
-    origin: str | None = None,
 ) -> None:
     """Settle a paused task as an escalation that has left the lane.
 
@@ -3380,10 +3379,6 @@ def _escalate_task(
         "downgraded": False,
         "resolved": None,
     }
-    if origin is not None:
-        # Server-owned provenance. Only the call sites that pass it may be
-        # defaulted to their recommendation; unclassified cards never are.
-        document["origin"] = {"class": origin}
     if cause.startswith("dispatch-refused:"):
         # This is server-owned authority, separate from the option shape that
         # planner-authored pauses also use. Funding verifies both copies before
@@ -4441,7 +4436,20 @@ def _apply_decision(
                 "factory task settlement refused",
             )
     else:
-        _escalate_task(task, decision, cause, runs, origin="planner_pause")
+        from factory.orchestration import factory_funding
+
+        if not evidence_recovery and factory_funding.routine_pause(task, decision):
+            # The same task keeps its receipt, graph, PR and accounting; the
+            # judge's grant or its escalation card answers the pause.
+            _reject_decision(
+                task["id"],
+                cause,
+                action,
+                "routine_pause_funding_requested",
+                decision["reason"],
+            )
+            return
+        _escalate_task(task, decision, cause, runs)
 
 
 def _review_rounds_used(task_id: str, *, session: Session | None = None) -> int:
@@ -6623,12 +6631,7 @@ def _settle_paused_task(
             }
         )
         _escalate_task(
-            task,
-            decision,
-            "paused-task-deadline",
-            runs,
-            paused_deadline=True,
-            origin="deadline_pause",
+            task, decision, "paused-task-deadline", runs, paused_deadline=True
         )
         return True
     return closed_landing_hold
@@ -8897,14 +8900,6 @@ def _tick(checkpoint) -> None:
         revalidate_escalations()
     except Exception:  # noqa: BLE001 - card checks cannot stop task reconciliation
         logger.exception("factory escalation revalidation failed")
-    # Before any occupancy return: a lane full of waiting work must still be
-    # able to answer the routine card that is holding it.
-    try:
-        from factory.orchestration import factory_auto_recommendation
-
-        factory_auto_recommendation.tick(snapshot["state"])
-    except Exception:  # noqa: BLE001 - defaulting cards cannot stop reconciliation
-        logger.exception("factory auto-recommendation failed")
     active = list(snapshot["active_tasks"])
     if snapshot["state"] == "stopped":
         checkpoint("stop_reconciliation")
