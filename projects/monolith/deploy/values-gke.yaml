@@ -5,6 +5,11 @@ backend:
   autoscaling:
     enabled: false
 
+agentSessions:
+  # Requires verified schema and compatible backend/progress-ingest rollout.
+  # Roll back with false; retain the additive receipt schema.
+  stagedReceiptsEnabled: true
+
 # The private /qwen chat page streams from FreeToken on node-4 through the
 # Tailscale egress Service (projects/platform-gke/tailscale/values.yaml).
 frontend:
