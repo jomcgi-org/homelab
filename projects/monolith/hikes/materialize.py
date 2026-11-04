@@ -129,7 +129,7 @@ def _s3_client():
 
     # The chart supplies an https:// R2 endpoint for .s3 jobs; materialize_sync
     # refuses to run without one, so the scheme is always present here.
-    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
+    return boto3.client(
         "s3",
         endpoint_url=os.environ["SEAWEEDFS_S3_ENDPOINT"],
         aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
