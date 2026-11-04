@@ -942,7 +942,9 @@ def settle(task, run, request):
     accounting_basis = graph.settled_zero_basis(outcome)
     # A routed planner pause is rechecked at settlement: a hold or label set
     # after the request still keeps the question with a person.
-    routed = _routed_pause(task["id"])
+    # The provenance on the exact request being settled wins; a retry in the
+    # same refusal run inherits the run's routed pause.
+    routed = request.get("routine_pause") or _routed_pause(task["id"])
     label_hold = routine_labels_held(task) if routed is not None else None
     routine_held = None
     with controls._locked_session() as (db, control):
@@ -1428,7 +1430,13 @@ def reconcile(task, policy, runs, permission):
                 },
             )
             return True
-        return request(task, "Retry funding decision after " + last["refusal"])
+        # A retry of a routed pause keeps its provenance, so the locked
+        # routine hold and enabled-lane checks apply to the retry too.
+        return request(
+            task,
+            "Retry funding decision after " + last["refusal"],
+            routine=_routed_pause(task["id"]),
+        )
     snapshot = controls.task_snapshot(task["id"])
     nodes = graph.load_graph(task["id"])
     legacy = controls.continuation_grant(task["id"])
