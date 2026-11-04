@@ -3769,7 +3769,9 @@ def test_unrelated_mirror_labels_do_not_hold(db, routine):
     task, policy, state = routine
     _mirror_label(db, "bug")
     pause(task, policy, routine_pause())
-    settle_funding_request(task, _pending(task), funding_decision(assessment=ASSESSMENT))
+    settle_funding_request(
+        task, _pending(task), funding_decision(assessment=ASSESSMENT)
+    )
     assert _grant(task) is not None
 
 
