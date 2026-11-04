@@ -417,14 +417,9 @@ def _candidate(db, row, number, head):
         "landing_authorization" not in json.loads(row.direction_json or "{}"),
         "operator_grant_owned",
     )
-    _require(
-        not controls._accounting(controls._starts(db, row.task_id))["unresolved_starts"]
-        and all(
-            r["status"] in graph.TERMINAL_RUN_STATUSES
-            for r in graph.node_runs(row.task_id, session=db)
-        ),
-        "execution_unsettled",
-    )
+    refusal = releases.execution_refusal(db, row.task_id)
+    if refusal:
+        raise ValueError("repair_landing_" + refusal)
     state = landing._landing_state(db, [row.task_id])[row.task_id]
     _require(
         not state["merge_arm_refused"]
@@ -433,6 +428,9 @@ def _candidate(db, row, number, head):
     )
     provenance = _provenance(db, row, authority.id)
     source = controls._receipt(db, provenance["source_task_id"])
+    refusal = releases.execution_refusal(db, source.task_id)
+    if refusal:
+        raise ValueError("repair_landing_source_" + refusal)
     issue, source_issue = _issue(row), _issue(source)
     _require(
         provenance["marker"] in issue["body"] and provenance["marker"] in row.body,

@@ -173,6 +173,32 @@ def regular_file_evidence(pull, allowed_paths, refusal):
         reject()
 
 
+def execution_refusal(db, task_id):
+    """Landing quiescence includes claimed messages, not just terminal ledgers.
+
+    Callers recheck under the control/task locks before granting or using
+    landing authority. A stale-looking claim is not evidence of cessation.
+    """
+    refusal = controls._quiescence_refusal(db, task_id)
+    if refusal:
+        return refusal
+    if (
+        db.exec(
+            select(PendingMessage.id)
+            .join(AgentSession)
+            .where(
+                AgentSession.local_session_id.startswith(
+                    f"factory:{task_id}:", autoescape=True
+                ),
+                PendingMessage.claimed_by_replica.isnot(None),
+            )
+        ).first()
+        is not None
+    ):
+        return "claimed_execution"
+    return None
+
+
 def _handoff_history(db, row, pr_number, head_sha):
     from factory.orchestration.models import SwarmTask
 
@@ -442,23 +468,9 @@ def _preview(
         raise ValueError("scoped_landing_requires_unheld_settled_delivery")
     if controls.review_recovery_held(row.task_id, session=db):
         raise ValueError("review_only_recovery")
-    refusal = controls._quiescence_refusal(db, row.task_id)
+    refusal = execution_refusal(db, row.task_id)
     if refusal:
         raise ValueError("landing_release_" + refusal)
-    if (
-        db.exec(
-            select(PendingMessage.id)
-            .join(AgentSession)
-            .where(
-                AgentSession.local_session_id.startswith(
-                    f"factory:{row.task_id}:", autoescape=True
-                ),
-                PendingMessage.claimed_by_replica.isnot(None),
-            )
-        ).first()
-        is not None
-    ):
-        raise ValueError("landing_release_claimed_execution")
     if decision_in_flight(db, row.id):
         raise ValueError("landing_release_decision_in_flight")
     direction = json.loads(row.direction_json or "{}")

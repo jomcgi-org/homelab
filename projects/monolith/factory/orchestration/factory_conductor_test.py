@@ -20843,13 +20843,23 @@ def native_repair_landing_case(
     """Real producer/intake/review/landing owners; only external I/O is synthetic."""
     import base64
     import hashlib
+    from sqlmodel import SQLModel
     from factory import review_publisher
+    from factory.execution.models import AgentSession, PendingMessage
     from factory.orchestration import (
         factory_controls as controls,
         factory_landing as landing,
     )
     from factory.orchestration import repair_landing_delegation as delegation
     from factory.orchestration.models import SwarmTask, SwarmNodeRun
+
+    engine = controls.get_engine()
+    engine.update_execution_options(
+        schema_translate_map={"swarm": None, "agent_sessions": None}
+    )
+    SQLModel.metadata.create_all(
+        engine, tables=[AgentSession.__table__, PendingMessage.__table__]
+    )
 
     def activate(task, live):
         monkeypatch.setattr(delegation, "REPO", task["repo"])
@@ -21305,6 +21315,110 @@ def test_delegated_repair_native_landing_refuses(feedback_db, monkeypatch, hold,
             ).first()
             is None
         )
+
+
+@pytest.mark.parametrize("mode", ["trial", "ongoing"])
+@pytest.mark.parametrize("owner", ["repair", "source"])
+@pytest.mark.parametrize("phase", ["prepare", "arm", "queued"])
+def test_delegated_repair_native_claimed_execution_fence(
+    feedback_db, monkeypatch, mode, owner, phase
+):
+    from factory import review_publisher
+    from factory.execution.models import AgentSession, PendingMessage
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+        factory_landing_release as releases,
+        repair_landing_delegation as delegation,
+    )
+    from factory.orchestration.factory_models import FactoryAudit
+
+    case = native_repair_landing_case(monkeypatch, mode=mode)
+    task_id = getattr(case, owner)["id"]
+    claimed_at = controls._now() - timedelta(days=2)
+    message_id = None
+
+    def claim():
+        nonlocal message_id
+        with controls._locked_session() as (db, _):
+            # Terminal graph/start/session records do not prove that this
+            # later message has ceased, even when its claim looks expired.
+            assert controls._quiescence_refusal(db, task_id) is None
+            session = AgentSession(
+                local_session_id=f"factory:{task_id}:implement_repair:1",
+                workspace="/workspace/src",
+                branch=f"factory/{task_id}",
+                status="completed",
+            )
+            db.add(session)
+            db.flush()
+            message = PendingMessage(
+                session_id=session.id,
+                seq=2,
+                message_text="Continue existing execution",
+                claimed_by_replica="live-owner",
+                claimed_at=claimed_at,
+            )
+            db.add(message)
+            db.flush()
+            message_id = message.id
+            assert releases.execution_refusal(db, task_id) == "claimed_execution"
+
+    if phase == "prepare":
+        claim()
+        if owner == "repair":
+            with controls._read_session() as db:
+                receipt_id = controls._receipt(db, task_id).id
+            with pytest.raises(ValueError, match="^landing_release_claimed_execution$"):
+                releases.preview(
+                    receipt_id,
+                    72,
+                    case.pull["head"]["sha"],
+                    "Synthetic scope review",
+                    scope={
+                        "classification": "private_internal_reversible",
+                        "evidence": "Synthetic independent scope assessment",
+                    },
+                )
+    elif phase == "arm":
+        collect = review_publisher.collect
+
+        def raced(task_id, *, session=None):
+            result = collect(task_id, session=session)
+            if session is None:
+                with controls._read_session() as db:
+                    assert delegation._latest(db, delegation.GRANT) is not None
+                claim()
+            return result
+
+        monkeypatch.setattr(review_publisher, "collect", raced)
+
+    landing._arm(case.repair["repo"], case.item)
+    if phase == "queued":
+        assert case.queue == {"repair-pr"}
+        claim()
+        assert landing._fence_ungranted_queue_entry(case.repair["repo"], case.item)
+        assert [query for query, _ in case.mutations] == [
+            landing._ARM_AUTO_MERGE,
+            landing._DISARM_AUTO_MERGE,
+            landing._DEQUEUE_PULL_REQUEST,
+        ]
+    else:
+        assert not case.mutations
+    assert not case.queue and case.pull.get("auto_merge") is None
+    with controls._read_session() as db:
+        row = controls._receipt(db, case.repair["id"])
+        prefix = "source_" if owner == "source" else ""
+        assert releases.scoped_refusal(db, row, 72, case.pull["head"]["sha"]) == (
+            f"repair_landing_{prefix}claimed_execution"
+        )
+        message = db.get(PendingMessage, message_id)
+        assert message.claimed_by_replica == "live-owner"
+        assert message.claimed_at.replace(tzinfo=timezone.utc) == claimed_at
+        grants = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == delegation.GRANT)
+        ).all()
+        assert len(grants) == (0 if phase == "prepare" else 1)
 
 
 @pytest.mark.parametrize(
