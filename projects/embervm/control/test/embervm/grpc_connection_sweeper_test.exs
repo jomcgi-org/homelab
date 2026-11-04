@@ -52,6 +52,42 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     pid
   end
 
+  defp unreadable_non_wedged_child do
+    owner = self()
+    ready = make_ref()
+
+    pid =
+      spawn(fn ->
+        Enum.each(1..1_000, fn _ -> :erlang.yield() end)
+        send(owner, {ready, self()})
+
+        # Ignore system messages so the sweeper must time out reading state.
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn ->
+      monitor = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^monitor, :process, ^pid, _}, 1_000
+      refute Process.alive?(pid)
+    end)
+
+    assert_receive {^ready, ^pid}, 1_000
+    assert {:timeout, {:sys, :get_state, [^pid, 25]}} = catch_exit(:sys.get_state(pid, 25))
+    assert_non_wedged(pid)
+    pid
+  end
+
+  defp assert_non_wedged(pid) do
+    assert [current_function: current_function, reductions: reductions, status: :waiting] =
+             Process.info(pid, [:current_function, :reductions, :status])
+
+    refute current_function == {:proc_lib, :sync_start, 2}
+    assert reductions > 100
+  end
+
   defp terminate_child_collector do
     {:ok, calls} = Agent.start_link(fn -> [] end)
 
@@ -294,6 +330,105 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     assert [{^second_pid, reason}] = GrpcConnectionSweeper.sweep_now(sweeper)
     assert reason =~ "reapable for 3 consecutive sweeps"
     assert Agent.get(calls, & &1) == [second_pid]
+  end
+
+  for readable_prefix <- ["", "ipv4:"],
+      unreadable_prefix <- ["", "ipv4:"],
+      order <- [:readable_first, :unreadable_first],
+      prior_strikes <- [0, 1, 2] do
+    @tag :mixed_target
+    test "target-level keep wins with #{inspect({readable_prefix, unreadable_prefix, order, prior_strikes})}" do
+      supervisor = mock_supervisor()
+      target = "10.42.9.99:9090"
+      stale_target = "10.42.8.88:9090"
+      readable = mock_child(unquote(readable_prefix) <> target)
+      unreadable = unreadable_non_wedged_child()
+      stale = mock_child(stale_target)
+      owner = self()
+      {terminate_fun, calls} = terminate_child_collector()
+
+      sweeper =
+        start_sweeper(
+          status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
+          supervisor: supervisor,
+          terminate_child_fun: terminate_fun,
+          start_args_target_fun: fn ^unreadable ->
+            send(owner, {:start_args_target, unreadable})
+            {:ok, unquote(unreadable_prefix) <> target}
+          end,
+          strikes_required: 3
+        )
+
+      # Accumulate strikes through normal sweeps, before adding the keeper.
+      MockSupervisor.set_children(supervisor, [child(readable)])
+
+      for count <- Enum.take([1, 2], unquote(prior_strikes)) do
+        assert GrpcConnectionSweeper.sweep_now(sweeper) == []
+        assert :sys.get_state(sweeper).strikes == %{{:target, target} => count}
+        assert Agent.get(calls, & &1) == []
+      end
+
+      siblings =
+        case unquote(order) do
+          :readable_first -> [child(readable), child(unreadable)]
+          :unreadable_first -> [child(unreadable), child(readable)]
+        end
+
+      MockSupervisor.set_children(supervisor, siblings ++ [child(stale)])
+
+      for count <- 1..3 do
+        result = GrpcConnectionSweeper.sweep_now(sweeper)
+        assert Process.alive?(sweeper)
+        assert_receive {:start_args_target, ^unreadable}
+        assert_non_wedged(unreadable)
+        assert :sys.get_state(sweeper).strikes == %{{:target, stale_target} => count}
+
+        if count < 3 do
+          assert result == []
+          assert Agent.get(calls, & &1) == []
+        else
+          assert [{^stale, reason}] = result
+          assert reason =~ "reapable for 3 consecutive sweeps"
+          assert Agent.get(calls, & &1) == [stale]
+        end
+
+        refute readable in Agent.get(calls, & &1)
+        refute unreadable in Agent.get(calls, & &1)
+      end
+    end
+  end
+
+  test "two reapable siblings share one strike per sweep and both reap on strike three" do
+    supervisor = mock_supervisor()
+    target = "10.42.9.99:9090"
+    first = mock_child(target)
+    second = mock_child("ipv4:" <> target)
+    MockSupervisor.set_children(supervisor, [child(first), child(second)])
+    {terminate_fun, calls} = terminate_child_collector()
+
+    sweeper =
+      start_sweeper(
+        status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
+        supervisor: supervisor,
+        terminate_child_fun: terminate_fun,
+        strikes_required: 3
+      )
+
+    for count <- 1..3 do
+      result = GrpcConnectionSweeper.sweep_now(sweeper)
+      assert Process.alive?(sweeper)
+      assert :sys.get_state(sweeper).strikes == %{{:target, target} => count}
+
+      if count < 3 do
+        assert result == []
+        assert Agent.get(calls, & &1) == []
+      else
+        assert [{^first, first_reason}, {^second, second_reason}] = result
+        assert first_reason =~ "reapable for 3 consecutive sweeps"
+        assert second_reason =~ "reapable for 3 consecutive sweeps"
+        assert Agent.get(calls, & &1) == [second, first]
+      end
+    end
   end
 
   test "sweeper logs accumulating strikes before it reaps (#4419)" do
