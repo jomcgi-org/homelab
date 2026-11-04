@@ -5192,6 +5192,8 @@ py_test(
     srcs = ["factory/orchestration/owner_pr_landing_delegation_test.py"],
     # Reuse the established native repair fixture without copying its producer.
     data = ["factory/orchestration/factory_conductor_test.py"],
+    # Import the fixture without collecting its full, separately tested suite.
+    env = {"PYTEST_ADDOPTS": "--ignore=projects/monolith/factory/orchestration/factory_conductor_test.py"},
     imports = ["."],
     deps = [
         ":pkg_auth",
