@@ -101,7 +101,13 @@ def policy(**overrides):
 def test_policy_defaults_every_source_off_and_refuses_broader_writes():
     block = controls._validate_problem_issues({})
     assert block == controls.DEFAULT_PROBLEM_ISSUES
-    assert not any(block["sources"].values())
+    assert block["enabled"] is False
+    # Only the repair signal defaults on, and only behind the producer switch.
+    assert [k for k, v in block["sources"].items() if v] == ["recurring_blocker"]
+    assert not any(producer._effective(block).values())
+    assert not controls._validate_problem_issues(
+        {"enabled": True, "sources": {"recurring_blocker": False}}
+    )["sources"]["recurring_blocker"]
     with pytest.raises(ValueError, match="labels must be exactly bug"):
         controls._validate_problem_issues({"labels": ["bug", "agent-ready"]})
     with pytest.raises(ValueError, match="max_per_tick"):
@@ -1311,3 +1317,20 @@ def test_stalled_owner_still_yields_a_repair_candidate(improvements):
     result = service.submit(batch, actor="operator:test")
     assert result["reason"] == "candidates"
     assert result["drafts"]
+
+
+def test_enabled_producer_activates_the_repair_source_without_replaying_history(
+    db, monkeypatch
+):
+    engine, _clock = db
+    add_event(engine, action="recurring_blocker", blocker_key="c" * 64)
+    # An existing operator policy that predates the source and never names it.
+    selected = policy(sources={"node_stalled": True})
+    state = github(monkeypatch)
+    enable_after_watermark(engine, selected)
+    producer.problem_issues_tick(selected)
+    assert state["writes"] == []
+    add_event(engine, action="recurring_blocker", blocker_key="d" * 64)
+    producer.problem_issues_tick(selected)
+    assert len(state["writes"]) == 1
+    assert "repeated blocker" in state["writes"][0]["title"]

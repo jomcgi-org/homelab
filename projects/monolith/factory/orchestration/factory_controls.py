@@ -240,7 +240,10 @@ DEFAULT_INTAKE = {
 # it, so the capability arrives inert and an operator opts in.
 DEFAULT_AUTO_MERGE = False
 # Problem issues turn a deliberately small set of exact factory audits into
-# ordinary GitHub issues. Both the producer and every source arrive off. The
+# ordinary GitHub issues. The producer arrives off. Every source arrives off
+# except `recurring_blocker`: wherever an operator has enabled the producer,
+# a repeated no-progress blocker becomes one repair issue on normal rollout
+# (watermarked, so no history is replayed); `false` keeps it off. The
 # remaining values are conservative repository defaults supplied by the
 # conductor rescope for #6002; changing live policy remains an operator act.
 PROBLEM_ISSUE_SOURCES = (
@@ -252,7 +255,9 @@ PROBLEM_ISSUE_SOURCES = (
 )
 DEFAULT_PROBLEM_ISSUES = {
     "enabled": False,
-    "sources": {source: False for source in PROBLEM_ISSUE_SOURCES},
+    "sources": {
+        source: source == "recurring_blocker" for source in PROBLEM_ISSUE_SOURCES
+    },
     "source_audit_limit": 50,
     "issue_pages": 2,
     "issues_per_page": 100,
