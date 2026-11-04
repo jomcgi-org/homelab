@@ -958,6 +958,9 @@ def settle(task, run, request):
             return
         if (
             control.state not in ("enabled", "paused")
+            # A routed pause settles only in an enabled lane; otherwise it
+            # waits, with no grant and no card, until the lane is enabled.
+            or (routed is not None and control.state != "enabled")
             or row.state != "admitted"
             or row.task_paused
             or row.cancellation_requested
