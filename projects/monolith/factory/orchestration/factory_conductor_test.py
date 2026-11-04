@@ -20831,7 +20831,15 @@ def test_failed_node_review_retry_keeps_existing_refusal_limit(
     )
 
 
-def native_repair_landing_case(monkeypatch, *, enabled=True, max_repairs=3):
+def native_repair_landing_case(
+    monkeypatch,
+    *,
+    enabled=True,
+    max_repairs=3,
+    mode="trial",
+    path_profile="observation",
+    path=None,
+):
     """Real producer/intake/review/landing owners; only external I/O is synthetic."""
     import base64
     import hashlib
@@ -20850,7 +20858,12 @@ def native_repair_landing_case(monkeypatch, *, enabled=True, max_repairs=3):
             control.policy_json = json.dumps(live)
             version = control.version
         if enabled:
-            args = dict(duration_minutes=1440, max_repairs=max_repairs)
+            args = dict(
+                duration_minutes=1440 if mode == "trial" else None,
+                max_repairs=max_repairs,
+                mode=mode,
+                path_profile=path_profile,
+            )
             preview = delegation.configure(
                 delegation_principal(),
                 "preview",
@@ -20877,7 +20890,7 @@ def native_repair_landing_case(monkeypatch, *, enabled=True, max_repairs=3):
         repair = db.get(SwarmTask, repair_id).model_dump()
     policy = controls.task_snapshot(repair_id)["policy"]
     head, base = "b" * 40, "a" * 40
-    path = "projects/monolith/factory/orchestration/factory_feedback.py"
+    path = path or "projects/monolith/factory/orchestration/factory_feedback.py"
     issue_reader = conductor.github_get
     monkeypatch.setattr(
         conductor,
@@ -21147,7 +21160,8 @@ def test_delegated_repair_main_progress_keeps_reviewed_diff_authority(
         "malformed_pull",
     ],
 )
-def test_delegated_repair_native_landing_refuses(feedback_db, monkeypatch, hold):
+@pytest.mark.parametrize("mode", ["trial", "ongoing"])
+def test_delegated_repair_native_landing_refuses(feedback_db, monkeypatch, hold, mode):
     from factory.orchestration import (
         factory_controls as controls,
         factory_landing as landing,
@@ -21156,7 +21170,13 @@ def test_delegated_repair_native_landing_refuses(feedback_db, monkeypatch, hold)
     from factory.orchestration.factory_models import FactoryAudit, FactoryStart
     from factory.orchestration.models import SwarmNodeRun
 
-    case = native_repair_landing_case(monkeypatch, enabled=hold != "disabled")
+    if mode == "ongoing" and hold == "expired":
+        pytest.skip(
+            "Ongoing authority has no time expiry, revocation and policy fences still apply"
+        )
+    case = native_repair_landing_case(
+        monkeypatch, enabled=hold != "disabled", mode=mode
+    )
     with controls._locked_session() as (db, control):
         row = controls._receipt(db, case.repair["id"])
         if hold == "revoked":
@@ -21290,8 +21310,9 @@ def test_delegated_repair_native_landing_refuses(feedback_db, monkeypatch, hold)
 @pytest.mark.parametrize(
     "change", ["revoked", "head", "review", "source_hold", "unknown"]
 )
+@pytest.mark.parametrize("mode", ["trial", "ongoing"])
 def test_delegated_repair_rechecks_between_prepare_and_arm(
-    feedback_db, monkeypatch, change
+    feedback_db, monkeypatch, change, mode
 ):
     from factory import review_publisher
     from factory.orchestration import (
@@ -21302,7 +21323,7 @@ def test_delegated_repair_rechecks_between_prepare_and_arm(
     from factory.orchestration.factory_models import FactoryStart
     from factory.orchestration.models import SwarmNodeRun
 
-    case = native_repair_landing_case(monkeypatch)
+    case = native_repair_landing_case(monkeypatch, mode=mode)
     collect = review_publisher.collect
 
     def raced(task_id, *, session=None):
@@ -21356,14 +21377,19 @@ def test_delegated_repair_rechecks_between_prepare_and_arm(
 @pytest.mark.parametrize(
     "change", ["revoked", "expired", "policy", "source_hold", "head"]
 )
-def test_delegated_repair_native_queue_revocation(feedback_db, monkeypatch, change):
+@pytest.mark.parametrize("mode", ["trial", "ongoing"])
+def test_delegated_repair_native_queue_revocation(
+    feedback_db, monkeypatch, change, mode
+):
     from factory.orchestration import (
         factory_controls as controls,
         factory_landing as landing,
     )
     from factory.orchestration import repair_landing_delegation as delegation
 
-    case = native_repair_landing_case(monkeypatch)
+    if mode == "ongoing" and change == "expired":
+        pytest.skip("Ongoing authority has no time expiry")
+    case = native_repair_landing_case(monkeypatch, mode=mode)
     landing._arm(case.repair["repo"], case.item)
     assert case.queue == {"repair-pr"}
     assert not landing._fence_ungranted_queue_entry(case.repair["repo"], case.item)
@@ -21432,6 +21458,254 @@ def test_delegated_repair_grants_are_finite_and_replay_does_not_spend(
             )
             == 1
         )
+
+
+@pytest.mark.parametrize(
+    "classification", ["requires_operator", "private_internal_reversible", None]
+)
+def test_delegated_repair_file_limit_is_not_an_ordinary_review_schema_limit(
+    feedback_db, monkeypatch, classification
+):
+    from factory import review_publisher
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import repair_landing_delegation as delegation
+    from factory.orchestration.models import SwarmNodeRun
+
+    case = native_repair_landing_case(monkeypatch)
+    with controls._locked_session() as (db, _):
+        run = db.get(SwarmNodeRun, case.review["id"])
+        outcome = json.loads(run.outcome_json)
+        for value in (outcome["value"], outcome["artifact"]["value"]):
+            if classification is None:
+                value.pop("landing_scope")  # Legacy reviews remain valid.
+            else:
+                value["landing_scope"].update(
+                    classification=classification,
+                    paths=[f"existing/file-{i}.py" for i in range(20)],
+                )
+            assert not schema_errors(value, conductor.REVIEW_SCHEMA)
+        run.outcome_json = json.dumps(outcome)
+    assert isinstance(
+        review_publisher.collect(case.repair["id"]), review_publisher.ReviewEvidence
+    )
+    reason = delegation.prepare(case.repair["id"], 72, case.pull["head"]["sha"])
+    assert (
+        reason
+        == {
+            None: "repair_landing_scope_missing_or_invalid",
+            "requires_operator": "repair_landing_scope_requires_operator",
+            "private_internal_reversible": "repair_landing_file_limit",
+        }[classification]
+    )
+
+
+def change_delegated_scope(case):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.models import SwarmNodeRun
+
+    with controls._locked_session() as (db, _):
+        run = db.get(SwarmNodeRun, case.review["id"])
+        outcome = json.loads(run.outcome_json)
+        for value in (outcome["value"], outcome["artifact"]["value"]):
+            value["landing_scope"]["evidence"] += " More independent evidence."
+        run.outcome_json = json.dumps(outcome)
+
+
+def test_delegated_repair_ongoing_native_queue_survives_age_and_unrelated_history(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+    from factory.orchestration.factory_models import FactoryAudit
+
+    case = native_repair_landing_case(monkeypatch, mode="ongoing")
+    # More than the old lifetime scan bound must not strand this exact marker.
+    with controls._locked_session() as (db, _):
+        db.add_all(
+            [
+                FactoryAudit(
+                    actor="factory:problem-issues",
+                    action="problem_issue_created",
+                    detail_json=controls.dumps(
+                        {"fingerprint": f"{i:064x}", "issue_number": i + 1000}
+                    ),
+                )
+                for i in range(502)
+            ]
+        )
+    later = controls._now() + timedelta(days=31)
+    monkeypatch.setattr(controls, "_now", lambda: later)
+    landing._arm(case.repair["repo"], case.item)
+    assert case.queue == {"repair-pr"}
+    assert not landing._fence_ungranted_queue_entry(case.repair["repo"], case.item)
+    with controls._read_session() as db:
+        view = delegation.status(db)
+        assert view["enabled"] and view["mode"] == "ongoing"
+        assert view["expires_at"] is None
+        assert view["max_task_derivations"] == view["max_source_derivations"] == 3
+
+
+def test_delegated_repair_ongoing_rolling_limit_waits_without_invalidating_grant(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    case = native_repair_landing_case(monkeypatch, mode="ongoing", max_repairs=1)
+    args = (case.repair["id"], 72, case.pull["head"]["sha"])
+    # A prior authorization's grant also spends the rolling allowance.
+    with controls._locked_session() as (db, _):
+        controls._audit(db, delegation.ACTOR, delegation.GRANT, authorization_id=-1)
+        db.flush()
+        previous_id = delegation._latest(db, delegation.GRANT).id
+    landing._arm(case.repair["repo"], case.item)
+    assert not case.queue
+    with controls._read_session() as db:
+        wait = delegation._latest(db, "landing_authorization_wait", case.repair["id"])
+        assert json.loads(wait.detail_json)["reason"] == "repair_landing_rolling_limit"
+    assert any(
+        x["task_id"] == case.repair["id"] for x in landing._deliveries(case.live)
+    )
+    with controls._locked_session() as (db, _):
+        db.get(controls.FactoryAudit, previous_id).created_at = (
+            controls._now() - timedelta(hours=25)
+        )
+    landing._arm(case.repair["repo"], case.item)
+    assert case.queue == {"repair-pr"}
+    assert delegation.prepare(*args) is None  # Exact replay doesn't spend.
+    assert not landing._fence_ungranted_queue_entry(case.repair["repo"], case.item)
+    change_delegated_scope(case)
+    assert delegation.prepare(*args) == "repair_landing_rolling_limit"
+    # Time replenishes only the global rate allowance, not per-task bounds.
+    with controls._locked_session() as (db, _):
+        delegation._latest(db, delegation.GRANT).created_at = (
+            controls._now() - timedelta(hours=25)
+        )
+    assert delegation.prepare(*args) is None
+
+
+@pytest.mark.parametrize("bound", ["task", "source"])
+def test_delegated_repair_ongoing_cumulative_bounds_survive_window_and_authorization(
+    feedback_db, monkeypatch, bound
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    case = native_repair_landing_case(monkeypatch, mode="ongoing", max_repairs=10)
+    args = (case.repair["id"], 72, case.pull["head"]["sha"])
+    with controls._locked_session() as (db, _):
+        for _ in range(3):
+            controls._audit(
+                db,
+                delegation.ACTOR,
+                delegation.GRANT,
+                task_id=case.repair["id"] if bound == "task" else None,
+                authorization_id=-1,
+                provenance={"source_task_id": case.source["id"]},
+            )
+        db.flush()
+        for grant in db.exec(
+            select(controls.FactoryAudit).where(
+                controls.FactoryAudit.action == delegation.GRANT
+            )
+        ).all():
+            grant.created_at = controls._now() - timedelta(days=30)
+    assert delegation.prepare(*args) == f"repair_landing_{bound}_limit"
+
+
+def test_delegated_repair_ongoing_replays_old_task_after_many_other_grants(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    case = native_repair_landing_case(monkeypatch, mode="ongoing")
+    args = (case.repair["id"], 72, case.pull["head"]["sha"])
+    landing._arm(case.repair["repo"], case.item)
+    with controls._locked_session() as (db, _):
+        for i in range(20):
+            controls._audit(
+                db, delegation.ACTOR, delegation.GRANT, authorization_id=-1, other=i
+            )
+    assert delegation.prepare(*args) is None
+    assert not landing._fence_ungranted_queue_entry(case.repair["repo"], case.item)
+
+
+def test_delegated_repair_ongoing_future_repair_after_lifetime_trial_limit(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    case = native_repair_landing_case(monkeypatch, mode="ongoing", max_repairs=1)
+    with controls._locked_session() as (db, _):
+        authorization = delegation._latest(db, delegation.CONTROL)
+        for i in range(20):
+            controls._audit(
+                db,
+                delegation.ACTOR,
+                delegation.GRANT,
+                authorization_id=authorization.id,
+                other=i,
+            )
+        db.flush()
+        for grant in db.exec(
+            select(controls.FactoryAudit).where(
+                controls.FactoryAudit.action == delegation.GRANT
+            )
+        ).all():
+            grant.created_at = controls._now() - timedelta(days=2)
+    # No renewed standing grant, scheduler, or synthetic merge acknowledgment.
+    landing._arm(case.repair["repo"], case.item)
+    assert case.queue == {"repair-pr"}
+    with controls._read_session() as db:
+        assert delegation.status(db)["derivations_used"] == 1
+
+
+def test_delegated_repair_concurrent_exact_prepare_spends_once(
+    feedback_db, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    case = native_repair_landing_case(monkeypatch, mode="ongoing", max_repairs=1)
+    args = (case.repair["id"], 72, case.pull["head"]["sha"])
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: delegation.prepare(*args), range(2)))
+    assert results == [None, None]
+    with controls._read_session() as db:
+        assert len(delegation._grants(db, task_id=case.repair["id"])) == 1
+
+
+@pytest.mark.parametrize(
+    "profile,eligible", [("observation", False), ("diagnostics", True)]
+)
+def test_delegated_repair_diagnostics_requires_explicit_profile(
+    feedback_db, monkeypatch, profile, eligible
+):
+    from factory.orchestration import factory_landing as landing
+
+    case = native_repair_landing_case(
+        monkeypatch,
+        mode="ongoing",
+        path_profile=profile,
+        path="projects/monolith/factory/execution/rationale.py",
+    )
+    landing._arm(case.repair["repo"], case.item)
+    assert bool(case.queue) is eligible
 
 
 def test_discard_and_rename_keep_spent_history_charged(feedback_db, monkeypatch):

@@ -823,7 +823,8 @@ async def _control_catalog() -> dict:
             "description_sha256": hashlib.sha256(
                 (tool.description or "").encode()
             ).hexdigest(),
-            "arguments": list(properties)[:16],
+            "arguments": list(properties)[:24],
+            "arguments_complete": len(properties) <= 24,
             "operations": properties.get("operation", {}).get("enum", [])[:4],
         }
         if "target" in properties:
@@ -2567,6 +2568,8 @@ async def factory_configure_refill(
     workflow_stranded: bool | None = None,
     duration_minutes: Annotated[MCPInteger | None, Field(ge=1, le=1440)] = None,
     max_repairs: Annotated[MCPInteger | None, Field(ge=1, le=10)] = None,
+    delegation_mode: Literal["trial", "ongoing"] | None = None,
+    path_profile: Literal["observation", "diagnostics"] | None = None,
 ) -> dict:
     """Preview or apply bounded refill and existing learning cadence as an operator.
 
@@ -2588,9 +2591,14 @@ async def factory_configure_refill(
     delegates to the same guarded preview/apply as factory_configure_problem_issues.
     Native factory_status.control_catalog advertises targets and argument names.
     Target repair_landing configures only a default-off standing delegation:
-    specify duration_minutes and max_repairs (recommended 1440 and 3), model astra
-    and hourly false. Omit producer switches and other refill options. Preview
-    lists the fixed private file boundary. Disabling revokes future arming.
+    use model astra and hourly false. Trial mode requires duration_minutes and
+    max_repairs (recommended 1440 and 3). Explicit delegation_mode ongoing omits
+    duration_minutes and caps max_repairs per rolling 24 hours plus three lifetime
+    derivations per repair task and source task. It remains effective until
+    revoked or policy drift. No trial upgrades automatically. Optional path_profile
+    diagnostics adds only private output parsers to the observation boundary.
+    Omit producer switches and other refill options. Preview lists exact paths
+    and bounds. Disabling revokes future arming.
     The native landing observer fences queued grants on its next tick. This
     does not undo completed external actions or activate producer/intake.
     """
@@ -2606,7 +2614,8 @@ async def factory_configure_refill(
             or min_new_issues is not None
             or recurring_blocker is not None
             or workflow_stranded is not None
-            or duration_minutes is None
+            or (delegation_mode != "ongoing" and duration_minutes is None)
+            or (delegation_mode == "ongoing" and duration_minutes is not None)
             or max_repairs is None
         ):
             return {"ok": False, "reason": "repair_landing_target_arguments_invalid"}
@@ -2622,12 +2631,17 @@ async def factory_configure_refill(
                 reason,
                 duration_minutes=duration_minutes,
                 max_repairs=max_repairs,
+                mode=delegation_mode or "trial",
+                path_profile=path_profile or "observation",
                 request_key=request_key,
                 expected_preview_sha256=expected_preview_sha256,
             )
         except ValueError as exc:
             return {"ok": False, "reason": str(exc)}
-    if duration_minutes is not None or max_repairs is not None:
+    if any(
+        value is not None
+        for value in (duration_minutes, max_repairs, delegation_mode, path_profile)
+    ):
         return {"ok": False, "reason": "refill_target_arguments_invalid"}
     if target == "problem_issues":
         if (

@@ -167,6 +167,8 @@ def test_status_distinguishes_native_registration_from_caller_catalog(monkeypatc
         "workflow_stranded",
         "duration_minutes",
         "max_repairs",
+        "delegation_mode",
+        "path_profile",
     } <= set(refill["arguments"])
     assert len(refill["schema_sha256"]) == 64
     assert len(refill["description_sha256"]) == 64
@@ -210,7 +212,8 @@ def test_problem_issue_activation_requires_operator_and_preview(monkeypatch):
     assert calls[0][1]["actor"] == "joe"
 
 
-def test_existing_refill_tool_bounds_repair_landing_and_replay_after_revoke(db):
+@pytest.mark.parametrize("mode", ["trial", "ongoing"])
+def test_existing_refill_tool_bounds_repair_landing_and_replay_after_revoke(db, mode):
     from core.mcp_app import mcp as shared
     from fastmcp import Client
     from factory.orchestration import repair_landing_delegation as delegation
@@ -233,16 +236,22 @@ def test_existing_refill_tool_bounds_repair_landing_and_replay_after_revoke(db):
         enabled=True,
         model="astra",
         hourly=False,
-        duration_minutes=1440,
+        duration_minutes=1440 if mode == "trial" else None,
         max_repairs=2,
         expected_version=version,
         reason="Bounded internal repair trial",
     )
+    if mode == "ongoing":
+        args["delegation_mode"] = mode
 
     async def exercise():
         async with Client(shared) as client:
             preview = (await client.call_tool("factory_configure_refill", args)).data
             assert preview["allowed_paths"] == sorted(delegation.ALLOWED_PATHS)
+            if mode == "ongoing":
+                assert preview["mode"] == "ongoing"
+                assert preview["rolling_window_hours"] == 24
+                assert preview["max_task_derivations"] == 3
             apply = {
                 **args,
                 "operation": "apply",
@@ -255,6 +264,12 @@ def test_existing_refill_tool_bounds_repair_landing_and_replay_after_revoke(db):
                 )
             ).data
             assert bad["reason"] == "repair_landing_preview_changed"
+            widened = (
+                await client.call_tool(
+                    "factory_configure_refill", {**apply, "path_profile": "diagnostics"}
+                )
+            ).data
+            assert widened["reason"] == "repair_landing_preview_changed"
             saved = (await client.call_tool("factory_configure_refill", apply)).data
             assert saved["ok"] and saved["dispatched"] is False
             stale = (
@@ -319,8 +334,21 @@ def test_existing_refill_tool_bounds_repair_landing_and_replay_after_revoke(db):
         {"min_new_issues": 1},
         {"duration_minutes": None},
         {"max_repairs": None},
+        {"delegation_mode": "ongoing"},  # Cannot mix duration and rolling mode.
         {"target": "refill"},
         {"target": "problem_issues"},
+        {
+            "target": "refill",
+            "duration_minutes": None,
+            "max_repairs": None,
+            "delegation_mode": "ongoing",
+        },
+        {
+            "target": "refill",
+            "duration_minutes": None,
+            "max_repairs": None,
+            "path_profile": "diagnostics",
+        },
     ],
 )
 def test_repair_landing_control_rejects_mixed_targets(monkeypatch, change):

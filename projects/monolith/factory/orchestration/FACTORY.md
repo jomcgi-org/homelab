@@ -149,9 +149,24 @@ including their tests. Only fresh node-bound recurring-blocker repairs created
 after activation qualify. Native independent exact-head review must attest the
 complete diff's private, internal, reversible scope; public, security, authority,
 credential and destructive changes require a separate operator decision. Missing
-or ambiguous review scope refuses. The standing authorization expires within
-24 hours and allows at most ten exact derivations, with no automatic renewal.
-An unchanged derivation replays without spending another slot.
+or ambiguous review scope refuses. The eight-file cap is delegation eligibility,
+not a constraint on ordinary or legacy review artifacts.
+
+Existing and default authorizations are finite trials: at most 24 hours and ten
+exact derivations, with no automatic renewal. Explicit `delegation_mode: ongoing`
+instead permits 1–10 derivations per rolling 24 hours until revoked or policy
+drift, bounded by three cumulative derivations per repair task and source task
+across authorizations. Exact unchanged replay spends nothing. Rate exhaustion
+waits for the existing landing tick; it does not permanently refuse the repair
+or invalidate already granted queue entries. Indexed task lookup and exact
+producer-marker lookup avoid lifetime journal-scan cutoffs. No new scheduler,
+ledger, migration or implicit authority renewal is introduced.
+
+The optional `diagnostics` path profile adds only existing rationale and unified
+diff parsers and their tests. It requires an explicit previewed choice. Mixed
+executor/control/build modules that also enforce native gates remain excluded,
+even when a proposed change is routine. See the concrete expansion boundary in
+[MCP.md](../MCP.md#enable-bounded-repair-landing).
 
 Landing rechecks source machine-pause provenance, both issues' ownership, holds,
 unknown execution, review, immutable file evidence and CI before arming through

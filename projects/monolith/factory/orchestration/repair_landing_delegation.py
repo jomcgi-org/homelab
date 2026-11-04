@@ -7,6 +7,7 @@ releases holds, resumes execution or changes admission policy.
 """
 
 import json
+import re
 from dataclasses import asdict
 from datetime import datetime, timedelta
 
@@ -36,6 +37,23 @@ ALLOWED_PATHS = frozenset(
     )
     for suffix in (".py", "_test.py")
 )
+# An additional, explicitly selected boundary for routine output parsing. It
+# does not include executor dispatch, build gates or control/permission owners.
+PATH_PROFILES = {
+    "observation": ALLOWED_PATHS,
+    "diagnostics": ALLOWED_PATHS
+    | {
+        prefix + suffix
+        for prefix in (
+            "projects/monolith/factory/execution/rationale",
+            "projects/monolith/factory/orchestration/unified_diff",
+        )
+        for suffix in (".py", "_test.py")
+    },
+}
+MAX_FILES = 8
+MAX_TASK_DERIVATIONS = 3
+RATE_WINDOW = timedelta(hours=24)
 SCOPE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -67,7 +85,6 @@ SCOPE_SCHEMA = {
         "paths": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 8,
             "uniqueItems": True,
             "items": {"type": "string"},
         },
@@ -96,14 +113,23 @@ def configure(
     *,
     duration_minutes=60,
     max_repairs=3,
+    mode="trial",
+    path_profile="observation",
     request_key=None,
     expected_preview_sha256=None,
 ):
     _require(is_operator(principal), "standing_human_required")
     _require(operation in {"preview", "apply"}, "operation_invalid")
     _require(type(enabled) is bool, "enabled_invalid")
+    _require(mode in {"trial", "ongoing"}, "mode_invalid")
+    _require(path_profile in PATH_PROFILES, "path_profile_invalid")
     _require(
-        type(duration_minutes) is int and 1 <= duration_minutes <= 1440,
+        (mode == "ongoing" and duration_minutes is None)
+        or (
+            mode == "trial"
+            and type(duration_minutes) is int
+            and 1 <= duration_minutes <= 1440
+        ),
         "duration_invalid",
     )
     _require(type(max_repairs) is int and 1 <= max_repairs <= 10, "limit_invalid")
@@ -116,6 +142,9 @@ def configure(
         request_key=request_key,
         expected_preview_sha256=expected_preview_sha256,
     )
+    # Preserve trial request identity for callers replaying pre-upgrade commands.
+    if mode != "trial" or path_profile != "observation":
+        request.update(mode=mode, path_profile=path_profile)
     with controls._locked_session() as (db, control):
         if operation == "apply":
             controls._text(request_key, "request_key")
@@ -123,6 +152,9 @@ def configure(
                 select(FactoryAudit.detail_json).where(
                     FactoryAudit.actor == principal.subject,
                     FactoryAudit.action == CONTROL,
+                    FactoryAudit.detail_json.contains(
+                        '"request_key":' + json.dumps(request_key)
+                    ),
                 )
             ).all():
                 saved = json.loads(raw)
@@ -149,9 +181,17 @@ def configure(
             previous_authorization_id=prior.id if prior else None,
             duration_minutes=duration_minutes,
             max_repairs=max_repairs,
-            allowed_paths=sorted(ALLOWED_PATHS),
+            allowed_paths=sorted(PATH_PROFILES[path_profile]),
             reason=request["reason"],
         )
+        if mode != "trial" or path_profile != "observation":
+            proposal.update(mode=mode, path_profile=path_profile)
+        if mode == "ongoing":
+            proposal.update(
+                rolling_window_hours=24,
+                max_task_derivations=MAX_TASK_DERIVATIONS,
+                max_source_derivations=MAX_TASK_DERIVATIONS,
+            )
         proposal["preview_sha256"] = controls.digest(proposal)
         if operation == "preview":
             return {"ok": True, **proposal}
@@ -167,7 +207,9 @@ def configure(
             dispatched=False,
             expires_at=(
                 controls._now() + timedelta(minutes=duration_minutes)
-            ).isoformat(),
+            ).isoformat()
+            if mode == "trial"
+            else None,
         )
         controls._audit(
             db,
@@ -186,7 +228,20 @@ def _authority(db):
     saved = json.loads(event.detail_json)
     proposal, result = saved["proposal"], saved["result"]
     _require(result.get("ok") is True and result.get("enabled") is True, "disabled")
-    _require(controls._now() < datetime.fromisoformat(result["expires_at"]), "expired")
+    mode = proposal.get("mode", "trial")
+    _require(mode in {"trial", "ongoing"}, "mode_invalid")
+    if mode == "trial":
+        _require(
+            controls._now() < datetime.fromisoformat(result["expires_at"]), "expired"
+        )
+    else:
+        _require(
+            result["expires_at"] is None
+            and proposal.get("rolling_window_hours") == 24
+            and proposal.get("max_task_derivations") == MAX_TASK_DERIVATIONS
+            and proposal.get("max_source_derivations") == MAX_TASK_DERIVATIONS,
+            "bounds_changed",
+        )
     control = db.get(FactoryControl, "factory")
     policy = json.loads(control.policy_json or "{}")
     _require(
@@ -195,7 +250,9 @@ def _authority(db):
     )
     _require(
         proposal["repo"] == REPO
-        and proposal["allowed_paths"] == sorted(ALLOWED_PATHS)
+        and proposal.get("path_profile", "observation") in PATH_PROFILES
+        and proposal["allowed_paths"]
+        == sorted(PATH_PROFILES[proposal.get("path_profile", "observation")])
         and proposal["policy_sha256"] == controls.digest(policy),
         "policy_changed",
     )
@@ -219,11 +276,17 @@ def status(db):
         return {"enabled": False, "reason": "repair_landing_disabled"}
     try:
         _, proposal, result = _authority(db)
-        used = len(_grants(db, event.id))
+        ongoing = proposal.get("mode") == "ongoing"
+        used = len(_rolling_grants(db) if ongoing else _grants(db, event.id))
         return {
             "enabled": True,
             "authorization_id": event.id,
             "expires_at": result["expires_at"],
+            "mode": proposal.get("mode", "trial"),
+            "path_profile": proposal.get("path_profile", "observation"),
+            "rolling_window_hours": 24 if ongoing else None,
+            "max_task_derivations": MAX_TASK_DERIVATIONS if ongoing else None,
+            "max_source_derivations": MAX_TASK_DERIVATIONS if ongoing else None,
             "max_repairs": proposal["max_repairs"],
             "derivations_used": used,
             "derivations_remaining": max(0, proposal["max_repairs"] - used),
@@ -238,6 +301,10 @@ def _provenance(db, row, authorization_id):
         factory_problem_issues as producer,
     )
 
+    # Lookup the exact producer marker before bounding results. An ongoing
+    # authorization must not become unusable after 500 unrelated repairs.
+    markers = re.findall(r"<!-- factory-problem:([0-9a-f]{64}) -->", row.body or "")
+    _require(len(markers) == 1, "producer_provenance_missing_or_ambiguous")
     events = db.exec(
         select(FactoryAudit)
         .where(
@@ -246,11 +313,12 @@ def _provenance(db, row, authorization_id):
                 ("problem_issue_created", "problem_issue_reconciled")
             ),
             FactoryAudit.id > authorization_id,
+            producer._fingerprint_clause(markers[0]),
         )
         .order_by(FactoryAudit.id.desc())
-        .limit(501)
+        .limit(3)
     ).all()
-    _require(len(events) <= 500, "producer_history_incomplete")
+    _require(len(events) < 3, "producer_history_incomplete")
     matches = []
     for event in events:
         detail = json.loads(event.detail_json)
@@ -398,6 +466,8 @@ def _candidate(db, row, number, head):
         ),
         "scope_requires_operator",
     )
+    # This is delegation eligibility, never the schema for ordinary reviews.
+    _require(len(scope["paths"]) <= MAX_FILES, "file_limit")
     pull = landing.github_get(row.repo, f"pulls/{number}")
     task = db.get(SwarmTask, row.task_id)
     _require(
@@ -422,7 +492,7 @@ def _candidate(db, row, number, head):
     )
     files = releases.regular_file_evidence(
         {**pull, "base": {**pull["base"], "sha": scope["base_sha"]}},
-        ALLOWED_PATHS,
+        frozenset(proposal["allowed_paths"]),
         "repair_landing_paths_require_operator",
     )
     _require(
@@ -454,20 +524,36 @@ def _candidate(db, row, number, head):
     )
 
 
-def _grants(db, authorization_id):
+def _grants(
+    db, authorization_id=None, *, task_id=None, source_task_id=None, since=None
+):
+    query = select(FactoryAudit).where(
+        FactoryAudit.actor == ACTOR,
+        FactoryAudit.action == GRANT,
+    )
+    if authorization_id is not None:
+        query = query.where(FactoryAudit.id > authorization_id)
+    if task_id is not None:
+        query = query.where(FactoryAudit.task_id == task_id)
+    if source_task_id is not None:
+        query = query.where(
+            FactoryAudit.detail_json.contains(
+                '"source_task_id":' + json.dumps(source_task_id)
+            )
+        )
+    if since is not None:
+        query = query.where(FactoryAudit.created_at > since)
     return [
         {**json.loads(row.detail_json), "task_id": row.task_id}
-        for row in db.exec(
-            select(FactoryAudit)
-            .where(
-                FactoryAudit.actor == ACTOR,
-                FactoryAudit.action == GRANT,
-                FactoryAudit.id > authorization_id,
-            )
-            .limit(11)
-        ).all()
-        if json.loads(row.detail_json).get("authorization_id") == authorization_id
+        for row in db.exec(query.order_by(FactoryAudit.id.desc()).limit(11)).all()
+        if authorization_id is None
+        or json.loads(row.detail_json).get("authorization_id") == authorization_id
     ]
+
+
+def _rolling_grants(db):
+    # All authorizations count. Reconfiguration cannot reset the rolling cap.
+    return _grants(db, since=controls._now() - RATE_WINDOW)
 
 
 def prepare(task_id, number, head):
@@ -475,11 +561,30 @@ def prepare(task_id, number, head):
     try:
         with controls._locked_session() as (db, _):
             candidate = _candidate(db, controls._receipt(db, task_id), number, head)
-            grants = _grants(db, candidate["authorization_id"])
+            grants = _grants(db, task_id=task_id)
             if candidate in grants:
                 return None
             _, proposal, _ = _authority(db)
-            _require(len(grants) < proposal["max_repairs"], "delegation_exhausted")
+            if proposal.get("mode") == "ongoing":
+                _require(len(grants) < MAX_TASK_DERIVATIONS, "task_limit")
+                _require(
+                    len(
+                        _grants(
+                            db, source_task_id=candidate["provenance"]["source_task_id"]
+                        )
+                    )
+                    < MAX_TASK_DERIVATIONS,
+                    "source_limit",
+                )
+                _require(
+                    len(_rolling_grants(db)) < proposal["max_repairs"], "rolling_limit"
+                )
+            else:
+                _require(
+                    len(_grants(db, candidate["authorization_id"]))
+                    < proposal["max_repairs"],
+                    "delegation_exhausted",
+                )
             controls._audit(
                 db,
                 ACTOR,
@@ -504,7 +609,7 @@ def refusal(db, row, number, head):
     try:
         candidate = _candidate(db, row, number, head)
         _require(
-            candidate in _grants(db, candidate["authorization_id"]),
+            candidate in _grants(db, task_id=row.task_id),
             "authorization_missing_or_changed",
         )
         return None
