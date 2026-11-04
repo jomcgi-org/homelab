@@ -1084,14 +1084,23 @@ def test_private_recovery_audits_do_not_enter_publishable_scout_prompts():
     assert "unknown-execution fences" in collect
 
 
-def test_context_carries_bounded_pause_audits_as_private_advisory_evidence(db):
+@pytest.mark.parametrize(
+    "action",
+    [
+        "pause_task",
+        "recurring_blocker",
+        "workflow_stranded",
+        "problem_issue_recovery_observed",
+    ],
+)
+def test_context_carries_bounded_pause_audits_as_private_advisory_evidence(db, action):
     engine, _ = db
     before = service.context()
     with Session(engine) as session:
         session.add(
             FactoryAudit(
                 actor="test",
-                action="pause_task",
+                action=action,
                 task_id="task-a",
                 detail_json=dumps(
                     {"ok": True, "reason": "x" * 1000, "private_unused": "omit"}

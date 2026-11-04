@@ -196,6 +196,9 @@ def recovery_events(db):
                     "allocation_recovery_required",
                     "paused_card_created",
                     "paused_card_superseded",
+                    "recurring_blocker",
+                    "workflow_stranded",
+                    "problem_issue_recovery_observed",
                 )
             )
         )

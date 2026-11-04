@@ -383,6 +383,8 @@ code repair but its card, unknown starts and execution authority never change.
 
 The existing scout remains a one-shot, operator-chartered evidence collector;
 learning remains report-only. Neither is repurposed as an execution authority.
+Blocker, stranded-workflow and observed-recovery events feed their existing
+bounded private recovery sample, without entering publishable scout prompts.
 The recurring event producer is the autonomous repair trigger. Its private
 `problem_issue_recovery_watch` ledger observes at most 50 recent repairs per
 tick. `problem_issue_recovery_observed` requires the repair delivery's recorded
