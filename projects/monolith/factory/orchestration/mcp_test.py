@@ -151,12 +151,17 @@ def test_status_distinguishes_native_registration_from_caller_catalog(monkeypatc
     assert catalog["source"] == "native_server_registry"
     assert catalog["caller_visibility"] == "not_observed"
     assert set(catalog["tools"]) == {
+        "factory_status",
+        "factory_session_dispatch_diagnostics",
         "factory_configure_refill",
         "factory_configure_problem_issues",
         "factory_amend_policy",
         "factory_reconcile",
         "factory_continue_evidence",
     }
+    status = catalog["tools"]["factory_status"]
+    assert status["targets"] == ["factory", "session_dispatch"]
+    assert {"target", "session_id", "seq"} <= set(status["arguments"])
     refill = catalog["tools"]["factory_configure_refill"]
     assert refill["registered"] is True
     assert refill["operations"] == ["preview", "apply"]
@@ -2688,8 +2693,8 @@ def test_fresh_issue_preparation_requires_typed_apply_and_operator(monkeypatch):
     assert calls[1][2]["request_key"] == "exact-key"
 
 
-@pytest.mark.parametrize("cached_name", [False, True])
-def test_session_dispatch_diagnostics_operator_and_thread(monkeypatch, cached_name):
+@pytest.mark.parametrize("surface", ["combined", "cached", "status"])
+def test_session_dispatch_diagnostics_operator_and_thread(monkeypatch, surface):
     import threading
     from factory.execution import admission_diagnostics
 
@@ -2704,8 +2709,12 @@ def test_session_dispatch_diagnostics_operator_and_thread(monkeypatch, cached_na
     monkeypatch.setattr(admission_diagnostics, "inspect_session_turn", read)
 
     def call():
-        if cached_name:
+        if surface == "cached":
             return mcp.factory_session_dispatch_diagnostics(21073, 2)
+        if surface == "status":
+            return mcp.factory_status(
+                target="session_dispatch", session_id=21073, seq=2
+            )
         return mcp.factory_diagnostics("session_dispatch", session_id=21073, seq=2)
 
     result = _as(
@@ -2720,8 +2729,8 @@ def test_session_dispatch_diagnostics_operator_and_thread(monkeypatch, cached_na
     assert calls == [(21073, 2)]
 
 
-@pytest.mark.parametrize("cached_name", [False, True])
-def test_session_dispatch_diagnostics_strict_wire_identity(monkeypatch, cached_name):
+@pytest.mark.parametrize("surface", ["combined", "cached", "status"])
+def test_session_dispatch_diagnostics_strict_wire_identity(monkeypatch, surface):
     from fastmcp import Client
     from core.mcp_app import mcp as shared
     from factory.execution import admission_diagnostics
@@ -2732,29 +2741,22 @@ def test_session_dispatch_diagnostics_strict_wire_identity(monkeypatch, cached_n
         "inspect_session_turn",
         lambda sid, seq: calls.append((sid, seq)) or {"recovery_authorized": False},
     )
+    name, selector = {
+        "combined": ("factory_diagnostics", {"kind": "session_dispatch"}),
+        "cached": ("factory_session_dispatch_diagnostics", {}),
+        "status": ("factory_status", {"target": "session_dispatch"}),
+    }[surface]
     for principal in (
         _principal(authority=Authority.DELEGATED),
         _principal(kind=PrincipalKind.WORKLOAD),
     ):
         assert not _as(
             principal,
-            lambda: (
-                mcp.factory_session_dispatch_diagnostics(21073, 2)
-                if cached_name
-                else mcp.factory_diagnostics(
-                    "session_dispatch", session_id=21073, seq=2
-                )
-            ),
+            lambda: getattr(mcp, name)(**selector, session_id=21073, seq=2),
         )["ok"]
     assert not calls
 
     async def wire():
-        name = (
-            "factory_session_dispatch_diagnostics"
-            if cached_name
-            else "factory_diagnostics"
-        )
-        selector = {} if cached_name else {"kind": "session_dispatch"}
         async with Client(shared) as client:
             for field in ("session_id", "seq"):
                 for value in (True, "2", 0, -1, 2**63):
@@ -2773,6 +2775,34 @@ def test_session_dispatch_diagnostics_strict_wire_identity(monkeypatch, cached_n
 
     _as(_principal(), wire)
     assert calls == [(21073, 2)]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"target": "session_dispatch"},
+        {"target": "session_dispatch", "session_id": 21073},
+        {"target": "session_dispatch", "seq": 2},
+        {"session_id": 21073, "seq": 2},
+        {"target": "session_dispatch", "session_id": 21073, "seq": 2, "offset": 1},
+        {"target": "session_dispatch", "session_id": 21073, "seq": 2, "limit": 1},
+        {
+            "target": "session_dispatch",
+            "session_id": 21073,
+            "seq": 2,
+            "include_recent": True,
+        },
+    ],
+)
+def test_status_dispatch_rejects_incomplete_or_mixed_reads(monkeypatch, args):
+    from factory.execution import admission_diagnostics
+
+    def forbidden(*_):
+        pytest.fail("invalid read reached an owner")
+
+    monkeypatch.setattr(mcp, "_status_payload", forbidden)
+    monkeypatch.setattr(admission_diagnostics, "inspect_session_turn", forbidden)
+    assert not _as(_principal(), lambda: mcp.factory_status(**args))["ok"]
 
 
 @pytest.mark.parametrize(

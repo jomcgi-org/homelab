@@ -348,6 +348,10 @@ consolidates names. The session dispatch diagnostics compatibility name delegate
 to `factory_diagnostics` so those callers can inspect an uncertain turn without
 guessing that it stopped. Both names keep the same standing-operator gate, strict
 identity and bounded read owner; neither grants recovery authority (#7603).
+Some cached callers still cannot invoke the restored name after deployment.
+An explicit session-dispatch read target on the established `factory_status`
+route reaches that same owner while preserving default status behavior. Native
+catalog evidence identifies the route without claiming gateway refresh.
 
 ### Owned records
 
