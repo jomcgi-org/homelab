@@ -3592,6 +3592,10 @@ def test_held_refusal_retries_the_card_without_another_review(db, routine, monke
     with pytest.raises(ValueError):
         settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
     assert _settled(task)["failure_category"] == "routine_pause_held"
+    from datetime import timedelta
+
+    later = controls._now() + timedelta(minutes=6)
+    monkeypatch.setattr(controls, "_now", lambda: later)
     funding.reconcile(
         conductor._task(task["id"]),
         policy,
