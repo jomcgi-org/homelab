@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "52a8dde2a",
+  "commit": "296133ae2",
   "nodes": [
     {
       "key": "console-caller",
@@ -346,6 +346,22 @@
       "layer": "enforcement",
       "maturity": "built",
       "evidence": "projects/monolith/factory/orchestration/owner_prs.py:57,209,589,711"
+    },
+    {
+      "key": "factory-required-recovery",
+      "label": "Required recovery issue producer",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/factory_problem_issues.py:964"
+    },
+    {
+      "key": "factory-required-recovery-quota",
+      "label": "Token broker per-account quota evidence",
+      "view": "logical",
+      "layer": "feedback_source",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/provider_quota.py: fetch_provider_quota_sync; projects/embervm/tokenbroker/internal/quota/quota.go:438"
     }
   ],
   "control_actions": [
@@ -762,6 +778,15 @@
       "to": "github-pulls",
       "maturity": "built",
       "evidence": "projects/monolith/factory/orchestration/factory_landing.py:902"
+    },
+    {
+      "key": "factory-required-recovery.publish",
+      "label": "Record one bounded repair issue for an enabled recovery source",
+      "view": "logical",
+      "from": "factory-required-recovery",
+      "to": "github-issues",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/factory_problem_issues.py:964,1265"
     }
   ],
   "feedback": [
@@ -965,6 +990,20 @@
       "to": "factory-owner-hold-text",
       "signal": "Fresh PR and referenced-objective bodies and discussion text; veto evidence only",
       "evidence": "projects/monolith/factory/orchestration/owner_prs.py:556,691"
+    },
+    {
+      "view": "logical",
+      "from": "factory-required-recovery-quota",
+      "to": "factory-required-recovery",
+      "signal": "Fresh complete per-account permission, duration, usage, reset and pacing evidence",
+      "evidence": "projects/monolith/factory/orchestration/factory_problem_issues.py:83"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "factory-required-recovery",
+      "signal": "Retained recovery source events, policy watermarks, ownership and publication history",
+      "evidence": "projects/monolith/factory/orchestration/factory_problem_issues.py:564,938,964"
     }
   ]
 }
