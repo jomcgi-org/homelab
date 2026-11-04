@@ -55,6 +55,101 @@ _EVENT_ACTIONS = {
 }
 
 
+def configure(
+    operation,
+    enabled,
+    recurring_blocker,
+    workflow_stranded,
+    expected_version,
+    reason,
+    *,
+    actor,
+    request_key=None,
+    expected_preview_sha256=None,
+):
+    """Change only the producer switch and its two recovery sources.
+
+    The ordinary producer owns watermarking, deduplication and publication;
+    intake still owns receipts. No generation rollover or task mutation.
+    """
+    from core.jsonio import dumps
+    from factory.orchestration import factory_controls as controls
+
+    if operation not in {"preview", "apply"}:
+        raise ValueError("problem_issues_operation_invalid")
+    if any(
+        type(v) is not bool for v in (enabled, recurring_blocker, workflow_stranded)
+    ):
+        raise ValueError("problem_issues_switch_invalid")
+    request = dict(
+        enabled=enabled,
+        recurring_blocker=recurring_blocker,
+        workflow_stranded=workflow_stranded,
+        expected_version=expected_version,
+        reason=controls._text(reason, "reason"),
+        request_key=request_key,
+        expected_preview_sha256=expected_preview_sha256,
+    )
+    action = "problem_issues_control_applied"
+    with _locked_session() as (db, control):
+        if operation == "apply":
+            controls._text(request_key, "request_key")
+            for raw in db.exec(
+                select(FactoryAudit.detail_json).where(
+                    FactoryAudit.actor == actor,
+                    FactoryAudit.action == action,
+                )
+            ).all():
+                prior = json.loads(raw)
+                if prior["request"]["request_key"] == request_key:
+                    if prior["request"] != request:
+                        raise ValueError("problem_issues_request_conflict")
+                    return prior["result"]
+        if control.version != expected_version:
+            raise ValueError("problem_issues_version_changed")
+        policy = json.loads(control.policy_json or "{}")
+        if not policy.get("repo") or control.state == "stopped":
+            raise ValueError("problem_issues_control_unavailable")
+        before = policy.get("problem_issues", {})
+        after = {
+            **before,
+            "enabled": enabled,
+            "sources": {
+                **before.get("sources", {}),
+                "recurring_blocker": recurring_blocker,
+                "workflow_stranded": workflow_stranded,
+            },
+        }
+        normalized = problem_issues_policy({"problem_issues": after})
+        proposal = dict(
+            ok=True,
+            version=control.version,
+            policy_sha256=controls.digest(policy),
+            before=before,
+            after=after,
+            generation=policy.get("generation"),
+            reason=request["reason"],
+            effective_sources=_effective(normalized),
+        )
+        proposal["preview_sha256"] = controls.digest(proposal)
+        if operation == "preview":
+            return proposal
+        if proposal["preview_sha256"] != expected_preview_sha256:
+            raise ValueError("problem_issues_preview_changed")
+        policy["problem_issues"] = after
+        control.policy_json = dumps(policy)
+        control.version += 1
+        control.actor, control.updated_at = actor, _now()
+        result = dict(
+            ok=True,
+            version=control.version,
+            generation=policy.get("generation"),
+            dispatched=False,
+        )
+        _audit(db, actor, action, request=request, proposal=proposal, result=result)
+        return result
+
+
 def github_list(repo: str, suffix: str) -> list:
     """Use the conductor's bounded repository read through one test seam."""
     from factory.orchestration.factory_conductor import github_list as read

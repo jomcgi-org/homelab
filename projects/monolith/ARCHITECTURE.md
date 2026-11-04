@@ -369,6 +369,14 @@ read back, so issue-side changes cannot steer factory state through them.
 
 ### Funding consolidation
 
+**Why.** A task-level grant alone cannot make an exhausted node runnable.
+Funding now binds one failed work node to its review and records one versioned
+attempt-bound increase on approval. Two renewals per task, the ten-attempt node
+ceiling and the pinned cumulative turn extension remain enforced. Existing
+operator and uncertainty fences are rechecked at settlement. Producer activation
+uses an independent narrow preview/apply control that preserves generation and
+receipt ownership; it feeds the existing problem-issue and intake owners.
+
 **Why.** The eight funding, judgement, reservation, watchdog, continuation,
 allocation and metering modules answered overlapping policy questions (#7454).
 Task grants, exact-artifact continuations, reservation verdicts and opt-in meter

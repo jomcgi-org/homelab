@@ -132,7 +132,7 @@ The optional `backlog_refill` block ships omitted; omission and `enabled: false`
 
 ### Exact-event problem issues
 
-Optional `problem_issues` creates GitHub issues from: `node_stalled`, `workflow_stranded` and terminal `landing_recovery_exhausted`. It neither creates receipts nor admits tasks. Block and source switches default false. Each tick scans at most 50 source audits, creating at most one issue within a rolling 24-hour cap of 3. Rollout checklist and evidence live on [#6574](https://github.com/jomcgi-org/homelab/issues/6574).
+Optional `problem_issues` creates GitHub issues from `node_stalled`, `workflow_stranded`, `recurring_blocker` and terminal `landing_recovery_exhausted`. It neither creates receipts nor admits tasks. The master switch defaults false; `recurring_blocker` defaults true behind it. Each tick scans at most 50 source audits, creating at most one issue within a rolling 24-hour cap of 3. `factory_configure_problem_issues` lets a standing operator preview/apply the master, recurring-blocker and stranded-workflow switches without changing generation, existing receipts or any other settings. Newly enabled sources are watermarked on the next producer tick. The existing producer owns deduplication and recursion prevention; ordinary intake/refinement owns future work. [MCP activation](../MCP.md#enable-recovery-problem-issues) records the exact arguments.
 
 ### Escalation decisions
 
@@ -305,6 +305,25 @@ The no-progress watchdog is the `progress_watchdog` policy block: `enabled` and 
 
 Bounded factory status exposes refill/receipt-amendment hashes and argument names; no alternate route bypasses stale discovery.
 (see: /projects/monolith/factory/MCP.md)
+
+### Bounded failed-node renewal
+
+Funding can grant one extra attempt on one exhausted failed work node whose
+dependencies succeeded. The request binds its full node snapshot and latest
+failed run, graph revision, run evidence, issue and effective policy. Settlement
+rechecks them under the control and task locks. The graph records
+`renew_node_attempt` with before/after bounds; historical revisions, attempts,
+admitted pins, identity, branch and accounting remain unchanged.
+
+At most two such renewals are permitted per task across all nodes, each node
+remains at or below ten attempts, and granted turns stay below the pinned merit
+extension ceiling even when merit prompting is disabled. Existing no-progress
+and funding-refusal limits still apply. Only an enabled lane and admitted task
+qualify. Fresh GitHub labels and the synchronized work-item mirror must permit
+recovery; absent mirrors, human handoffs, landing holds, review-recovery holds,
+nonrenewable recovery, paused/cancelled tasks and unresolved starts refuse it.
+Escalated or cancelled nodes retain their existing recovery owner. A new grant
+does not answer an existing operator card or re-admit an escalated receipt.
 
 ### Work item pointer comments
 

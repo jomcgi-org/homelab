@@ -98,6 +98,165 @@ def policy(**overrides):
     return {"repo": "owner/repo", "problem_issues": block}
 
 
+@pytest.mark.parametrize("state", ["admitted", "uncertain", "escalated"])
+def test_recovery_producer_control_preserves_owners_and_is_replayable(db, state):
+    engine, _ = db
+    original = {
+        **policy(enabled=False),
+        "generation": 8,
+        "intake": {"enabled": True},
+        "max_attempts": 2,
+    }
+    with Session(engine) as session:
+        control = session.get(FactoryControl, "factory")
+        control.policy_json, control.state = dumps(original), "enabled"
+        row = session.exec(select(FactoryReceipt)).one()
+        row.state, row.task_paused = state, True
+        row.direction_json = dumps({"landing_hold": {"actor": "operator"}})
+        session.commit()
+        session.refresh(row)
+        receipt_before = row.model_dump()
+        version = control.version
+    args = dict(
+        enabled=True,
+        recurring_blocker=True,
+        workflow_stranded=True,
+        expected_version=version,
+        reason="Enable future recovery signals",
+        actor="joe",
+    )
+    preview = producer.configure("preview", **args)
+    assert not audits(engine, "problem_issues_control_applied")
+    apply = dict(
+        **args,
+        request_key="activate",
+        expected_preview_sha256=preview["preview_sha256"],
+    )
+    result = producer.configure("apply", **apply)
+    assert producer.configure("apply", **apply) == result
+    assert result == {
+        "ok": True,
+        "version": version + 1,
+        "generation": 8,
+        "dispatched": False,
+    }
+    with Session(engine) as session:
+        assert session.exec(select(FactoryReceipt)).one().model_dump() == receipt_before
+        after = json.loads(session.get(FactoryControl, "factory").policy_json)
+    expected = {
+        **original,
+        "problem_issues": {
+            **original["problem_issues"],
+            "enabled": True,
+            "sources": {
+                **original["problem_issues"]["sources"],
+                "recurring_blocker": True,
+                "workflow_stranded": True,
+            },
+        },
+    }
+    assert after == expected
+    assert len(audits(engine, "problem_issues_control_applied")) == 1
+    with pytest.raises(ValueError, match="request_conflict"):
+        producer.configure("apply", **{**apply, "enabled": False})
+    with pytest.raises(ValueError, match="version_changed"):
+        producer.configure("apply", **{**apply, "request_key": "another"})
+
+
+def test_recovery_producer_concurrent_replay_applies_once(db):
+    engine, _ = db
+    with Session(engine) as session:
+        control = session.get(FactoryControl, "factory")
+        control.policy_json = dumps(policy(enabled=False))
+        session.commit()
+        version = control.version
+    args = dict(
+        enabled=True,
+        recurring_blocker=True,
+        workflow_stranded=True,
+        expected_version=version,
+        reason="Recovery",
+        actor="joe",
+    )
+    preview = producer.configure("preview", **args)
+    args.update(request_key="same", expected_preview_sha256=preview["preview_sha256"])
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(producer.configure, "apply", **args) for _ in range(2)
+        ]
+        results = [f.result(timeout=10) for f in futures]
+    assert results[0] == results[1]
+    assert len(audits(engine, "problem_issues_control_applied")) == 1
+
+
+def test_recovery_producer_preview_rejects_unversioned_policy_change(db):
+    engine, _ = db
+    with Session(engine) as session:
+        control = session.get(FactoryControl, "factory")
+        control.policy_json = dumps(policy(enabled=False))
+        session.commit()
+        version = control.version
+    args = dict(
+        enabled=True,
+        recurring_blocker=True,
+        workflow_stranded=True,
+        expected_version=version,
+        reason="Recovery",
+        actor="joe",
+    )
+    preview = producer.configure("preview", **args)
+    with Session(engine) as session:
+        session.get(FactoryControl, "factory").policy_json = dumps(
+            policy(max_per_24_hours=1)
+        )
+        session.commit()
+    with pytest.raises(ValueError, match="preview_changed"):
+        producer.configure(
+            "apply",
+            **args,
+            request_key="activate",
+            expected_preview_sha256=preview["preview_sha256"],
+        )
+    assert not audits(engine, "problem_issues_control_applied")
+
+
+def test_recovery_activation_reaches_watermarked_deduplicated_producer(db, monkeypatch):
+    engine, _ = db
+    state = github(monkeypatch)
+    with Session(engine) as session:
+        control = session.get(FactoryControl, "factory")
+        control.policy_json = dumps(policy(enabled=False, sources={}))
+        session.commit()
+        version = control.version
+    args = dict(
+        enabled=True,
+        recurring_blocker=True,
+        workflow_stranded=True,
+        expected_version=version,
+        reason="Recovery",
+        actor="joe",
+    )
+    preview = producer.configure("preview", **args)
+    producer.configure(
+        "apply",
+        **args,
+        request_key="activate",
+        expected_preview_sha256=preview["preview_sha256"],
+    )
+    with Session(engine) as session:
+        selected = json.loads(session.get(FactoryControl, "factory").policy_json)
+    add_event(engine, action="recurring_blocker", blocker_key="a" * 64)
+    producer.problem_issues_tick(selected)
+    assert not state["writes"]
+    for _ in range(2):
+        add_event(engine, action="recurring_blocker", blocker_key="b" * 64)
+        producer.problem_issues_tick(selected)
+    assert len(state["writes"]) == 1
+    assert state["writes"][0]["labels"] == ["bug"]
+    with Session(engine) as session:
+        assert len(session.exec(select(FactoryReceipt)).all()) == 1
+
+
 def test_policy_defaults_every_source_off_and_refuses_broader_writes():
     block = controls._validate_problem_issues({})
     assert block == controls.DEFAULT_PROBLEM_ISSUES

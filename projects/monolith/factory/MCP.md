@@ -332,9 +332,9 @@ refused model retained separately if truncated. No prompts or credentials appear
 
 ### Native registration and caller discovery
 
-`factory_status.control_catalog` reports four entries from the running native
+`factory_status.control_catalog` reports five entries from the running native
 FastMCP registry: `factory_configure_refill`, `factory_amend_policy`,
-`factory_reconcile` and `factory_continue_evidence`.
+`factory_reconcile`, `factory_continue_evidence` and `factory_configure_problem_issues`.
 Each includes registration, schema and description hashes, bounded argument
 names and offered operations/models. It is operator-only, read-only and reports
 `caller_visibility=not_observed`. It does not return the whole tool catalogue.
@@ -359,6 +359,33 @@ available, or request its operator to reconcile discovery without changing
 access. If the tool remains absent, report that capability gap and stop the
 activation. Do not substitute legacy configure, a new alias, direct database
 writes, or a previously denied HTTP path.
+
+### Enable recovery problem issues
+
+After the reviewed code is deployed, use the native
+`factory_configure_problem_issues` control as a standing human operator:
+
+1. Read `factory_status.version` and verify the control's native registration.
+2. Call with `operation: "preview"`, `enabled: true`,
+   `recurring_blocker: true`, `workflow_stranded: true`, that `expected_version`
+   and a `reason`. Inspect `before`, `after` and `effective_sources`.
+3. Call with `operation: "apply"`, the identical switches/version/reason,
+   `expected_preview_sha256` copied from `preview_sha256`, and a new
+   `request_key`. Retry identical arguments and key after a lost response.
+4. Read status again. The next ordinary producer tick watermarks newly enabled
+   sources; subsequent events can create bounded deduplicated `bug` issues.
+   Existing intake/refinement settings must already allow future bug intake.
+
+The control changes only those three switches. It preserves policy generation,
+all other source/settings values, queued and active receipts, holds, ownership,
+unknown starts and producer history. It neither files an issue immediately nor
+dispatches work. Version or policy changes invalidate preview. To reverse a
+switch, preview/apply its false value through the same operation. The control
+does not replay historical signals or recover an existing escalated receipt.
+Pass the version as a JSON integer. Strings, fractional values and booleans
+are refused by the shared exact-integer contract.
+If native registration exists but the client lacks the tool, follow the caller
+discovery procedure above; legacy `configure` is not a substitute.
 
 ### Separate restriction, continuation and refill activation
 

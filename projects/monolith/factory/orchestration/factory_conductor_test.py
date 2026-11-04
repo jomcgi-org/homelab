@@ -19882,6 +19882,306 @@ def test_spent_node_allocation_does_not_block_a_task_funding_request(
         assert funding.latest(db, task["id"], "allocation_recovery_required") is None
 
 
+def retry_exhausted_task(monkeypatch):
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+
+    task, policy = exhausted_allocation_task(monkeypatch, "implement_manifest", 4)
+    assert conductor.graph.admit_dispatch(task["id"], "implement_manifest").ok
+    assert conductor.graph.record_outcome(
+        task["id"],
+        "implement_manifest",
+        2,
+        "failed",
+        0.25,
+        None,
+        json.dumps(
+            {
+                "reason": "guest_cessation_confirmed",
+                "artifact": {"finding": "retryable failure"},
+            }
+        ),
+    ).ok
+    monkeypatch.setattr(funding, "routine_labels_held", lambda _: None)
+    with controls._locked_session() as (db, _):
+        item = WorkItem(
+            title="Recovery fixture",
+            state="active",
+            source_kind="github",
+            trust="untrusted",
+            authority="github",
+            github_repo=task["repo"],
+            github_issue_number=task["issue_number"],
+        )
+        db.add(item)
+        db.flush()
+        controls._receipt(db, task["id"]).work_item_id = item.id
+    return task, policy
+
+
+def test_funding_renews_exact_node_and_preserves_history(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, policy = retry_exhausted_task(monkeypatch)
+    history = conductor.graph.node_runs(task["id"])
+    original = conductor.graph.load_graph(task["id"])
+    revision = conductor.graph.current_version(task["id"])
+    assert not conductor._ready_nodes(original, history)
+    with controls._read_session() as db:
+        assert funding._retry_target(db, task["id"])
+        assert (
+            funding.routine_hold(db, controls._receipt(db, task["id"]), task["id"])
+            is None
+        )
+    # Ordinary reconciliation reaches the review without waiting for a planner.
+    assert funding.reconcile(task, policy, history, controls.can_start(task["id"]))
+    request = settle_funding(task, funding_decision())
+    with controls._read_session() as db:
+        grant = funding.amendment(db, task["id"])
+    assert grant["node_retry"]["before"] == 2
+    assert grant["node_retry"]["after"] == 3
+    assert grant["node_retry"]["source_run_id"] == history[-1]["id"]
+    assert conductor.graph.load_graph(task["id"], revision) == original
+    after = conductor.graph.node_runs(task["id"])
+    assert [r for r in after if r["node_key"] == "implement_manifest"] == history
+    ready = conductor._ready_nodes(conductor.graph.load_graph(task["id"]), after)
+    assert [n["node_key"] for n in ready] == ["implement_manifest"]
+    # A replay cannot grant another attempt.
+    funding.settle(
+        task, next(r for r in after if r["node_key"] == request["node_key"]), request
+    )
+    admitted = conductor.graph.admit_dispatch(task["id"], "implement_manifest")
+    assert admitted.ok and admitted.attempt == 3
+    assert admitted.pin["max_attempts"] == 3
+    assert "Funding judge direction" in admitted.pin["prompt"]
+
+
+@pytest.mark.parametrize("when", ["request", "settle"])
+@pytest.mark.parametrize(
+    "hold",
+    [
+        "landing",
+        "human",
+        "nonrenewable",
+        "pause",
+        "unknown",
+        "running",
+        "review",
+        "label",
+    ],
+)
+def test_funded_retry_never_crosses_a_hold(feedback_db, monkeypatch, when, hold):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+    from factory.orchestration.factory_models import FactoryStart
+
+    task, _ = retry_exhausted_task(monkeypatch)
+    if when == "settle":
+        assert funding.request(task, "Renew exact attempt")
+        with controls._read_session() as db:
+            request = funding.pending(db, task["id"])
+        run = run_feedback_node(task, request["node_key"], funding_decision())
+    with controls._locked_session() as (db, _):
+        row = controls._receipt(db, task["id"])
+        if hold == "landing":
+            row.direction_json = json.dumps({"landing_hold": {"actor": "operator"}})
+        elif hold == "human":
+            controls._audit(db, "operator", "human_handoff", task_id=task["id"])
+        elif hold == "nonrenewable":
+            row.direction_json = json.dumps({"nonrenewable_recovery": True})
+        elif hold == "pause":
+            row.task_paused = True
+        elif hold in {"unknown", "running"}:
+            db.add(
+                FactoryStart(
+                    task_id=task["id"],
+                    start_key="unresolved",
+                    actor="test",
+                    model="opus",
+                    max_cost_usd=1,
+                    status="uncertain" if hold == "unknown" else "reserved",
+                )
+            )
+        elif hold == "label":
+            db.get(WorkItem, row.work_item_id).labels = ["human"]
+    if hold == "review":
+        monkeypatch.setattr(controls, "review_recovery_held", lambda *a, **kw: True)
+    if when == "request":
+        assert not funding.request(task, "Renew exact attempt")
+    else:
+        funding.settle(task, run, request)
+    node = conductor.graph.load_graph(task["id"])[0]
+    assert node["max_attempts"] == 2
+    with controls._read_session() as db:
+        assert funding.amendment(db, task["id"]) is None
+
+
+@pytest.mark.parametrize(
+    "change", ["graph", "node", "runs", "policy", "labels", "ceiling", "direction"]
+)
+def test_funded_retry_revalidates_evidence(feedback_db, monkeypatch, change):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+    from factory.orchestration.models import SwarmPlanNode, SwarmNodeRun
+
+    task, _ = retry_exhausted_task(monkeypatch)
+    assert funding.request(task, "Renew exact attempt")
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    run = run_feedback_node(task, request["node_key"], funding_decision())
+    if change == "graph":
+        conductor.graph.add_node(
+            task["id"],
+            author_kind="engine",
+            author="test",
+            cause_kind="test",
+            cause_ref="concurrent",
+            stated_reason="Changed graph",
+            expected_version=request["revision"],
+            node_key="other",
+            kind="work",
+            prompt="Other work",
+            model="opus",
+            deps=[],
+            max_cost_usd=1,
+            side_effects=False,
+            max_attempts=1,
+            turn_timeout_seconds=60,
+        )
+    elif change == "labels":
+        monkeypatch.setattr(funding, "routine_labels_held", lambda _: "held_label")
+    elif change == "ceiling":
+        monkeypatch.setattr(
+            funding.factory_judge, "ceiling", lambda _: {"turn_ceiling": 0}
+        )
+    else:
+        with controls._locked_session() as (db, _):
+            if change == "node":
+                db.exec(
+                    select(SwarmPlanNode).where(
+                        SwarmPlanNode.node_key == "implement_manifest"
+                    )
+                ).one().prompt += " changed"
+            elif change == "runs":
+                db.get(
+                    SwarmNodeRun, request["node_retry"]["source_run_id"]
+                ).outcome_json = "{}"
+            elif change == "direction":
+                controls._receipt(db, task["id"]).direction_json = json.dumps(
+                    {"operator_direction": "Different scope"}
+                )
+            else:
+                row = controls._receipt(db, task["id"])
+                row.policy_json = json.dumps(
+                    {**json.loads(row.policy_json), "max_planner_turns": 8}
+                )
+    funding.settle(task, run, request)
+    assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == 2
+    with controls._read_session() as db:
+        assert funding.amendment(db, task["id"]) is None
+        assert funding.latest(db, task["id"], "funding_review_settled")["refusal"]
+
+
+def test_funded_retry_history_survives_readded_key(feedback_db, monkeypatch):
+    from factory.orchestration import factory_funding as funding
+
+    task, _ = retry_exhausted_task(monkeypatch)
+    original = conductor.graph.load_graph(task["id"])
+    assert funding.request(task, "One exact retry")
+    settle_funding(task, funding_decision())
+    version = conductor.graph.current_version(task["id"])
+    renewed = conductor.graph.load_graph(task["id"])
+    audit = dict(
+        author_kind="engine",
+        author="test",
+        cause_kind="test",
+        cause_ref="replace",
+        stated_reason="Replacement for history test",
+    )
+    assert conductor.graph.discard_node(
+        task["id"], "implement_manifest", expected_version=version, **audit
+    ).ok
+    assert conductor.graph.add_node(
+        task["id"],
+        expected_version=version + 1,
+        node_key="implement_manifest",
+        kind="work",
+        prompt="Replacement",
+        model="opus",
+        deps=[],
+        max_cost_usd=1,
+        side_effects=False,
+        max_attempts=1,
+        turn_timeout_seconds=60,
+        **audit,
+    ).ok
+    historical = conductor.graph.load_graph(task["id"], version)
+    assert historical[0]["max_attempts"] == renewed[0]["max_attempts"] == 3
+    assert (
+        conductor.graph.load_graph(task["id"], 1)[0]["max_attempts"]
+        == original[0]["max_attempts"]
+        == 2
+    )
+
+
+def test_funded_retry_cumulative_limit_and_no_progress(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, _ = retry_exhausted_task(monkeypatch)
+    for attempt in (3, 4):
+        assert funding.request(task, "New exact failure evidence")
+        settle_funding(task, funding_decision())
+        admitted = conductor.graph.admit_dispatch(task["id"], "implement_manifest")
+        assert admitted.ok and admitted.attempt == attempt
+        assert conductor.graph.record_outcome(
+            task["id"],
+            "implement_manifest",
+            attempt,
+            "failed",
+            0.25,
+            str(attempt) * 40,
+            json.dumps({"artifact": {"finding": f"failure {attempt}"}}),
+        ).ok
+    with controls._read_session() as db:
+        assert funding._retry_target(db, task["id"]) is None
+    assert not conductor.graph.admit_dispatch(task["id"], "implement_manifest").ok
+
+
+def test_funded_retry_without_new_work_evidence_stays_bounded(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, _ = retry_exhausted_task(monkeypatch)
+    assert funding.request(task, "One recovery attempt")
+    settle_funding(task, funding_decision())
+    assert conductor.graph.admit_dispatch(task["id"], "implement_manifest").ok
+    assert conductor.graph.record_outcome(
+        task["id"], "implement_manifest", 3, "failed", 0.25, None, "{}"
+    ).ok
+    assert not funding.request(task, "Repeat without progress")
+    assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == 3
+    assert controls.task_snapshot(task["id"])["task_paused"]
+    with controls._read_session() as db:
+        assert (
+            funding.latest(db, task["id"], "recurring_blocker")["reason"]
+            == "funding_without_progress"
+        )
+
+
 def test_funding_settles_against_a_spent_node_allocation(feedback_db, monkeypatch):
     from factory.orchestration import (
         factory_controls as controls,
@@ -20453,6 +20753,42 @@ def test_funding_review_outlives_only_its_exact_soft_deadline(feedback_db, monke
     ]
     controls.set_control("stop", "test")
     assert not controls.can_start(task["id"], start_key=request["start_key"])["ok"]
+
+
+def test_expired_task_funding_dispatch_is_reachable(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, policy = retry_exhausted_task(monkeypatch)
+    now = controls._now() + timedelta(seconds=policy["task_timeout_seconds"] + 1)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    monkeypatch.setattr(conductor, "_slot_budget", lambda: 1)
+    monkeypatch.setattr(conductor, "hydration_branch", lambda _: "main")
+    monkeypatch.setattr(conductor, "branch_hydration", lambda *a: "main")
+    monkeypatch.setattr(conductor, "_dispatch_branch", lambda *a: "factory/test")
+    assert controls.can_start(task["id"])["reason"] == "task_deadline"
+    assert funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    assert funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    run = next(
+        r
+        for r in conductor.graph.node_runs(task["id"])
+        if r["node_key"] == request["node_key"]
+    )
+    assert run["pin"]["task_deadline_at"] == request["deadline_at"]
 
 
 @pytest.mark.parametrize("changed_issue", [False, True])
