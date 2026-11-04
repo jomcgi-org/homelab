@@ -33,6 +33,10 @@ ACTOR = "factory:improvement-scout"
 TASK_CLASS = "advisory-diagnosis"
 REPO = "jomcgi-org/homelab"
 SOURCE = "quota_improvement"
+# Owned work that is actually delivering. Queued, escalated, uncertain and
+# paused receipts stay owned and untouched but do not make read-only repair
+# preparation wait; one definition keeps context and transport in agreement.
+PROGRESSING_STATES = ("admitted", "landing")
 MODEL = "sol"
 COLLECT_KEY = "scout_collect_1"
 REVIEW_KEY = "scout_review_1"
@@ -169,9 +173,8 @@ def _verified_policy(db, receipt, task_id, node_key, attempt):
         .where(
             FactoryReceipt.repo == REPO,
             FactoryReceipt.id != receipt.id,
-            FactoryReceipt.state.in_(
-                ("queued", "admitted", "uncertain", "landing", "escalated")
-            ),
+            FactoryReceipt.state.in_(PROGRESSING_STATES),
+            FactoryReceipt.task_paused.is_(False),
         )
         .limit(1)
     ).first()

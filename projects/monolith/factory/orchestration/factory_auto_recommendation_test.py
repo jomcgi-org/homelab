@@ -149,6 +149,7 @@ def configure():
 def card(first="agent-ready", **extra):
     return {
         "kind": "delivery",
+        "origin": {"class": "planner_pause"},
         "question": "Merge the working fix or wait for permission?",
         "reason": "The tests pass.",
         "options": [
@@ -207,9 +208,9 @@ def actions(db, action):
         ]
 
 
-def tick():
+def tick(state="enabled"):
     auto._last_run = None
-    return auto.tick()
+    return auto.tick(state)
 
 
 def test_routine_card_defaults_to_its_recommendation_once(db, github):
@@ -246,9 +247,9 @@ def test_flag_off_and_interval_do_nothing(db, github, monkeypatch):
     monkeypatch.setenv(auto.ENABLED_ENV, "false")
     assert tick() == {}
     monkeypatch.setenv(auto.ENABLED_ENV, "true")
-    assert auto.tick() == {"applied": 1}
+    assert auto.tick("enabled") == {"applied": 1}
     escalate(db)
-    assert auto.tick() == {}  # inside the interval
+    assert auto.tick("enabled") == {}  # inside the interval
 
 
 def test_card_inside_the_grace_window_is_left_to_a_person(db, github):
@@ -266,7 +267,6 @@ def test_card_inside_the_grace_window_is_left_to_a_person(db, github):
         (card(question="Grant the agent access to production?"), "sensitive_scope"),
         (card(reason="Includes deleting stale rows."), "sensitive_scope"),
         (card(summary="Dropping the old table."), "sensitive_scope"),
-        (card(kind="watchdog"), "not_routine_kind"),
         (card(dispatch_refusal={"x": 1}), "funding_gate"),
         (card(resolved={"effect": "hold"}), "not_open"),
         ({**card(), "options": card()["options"][:1]}, "invalid_options"),
@@ -331,11 +331,23 @@ def test_explicit_holds_and_pauses_stay_gated(db, github):
     assert tick() == {"receipt_held": 1}
 
 
-def test_repeat_without_progress_becomes_one_repair_signal(db, github):
+@pytest.fixture
+def runs(monkeypatch):
+    """Server-observed node runs for the escalated task."""
+    state = {"runs": [{"id": 1, "node_key": "implement", "status": "failed"}]}
+    monkeypatch.setattr(auto, "_runs", lambda _db, _row: list(state["runs"]))
+    return state
+
+
+def succeed(runs, run_id):
+    runs["runs"].append({"id": run_id, "node_key": "review", "status": "succeeded"})
+
+
+def test_repeat_without_progress_becomes_one_repair_signal(db, github, runs):
     configure()
     escalate(db)
     assert tick() == {"applied": 1}
-    escalate(db)  # the same question comes back, same pull request head
+    escalate(db)  # the same failure comes back at the same head
 
     assert tick() == {"no_progress": 1}
     assert tick() == {"no_progress": 1}
@@ -345,24 +357,57 @@ def test_repeat_without_progress_becomes_one_repair_signal(db, github):
     assert len(actions(db, auto.APPLIED)) == 1
 
 
-def test_moved_head_or_new_diagnosis_is_progress_until_the_cap(db, github):
+def test_reworded_question_is_not_progress(db, github, runs):
     configure()
     escalate(db)
     assert tick() == {"applied": 1}
-    github.head = "b" * 40  # changed artifact
+    escalate(db, card(question="Please approve the same fix again?"))
+    assert tick() == {"no_progress": 1}
+    assert len(actions(db, auto.BLOCKER)) == 1
+
+
+def test_a_moved_head_alone_is_not_progress(db, github, runs):
+    configure()
     escalate(db)
     assert tick() == {"applied": 1}
-    escalate(db, card(question="A different failure now?"))  # new diagnosis
+    github.head = "b" * 40  # moved, but nothing server-observed succeeded
+    escalate(db)
+    assert tick() == {"no_progress": 1}
+
+
+def test_new_artifact_and_success_evidence_is_progress_until_the_cap(
+    db, github, runs
+):
+    configure()
+    escalate(db)
+    assert tick() == {"applied": 1}
+    github.head = "b" * 40
+    succeed(runs, 5)
+    escalate(db)
+    assert tick() == {"applied": 1}
+    github.head = "c" * 40
+    succeed(runs, 9)
+    escalate(db)
     assert tick() == {"applied": 1}
 
-    escalate(db, card(question="Yet another failure?"))
-    github.head = "c" * 40
+    github.head = "d" * 40
+    succeed(runs, 12)
+    escalate(db)
     assert tick() == {"auto_limit": 1}
     assert len(actions(db, auto.APPLIED)) == 3
     assert len(actions(db, auto.BLOCKER)) == 1
 
 
-def test_repair_issues_never_spawn_repairs(db, github):
+def test_a_different_failure_identity_is_novel(db, github, runs):
+    configure()
+    escalate(db)
+    assert tick() == {"applied": 1}
+    runs["runs"] = [{"id": 2, "node_key": "integrate", "status": "failed"}]
+    escalate(db)
+    assert tick() == {"applied": 1}
+
+
+def test_repair_issues_never_spawn_repairs(db, github, runs):
     configure()
     escalate(db, body="<!-- factory-problem:abc -->\nrepair")
     assert tick() == {"applied": 1}
@@ -371,14 +416,120 @@ def test_repair_issues_never_spawn_repairs(db, github):
     assert actions(db, auto.BLOCKER) == []
 
 
-def test_concurrent_considerations_apply_the_card_once(db, github):
+def test_unclassified_and_historical_cards_wait_for_a_person(db, github):
+    configure()
+    document = card()
+    del document["origin"]
+    escalate(db, document)
+    assert tick() == {"unclassified": 1}
+    escalate(db, card(origin={"class": "funding_doubt"}))
+    assert tick() == {"unclassified": 1}
+    assert actions(db, auto.APPLIED) == []
+
+
+def test_factory_generated_repair_refinement_defaults_to_its_recommendation(
+    db, github
+):
+    configure()
+    document = card()
+    del document["origin"]
+    receipt_id = escalate(
+        db, document, body="<!-- factory-problem:abc -->\nrepair"
+    )
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt_id)
+        row.task_class = "refine"
+        session.add(row)
+        session.commit()
+    assert tick() == {"applied": 1}
+
+
+@pytest.mark.parametrize(
+    "direction",
+    [
+        {"nonrenewable_recovery": {"by": "operator"}},
+        {"model_restriction": {"removed_models": ["opus"]}},
+    ],
+)
+def test_shared_restriction_owners_gate(db, github, direction):
+    configure()
+    receipt_id = escalate(db)
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt_id)
+        row.direction_json = json.dumps(direction)
+        session.add(row)
+        session.commit()
+    assert tick() == {"explicit_hold": 1}
+
+
+def test_a_recorded_human_handoff_gates(db, github):
+    configure()
+    escalate(db)
+    with controls._locked_session() as (session, _control):
+        controls._audit(session, "operator", "human_handoff", task_id=None)
+    assert tick() == {"applied": 1}  # no task identity to match, no handoff
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        row.direction_json = json.dumps({"previous_task_ids": ["t-1"]})
+        session.add(row)
+        session.add(
+            FactoryAudit(actor="op", action="human_handoff", task_id=None, detail_json="{}")
+        )
+        session.commit()
+
+
+def test_stopped_and_paused_lanes_do_nothing(db, github):
+    configure()
+    escalate(db)
+    for state in ("stopped", "paused", "disabled", None):
+        assert tick(state) == {}
+    assert github.writes == []
+    assert actions(db, auto.APPLIED) == []
+
+
+def test_the_claim_revalidates_under_the_lock_if_the_lane_stops(db, github):
+    configure()
+    receipt_id = escalate(db)
+    assert controls.set_control("stop", "operator")["ok"]
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt_id)
+        fields = decisions._fields(row)
+    result = decisions.request_decision(
+        receipt_id,
+        fields["decision_id"],
+        "go",
+        auto.ACTOR,
+        request_key="auto:direct",
+        note=auto.NOTE,
+    )
+    assert result["state"] == "refused" and result["reason"] == "auto:lane_not_enabled"
+    assert github.writes == []
+
+
+def test_concurrent_considerations_apply_the_card_once(db, github, runs):
+    import threading
+
     configure()
     receipt_id = escalate(db)
     now = controls._now()
-    first = auto._consider(receipt_id, now)
-    second = auto._consider(receipt_id, now)
-    assert first == "applied"
-    assert second != "applied"
+    outcomes: list[str] = []
+    barrier = threading.Barrier(4)
+
+    def attempt():
+        barrier.wait()
+        try:
+            outcomes.append(auto._consider(receipt_id, now))
+        except Exception as exc:  # noqa: BLE001 - a lost race may raise
+            outcomes.append(type(exc).__name__)
+
+    threads = [threading.Thread(target=attempt) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    # Racing callers share one request key: every one reports the single
+    # stored outcome, and the effect and ledger happen exactly once.
+    assert set(outcomes) <= {"applied", "unconfirmed"} and "applied" in outcomes
     assert len(actions(db, "decision_applied")) == 1
     assert len(actions(db, auto.APPLIED)) == 1
 

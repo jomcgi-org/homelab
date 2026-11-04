@@ -189,6 +189,7 @@ def _claim(
     expected_decision_id: str | None = None,
     *,
     session=None,
+    note: str | None = None,
 ) -> tuple[dict, dict, dict]:
     """Reserve this escalation for this option, or say why it cannot be.
 
@@ -271,6 +272,13 @@ def _claim(
         holder = _live_claim(db, receipt_id, option_key, _fields(row)["decision_id"])
         if holder is not None:
             raise DecisionError(409, f"a decision for {holder} is already in flight")
+        from factory.orchestration import factory_auto_recommendation as auto
+
+        if actor == auto.ACTOR:
+            # The automatic actor is revalidated here, under the same lock as
+            # the claim, against the shared restriction owners. Its ledger row
+            # commits or rolls back with the claim itself.
+            auto.revalidate_claim(db, control, row, escalation, option, note)
         _audit(
             db,
             actor,
@@ -1359,7 +1367,7 @@ def request_decision(
                 )
             if action == "decide":
                 fields, escalation, resolved = _claim(
-                    receipt_id, option_key, actor, decision_id, session=db
+                    receipt_id, option_key, actor, decision_id, session=db, note=note
                 )
             else:
                 row = _receipt(db, receipt_id)

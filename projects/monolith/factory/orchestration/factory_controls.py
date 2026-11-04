@@ -1376,6 +1376,7 @@ def _policy_for_generation_comparison(policy: dict) -> dict:
 
     comparable["backlog_refill"] = refill_policy(comparable)
     comparable["problem_issues"] = problem_issues_policy(comparable)
+    comparable.setdefault("task_budget_binding", False)
     comparable["progress_watchdog"] = progress_watchdog_policy(comparable)
     # Newly defaulted intake fields must not turn a legacy no-op configure
     # into a generation change while pinned receipts are running.
