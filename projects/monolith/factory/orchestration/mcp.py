@@ -371,6 +371,7 @@ def _status_payload(
         "review_routing": view.get("review_routing"),
         "refill": view.get("refill"),
         "repair_landing": view.get("repair_landing"),
+        "owner_pr_landing": view.get("owner_pr_landing"),
         "active": active,
         "queued": queued,
         "needs_operator": needs_operator,
@@ -769,7 +770,11 @@ def _operator_view(
         ]
         decisions = _decision_page(db, False, offset, limit)
         generated = _now()
-        from factory.orchestration import refill_control, repair_landing_delegation
+        from factory.orchestration import (
+            owner_pr_landing_delegation,
+            refill_control,
+            repair_landing_delegation,
+        )
 
         refill_status = refill_control.status(db, control)
         return {
@@ -786,6 +791,7 @@ def _operator_view(
             "generated_at": generated,
             "refill": refill_status,
             "repair_landing": repair_landing_delegation.status(db),
+            "owner_pr_landing": owner_pr_landing_delegation.status(db),
             "intake": controls.intake_state(policy, session=db),
             "lanes": controls.lane_usage(
                 policy,
@@ -831,7 +837,7 @@ async def _control_catalog() -> dict:
             "operations": properties.get("operation", {}).get("enum", [])[:4],
         }
         if "target" in properties:
-            tools[name]["targets"] = properties["target"].get("enum", [])[:4]
+            tools[name]["targets"] = properties["target"].get("enum", [])[:8]
         if "model" in properties:
             tools[name]["models"] = properties["model"].get("enum", [])[:8]
     return {
@@ -2652,7 +2658,7 @@ async def factory_configure_refill(
     reset_breaker: bool = False,
     min_new_issues: Annotated[MCPInteger, Field(ge=0, le=100)] | None = None,
     target: Literal[
-        "refill", "problem_issues", "owner_prs", "repair_landing"
+        "refill", "problem_issues", "owner_prs", "repair_landing", "owner_pr_landing"
     ] = "refill",
     recurring_blocker: bool | None = None,
     workflow_stranded: bool | None = None,
@@ -2697,11 +2703,56 @@ async def factory_configure_refill(
     exact paths and bounds. Disabling revokes future arming.
     The native landing observer fences queued grants on its next tick. This
     does not undo completed external actions or activate producer/intake.
+
+    Target owner_pr_landing configures a separate default-off standing decision.
+    Use model astra and hourly false, omitting all target-specific options.
+    Preview binds the configured numeric owner identity, intake policy and
+    configuration history. It explicitly covers pre-existing adopted PRs within
+    a frozen private diagnostics profile. Bounds are three new derivations per
+    rolling 24 hours and three per canonical PR across receipts and generations.
+    Independent exact-head review, CI, holds and the existing merge queue apply.
+    Disable revokes queued and future authority on the next landing observation.
     """
     principal = current_principal()
     refusal = _refuse(principal)
     if refusal is not None:
         return refusal
+    if target == "owner_pr_landing":
+        if (
+            model != "astra"
+            or hourly is not False
+            or reset_breaker
+            or any(
+                value is not None
+                for value in (
+                    min_new_issues,
+                    recurring_blocker,
+                    workflow_stranded,
+                    owner_login,
+                    owner_id,
+                    duration_minutes,
+                    max_repairs,
+                    delegation_mode,
+                    path_profile,
+                )
+            )
+        ):
+            return {"ok": False, "reason": "owner_pr_landing_target_arguments_invalid"}
+        from factory.orchestration import owner_pr_landing_delegation
+
+        try:
+            return await asyncio.to_thread(
+                owner_pr_landing_delegation.configure,
+                principal,
+                operation,
+                enabled,
+                expected_version,
+                reason,
+                request_key=request_key,
+                expected_preview_sha256=expected_preview_sha256,
+            )
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
     if target == "repair_landing":
         if (
             owner_login is not None

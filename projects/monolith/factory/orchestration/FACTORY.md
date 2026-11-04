@@ -452,6 +452,31 @@ The feed prefers finishing PRs over fresh implementation candidates. It never
 imports prior approval: independent review and required CI must cover the current
 head, followed by the existing merge queue and rollout owner.
 
+`owner_pr_landing_delegation` is a separate, default-off standing landing
+decision, configured through `factory_configure_refill` with
+`target: owner_pr_landing`. Preview binds the configured login and numeric owner
+ID, repository/base, intake policy and latest relevant configuration event.
+Disable/change/restore cannot revive an earlier grant. It explicitly permits
+pre-existing PRs and already adopted receipts with genuine `receive_owner_pr`
+provenance, canonical work-item ownership, and either an accepted issue or a
+server-settled direct PR refinement. Legacy cards supply no authority.
+
+The frozen `private_diagnostics_v1` profile contains the twelve Python source/test
+paths listed by preview, with at most eight existing regular UTF-8 files modified.
+An independent typed review must approve that exact immutable merge base, head
+and path set with all public/security/credential/destructive flags false. Other
+paths require separate operator scope. The existing landing owner derives at
+most three grants per rolling 24 hours across authorizations, and three per
+canonical repository/PR across receipts and generations. Exact replay is free.
+An explicit per-head human grant always takes precedence, including malformed or
+revoked grants. Owner delegation refusal never falls through to repair authority.
+
+Fresh PR and canonical/referenced issue discussions, local ownership, history and
+unsettled or claimed execution fence both arming and existing queue entries.
+The same checks run under the existing control/task lock before queue mutation.
+No producer, scheduler, merge owner or independent ledger is added. This narrow
+capability does not establish that any current backlog PR fits its profile.
+
 Fresh PR/discussion holds fence dispatch and verification. The private
 `intake.owner_pr_backlog` projection reports the latest sweep's states, age,
 receipt owners and blockers, alongside merged and verified delivery counts.

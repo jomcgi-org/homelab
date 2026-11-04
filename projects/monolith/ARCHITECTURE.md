@@ -537,6 +537,10 @@ receipt, branch and landing owners preserve holds and history. Verified numeric
 author identity discovers work; an accepted objective or server-verified brief
 establishes scope, and fresh independent review still gates the current head.
 See [owner PR backlog](factory/orchestration/FACTORY.md#owner-authored-pr-backlog).
+Its optional standing landing delegation has a separate audit family and fixed
+private diagnostic boundary. The existing landing owner derives exact-head
+authority only after canonical provenance, fresh holds, independent review and
+CI pass, with rolling and lifetime per-PR caps shared across reauthorization.
 Activation and operational acceptance remain on #7597.
 
 **Why.** Security risk and human ownership are different labels. Excluding every

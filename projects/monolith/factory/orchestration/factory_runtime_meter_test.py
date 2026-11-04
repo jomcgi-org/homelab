@@ -4801,7 +4801,7 @@ def test_public_docs_atomic_release_grant_replay_and_queue(
     monkeypatch.setattr(
         review_publisher,
         "collect",
-        lambda task: review_publisher.ReviewEvidence(
+        lambda task, *, session=None: review_publisher.ReviewEvidence(
             task_id=task,
             repo="org/repo",
             pr_number=7170,
@@ -4831,7 +4831,9 @@ def test_public_docs_atomic_release_grant_replay_and_queue(
         monkeypatch.setattr(
             review_publisher,
             "collect",
-            lambda task: review_publisher.Refusal(task, "review_missing"),
+            lambda task, *, session=None: review_publisher.Refusal(
+                task, "review_missing"
+            ),
         )
     if queue_change == "head":
         pull["head"]["sha"] = "c" * 40
@@ -4841,7 +4843,9 @@ def test_public_docs_atomic_release_grant_replay_and_queue(
             direction = json.loads(row.direction_json)
             direction["landing_hold"] = {"actor": "operator", "reason": "new hold"}
             row.direction_json = json.dumps(direction)
-    queued = iter([{"PR_7170"}, set()])
+    # The fence observes membership before and again under the control lock,
+    # then verifies removal after the dequeue mutation.
+    queued = iter([{"PR_7170"}, {"PR_7170"}, set()])
     monkeypatch.setattr(landing, "_queued_ids", lambda *_: next(queued))
     assert landing._fence_ungranted_queue_entry("org/repo", item)
     assert len(actions) == 1
