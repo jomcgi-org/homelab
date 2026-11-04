@@ -7031,6 +7031,16 @@ bdd_test(
     ],
 )
 
+bdd_test(
+    name = "grimoire_knowledge_sources_postgres_test",
+    srcs = ["grimoire/knowledge_sources_postgres_test.py"],
+    deps = [
+        ":pkg_grimoire",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
 py_test(
     name = "ships_models_test",
     srcs = ["ships/models_test.py"],

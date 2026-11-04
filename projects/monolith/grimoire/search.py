@@ -34,7 +34,13 @@ from grimoire.play_embeddings import (
     event_text,
     play_embedding_predicate,
 )
-from grimoire.visibility import Viewer, project_entity, visible_entities_query
+from grimoire.reveals import current_reveal_body
+from grimoire.visibility import (
+    Viewer,
+    can_read_book,
+    project_entity,
+    visible_entities_query,
+)
 from grimoire.voices import speaker_ref
 
 # How many extra candidates to pull past ``k`` before visibility filtering and
@@ -89,11 +95,18 @@ def knn_embeddings(
 
 
 def _resolve_chunk_hit(
-    session: Session, chunk_id: str, distance: float
+    session: Session,
+    chunk_id: str,
+    distance: float,
+    *,
+    campaign_id: str,
+    viewer: Viewer,
 ) -> dict[str, Any] | None:
-    """Sync: shape a chunk hit. Chunks are always visible in v1 (global corpus)."""
-    chunk = session.get(KnowledgeChunk, chunk_id)
+    """Recheck the current source; entity grants never grant book text."""
+    chunk = session.get(KnowledgeChunk, chunk_id, populate_existing=True)
     if chunk is None:
+        return None
+    if not can_read_book(session, campaign_id, viewer, chunk.book_id):
         return None
     # Resolve the book's display name so the omnibox can title chunk hits with a
     # human name (and link into the reader) instead of showing the raw book_id.
@@ -131,7 +144,9 @@ def _resolve_entity_hit(
     module to wire the endpoint, so importing back would be circular).
     """
     rows = session.exec(
-        visible_entities_query(campaign_id, viewer).where(Entity.id == entity_id)
+        visible_entities_query(campaign_id, viewer)
+        .where(Entity.id == entity_id)
+        .execution_options(populate_existing=True)
     ).all()
     if not rows:
         return None
@@ -186,7 +201,9 @@ def _resolve_knowledge_hits(
                 resolved["type"] = "entity"
                 resolved["source"] = {"entity_id": source_id}
         elif kind == "chunk":
-            resolved = _resolve_chunk_hit(session, source_id, distance)
+            resolved = _resolve_chunk_hit(
+                session, source_id, distance, campaign_id=campaign_id, viewer=viewer
+            )
             if resolved is not None:
                 resolved["type"] = "chunk"
                 resolved["source"] = {
@@ -238,7 +255,7 @@ def _resolve_knowledge_hits(
                     "source": {"fact_id": fact.id},
                 }
         elif kind in ("event", "transcript"):
-            event = session.get(SessionEvent, source_id)
+            event = session.get(SessionEvent, source_id, populate_existing=True)
             if (
                 event is not None
                 and event.campaign_id == campaign_id
@@ -251,6 +268,9 @@ def _resolve_knowledge_hits(
                 # and journal projections, so a raw speaker UUID never reaches
                 # a preview.
                 body = event.body
+                if viewer != "dm" and event.kind == "reveal":
+                    body = current_reveal_body(session, campaign_id, viewer, body)
+                    event = event.model_copy(update={"body": body})
                 if viewer != "dm" and body and isinstance(body.get("speaker_key"), str):
                     body = {
                         **body,

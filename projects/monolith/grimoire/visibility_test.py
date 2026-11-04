@@ -76,7 +76,12 @@ def seed_campaign(session: Session) -> Seed:
     seed.alice = alice
     seed.bob = bob
 
-    creature = Entity(entity_type="creature", name="Umbrasyl", is_global=True)
+    creature = Entity(
+        entity_type="creature",
+        name="Umbrasyl",
+        is_global=True,
+        source_book="system-reference-doc-5-1",
+    )
     session.add(creature)
     session.commit()
     session.refresh(creature)
@@ -155,6 +160,52 @@ def _visible_ids(session: Session, campaign_id: str, viewer: str) -> set[str]:
     return {entity.id for entity, _grant in rows}
 
 
+@pytest.mark.parametrize(
+    "source",
+    [None, "unknown", "lost-mine-of-phandelver", "system-reference-doc-5-1-adventure"],
+)
+def test_unknown_and_adventure_globals_fail_closed(session, source):
+    seed = seed_campaign(session)
+    entity = Entity(
+        entity_type="npc",
+        name="Hidden adventure NPC",
+        source_book=source,
+        is_global=True,
+    )
+    session.add(entity)
+    session.commit()
+    assert entity.id in _visible_ids(session, seed.campaign.id, "dm")
+    assert entity.id not in _visible_ids(session, seed.campaign.id, seed.alice.id)
+    assert project_entity(entity, None, None, seed.alice.id) is None
+
+
+@pytest.mark.parametrize("viewer", [None, "unknown-character"])
+def test_characterless_or_foreign_identity_cannot_read_common_corpus(session, viewer):
+    seed = seed_campaign(session)
+    assert _visible_ids(session, seed.campaign.id, viewer) == set()
+    other = Campaign(name="Other", dm_name="Other DM")
+    session.add(other)
+    session.commit()
+    assert _visible_ids(session, other.id, seed.alice.id) == set()
+
+
+@pytest.mark.parametrize("scope", ["name_only", "partial", "full"])
+def test_grants_cannot_narrow_common_knowledge(session, scope):
+    seed = seed_campaign(session)
+    grant = KnowledgeGrant(
+        campaign_id=seed.campaign.id,
+        entity_id=seed.creature.id,
+        player_character_id=seed.alice.id,
+        grant_scope=scope,
+        revealed_details={"clue": "A clue"},
+    )
+    projection = project_entity(
+        seed.creature, seed.creature_detail, grant, seed.alice.id
+    )
+    assert projection["ac"] == 19
+    assert projection["size"] == "Gargantuan"
+
+
 def test_alice_sees_global_plus_her_grants(session: Session):
     seed = seed_campaign(session)
 
@@ -224,14 +275,19 @@ def test_partial_grant_excludes_detail_columns(session: Session):
     assert "location_type" not in result
 
 
-def test_name_only_grant_suppressed_in_lookup_context(session: Session):
+def test_name_only_grant_is_identity_in_lookup_context(session: Session):
     seed = seed_campaign(session)
 
     result = project_entity(
         seed.spell, None, seed.name_only_grant, viewer=seed.alice.id, context="lookup"
     )
 
-    assert result is None
+    assert result == {
+        "id": seed.spell.id,
+        "name": seed.spell.name,
+        "entity_type": "spell",
+        "recognition_only": True,
+    }
 
 
 def test_name_only_grant_stub_in_relationship_context(session: Session):

@@ -37,7 +37,12 @@ from grimoire.models import (
     Entity,
     KnowledgeChunk,
 )
-from grimoire.visibility import Viewer, project_entity, visible_entities_query
+from grimoire.visibility import (
+    Viewer,
+    can_read_book,
+    project_entity,
+    visible_entities_query,
+)
 
 # Characters of chunk content shown in a list/preview row (matches
 # search._CHUNK_PREVIEW_LEN so previews are consistent across surfaces).
@@ -488,8 +493,8 @@ def get_chunk(
     assigns), so the reader's back/next controls follow the page sequence, not
     insertion order. Entities come from chunk_entity_mention, viewpoint-filtered.
     """
-    chunk = session.get(KnowledgeChunk, chunk_id)
-    if chunk is None:
+    chunk = session.get(KnowledgeChunk, chunk_id, populate_existing=True)
+    if chunk is None or not can_read_book(session, campaign_id, viewer, chunk.book_id):
         return None
 
     prev_id, next_id = _chunk_neighbours(session, chunk)

@@ -16,10 +16,54 @@ from typing import Any, Literal
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, SQLModel, and_, or_, select
 
-from grimoire.models import Entity, GameSession, KnowledgeGrant
+from grimoire.models import Entity, GameSession, KnowledgeGrant, PlayerCharacter
 
 Viewer = str | None  # "dm", a player_character_id, or None before association
 Context = Literal["lookup", "relationship"]
+
+# Exact corpus identifiers, reviewed as rules/reference sources. Copyright is
+# a separate public-reader policy and never establishes campaign knowledge.
+# Unknown sources (including source-less globals) fail closed.
+COMMON_KNOWLEDGE_BOOK_IDS = frozenset(
+    {
+        "system-reference-doc-5-1",
+        "system-reference-doc-5-2",
+        "black-flag-reference-document",
+        "a5e-srd",
+    }
+)
+
+
+def common_knowledge_predicate():
+    return and_(
+        Entity.is_global.is_(True), Entity.source_book.in_(COMMON_KNOWLEDGE_BOOK_IDS)
+    )
+
+
+def is_common_knowledge(entity: Entity) -> bool:
+    return entity.is_global and entity.source_book in COMMON_KNOWLEDGE_BOOK_IDS
+
+
+def campaign_player_predicate(campaign_id: str, viewer: Viewer):
+    return (
+        select(PlayerCharacter.id)
+        .where(
+            PlayerCharacter.id == viewer,
+            PlayerCharacter.campaign_id == campaign_id,
+        )
+        .exists()
+    )
+
+
+def can_read_book(
+    session: Session, campaign_id: str, viewer: Viewer, book_id: str
+) -> bool:
+    """Entity grants never authorize source pages, including name-only cards."""
+    return viewer == "dm" or (
+        book_id in COMMON_KNOWLEDGE_BOOK_IDS
+        and session.exec(select(campaign_player_predicate(campaign_id, viewer))).one()
+    )
+
 
 # Spine identity fields returned even for the most restrictive scope
 # (partial/name_only): enough to name and link the entity, nothing typed.
@@ -45,15 +89,15 @@ def visible_entities_query(
 
     Player view (viewer is a player_character_id): LEFT JOIN knowledge_grant
     scoped to (this entity, this campaign, this player), keep rows where the
-    entity is_global or a grant exists. This is the base predicate from ADR
-    011: `is_global OR g.id IS NOT NULL`.
+    entity has an explicit common-knowledge classification or a grant exists.
+    A campaign-local character is required even for common knowledge.
 
     DM view (viewer == "dm"): global corpus entities plus private entities
     associated with this campaign by a grant or by their creating game session.
     Grants reach the caller as annotations. The campaign-scoped outer join can
     yield one row per grant; callers that need one row per entity aggregate it.
 
-    ``not_granted_to`` hides entities that PC already knows: global entities
+    ``not_granted_to`` hides entities that PC already knows: common entities
     or any grant scope. The correlated alias is separate from the DM join.
     Callers must authorize this DM-only filter before building the query.
     Returns a select() yielding (Entity, KnowledgeGrant | None) row tuples.
@@ -91,7 +135,7 @@ def visible_entities_query(
                 .correlate(Entity)
                 .exists()
             )
-            query = query.where(Entity.is_global.is_(False), ~known)
+            query = query.where(~common_knowledge_predicate(), ~known)
         return query
 
     join_condition = and_(
@@ -102,7 +146,10 @@ def visible_entities_query(
     query = (
         select(Entity, KnowledgeGrant)
         .join(KnowledgeGrant, join_condition, isouter=True)
-        .where(or_(Entity.is_global, KnowledgeGrant.id.is_not(None)))
+        .where(
+            campaign_player_predicate(campaign_id, viewer),
+            or_(common_knowledge_predicate(), KnowledgeGrant.id.is_not(None)),
+        )
     )
     return query
 
@@ -157,20 +204,18 @@ def project_entity(
 
     - dm: full spine + detail fields, plus a grant annotation if one is
       passed in (None otherwise).
-    - player, is_global with no grant, or grant_scope == "full": spine +
-      detail fields (a global entity nobody has scoped down is fully
-      visible; an explicit "full" grant on a non-global entity is the same).
+    - player, common knowledge or grant_scope == "full": spine and detail
+      fields. Narrower grants cannot reduce the common-knowledge baseline.
     - grant_scope == "partial": spine identity fields only, plus
       revealed_details. No typed detail columns.
-    - grant_scope == "name_only": recognition only, not retrieval. Returns
-      None in "lookup" context (suppressed from direct lookup and vector
-      search per the spec); returns a name-only stub in "relationship"
-      context so neighbor listings can still say "you recognize this name".
+    - grant_scope == "name_only": an identity card in lookup, search and
+      relationships, without typed fields, source text or descriptions.
     """
     spine = {field: getattr(entity, field) for field in _SPINE_FIELDS}
 
     if viewer == "dm":
         result = {**spine, **_flatten_detail(detail)}
+        result["common_knowledge"] = is_common_knowledge(entity)
         result["grant"] = (
             None
             if grant is None
@@ -184,16 +229,20 @@ def project_entity(
 
     scope = grant.grant_scope if grant is not None else None
 
-    if scope is None or scope == "full":
+    if viewer is None:
+        return None
+
+    if is_common_knowledge(entity) or scope == "full":
         return {**spine, **_flatten_detail(detail)}
+
+    if scope is None:
+        return None
 
     if scope == "partial":
         identity = {field: getattr(entity, field) for field in _SPINE_IDENTITY_FIELDS}
         return {**identity, "revealed_details": grant.revealed_details}
 
     if scope == "name_only":
-        if context == "lookup":
-            return None
         return {
             "id": entity.id,
             "name": entity.name,

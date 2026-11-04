@@ -553,7 +553,11 @@ def test_campaign_route_matrix(harness, method, path):
                 ]
             elif "entity_id" in case.params:
                 variants = [
-                    ({"entity_id": h.rows[key].id}, None, key in ("a_only", "partial"))
+                    (
+                        {"entity_id": h.rows[key].id},
+                        None,
+                        key in ("a_only", "partial", "name_only"),
+                    )
                     for key in (
                         "private",
                         "a_only",
@@ -561,6 +565,7 @@ def test_campaign_route_matrix(harness, method, path):
                         "partial",
                         "name_only",
                         "foreign",
+                        "adventure_npc",
                     )
                 ]
             elif path.endswith(("/entities", "/search")):
@@ -693,7 +698,7 @@ def test_transcript_canaries_reach_only_their_real_feed_audiences(harness):
 
 def test_canaries_are_seeded_and_wire_safe(harness):
     tokens = list(harness.canaries)
-    assert len(tokens) == 271  # Main plus eleven transcript canaries.
+    assert len(tokens) == 273  # Includes the book-backed adventure canaries.
     embeddings = [
         row for key, row in harness.rows.items() if key.startswith("embedding_")
     ]

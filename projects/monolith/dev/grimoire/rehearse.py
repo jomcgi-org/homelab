@@ -72,6 +72,71 @@ def state_text(page, query=""):
     return response.text()
 
 
+def rehearse_adventure_knowledge(dm, a, b, output, report):
+    """A global adventure stays hidden until a scoped reveal, then retracts."""
+    state = dm.request.get(dm.url + "/state").json()
+    pc_id = next(
+        pc["id"] for pc in state["characters"] if pc["character_name"] == "Elowen"
+    )
+    npc = dm.request.get(dm.url + "/state?q=Gundren").json()["items"][0]
+    for viewer in (a, b):
+        assert "Gundren" not in state_text(viewer, "?q=Gundren")
+        assert not viewer.request.get(viewer.url + f"/state?entity={npc['id']}").ok
+    open_reveal(dm)
+    dm.get_by_label("Find knowledge").fill("Gundren")
+    dm.get_by_role("button", name="Search knowledge", exact=True).click()
+    dm.get_by_role("button", name="Gundren Rockseeker npc", exact=True).click()
+    dm.get_by_label("Elowen", exact=True).check()
+    dm.get_by_label("Knowledge scope").select_option("name_only")
+    dm.get_by_role("button", name="Preview knowledge", exact=True).click()
+    dm.get_by_role("button", name="Share knowledge", exact=True).click()
+    expect(dm.get_by_text("Knowledge shared.", exact=True)).to_be_visible()
+    close_reveal(dm)
+    card = a.request.get(a.url + f"/state?entity={npc['id']}")
+    assert card.ok and card.json()["recognition_only"] is True
+    assert "description" not in card.json() and "source_book" not in card.json()
+    for viewer in (a, b):
+        payload = state_text(viewer)
+        assert "ADVENTURE_NPC_SECRET" not in payload
+        assert "ADVENTURE_CHUNK_SECRET" not in payload
+    assert "Gundren" not in state_text(b, "?q=Gundren")
+    expect(a.get_by_text("Gundren Rockseeker", exact=True).first).to_be_visible(
+        timeout=5000
+    )
+    expect(a.get_by_text("You recognize this name.", exact=True).first).to_be_visible()
+    a.screenshot(path=str(output / "adventure-name-only.png"), full_page=True)
+    token = next(
+        cookie["value"]
+        for cookie in dm.context.cookies()
+        if cookie["name"] == "grimoire-id-token"
+    )
+    grants = dm.request.get(
+        f"http://friends.localhost:8177/api/grimoire/campaigns/{state['campaign']['id']}/grants",
+        headers={"x-grimoire-token": token},
+    )
+    assert grants.ok
+    grant = next(
+        item
+        for item in grants.json()
+        if item["entity_id"] == npc["id"] and item["player_character_id"] == pc_id
+    )
+    revoked = dm.request.post(
+        dm.url + "/state",
+        data={"operation": "revoke", "grantId": grant["id"], "silent": True},
+    )
+    assert revoked.ok
+    for viewer in (a, b):
+        assert "Gundren" not in state_text(viewer, "?q=Gundren")
+        assert not viewer.request.get(viewer.url + f"/state?entity={npc['id']}").ok
+    expect(a.get_by_text("Gundren Rockseeker", exact=True)).to_have_count(
+        0, timeout=5000
+    )
+    a.screenshot(path=str(output / "adventure-retracted.png"), full_page=True)
+    report["checks"].append(
+        "Global adventure hidden from both players, name-only card for Elowen only, retraction removes access without source spoilers"
+    )
+
+
 def open_campaign_players(page, article):
     # The lobby's controlled details can be reset during hydration. Wait until
     # navigation has settled, then open it only if it is currently closed.
@@ -148,6 +213,7 @@ def main():
                     path=str(args.output / f"{role}-empty-feed.png"), full_page=True
                 )
             stamp = str(time.time_ns())
+            rehearse_adventure_knowledge(dm, a, b, args.output, report)
             scene = f"A stranger leaves a sealed letter at your table. ({stamp})"
             dm.get_by_label("Set the scene", exact=True).fill(scene)
             dm.get_by_label("Send to").select_option("table")
@@ -261,9 +327,11 @@ def main():
             ).to_be_visible()
             assert "DM_ONLY_INNKEEPER_SECRET" not in drawer.inner_text()
             entity_id = next(
-                (row["body"].get("reveals", [row["body"]])[0])["entity_id"]
+                item["entity_id"]
                 for row in a.request.get(a.url + "/state").json()["events"]
-                if row["kind"] == "reveal"
+                if row["kind"] == "reveal" and row["body"]
+                for item in row["body"].get("reveals", [row["body"]])
+                if item.get("name") == "Mara, the innkeeper"
             )
             entity_page = a.url.rsplit("/", 1)[0] + "/entities/" + entity_id
             page_response = a.request.get(entity_page)
@@ -397,7 +465,7 @@ def main():
             sheet_roll = next(
                 row
                 for row in sheet_state["events"]
-                if row["body"].get("label") == "Strength save"
+                if (row["body"] or {}).get("label") == "Strength save"
             )
             approved_bonus = sheet_state["characters"][0]["approved"][
                 "saving_throw_bonuses"
@@ -428,7 +496,7 @@ def main():
             expect(a.get_by_text(public_label, exact=False)).to_be_visible(timeout=5000)
             rows = a.request.get(a.url + "/state").json()["events"]
             rolled = next(
-                row for row in rows if row["body"].get("label") == public_label
+                row for row in rows if (row["body"] or {}).get("label") == public_label
             )
             assert 5 <= rolled["body"]["total"] <= 15
             assert rolled["body"]["total"] == sum(rolled["body"]["kept"]) + 3
@@ -1366,7 +1434,7 @@ def main():
                 next(
                     row["body"]["modifier"]
                     for row in fresh_state["events"]
-                    if row["body"].get("label") == "Strength check"
+                    if (row["body"] or {}).get("label") == "Strength check"
                 )
                 == 2
             )

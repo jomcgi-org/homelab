@@ -6,10 +6,11 @@ import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlmodel import Session
+from sqlalchemy import func
+from sqlmodel import Session, select
 
 from grimoire.models import Entity
-from grimoire.visibility import visible_entities_query
+from grimoire.visibility import common_knowledge_predicate
 
 Ability = Literal[
     "strength",
@@ -76,15 +77,17 @@ def _visible_corpus_entity(
     name: str,
 ) -> Entity:
     matches = session.exec(
-        visible_entities_query(campaign_id, player_character_id).where(
+        select(Entity)
+        .where(
+            common_knowledge_predicate(),
             Entity.entity_type == entity_type,
+            func.lower(Entity.name) == name.lower(),
         )
+        .order_by(Entity.id)
+        .limit(2)
     ).all()
-    for entity, grant in matches:
-        if entity.name.casefold() != name.casefold():
-            continue
-        if entity.is_global or (grant is not None and grant.grant_scope == "full"):
-            return entity
+    if len(matches) == 1:
+        return matches[0]
     label = "ancestry" if entity_type == "race" else "class"
     raise SheetValidationError(f"{label} is not available in this campaign corpus")
 

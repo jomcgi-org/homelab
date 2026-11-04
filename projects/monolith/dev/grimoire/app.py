@@ -21,16 +21,20 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from grimoire.models import (
     AppUser,
+    Book,
     Campaign,
     CampaignMember,
     CharacterSheetVersion,
     Entity,
     EntityNpc,
+    KnowledgeChunk,
+    ChunkEntityMention,
     GameSession,
     PlayerCharacter,
 )
 from grimoire.router import router
 from grimoire.sheets import CharacterSheetV1, derive_sheet
+from grimoire.knowledge_sources import reconcile_sheet
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlmodel import Session, SQLModel, select
@@ -126,16 +130,23 @@ def build_app() -> FastAPI:
             session.flush()
             session.add_all(
                 [
-                    Entity(entity_type="race", name="Human", source_type="homebrew"),
+                    Entity(
+                        entity_type="race",
+                        name="Human",
+                        source_type="homebrew",
+                        source_book="system-reference-doc-5-1",
+                    ),
                     Entity(
                         entity_type="class",
                         name="Ranger",
+                        source_book="system-reference-doc-5-1",
                         source_type="homebrew",
                         detail={"hit_die": "d10", "saves": "strength, dexterity"},
                     ),
                     Entity(
                         entity_type="class",
                         name="Fighter",
+                        source_book="system-reference-doc-5-1",
                         source_type="homebrew",
                         detail={"hit_die": "d10", "saves": "strength, constitution"},
                     ),
@@ -173,6 +184,9 @@ def build_app() -> FastAPI:
                     )
                 )
             session.add_all(approved)
+            session.flush()
+            for version in approved:
+                reconcile_sheet(session, version)
             history = GameSession(campaign_id=campaign.id, status="ended", ended_at=now)
             session.add(history)
             session.flush()
@@ -185,6 +199,40 @@ def build_app() -> FastAPI:
             )
             session.add(innkeeper)
             session.flush()
+            adventure = Entity(
+                entity_type="npc",
+                name="Gundren Rockseeker",
+                source_book="lost-mine-of-phandelver",
+                is_global=True,
+            )
+            session.add_all(
+                [
+                    Book(
+                        id="lost-mine-of-phandelver",
+                        display_name="Lost Mine of Phandelver",
+                    ),
+                    adventure,
+                ]
+            )
+            session.flush()
+            adventure_chunk = KnowledgeChunk(
+                book_id="lost-mine-of-phandelver",
+                chunk_ref="gundren",
+                seq=1,
+                content="ADVENTURE_CHUNK_SECRET",
+            )
+            session.add(adventure_chunk)
+            session.flush()
+            session.add_all(
+                [
+                    EntityNpc(
+                        entity_id=adventure.id, description="ADVENTURE_NPC_SECRET"
+                    ),
+                    ChunkEntityMention(
+                        chunk_id=adventure_chunk.id, entity_id=adventure.id
+                    ),
+                ]
+            )
             session.add(
                 EntityNpc(
                     entity_id=innkeeper.id,

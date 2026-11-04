@@ -6,7 +6,7 @@
   import RevealPanel from "$lib/grimoire/RevealPanel.svelte";
   import { scopeLabel } from "$lib/grimoire/knowledge-fields.js";
   let { data } = $props();
-  let query = $state("");
+  let query = $state(data.query || "");
   let type = $state("");
   let session = $state("");
   let selection = $state(null);
@@ -20,7 +20,6 @@
   let entities = $derived(
     data.entities.filter(
       (entity) =>
-        entity.name.toLowerCase().includes(query.toLowerCase()) &&
         (!type || entity.entity_type === type) &&
         (!session ||
           data.grants.some(
@@ -55,7 +54,16 @@
     changed={invalidateAll}
   />
   <div class="filters">
-    <label>Find knowledge<input bind:value={query} /></label><label
+    <form method="GET">
+      <label
+        >Find knowledge<input
+          name="q"
+          maxlength="120"
+          bind:value={query}
+        /></label
+      ><button type="submit">Search corpus</button>
+    </form>
+    <label
       >Entity type<select bind:value={type}
         ><option value="">All types</option>{#each types as item}<option
             value={item}>{item}</option
@@ -96,13 +104,13 @@
                   disabled={!ready}
                   aria-label={`Edit ${entity.name} for ${pc.character_name}`}
                   onclick={() => (selection = { entity, pc })}
-                  >{#if grantFor(entity, pc)}<span
+                  >{#if entity.common_knowledge}<span
+                      class="badge"
+                      data-scope="full">Full by default</span
+                    >{:else if grantFor(entity, pc)}<span
                       class="badge"
                       data-scope={grantFor(entity, pc).grant_scope}
                       >{scopeLabel(grantFor(entity, pc).grant_scope)}</span
-                    >{:else if entity.is_global}<span
-                      class="badge"
-                      data-scope="full">Full by default</span
                     >{:else}<span class="badge" data-scope="none"
                       >Not granted</span
                     >{/if}</button
@@ -112,6 +120,13 @@
       >
     </table>
   </div>
+  {#if data.nextCursor}<a
+      href={`?cursor=${data.nextCursor}&q=${encodeURIComponent(data.query || "")}`}
+      >More granted knowledge</a
+    >{/if}
+  {#if data.searchTruncated}<p>
+      Showing the first 50 matches. Refine your search.
+    </p>{/if}
 </main>
 
 <style>

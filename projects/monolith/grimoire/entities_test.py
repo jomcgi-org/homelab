@@ -127,7 +127,12 @@ def seed_scenario(session: Session) -> Seed:
     seed.alice_email = alice_user.email
     seed.bob_email = bob_user.email
 
-    creature = Entity(entity_type="creature", name="Umbrasyl", is_global=True)
+    creature = Entity(
+        entity_type="creature",
+        name="Umbrasyl",
+        is_global=True,
+        source_book="system-reference-doc-5-1",
+    )
     session.add(creature)
     session.commit()
     session.refresh(creature)
@@ -229,9 +234,7 @@ def seed_scenario(session: Session) -> Seed:
 
 
 class TestListEntities:
-    def test_alice_sees_global_full_and_partial_not_name_only_or_ungranted(
-        self, session, client
-    ):
+    def test_alice_sees_common_full_partial_and_name_cards(self, session, client):
         seed = seed_scenario(session)
         r = client.get(
             f"/api/grimoire/campaigns/{seed.campaign.id}/entities",
@@ -239,7 +242,7 @@ class TestListEntities:
         )
         assert r.status_code == 200
         names = {item["name"] for item in r.json()["items"]}
-        assert names == {"Umbrasyl", "Strahd", "Castle Ravenloft"}
+        assert names == {"Umbrasyl", "Strahd", "Castle Ravenloft", "Vampiric Touch"}
 
     def test_bob_sees_global_only(self, session, client):
         seed = seed_scenario(session)
@@ -359,13 +362,19 @@ class TestGetEntity:
         assert "location_type" not in body
         assert "source_type" not in body
 
-    def test_alice_name_only_spell_404s(self, session, client):
+    def test_alice_name_only_spell_is_identity_card(self, session, client):
         seed = seed_scenario(session)
         r = client.get(
             f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.spell.id}",
             headers={"X-Test-Auth-Email": seed.alice_email},
         )
-        assert r.status_code == 404
+        assert r.status_code == 200
+        assert r.json() == {
+            "id": seed.spell.id,
+            "name": seed.spell.name,
+            "entity_type": "spell",
+            "recognition_only": True,
+        }
 
     def test_alice_ungranted_faction_404s(self, session, client):
         seed = seed_scenario(session)

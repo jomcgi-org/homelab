@@ -10,7 +10,7 @@ from sqlalchemy.dialects import postgresql
 from sqlmodel import select
 
 from grimoire import search
-from grimoire.models import CharacterFact, Embedding, SessionEvent
+from grimoire.models import CharacterFact, Embedding, SessionEvent, KnowledgeGrant
 from grimoire.play_embeddings import audience_columns
 from grimoire.testing.leak_harness import (
     ROLES,
@@ -35,6 +35,54 @@ def request(client, h, viewer, **params):
     )
     h.assert_no_leak(response, viewer)
     return response
+
+
+@pytest.mark.parametrize("scope", [None, "name_only", "partial", "full"])
+def test_global_adventure_candidates_require_grant_and_never_unlock_chunks(
+    harness, scope
+):
+    h = harness
+    npc = h.rows["adventure_npc"]
+    if scope:
+        grant = KnowledgeGrant(
+            campaign_id=h.rows["campaign"].id,
+            entity_id=npc.id,
+            player_character_id=h.rows["character_a"].id,
+            grant_scope=scope,
+            revealed_details={"clue": "A merchant"},
+        )
+        h.session.add(grant)
+        h.session.commit()
+    with TestClient(h.app()) as client:
+        for viewer in ROLES:
+            response = request(client, h, viewer)
+            if response.status_code != 200:
+                assert viewer in ("outsider", "other_campaign")
+                continue
+            results = {row["id"]: row for row in response.json()}
+            assert (npc.id in results) == (
+                viewer == "dm" or viewer == "player_a" and scope is not None
+            )
+            assert (h.rows["adventure_chunk"].id in results) == (viewer == "dm")
+            if viewer == "player_a" and scope == "name_only":
+                assert set(results[npc.id]) == {
+                    "kind",
+                    "type",
+                    "id",
+                    "name",
+                    "entity_type",
+                    "recognition_only",
+                    "score",
+                    "source",
+                }
+                assert results[npc.id]["recognition_only"]
+        if scope:
+            h.session.delete(grant)
+            h.session.commit()
+            # fake_knn still returns the same cached candidates after retraction.
+            assert npc.id not in {
+                row["id"] for row in request(client, h, "player_a").json()
+            }
 
 
 @pytest.mark.parametrize("viewer", ROLES)
@@ -68,7 +116,9 @@ def test_b_only_reveal_has_authorized_positive_control(harness, viewer):
         response = request(client, h, viewer)
     assert response.status_code == 200
     token = h.rows["reveal_b"].body["reveals"][0]["text"]
-    assert (token in response.text) == (viewer in ("player_b", "dm"))
+    # Cached free text is never used as a player's source of truth.
+    assert (token in response.text) == (viewer == "dm")
+    assert (h.rows["reveal_b"].id in response.text) == (viewer in ("player_b", "dm"))
 
 
 def test_partial_grant_and_reveal_return_only_revealed_details(harness):
@@ -87,15 +137,113 @@ def test_partial_grant_and_reveal_return_only_revealed_details(harness):
     )
 
 
-def test_name_only_identity_and_reveal_text_are_excluded_from_retrieval(harness):
+def test_name_only_identity_card_excludes_reveal_text(harness):
     h = harness
     with TestClient(h.app()) as client:
         response = request(client, h, "player_a")
     assert response.status_code == 200
-    assert h.rows["name_only"].id not in response.text
-    assert h.rows["name_only"].name not in response.text
+    assert h.rows["name_only"].id in response.text
+    assert h.rows["name_only"].name in response.text
     assert h.rows["reveal_name_only"].id not in response.text
     assert h.rows["reveal_name_only"].body["reveals"][0]["text"] not in response.text
+
+
+def test_adventure_current_scope_rechecks_feed_journal_and_source_routes(harness):
+    h = harness
+    h.prepare("play")
+    npc = h.rows["adventure_npc"]
+    base = f"/api/grimoire/campaigns/{h.rows['campaign'].id}"
+    session_path = f"{base}/sessions/{h.rows['campaign_session'].id}"
+    with TestClient(h.app()) as client:
+        created = client.post(
+            f"{base}/grants/bulk",
+            headers=h.headers("dm"),
+            json={
+                "grants": [
+                    {
+                        "entity_id": npc.id,
+                        "player_character_id": h.rows["character_a"].id,
+                        "grant_scope": "full",
+                    }
+                ]
+            },
+        )
+        assert created.status_code == 200, created.text
+        grant = h.session.get(KnowledgeGrant, created.json()[0]["id"])
+        # Deliberately leave the full reveal snapshot and embedding untouched.
+        for scope in ("full", "partial", "name_only", None):
+            if scope is None:
+                h.session.delete(grant)
+            else:
+                grant.grant_scope = scope
+                grant.revealed_details = (
+                    {"clue": "A merchant"} if scope == "partial" else None
+                )
+            h.session.commit()
+            for viewer in ROLES:
+                headers = h.headers(viewer)
+                response = client.get(f"{base}/entities/{npc.id}", headers=headers)
+                member = viewer not in ("outsider", "other_campaign")
+                known = viewer == "dm" or viewer == "player_a" and scope is not None
+                assert response.status_code == (200 if known else 404)
+                if viewer == "player_a" and scope == "name_only":
+                    assert set(response.json()) == {
+                        "id",
+                        "name",
+                        "entity_type",
+                        "recognition_only",
+                    }
+                for path in (
+                    f"{base}/entities?q=Gundren",
+                    f"{base}/knowledge/search?q=Gundren&k=50",
+                    f"{session_path}/events",
+                    f"{session_path}/journal",
+                ):
+                    response = client.get(path, headers=headers)
+                    assert response.status_code == (200 if member else 404), (
+                        response.text
+                    )
+                    if viewer != "dm" and not (
+                        viewer == "player_a" and scope == "full"
+                    ):
+                        assert (
+                            h.rows["adventure_detail"].description not in response.text
+                        )
+                    if not known:
+                        assert npc.name not in response.text
+                    assert (
+                        h.rows["adventure_chunk"].content not in response.text
+                        or viewer == "dm"
+                    )
+                chunk = client.get(
+                    f"/api/grimoire/chunks/{h.rows['adventure_chunk'].id}?campaign={h.rows['campaign'].id}",
+                    headers=headers,
+                )
+                assert chunk.status_code == (200 if viewer == "dm" else 404)
+                for path in (
+                    "/books",
+                    "/books/lost-mine-of-phandelver/read",
+                    f"/chunks/{h.rows['adventure_chunk'].id}/image",
+                ):
+                    response = client.get("/api/grimoire" + path, headers=headers)
+                    if viewer not in ("dm", "other_campaign"):
+                        assert response.status_code in (403, 404)
+            context = asyncio.run(
+                search.search_knowledge(
+                    h.session,
+                    FakeEmbedClient(),
+                    h.rows["campaign"].id,
+                    h.rows["character_a"].id,
+                    h.rows["member_player_a"],
+                    "Gundren",
+                    50,
+                    for_context=True,
+                )
+            )
+            rendered = str(context)
+            assert h.rows["adventure_chunk"].content not in rendered
+            if scope != "full":
+                assert h.rows["adventure_detail"].description not in rendered
 
 
 @pytest.mark.parametrize("grouped", (False, True))
@@ -187,6 +335,9 @@ def test_sqlite_knn_applies_candidate_predicate_independently_of_recheck(
         for entity in ("private", "a_only", "b_only", "partial", "name_only", "foreign")
     }
     expected.add(h.rows["chunk_private"].id)
+    expected.update(
+        h.rows[key].id for key in ("adventure_npc", "adventure_chunk", "common_chunk")
+    )
     for source in h.rows.values():
         if (
             isinstance(source, SessionEvent)

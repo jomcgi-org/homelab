@@ -125,6 +125,7 @@ class LeakHarness:
 
     def prepare(self, state: str | None) -> None:
         if state == "submitted":
+            self.rows["sheet"].sheet = dict(SHEET_BODY)
             self.rows["sheet"].status = "submitted"
             self.rows["sheet"].submitted_at = datetime.now(UTC)
         elif state == "closed":
@@ -656,13 +657,22 @@ def build_fixture(session: Session) -> LeakHarness:
         "speaker_key": rows["private"].id,
     }
     keep("book", Book(id="corpus", display_name="Global corpus"))
-    keep("ancestry", Entity(entity_type="race", name="Human", is_global=True))
+    keep(
+        "ancestry",
+        Entity(
+            entity_type="race",
+            name="Human",
+            is_global=True,
+            source_book="system-reference-doc-5-1",
+        ),
+    )
     keep(
         "class",
         Entity(
             entity_type="class",
             name="Fighter",
             is_global=True,
+            source_book="system-reference-doc-5-1",
             detail={"hit_die": "d10", "saves": "Strength, Constitution"},
         ),
     )
@@ -771,6 +781,73 @@ def build_fixture(session: Session) -> LeakHarness:
                         "to": "party",
                     }
                 },
+            ),
+        )
+    keep(
+        "adventure_book",
+        Book(id="lost-mine-of-phandelver", display_name="Lost Mine of Phandelver"),
+    )
+    adventure = keep(
+        "adventure_npc",
+        Entity(
+            entity_type="npc",
+            name="Gundren Rockseeker",
+            is_global=True,
+            source_book="lost-mine-of-phandelver",
+        ),
+    )
+    keep(
+        "adventure_detail",
+        EntityNpc(
+            entity_id=adventure.id,
+            description=mark("adventure.spoiler", ("dm",)),
+            occupation="Secret adventure patron",
+        ),
+    )
+    chunk = keep(
+        "adventure_chunk",
+        KnowledgeChunk(
+            book_id="lost-mine-of-phandelver",
+            chunk_ref="gundren",
+            content=mark("adventure.chunk", ("dm",)),
+            seq=1,
+        ),
+    )
+    keep(
+        "adventure_mention",
+        ChunkEntityMention(chunk_id=chunk.id, entity_id=adventure.id),
+    )
+    reference = keep(
+        "common_chunk",
+        KnowledgeChunk(
+            book_id="system-reference-doc-5-1",
+            chunk_ref="rules",
+            content="Common reference rules",
+            seq=1,
+        ),
+    )
+    keep(
+        "common_embedding",
+        Embedding(
+            embeddable_kind="chunk",
+            embeddable_id=reference.id,
+            model="test",
+            dim=1024,
+            vector=[0.0] * 1024,
+        ),
+    )
+    for key, kind, source in (
+        ("adventure_entity_embedding", "entity", adventure.id),
+        ("adventure_chunk_embedding", "chunk", chunk.id),
+    ):
+        keep(
+            key,
+            Embedding(
+                embeddable_kind=kind,
+                embeddable_id=source,
+                model="test",
+                dim=1024,
+                vector=[0.0] * 1024,
             ),
         )
     session.add_all(objects)
