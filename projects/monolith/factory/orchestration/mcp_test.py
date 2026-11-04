@@ -801,7 +801,7 @@ def test_status_landing_refusal_is_bounded_read_only_and_epoch_scoped(
     refusal = row["landing_refusal"]
     assert row["unresolved_starts"] == 1
     assert row["task_paused"] is True
-    if superseding:
+    if superseding in {"landing_recovery_requested", "merged"}:
         assert refusal is None
     else:
         assert refusal["reason"] == "merged_delivery_identity_mismatch"

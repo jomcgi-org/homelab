@@ -295,9 +295,7 @@ def _landing_refusal(db, task_id):
                 (
                     "merge_arm_refused",
                     "landing_recovery_requested",
-                    "merge_armed",
                     "merged",
-                    "owned_pr_merged",
                 )
             ),
         )
@@ -866,8 +864,8 @@ async def factory_status(
         sessions hold no factory record, so an empty active list is not
         evidence that nothing is running anywhere.
         ``landing_refusal`` is the latest recorded refusal in the current
-        landing attempt, not a live GitHub or queue check. A newer recovery,
-        arming or merge observation supersedes it.
+        landing attempt, not a live GitHub or queue check. A newer recovery
+        or accepted merge supersedes it. Arming or observing a merge does not.
         ``control_catalog`` reports native controls and their supported targets.
         It cannot observe or refresh a gateway or caller's cached tool list.
     """

@@ -400,7 +400,8 @@ evidence alone cannot change a client's schema. Legacy `configure` is not a subs
 
 Each compact status row includes `landing_refusal`: the latest recorded
 `merge_arm_refused` reason, PR number, audit ID and timestamp. A newer recovery
-request, arming or merge observation supersedes it. This is a bounded private
+request or accepted merge supersedes it. Arming or merely observing a merged PR
+does not clear the recorded refusal. This is a bounded private
 audit projection, not a live GitHub or queue query. Null does not prove landing
 eligibility or queue membership. A `merged_delivery_identity_mismatch` means
 the existing landing owner refused acceptance; inspect its approved delivery
