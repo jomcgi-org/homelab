@@ -315,6 +315,12 @@ rechecks them under the control and task locks. The graph records
 `renew_node_attempt` with before/after bounds; historical revisions, attempts,
 admitted pins, identity, branch and accounting remain unchanged.
 
+Transient or unstarted funding-review retries retain the preceding request's
+exact node and repair authority through the existing cooldown and refusal cap.
+They revalidate source evidence; only funding's exact retirement of its expired,
+unstarted gate may advance the graph. Retrying a review never consumes another
+machine-pause resume or attaches retry authority to ordinary funding.
+
 At most two such renewals are permitted per task across all nodes, each node
 remains at or below ten attempts, and granted turns stay below the pinned merit
 extension ceiling even when merit prompting is disabled. Existing no-progress

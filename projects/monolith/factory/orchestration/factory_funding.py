@@ -526,6 +526,7 @@ def request(
     routine=None,
     retry_only=False,
     repair=None,
+    retry_request=None,
 ):
     """Reserve one exact judge decision, even when task soft limits ran out.
 
@@ -535,6 +536,10 @@ def request(
     recurring blocker for repair instead of pausing the allocation, so the
     caller's ordinary card reaches a person. The pause is kept on the request
     so exhausted review refusals raise that card rather than failing silently.
+
+    ``retry_request`` is the preceding failed exact-node review, supplied only
+    by reconciliation. It preserves and revalidates that request's authority;
+    ordinary funding never inherits node or repair authority implicitly.
     """
     from factory.orchestration import factory_conductor as c
 
@@ -568,10 +573,17 @@ def request(
     issue = _issue(task)
     if issue.get("number") != task["issue_number"]:
         return False
-    with controls._read_session() as db:
-        retry = _retry_target(db, task["id"]) if retry_only else None
-    if retry_only and retry is None:
-        return False
+    retry = None
+    if retry_request is not None:
+        retry = retry_request.get("node_retry")
+        if not retry:
+            return False
+        repair = retry_request.get("repair_recovery")
+    elif retry_only:
+        with controls._read_session() as db:
+            retry = _retry_target(db, task["id"])
+        if retry is None:
+            return False
     retry_label_hold = routine_labels_held(task) if retry else None
     merit = None
     if factory_judge.enabled():
@@ -592,10 +604,16 @@ def request(
         if row is None:
             return False
         graph._lock_task(db, task["id"])
+        if retry_request is not None and not _retry_review_valid(
+            db, row, retry_request, issue
+        ):
+            return False
         if retry and retry != _retry_target(db, task["id"]):
             return False
-        if repair is not None and (
-            not retry or repair != _repair_evidence(db, task["id"])
+        if (
+            repair is not None
+            and retry_request is None
+            and (not retry or repair != _repair_evidence(db, task["id"]))
         ):
             return False
         # A hold set while labels were read wins here, without mutating it.
@@ -612,7 +630,7 @@ def request(
             or control.state not in ("enabled", "paused")
             or (routine and control.state != "enabled")
             or row.cancellation_requested
-            or (row.task_paused and repair is None)
+            or (row.task_paused and (repair is None or retry_request is not None))
         ):
             return False
         if row.state not in ("admitted", "failed", "escalated") or (
@@ -678,7 +696,7 @@ def request(
         judge = model_pool.select_model("judge", policy)["model"]
         if judge not in policy["allowed_models"]:
             return False
-        if repair is not None:
+        if repair is not None and retry_request is None:
             # Same transaction as the pending review. Native capacity release
             # retains its owner; no queued release may outlive a failed review
             # preparation. The only next dispatch is funding's decision gate.
@@ -762,6 +780,9 @@ def request(
             )
         if repair is not None:
             audit_detail["repair_recovery"] = repair
+        if retry_request is not None:
+            audit_detail["retry_of_request_id"] = retry_request["audit_id"]
+        elif repair is not None:
             record_audit(
                 db, ACTOR, "repair_funding_requested", task_id=task["id"], **repair
             )
@@ -1072,12 +1093,7 @@ def settle(task, run, request):
             ):
                 raise ValueError("funding retry held or evidence changed")
             repair = request.get("repair_recovery")
-            if repair and (
-                not _repair_rollout_valid(db, repair)
-                or _latest_pause(db, task["id"]).id != repair["pause_id"]
-                or latest(db, task["id"], "resume_task")["audit_id"]
-                != repair["resume_id"]
-            ):
+            if repair and not _repair_review_valid(db, task["id"], repair):
                 raise ValueError("repair recovery authority changed")
             if (
                 run["pin"]["model"] != review_model(request)
@@ -1382,6 +1398,7 @@ def reconcile(task, policy, runs, permission):
                             task_id=task["id"],
                             request_id=review["audit_id"],
                             refusal="Review could not acquire execution capacity before its deadline",
+                            failure_category="unstarted_expired",
                             retry_after=(
                                 controls._now() + timedelta(seconds=REVIEW_SECONDS)
                             ).isoformat(),
@@ -1549,8 +1566,14 @@ def reconcile(task, policy, runs, permission):
         # A retry of a routed pause keeps its provenance, so the locked
         # routine hold and enabled-lane checks apply to the retry too.
         routed = _routed_pause(task["id"])
+        with controls._read_session() as db:
+            prior = latest(db, task["id"], "funding_review_requested")
+            retry_request = prior if prior and prior.get("node_retry") else None
         retried = request(
-            task, "Retry funding decision after " + last["refusal"], routine=routed
+            task,
+            "Retry funding decision after " + last["refusal"],
+            routine=routed,
+            retry_request=retry_request,
         )
         if retried or routed is None:
             return retried
@@ -1603,6 +1626,62 @@ def reconcile(task, policy, runs, permission):
                 "Review rounds exhausted; assess remaining value and correction plan",
             )
     return False
+
+
+def _retry_review_valid(db, row, prior, issue):
+    """Retry the same bounded review, never select fresh node authority.
+
+    All source evidence remains frozen. The sole permitted intervening graph
+    edit is funding's exact retirement of its unstarted expired review gate.
+    Other edits, including an edit later undone, invalidate this request.
+    """
+    from factory.orchestration.models import SwarmPlanVersion
+
+    task_id = row.task_id
+    settled = latest(db, task_id, "funding_review_settled")
+    if (
+        prior != latest(db, task_id, "funding_review_requested")
+        or settled is None
+        or settled.get("request_id") != prior["audit_id"]
+        or not settled.get("refusal")
+        or _refusal_wait(settled)
+        or settled.get("failure_category")
+        not in {
+            "execution_failed",
+            "pre_model_failure",
+            "artifact_invalid",
+            "unstarted_expired",
+        }
+        or prior.get("retry_authority_sha256") != _retry_authority(row)
+        or prior["policy_sha256"] != controls.digest(effective_policy(db, row))
+        or prior["issue_sha256"] != controls.digest(issue)
+        or prior["runs_sha256"]
+        != _runs_digest(graph.node_runs(task_id, session=db), prior["node_key"])
+    ):
+        return False
+    revision = graph.current_version(task_id, session=db)
+    if settled["failure_category"] == "unstarted_expired":
+        retirement = db.exec(
+            select(SwarmPlanVersion).where(
+                SwarmPlanVersion.task_id == task_id,
+                SwarmPlanVersion.version == revision,
+            )
+        ).first()
+        if (
+            revision != prior["revision"] + 1
+            or retirement is None
+            or retirement.op != "discard_node"
+            or retirement.author_kind != "engine"
+            or retirement.author != ACTOR
+            or retirement.cause_kind != "factory_conductor"
+            or retirement.cause_ref != "funding-expired:" + prior["node_key"]
+            or json.loads(retirement.change_json).get("node_key") != prior["node_key"]
+        ):
+            return False
+    elif revision != prior["revision"]:
+        return False
+    repair = prior.get("repair_recovery")
+    return not repair or _repair_review_valid(db, task_id, repair)
 
 
 def _retry_authority(row):
@@ -1774,6 +1853,29 @@ def _latest_pause(db, task_id):
         .order_by(FactoryAudit.id.desc())
     )
     return next((row for row in rows if json.loads(row.detail_json).get("ok")), None)
+
+
+def _repair_review_valid(db, task_id, proof):
+    """Continue an already prepared repair review, not its consumed resume."""
+    row = controls._receipt(db, task_id)
+    wait = latest(db, task_id, "repair_allocation_wait")
+    pause = _latest_pause(db, task_id)
+    resume = latest(db, task_id, "resume_task")
+    if (
+        row is None
+        or row.task_paused
+        or wait is None
+        or wait["audit_id"] != proof["wait_id"]
+        or pause is None
+        or pause.id != proof["pause_id"]
+        or resume is None
+        or resume["audit_id"] != proof["resume_id"]
+    ):
+        return False
+    card = {**wait["card"], "resolved": {"kind": "verified_repair_review", **proof}}
+    return json.loads(row.escalation_json or "null") == card and _repair_rollout_valid(
+        db, proof
+    )
 
 
 def _repair_rollout_valid(db, proof):
