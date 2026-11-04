@@ -20,9 +20,11 @@ go_library(
     visibility = ["//visibility:private"],
     deps = select({
         "@rules_go//go/platform:android": [
+            "//projects/firecracker/substrate/guestvolume",
             "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:linux": [
+            "//projects/firecracker/substrate/guestvolume",
             "@org_golang_x_sys//unix",
         ],
         "//conditions:default": [],
@@ -37,6 +39,18 @@ go_binary(
 
 go_test(
     name = "cmd_test",
-    srcs = ["main_test.go"],
+    srcs = [
+        "main_test.go",
+        "volume_linux_test.go",
+    ],
     embed = [":cmd_lib"],
+    deps = select({
+        "@rules_go//go/platform:android": [
+            "//projects/firecracker/substrate/guestvolume",
+        ],
+        "@rules_go//go/platform:linux": [
+            "//projects/firecracker/substrate/guestvolume",
+        ],
+        "//conditions:default": [],
+    }),
 )
