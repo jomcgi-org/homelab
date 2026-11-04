@@ -266,6 +266,10 @@ class AgentResultReceipt(SQLModel, table=True):
     superseded_at: datetime | None = Field(
         default=None, sa_type=DateTime(timezone=True)
     )
+    # NULL is the legacy immediate-attempt protocol. A prepared row carries
+    # superseded_at until its exact owner records attempt intent, so an older
+    # binary cannot consume it or use it as lease-recovery evidence.
+    attempt_phase: str | None = None
     received_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     response_observed_at: datetime | None = Field(
         default=None, sa_type=DateTime(timezone=True)

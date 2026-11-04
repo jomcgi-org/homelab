@@ -198,6 +198,41 @@ The reconciler expands only active receipts from a fresh control row. Source nod
 
 Gate every checkpoint-sequence change to `drain_cycle`, `implement_then_review` and `start_session_workflow` with `DBOS.patch`; steps, `DBOS.sleep`, send/recv, events, child workflows and patch markers consume function ids. Add with `if DBOS.patch("<name>")`, remove with `if not DBOS.patch("<name>")`, make reorder or rename a remove plus add, and never wrap an unchanged call. Retire with `DBOS.deprecate_patch` only once no pre-patch workflow can be PENDING. Unpatched edits strand in-flight nodes: the reconciler audits `workflow_stranded` and settles the attempt as uncertain for bounded retry. A stale-checkpoint PENDING workflow settles the same way, audited `node_stalled` once. A replica lost mid-invoke holds the turn as `response_lost`.
 
+Receipt preparation and attempt intent are separate when
+`agentSessions.stagedReceiptsEnabled` (`AGENT_STAGED_RECEIPTS_ENABLED`) is enabled.
+The default is false. One flag snapshot per executor supplies the handoff guard
+that selects both staged preparation and promotion. Preparation preserves the
+last attempted receipt; the existing pool/session locks plus the bounded local
+handoff guard serialize promotion against the first response-loss hold. A hold
+that wins cannot be superseded by a late preparation or promotion. Intent is
+conservative evidence of a possible invoke, not proof a POST reached the guest.
+Cancellation or an uncertain promotion commit cannot become `not_invoked` or
+authorize another attempt. Callback credentials, exact ownership, accounting,
+first-hold bounds and normal retry admission remain with their existing owners.
+
+Roll out this protocol in three reviewed GitOps changes. First land schema
+prerequisite [#7620](https://github.com/jomcgi-org/homelab/pull/7620) and verify
+Atlas applied `20261104180000_agent_receipt_attempt_phase.sql` with its exact
+reviewed SQL and checksum. Its metadata postcondition proves the column shape.
+Only then land runtime [#7619](https://github.com/jomcgi-org/homelab/pull/7619)
+with the flag false and verify the complete compatible backend and progress-ingest
+rollout on every replica. In a separate reviewed activation change, set
+`agentSessions.stagedReceiptsEnabled: true` in the private deployment overlay,
+verify the rollout and rendered environment, and observe a naturally occurring
+handoff retaining the exact attempted receipt followed by normal result adoption
+and useful delivery. A merged default-off implementation or synthetic tests do
+not meet [#7583](https://github.com/jomcgi-org/homelab/issues/7583) acceptance.
+
+Rollback sets the flag false for future executors; already running executors
+retain their snapshot. Keep the additive nullable column. Legacy NULL rows keep
+their prior protocol. A prepared row also carries `superseded_at`, so old readers
+and lease recovery exclude it even after binary rollback. An old callback writer
+may capture its authenticated body, but cannot make that row active, and the new
+promotion path refuses any nonempty preparation. Attempted rows use the existing
+active-receipt representation and remain readable by old code. Never backfill,
+revive or reinterpret a historical receipt or an existing uncertain execution as
+part of deployment or rollback.
+
 The lost-before-session sweep (#6285) runs before task reconciliation and the deadline backstop, once the node's pinned `turn_timeout_seconds` has elapsed. The owning DBOS workflow must report `ERROR` or `CANCELLED`, or a lookup must prove it absent. Under the control lock shared with session creation, the proof also needs immutable run and start ownership and no bound or deterministic session, cost, outcome, permit or result receipt. Both ledgers then settle atomically as `failed` at zero cost with `no_model_post` and `never_dispatched`; anything else leaves the attempt untouched.
 
 `provider_error_before_work` settles a guest provider error with no tool activity, diff or artifact at reported spend. `FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED` (chart false) settles a drained continuation only on durable `evicted`/`node_gone` proof. Sessions 8410 and 8416 remediation and live checks stay on [#6271](https://github.com/jomcgi-org/homelab/issues/6271#issuecomment-5750415773). The node workflow carries a brick-drain relay to an owner.

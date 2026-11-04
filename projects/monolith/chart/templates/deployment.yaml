@@ -170,6 +170,8 @@ spec:
             - name: AGENT_PI_WORKLOAD
               value: {{ .Values.agentSessions.piWorkload | quote }}
             {{- end }}
+            - name: AGENT_STAGED_RECEIPTS_ENABLED
+              value: {{ (.Values.agentSessions | default dict).stagedReceiptsEnabled | default false | quote }}
             {{- with (.Values.agentSessions | default dict).admission }}
             # Shared execution permits. Read per check in admission.py, so
             # these are the live bounds on the next pod rather than values
