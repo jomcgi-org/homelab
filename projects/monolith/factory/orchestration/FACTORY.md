@@ -294,6 +294,8 @@ Funding lives in `factory_funding.py`: `request` records one judge node, `settle
 
 Eligible funding reviews include progress, proximity-to-landing and issue-value criteria and server-read evidence from `factory_judge.py`. Explicit doubt steers to an operator card, and the turn ceiling is the original allowance plus `factoryMeritJudgeMaxExtensionMultiple` times it. Missing pinned policy and historical requests without merit metadata retain their legacy handling.
 
+The GKE overlay retains `factoryMeritJudgeEnabled: true` solely for pre-retirement charts. HEAD values can reach an older chart before promotion or during pin-lowering rollback; the compatibility key preserves its enabled behavior. The current chart and image ignore it. The staged #7585 scope allows this single config reference; #7596 tracks removal after those charts are no longer supported revert targets. Operational acceptance for #7585 is a verified rollout of the delivered chart revision, separate from #7502's checks and #7596's removal prerequisite.
+
 Three switches stage funding, each false in the chart and enabled in the GKE overlay:
 
 - `FACTORY_CONDUCTOR_FUNDING_ENABLED`: new funding reviews when work turns, review rounds or a lease run out. Enrolled reviews finish after it is disabled, a failed or stale review waits five minutes, and six consecutive refusals end the task.

@@ -409,6 +409,15 @@ continuation contracts remain: the legacy final correction pair behind
 operator two-hour lease for one paused recovered task. The switch contract is in
 [Funding](factory/orchestration/FACTORY.md#funding).
 
+**Why.** The hub reads deployment values from git HEAD while Kargo promotes
+the chart revision separately. The GKE overlay retains
+`factoryMeritJudgeEnabled: true` for pre-retirement charts during promotion
+and pin-lowering rollback. Those charts default to false without the key;
+the current chart and image no longer read it. The staged #7585 scope permits
+this one compatibility config reference. #7596 tracks its removal only after
+pre-retirement charts are no longer supported revert targets. A verified new
+rollout alone does not satisfy that removal condition.
+
 ### Factory acceptance
 
 Repository delivery and operational acceptance are separate. These rows move from
@@ -418,6 +427,7 @@ See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-check
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Retire the merit runtime switch while preserving old-chart enabled behavior | section 4; proposed staged Conductor rescope | #7585, #7596 | repository correction; verified rollout remains on #7585; compatibility-key removal stays on #7596 until old charts leave rollback support |
 | Escalation cards survive the factory's own gate writes, declined landing recovery is named, and optimizer verdicts are final once the window ends and its attempts settle | section 4; evidence on the issue | #7495 | repository delivery; 72-hour before and after counts remain on the issue |
 | Per-sweep intake decisions, private backlog age and digest evidence | section 4; repository-only Conductor rescope | #7459 | staged repository delivery; rollout, first-sweep distribution and credential-backed follow-up remain on the issue |
 | One funding decision owns continuation, steering and stop while accounting retains reservations and unknown outcomes | Funding consolidation; repository acceptance in #7454 | #7454 | policy tests consolidated, task grant, progress and continuation decisions unified, allocation recovery folded into funding, shadow and reservation dollar-ceiling paths retired; reservation and meter decisions share the funding resolver; canonical funding audits retain rollback projections; reduction percentages are measurements |
