@@ -813,12 +813,13 @@ def routine_hold(db, row, task_id):
     if controls.review_recovery_held(task_id, session=db):
         return "review_recovery_held"
     # The webhook- and sweep-synchronized work-item labels, read in the
-    # caller's (locked) session: the same mirror the human-handoff fence
-    # trusts, so a held label revalidates transactionally before any grant.
+    # caller's (locked) session: the mirror the human-handoff fence trusts.
+    # It is current to webhook latency, not to GitHub itself; a receipt with
+    # no mirror cannot be revalidated under the lock and is never routine.
     item = db.get(WorkItem, row.work_item_id) if row.work_item_id else None
-    if item is not None and {
-        str(label).lower() for label in item.labels or []
-    } & ROUTINE_HELD_LABELS:
+    if item is None:
+        return "no_label_mirror"
+    if {str(label).lower() for label in item.labels or []} & ROUTINE_HELD_LABELS:
         return "held_label"
     if (
         db.exec(
@@ -1454,9 +1455,19 @@ def reconcile(task, policy, runs, permission):
         if (held and held != "task_held") or blocked:
             try:
                 c._escalate_task(task, routed["decision"], routed["cause"], runs)
-                return True
             except c._EditRefused:
-                pass
+                # No card can be posted and no review may run: end the task
+                # rather than leaving it without an owner.
+                controls.finish_task(
+                    task["id"],
+                    "failed",
+                    ACTOR,
+                    evidence={
+                        "state": "funding_review_unavailable",
+                        "reason": "A held routine pause could not be raised as a card.",
+                    },
+                )
+            return True
         return False
     snapshot = controls.task_snapshot(task["id"])
     nodes = graph.load_graph(task["id"])
