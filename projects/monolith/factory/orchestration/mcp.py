@@ -803,8 +803,11 @@ async def _control_catalog() -> dict:
     """Bounded native evidence, not a claim about gateway or client discovery."""
     tools = {}
     for name in (
+        "factory_status",
+        "factory_session_dispatch_diagnostics",
         "factory_configure_refill",
         "factory_configure_problem_issues",
+        "factory_configure_owner_prs",
         "factory_amend_policy",
         "factory_reconcile",
         "factory_continue_evidence",
@@ -844,6 +847,9 @@ async def factory_status(
     include_recent: bool = False,
     offset: Annotated[MCPInteger, Field(ge=0)] = 0,
     limit: Annotated[MCPInteger, Field(ge=1, le=STATUS_LIMIT_MAX)] = STATUS_LIMIT,
+    target: Literal["factory", "session_dispatch"] = "factory",
+    session_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)] | None = None,
+    seq: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)] | None = None,
 ) -> dict:
     """Read what the software factory is working on and what is blocked.
 
@@ -857,6 +863,11 @@ async def factory_status(
             now rather than what already finished.
         offset: Zero-based offset applied independently to each state bucket.
         limit: Maximum rows returned per bucket, from one to fifty.
+        target: Factory status by default. session_dispatch reads exact turn
+            metadata through the existing diagnostics owner for cached callers.
+        session_id: Required only for session_dispatch, together with seq.
+        seq: Exact positive turn sequence. Dispatch reads do not accept status
+            paging or include_recent and never authorize execution or recovery.
 
     Returns:
         The control state and policy, the intake block and lane usage that
@@ -875,6 +886,16 @@ async def factory_status(
     refusal = _refuse(current_principal())
     if refusal is not None:
         return refusal
+    if target == "session_dispatch":
+        if session_id is None or seq is None:
+            return {"ok": False, "reason": "session_dispatch_requires_session_and_seq"}
+        if include_recent or offset or limit != STATUS_LIMIT:
+            return {"ok": False, "reason": "session_dispatch_does_not_accept_paging"}
+        return await factory_diagnostics(
+            "session_dispatch", session_id=session_id, seq=seq
+        )
+    if session_id is not None or seq is not None:
+        return {"ok": False, "reason": "session_identity_requires_dispatch_target"}
     result = await asyncio.to_thread(_status_payload, include_recent, offset, limit)
     if result.get("ok"):
         result["control_catalog"] = await _control_catalog()
@@ -2088,6 +2109,21 @@ async def factory_find_routine_permits(
 
 
 @mcp.tool
+async def factory_session_dispatch_diagnostics(
+    session_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+    seq: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+) -> dict:
+    """Read exact session-turn metadata for callers with a cached tool catalog.
+
+    Compatibility name for factory_diagnostics kind session_dispatch. Requires
+    a standing human operator and uses the same bounded read owner. Does not
+    contact guests, retry, reconcile, change state or authorize recovery.
+    Missing records and old observations never establish current cessation.
+    """
+    return await factory_diagnostics("session_dispatch", session_id=session_id, seq=seq)
+
+
+@mcp.tool
 async def factory_diagnostics(
     kind: Literal["permits", "session_dispatch", "raw_extraction", "quota_probes"],
     permit_ids: Annotated[
@@ -2552,6 +2588,53 @@ async def factory_reconcile(
 
 
 @mcp.tool
+async def factory_configure_owner_prs(
+    operation: Literal["preview", "apply"],
+    expected_version: Annotated[MCPInteger, Field(ge=0)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    owner_login: str | None = None,
+    owner_id: Annotated[MCPInteger, Field(ge=1)] | None = None,
+    request_key: str | None = None,
+    expected_preview_sha256: str | None = None,
+) -> dict:
+    """Configure owner PR discovery on existing intake. Omit both owner fields to disable.
+
+    First verify the GitHub owner's login and numeric user ID. Preview using
+    current factory_status version, then apply its digest and a stable request
+    key. Changes only intake.owner_pr_author and preserves generation, all receipts,
+    holds, budgets, unrelated producers, review and merge controls. Starts no work.
+    Existing intake and refinement must already be enabled, without a batch hold.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from factory.orchestration import owner_pr_control
+
+    if (owner_login is None) != (owner_id is None):
+        return {"ok": False, "reason": "owner_identity_incomplete"}
+    owner = {"login": owner_login, "id": owner_id} if owner_login is not None else None
+    try:
+        if operation == "preview":
+            return await asyncio.to_thread(
+                owner_pr_control.preview, owner, expected_version, reason
+            )
+        if not request_key or not expected_preview_sha256:
+            return {"ok": False, "reason": "owner_pr_preview_required"}
+        return await asyncio.to_thread(
+            owner_pr_control.apply,
+            principal.subject,
+            owner,
+            expected_version,
+            reason,
+            request_key,
+            expected_preview_sha256,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
 async def factory_configure_refill(
     operation: Literal["preview", "apply"],
     enabled: bool,
@@ -2563,9 +2646,13 @@ async def factory_configure_refill(
     expected_preview_sha256: str | None = None,
     reset_breaker: bool = False,
     min_new_issues: Annotated[MCPInteger, Field(ge=0, le=100)] | None = None,
-    target: Literal["refill", "problem_issues", "repair_landing"] = "refill",
+    target: Literal[
+        "refill", "problem_issues", "owner_prs", "repair_landing"
+    ] = "refill",
     recurring_blocker: bool | None = None,
     workflow_stranded: bool | None = None,
+    owner_login: str | None = None,
+    owner_id: Annotated[MCPInteger, Field(ge=1)] | None = None,
     duration_minutes: Annotated[MCPInteger | None, Field(ge=1, le=1440)] = None,
     max_repairs: Annotated[MCPInteger | None, Field(ge=1, le=10)] = None,
     delegation_mode: Literal["trial", "ongoing"] | None = None,
@@ -2589,6 +2676,10 @@ async def factory_configure_refill(
     hourly false as compatibility placeholders. Refill settings stay unchanged.
     reset_breaker and min_new_issues are not permitted for that target. This
     delegates to the same guarded preview/apply as factory_configure_problem_issues.
+    For target owner_prs, enabled true requires verified owner_login and owner_id.
+    Enabled false requires both omitted. Use model astra and hourly false.
+    All refill/problem-issue/delegation options must be omitted/default. This delegates to
+    factory_configure_owner_prs, preserving every unrelated producer setting.
     Native factory_status.control_catalog advertises targets and argument names.
     Target repair_landing configures only a default-off standing delegation:
     use model astra and hourly false. Trial mode requires duration_minutes and
@@ -2597,8 +2688,8 @@ async def factory_configure_refill(
     derivations per repair task and source task. It remains effective until
     revoked or policy drift. No trial upgrades automatically. Optional path_profile
     diagnostics adds only private output parsers to the observation boundary.
-    Omit producer switches and other refill options. Preview lists exact paths
-    and bounds. Disabling revokes future arming.
+    Omit owner identity, producer switches and other refill options. Preview lists
+    exact paths and bounds. Disabling revokes future arming.
     The native landing observer fences queued grants on its next tick. This
     does not undo completed external actions or activate producer/intake.
     """
@@ -2608,7 +2699,9 @@ async def factory_configure_refill(
         return refusal
     if target == "repair_landing":
         if (
-            model != "astra"
+            owner_login is not None
+            or owner_id is not None
+            or model != "astra"
             or hourly is not False
             or reset_breaker
             or min_new_issues is not None
@@ -2643,9 +2736,32 @@ async def factory_configure_refill(
         for value in (duration_minutes, max_repairs, delegation_mode, path_profile)
     ):
         return {"ok": False, "reason": "refill_target_arguments_invalid"}
-    if target == "problem_issues":
+    if target == "owner_prs":
         if (
             model != "astra"
+            or hourly is not False
+            or reset_breaker
+            or min_new_issues is not None
+            or recurring_blocker is not None
+            or workflow_stranded is not None
+            or (enabled and (owner_login is None or owner_id is None))
+            or (not enabled and (owner_login is not None or owner_id is not None))
+        ):
+            return {"ok": False, "reason": "owner_pr_target_arguments_invalid"}
+        return await factory_configure_owner_prs(
+            operation=operation,
+            expected_version=expected_version,
+            reason=reason,
+            owner_login=owner_login,
+            owner_id=owner_id,
+            request_key=request_key,
+            expected_preview_sha256=expected_preview_sha256,
+        )
+    if target == "problem_issues":
+        if (
+            owner_login is not None
+            or owner_id is not None
+            or model != "astra"
             or hourly is not False
             or reset_breaker
             or min_new_issues is not None
@@ -2665,6 +2781,8 @@ async def factory_configure_refill(
         )
     if (
         target != "refill"
+        or owner_login is not None
+        or owner_id is not None
         or recurring_blocker is not None
         or workflow_stranded is not None
     ):

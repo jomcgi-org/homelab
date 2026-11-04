@@ -62,6 +62,22 @@ unless another owner supplies evidence. Work-item context includes current open
 blockers, the GitHub source timestamp and bounded correction history, without
 turning those records into mutation authority.
 
+`factory_diagnostics(kind="session_dispatch", session_id=..., seq=...)` reads
+exact turn queue, permit and fence metadata. The compatibility name
+`factory_session_dispatch_diagnostics(session_id=..., seq=...)` reaches that
+same owner for connected callers whose tool catalog predates consolidation.
+Both require a standing human operator and strict positive integer identities.
+Neither contacts a guest, changes execution or authorizes recovery; recorded
+cessation metadata is not independent fresh cessation proof.
+
+If a cached caller still cannot invoke that restored name, the established
+`factory_status(target="session_dispatch", session_id=..., seq=...)` reaches
+the same diagnostics owner. Omit status paging and `include_recent`; both
+identities are required. The default `target="factory"` retains ordinary
+status behavior and rejects session identity arguments. Normal status includes
+these native arguments and targets in `control_catalog`, without claiming that
+the gateway or caller catalog has refreshed.
+
 ## Apply controls
 
 Call `factory_control` with an explicit action, a new `request_key`, and
@@ -752,3 +768,23 @@ unknown results, accounting and unrelated fences. If corroboration is unavailabl
 keep recovery blocked. A new operator attestation would need independently
 verified teardown/absence evidence for the exact worker incarnation and separate
 explicit authority; merely asserting that the record is missing is insufficient.
+
+### Owner PR feed configuration
+
+`factory_configure_owner_prs` supports `preview` and `apply` for one verified
+GitHub `owner_login` and positive numeric `owner_id`; omit both to disable.
+Use current `factory_status.version`, a reason, then the returned preview digest
+and a stable request key on apply. The control changes only
+`intake.owner_pr_author`, leaves generation and unrelated controls untouched,
+and starts no task. It requires standing operator authentication. Enablement
+requires existing intake and refinement with no restricted refinement batch.
+The existing-name compatibility route is `factory_configure_refill` with
+`target=owner_prs`, `enabled=true`, `owner_login`, `owner_id`, `model=astra` and
+`hourly=false`; leave refill/problem-source options omitted/default. Disabling
+uses `enabled=false` and omits both owner fields. It delegates to the same owner,
+so cached client catalogs need no new tool name. The native control catalog
+reports the target and argument names independently of client visibility.
+
+Read `intake.owner_pr_backlog` for the latest observed backlog and separate
+merged/verified delivery counts. An activated producer or queued receipt is not
+operational acceptance; #7597 retains the real autonomous delivery demonstration.

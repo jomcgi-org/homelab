@@ -2374,3 +2374,24 @@ def test_queued_human_work_is_cancelled_before_task_admission(db):
         ).one()
         assert row.state == "cancelled"
         assert row.task_id is None
+
+
+def test_owner_pr_refinement_cannot_close_pr_even_when_issue_closure_enabled(db):
+    task, policy = make_task(intake={"enabled": True, "close_enabled": True})
+    with Session(db) as session:
+        receipt = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        receipt.direction_json = json.dumps(
+            {"owner_pr": {"direct": True, "author_id": 42}}
+        )
+        session.commit()
+    assert refine.closing_allowed(policy, exclude_task_id=task["id"]) == (
+        False,
+        "owner_pr_disposition_requires_delivery_owner",
+    )
+    snapshot = controls.task_snapshot(task["id"])
+    prompt = refine.refine_prompt(task, snapshot, closing=False)
+    assert "Do not demand a new issue" in prompt
+    assert "standing maintenance policy" in prompt
+    assert "never edit source" in prompt

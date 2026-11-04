@@ -334,10 +334,13 @@ Linux orchestrator CI and a real bounded operating trial stay the delivery gates
 
 Funding lives in `factory_funding.py`: `request` records one judge node, `settle` verifies its authority, `decide` resolves a validated artifact to `continue`, `steer` or `stop`. A continue or steer grants at most 20 work turns and a 30-minute review horizon. Reservations and unknown outcomes stay charged; a factory start reserves a ceiling and settles at the reported cost, falling back to the token-usage list price. A judge proposing a larger budget pauses the receipt for operator approval. Continuation contracts remain: the legacy pair below and an operator `progress_continuation` two-hour lease for one paused recovered task.
 
-Four switches stage funding, each false in the chart and enabled in the GKE overlay:
+Eligible funding reviews include progress, proximity-to-landing and issue-value criteria and server-read evidence from `factory_judge.py`. Explicit doubt steers to an operator card, and the turn ceiling is the original allowance plus `factoryMeritJudgeMaxExtensionMultiple` times it. Missing pinned policy and historical requests without merit metadata retain their legacy handling.
+
+The GKE overlay retains `factoryMeritJudgeEnabled: true` solely for pre-retirement charts. HEAD values can reach an older chart before promotion or during pin-lowering rollback; the compatibility key preserves its enabled behavior. The current chart and image ignore it. The staged #7585 scope allows this single config reference; #7596 tracks removal after those charts are no longer supported revert targets. Operational acceptance for #7585 is a verified rollout of the delivered chart revision, separate from #7502's checks and #7596's removal prerequisite.
+
+Three switches stage funding, each false in the chart and enabled in the GKE overlay:
 
 - `FACTORY_CONDUCTOR_FUNDING_ENABLED`: new funding reviews when work turns, review rounds or a lease run out. Enrolled reviews finish after it is disabled, a failed or stale review waits five minutes, and six consecutive refusals end the task.
-- `FACTORY_MERIT_JUDGE_ENABLED`: adds the progress, proximity-to-landing and issue-value criteria and server-read evidence in `factory_judge.py`. Explicit doubt steers to an operator card, and the turn ceiling is the original allowance plus `factoryMeritJudgeMaxExtensionMultiple` times it.
 - `FACTORY_RESERVATION_REVIEW_ENABLED`: a 30-minute lease on the running invocation, reviewed from five minutes before expiry. Heartbeats never renew it.
 - `FACTORY_AUTONOMOUS_CONTINUATION_ENABLED`: the legacy pair, one final named correction plus independent review at a work-turn limit. It cannot renew itself, and funding supersedes it for enrolled tasks.
 
@@ -429,3 +432,31 @@ pipeline keep their existing contracts. See the activation and limitations in
 
 The Conductor pursues continuous self-improvement and delivery velocity toward Joe goals. Factory-owned budgets and workflow policies evolve through their owning interfaces; dollars stay accounting. Root `AGENTS.md` defines standing delivery authority; the [evolution contract](../../../../docs/agents/evolution.md) defines how improvements evaluate and retain.
 (see: /projects/monolith/factory/orchestration/factory_improvements.py)
+
+### Owner-authored PR backlog
+
+`intake.owner_pr_author` is omitted by default. A verified `{login, id}` enables
+owner PR discovery on the existing intake sweep, including drafts; dependency
+bots retain their separate policy. `factory_configure_owner_prs` previews and
+applies only this field with version CAS, a preview digest and replay-safe request
+key. Existing intake and refinement must already be enabled, without a refinement
+batch. Disabling discovery does not discard already owned work.
+
+A PR closing one accepted issue adopts that issue's work item and existing branch.
+An unlinked PR becomes a PR-backed work item and enters the existing bounded
+advisory lane. A server-verified `agent-ready` brief, citing an accepted goal or
+standing maintenance policy, permits delivery on that same PR without another
+issue. A label or author identity alone is not a scope grant. Older histories,
+active/queued ownership, explicit holds and unknown execution win over discovery.
+The feed prefers finishing PRs over fresh implementation candidates. It never
+imports prior approval: independent review and required CI must cover the current
+head, followed by the existing merge queue and rollout owner.
+
+Fresh PR/discussion holds fence dispatch and verification. The private
+`intake.owner_pr_backlog` projection reports the latest sweep's states, age,
+receipt owners and blockers, alongside merged and verified delivery counts.
+Superseded or closed PRs keep their history; advisory refinement cannot close a
+PR. External merges retain the existing merged-delivery verification owner and
+its review/operational fences. #7428 owns that owner's remaining external-review
+handoff. Activation, rollout and a pre-existing PR reaching reviewed, merged and
+verified delivery without manual selection remain open on #7597.

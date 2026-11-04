@@ -693,7 +693,7 @@ def _arm(repo: str, item: dict) -> None:
         return
     from factory.orchestration.factory_controls import review_recovery_held as held
 
-    if _enforce_landing_hold(repo, item):
+    if _enforce_landing_hold(repo, item) or _enforce_owner_pr_hold(repo, item):
         return
     if held(item["task_id"]):
         _refuse(item, "review_only_recovery")
@@ -796,6 +796,10 @@ def _arm(repo: str, item: dict) -> None:
                     or not conductor.delivery_identity_matches(task, current)
                 ):
                     refusal = "scoped_landing_authorization_identity_changed"
+            if not refusal and _enforce_owner_pr_hold(
+                repo, item, pr=current, session=db
+            ):
+                refusal = item.pop("owner_pr_hold_reason", "owner_pr_hold")
             if not refusal:
                 github_graphql(
                     _ARM_AUTO_MERGE, {"pullRequestId": node_id, "expectedHeadOid": head}
@@ -1342,13 +1346,14 @@ def _close_issue(repo: str, item: dict) -> None:
         )
         item["closed"] = True  # Landing is complete; the issue remains open.
         return
-    if item.get("dependency_review"):
+    if item.get("dependency_review") or direction.get("owner_pr", {}).get("direct"):
         _record(
             item["task_id"],
             "repository_delivery_complete",
             pr_number=number,
             closed_by_factory=False,
-            dependency_review=True,
+            dependency_review=bool(item.get("dependency_review")),
+            owner_pr_direct=bool(direction.get("owner_pr", {}).get("direct")),
         )
         item["closed"] = True
         return
@@ -1507,6 +1512,55 @@ def _handoff_human_delivery(repo: str, item: dict) -> bool:
         return True
 
 
+def _enforce_owner_pr_hold(repo: str, item: dict, *, pr=None, session=None) -> bool:
+    """Fence adopted PR holds before queue observation and the final arm write."""
+    from factory.orchestration import owner_prs
+
+    with _read_session(session) as db:
+        row = controls._receipt(db, item["task_id"])
+        direction = json.loads(row.direction_json or "{}") if row else {}
+        if not direction.get("owner_pr"):
+            return False
+        repo = row.repo
+        task = {
+            "repo": repo,
+            "owner_pr": direction["owner_pr"],
+            "delivery_pr_number": item["pr_number"],
+        }
+    try:
+        pr = pr if pr is not None else github_get(repo, f"pulls/{item['pr_number']}")
+        try:
+            owner_prs.assert_unheld(
+                task, pr, read_get=github_get, read_list=github_list
+            )
+            return False
+        except owner_prs.OwnerPRHold as exc:
+            reason = str(exc)
+        if not pr.get("merged"):
+            node_id = pr.get("node_id")
+            if not isinstance(node_id, str) or not node_id:
+                raise ValueError("owner PR hold has no node id")
+            if pr.get("auto_merge") is not None and not _disarm(repo, pr):
+                item["refused"] = True
+                return True
+            if node_id in _queued_ids([node_id]):
+                github_graphql(_DEQUEUE_PULL_REQUEST, {"pullRequestId": node_id})
+                if node_id in _queued_ids([node_id]):
+                    raise ValueError("held owner PR remains queued")
+        if session is None:
+            _scope_wait(item, reason)
+        else:
+            item["refused"] = True
+            item["owner_pr_hold_reason"] = reason
+    except (httpx.HTTPError, ValueError) as exc:
+        if session is None:
+            _error(item["task_id"], "owner_pr_hold", exc)
+        else:
+            item["owner_pr_hold_reason"] = "owner_pr_hold_evidence_unavailable"
+        item["refused"] = True
+    return True
+
+
 def _enforce_landing_hold(repo: str, item: dict) -> bool:
     """Re-read the receipt before any landing mutation and disarm existing work."""
     from factory.orchestration import factory_controls as controls
@@ -1574,6 +1628,7 @@ def landing_tick(policy: dict) -> None:
             item
             for item in _deliveries(policy, include_refused=True, rotate=True)
             if not _enforce_landing_hold(policy["repo"], item)
+            and not _enforce_owner_pr_hold(policy["repo"], item)
             and not _fence_ungranted_queue_entry(policy["repo"], item)
             and not operator_target(item["task_id"])
             and (not item.get("paused") or item.get("owned_merge_observed"))

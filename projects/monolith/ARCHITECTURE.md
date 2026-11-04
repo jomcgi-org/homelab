@@ -343,6 +343,16 @@ read-only projections and the restricted public database role.
 See [domain ownership](factory/orchestration/FACTORY.md#domain-ownership) and
 [planner preview](factory/orchestration/FACTORY.md#planner-preview).
 
+**Why.** Connected MCP callers can retain a tool catalog after the native server
+consolidates names. The session dispatch diagnostics compatibility name delegates
+to `factory_diagnostics` so those callers can inspect an uncertain turn without
+guessing that it stopped. Both names keep the same standing-operator gate, strict
+identity and bounded read owner; neither grants recovery authority (#7603).
+Some cached callers still cannot invoke the restored name after deployment.
+An explicit session-dispatch read target on the established `factory_status`
+route reaches that same owner while preserving default status behavior. Native
+catalog evidence identifies the route without claiming gateway refresh.
+
 ### Owned records
 
 Schema and durable workflow identities survive the package consolidation.
@@ -401,13 +411,22 @@ acceptance, not numeric gates. Required CI and independent exact-head review
 remain mandatory. Rollback is reverting the PR.
 
 **Why.** `FACTORY_CONDUCTOR_FUNDING_ENABLED` stages judge-reviewed funding.
-`FACTORY_MERIT_JUDGE_ENABLED` adds criteria and server-read evidence to the same
-judge path, and doubt steers to an operator card under a pinned turn ceiling.
+Eligible funding reviews carry merit criteria and server-read evidence on the
+same judge path. Doubt steers to an operator card under a pinned turn ceiling.
 `FACTORY_RESERVATION_REVIEW_ENABLED` reviews the running invocation's lease. Two
 continuation contracts remain: the legacy final correction pair behind
 `FACTORY_AUTONOMOUS_CONTINUATION_ENABLED`, which cannot renew itself, and an
 operator two-hour lease for one paused recovered task. The switch contract is in
 [Funding](factory/orchestration/FACTORY.md#funding).
+
+**Why.** The hub reads deployment values from git HEAD while Kargo promotes
+the chart revision separately. The GKE overlay retains
+`factoryMeritJudgeEnabled: true` for pre-retirement charts during promotion
+and pin-lowering rollback. Those charts default to false without the key;
+the current chart and image no longer read it. The staged #7585 scope permits
+this one compatibility config reference. #7596 tracks its removal only after
+pre-retirement charts are no longer supported revert targets. A verified new
+rollout alone does not satisfy that removal condition.
 
 ### Factory acceptance
 
@@ -418,6 +437,7 @@ See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-check
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Retire the merit runtime switch while preserving old-chart enabled behavior | section 4; proposed staged Conductor rescope | #7585, #7596 | repository correction; verified rollout remains on #7585; compatibility-key removal stays on #7596 until old charts leave rollback support |
 | Escalation cards survive the factory's own gate writes, declined landing recovery is named, and optimizer verdicts are final once the window ends and its attempts settle | section 4; evidence on the issue | #7495 | repository delivery; 72-hour before and after counts remain on the issue |
 | Per-sweep intake decisions, private backlog age and digest evidence | section 4; repository-only Conductor rescope | #7459 | staged repository delivery; rollout, first-sweep distribution and credential-backed follow-up remain on the issue |
 | One funding decision owns continuation, steering and stop while accounting retains reservations and unknown outcomes | Funding consolidation; repository acceptance in #7454 | #7454 | policy tests consolidated, task grant, progress and continuation decisions unified, allocation recovery folded into funding, shadow and reservation dollar-ceiling paths retired; reservation and meter decisions share the funding resolver; canonical funding audits retain rollback projections; reduction percentages are measurements |
@@ -510,6 +530,14 @@ expose credentials or query content. See [read pacing](factory/orchestration/FAC
 **Why.** Autonomous intake removes manual issue copying while keeping readiness
 observable on GitHub. Judgment work has no machine oracle, so quota pressure must
 preserve its capability floor (agents/038, #6002). See [intake](factory/orchestration/FACTORY.md#autonomous-intake-and-refine).
+
+**Why.** Open owner-authored PRs are unfinished delivery, so intake should finish
+or refine them before generating fresh implementation. The same work-item,
+receipt, branch and landing owners preserve holds and history. Verified numeric
+author identity discovers work; an accepted objective or server-verified brief
+establishes scope, and fresh independent review still gates the current head.
+See [owner PR backlog](factory/orchestration/FACTORY.md#owner-authored-pr-backlog).
+Activation and operational acceptance remain on #7597.
 
 **Why.** Security risk and human ownership are different labels. Excluding every
 security finding discarded otherwise eligible work; custom eligibility fences

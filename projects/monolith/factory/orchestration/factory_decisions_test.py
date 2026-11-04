@@ -79,6 +79,11 @@ def db(tmp_path, monkeypatch):
         session.commit()
     for module in (conductor, conductor.graph, controls):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
+    # Merit enrichment now runs on every eligible request. Keep its external
+    # evidence deterministic; dedicated evidence tests exercise the reader.
+    from factory.orchestration import factory_judge
+
+    monkeypatch.setattr(factory_judge, "merit_evidence", lambda _task, _runs: MERIT)
     yield engine
     engine.dispose()
 
@@ -2072,6 +2077,7 @@ def funding_decision(**changes):
         "task_budget_usd": 30.0,
         "additional_work_turns": 1,
         "lease_minutes": 30,
+        "assessment": ASSESSMENT,
         **changes,
     }
 
@@ -2440,7 +2446,6 @@ def _merit_judge(monkeypatch):
     from factory.orchestration import factory_judge
 
     monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
-    monkeypatch.setenv("FACTORY_MERIT_JUDGE_ENABLED", "true")
     monkeypatch.setattr(factory_judge, "merit_evidence", lambda _task, _runs: MERIT)
     monkeypatch.setattr(
         funding,
@@ -2456,7 +2461,7 @@ def _merit_judge(monkeypatch):
 
 
 def _repeated_deficit(monkeypatch, task, policy, deficit):
-    """Two matching envelope refusals with merit judging on; the cards raised."""
+    """Two matching envelope refusals; return any cards raised."""
     _merit_judge(monkeypatch)
     monkeypatch.setattr(
         conductor,
@@ -2723,12 +2728,14 @@ def test_a_merit_verdict_without_its_assessment_is_refused(db, monkeypatch):
     task, policy = envelope_task()
     deficit = {"usd": {"allowed": 30.0, "needed": 31.2}}
     assert _repeated_deficit(monkeypatch, task, policy, deficit) == []
-    settle_funding_request(task, _pending(task), funding_decision())
+    decision = funding_decision()
+    decision.pop("assessment")
+    settle_funding_request(task, _pending(task), decision)
     assert _grant(task) is None
     assert _settled(task)["refusal"] == "a merit verdict needs its assessment"
 
 
-def test_escalate_is_refused_on_a_review_without_merit_judging(db, monkeypatch):
+def test_escalate_is_refused_on_a_historical_review_without_merit(db, monkeypatch):
     task, _policy = envelope_task()
     monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
     monkeypatch.setattr(
@@ -2743,6 +2750,13 @@ def test_escalate_is_refused_on_a_review_without_merit_judging(db, monkeypatch):
         },
     )
     assert funding.request(task, "Assess value")
+    # Simulate a durable request recorded before merit enrichment existed.
+    with controls._locked_session() as (session, _control):
+        request = _pending(task)
+        audit = session.get(FactoryAudit, request["audit_id"])
+        payload = json.loads(audit.detail_json)
+        payload.pop("merit")
+        audit.detail_json = json.dumps(payload)
     settle_funding_request(
         task,
         _pending(task),
@@ -2756,11 +2770,67 @@ def test_escalate_is_refused_on_a_review_without_merit_judging(db, monkeypatch):
     assert _settled(task)["refusal"] == "escalate is honoured only on a merit review"
 
 
-def test_merit_judging_is_off_by_default(db, monkeypatch):
+def test_merit_judging_enriches_repeated_deficits_without_a_rollout_flag(
+    db, monkeypatch
+):
+    from factory.orchestration import factory_judge
+
+    task, policy = envelope_task()
+    assert _repeated_deficit(monkeypatch, task, policy, {"usd": {"needed": 30.5}}) == []
+    request = _pending(task)
+    assert request["merit"] == {
+        "ceiling": factory_judge.ceiling(policy),
+        "evidence": MERIT,
+    }
+    node = next(
+        node
+        for node in conductor.graph.load_graph(task["id"])
+        if node["node_key"] == request["node_key"]
+    )
+    assert factory_judge.CRITERIA in node["prompt"]
+    assert json.dumps(MERIT) in node["prompt"]
+
+
+def test_missing_pinned_policy_cannot_judge_a_deficit(db, monkeypatch):
     task, _policy = envelope_task()
-    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
-    monkeypatch.delenv("FACTORY_MERIT_JUDGE_ENABLED", raising=False)
-    assert funding.judge_deficit(task, {"usd": {"needed": 30.5}}, "r") is False
+    _merit_judge(monkeypatch)
+    with controls._locked_session() as (session, _control):
+        controls._receipt(session, task["id"]).policy_json = None
+    assert funding._pinned_ceiling(task["id"]) is None
+    assert not funding.judge_deficit(task, {"usd": {"needed": 30.5}}, "r")
+    assert _pending(task) is None
+
+
+def test_request_without_a_bound_retains_legacy_enrichment_fallback(db, monkeypatch):
+    task, _policy = envelope_task()
+    _merit_judge(monkeypatch)
+    monkeypatch.setattr(funding, "_pinned_ceiling", lambda _: None)
+    monkeypatch.setattr(
+        funding.factory_judge,
+        "merit_evidence",
+        lambda *_: pytest.fail("missing policy must not collect merit evidence"),
+    )
+    assert funding.request(task, "Legacy request without pinned policy")
+    assert "merit" not in _pending(task)
+
+
+def test_unreadable_deficit_is_refused_without_starting_a_review(db, monkeypatch):
+    task, _policy = envelope_task()
+    _merit_judge(monkeypatch)
+    assert not funding.judge_deficit(task, {"spare_usd": 1}, "r")
+    assert _pending(task) is None
+    with controls._read_session() as session:
+        assert (
+            funding.latest(session, task["id"], "merit_funding_declined")["refusal"]
+            == "deficit_unreadable"
+        )
+
+
+def test_funding_disabled_unenrolled_task_cannot_judge_a_deficit(db, monkeypatch):
+    task, _policy = envelope_task()
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "false")
+    assert not funding.judge_deficit(task, {"usd": {"needed": 30.5}}, "r")
+    assert _pending(task) is None
 
 
 def test_the_merit_ceiling_takes_the_smaller_of_multiple_and_cap(monkeypatch):

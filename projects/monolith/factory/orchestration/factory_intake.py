@@ -928,6 +928,8 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             task_text=(
                 f"GitHub dependency pull request {row.url}\n\n{row.title}\n\n{row.body}"
                 if direction.get("dependency_review")
+                else f"GitHub pull request {row.url}\n\n{row.title}\n\n{row.body}"
+                if direction.get("owner_pr")
                 else f"GitHub issue {row.url}\n\n{row.title}\n\n{row.body}"
             ),
             repo=row.repo,
