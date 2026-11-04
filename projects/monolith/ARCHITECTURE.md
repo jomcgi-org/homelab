@@ -376,6 +376,10 @@ ceiling and the pinned cumulative turn extension remain enforced. Existing
 operator and uncertainty fences are rechecked at settlement. Producer activation
 uses an independent narrow preview/apply control that preserves generation and
 receipt ownership; it feeds the existing problem-issue and intake owners.
+The established refill MCP name exposes an explicit problem-issues target
+through that same owner for cached callers, without changing refill settings.
+Compact operator status projects recorded landing refusals without inferring
+queue state or accepting a merge whose identity differs from its approved head.
 
 **Why.** The eight funding, judgement, reservation, watchdog, continuation,
 allocation and metering modules answered overlapping policy questions (#7454).

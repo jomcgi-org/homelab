@@ -276,6 +276,45 @@ def _task_row(receipt: dict, *, queue_position: int | None = None) -> dict:
         "outcome_evidence": _evidence_summary(receipt.get("evidence")),
         "progress": _progress(receipt.get("nodes") or []),
         "stop": _stop_summary(receipt),
+        "landing_refusal": receipt.get("landing_refusal"),
+    }
+
+
+def _landing_refusal(db, task_id):
+    """Latest recorded refusal, not a live queue or GitHub observation."""
+    from sqlmodel import select
+    from factory.orchestration.factory_models import FactoryAudit
+
+    if not task_id:
+        return None
+    event = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.task_id == task_id,
+            FactoryAudit.action.in_(
+                (
+                    "merge_arm_refused",
+                    "landing_recovery_requested",
+                    "merge_armed",
+                    "merged",
+                    "owned_pr_merged",
+                )
+            ),
+        )
+        .order_by(FactoryAudit.id.desc())
+        .limit(1)
+    ).first()
+    if event is None or event.action != "merge_arm_refused":
+        return None
+    detail = json.loads(event.detail_json)
+    return {
+        "source": "recorded_landing_audit",
+        "audit_id": event.id,
+        "observed_at": iso_or_str(event.created_at),
+        "reason": str(detail.get("reason") or "unspecified")[:200],
+        "pr_number": detail.get("pr_number")
+        if type(detail.get("pr_number")) is int
+        else None,
     }
 
 
@@ -704,6 +743,7 @@ def _operator_view(
                     )
                 else:
                     cards.append(shape_receipt(receipt))
+                cards[-1]["landing_refusal"] = _landing_refusal(db, row.task_id)
             buckets[name] = cards
             pagination[name] = _pagination(total, offset, limit, len(cards))
         # Lane accounting needs all active/eligible queue identities, including
@@ -786,6 +826,8 @@ async def _control_catalog() -> dict:
             "arguments": list(properties)[:16],
             "operations": properties.get("operation", {}).get("enum", [])[:4],
         }
+        if "target" in properties:
+            tools[name]["targets"] = properties["target"].get("enum", [])[:4]
         if "model" in properties:
             tools[name]["models"] = properties["model"].get("enum", [])[:8]
     return {
@@ -823,7 +865,10 @@ async def factory_status(
         response carries ``observed_at`` and a ``coverage`` map. Cloud
         sessions hold no factory record, so an empty active list is not
         evidence that nothing is running anywhere.
-        ``control_catalog`` reports native refill and amendment registration.
+        ``landing_refusal`` is the latest recorded refusal in the current
+        landing attempt, not a live GitHub or queue check. A newer recovery,
+        arming or merge observation supersedes it.
+        ``control_catalog`` reports native controls and their supported targets.
         It cannot observe or refresh a gateway or caller's cached tool list.
     """
     refusal = _refuse(current_principal())
@@ -2517,6 +2562,9 @@ async def factory_configure_refill(
     expected_preview_sha256: str | None = None,
     reset_breaker: bool = False,
     min_new_issues: Annotated[MCPInteger, Field(ge=0, le=100)] | None = None,
+    target: Literal["refill", "problem_issues"] = "refill",
+    recurring_blocker: bool | None = None,
+    workflow_stranded: bool | None = None,
 ) -> dict:
     """Preview or apply bounded refill and existing learning cadence as an operator.
 
@@ -2530,11 +2578,44 @@ async def factory_configure_refill(
     held/uncertain learning execution refuses changes. No task is dispatched
     by this operation. Inspect generated, eligible, admitted and executing
     evidence separately through ordinary factory status after activation.
+
+    For target problem_issues, enabled controls only that producer. Supply
+    both recurring_blocker and workflow_stranded switches, model astra and
+    hourly false as compatibility placeholders. Refill settings stay unchanged.
+    reset_breaker and min_new_issues are not permitted for that target. This
+    delegates to the same guarded preview/apply as factory_configure_problem_issues.
+    Native factory_status.control_catalog advertises targets and argument names.
     """
     principal = current_principal()
     refusal = _refuse(principal)
     if refusal is not None:
         return refusal
+    if target == "problem_issues":
+        if (
+            model != "astra"
+            or hourly is not False
+            or reset_breaker
+            or min_new_issues is not None
+            or type(recurring_blocker) is not bool
+            or type(workflow_stranded) is not bool
+        ):
+            return {"ok": False, "reason": "problem_issues_target_arguments_invalid"}
+        return await factory_configure_problem_issues(
+            operation=operation,
+            enabled=enabled,
+            recurring_blocker=recurring_blocker,
+            workflow_stranded=workflow_stranded,
+            expected_version=expected_version,
+            reason=reason,
+            request_key=request_key,
+            expected_preview_sha256=expected_preview_sha256,
+        )
+    if (
+        target != "refill"
+        or recurring_blocker is not None
+        or workflow_stranded is not None
+    ):
+        return {"ok": False, "reason": "refill_target_arguments_invalid"}
     from factory.orchestration import refill_control
 
     try:

@@ -160,6 +160,10 @@ def test_status_distinguishes_native_registration_from_caller_catalog(monkeypatc
     assert refill["registered"] is True
     assert refill["operations"] == ["preview", "apply"]
     assert refill["models"] == ["astra", "opus"]
+    assert refill["targets"] == ["refill", "problem_issues"]
+    assert {"target", "recurring_blocker", "workflow_stranded"} <= set(
+        refill["arguments"]
+    )
     assert len(refill["schema_sha256"]) == 64
     assert len(refill["description_sha256"]) == 64
     continuation = catalog["tools"]["factory_continue_evidence"]
@@ -200,6 +204,144 @@ def test_problem_issue_activation_requires_operator_and_preview(monkeypatch):
     assert not calls
     assert _as(_principal(), lambda: mcp.factory_configure_problem_issues(**args))["ok"]
     assert calls[0][1]["actor"] == "joe"
+
+
+def test_existing_refill_tool_can_activate_problem_issues_without_refill_changes(db):
+    from core.mcp_app import mcp as shared
+    from fastmcp import Client
+
+    original = {
+        "repo": "owner/repo",
+        "generation": 9,
+        "backlog_refill": {"enabled": False, "model": "opus"},
+        "intake": {"enabled": True},
+        "problem_issues": {"enabled": False, "sources": {"node_stalled": False}},
+    }
+    with Session(db) as session, session.begin():
+        control = session.get(FactoryControl, "factory")
+        control.policy_json = json.dumps(original)
+        version = control.version
+    args = dict(
+        operation="preview",
+        target="problem_issues",
+        enabled=True,
+        model="astra",
+        hourly=False,
+        recurring_blocker=True,
+        workflow_stranded=True,
+        expected_version=version,
+        reason="Enable future recovery signals",
+    )
+
+    async def exercise():
+        async with Client(shared) as client:
+            preview = (await client.call_tool("factory_configure_refill", args)).data
+            assert preview["effective_sources"]["recurring_blocker"]
+            apply = {
+                **args,
+                "operation": "apply",
+                "expected_preview_sha256": preview["preview_sha256"],
+                "request_key": "recovery-sources",
+            }
+            saved = (await client.call_tool("factory_configure_refill", apply)).data
+            assert saved["ok"] and saved["dispatched"] is False
+            assert (
+                await client.call_tool("factory_configure_refill", apply)
+            ).data == saved
+            # Both entry points share the same digest and replay ledger.
+            native = {
+                k: v for k, v in apply.items() if k not in {"target", "model", "hourly"}
+            }
+            assert (
+                await client.call_tool("factory_configure_problem_issues", native)
+            ).data == saved
+            stale = await client.call_tool(
+                "factory_configure_refill", {**apply, "request_key": "other"}
+            )
+            assert stale.data["reason"] == "problem_issues_version_changed"
+
+    _as(_principal(), exercise)
+    with Session(db) as session:
+        after = json.loads(session.get(FactoryControl, "factory").policy_json)
+        assert {k: v for k, v in after.items() if k != "problem_issues"} == {
+            k: v for k, v in original.items() if k != "problem_issues"
+        }
+        assert after["problem_issues"]["sources"] == {
+            "node_stalled": False,
+            "recurring_blocker": True,
+            "workflow_stranded": True,
+        }
+        assert len(session.exec(select(FactoryAudit)).all()) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"hourly": True},
+        {"model": "opus"},
+        {"reset_breaker": True},
+        {"min_new_issues": 1},
+        {"recurring_blocker": None},
+        {"workflow_stranded": None},
+        {"target": "refill"},
+    ],
+)
+def test_refill_problem_issue_target_refuses_mixed_or_missing_arguments(
+    monkeypatch, change
+):
+    from factory.orchestration import factory_problem_issues, refill_control
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid mixed request reached a writer")
+
+    monkeypatch.setattr(factory_problem_issues, "configure", forbidden)
+    monkeypatch.setattr(refill_control, "preview", forbidden)
+    args = dict(
+        operation="preview",
+        target="problem_issues",
+        enabled=True,
+        model="astra",
+        hourly=False,
+        recurring_blocker=True,
+        workflow_stranded=True,
+        expected_version=1,
+        reason="Recovery",
+    )
+    assert not _as(
+        _principal(), lambda: mcp.factory_configure_refill(**{**args, **change})
+    )["ok"]
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+        _principal(groups=()),
+    ],
+)
+def test_refill_problem_issue_target_preserves_operator_gate(monkeypatch, principal):
+    async def forbidden(**kwargs):
+        pytest.fail("unauthorized caller reached recovery control")
+
+    monkeypatch.setattr(mcp, "factory_configure_problem_issues", forbidden)
+    assert (
+        _as(
+            principal,
+            lambda: mcp.factory_configure_refill(
+                "preview",
+                True,
+                "astra",
+                False,
+                1,
+                "Recovery",
+                target="problem_issues",
+                recurring_blocker=True,
+                workflow_stranded=True,
+            ),
+        )["error"]
+        == mcp.OPERATOR_REQUIRED
+    )
 
 
 @pytest.mark.parametrize(
@@ -571,6 +713,117 @@ def test_status_payload_includes_recent_on_request(db):
 
     payload = mcp._status_payload(include_recent=True)
     assert [task["issue_number"] for task in payload["recent"]] == [3]
+
+
+@pytest.mark.parametrize(
+    "superseding",
+    [
+        None,
+        "landing_recovery_requested",
+        "merge_armed",
+        "merged",
+        "owned_pr_merged",
+    ],
+)
+@pytest.mark.parametrize("state", ["landing", "succeeded"])
+def test_status_landing_refusal_is_bounded_read_only_and_epoch_scoped(
+    db, monkeypatch, superseding, state
+):
+    from factory.orchestration import graph
+
+    monkeypatch.setattr(graph, "load_graph", lambda *a, **kw: [])
+    monkeypatch.setattr(graph, "node_runs", lambda *a, **kw: [])
+    with Session(db) as session, session.begin():
+        session.add(
+            SwarmTask(id="synthetic", task_text="work", conductor_model="astra")
+        )
+    seed_operator_rows(
+        db,
+        [
+            {
+                "issue_number": 7,
+                "task_id": "synthetic",
+                "state": state,
+                "task_paused": True,
+                "direction_json": json.dumps({"landing_hold": {"actor": "operator"}}),
+                "policy_json": json.dumps(
+                    {
+                        "task_timeout_seconds": 3600,
+                        "task_budget_usd": 10,
+                        "max_turns_per_task": 9,
+                    }
+                ),
+            }
+        ],
+    )
+    with Session(db) as session, session.begin():
+        session.add(
+            FactoryStart(
+                task_id="synthetic",
+                start_key="unknown",
+                actor="test",
+                model="astra",
+                max_cost_usd=1,
+                status="uncertain",
+            )
+        )
+        session.add(
+            FactoryAudit(
+                actor="factory:landing",
+                task_id="synthetic",
+                action="merge_arm_refused",
+                detail_json=json.dumps(
+                    {
+                        "reason": "merged_delivery_identity_mismatch",
+                        "pr_number": 17,
+                        "private_extra": "not projected",
+                    }
+                ),
+            )
+        )
+    if superseding:
+        with Session(db) as session, session.begin():
+            session.add(
+                FactoryAudit(
+                    actor="factory:landing", task_id="synthetic", action=superseding
+                )
+            )
+    with Session(db) as session:
+        before = [r.model_dump() for r in session.exec(select(FactoryReceipt)).all()]
+        audits_before = [
+            r.model_dump() for r in session.exec(select(FactoryAudit)).all()
+        ]
+        starts_before = [
+            r.model_dump() for r in session.exec(select(FactoryStart)).all()
+        ]
+    payload = mcp._status_payload(True)
+    row = payload["active" if state == "landing" else "recent"][0]
+    refusal = row["landing_refusal"]
+    assert row["unresolved_starts"] == 1
+    assert row["task_paused"] is True
+    if superseding:
+        assert refusal is None
+    else:
+        assert refusal["reason"] == "merged_delivery_identity_mismatch"
+        assert refusal["pr_number"] == 17
+        assert refusal["source"] == "recorded_landing_audit"
+        assert set(refusal) == {
+            "reason",
+            "pr_number",
+            "source",
+            "audit_id",
+            "observed_at",
+        }
+    with Session(db) as session:
+        assert [
+            r.model_dump() for r in session.exec(select(FactoryReceipt)).all()
+        ] == before
+        assert [
+            r.model_dump() for r in session.exec(select(FactoryAudit)).all()
+        ] == audits_before
+        assert [
+            r.model_dump() for r in session.exec(select(FactoryStart)).all()
+        ] == starts_before
 
 
 def test_status_payload_pages_each_bucket_and_keeps_queue_positions(db):
