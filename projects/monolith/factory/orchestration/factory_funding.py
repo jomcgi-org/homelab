@@ -1,8 +1,10 @@
 """The funding judge allocates bounded work leases against one issue budget."""
 
 from datetime import datetime, timedelta
+import hashlib
 import json
 import math
+import os
 import re
 
 import httpx
@@ -47,6 +49,24 @@ FUNDING_REFUSAL_LIMIT = 6
 DISPATCH_GRANT_KIND = "dispatch_refusal"
 PROGRESS_REARMED = "funding_progress_rearmed"
 ESCALATE = "escalate"
+ROUTINE_PAUSE_ENV = "FACTORY_ROUTINE_PAUSE_FUNDING_ENABLED"
+BLOCKER = "recurring_blocker"
+# A factory-generated repair issue carries this marker; its own stall never
+# produces another repair issue.
+REPAIR_MARKER = "factory-problem:"
+# Labels that keep a question with a person whatever the pause says.
+ROUTINE_HELD_LABELS = frozenset(
+    {"human", "needs-human", "needs-thought", "security-finding", "security"}
+)
+# Defence in depth beside factory_gates.HUMAN_GATE_BACKSTOP. Neither is
+# authority: the routine path also needs no typed gate, an agent-ready first
+# option, no shared hold, an enabled lane and the judge's own decision.
+_ROUTINE_BACKSTOP = re.compile(
+    r"security|vulnerab|access|privileg|authori[sz]|authenticat|rbac|\biam\b"
+    r"|\bssh\b|kubeconfig|firewall|ingress|\bdns\b|human[- ]owned|conflicting"
+    r"|destroy|irreversib|force[- ]push|bypass|rotate|revoke|\bprod",
+    re.IGNORECASE,
+)
 SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -497,8 +517,14 @@ def judge_deficit(task, deficit, reason):
     )
 
 
-def request(task, reason, *, recover=False, progress=False):
-    """Reserve one exact judge decision, even when task soft limits ran out."""
+def request(task, reason, *, recover=False, progress=False, routine=False):
+    """Reserve one exact judge decision, even when task soft limits ran out.
+
+    ``routine`` is a planner pause the factory may answer itself. It needs an
+    enabled lane, and a prior grant without new work evidence is reported as
+    a recurring blocker for repair instead of pausing the allocation, so the
+    caller's ordinary card reaches a person.
+    """
     from factory.orchestration import factory_conductor as c
 
     from factory.orchestration import factory_improvement_scout as scout
@@ -515,8 +541,9 @@ def request(task, reason, *, recover=False, progress=False):
             return False
         if _review_waiting(db, task["id"], progress):
             # The reconciler owns retries and their terminal refusal limit.
-            # A second trigger cannot bypass its five-minute wait.
-            return True
+            # A second trigger cannot bypass its five-minute wait. A routine
+            # pause only defers to a review that actually exists.
+            return not routine or pending(db, task["id"]) is not None
         if (
             not enabled()
             and not progress
@@ -551,6 +578,7 @@ def request(task, reason, *, recover=False, progress=False):
             or row.repo != task["repo"]
             or row.issue_number != task["issue_number"]
             or control.state not in ("enabled", "paused")
+            or (routine and control.state != "enabled")
             or row.cancellation_requested
             or row.task_paused
         ):
@@ -560,7 +588,7 @@ def request(task, reason, *, recover=False, progress=False):
         ):
             return False
         if _review_waiting(db, task["id"], progress):
-            return True
+            return not routine or pending(db, task["id"]) is not None
         runs = graph.node_runs(task["id"], session=db)
         spent = controls._accounting(controls._starts(db, task["id"]))
         if spent["unresolved_starts"] or any(
@@ -583,6 +611,9 @@ def request(task, reason, *, recover=False, progress=False):
         ):
             return False
         blocker = funding_blocker(db, task["id"], runs)
+        if blocker and routine:
+            _record_blocker(db, row, task["id"], blocker)
+            return False
         if blocker:
             pause_allocation(db, task["id"], blocker)
             return False
@@ -714,6 +745,113 @@ def request(task, reason, *, recover=False, progress=False):
             db.add(stored)
             db.add(row)
         return True
+
+
+def _routine_text(decision):
+    parts = [decision.get("question"), decision.get("reason")]
+    for option in decision.get("options") or []:
+        if isinstance(option, dict):
+            parts += [option.get("label"), json.dumps(option.get("detail") or {})]
+    return " ".join(str(part or "") for part in parts)
+
+
+def routine_pause(task, decision):
+    """Send an ungated, continue-recommending planner pause to the judge.
+
+    Returns True when a funding review owns the question, so the caller posts
+    no card. The judge continues, steers or stops the same task under its
+    existing allocation, progress and refusal rules; its escalate path and
+    every refusal here leave the ordinary card for a person.
+    """
+    from factory.orchestration import factory_gates
+
+    if os.getenv(ROUTINE_PAUSE_ENV, "false").lower() != "true" or not enabled():
+        return False
+    # Typed gates already have their owner, including every declared effect.
+    if decision.get("gate") is not None:
+        return False
+    options = decision.get("options")
+    if (
+        controls.verify_option_list(options, subject="pause") is not None
+        or options[0]["effect"] != controls.CONTINUE_EFFECT
+    ):
+        return False
+    text = _routine_text(decision)
+    if factory_gates.HUMAN_GATE_BACKSTOP.search(text) or _ROUTINE_BACKSTOP.search(
+        text
+    ):
+        return False
+    with controls._read_session() as db:
+        row = controls._receipt(db, task["id"])
+        direction = json.loads(row.direction_json or "{}") if row else {}
+        if (
+            row is None
+            or controls.nonrenewable_recovery(row)
+            or "landing_hold" in direction
+            or controls.review_recovery_held(task["id"], session=db)
+            or db.exec(
+                select(FactoryAudit.id).where(
+                    FactoryAudit.task_id == task["id"],
+                    FactoryAudit.action == "human_handoff",
+                )
+            ).first()
+            is not None
+        ):
+            return False
+    from factory.orchestration.factory_conductor import github_get
+
+    try:
+        issue = github_get(task["repo"], f"issues/{task['issue_number']}")
+    except Exception:  # noqa: BLE001 - unreadable labels keep the card
+        return False
+    labels = {
+        (item.get("name", "") if isinstance(item, dict) else str(item)).lower()
+        for item in issue.get("labels") or []
+    }
+    if labels & ROUTINE_HELD_LABELS or issue.get("state") != "open":
+        return False
+    option = options[0]
+    reason = (
+        "The planner paused with an ungated question and recommends "
+        "continuing. Decide on the merits whether this same task continues; "
+        "escalate if a person must decide. Question: "
+        + str(decision.get("question"))[:800]
+        + " Recommended: "
+        + option["label"]
+        + ". "
+        + str((option.get("detail") or {}).get("scope") or "")[:500]
+    )
+    return request(task, reason, routine=True)
+
+
+def blocker_key(repo, issue_number, task_id, code):
+    """Stable identity of one task's repeated blocker, not of its prose."""
+    raw = f"{repo}#{issue_number}:{task_id}:{code}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _record_blocker(db, row, task_id, blocker):
+    """One repair signal per blocker; repair issues never recurse."""
+    if REPAIR_MARKER in (row.body or ""):
+        return
+    key = blocker_key(row.repo, row.issue_number, task_id, blocker["code"])
+    prior = db.exec(
+        select(FactoryAudit.id).where(
+            FactoryAudit.action == BLOCKER,
+            FactoryAudit.detail_json.contains(f'"blocker_key":"{key}"'),
+        )
+    ).first()
+    if prior is not None:
+        return
+    record_audit(
+        db,
+        ACTOR,
+        BLOCKER,
+        task_id=task_id,
+        blocker_key=key,
+        reason=blocker["code"],
+        grant_id=blocker.get("grant_id"),
+    )
 
 
 def settle(task, run, request):

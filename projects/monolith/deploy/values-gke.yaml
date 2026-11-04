@@ -48,7 +48,7 @@ swarm:
   # On 2026-10-01 receipts 700/703 (generation 13, admitted) had watchdog
   # cards factory_decide refused once the policy moved to 14.
   factoryActiveReceiptDecisionsEnabled: true
-  factoryAutoRecommendationEnabled: true
+  factoryRoutinePauseFundingEnabled: true
   # Per-class floors on remaining quota percent (#5974). A floor only bites
   # for a role whose stored factory policy carries a model_pools entry with
   # somewhere to spill to; a single-member pool never consults quota. The

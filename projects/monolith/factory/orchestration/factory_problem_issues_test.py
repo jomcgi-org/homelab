@@ -1202,7 +1202,7 @@ def test_scout_context_excludes_only_exact_durable_owner(improvements):
                 body="",
                 url="https://github.com/jomcgi-org/homelab/issues/999",
                 actor="operator",
-                state="admitted",
+                state="queued",
             )
         )
         session.commit()
@@ -1216,7 +1216,7 @@ def test_scout_context_excludes_only_exact_durable_owner(improvements):
     [
         ("escalated", False, True),
         ("uncertain", False, True),
-        ("queued", False, True),
+        ("queued", False, False),
         ("admitted", True, True),
         ("admitted", False, False),
         ("landing", False, False),
