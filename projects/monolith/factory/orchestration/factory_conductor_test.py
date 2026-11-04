@@ -18978,12 +18978,23 @@ def test_duplicate_continuation_tick_replays_grant_without_failing_task(
     )
 
 
-def funding_task(monkeypatch, *, judge_pool=None):
+def funding_task(monkeypatch, *, judge_pool=None, binding=False):
     from factory.orchestration import factory_funding as funding
     from factory.orchestration import factory_controls as controls
 
     monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
     task, policy = reviewed_after_three_turns(4)
+    if binding:
+        # An explicit operator monetary restriction pinned on this task.
+        from sqlmodel import Session
+
+        with Session(conductor.get_engine()) as db:
+            row = controls._receipt(db, task["id"])
+            pinned = json.loads(row.policy_json)
+            pinned["task_budget_binding"] = True
+            row.policy_json = json.dumps(pinned)
+            db.add(row)
+            db.commit()
     if judge_pool is not None:
         # Allow and configure the judge pool; preserve the fixture's models.
         from sqlmodel import Session
@@ -20024,10 +20035,11 @@ def test_spent_allocation_needs_no_operator_recovery_and_keeps_its_charges(
 def test_funding_increase_requires_operator_amendment(
     feedback_db, monkeypatch, action, creation_enabled
 ):
+    """Under an explicit operator budget restriction an increase still waits."""
     from factory.orchestration import factory_controls as controls
     from factory.orchestration import factory_funding as funding
 
-    task, policy = funding_task(monkeypatch)
+    task, policy = funding_task(monkeypatch, binding=True)
     assert funding.request(task, "Assess the next tranche")
     monkeypatch.setenv(
         "FACTORY_CONDUCTOR_FUNDING_ENABLED", str(creation_enabled).lower()
@@ -20074,6 +20086,43 @@ def test_funding_increase_requires_operator_amendment(
             == settled_id
         )
         assert funding.amendment(db, task["id"]) is None
+
+
+@pytest.mark.parametrize("live", [False, True])
+def test_unrestricted_budget_proposal_is_accounting_not_an_approval(
+    feedback_db, monkeypatch, live
+):
+    """No standing dollar cap: a larger proposal grants on the same task,
+    unless the live policy now carries the explicit restriction."""
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration.factory_models import FactoryControl
+    from sqlmodel import Session
+
+    task, policy = funding_task(monkeypatch)
+    if live:
+        with Session(conductor.get_engine()) as db:
+            control = db.get(FactoryControl, "factory")
+            stored = json.loads(control.policy_json)
+            stored["task_budget_binding"] = True
+            control.policy_json = json.dumps(stored)
+            db.add(control)
+            db.commit()
+    assert funding.request(task, "Assess the next tranche")
+    proposed = policy["task_budget_usd"] + 10
+    settle_funding(task, funding_decision(task_budget_usd=proposed))
+    after = controls.task_snapshot(task["id"])
+    assert after["task_id"] == task["id"]
+    assert after["task_paused"] is live
+    with controls._read_session() as db:
+        grant = funding.amendment(db, task["id"])
+        approval = funding.latest(db, task["id"], "funding_budget_approval_required")
+    if live:
+        assert grant is None and approval is not None
+    else:
+        assert approval is None
+        assert grant["granted_task_budget_usd"] == proposed
+        assert after["policy"]["task_budget_usd"] == proposed
 
 
 @pytest.mark.parametrize("charged", [5.0, 100.0])
@@ -20126,7 +20175,7 @@ def test_operator_amendment_is_the_budget_increase_authority(
     SQLModel.metadata.create_all(
         feedback_db, tables=[AgentSession.__table__, PendingMessage.__table__]
     )
-    task, original_policy = funding_task(monkeypatch)
+    task, original_policy = funding_task(monkeypatch, binding=True)
     proposed = max(50.0, approved)
     assert funding.request(task, "Assess the next tranche")
     settle_funding(task, funding_decision(task_budget_usd=proposed))
@@ -20476,7 +20525,7 @@ def test_oversight_has_graph_and_start_headroom_after_task_budget_exhaustion(
     from sqlmodel import Session
     from factory.orchestration.models import SwarmTask
 
-    task, policy = funding_task(monkeypatch)
+    task, policy = funding_task(monkeypatch, binding=True)
     with Session(conductor.get_engine()) as db:
         row = controls._receipt(db, task["id"])
         policy["task_budget_usd"] = 0.75

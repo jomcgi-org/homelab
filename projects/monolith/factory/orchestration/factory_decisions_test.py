@@ -3326,7 +3326,7 @@ def test_repeat_without_new_work_is_one_repair_signal_and_a_card(db, routine):
     assert len(blockers) == 1
     assert blockers[0]["reason"] == "funding_without_progress"
     assert blockers[0]["blocker_key"] == funding.blocker_key(
-        REPO, ISSUE, task["id"], "funding_without_progress"
+        REPO, ISSUE, "funding_without_progress"
     )
     # The allocation is not paused behind the person's card.
     assert not controls.task_snapshot(task["id"])["task_paused"]
@@ -3368,3 +3368,51 @@ def test_concurrent_routine_pauses_request_one_review(db, routine):
         thread.join()
     assert len(audits_of(db, "funding_review_requested")) == 1
     assert results.count(True) >= 1
+
+
+def test_routine_pause_never_rides_another_pending_review(db, routine):
+    task, policy, state = routine
+    # A review already pending for a different trigger.
+    assert funding.request(task, "Watchdog: assess the next tranche")
+    pause(task, policy, routine_pause())
+    assert len(state["cards"]) == 1
+    assert len(audits_of(db, "funding_review_requested")) == 1
+
+
+def test_exhausted_review_refusals_raise_the_routed_pause_card(
+    db, routine, monkeypatch
+):
+    from datetime import timedelta
+
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    assert state["cards"] == []
+    clock = {"now": controls._now()}
+    monkeypatch.setattr(controls, "_now", lambda: clock["now"])
+    for _ in range(funding.FUNDING_REFUSAL_LIMIT):
+        request = _pending(task)
+        assert request is not None
+        # An unusable artifact settles as a refusal.
+        settle_funding_request(task, request, {"action": "nonsense"})
+        assert _settled(task)["refusal"]
+        clock["now"] += timedelta(minutes=6)
+        funding.reconcile(
+            conductor._task(task["id"]),
+            policy,
+            conductor.graph.node_runs(task["id"]),
+            controls.can_start(task["id"]),
+        )
+    assert state["cards"] == [routine_pause()["question"]]
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        assert row.state != "failed"
+
+
+def test_scout_tasks_are_never_routed(db, routine, monkeypatch):
+    from factory.orchestration import factory_improvement_scout as scout
+
+    task, policy, state = routine
+    monkeypatch.setattr(scout, "owns_task", lambda _task_id: True)
+    pause(task, policy, routine_pause())
+    assert len(state["cards"]) == 1
+    assert audits_of(db, "funding_review_requested") == []

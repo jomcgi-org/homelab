@@ -4438,7 +4438,9 @@ def _apply_decision(
     else:
         from factory.orchestration import factory_funding
 
-        if not evidence_recovery and factory_funding.routine_pause(task, decision):
+        if not evidence_recovery and factory_funding.routine_pause(
+            task, decision, cause
+        ):
             # The same task keeps its receipt, graph, PR and accounting; the
             # judge's grant or its escalation card answers the pause.
             _reject_decision(
