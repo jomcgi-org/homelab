@@ -3702,3 +3702,68 @@ def test_settle_uses_the_exact_request_provenance(db, routine, monkeypatch):
     settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
     assert _grant(task) is None
     assert _settled(task)["failure_category"] == "routine_pause_held"
+
+
+def _mirror_label(db, label):
+    """Set a label on the receipt's synchronized work-item mirror."""
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        if row.work_item_id is None:
+            item = WorkItem(
+                title="mirror",
+                state="ready",
+                source_kind="github",
+                trust="trusted",
+                authority="github",
+                github_repo=REPO,
+                github_issue_number=ISSUE,
+                labels=[],
+            )
+            session.add(item)
+            session.flush()
+            row.work_item_id = item.id
+            session.add(row)
+        item = session.get(WorkItem, row.work_item_id)
+        item.labels = [*item.labels, label]
+        session.add(item)
+        session.commit()
+
+
+@pytest.mark.parametrize("label", ["human", "needs-human", "security-finding"])
+def test_mirrored_label_after_the_github_read_is_revalidated_before_the_grant(
+    db, routine, label
+):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    request = _pending(task)
+    # GitHub's settlement-time read still sees no label; the synchronized
+    # mirror records it before the locked grant decision.
+    _mirror_label(db, label)
+    settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
+    assert _grant(task) is None
+    assert _settled(task)["refusal"] == "routine pause held: held_label"
+    assert state["cards"] == [routine_pause()["question"]]
+
+
+def test_mirrored_label_between_preflight_and_request_lock_wins(
+    db, routine, monkeypatch
+):
+    task, policy, state = routine
+    original = funding._issue
+
+    def racing_issue(task_arg):
+        _mirror_label(db, "human")
+        return original(task_arg)
+
+    monkeypatch.setattr(funding, "_issue", racing_issue)
+    pause(task, policy, routine_pause())
+    assert audits_of(db, "funding_review_requested") == []
+    assert len(state["cards"]) == 1
+
+
+def test_unrelated_mirror_labels_do_not_hold(db, routine):
+    task, policy, state = routine
+    _mirror_label(db, "bug")
+    pause(task, policy, routine_pause())
+    settle_funding_request(task, _pending(task), funding_decision(assessment=ASSESSMENT))
+    assert _grant(task) is not None

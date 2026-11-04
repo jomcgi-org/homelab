@@ -812,6 +812,14 @@ def routine_hold(db, row, task_id):
         return "landing_hold"
     if controls.review_recovery_held(task_id, session=db):
         return "review_recovery_held"
+    # The webhook- and sweep-synchronized work-item labels, read in the
+    # caller's (locked) session: the same mirror the human-handoff fence
+    # trusts, so a held label revalidates transactionally before any grant.
+    item = db.get(WorkItem, row.work_item_id) if row.work_item_id else None
+    if item is not None and {
+        str(label).lower() for label in item.labels or []
+    } & ROUTINE_HELD_LABELS:
+        return "held_label"
     if (
         db.exec(
             select(FactoryAudit.id).where(
