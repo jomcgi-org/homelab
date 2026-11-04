@@ -21,7 +21,7 @@ defmodule Embervm.OpLog.PostgresTest do
     test "session reader includes nullable dispatch identity #{inspect(dispatch_id)}" do
       row = ["s-read", "t1", "p1", "wl", "running", "node-4", "vm-1", nil,
         "base", "digest", 0, nil, nil, "hash", 100, 101, nil, nil, 101, nil,
-        "s-read", nil, nil, nil, 1, nil, unquote(dispatch_id)]
+        "s-read", nil, nil, nil, 1, nil, unquote(dispatch_id), nil]
       {:ok, server} = Postgres.start_link(name: nil, connection: self(),
         query_fun: fn _, sql, [] ->
           assert sql =~ "interrupted_turn_json, inflight_dispatch_id"
@@ -41,6 +41,8 @@ defmodule Embervm.OpLog.PostgresTest do
     expected = [
       {:append, 2},
       {:read_from, 2},
+      {:session_recovery_fence, 5},
+      {:session_restore_allowed, 2},
       {:load_tasks, 1},
       {:load_sessions, 1},
       {:load_serving_instances, 1},

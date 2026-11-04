@@ -30,7 +30,7 @@ const render = async (view, scenario = "populated") => {
   await tick();
 };
 
-for (const view of Object.keys(routes)) {
+for (const view of ["board", "escalations", "item"]) {
   for (const scenario of [
     "populated",
     "empty",
@@ -75,11 +75,13 @@ for (const view of Object.keys(routes)) {
 }
 
 test.each([
-  "/factory/execution",
-  "/factory/execution/drain",
   "/factory/escalations-extra",
   "/factory/work-items",
-  "/updates",
+  "/updates/archive",
+  "/application",
+  "/reviewer",
+  "/factory/escalations/extra",
+  "/factory/work-items/1/extra",
 ])("keeps legacy dashboard navigation on %s", async (path) => {
   page.set({
     url: new URL(`https://private.example.test${path}`),
@@ -95,4 +97,40 @@ test.each([
     document.querySelector(".back-to-dashboard").getAttribute("href"),
   ).toBe("/");
   expect(document.querySelector(".scheme")).toBeNull();
+});
+
+test.each([
+  "/",
+  "/private",
+  "/private/",
+  "/app",
+  "/app/tool",
+  "/review/",
+  "/chat/",
+  "/notes/",
+  "/qwen/",
+  "/factory",
+  "/factory/",
+  "/factory/escalations/",
+  "/factory/work-items/1/",
+  "/private/factory/work-items/1/",
+  "/factory/execution",
+  "/factory/execution/drain",
+  "/private/factory/execution/",
+  "/private/factory/execution/drain/",
+  "/updates",
+  "/updates/",
+  "/private/updates",
+])("suppresses shared back chrome on %s", async (path) => {
+  page.set({
+    url: new URL(`https://private.example.test${path}`),
+    data: {},
+    error: null,
+  });
+  instance = mount(App, {
+    target: document.body,
+    props: { view: "legacy", data: {} },
+  });
+  await tick();
+  expect(document.querySelector(".back-to-dashboard")).toBeNull();
 });

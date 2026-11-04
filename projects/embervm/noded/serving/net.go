@@ -261,15 +261,6 @@ func PortForIP(base int, network *net.IPNet, ip net.IP) (uint32, error) {
 	return uint32(port), nil
 }
 
-// nftTeardownArgs returns the argv to remove the dedicated serving table entirely
-// (scoped: only our table). It is provided for a FUTURE teardown call site (the daemon
-// never tears the table down today: EnsureNetwork re-applies it idempotently on every
-// start). `nft delete table` errors on an absent table, so whatever call site wires
-// this in MUST tolerate that (e.g. ignore a not-found error). Pure for table testing.
-func nftTeardownArgs() []string {
-	return []string{"nft", "delete", "table", "inet", nftTable}
-}
-
 // Manager owns the host serving network: the shared per-node bridge, the nftables
 // posture, and per-VM taps. It is safe for concurrent use by StartServing/
 // StopServing (the IP allocator it embeds is separately locked; ip/nft calls are

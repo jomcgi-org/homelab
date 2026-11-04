@@ -1,4 +1,4 @@
-"""Deterministic candidate-policy fixtures; no production policy is activated."""
+"""Retired shadow writes leave objective accounting and existing holds intact."""
 
 import json
 from types import SimpleNamespace
@@ -19,58 +19,6 @@ from factory.orchestration.factory_models import (
 from factory.orchestration.models import SwarmNodeRun, SwarmPlanNode, SwarmTask
 
 
-@pytest.mark.parametrize("kind", sorted(shadow.SEMANTIC_KINDS))
-def test_verified_negative_or_positive_evidence_changes_decision(kind):
-    observation = shadow.VerifiedEvidence(
-        kind,
-        "cache hypothesis",
-        "reproduction still fails with cache disabled",
-        "test transport isolation next",
-        "verified-result:1",
-    )
-    assert shadow.classify([observation])["classification"] == "progressing"
-    # Repetition with a different receipt/node name is not fresh evidence.
-    renamed = shadow.VerifiedEvidence(
-        kind,
-        observation.subject,
-        observation.result,
-        observation.next_action,
-        "renamed-node:2",
-    )
-    assert shadow.classify([observation, renamed])["classification"] == "stalled"
-
-
-def test_changed_verified_next_action_counts_but_claims_and_commits_do_not():
-    old = shadow.VerifiedEvidence(
-        "test_result", "transport test", "fails", "isolate network", "test:1"
-    )
-    new = shadow.VerifiedEvidence(
-        "hypothesis_eliminated",
-        "DNS",
-        "independent reproduction excludes DNS",
-        "isolate TLS",
-        "test:2",
-    )
-    assert shadow.classify([old, new])["classification"] == "progressing"
-    for claim in (
-        {"summary": "making progress"},
-        {"head_sha": "a" * 40, "pr_number": 1},
-        {"tests_passed": True},
-        {"kind": "test_result", "source": "worker says so"},
-    ):
-        assert shadow.classify([claim])["classification"] == "insufficient_evidence"
-    assert shadow.classify([old, new, old])["classification"] == "stalled"
-
-
-def test_wait_and_authority_take_precedence_over_activity():
-    assert shadow.classify([], waiting=True)["classification"] == "waiting"
-    assert (
-        shadow.classify([], waiting=True, authority_blocked=True)["classification"]
-        == "authority_blocked"
-    )
-    assert shadow.classify([])["classification"] == "insufficient_evidence"
-
-
 def start(session_id, *, status="failed", cost=None, reservation=4, basis=None):
     return SimpleNamespace(
         session_id=session_id,
@@ -87,49 +35,40 @@ def turn(session_id, seq=1, *, listed=None, reported=None):
     )
 
 
-def test_price_projection_deduplicates_turns_and_never_calls_reported_cost_cash():
-    first = turn(1, listed=500, reported=2)
-    report = shadow.price_projection(
-        [start(1, cost=2), start(2, cost=3)],
-        [first, first, turn(2, listed=499.9, reported=3)],
-        supervision_list_usd=0.1,
-    )
-    assert report["known_list_usd"] == 1000
-    assert report["observed_objective_backstop_exceeded"]
-    assert report["sessions"][0]["observed_backstop_exceeded"]
-    assert report["sessions"][0]["provider_reported_usd"] == 2
-    assert report["known_cash_cost_usd"] is None
-    assert report["subscription_quota"] is None
-    assert not report["hard_stop_enforced"]
-    assert not report["within_backstop_verified"]
+@pytest.mark.parametrize("status", ["reserved", "uncertain", "failed", "succeeded"])
+@pytest.mark.parametrize("listed", [None, 0, 500])
+def test_exposure_keeps_unknown_or_inflight_charges(status, listed):
+    held = listed is None or status in ("reserved", "uncertain")
+    assert shadow.exposure(
+        [start(1, status=status, cost=6)], [turn(1, listed=listed)]
+    ) == (6 if held else 0)
 
 
 def test_unknown_failed_preflight_and_active_exposure_are_never_refunded():
-    report = shadow.price_projection(
-        [
-            start(1),
-            start(2, status="uncertain", cost=1),
-            start(None, cost=3),
-            start(None, cost=0, basis="no_model_post"),
-        ],
-        [turn(1), turn(2, listed=1)],
-        session_ids=[1, 2, 3],
+    assert (
+        shadow.exposure(
+            [
+                start(1),
+                start(2, status="uncertain", cost=1),
+                start(None, cost=3),
+                start(None, cost=0, basis="no_model_post"),
+            ],
+            [turn(1), turn(2, listed=1)],
+        )
+        == 12
     )
-    assert report["known_list_usd"] == 1
-    assert report["unknown_or_reserved_exposure_usd"] == 12
-    assert report["sessions"][0]["unpriced_turns"] == 1
-    assert report["sessions"][0]["unbounded_unknown_usage"]
-    assert report["sessions"][1]["unbounded_unknown_usage"]
-    assert report["sessions"][2]["unbounded_unknown_usage"]
-    assert report["sessions"][2]["missing_turns"]
 
 
 @pytest.mark.parametrize("listed", [None, float("nan"), float("inf"), -1, True])
 def test_invalid_or_missing_prices_remain_unknown(listed):
-    report = shadow.price_projection([start(1)], [turn(1, listed=listed)])
-    assert report["known_list_usd"] == 0
-    assert report["unknown_or_reserved_exposure_usd"] == 4
-    assert report["sessions"][0]["unpriced_turns"] == 1
+    assert shadow.exposure([start(1)], [turn(1, listed=listed)]) == 4
+
+
+@pytest.mark.parametrize(
+    "basis", ["no_model_post", "capacity_denied", "no_session_created"]
+)
+def test_only_positive_no_execution_proof_removes_exposure(basis):
+    assert shadow.exposure([start(None, basis=basis), start(1, basis=basis)], []) == 0
 
 
 @pytest.fixture
@@ -238,72 +177,62 @@ POLICY = {
 }
 
 
-def test_objective_readmission_uses_immutable_history_once_and_keeps_old_limits(db):
+def test_objective_readmission_uses_immutable_history_once_without_mutations(db):
     with Session(db) as session:
         receipt = session.get(FactoryReceipt, 838)
         # Also discover each session through native prefix links. Do not count
         # that session twice, or accidentally include the unrelated objective.
-        result = shadow.snapshot(session, receipt, POLICY)
+        result = shadow.snapshot(session, receipt)
         assert result["objective_task_ids"] == ["current", "old"]
-        assert result["prices"]["known_list_usd"] == 700
-        assert len(result["prices"]["sessions"]) == 2
-        assert result["binding_limits"] == {
-            "task_budget_usd": 50,
-            "objective_budget_usd": 200,
-            "max_task_turns_hard": 9,
-            "turn_budget_usd": 4,
-        }
-        assert result["progress"]["classification"] == "authority_blocked"
+        assert sum(turn.list_cost_usd for turn in result["turns"]) == 700
+        assert len(result["turns"]) == 2
+        assert result["unknown_or_reserved_exposure_usd"] == 0
+        assert receipt.task_paused
+        assert not session.dirty
+        assert not session.new
 
 
-def test_shadow_observes_below_spend_gate_without_model_or_control_mutations(
-    db, monkeypatch
+@pytest.mark.parametrize("legacy_flag", ["false", "true"])
+@pytest.mark.parametrize("watch_enabled", [False, True])
+def test_retired_shadow_flag_never_records_or_changes_holds(
+    db, monkeypatch, legacy_flag, watch_enabled
 ):
-    monkeypatch.setenv("FACTORY_PROGRESS_SHADOW_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_PROGRESS_SHADOW_ENABLED", legacy_flag)
+    monkeypatch.setattr(
+        shadow, "snapshot", lambda *a: pytest.fail("watchdog read retired shadow")
+    )
     monkeypatch.setattr(
         controls, "set_control", lambda *a, **kw: pytest.fail("shadow changed control")
     )
     monkeypatch.setattr(
         watchdog, "_clear", lambda *a, **kw: pytest.fail("shadow cleared watchdog")
     )
+    from factory.orchestration import factory_funding
+
     monkeypatch.setattr(
-        watchdog, "assess", lambda *a, **kw: pytest.fail("shadow called paid judge")
+        factory_funding,
+        "request",
+        lambda *a, **kw: pytest.fail("shadow called paid judge"),
     )
     with Session(db) as session:
         for row in session.exec(select(FactoryStart)).all():
             row.cost_usd = 0
         session.commit()
-    assert (
-        watchdog.check("current", {**POLICY, "progress_watchdog": {"enabled": True}})
-        == "under_threshold"
-    )
-    assert watchdog.check("current", POLICY) == "disabled"
+    assert watchdog.check(
+        "current", {**POLICY, "progress_watchdog": {"enabled": watch_enabled}}
+    ) == ("under_threshold" if watch_enabled else "disabled")
     with Session(db) as session:
         audits = session.exec(
-            select(FactoryAudit).where(FactoryAudit.action == shadow.ACTION)
+            select(FactoryAudit).where(
+                FactoryAudit.action == "progress_shadow_assessed"
+            )
         ).all()
-        assert len(audits) == 1
+        assert audits == []
         assert session.get(FactoryReceipt, 838).task_paused
-        assert json.loads(audits[0].detail_json)["mode"] == "shadow"
         assert session.exec(select(FactoryStart)).all()[0].max_cost_usd == 4
 
 
-def test_shadow_disabled_does_not_read_or_write_new_state(db, monkeypatch):
-    monkeypatch.delenv("FACTORY_PROGRESS_SHADOW_ENABLED", raising=False)
-    monkeypatch.setattr(
-        shadow, "snapshot", lambda *a: pytest.fail("disabled shadow read")
-    )
-    assert watchdog.check("current", POLICY) == "disabled"
-    with Session(db) as session:
-        assert (
-            session.exec(
-                select(FactoryAudit).where(FactoryAudit.action == shadow.ACTION)
-            ).all()
-            == []
-        )
-
-
-def test_collector_keeps_blobs_out_of_price_reads_and_marks_unpriced_supervision(db):
+def test_collector_keeps_blobs_out_of_price_reads_and_preserves_supervision(db):
     from sqlalchemy import event
 
     queries = []
@@ -315,17 +244,20 @@ def test_collector_keeps_blobs_out_of_price_reads_and_marks_unpriced_supervision
         ),
     )
     with Session(db) as session:
-        session.add(
-            FactoryAudit(
-                task_id="old",
-                actor="factory:watchdog",
-                action="watchdog_assessed",
-                detail_json='{"cost_usd":null}',
-            )
+        session.add_all(
+            [
+                FactoryAudit(
+                    task_id="old",
+                    actor="factory:watchdog",
+                    action="watchdog_assessed",
+                    detail_json=json.dumps({"cost_usd": cost}),
+                )
+                for cost in [None, 0.5]
+            ]
         )
         session.commit()
-        result = shadow.snapshot(session, session.get(FactoryReceipt, 838), POLICY)
-        assert result["prices"]["unpriced_supervision_assessments"] == 1
+        result = shadow.snapshot(session, session.get(FactoryReceipt, 838))
+        assert result["supervision_list_usd"] == 0.5
     turn_queries = [
         query for query in queries if "SELECT" in query and "agent_turns" in query
     ]
@@ -342,26 +274,17 @@ def test_collector_keeps_blobs_out_of_price_reads_and_marks_unpriced_supervision
     )
 
 
-def test_shadow_failure_does_not_disable_legacy_watchdog_or_resume(db, monkeypatch):
-    monkeypatch.setenv("FACTORY_PROGRESS_SHADOW_ENABLED", "true")
-
-    def broken(*args):
-        raise ValueError("unreadable candidate evidence")
-
-    monkeypatch.setattr(shadow, "snapshot", broken)
+def test_historical_shadow_is_still_readable_without_recomputing_it(db):
     with Session(db) as session:
-        for row in session.exec(select(FactoryStart)).all():
-            row.cost_usd = 0
-        session.commit()
-    assert (
-        watchdog.check("current", {**POLICY, "progress_watchdog": {"enabled": True}})
-        == "under_threshold"
-    )
-    with Session(db) as session:
-        assert session.get(FactoryReceipt, 838).task_paused
-        assert (
-            session.exec(
-                select(FactoryAudit).where(FactoryAudit.action == shadow.ACTION)
-            ).all()
-            == []
+        previous = {"mode": "shadow", "progress": {"classification": "waiting"}}
+        session.add(
+            FactoryAudit(
+                task_id="current",
+                actor="factory:progress-shadow",
+                action="progress_shadow_assessed",
+                detail_json=json.dumps(previous),
+            )
         )
+        session.commit()
+        assert watchdog.detail(session, "current", POLICY)["shadow"] == previous
+        assert session.get(FactoryReceipt, 838).task_paused

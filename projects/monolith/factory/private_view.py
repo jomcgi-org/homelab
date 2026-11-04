@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
-from core.clock import iso_or_str
+from core.clock import aware, iso_or_str
 
 RECENT_LIMIT = 12
 RESULT_HEAD = 240
@@ -32,6 +32,7 @@ _RUN_STATE = {
     "admitted": "running",
     "succeeded": "done",
     "failed": "failed",
+    "escalated": "escalated",
     "uncertain": "uncertain",
     "cancelled": "cancelled",
 }
@@ -54,7 +55,13 @@ def node_label(node_key: str) -> str:
     return f"{kind} · {rest.replace('_', ' ')}" if rest else kind
 
 
-def shape_node(node: dict, runs: list[dict], sessions: dict[int, dict]) -> dict:
+def shape_node(
+    node: dict,
+    runs: list[dict],
+    sessions: dict[int, dict],
+    *,
+    receipt_state: str | None = None,
+) -> dict:
     """Join one plan node to its attempts and derive a single display state."""
     attempts = sorted(runs, key=lambda run: run.get("attempt") or 0)
     latest = attempts[-1] if attempts else None
@@ -67,7 +74,12 @@ def shape_node(node: dict, runs: list[dict], sessions: dict[int, dict]) -> dict:
     elif latest is None:
         state = "pending"
     else:
-        state = _RUN_STATE.get(latest.get("status") or "", "running")
+        state = _RUN_STATE.get(latest.get("status") or "", "uncertain")
+        if state == "running" and receipt_state not in (None, "admitted"):
+            state = "uncertain"
+        elif state == "running" and receipt_state == "admitted":
+            if not (sessions.get(latest.get("session_id")) or {}).get("executing"):
+                state = "uncertain"
     shaped_attempts = []
     for run in attempts:
         session_id = run.get("session_id")
@@ -200,15 +212,59 @@ def shape_receipt(
     for run in runs or []:
         by_node.setdefault(run["node_key"], []).append(run)
     shaped["nodes"] = [
-        shape_node(node, by_node.get(node["node_key"], []), sessions or {})
+        shape_node(
+            node,
+            by_node.get(node["node_key"], []),
+            sessions or {},
+            receipt_state=receipt.get("state"),
+        )
         for node in nodes or []
     ]
     shaped["stop_events"] = receipt.get("stop_events") or []
     return shaped
 
 
+def current_execution(row, pending, receipt, turn, now: datetime) -> bool:
+    """Fresh worker dispatch evidence, not proof of continuous provider generation.
+
+    A native receipt is prepared immediately before POST. Match the current
+    owned head, not an old guest binding. Losing freshness means unknown, never
+    cessation; this projection grants no retry or capacity release.
+    """
+    if (
+        pending is None
+        or receipt is None
+        or row.status != "running"
+        or not row.ember_session_id
+        or row.result_receipt_fence_id
+        or row.guest_cleanup_id
+        or not pending.claimed_by_replica
+        or pending.claimed_at is None
+        or not 0 <= (aware(now) - aware(pending.claimed_at)).total_seconds() <= 30
+        or (turn is not None and turn.seq >= pending.seq)
+    ):
+        return False
+    return (
+        receipt.session_id == row.id
+        and receipt.local_session_id == row.local_session_id
+        and receipt.seq == pending.seq
+        and receipt.dispatch_count == pending.dispatch_count
+        and receipt.claim_owner == pending.claimed_by_replica
+        and receipt.guest_id == row.ember_session_id
+        and receipt.superseded_at is None
+        and receipt.received_at is None
+        and receipt.response_observed_at is None
+        and receipt.response_observer_released_at is None
+    )
+
+
 def _session_summaries(db: Session, ids: set[int]) -> dict[int, dict]:
-    from factory.execution.models import AgentSession, AgentTurn
+    from factory.execution.models import (
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
 
     if not ids:
         return {}
@@ -221,7 +277,22 @@ def _session_summaries(db: Session, ids: set[int]) -> dict[int, dict]:
             .order_by(AgentTurn.seq.desc())
             .limit(1)
         ).first()
+        pending = db.exec(
+            select(PendingMessage)
+            .where(PendingMessage.session_id == row.id)
+            .order_by(PendingMessage.seq)
+            .limit(1)
+        ).first()
+        receipt = db.exec(
+            select(AgentResultReceipt)
+            .where(AgentResultReceipt.session_id == row.id)
+            .order_by(AgentResultReceipt.created_at.desc())
+            .limit(1)
+        ).first()
         summaries[row.id] = {
+            "executing": current_execution(
+                row, pending, receipt, turn, datetime.now(timezone.utc)
+            ),
             "id": row.id,
             "model": row.model,
             "status": row.status,
@@ -242,6 +313,7 @@ def build_factory_view(
     *,
     session: Session | None = None,
     plan_tasks: Iterable[str] | None = None,
+    include_backlog: bool = True,
 ) -> dict:
     """Everything the factory board needs in one read.
 
@@ -259,6 +331,20 @@ def build_factory_view(
     from core.db import get_engine
 
     def build(db: Session) -> dict:
+        backlog = None
+        if include_backlog:
+            from factory.orchestration.intake_evidence import backlog as load_backlog
+
+            try:
+                with db.begin_nested():
+                    backlog = load_backlog(db)
+            except Exception:  # noqa: BLE001 - evidence failure is not an empty backlog
+                backlog = {
+                    "available": False,
+                    "issues": [],
+                    "coverage": {},
+                    "stale": True,
+                }
         state = status(session=db)
         if not state.get("ok"):
             return {
@@ -314,6 +400,7 @@ def build_factory_view(
             "intake": state.get("intake"),
             "problem_issues": state.get("problem_issues"),
             "backlog_refill": state.get("backlog_refill"),
+            **({"intake_backlog": backlog} if include_backlog else {}),
             "lanes": state.get("lanes"),
             "review_routing": state.get("review_routing"),
             "version": state["version"],

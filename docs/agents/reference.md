@@ -24,9 +24,10 @@ helm template <rel> projects/<svc>/chart/ -f projects/<svc>/deploy/values.yaml
 - **Never pipe `ci` or `bb remote` output into a filter or discard it.** Run
   unpiped or `| tee` to a file. `ci test` has exited 0 without running
   anything (#4118): judge a run by its `Executed N out of M tests` line.
-- **BUILD generation is CI-only.** CI's format stage runs `//:gazelle` and
-  auto-commits a `style: auto-format` commit, so fetch and rebase before your
-  next push.
+- **BUILD generation uses the repository's pinned Gazelle.** Factory source
+  guests use the packaged Linux `//:gazelle_binary` during complete pre-push
+  validation. Ordinary local `ci regen` still leaves BUILD generation to CI.
+  Never substitute PATH Gazelle. Fetch and rebase after any CI writeback.
 - **Generated sources needed by ordinary tooling belong in a clean checkout.**
   Keep pinned Bazel generation authoritative, seed only the required outputs
   as tracked files, and verify their bytes against regenerated outputs in
@@ -137,6 +138,7 @@ when its row applies.
 | When | Read |
 |------|------|
 | Working under `projects/monolith/` or `projects/embervm/` | that directory's `AGENTS.md` |
+| Factory orchestration, execution or controls | [FACTORY.md](../../projects/monolith/factory/orchestration/FACTORY.md) first; [monolith section 4](../../projects/monolith/ARCHITECTURE.md#4-agents) for ownership, trust, rationale and acceptance |
 | A red CI run you need to diagnose | `docs/agents/ci-triage.md` |
 | Opening, readying or enqueuing a PR without GraphQL (cloud session) | `docs/agents/cloud-sessions.md` |
 | Reviewing a finished PR diff | `docs/agents/review.md` |

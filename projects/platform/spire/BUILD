@@ -1,5 +1,10 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 
+exports_files(
+    ["values-gke.yaml"],
+    visibility = ["//projects/platform-gke/spire:__pkg__"],
+)
+
 helm_chart(
     name = "chart",
     lint = False,

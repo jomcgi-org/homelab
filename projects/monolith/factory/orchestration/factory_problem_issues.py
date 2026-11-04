@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 import hashlib
 import json
 import logging
-import os
 import re
 
 import httpx
@@ -20,7 +19,7 @@ from sqlalchemy import and_, or_
 from sqlmodel import Session, select
 
 from core.clock import aware
-from core.github import GITHUB_API
+from core.github import GITHUB_API, github_headers
 from factory.orchestration.factory_controls import (
     PROBLEM_ISSUE_SOURCES,
     _audit,
@@ -40,6 +39,9 @@ ACTOR = "factory:problem-issues"
 WRITE_TIMEOUT_SECONDS = 15
 RESPONSE_LIMIT_BYTES = 1_000_000
 MARKER_PREFIX = "factory-problem"
+RECOVERY_SOURCES = frozenset({"recurring_blocker", "workflow_stranded"})
+RECOVERY_ACTIVATION = "problem_issue_recovery_loop_activated"
+RECOVERY_REPO = "jomcgi-org/homelab"
 _TERMINAL_ACTIONS = (
     "problem_issue_created",
     "problem_issue_reconciled",
@@ -52,7 +54,356 @@ _EVENT_ACTIONS = {
     "node_stalled": "node_stalled",
     "workflow_stranded": "workflow_stranded",
     "landing_recovery_exhausted": "merge_arm_refused",
+    "recurring_blocker": "recurring_blocker",
 }
+
+
+def _delivery_enabled(policy: dict) -> bool:
+    from factory.orchestration import factory_controls as controls
+
+    if policy.get("repo") != RECOVERY_REPO:
+        return False
+    intake = controls.intake_policy(policy)
+    if not intake["enabled"] or intake["refinement_batch"]:
+        return False
+    entry = controls.repo_entry(policy, RECOVERY_REPO)
+    labels = {label.lower() for label in problem_issues_policy(policy)["labels"]}
+    return bool(
+        entry["enabled"]
+        and not entry["paused"]
+        and (
+            intake["refine_enabled"]
+            or labels.intersection(label.lower() for label in entry["labels"])
+        )
+        and not labels.intersection(label.lower() for label in entry["exclude_labels"])
+    )
+
+
+def _spare_quota() -> bool:
+    """Reuse improvement's fresh per-grant surplus evidence, not a headline.
+
+    This authorizes issue discovery only. Normal admission and provider routing
+    still own every paid start; no scout subscription or execution fence changes.
+    """
+    from factory.execution.provider_quota import fetch_provider_quota_sync
+    from factory.orchestration.factory_improvement_preview import (
+        PreviewPolicy,
+        quota_decisions,
+    )
+
+    return any(
+        row["eligible"]
+        for row in quota_decisions(
+            fetch_provider_quota_sync(force=True), now=_now(), policy=PreviewPolicy()
+        )
+    )
+
+
+def _recovery_owner(db, row):
+    """Bind local ownership without interpreting a card as resume authority."""
+    from factory.orchestration.factory_models import FactoryControl, WorkItem
+
+    receipt = _receipt(db, row.task_id)
+    if receipt is None:
+        return None
+    item = db.get(WorkItem, receipt.work_item_id) if receipt.work_item_id else None
+    labels = set(item.labels) if item else set()
+    if (
+        receipt.state in {"succeeded", "cancelled"}
+        or "human" in labels
+        or f"{MARKER_PREFIX}:" in (receipt.body or "")
+    ):
+        return None
+    control = db.get(FactoryControl, "factory")
+    if control is None or control.state != "enabled":
+        return None
+    return {
+        **receipt.model_dump(mode="json"),
+        "control_version": control.version,
+        "label_mirror": item.model_dump(mode="json") if item else None,
+    }
+
+
+def _recovery_context(policy, row):
+    from factory.orchestration.factory_conductor import github_get
+
+    with _read_session() as db:
+        owner = _recovery_owner(db, row)
+    if owner is None or owner["repo"] != RECOVERY_REPO:
+        return None
+    issue = github_get(owner["repo"], f"issues/{owner['issue_number']}")
+    labels = {x["name"].lower() for x in issue.get("labels", [])}
+    if (
+        issue.get("number") != owner["issue_number"]
+        or issue.get("state") != "open"
+        or issue.get("assignees")
+        or labels & {"human", "security-finding", "security"}
+        or f"{MARKER_PREFIX}:" in (issue.get("body") or "")
+    ):
+        return None
+    return owner
+
+
+def _watch_recovery(db, row, source, fingerprint):
+    """Retain an exact private target; absent bindings cannot prove recovery."""
+    from factory.orchestration.models import SwarmNodeRun
+
+    detail = json.loads(row.detail_json)
+    node_key = detail.get("node_key")
+    run = (
+        db.exec(
+            select(SwarmNodeRun)
+            .where(
+                SwarmNodeRun.task_id == row.task_id,
+                SwarmNodeRun.node_key == node_key,
+                SwarmNodeRun.created_at <= row.created_at,
+            )
+            .order_by(SwarmNodeRun.id.desc())
+            .limit(1)
+        ).first()
+        if node_key
+        else None
+    )
+    if detail.get("source_run_id") is not None and (
+        run is None or run.id != detail["source_run_id"]
+    ):
+        run = None
+    _audit(
+        db,
+        ACTOR,
+        "problem_issue_recovery_watch",
+        task_id=row.task_id,
+        **_detail(
+            row,
+            source,
+            fingerprint,
+            node_key=node_key,
+            source_run_id=run.id if run else None,
+        ),
+    )
+
+
+def _observe_recoveries():
+    """Observe, never resume: merged/deployed repair is not runtime recovery.
+
+    A bounded pending set reuses the producer ledger. Exact successful node
+    execution must follow the repair's existing rollout proof. Historical
+    cards, holds, missing bindings and unknown starts stay unverified.
+    """
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_funding import (
+        routine_hold,
+        _repair_rollout_valid,
+    )
+    from factory.orchestration.models import SwarmNodeRun
+
+    with _locked_session() as (db, _control):
+        watches = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.action == "problem_issue_recovery_watch",
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(50)
+        ).all()
+        if not watches:
+            return
+        unknown = controls.unresolved_start_task_ids(db)
+        for watch in watches:
+            detail = json.loads(watch.detail_json)
+            fingerprint = detail["fingerprint"]
+            if _last_matching(
+                db, fingerprint, ("problem_issue_recovery_observed",), watch.task_id
+            ):
+                continue
+            source = _receipt(db, watch.task_id)
+            if (
+                source is None
+                or source.task_paused
+                or source.cancellation_requested
+                or source.state in {"escalated", "cancelled", "uncertain"}
+                or source.task_id in unknown
+                or not detail.get("source_run_id")
+                or routine_hold(db, source, source.task_id)
+            ):
+                continue
+            created = _last_matching(
+                db,
+                fingerprint,
+                ("problem_issue_created", "problem_issue_reconciled"),
+                watch.task_id,
+            )
+            if created is None:
+                continue
+            result = json.loads(created.detail_json)
+            numbers = result.get("issue_numbers") or [result.get("issue_number")]
+            repairs = db.exec(
+                select(FactoryReceipt).where(
+                    FactoryReceipt.repo == source.repo,
+                    FactoryReceipt.issue_number.in_(
+                        [n for n in numbers if type(n) is int]
+                    ),
+                    FactoryReceipt.task_class == "bug-fix",
+                    FactoryReceipt.state == "succeeded",
+                )
+            ).all()
+            for repair in repairs:
+                rollout = db.exec(
+                    select(FactoryAudit)
+                    .where(
+                        FactoryAudit.task_id == repair.task_id,
+                        FactoryAudit.action == "rollout_verified",
+                    )
+                    .order_by(FactoryAudit.id.desc())
+                    .limit(1)
+                ).first()
+                if rollout is None:
+                    continue
+                if not _repair_rollout_valid(
+                    db,
+                    {
+                        "repo": source.repo,
+                        "repair_task_id": repair.task_id,
+                        "repair_issue": repair.issue_number,
+                        "rollout_audit_id": rollout.id,
+                        "rollout_sha256": controls.digest(
+                            json.loads(rollout.detail_json)
+                        ),
+                    },
+                ):
+                    continue
+                recovered = db.exec(
+                    select(SwarmNodeRun)
+                    .where(
+                        SwarmNodeRun.task_id == watch.task_id,
+                        SwarmNodeRun.node_key == detail["node_key"],
+                        SwarmNodeRun.id > detail["source_run_id"],
+                        SwarmNodeRun.status == "succeeded",
+                        SwarmNodeRun.created_at > rollout.created_at,
+                        SwarmNodeRun.finished_at.is_not(None),
+                    )
+                    .order_by(SwarmNodeRun.id)
+                    .limit(1)
+                ).first()
+                if recovered is not None:
+                    _audit(
+                        db,
+                        ACTOR,
+                        "problem_issue_recovery_observed",
+                        task_id=watch.task_id,
+                        fingerprint=fingerprint,
+                        repair_task_id=repair.task_id,
+                        rollout_audit_id=rollout.id,
+                        node_key=detail["node_key"],
+                        source_run_id=detail["source_run_id"],
+                        recovered_run_id=recovered.id,
+                    )
+                    break
+
+
+def configure(
+    operation,
+    enabled,
+    recurring_blocker,
+    workflow_stranded,
+    expected_version,
+    reason,
+    *,
+    actor,
+    request_key=None,
+    expected_preview_sha256=None,
+):
+    """Change only the producer switch and its two recovery sources.
+
+    The ordinary producer owns watermarking, deduplication and publication;
+    intake still owns receipts. No generation rollover or task mutation.
+    """
+    from core.jsonio import dumps
+    from factory.orchestration import factory_controls as controls
+
+    if operation not in {"preview", "apply"}:
+        raise ValueError("problem_issues_operation_invalid")
+    if any(
+        type(v) is not bool for v in (enabled, recurring_blocker, workflow_stranded)
+    ):
+        raise ValueError("problem_issues_switch_invalid")
+    request = dict(
+        enabled=enabled,
+        recurring_blocker=recurring_blocker,
+        workflow_stranded=workflow_stranded,
+        expected_version=expected_version,
+        reason=controls._text(reason, "reason"),
+        request_key=request_key,
+        expected_preview_sha256=expected_preview_sha256,
+    )
+    action = "problem_issues_control_applied"
+    with _locked_session() as (db, control):
+        if operation == "apply":
+            controls._text(request_key, "request_key")
+            for raw in db.exec(
+                select(FactoryAudit.detail_json).where(
+                    FactoryAudit.actor == actor,
+                    FactoryAudit.action == action,
+                )
+            ).all():
+                prior = json.loads(raw)
+                if prior["request"]["request_key"] == request_key:
+                    if prior["request"] != request:
+                        raise ValueError("problem_issues_request_conflict")
+                    return prior["result"]
+        if control.version != expected_version:
+            raise ValueError("problem_issues_version_changed")
+        policy = json.loads(control.policy_json or "{}")
+        if not policy.get("repo") or control.state == "stopped":
+            raise ValueError("problem_issues_control_unavailable")
+        before = policy.get("problem_issues") or {}
+        if (
+            enabled
+            and not before.get("enabled")
+            and any(
+                value
+                for name, value in (before.get("sources") or {}).items()
+                if name not in RECOVERY_SOURCES
+            )
+        ):
+            raise ValueError("problem_issues_unrelated_sources_enabled")
+        after = {
+            **before,
+            "enabled": enabled,
+            "sources": {
+                **(before.get("sources") or {}),
+                "recurring_blocker": recurring_blocker,
+                "workflow_stranded": workflow_stranded,
+            },
+        }
+        normalized = problem_issues_policy({"problem_issues": after})
+        proposal = dict(
+            ok=True,
+            version=control.version,
+            policy_sha256=controls.digest(policy),
+            before=before,
+            after=after,
+            generation=policy.get("generation"),
+            reason=request["reason"],
+            effective_sources=_effective(normalized),
+        )
+        proposal["preview_sha256"] = controls.digest(proposal)
+        if operation == "preview":
+            return proposal
+        if proposal["preview_sha256"] != expected_preview_sha256:
+            raise ValueError("problem_issues_preview_changed")
+        policy["problem_issues"] = after
+        control.policy_json = dumps(policy)
+        control.version += 1
+        control.actor, control.updated_at = actor, _now()
+        result = dict(
+            ok=True,
+            version=control.version,
+            generation=policy.get("generation"),
+            dispatched=False,
+        )
+        _audit(db, actor, action, request=request, proposal=proposal, result=result)
+        return result
 
 
 def github_list(repo: str, suffix: str) -> list:
@@ -60,18 +411,6 @@ def github_list(repo: str, suffix: str) -> list:
     from factory.orchestration.factory_conductor import github_list as read
 
     return read(repo, suffix)
-
-
-def _headers() -> dict[str, str]:
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "monolith-factory-problem-issues",
-    }
-    token = os.environ.get("GITHUB_API_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
 
 
 def github_write(repo: str, payload: dict) -> object:
@@ -82,7 +421,7 @@ def github_write(repo: str, payload: dict) -> object:
         with client.stream(
             "POST",
             f"{GITHUB_API}/repos/{repo}/issues",
-            headers=_headers(),
+            headers=github_headers("monolith-factory-problem-issues"),
             json=payload,
         ) as response:
             response.raise_for_status()
@@ -103,7 +442,7 @@ def _source(row: FactoryAudit) -> tuple[str, dict] | None:
         return None
     if row.action == "improvement_candidate":
         return "quota_improvement", detail
-    if row.action in ("node_stalled", "workflow_stranded"):
+    if row.action in ("node_stalled", "workflow_stranded", "recurring_blocker"):
         return row.action, detail
     if (
         row.action == "merge_arm_refused"
@@ -123,6 +462,12 @@ def _identity(source: str, row: FactoryAudit, detail: dict) -> dict | None:
             "task_id": row.task_id,
             "workflow_id": workflow_id,
         }
+    if source == "recurring_blocker":
+        key = detail.get("blocker_key")
+        if not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{64}", key):
+            return None
+        # The problem, not the task: a re-admitted receipt repeats the key.
+        return {"source": source, "blocker_key": key}
     number = detail.get("pr_number")
     if type(number) is not int or number <= 0:
         return None
@@ -345,6 +690,9 @@ def _issue(
         "landing_recovery_exhausted": (
             f"factory: landing recovery exhausted for #{issue_number}"
         ),
+        "recurring_blocker": (
+            f"factory: repeated blocker without progress on #{issue_number}"
+        ),
     }
     lines = [
         marker,
@@ -362,27 +710,40 @@ def _issue(
         lines.append(
             f"- [Pull request #{pr_number}](https://github.com/{repo}/pull/{pr_number})"
         )
+    paths = {
+        "recurring_blocker": "factory_funding.py and factory_progress_watchdog.py",
+        "workflow_stranded": "factory_conductor.py and durable workflow reconciliation",
+        "node_stalled": "factory_conductor.py and node timeout supervision",
+        "landing_recovery_exhausted": "factory_landing.py and exact-head recovery",
+    }
     lines.extend(
         [
             "",
-            "## Evidence",
+            "## Scoped repair",
             "",
-            f"- Factory task: `{row.task_id}`",
-            f"- Source audit: `{row.id}`",
+            "Inspect `projects/monolith/factory/orchestration/`: "
+            + paths[source]
+            + ".",
+            "Reproduce the missing recovery transition with synthetic evidence and "
+            "fix it in the existing owner. Check existing issues and PRs before "
+            "implementation; reuse an existing repair rather than competing with it.",
+            "Private receipts, audit details, invocations and quota observations "
+            "stay in private factory records. Do not copy them into GitHub.",
+            "",
+            "## Acceptance",
+            "",
+            "- Regression tests prove eligible recovery and refusal on human holds, "
+            "unknown starts, stale evidence and concurrent changes.",
+            "- Independent exact-head review and required CI precede normal merge "
+            "queue landing; verify the managed rollout through the existing owner.",
+            "- Observe an eligible same-task recovery after rollout. A merged repair "
+            "alone is not recovery evidence. Historical cards and explicit holds "
+            "remain with their owners; report unsupported recovery rather than "
+            "clearing them or fabricating success.",
+            "- Do not reset retry history, bypass admission or create another "
+            "recovery engine. Repair tickets must not recursively produce repairs.",
         ]
     )
-    for key in (
-        "workflow_id",
-        "node_key",
-        "idle_seconds",
-        "turn_timeout_seconds",
-        "workflow_version",
-        "running_version",
-        "pr_number",
-    ):
-        value = detail.get(key)
-        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
-            lines.append(f"- {key.replace('_', ' ').title()}: `{str(value)[:500]}`")
     lines.extend(
         [
             "",
@@ -538,13 +899,13 @@ def _reconcile_pending(block: dict, started: FactoryAudit, detail: dict):
     )
 
 
-def _next_event(block: dict, observed: dict):
+def _next_event(block: dict, observed: dict, *, skip_sources=()):
     effective = observed["effective_sources"]
     watermarks = observed.get("watermarks") or {}
     with _read_session() as db:
         filters = []
         for source in PROBLEM_ISSUE_SOURCES:
-            if effective.get(source):
+            if effective.get(source) and source not in skip_sources:
                 filters.append(
                     _event_filter(
                         source,
@@ -565,6 +926,11 @@ def _next_event(block: dict, observed: dict):
 
 def problem_issues_tick(policy: dict) -> None:
     """Reconcile at most one exact source event and create at most one issue."""
+    if policy.get("repo") == RECOVERY_REPO:
+        from factory.orchestration.factory_funding import repair_recovery_tick
+
+        repair_recovery_tick()
+        _observe_recoveries()
     block = problem_issues_policy(policy)
     # Old policies omit the block. They remain inert for new source events, but
     # an intent recorded before an operator removed the block still needs its
@@ -585,7 +951,18 @@ def problem_issues_tick(policy: dict) -> None:
     if changed or not any(observed["effective_sources"].values()):
         return
 
-    row, capped = _next_event(block, observed)
+    skip_sources = ()
+    if policy.get("repo") == RECOVERY_REPO and any(
+        observed["effective_sources"].get(source) for source in RECOVERY_SOURCES
+    ):
+        try:
+            recovery_ready = _delivery_enabled(policy) and _spare_quota()
+        except Exception:  # Unavailable recovery evidence must not block other sources.
+            logger.exception("factory recovery discovery evidence unavailable")
+            recovery_ready = False
+        if not recovery_ready:
+            skip_sources = RECOVERY_SOURCES
+    row, capped = _next_event(block, observed, skip_sources=skip_sources)
     if row is None:
         return
     parsed = _source(row)
@@ -612,6 +989,32 @@ def problem_issues_tick(policy: dict) -> None:
             reason="missing_exact_event_identity",
         )
         return
+    recovery_owner = None
+    if source in RECOVERY_SOURCES and policy.get("repo") == RECOVERY_REPO:
+        # A held source may still need a code fix, but this producer never
+        # decides that a person's card or unknown invocation is safe to retry.
+        # Refusal waits without consuming the event, so fresh quota can unlock
+        # discovery without a reset, manual trigger or generation rollover.
+        recovery_owner = _recovery_context(policy, row)
+        if recovery_owner is None:
+            from factory.orchestration.factory_models import FactoryControl
+
+            with _read_session() as db:
+                control = db.get(FactoryControl, "factory")
+                if (
+                    control is None
+                    or control.state != "enabled"
+                    or json.loads(control.policy_json or "{}") != policy
+                ):
+                    return
+            _record(
+                "problem_issue_source_refused",
+                row,
+                source,
+                fingerprint,
+                reason="source_owned_or_recursive_or_unavailable",
+            )
+            return
     with _read_session() as db:
         completed = _last_matching(db, fingerprint, _TERMINAL_ACTIONS, row.task_id)
         delayed = _last_matching(
@@ -733,6 +1136,13 @@ def problem_issues_tick(policy: dict) -> None:
         issue = _issue(source, row, source_detail, repo, issue_number, marker)
 
     with _locked_session() as (db, _control):
+        if recovery_owner is not None:
+            if (
+                _control.state != "enabled"
+                or json.loads(_control.policy_json or "{}") != policy
+                or _recovery_owner(db, row) != recovery_owner
+            ):
+                return
         if source == "quota_improvement":
             from factory.orchestration.factory_improvement_preview import digest
             from factory.orchestration.factory_improvements import (
@@ -807,6 +1217,8 @@ def problem_issues_tick(policy: dict) -> None:
                 repo=repo,
             ),
         )
+        if recovery_owner is not None:
+            _watch_recovery(db, row, source, fingerprint)
 
     payload = {
         **issue,

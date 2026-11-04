@@ -644,10 +644,8 @@ unknown and is never guessed from the brick's current configuration.
 
 ### Parked workspaces can rejoin across nodes
 
-`crossNodeRejoin` defaults to false in the chart and is enabled in the GKE
-overlay (#6663). With it off, workspace rejoin stays pinned to `volume_node_id`
-and drains use the existing asynchronous archive path. With it on, drain workers
-synchronously export the unattached workspace through the owning instance dial,
+Cross-node rejoin (#6663) is unconditional. Drain workers synchronously export
+the unattached workspace through the owning instance dial,
 falling back to the draining pod's dial or the pre-park session dial when draining
 has removed its capacity fact. Export retries are bounded to three attempts.
 
@@ -748,13 +746,9 @@ evidence. Private bounded caches reuse only redacted terminal logs. Image
 publication does not establish guest uptake or measured reductions in repeated
 CI calls; the next retro window supplies that operational acceptance.
 
-A sequential Firecracker dirty-page diff bank path exists and is dormant.
-The merge-at-bank step now attempts Linux `FICLONE` for the temporary copy of
-the previous full and falls back to a byte copy on ext4 or across filesystems.
-Repository support does not establish that the fleet scratch path supports
-reflink: `noded.diffBanking` remains false until #5699 validates the staged XFS
-loop path on a dev node and #4970 records the demo-postgres latency and
-correctness comparison. Only full bundles ever enter the archive.
+Banking always writes a Full snapshot. The dormant dirty-page diff path and
+its merge-at-bank reflink helper were removed in 2026-11: its prerequisite,
+XFS reflink scratch (#5699), was closed as not planned.
 
 **`maxLifetimeSeconds` is a version-convergence bound, not a data lifetime**:
 it stops a session riding a stale base forever and is never raised to buy
@@ -776,6 +770,63 @@ releases it once the heir row exists, each claim one atomic ETS insert, so a
 restore admitted inside the window is denied with the retryable
 `lineage_restore_in_flight` reason and a restore in flight holds the prefix for
 that sweep. The destructive GC gate stays off by default regardless.
+
+**Historical cessation evidence.** The management-authenticated, owner-scoped
+`GET /v1/sessions/:id/cessation-evidence` reads an exact original dispatch after
+its session projection has been pruned. It accepts only a retained original
+creation, one invocation start, positive `idled` parking/parked commits, and
+`idle_ttl` eviction. Guest, lineage, principal, workload, original node/VM,
+generation and timestamps must agree. Creation must be above the compaction
+marker; complete bounded creation history must contain no successor. Unknown
+transitions, missing fields, malformed payloads and exhausted bounds refuse.
+The limits are 256 target events/1 MiB, 32,768 creation events/16 MiB, and 64 KiB
+per payload. Neither raw payloads nor credential hashes leave the verifier.
+
+The backend reads marker, history and durable ownership in one read-only
+snapshot. The serialized session store and manager additionally refuse all hot
+lineage holders, even terminal ones, registry owners, pending restore authority
+and unresolved residency aliases. A surviving terminal holder could otherwise
+authorize a later restore. Successful reads carry a fresh observation timestamp
+and a stable hash of the exact positive history, independent of unrelated new
+sessions. They neither recreate a session nor determine its invocation result.
+
+**Why.** Seven-day projection pruning can remove a stopped guest while its
+thirty-day journal still contains positive cessation evidence. A missing row
+alone cannot justify recovery. This proof is explicitly scoped to the deployed
+single-writer control plane (`replicas: 1`, `strategy: Recreate`), not an
+unimplemented multi-writer authority. A crashed manager's orphan Restore/Prime
+RPC may finish resource work, but cannot register, Assign or dispatch through
+its dead owner. The restart regression covers that distinction; the proof does
+not assert that every orphan RPC has stopped. Consumers must retain their own
+freshness, exact ownership, audited authorization and unknown-outcome fences.
+
+**Retained-session recovery fencing.** The private factory recovery workflow
+uses management-authenticated `POST /v1/sessions/:id/recovery-fence`, restricted
+to the retained principal without a session-token or admin substitution. Preview
+binds a request key to generation zero, one exact dispatch and its interrupted
+turn marker, positive `idled` parking, and `idle_ttl` or `node_gone` eviction.
+Complete bounded original/creation history and fresh durable/hot ownership checks
+must exclude every successor, residency alias and dispatch-capable pending
+restore; tracked handoff exports also refuse. Missing evidence fails closed.
+
+Apply repeats those checks under the serialized manager and compares the exact
+preview digest in one backend transaction. It appends `session_recovery_fenced`
+and writes only immutable `sessions.recovery_fence_json`; original state,
+timestamps, interruption and usage remain unchanged. An identical request can
+read back a fresh proof after a lost response. A changed key, identity, history,
+claim or digest cannot reuse the fence as recovery authority. Freshness and the
+fenced flag are excluded from the stable preview digest.
+
+**Why.** A retained terminal row remains eligible for workspace restoration, so
+proof of prior physical cessation alone cannot safely authorize retry. Restore
+admission now reads the durable fence on every restoring create, including after
+an uncertain apply, and fails closed on unavailable storage. The field survives
+restart; after ordinary projection pruning, the missing durable holder refuses
+as `unknown_lineage` even if ETS still has the old row. The fence never fabricates
+an invocation result or recreates a missing native receipt. It shares the existing
+single-writer deployment assumption. Orphan non-dispatching export RPCs may finish
+uploading bytes, but cannot restore the fenced lineage or authorize execution;
+the proof makes no assertion that all resource RPCs have ceased.
 
 **Why.** A control-plane restart during an interruptible bank could leave a
 benign generation advance indistinguishable from an unauthorized one, forcing
@@ -1048,8 +1099,8 @@ against them.
    to the pod UID and node name claims in the brick's bound ServiceAccount
    token, so a brick can establish only its own stream. The one carve-out is
    destruction: an instance is recorded destroyed only after the owning node
-   confirms teardown (gate `nodeConfirmedDestroy`: true in production
-   and dev since 2026-08-22, #4758), and reconciliation is fail-closed toward destruction (an
+   confirms teardown (unconditional since 2026-11; armed in production and dev
+   from 2026-08-22, #4758), and reconciliation is fail-closed toward destruction (an
    unrecognised node VM is an orphan to destroy, unless it carries the
    `origin: ACTIVATOR` marker, in which case it is adopted and backfilled).
    Model-checked (`adoption.tla`) against control-plane and node crashes
@@ -2015,15 +2066,11 @@ that existing serving path before polling can resume.
 
 The Codex sidecar excludes grants at 97 percent or explicit exhaustion, and
 never falls from a fresh usable tier into stale or exhausted quota after a
-token-fetch failure. With `SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION=true`, the
-KG gate can ignore exhausted accounts beside a fresh permitting account. Unknown inventory, malformed evidence, role floors
-and no fresh permitting account still defer. Cached sidecar observations age
-even while the broker is unavailable. The gate's compatibility setting defaults
-to false because monolith and EmberVM promote independently. First deploy and
-verify every sidecar's exclusion, then enable the setting through a separate
-monolith values change (`swarm.codexExhaustedGrantExclusion: true`). Until that activation, reobserved exhaustion still
-vetoes KG admission, preserving the old conservative contract. Opposite version
-skew could let an old sidecar select an account the new gate excludes.
+token-fetch failure. The KG gate ignores exhausted accounts beside a fresh
+permitting account. Unknown inventory, malformed evidence, role floors and no
+fresh permitting account still defer. Cached sidecar observations age even
+while the broker is unavailable. Every sidecar carries the exclusion, so an old
+sidecar can no longer select an account the gate excludes.
 
 **Account preference** (enabled on the hub for factory and interactive guests): `grantPolicy: prefer-first`
 on a two-member Codex catalog pool chooses its first member whenever fresh usage

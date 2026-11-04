@@ -1,8 +1,15 @@
 // Invented data only. No IDs, notes or decisions are loaded from production.
+import { summarizeBoard } from "../src/lib/private/factory-summary.js";
+
 export const itemId = "100001";
 export const taskId =
   "t-synthetic-78381e85-5d08-4751-a77a-long-operator-investigation";
 export const routes = {
+  dashboard: "/",
+  updates: "/updates",
+  qwen: "/qwen",
+  execution: "/factory/execution",
+  drain: "/factory/execution/drain",
   board: "/factory",
   escalations: "/factory/escalations",
   item: `/factory/work-items/${itemId}`,
@@ -252,10 +259,122 @@ export function board(empty = false) {
 export function fixtureData(view, scenario = "populated") {
   const error = scenario === "unavailable",
     empty = scenario === "empty";
+  if (view === "dashboard") return dashboardData(scenario);
+  if (view === "execution") return { sessions: [], models: [], error: false };
+  if (view === "updates")
+    return {
+      updates: [],
+      projects: [],
+      technologies: [],
+      months: [],
+      selectedMonth: "2026-10",
+      selectedProject: "",
+      selectedTechnology: "",
+      error: false,
+      invalidMonth: false,
+    };
   if (view === "board")
     return { board: error ? null : board(empty), task: null, error };
   if (view === "escalations")
     return { escalations: error || empty ? [] : escalations(), error };
   if (scenario === "missing") return { itemId, missing: true };
   return { itemId, document: error ? null : workItem(empty), error };
+}
+
+export function dashboardData(scenario = "populated") {
+  const daily = {
+    note_id: "synthetic-daily",
+    title: "Synthetic daily task",
+    status: "todo",
+    due: "2026-10-29",
+  };
+  const weekly = {
+    note_id: "synthetic-weekly",
+    title: "Synthetic weekly task",
+    status: "todo",
+    due: "2026-10-31",
+  };
+  if (scenario === "unavailable")
+    return { dashboard: null, tasksDaily: null, tasksWeekly: null };
+  // What a phone saw live on 3 November: a red workload, a red PR, many
+  // open PRs, and the board still on its way after a deploy.
+  if (scenario === "attention") {
+    const prs = Array.from({ length: 30 }, (_, i) => ({
+      number: 90100 + i,
+      title: `Synthetic open change ${i + 1}`,
+      url: `https://example.test/pull/${90100 + i}`,
+      ci: "passing",
+      draft: false,
+    }));
+    prs[0] = {
+      number: 90071,
+      title:
+        "Synthetic failing change: tidy the private theme chrome and verify basemap pixels",
+      url: "https://example.test/pull/90071",
+      ci: "failing",
+      draft: false,
+    };
+    return {
+      tasksDaily: [daily],
+      tasksWeekly: [daily],
+      dashboard: {
+        factory: null,
+        factory_pending: true,
+        today: { events: [] },
+        health: {
+          healthy: false,
+          scanned: 42,
+          unhealthy: {
+            applications: [{ namespace: "argocd", name: "synthetic-hub" }],
+          },
+        },
+        github: { open_prs: prs, recent_merges: [] },
+      },
+    };
+  }
+  return {
+    tasksDaily: scenario === "empty" ? [] : [daily],
+    tasksWeekly: scenario === "empty" ? [] : [daily, weekly],
+    dashboard: {
+      // The same summary the server attaches, from the same synthetic board.
+      factory: summarizeBoard(board(scenario === "empty")),
+      today: {
+        events:
+          scenario === "empty"
+            ? []
+            : [
+                { allDay: true, title: "Synthetic all-day observation" },
+                {
+                  time: "00:00",
+                  endTime: "00:01",
+                  title: "Synthetic past event",
+                },
+                {
+                  time: "00:01",
+                  endTime: "23:59",
+                  title: "Synthetic active event",
+                  location: "Synthetic long location " + "reference".repeat(16),
+                },
+              ],
+      },
+      health: { healthy: true, scanned: 42 },
+      github: {
+        open_prs:
+          scenario === "empty"
+            ? []
+            : [
+                {
+                  number: 90001,
+                  title:
+                    "Synthetic dashboard investigation " +
+                    "long-reference".repeat(10),
+                  url: "https://example.test/pull/90001",
+                  ci: "passing",
+                  draft: true,
+                },
+              ],
+        recent_merges: [],
+      },
+    },
+  };
 }

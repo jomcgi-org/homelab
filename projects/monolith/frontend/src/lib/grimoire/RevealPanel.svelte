@@ -79,7 +79,6 @@
     background: var(--grim-surface);
     color: var(--grim-ink);
     border-left: 1px solid var(--grim-line);
-    box-shadow: -12px 0 40px #0002;
     z-index: 20;
   }
   .head {

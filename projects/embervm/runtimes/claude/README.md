@@ -209,6 +209,60 @@ silently.
 
 ## Factory toolchains (#6642)
 
+### Source-push validation (#7458)
+
+The shared shim installs `push_format.py` for server-declared source nodes.
+Claude, Codex and Muse use `claude-runtime`; the `pi-spark` rollback adapter
+uses `pi-runtime`. Both images include the guard and formatter layers. The
+images reuse `multitool_tar` with the SHA-pinned `bazel/tools/tools.lock.json`
+entries for buildifier, gofumpt, ruff, shfmt and Helm. Prettier 3.9.6,
+prettier-plugin-svelte 4.1.1 and Svelte 5.56.9 reuse
+`//bazel/tools/image:prettier_tar` from `pnpm-lock.yaml`. Pi also receives the
+existing Node 22.22.0 layer. Both APK configurations add GNU grep because the
+repository generators use `grep --include`; Pi also adds `go-1.26` for the
+Go/proto generator. Both locks were regenerated with rules_apko's pinned apko
+v1.2.25, including its resolver's transitive package updates. The bootstrap
+guest could not run the wrapper's process substitution or Bazel's TLS fetch,
+so this delivery used the same release binary after verifying the SHA256 from
+rules_apko's versions.bzl. Locks were not hand-edited. Future updates use
+`update-apko-locks.sh` on a supported Linux builder.
+
+The relock also updates git, gh and glibc. Claude moves from libcrypto3/libssl3
+to openssl-3.6; Pi adds openssl-4.0 libraries and
+openssl-provider-legacy-allowed. Runtime acceptance must exercise TLS, Git and
+CLI startup in both fresh images. The formatter layer deliberately overlays
+apko's Helm 3.19.2 with CI's pinned Helm 3.16.4. The layer smoke test checks that
+effective version; APK lock checks alone do not verify the executable.
+
+The image builds `//:gazelle_binary` on Linux/amd64 and installs it as
+`/usr/local/libexec/homelab-gazelle`. Complete `ci regen` runs this repository
+binary, including its extensions, then the Go/proto pass used by PR CI. Both
+passes use `-bzlmod`, the image's `bazel_gazelle_go_repository_config` and
+`GOROOT` from the installed Go SDK. Static external resolution prevents an
+unknown import from invoking unpinned `go get`. Dependency-map additions need
+a runtime image with the matching repository mapping and Linux CI validation.
+It never resolves `gazelle` from PATH. An image-generated manifest checks the
+root Gazelle declaration, Gazelle/plugin Bazel versions and overrides, the
+extension's YAML dependencies, and the extension sources. Unrelated module
+pins and application Go requirements do not change the binary fingerprint.
+Changes to generator inputs require a rebuilt guest; validation fails with
+their paths instead of silently using an older generator.
+There is no per-node toolchain download or remote-format fallback.
+The guard requires the outgoing helper's `validation-protocol` handshake, so
+an older branch that ignores complete validation cannot silently pass. Bring
+that branch forward to the helper upgrade before pushing from an upgraded guest.
+
+The server takes the push destination from the immutable node pin. Hydration
+may start at main, the task branch for a fan-out node, or an adopted branch.
+The hook fetches an explicit main-to-origin/main refspec before validation so
+single-branch clones have the required baseline. Missing result evidence does
+not require a push contract during result persistence.
+
+Roll out the runtime images before the corresponding monolith dispatch change.
+Fresh source guests must demonstrate refusal of a committed malformed tree,
+successful corrected pushes, and surviving per-node result evidence. No rollout
+or 14-day measurement is part of this repository-only delivery.
+
 The factory retro found ~26% of sessions bootstrapping a toolchain (`pip install
 pytest`, downloading helm or Go) before doing any work, so the tools the repo's
 own validation needs ship in the base. A fresh factory session should use them
@@ -216,7 +270,7 @@ instead of installing its own.
 
 | Tool | apko package | Why this stream |
 |------|--------------|-----------------|
-| helm | `helm-3` | The repo pins helm 3.16.4 (`bazel/tools/tools.lock.json`); Wolfi's plain `helm` is 4.x. Wolfi only carries 3.19.x, so this is the nearest 3 release, not an exact match. |
+| helm | `helm-3`, overlaid by the formatter layer | The effective binary is CI's pinned 3.16.4 (`bazel/tools/tools.lock.json`). The layer replaces Wolfi's 3.19.x executable; the APK package remains in the lock. |
 | go | `go-1.26` | `go.mod` says `go 1.26.0` with no toolchain line, so the packaged 1.26.x needs no toolchain download. |
 | node | `nodejs-22` | Matches the major of the Bazel node toolchain (`node.toolchain` 22.22.0 in `MODULE.bazel`) and the monolith frontend image. Wolfi resolves the guest's patch version independently. |
 | pnpm | `pnpm~10` | Matches `pnpm_version` 10.34.5 in `MODULE.bazel`. A bare `pnpm` resolves to the pnpm 11 provider, which wants Node >= 22.13. |

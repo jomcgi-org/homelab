@@ -124,6 +124,110 @@ def enable(policy):
     assert controls.set_control("enable", "operator")["ok"]
 
 
+@pytest.mark.parametrize("same_age, expected", [(False, 2), (True, 1)])
+def test_autonomous_receipt_queue_preserves_issue_age_and_ties(
+    db, policy, same_age, expected
+):
+    from datetime import datetime, timezone
+
+    policy.update(issue_numbers=[], intake={"enabled": True})
+    enable(policy)
+    # Newer issue was received first. Equal creation times break by issue
+    # identity, independent of receipt insertion order.
+    for number in (3, 1, 2):
+        snapshot = github_issue(number)
+        snapshot["created_at"] = (
+            "2026-09-01T00:00:00Z"
+            if same_age or number == 2
+            else "2026-09-02T00:00:00Z"
+        )
+        receive_issue(
+            "owner/repo",
+            number,
+            snapshot["title"],
+            "body",
+            snapshot["html_url"],
+            INTAKE_ACTOR,
+            issue=snapshot,
+        )
+    with Session(db) as session:
+        receipts = session.exec(
+            select(FactoryReceipt).order_by(FactoryReceipt.id)
+        ).all()
+        assert [row.issue_number for row in receipts] == [3, 1, 2]
+        # Receipt timestamps deliberately disagree with issue age.
+        receipts[0].created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        session.commit()
+    admitted = admit_next("test")
+    assert admitted["ok"], admitted
+    with Session(db) as session:
+        assert (
+            session.get(FactoryReceipt, admitted["receipt_id"]).issue_number == expected
+        )
+
+
+def test_full_repo_autonomous_queue_cannot_overtake_operator_receipts(
+    db, policy, monkeypatch
+):
+    from datetime import UTC, datetime, timedelta
+
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "3")
+    policy.update(
+        max_tasks={"delivery": 3, "advisory": 0},
+        intake={"enabled": True},
+        repos={
+            "owner/repo": {"max_tasks": {"delivery": 1, "advisory": 0}},
+            "owner/other": {
+                "enabled": True,
+                "max_tasks": {"delivery": 1, "advisory": 0},
+            },
+        },
+    )
+    enable(policy)
+    issue(1, repo="owner/other")
+    occupied = admit_next("test")
+    assert occupied["ok"], occupied
+
+    queued = []
+    for repo, number, actor in (
+        ("owner/other", 3, INTAKE_ACTOR),
+        ("owner/repo", 1, "operator"),
+        ("owner/repo", 2, "operator"),
+        ("owner/repo", 3, INTAKE_ACTOR),
+    ):
+        snapshot = github_issue(number)
+        snapshot["html_url"] = f"https://github.com/{repo}/issues/{number}"
+        received = receive_issue(
+            repo,
+            number,
+            snapshot["title"],
+            "body",
+            snapshot["html_url"],
+            actor,
+            issue=snapshot,
+        )
+        queued.append(received["receipt"]["id"])
+    with Session(db) as session:
+        for offset, receipt_id in enumerate(queued):
+            session.get(FactoryReceipt, receipt_id).created_at = datetime(
+                2026, 1, 1, tzinfo=UTC
+            ) + timedelta(minutes=offset)
+        session.commit()
+
+    # The oldest autonomous receipt cannot run while its repo is full. It
+    # must not lend that queue position to newer work in the other repo.
+    for receipt_id in queued[1:]:
+        admitted = admit_next("test")
+        assert admitted["ok"], admitted
+        assert admitted["receipt_id"] == receipt_id
+        with Session(db) as session:
+            assert session.get(FactoryReceipt, queued[0]).state == "queued"
+            assert (
+                session.get(FactoryReceipt, occupied["receipt_id"]).state == "admitted"
+            )
+        assert controls.finish_task(admitted["task_id"], "succeeded", "test")["ok"]
+
+
 @pytest.mark.parametrize("identity", ["canonical", "alias", "legacy"])
 @pytest.mark.parametrize("history", ["cancelled", "held", "failed_refinement"])
 def test_natural_history_fence_rechecks_receiving_and_claim_without_blocking_others(
@@ -259,6 +363,60 @@ def test_explicit_delivery_keeps_refinement_landing_hold(db, policy, alias):
     assert controls.task_snapshot(admitted["task_id"])["direction"]["landing_hold"] == {
         "reason": "leave unmerged"
     }
+
+
+@pytest.mark.parametrize("task_class", ["bug-fix", "refine"])
+@pytest.mark.parametrize("evidence", ["exact", "different_gate", "operator", "unknown"])
+def test_hold_inheritance_requires_exact_refused_planner_provenance(
+    db, policy, monkeypatch, task_class, evidence
+):
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    enable(policy)
+    hold = {"actor": "factory:conductor", "cause": "planner:test", "reason": "stage"}
+    direction = {
+        "landing_hold": hold,
+        "landing_hold_provenance": {
+            "origin": "operator" if evidence == "operator" else "planner",
+            "cause": "planner:test",
+            "gate_id": "exact",
+            "hold": hold,
+        },
+        "landing_hold_refusals": [
+            {
+                "cause": "planner:test",
+                "gate_id": "other" if evidence == "different_gate" else "exact",
+            }
+        ],
+    }
+    if evidence == "unknown":
+        direction.pop("landing_hold_provenance")
+    with Session(db) as session, session.begin():
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=1,
+                generation=99,
+                task_class=task_class,
+                title="earlier",
+                body="body",
+                url="https://github.com/owner/repo/issues/1",
+                actor="operator",
+                state="succeeded",
+                direction_json=json.dumps(direction),
+            )
+        )
+    receive_issue(
+        "owner/repo",
+        1,
+        "delivery",
+        "body",
+        "https://github.com/owner/repo/issues/1",
+        "operator",
+    )
+    result = admit_next("scheduler")
+    assert result["ok"], result
+    received = controls.task_snapshot(result["task_id"])["direction"] or {}
+    assert ("landing_hold" in received) is (evidence != "exact")
 
 
 @pytest.mark.parametrize("held", [False, True])
@@ -416,7 +574,6 @@ def test_admission_recall_reuses_sqlite_session(db, policy, monkeypatch, caplog)
     from knowledge import recall_cache
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.setenv("KNOWLEDGE_RECALL_ENABLED", "true")
     engine_calls = []
     submissions = []
 

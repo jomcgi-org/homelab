@@ -189,8 +189,8 @@ defmodule Embervm.PoolManager do
             # The VM exists now: hold the debit until the daemon's next report
             # counts it, then let it drop.
             Inflight.settle(node_id, meta.claim_ref, table: state.inflight_table)
-            _ = safe(fn -> append_primed(state, wl, vm_id, node_id) end)
-            _ = safe(fn -> state.deposit_fun.(state.dispatcher, node_id, wl, vm_id) end)
+            _ = Embervm.SafeCall.run(fn -> append_primed(state, wl, vm_id, node_id) end)
+            _ = Embervm.SafeCall.run(fn -> state.deposit_fun.(state.dispatcher, node_id, wl, vm_id) end)
 
           {:error, reason} ->
             Inflight.release(node_id, meta.claim_ref, table: state.inflight_table)
@@ -269,7 +269,7 @@ defmodule Embervm.PoolManager do
 
     Enum.each(targets, fn {{instance_id, workload}, target} ->
       _ =
-        safe(fn ->
+        Embervm.SafeCall.run(fn ->
           state.reservation_target_fun.(instance_id, workload, target.count, target.mem_mib)
         end)
     end)
@@ -277,7 +277,7 @@ defmodule Embervm.PoolManager do
     state.reservation_targets
     |> Map.drop(Map.keys(targets))
     |> Enum.each(fn {{instance_id, workload}, old} ->
-      _ = safe(fn -> state.reservation_target_fun.(instance_id, workload, 0, old.mem_mib) end)
+      _ = Embervm.SafeCall.run(fn -> state.reservation_target_fun.(instance_id, workload, 0, old.mem_mib) end)
     end)
 
     %{state | reservation_targets: targets}
@@ -517,7 +517,7 @@ defmodule Embervm.PoolManager do
           if Map.get(acc.floor_satisfied, wl) == satisfied do
             acc
           else
-            _ = safe(fn -> write_floor_status(acc, w.namespace, wl, satisfied) end)
+            _ = Embervm.SafeCall.run(fn -> write_floor_status(acc, w.namespace, wl, satisfied) end)
             %{acc | floor_satisfied: Map.put(acc.floor_satisfied, wl, satisfied)}
           end
 
@@ -664,16 +664,6 @@ defmodule Embervm.PoolManager do
   defp schedule_refill(state) do
     Process.send_after(self(), :refill, state.refill_interval_ms)
     state
-  end
-
-  defp safe(fun) do
-    try do
-      fun.()
-    rescue
-      _ -> :error
-    catch
-      _, _ -> :error
-    end
   end
 
   defp append_primed(%{op_log: nil}, _workload, _vm_id, _node_id), do: :ok

@@ -17,14 +17,14 @@ from factory.orchestration import factory_improvements as improvements
 from factory.orchestration.factory_improvement_preview import digest, preview
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 
-ACTOR = "factory:improvement-scout"
-TASK_CLASS = "advisory-diagnosis"
+ACTOR = fence.ACTOR
+TASK_CLASS = fence.TASK_CLASS
 CLAIM = "scout_claim"
 REVIEW = "scout_review"
 SETTLED = "scout_settled"
-COLLECT_KEY = "scout_collect_1"
-REVIEW_KEY = "scout_review_1"
-MODEL = "sol"
+COLLECT_KEY = fence.COLLECT_KEY
+REVIEW_KEY = fence.REVIEW_KEY
+MODEL = fence.MODEL
 MAX_PROMPT = 60_000
 
 FINDING_SCHEMA = {
@@ -253,11 +253,6 @@ def is_scout(task_id: str) -> bool:
     return _receipt(task_id) is not None
 
 
-def transport_allowed(task_id: str, node_key: str, attempt: int) -> bool:
-    """Compatibility seam; the executor imports the minimal leaf directly."""
-    return fence.transport_allowed(task_id, node_key, attempt)
-
-
 def dispatch_allowed(task_id: str) -> dict:
     """Rechecked at physical transport, including delayed starts and retries."""
     if _prior_settlement(task_id) is not None:
@@ -408,6 +403,14 @@ def _prompt(current, *, collection=None):
             "and reliability gaps aligned with active goals. Do not invent work to consume quota. "
             "Include factory bottlenecks, prompt failures and obsolete rules when evidence links "
             "them to a goal. Prefer a scoped repair or removal over new machinery. "
+            "Investigate evidence of avoidable paused time, "
+            "operator interruptions, recovery outcomes and repeated causes. Unmatched pauses "
+            "have unknown duration/outcome. Do not copy private recovery records into "
+            "findings or transcripts. "
+            "Do not call a pause avoidable without evidence of an authorized safe recovery. "
+            "Separate transport/missing-result failures from code rejection and legitimate "
+            "review/CI/dependency waits. Measure reduced disruption without weakening "
+            "unknown-execution fences, human holds, subscription caps or acceptance. "
             "Return an empty findings list when none is actionable. Each finding needs fresh evidence "
             "at the exact repo_head, reproduction, benefit, scoped acceptance tests and proposed owner. "
             "In benefit state the hypothesis and observed baseline; in acceptance_tests state the "

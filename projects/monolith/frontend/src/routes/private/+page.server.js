@@ -1,3 +1,6 @@
+import { invalidateTasks, readTasks } from "$lib/private/backend-cache.js";
+import { loadDashboard } from "$lib/private/dashboard-load.js";
+
 // No URL fallback: API_BASE is injected via values.yaml in prod; a localhost
 // dev run sets it in the environment. A missing var fails loudly instead of
 // silently serving from the wrong backend.
@@ -7,31 +10,20 @@ const API_BASE = process.env.API_BASE;
 // vocabulary in knowledge/store.py patch_task (done_statuses).
 const DONE_STATUSES = ["done", "cancelled"];
 
-export async function load({ fetch }) {
-  // Fail-soft parallel fetches: a dead backend section degrades to
-  // null/[] so SSR always renders.
-  const [dashboard, tasksDaily, tasksWeekly] = await Promise.all([
-    fetch(`${API_BASE}/api/home/dashboard`, {
-      signal: AbortSignal.timeout(15000),
-    })
-      .then((res) => (res.ok ? res.json() : null))
-      .catch(() => null),
-    fetch(`${API_BASE}/api/knowledge/tasks/daily`, {
-      signal: AbortSignal.timeout(10000),
-    })
-      .then((res) => (res.ok ? res.json() : { tasks: [] }))
-      .catch(() => ({ tasks: [] })),
-    fetch(`${API_BASE}/api/knowledge/tasks/weekly`, {
-      signal: AbortSignal.timeout(10000),
-    })
-      .then((res) => (res.ok ? res.json() : { tasks: [] }))
-      .catch(() => ({ tasks: [] })),
+export async function load() {
+  // Every section comes from the process-wide backend cache: the page
+  // answers from memory and refreshes in the background, so a stalled
+  // backend never holds the page past the gateway's timeout. A cold process
+  // waits a few seconds at most for its first reading.
+  const [{ dashboard }, daily, weekly] = await Promise.all([
+    loadDashboard(API_BASE),
+    readTasks(API_BASE, "daily"),
+    readTasks(API_BASE, "weekly"),
   ]);
-
   return {
     dashboard,
-    tasksDaily: tasksDaily?.tasks ?? [],
-    tasksWeekly: tasksWeekly?.tasks ?? [],
+    tasksDaily: daily?.tasks ?? [],
+    tasksWeekly: weekly?.tasks ?? [],
   };
 }
 
@@ -56,6 +48,8 @@ export const actions = {
         },
       );
       if (!res.ok) return { error: true };
+      // The cached lists still hold the old status: read them again next.
+      invalidateTasks();
       return { status: next };
     } catch {
       return { error: true };

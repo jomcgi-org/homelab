@@ -4,14 +4,22 @@
   // component state, capped to the last 12 turns when sent upstream.
   const HISTORY_CAP = 12;
 
+  // `seed` ({ text, at }) fills the box with a question to send, e.g. from a
+  // Needs-you row; each new `at` fills it again. Sending stays one tap.
+  let { seed = null } = $props();
+
   let messages = $state([]);
   let input = $state("");
+  $effect(() => {
+    if (seed?.text) input = seed.text;
+  });
   let streaming = $state(false);
   let logEl = $state(null);
 
   function scrollToBottom() {
     if (!logEl) return;
     requestAnimationFrame(() => {
+      if (!logEl) return;
       logEl.scrollTop = logEl.scrollHeight;
     });
   }
@@ -133,15 +141,23 @@
     {/each}
   </div>
   <div class="input-bar">
+    <!-- Not disabled while streaming: a disabled field drops focus and the
+         phone keyboard with it. send() already ignores a second send. -->
     <input
       type="text"
       bind:value={input}
       onkeydown={onKeydown}
       placeholder={streaming ? "thinking..." : "ask the cluster..."}
-      disabled={streaming}
       aria-label="Ask the cluster"
+      aria-busy={streaming}
+      enterkeyhint="send"
+      autocomplete="off"
     />
-    <button onclick={send} disabled={streaming || !input.trim()}>
+    <button
+      aria-label="Send message"
+      onclick={send}
+      disabled={streaming || !input.trim()}
+    >
       &rarr;
     </button>
   </div>
@@ -155,7 +171,7 @@
      * the transcript dominates and the input is a slim rail beneath it. */
     min-height: 300px;
     max-height: 560px;
-    font-family: var(--font);
+    font-family: var(--font-ui);
   }
 
   .chat-log {
@@ -167,12 +183,12 @@
     gap: 10px;
     padding: 4px 0 12px 0;
     scrollbar-width: thin;
-    scrollbar-color: var(--fg-tertiary) transparent;
+    scrollbar-color: var(--ink-2) transparent;
   }
 
   .chat-empty {
     font-size: 13px;
-    color: var(--fg-tertiary);
+    color: var(--ink-2);
     margin: 0;
   }
 
@@ -187,25 +203,25 @@
   .msg--user {
     align-self: flex-end;
     text-align: right;
-    color: var(--fg-secondary);
+    color: var(--ink-2);
     white-space: pre-wrap;
   }
 
   .msg--assistant {
     align-self: flex-start;
-    border-left: 1px solid var(--border);
+    border-left: 1px solid var(--stroke);
     padding-left: 12px;
   }
 
   .msg-text {
-    color: var(--fg);
+    color: var(--ink);
     white-space: pre-wrap;
     word-break: break-word;
   }
 
   .tool-line {
     font-size: 12px;
-    color: var(--fg-tertiary);
+    color: var(--ink-2);
     font-variant-numeric: tabular-nums;
     padding: 2px 0;
     word-break: break-all;
@@ -213,13 +229,13 @@
 
   .error-line {
     font-size: 13px;
-    color: var(--danger);
+    color: var(--tone-disk);
     margin-top: 4px;
   }
 
   .cursor {
     animation: blink 0.8s step-end infinite;
-    color: var(--fg-secondary);
+    color: var(--ink-2);
   }
 
   @keyframes blink {
@@ -230,22 +246,24 @@
 
   .input-bar {
     display: flex;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--stroke);
   }
 
+  /* 16px: anything smaller makes iOS Safari zoom the page on focus. */
   .input-bar input {
     flex: 1;
-    font-family: var(--font);
-    font-size: 13px;
-    color: var(--fg);
+    min-height: 44px;
+    font-family: var(--font-ui);
+    font-size: 1rem;
+    color: var(--ink);
     background: transparent;
     border: none;
-    outline: none;
+    min-width: 0;
     padding: 10px 0;
   }
 
   .input-bar input::placeholder {
-    color: var(--fg-tertiary);
+    color: var(--ink-2);
   }
 
   .input-bar input:disabled {
@@ -253,10 +271,12 @@
   }
 
   .input-bar button {
-    font-family: var(--font);
+    min-width: 44px;
+    min-height: 44px;
+    font-family: var(--font-ui);
     font-size: 14px;
     font-weight: 700;
-    color: var(--fg);
+    color: var(--ink);
     background: transparent;
     border: none;
     padding: 10px 0 10px 12px;

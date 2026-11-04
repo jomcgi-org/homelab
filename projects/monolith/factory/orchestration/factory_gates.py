@@ -9,8 +9,9 @@ import re
 
 from sqlmodel import select
 
+from core.env import flag
 from factory.orchestration.factory_controls import _audit, _locked_session, _now
-from factory.orchestration.factory_models import FactoryReceipt
+from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt, WorkItem
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,12 @@ GATE_EFFECTS = (
     "deletes_data",
     "touches_external_account",
     "uses_credentials",
+)
+
+# Generated scope and checklist entries must each fit one Markdown line. Cover
+# every splitlines separator, and reject HTML comments and leading whitespace.
+_GATE_LINE_PATTERN = (
+    r"^(?![\s\S]*(?:<!--|[\r\n\u000b\u000c\u001c-\u001e\u0085\u2028\u2029]))\S"
 )
 
 GATE_SCHEMA = {
@@ -51,12 +58,22 @@ GATE_SCHEMA = {
             "properties": {effect: {"type": "boolean"} for effect in GATE_EFFECTS},
         },
         "value": {"type": "string", "minLength": 1, "maxLength": 1000},
-        "scope": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "scope": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "pattern": _GATE_LINE_PATTERN,
+        },
         "live_checks": {
             "type": "array",
             "minItems": 1,
             "maxItems": 10,
-            "items": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000,
+                "pattern": _GATE_LINE_PATTERN,
+            },
         },
         "delivered_prs": {
             "type": "array",
@@ -89,39 +106,27 @@ GATE_SCHEMA = {
 }
 
 GATE_PROMPT = (
-    "Set leave_unmerged: true only for explicitly unmerged delivery scope, not "
-    "merely outstanding live checks. Existing holds remain binding; only the "
-    "authorized landing owner may merge or deploy. "
-    "For missing names, retention counts, thresholds or similar parameters, propose a "
-    "`gate` with kind `parameter`, classification `reversible`, concrete `value` "
-    "and `reason`. The server records the default; no person is needed. "
-    "Classify actual spending, production deletion or external-account effects "
-    "as `spending`, `prod_deletion` or `external_account`. Keep safe repository "
-    "defaults separate. Every gate declares `effects`: booleans `spends_money`, "
-    "`deletes_data`, `touches_external_account` and `uses_credentials`. Set each "
-    "true for that effect from choosing or acting on the gate, including existing "
-    "credential use or changes. Any true effect sends the gate to a person. "
-    "`reason` is free prose and may explain safety; it cannot override effects. "
-    "For live validation this runner cannot "
-    "perform, use kind `live_validation`, classification `reversible`, a "
-    "repository-only default-off or staged `scope`, and `live_checks` naming "
-    "outstanding acceptance. The server appends the checklist to the issue. "
-    "Never weaken acceptance. State the rescope "
-    "in the PR body; remove closing keywords while operational work remains. "
-    "Required Linux CI and independent exact-head review still apply. For an "
-    "existing open PR delivering this issue, use kind `delivery_target`: the "
-    "conductor adopts its branch, rebases onto main, repairs and re-reviews the "
-    "same PR. A head outside `factory/` or a branch owned by another running "
-    "task needs a person. "
-    "If the repository scope is already merged and only live checks remain, "
-    "use kind `repository_delivered` (`reversible`) with `delivered_prs`, "
-    "`live_checks`, and `tracked_in` only if the rescope names an open issue "
-    "owning those checks; the server hands them to a person. "
-    "Carry a live_validation gate on ordinary plan/add_node decisions as well "
-    "as completed implementation artifacts when repository work can proceed "
-    "but operational acceptance remains. Graph edits never replace that durable "
-    "checklist. Return the gate with the would-be needs-human/escalate/pause artifact, "
-    "including the proposed default or scope, so the server can continue it. "
+    "When a decision would otherwise stop for a person, propose a `gate` with "
+    "the would-be pause artifact so the server can continue it. Use kind "
+    "`parameter` (`reversible`, concrete `value`) for a missing name, count, "
+    "threshold or similar default. Use `live_validation` (`reversible`) with "
+    "a repository-only default-off or staged `scope` when repository work can "
+    "proceed but operational acceptance remains. Each `live_checks` entry is "
+    "one check the factory can run after rollout and settle within 72 hours: "
+    "a verify_deployment result, a status or audit read, a log query. Never a "
+    "multi-day observation, a backlog triage or a person's judgement; the "
+    "smallest live check is a verified rollout of the delivered revision. "
+    "Carry it on ordinary plan and add_node decisions too. "
+    "Use `delivery_target` to adopt an existing open PR for this issue, "
+    "and `repository_delivered` when the repository scope is already merged "
+    "and only live checks remain. Classify real spending, production "
+    "deletion or external-account effects as such. Every gate declares "
+    "`effects`, true for each effect that choosing or acting on it has, "
+    "including credential use. Any true effect sends the gate to a person, "
+    "and `reason` cannot override effects. Never weaken acceptance: state a "
+    "rescope in the PR body and drop closing keywords while operational work "
+    "remains. Existing holds remain binding; only the authorized landing owner "
+    "may merge or deploy. "
 )
 
 
@@ -160,15 +165,44 @@ def guidance(task: dict) -> str:
     if task.get("delivery_adoption") and not task.get("dependency_review"):
         parts.append(
             f"Adopted PR #{task['delivery_pr_number']} on {task['delivery_branch']}. "
-            "Rebase onto main, repair, push to this branch and independently "
-            "re-review the resulting head. Update this PR."
+            "Inspect fresh PR checks, reviews, draft status and conflicts. Finish the "
+            "draft, repair failing checks or review findings, and rebase only for "
+            "conflicts or CI writeback. Push to this branch, update this PR and "
+            "independently re-review the resulting head. Preserve explicit holds "
+            "and remaining operational acceptance. Never create a replacement PR."
         )
     return "\n".join(parts)
 
 
+_SCOPE_TAILS = (
+    "Operational acceptance remains on the issue; do not close it",
+    "Operational acceptance remains on the issue",
+    "Deliver repository changes default-off or staged",
+)
+
+
+def _scope_sentence(scope: str) -> str:
+    """The planner's scope without the server's own suffix echoed back into it.
+
+    Planners copy the previous contract from the issue, suffix included, so
+    the rendered line read "...do not close it.. Deliver repository changes
+    default-off or staged. Operational acceptance remains on the issue; do
+    not close it." twice over.
+    """
+    text = scope.strip()
+    while True:
+        text = text.rstrip(" .")
+        for tail in _SCOPE_TAILS:
+            if text.endswith(tail):
+                text = text[: -len(tail)]
+                break
+        else:
+            return text
+
+
 def rescope_text(gate: dict) -> str:
     return (
-        f"Conductor rescope: {gate['scope']}. Deliver repository changes default-off "
+        f"Conductor rescope: {_scope_sentence(gate['scope'])}. Deliver repository changes default-off "
         "or staged. Operational acceptance remains on the issue; do not close it.\n"
         + "\n".join(f"- [ ] {check}" for check in gate["live_checks"])
     )
@@ -205,6 +239,129 @@ def restricted(gate: dict) -> bool:
     )
 
 
+class LandingHoldRefused(ValueError):
+    code = "landing_hold_refused"
+    reason = (
+        "A planner cannot create an unmerged landing hold. Remove leave_unmerged "
+        "and return the staged live_validation scope and acceptance checklist. "
+        "Required CI, exact-head review and the merge queue still apply. "
+        "An explicit operator hold requires server-observed operator provenance."
+    )
+
+    def __init__(self):
+        super().__init__(self.reason)
+
+
+def gate_identity(gate: dict) -> str:
+    return hashlib.sha256(json.dumps(gate, sort_keys=True).encode()).hexdigest()[:20]
+
+
+def restates(gate: dict, bound: dict) -> bool:
+    """A staged unmerged gate repeating a bound one's scope and effects."""
+
+    def staged(item):
+        try:
+            validate_gate(item)
+        except ValueError:
+            return False
+        return (
+            item.get("kind") == "live_validation"
+            and item.get("leave_unmerged") is True
+            and not restricted(item)
+        )
+
+    def boundary(item):
+        return {k: v for k, v in item.items() if k not in {"reason", "live_checks"}}
+
+    return (
+        staged(gate)
+        and staged(bound)
+        and boundary(gate) == boundary(bound)
+        and set(bound["live_checks"]) <= set(gate["live_checks"])
+    )
+
+
+def enforce_hold_origin(task: dict, gate: dict, cause: str) -> str:
+    """Only server-owned inputs establish provenance; artifact prose cannot."""
+    if not gate.get("leave_unmerged"):
+        return "none"
+    refused = False
+    with _locked_session() as (db, _control):
+        row = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        item = db.get(WorkItem, row.work_item_id) if row.work_item_id else None
+        if item is None:
+            item = db.exec(
+                select(WorkItem).where(
+                    WorkItem.github_repo == row.repo,
+                    WorkItem.github_issue_number == row.issue_number,
+                )
+            ).first()
+        human = item is not None and "human" in {label.lower() for label in item.labels}
+        human = (
+            human
+            or db.exec(
+                select(FactoryAudit.id).where(
+                    FactoryAudit.task_id == row.task_id,
+                    FactoryAudit.action == "human_handoff",
+                )
+            ).first()
+            is not None
+        )
+        origin = (
+            "operator"
+            if cause.startswith("operator:")
+            else ("human_issue" if human else "planner")
+        )
+        direction = json.loads(row.direction_json or "{}")
+        from factory.orchestration.factory_controls import landing_held
+
+        # Restating a gate already bound under a binding operator or legacy hold
+        # creates nothing; resolve() keeps the hold unchanged. A planner-made
+        # hold stays refusable.
+        provenance = direction.get("landing_hold_provenance")
+        repeat = (
+            landing_held({"direction": direction})
+            and not (
+                isinstance(provenance, dict) and provenance.get("origin") == "planner"
+            )
+            and any(
+                restates(gate, bound) for bound in direction.get("conductor_gates", [])
+            )
+        )
+        if (
+            flag("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED")
+            and origin == "planner"
+            and not repeat
+        ):
+            identity = gate_identity(gate)
+            # Refusal metadata is server-owned, separate from accepted gates.
+            evidence = {"cause": cause, "gate_id": identity}
+            refusals = direction.setdefault("landing_hold_refusals", [])
+            if evidence not in refusals:
+                refusals.append(evidence)
+                row.direction_json = json.dumps(direction)
+                row.updated_at = _now()
+                db.add(row)
+                _audit(
+                    db,
+                    "factory:conductor",
+                    "landing_hold_refused",
+                    task_id=task["id"],
+                    cause=cause,
+                    gate_id=identity,
+                    refusal_code=LandingHoldRefused.code,
+                    reason=LandingHoldRefused.reason,
+                )
+            refused = True
+    # Raise after the transaction commits, including on replay.
+    if refused:
+        task["landing_hold"] = landing_held({"direction": direction})
+        raise LandingHoldRefused()
+    return origin
+
+
 def resolve(task: dict, artifact: dict, cause: str) -> bool:
     """True only after a typed reversible gate has been durably decided."""
     from factory.orchestration import factory_conductor as conductor
@@ -220,6 +377,7 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
     # Reasons can explain safety without requesting operational authority.
     if restricted(gate):
         return False
+    origin = enforce_hold_origin(task, gate, cause)
     if gate["kind"] == "repository_delivered":
         # Delivery tasks only. A refine that resolves a gate goes on to apply
         # agent-ready, which is the opposite of handing the checks off.
@@ -244,9 +402,7 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
             )
         return adopted
     number, repo = task["issue_number"], task["repo"]
-    identity = hashlib.sha256(json.dumps(gate, sort_keys=True).encode()).hexdigest()[
-        :20
-    ]
+    identity = gate_identity(gate)
     marker = f"<!-- factory-gate:{task['id']}:{identity} -->"
     text = (
         f"Decided by the conductor: {gate['value']}, because {gate['reason']}; reversible"
@@ -264,6 +420,14 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
         if gate not in saved:
             saved.append(gate)
         if gate.get("leave_unmerged"):
+            created = "landing_hold" not in direction
+            if (
+                created
+                and origin == "planner"
+                and flag("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED")
+            ):
+                # The hold was released after enforce_hold_origin read it.
+                raise LandingHoldRefused()
             direction.setdefault(
                 "landing_hold",
                 {
@@ -272,29 +436,55 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
                     "reason": gate["reason"],
                 },
             )
+            if created:
+                direction["landing_hold_provenance"] = {
+                    "origin": origin,
+                    "cause": cause,
+                    "gate_id": identity,
+                    "hold": direction["landing_hold"],
+                }
+            elif origin in {"operator", "human_issue"}:
+                # A trusted reassertion must remain binding even if this exact
+                # restriction previously had refused planner provenance.
+                direction.pop("landing_hold_provenance", None)
         row.direction_json = json.dumps(direction)
         row.updated_at = _now()
         db.add(row)
     task["conductor_gates"] = saved
-    task["landing_hold"] = "landing_hold" in direction
+    from factory.orchestration.factory_controls import landing_held
+
+    task["landing_hold"] = landing_held({"direction": direction})
     conductor._post_decision_card(repo, number, marker, text)
     if gate["kind"] == "live_validation":
+        from factory.orchestration.factory_gate_blocks import render, rewrite
+
         issue = conductor.github_get(repo, f"issues/{number}")
         body = issue.get("body") or ""
-        if marker not in body:
-            github_write(
-                repo,
-                f"issues/{number}",
-                {"body": body + "\n\n" + marker + "\n" + text},
-                method="PATCH",
+        replacement = render(task["id"], identity, text)
+        try:
+            updated, _ = rewrite(body, replacement)
+        except ValueError as exc:
+            # The durable gate and card still carry acceptance. Ambiguous human
+            # text only prevents this body write, never the PR rescope or audit.
+            conductor._audit_once(
+                task["id"],
+                cause,
+                "conductor_gate_issue_body_skipped",
+                {"cause": cause, "issue_number": number, "reason": str(exc)},
             )
+        else:
+            if updated != body:
+                github_write(
+                    repo,
+                    f"issues/{number}",
+                    {"body": updated},
+                    method="PATCH",
+                )
     if gate["kind"] == "live_validation":
         rescope_pr(
             task, artifact.get("pr_number") or task.get("delivery_pr_number"), gate
         )
     with _locked_session() as (db, _control):
-        from factory.orchestration.factory_models import FactoryAudit
-
         prior = db.exec(
             select(FactoryAudit.detail_json).where(
                 FactoryAudit.task_id == task["id"],

@@ -2,12 +2,16 @@
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
 load("@aspect_rules_py//py:defs.bzl", "py_library")
+load("//bazel/tools/image:multitool_tar.bzl", "multitool_tar")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 filegroup(
     name = "shim_source",
-    srcs = ["shim.py"],
+    srcs = [
+        "push_format.py",
+        "shim.py",
+    ],
     visibility = ["//projects/monolith:__pkg__"],
 )
 
@@ -23,7 +27,10 @@ filegroup(
 # python-3.12 and no pip packages, so the shim must not grow third-party imports.
 py_library(
     name = "shim_lib",
-    srcs = ["shim.py"],
+    srcs = [
+        "push_format.py",
+        "shim.py",
+    ],
     imports = ["."],
 )
 
@@ -31,9 +38,13 @@ py_library(
 # python3 against it). Platform-independent python source.
 tar(
     name = "shim_tar",
-    srcs = ["shim.py"],
+    srcs = [
+        "push_format.py",
+        "shim.py",
+    ],
     mtree = [
         "./usr/local/bin/ember-claude-shim type=file content=$(execpath shim.py) mode=0755 uid=0 gid=0",
+        "./usr/local/bin/push_format.py type=file content=$(execpath push_format.py) mode=0755 uid=0 gid=0",
     ],
     # The pi runtime image ships this SAME artifact rather than rebuilding its
     # own, so the two guests can never drift in the shim. Same reasoning for
@@ -117,6 +128,55 @@ py_test(
     ],
 )
 
+multitool_tar(
+    name = "formatters",
+    tools = [
+        "buildifier",
+        "gofumpt",
+        "helm",
+        "ruff",
+        "shfmt",
+    ],
+    visibility = ["//projects/embervm/runtimes/pi:__pkg__"],
+)
+
+platform_transition_filegroup(
+    name = "gazelle_linux",
+    srcs = ["//:gazelle_binary"],
+    # gazelle_binary is a custom Go rule without go_binary's mode transition.
+    # rules_go's pure platform makes its libraries and binary disagree; use
+    # the repository Linux platform that also builds //:gazelle in CI.
+    target_platform = "//bazel/tools/platforms:linux_x86_64",
+)
+
+genrule(
+    name = "gazelle_inputs",
+    srcs = [
+        "gazelle_inputs.py",
+        "//:gazelle_runtime_inputs",
+        "//bazel/helm/gazelle:runtime_inputs",
+    ],
+    outs = ["gazelle-inputs.json"],
+    cmd = "python3 $(location gazelle_inputs.py) write $@ $(locations //:gazelle_runtime_inputs) $(locations //bazel/helm/gazelle:runtime_inputs)",
+)
+
+tar(
+    name = "gazelle_tar",
+    srcs = [
+        "gazelle_inputs.py",
+        ":gazelle_inputs",
+        ":gazelle_linux",
+        "@bazel_gazelle_go_repository_config//:WORKSPACE",
+    ],
+    mtree = [
+        "./usr/local/libexec/homelab-gazelle type=file content=$(execpath :gazelle_linux) mode=0755 uid=0 gid=0",
+        "./usr/local/libexec/gazelle_inputs.py type=file content=$(execpath gazelle_inputs.py) mode=0644 uid=0 gid=0",
+        "./usr/local/libexec/gazelle-inputs.json type=file content=$(execpath :gazelle_inputs) mode=0644 uid=0 gid=0",
+        "./usr/local/libexec/gazelle-repo-config type=file content=$(execpath @bazel_gazelle_go_repository_config//:WORKSPACE) mode=0644 uid=0 gid=0",
+    ],
+    visibility = ["//projects/embervm/runtimes/pi:__pkg__"],
+)
+
 apko_image(
     name = "image",
     # amd64-only: the Claude Code CLI is a single 262 MB arch-specific ELF and
@@ -130,6 +190,9 @@ apko_image(
     repository = "ghcr.io/jomcgi/homelab/projects/embervm/runtimes/claude",
     tars = [
         ":shim_tar",
+        ":formatters_linux_amd64",
+        ":gazelle_tar",
+        "//bazel/tools/image:prettier_tar",
         ":guest_config_tar",
         ":prewarm_clis_tar",
         ":ci_log_tar",
@@ -176,6 +239,51 @@ py_test(
         ":shim_lib",
         "@pip//pytest",
     ],
+)
+
+py_test(
+    name = "push_format_test",
+    srcs = ["push_format_test.py"],
+    imports = ["."],
+    target_compatible_with = ["@platforms//os:linux"],
+    deps = [
+        ":shim_lib",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "gazelle_inputs_test",
+    srcs = [
+        "gazelle_inputs.py",
+        "gazelle_inputs_test.py",
+    ],
+    imports = ["."],
+    deps = ["@pip//pytest"],
+)
+
+py_test(
+    name = "formatter_layers_test",
+    srcs = ["formatter_layers_test.py"],
+    data = [
+        ":formatters_linux_amd64",
+        ":gazelle_tar",
+        "//:gazelle_runtime_inputs",
+        "//bazel/helm/gazelle:smoke_sources",
+        "//bazel/tools/format:prettier.config.cjs",
+        "//bazel/tools/image:node_tar_linux_amd64",
+        "//bazel/tools/image:prettier_tar",
+        "@rules_go//go",
+    ],
+    env = {
+        "FORMATTER_TARS": "$(rootpaths :formatters_linux_amd64) $(rootpaths :gazelle_tar) $(rootpaths //bazel/tools/image:node_tar_linux_amd64) $(rootpaths //bazel/tools/image:prettier_tar)",
+        "GO_RUNNER": "$(rootpath @rules_go//go)",
+    },
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+    deps = ["@pip//pytest"],
 )
 
 py_test(

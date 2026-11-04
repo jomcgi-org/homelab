@@ -3600,6 +3600,45 @@ class ClaudeProcess:
         return {"terminal_reason": reason, "killed": timed_out, "timeout": timed_out}
 
 
+def _read_queued_json(adapter, timeout, runner):
+    """Read one JSONL event from an adapter's stdout pump queue."""
+    with adapter.process_lock:
+        output_queue = adapter._stdout_queue
+    if output_queue is None:
+        return None
+    try:
+        raw = output_queue.get(timeout=timeout)
+    except queue.Empty as exc:
+        raise TimeoutError from exc
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("%s emitted invalid JSON: %s" % (runner, exc)) from exc
+
+
+def _interrupt_turn(adapter, send_abort, timeout):
+    """Send a turn abort and wait for the turn; kill the CLI if either fails."""
+    try:
+        send_abort()
+    except Exception:
+        adapter._close_process(kill=True)
+        return {
+            "terminal_reason": "user_interrupt",
+            "killed": False,
+            "timeout": False,
+        }
+    timed_out = not adapter._turn_done.wait(timeout=timeout)
+    if timed_out:
+        adapter._close_process(kill=True)
+    return {
+        "terminal_reason": "user_interrupt",
+        "killed": timed_out,
+        "timeout": timed_out,
+    }
+
+
 class CodexProcess:
     """Own one long-lived Codex app-server process and bind threads lazily."""
 
@@ -3891,20 +3930,7 @@ url = %s
         sys.stderr.flush()
 
     def _read_event(self, timeout):
-        with self.process_lock:
-            output_queue = self._stdout_queue
-        if output_queue is None:
-            return None
-        try:
-            raw = output_queue.get(timeout=timeout)
-        except queue.Empty as exc:
-            raise TimeoutError from exc
-        if raw is None:
-            return None
-        try:
-            return json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise RuntimeError("codex emitted invalid JSON: %s" % exc) from exc
+        return _read_queued_json(self, timeout, "codex")
 
     def _resume(self, session_id, system_prompt=None):
         params = {
@@ -4410,13 +4436,6 @@ url = %s
                         pass
                 self._turn_done.set()
 
-    @staticmethod
-    def _reap_process(process):
-        try:
-            process.wait()
-        finally:
-            _managed_child_pids.discard(process.pid)
-
     def interrupt(self, timeout=INTERRUPT_TIMEOUT):
         with self.process_lock:
             process = self.process
@@ -4433,7 +4452,8 @@ url = %s
                 "killed": False,
                 "timeout": False,
             }
-        try:
+
+        def send_abort():
             with self._write_lock:
                 self._rpc_id += 1
                 request_id = self._rpc_id
@@ -4445,21 +4465,8 @@ url = %s
                     "params": {"threadId": thread_id, "turnId": turn_id},
                 }
             )
-        except Exception:
-            self._close_process(kill=True)
-            return {
-                "terminal_reason": "user_interrupt",
-                "killed": False,
-                "timeout": False,
-            }
-        timed_out = not self._turn_done.wait(timeout=timeout)
-        if timed_out:
-            self._close_process(kill=True)
-        return {
-            "terminal_reason": "user_interrupt",
-            "killed": timed_out,
-            "timeout": timed_out,
-        }
+
+        return _interrupt_turn(self, send_abort, timeout)
 
     def _close_process(self, kill=False):
         with self.process_lock:
@@ -5682,7 +5689,6 @@ class PiProcess:
         self._in_flight = False
         self._model = None
         self._system_prompt = None
-        self._session_file = None
         # Spawn-time workspace identity, read by the manager's remediation to
         # detect a volume mount hiding the tmpfs workspace this process was
         # spawned against. Same contract as ClaudeProcess.
@@ -5874,20 +5880,7 @@ class PiProcess:
             output_queue.put(None)
 
     def _read_event(self, timeout):
-        with self.process_lock:
-            output_queue = self._stdout_queue
-        if output_queue is None:
-            return None
-        try:
-            raw = output_queue.get(timeout=timeout)
-        except queue.Empty as exc:
-            raise TimeoutError from exc
-        if raw is None:
-            return None
-        try:
-            return json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise RuntimeError("pi emitted invalid JSON: %s" % exc) from exc
+        return _read_queued_json(self, timeout, "pi")
 
     def _send(self, command):
         with self._write_lock:
@@ -5919,12 +5912,9 @@ class PiProcess:
 
     def _state(self):
         data = self._command({"type": "get_state"})
-        session_file = data.get("sessionFile")
         session_id = data.get("sessionId")
         if isinstance(session_id, str) and session_id:
             self.session_id = session_id
-        if isinstance(session_file, str) and session_file:
-            self._session_file = session_file
         model = data.get("model")
         if isinstance(model, dict):
             model_id = model.get("id")
@@ -6439,23 +6429,7 @@ class PiProcess:
                 "timeout": False,
             }
         self._in_flight = False
-        try:
-            self._send({"type": "abort"})
-        except Exception:
-            self._close_process(kill=True)
-            return {
-                "terminal_reason": "user_interrupt",
-                "killed": False,
-                "timeout": False,
-            }
-        timed_out = not self._turn_done.wait(timeout=timeout)
-        if timed_out:
-            self._close_process(kill=True)
-        return {
-            "terminal_reason": "user_interrupt",
-            "killed": timed_out,
-            "timeout": timed_out,
-        }
+        return _interrupt_turn(self, lambda: self._send({"type": "abort"}), timeout)
 
     def _close_process(self, kill=False):
         with self.process_lock:
@@ -6681,6 +6655,9 @@ class ProcessManager:
             self._record_turn_phase("hydration", hydration_start, status)
 
     def _hydrate_workspace_inner(self, repo, branch, hydration_start):
+        pinned_commit = (
+            branch[7:] if re.fullmatch(r"commit:[0-9a-f]{40}", branch) else None
+        )
         if self._hydration_status in ("ok", "skipped_existing"):
             if _checkout_is_usable(self._checkout_dir):
                 self._hydration_status = "skipped_existing"
@@ -6767,6 +6744,10 @@ class ProcessManager:
             "https://github.com/%s.git" % repo,
             checkout_dir,
         ]
+        if pinned_commit:
+            # Clone with the existing credential/proxy configuration, then
+            # fetch the exact commit. Never pass a commit to clone --branch.
+            clone_command[3:5] = ["--no-checkout"]
         failure = None
         try:
             clone_start = _turn_timing_now()
@@ -6790,6 +6771,18 @@ class ProcessManager:
                     "git command failed with exit code %s%s"
                     % (result.returncode, ": " + stderr if stderr else "")
                 )
+            if pinned_commit:
+                for args in (
+                    ["fetch", "--no-tags", "origin", pinned_commit],
+                    ["checkout", "--detach", pinned_commit],
+                ):
+                    subprocess.run(
+                        ["git", "-C", checkout_dir, *args],
+                        capture_output=True,
+                        check=True,
+                        timeout=GIT_CLONE_TIMEOUT_SECONDS,
+                        **_cli_privilege_kwargs(),
+                    )
             validation = subprocess.run(
                 ["git", "-C", checkout_dir, "rev-parse", "--verify", "HEAD"],
                 capture_output=True,
@@ -6798,6 +6791,8 @@ class ProcessManager:
             )
             if validation.returncode != 0:
                 raise RuntimeError("cloned directory validation failed: HEAD not found")
+            if pinned_commit and validation.stdout.decode().strip() != pinned_commit:
+                raise RuntimeError("cloned directory does not match pinned commit")
         except Exception as exc:
             failure = exc
             # A partial clone from a failed attempt must not survive. A retry
@@ -6876,7 +6871,7 @@ class ProcessManager:
             return False
         # Base build safety depends on the noded placeholder volume staying blank
         # (zero-filled, no filesystem). Guest-init in guest init forbids mounting a
-        # placeholder during base build (volume_linux.go:97-100). If the placeholder
+        # placeholder during base build (volume_linux.go:94-97). If the placeholder
         # gains a superblock this probe would misfire and skip the build liveness check.
         volume_has_ext4 = _volume_has_ext4()
         if self._prewarm_clis and not volume_has_ext4:
@@ -6984,6 +6979,7 @@ class ProcessManager:
         effort=None,
         runtime_meter=None,
         workspace_handoff=None,
+        push_format=None,
     ):
         total_start = _turn_timing_now()
         self._turn_started_at = total_start
@@ -7023,6 +7019,57 @@ class ProcessManager:
                     "", ["cloning %s@%s" % (repo, branch)]
                 )
             self._hydrate_workspace(repo, branch)
+            if re.fullmatch(r"commit:[0-9a-f]{40}", branch):
+                # Restored volumes and repeated turns must prove the same HEAD
+                # too. Refuse without changing an existing mismatched checkout.
+                checkout = os.path.join(self.workspace, "src")
+                try:
+                    observed = (
+                        subprocess.run(
+                            ["git", "-C", checkout, "rev-parse", "--verify", "HEAD"],
+                            capture_output=True,
+                            check=True,
+                            timeout=5,
+                            **_cli_privilege_kwargs(),
+                        )
+                        .stdout.decode()
+                        .strip()
+                    )
+                    clean = (
+                        subprocess.run(
+                            ["git", "-C", checkout, "diff", "--quiet", "HEAD", "--"],
+                            capture_output=True,
+                            timeout=5,
+                            check=False,
+                            **_cli_privilege_kwargs(),
+                        ).returncode
+                        == 0
+                    )
+                except (OSError, subprocess.SubprocessError, UnicodeError):
+                    observed = None
+                    clean = False
+                if observed != branch[7:] or not clean:
+                    evidence = {
+                        "version": 1,
+                        "expected_sha": branch[7:],
+                        "observed_sha": observed,
+                        "tracked_clean": clean,
+                        "invocation_started": False,
+                        "dispatch_id": dispatch_id,
+                        "turn_seq": turn_seq,
+                    }
+                    return {
+                        "is_error": True,
+                        "result": "Pinned inspection checkout unavailable before model execution",
+                        "terminal_reason": "error",
+                        "stop_reason": "refill_inspection_preflight_failed",
+                        "num_turns": 0,
+                        "activities": [],
+                        "permission_denials": [],
+                        "usage": {"refill_inspection_preflight": evidence},
+                        "dispatch_id": dispatch_id,
+                        "turn_seq": turn_seq,
+                    }
         adapter = self._adapter(model)
         if runtime_meter is not None and adapter is not self.codex:
             raise RuntimeError("runtime metering requires the supported Codex adapter")
@@ -7030,6 +7077,24 @@ class ProcessManager:
             getattr(self, "workspace", DEFAULT_WORKSPACE), "src"
         )
         turn_base = _capture_turn_base(checkout_dir)
+        push_format_state = None
+        if push_format is not None:
+            import push_format as push_format_guard
+
+            installed = subprocess.run(
+                [
+                    sys.executable,
+                    push_format_guard.__file__,
+                    "install",
+                    checkout_dir,
+                    json.dumps(push_format),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                **_cli_privilege_kwargs(),
+            )
+            push_format_state = installed.stdout.strip()
         dispatch_bound = False
         interrupted_record = None
         if dispatch_id is not None:
@@ -7154,6 +7219,10 @@ class ProcessManager:
                     record["workspace_hydration"] = {"failed": self._hydration_error}
                 elif self._hydration_status:
                     record["workspace_hydration"] = self._hydration_status
+            if isinstance(record, dict) and push_format_state is not None:
+                drift = push_format_guard.evidence(push_format_state)
+                if drift is not None:
+                    record.setdefault("usage", {})["push_format"] = drift
             if isinstance(record, dict) and not reason:
                 diff = _capture_turn_diff(checkout_dir, turn_base)
                 if diff is not None:
@@ -7457,6 +7526,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self._send(400, {"error": "workspace_handoff must be an object"})
             return
         thinking = payload.get("thinking")
+        if "push_format" in payload and not isinstance(payload["push_format"], dict):
+            self._send(400, {"error": "push_format must be an object"})
+            return
         if thinking is not None and not (
             thinking is True
             or thinking is False
@@ -7503,6 +7575,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             dispatch = {"dispatch_id": dispatch_id.strip()} if dispatch_id else {}
             if "workspace_handoff" in payload:
                 dispatch["workspace_handoff"] = payload["workspace_handoff"]
+            if "push_format" in payload:
+                dispatch["push_format"] = payload["push_format"]
             if result_receipt and result_receipt.get("runtime_meter"):
                 dispatch["runtime_meter"] = result_receipt
             if payload.get("turn_seq") is not None:

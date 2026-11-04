@@ -19,6 +19,7 @@ go_test(
     srcs = ["mcp_test.go"],
     embed = [":mcp"],
     deps = [
+        "//projects/scotland-connector/internal/aurora",
         "//projects/scotland-connector/internal/connector",
         "//projects/scotland-connector/internal/fixture",
         "//projects/scotland-connector/internal/meter",

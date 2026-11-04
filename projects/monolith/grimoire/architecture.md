@@ -107,7 +107,12 @@ infrastructure. Players receive opaque references for NPC entity keys in both
 the voice map and narration bodies, so hidden NPC ids stay private. Free labels
 and voice hints are visible to every admitted member: the DM uses an NPC entity
 key for a hidden identity and avoids identifying text in hints. DMs retain raw
-keys. Server-generated audio is tracked separately in #6629.
+keys, and the DM map adds `speaker_name` for NPC keys still visible to the DM.
+The DM speaker pickers list saved presets from it and find other NPCs by name
+search; the session poll requests no NPC list. An NPC key without a name has
+left the DM's view: narration omits it, and the preset editor offers only its
+deletion, which checks the stored row and no entity. Server-generated audio is
+tracked separately in #6629.
 
 The browser queues only events already received in the session feed, in sequence
 order with one utterance in flight. Initial history is marked handled without
@@ -147,8 +152,8 @@ snippets.
 
 ## Transcripts
 
-The transcript routes require both `GRIMOIRE_PLAY_ENABLED` and
-`GRIMOIRE_TRANSCRIPT_ENABLED` to be exactly `true`, read on every request.
+The transcript routes require `GRIMOIRE_TRANSCRIPT_ENABLED` to be exactly
+`true`, read on every request.
 `grimoire.transcript.enabled` defaults to false until the capture surface is
 ready. No deploy override enables it.
 
@@ -187,7 +192,7 @@ utterance text. Ingest forbids unknown fields, including raw audio.
 Every campaign member can read retention settings. The DM sets
 `transcript_retention_days` from 1 to 365 days, with a default of 30. The daily
 `grimoire-redact-transcripts` CronWorkflow in `monolith-workflows` runs at 03:32
-UTC regardless of the play and transcript flags. It redacts utterances older than the campaign window by
+UTC regardless of the transcript flag. It redacts utterances older than the campaign window by
 server `created_at`, preserving a stub with `redacted: true`, timing, source
 and speaker label when present. The speaker remains in `author_member_id`.
 Event ids, sequence numbers and check-in state stay unchanged. Stubs retain
@@ -247,18 +252,14 @@ refreshes the game-session row, refuses ended sessions, validates the audience
 against that campaign, and allocates `max(seq) + 1` inside the caller's
 transaction. The helper flushes; the caller commits or rolls back. Grant
 updates and deletes lock matching reveal rows and retract the affected reveal
-history when play is enabled. Rows and sequence numbers are retained.
+history. Rows and sequence numbers are retained.
 
 **Why.** A Postgres sequence consumes numbers on rollback and would leave gaps.
 Locking the existing session row serializes writers within one session while
 other sessions can append independently. Allocation and insertion roll back
 together. The unique index also rejects a writer that bypasses serialization.
 
-The play HTTP routes require `GRIMOIRE_PLAY_ENABLED` to equal the lowercase
-string `true`, read on each request before identity and membership checks.
-`grimoire.play.enabled` defaults to false in the chart; deployment values stay
-off. Existing session creation and status updates are unaffected. Campaign
-members may list sessions and poll events. DMs may append every kind except
+The play HTTP routes are always on. Campaign members may list sessions and poll events. DMs may append every kind except
 `utterance` and `roll`; players may append only `action` with `dm` or `table`
 audience. HTTP utterances are refused for every caller because #6618 owns
 ingest. Generic event writes refuse `roll` for every caller with 403 because
@@ -296,9 +297,7 @@ results or seeds. A dependency override lets tests use a seeded RNG and assert
 the exact stored body without changing production randomness. Characterless
 players' table-only rule keeps every accepted roll visible to its roller.
 
-Part of #6610, which owns coordinated enablement of `grimoire.play.enabled`
-and live audience checks after the #6612 play surface is ready. Deployment
-values remain off. No operational flag flip belongs to this change.
+Part of #6610, which owns live audience checks.
 
 ### Handouts
 
@@ -434,10 +433,8 @@ Failures roll back both grants and events.
 On the entity list, DM-only `not_granted_to` means "hide entities that PC
 already knows": exclude global entities and any grant scope using a
 correlated grant alias in the shared visibility query. Knowledge search does
-not accept this filter. Authorization checks membership, play flag, DM role,
-then PC campaign membership, in that order. With the flag off, the new filters and
-bulk route return 404 and existing grant and read behavior is unchanged.
-Live enablement and live audience checks remain in #6610.
+not accept this filter. Authorization checks membership, DM role, then PC
+campaign membership, in that order. Live audience checks remain in #6610.
 
 **Why.** The grantee projection bounds the stored feed snapshot. One
 transaction keeps knowledge and feed changes together; an identity-free
@@ -504,8 +501,7 @@ unknown kinds and deleted rows are invisible to everyone, including the DM.
 Every query also filters the campaign. Seeded SQLite and PostgreSQL agreement
 matrices pin the SQL and Python policies against an independent oracle.
 
-The notes API works independently of `GRIMOIRE_PLAY_ENABLED`. Membership and
-the current character determine the viewer. Players with a character may create
+Membership and the current character determine the viewer. Players with a character may create
 either kind; DMs may create party notes only. Character notes may be edited or
 deleted only by their author; party notes by their author or the DM. Only a
 character note's author may change its DM sharing flag. The stored campaign
@@ -658,10 +654,9 @@ unassigned.
 moving knowledge between accounts. Campaign-scoped roles let a DM seat their
 own table without operator access.
 
-### Optional single-use campaign links (disabled)
+### Single-use campaign links
 
-`grimoire.invitationLinks.enabled` defaults to false. When enabled, campaign
-owners create a seven-day, single-recipient link for a registered player and
+Campaign owners create a seven-day, single-recipient link for a registered player and
 copy it themselves. The raw capability is shown once, carried in a URL
 fragment, then exchanged for a Secure, HttpOnly, SameSite=Lax resume cookie.
 The database stores only its SHA-256 digest. Opening the link does not grant
@@ -680,7 +675,7 @@ self-contained, no-store landing page with no telemetry or authenticated assets.
 The authenticated `/grimoire/join/accept` route and every other Grimoire route
 keep their existing OIDC policy. No private API is exposed on the friends host.
 
-New-account enrollment has a second default-off flag,
+New-account enrollment has a default-off flag,
 `grimoire.invitationLinks.enrollmentEnabled`. Issuance requires both campaign
 ownership and the existing `operators` account-administration entitlement.
 Ordinary campaign owners cannot create account-enrollment invitations. The
@@ -746,10 +741,10 @@ campaign creation, since open enrollment otherwise lets any Discord account
 create campaigns. Follow-up and the enablement decision live in
 [#7461](https://github.com/jomcgi-org/homelab/issues/7461).
 
-### Optional-link enablement checks
+### Link enrollment enablement checks
 
 Human-owned access review and activation are tracked in [#6858](https://github.com/jomcgi-org/homelab/issues/6858).
-Keep both flags off until reviewed provisioning and normal CI have passed.
+Keep enrollment off until reviewed provisioning and normal CI have passed.
 Before enabling, test the exact pinned Authentik version and Envoy routing with
 disposable accounts: fresh signup, existing-account sign-in, interrupted signup,
 Back/Close/reopen, wrong-account rejection, duplicate submission, expiry,
@@ -784,3 +779,25 @@ After the normal Linux CI and deployment gates, verify with two fresh accounts:
    Shared `/_app/` assets accept either app's signed cookie, while page and API
    permissions remain separate. Requests to `/api/grimoire` on the friends
    hostname have no backend route.
+
+Sign-in renews in place. The gateway requests `offline_access`, which the
+provider maps, so Authentik issues a refresh token and Envoy renews the
+one-hour tokens on the first request after they expire. The provider rotates a
+refresh token only in its last day, so two requests renewing together do not
+revoke each other. With refresh tokens, ending a friend's Authentik session or
+editing the application's policies no longer signs them out of Grimoire; to
+cut someone off, deactivate their Authentik account, which deletes their
+refresh tokens, or remove them from the campaign. When renewal fails, a fetch
+(`Sec-Fetch-Mode: cors`) gets a 401 and a navigation still redirects to the
+login. The BFF state endpoint also answers 401 for a missing or rejected token.
+A single 401 or login redirect can be transient, so the session page shows
+Reconnecting and treats it as expiry only when another one arrives two to
+thirty seconds later with no other answer between them. Then, once no send is
+in flight, it keeps the composer, its audience, any interrupted send's request
+id and the viewer's user id and role in the tab's `sessionStorage` and reloads
+at most once a minute; within that minute it shows a signed-out notice. A
+restored draft never widens its audience, and a draft kept for another viewer
+is dropped. A poll that answers for a different account or role reloads the
+page, because panels such as knowledge search keep their own state. The live
+check remains: hold a real login past the access-token lifetime and confirm
+the session stays Live without a reload.

@@ -42,21 +42,21 @@
     position: absolute;
     top: 20px;
     left: 20px;
-    background: #ffffff;
-    border: 1.5px solid #141414;
-    box-shadow: 4px 4px 0 #141414;
+    background: var(--notes-sheet, #ffffff);
+    border: var(--notes-rule-width, 1.5px) solid var(--notes-ink, #141414);
+    box-shadow: var(--notes-shadow, 4px 4px 0 #141414);
     padding: 10px 12px;
     width: 280px;
     z-index: 5;
     font-family: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
-    color: #141414;
+    color: var(--notes-ink, #141414);
   }
   label {
     display: block;
     font-size: 9px;
     letter-spacing: 0.12em;
     margin-bottom: 6px;
-    color: #8a857a;
+    color: var(--notes-muted, #8a857a);
   }
   input {
     width: 100%;
@@ -65,24 +65,24 @@
     background: transparent;
     font-family: inherit;
     font-size: 14px;
-    color: #141414;
+    color: var(--notes-ink, #141414);
     padding: 0;
-    caret-color: #ff6b5b;
+    caret-color: var(--notes-accent, #ff6b5b);
   }
   input::placeholder {
-    color: rgba(20, 20, 20, 0.32);
+    color: var(--notes-muted, rgba(20, 20, 20, 0.32));
   }
   .search-hint {
     margin-top: 6px;
     font-size: 9px;
     letter-spacing: 0.1em;
-    color: #8a857a;
+    color: var(--notes-muted, #8a857a);
   }
   kbd {
     font-family: inherit;
     font-size: 9px;
-    border: 1px solid #141414;
+    border: 1px solid var(--notes-ink, #141414);
     padding: 1px 5px;
-    background: #f1ebdc;
+    background: var(--notes-band, #f1ebdc);
   }
 </style>

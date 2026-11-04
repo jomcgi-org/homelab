@@ -233,8 +233,9 @@ def refresh(card, body, actor):
             or prior.get("resolved") is not None
             or _identity(row, prior) != card["decision_id"]
             or watchdog(row, prior)
-            or controls.issue_body_hash(body)
-            == (prior.get("issue_body_sha256") or controls.issue_body_hash(row.body))
+            or controls.issue_body_unchanged(
+                prior.get("issue_body_sha256"), row.body, body
+            )
         ):
             return False
         reason = (

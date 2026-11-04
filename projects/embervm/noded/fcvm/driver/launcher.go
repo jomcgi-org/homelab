@@ -634,14 +634,10 @@ func setOOMScoreAdj(pid, score int) error {
 	return os.WriteFile(path, []byte(strconv.Itoa(score)), 0o644)
 }
 
-func waitForSocket(ctx context.Context, socketPath string, timeout time.Duration) error {
-	return waitForSocketOrExit(ctx, socketPath, timeout, nil)
-}
-
-// waitForSocketOrExit is waitForSocket that also gives up as soon as exited is
-// closed: a VMM or jailer that died before binding its socket never will, so
-// waiting out the full timeout only delays the failure. A nil channel never
-// fires.
+// waitForSocketOrExit waits up to timeout for socketPath to accept a connection,
+// and gives up as soon as exited is closed: a VMM or jailer that died before
+// binding its socket never will, so waiting out the full timeout only delays the
+// failure. A nil channel never fires.
 func waitForSocketOrExit(ctx context.Context, socketPath string, timeout time.Duration, exited <-chan struct{}) error {
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

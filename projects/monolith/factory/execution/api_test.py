@@ -955,7 +955,6 @@ def test_kg_drain_node_gets_no_recall_anywhere(monkeypatch, tmp_path, node_key):
     monkeypatch.setattr(mcp, "get_engine", lambda: engine)
     monkeypatch.setattr(mcp.store, "create_session", create_session)
     monkeypatch.setattr(recall, "recall_block", unexpected_recall)
-    monkeypatch.setenv("KNOWLEDGE_RECALL_ENABLED", "true")
 
     mcp._persist_session(
         "kg",

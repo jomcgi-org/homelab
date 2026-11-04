@@ -16,7 +16,7 @@
         "operationId": "light",
         "security": [],
         "summary": "Light and night-sky windows at a Scottish point",
-        "description": "Staged repository delivery pending operational acceptance. Astronomy is computed without upstream calls and remains available without a snapshot. Europe/London civil dates, today by default, three-day default span, seven-day maximum and no later than 13 days ahead. Windows are clipped to each civil date. Cloud verdicts describe supporting nearby-site clear twilight-dark hourly samples only. Missing observations, including golden/blue light, stay unknown. Night suitability is reported separately. Anonymous, cookie-free responses use plan's bounded browser and Cloudflare cache policies, including ETag validation; forecasts prevent permanent caching.",
+        "description": "Astronomy is computed without upstream calls and remains available without a snapshot. Europe/London civil dates, today by default, three-day default span, seven-day maximum and no later than 13 days ahead. Windows are clipped to each civil date. Cloud verdicts describe supporting nearby-site clear twilight-dark hourly samples only. Missing observations, including golden/blue light, stay unknown. Night suitability is reported separately. Anonymous, cookie-free responses use plan's bounded browser and Cloudflare cache policies, including ETag validation; forecasts prevent permanent caching.",
         "parameters": [
           {
             "name": "lat",
@@ -649,12 +649,12 @@
           "start_from": {
             "type": ["string", "null"],
             "format": "date-time",
-            "description": "Earliest start that keeps the walk in the slot; null unless it fits."
+            "description": "Earliest start that keeps the walk in the slot; null unless it fits. A walk longer than its slot gets one start (start_from equals start_by): before the slot so it finishes at the slot end, or at sunrise when that would be dark, so it runs past the slot end."
           },
           "start_by": {
             "type": ["string", "null"],
             "format": "date-time",
-            "description": "Latest start that finishes inside the slot; null unless it fits."
+            "description": "Latest start that finishes inside the slot; null unless it fits. Equals start_from for a walk longer than its slot."
           },
           "slot": {
             "oneOf": [
@@ -1099,6 +1099,10 @@
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Other walks walk_name matched, best first."
+                  },
+                  "match_note": {
+                    "type": "string",
+                    "description": "Set when walk_name matched several routes equally well, so the walk checked is a tie-break; also_matched lists others."
                   }
                 }
               }

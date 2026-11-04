@@ -1,8 +1,8 @@
 """Trip image storage on Cloudflare R2 through its S3 API.
 
 Trip photos are content-addressed (``img_<sha256[:12]>.jpg``) and uploaded to the
-``monolith-trips`` bucket. The client construction mirrors stars.grid._s3_client
-(shared chart credentials, path-style addressing, endpoint scheme guard) and the
+``monolith-trips`` bucket. The client comes from core.s3 (shared chart
+credentials, path-style addressing, endpoint scheme guard) and the
 idempotent put + auto-create-bucket fallback mirrors chat.store._blob_s3_put.
 
 Production uses a pre-existing bucket. The historical auto-create fallback
@@ -12,6 +12,8 @@ The dummy credential defaults are retained for legacy/tests, not R2 access.
 
 import logging
 import os
+
+from core.s3 import path_style_client
 
 logger = logging.getLogger("monolith.trips.s3")
 
@@ -26,27 +28,12 @@ def put_image(image_key: str, data: bytes, content_type: str) -> None:
     images have a read path (the SSR map renders them), so a silent miss would
     leave a broken point rather than an archival gap.
     """
-    import boto3
-    from botocore.config import Config
     from botocore.exceptions import ClientError
 
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "")
     if not endpoint:
         raise RuntimeError("SEAWEEDFS_S3_ENDPOINT unset; cannot store trip image")
-    # The chart supplies HTTPS for R2. Prefix HTTP only for scheme-less
-    # legacy/test endpoints, preserving the deployed scheme and region.
-    if not endpoint.startswith(("http://", "https://")):
-        endpoint = "http://" + endpoint
-    # Scheme guaranteed by the guard above; the inline nosemgrep
-    # suppresses boto3-endpoint-url-missing-scheme for Semgrep scans.
-    client = boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),
-        aws_secret_access_key=os.environ.get("S3_SECRET_ACCESS_KEY", "duckdb"),
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-        config=Config(s3={"addressing_style": "path"}),
-    )
+    client = path_style_client(endpoint)
 
     bucket = os.environ.get("TRIPS_S3_BUCKET", "monolith-trips")
 

@@ -321,7 +321,9 @@ def attach_task(engine):
                 conductor_model="sol",
             )
         )
-        row = session.exec(select(FactoryReceipt)).one()
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.actor == scout.ACTOR)
+        ).one()
         row.task_id = "t-scout"
         row.state = "admitted"
         session.commit()
@@ -803,8 +805,8 @@ def test_scout_transport_rejects_generic_nodes_changed_models_and_retries(
     assert scout.tick(data["policy"])["ok"]
     attach_task(engine)
     seed_run(engine, key, model=model, pin_model=pin_model, attempt=attempt)
-    assert not scout.transport_allowed("t-scout", key, attempt)
-    assert scout.transport_allowed("ordinary-task", key, attempt)
+    assert not fence.transport_allowed("t-scout", key, attempt)
+    assert fence.transport_allowed("ordinary-task", key, attempt)
 
 
 @pytest.mark.parametrize("action", [scout.SETTLED, service.ATTEMPT])
@@ -824,7 +826,7 @@ def test_settlement_waiting_for_unresolved_starts_fences_all_transport(db, actio
         )
         session.commit()
     assert scout.dispatch_allowed("t-scout")["reason"] == "scout_already_settled"
-    assert not scout.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
+    assert not fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
 
 
 @pytest.mark.parametrize("entrypoint", ["request", "reconcile"])
@@ -937,8 +939,8 @@ def test_missing_claim_cannot_reclassify_scout_as_ordinary_transport(db):
         session.commit()
     assert scout.owns_task("t-scout")
     assert not scout.is_scout("t-scout")
-    assert not scout.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
-    assert not scout.transport_allowed("t-scout", "conductor_funding_1", 1)
+    assert not fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
+    assert not fence.transport_allowed("t-scout", "conductor_funding_1", 1)
 
 
 @pytest.mark.parametrize(
@@ -991,6 +993,41 @@ def test_leaf_transport_requires_current_database_and_quota_evidence(db, change)
     assert not fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
 
 
+@pytest.mark.parametrize(
+    ("state", "paused"),
+    [("escalated", False), ("uncertain", False), ("admitted", True)],
+)
+def test_stalled_owner_neither_blocks_nor_is_touched_by_scout_transport(
+    db, state, paused
+):
+    engine, data = db
+    with Session(engine) as session:
+        session.add(
+            FactoryReceipt(
+                repo=service.REPO,
+                issue_number=7001,
+                generation=1,
+                title="Stalled task",
+                body="held",
+                url="https://github.com/jomcgi-org/homelab/issues/7001",
+                actor="factory:intake",
+                task_class="bug-fix",
+                state=state,
+                task_paused=paused,
+            )
+        )
+        session.commit()
+    assert scout.tick(data["policy"])["ok"]
+    attach_task(engine)
+    seed_run(engine, scout.COLLECT_KEY)
+    assert fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
+    with Session(engine) as session:
+        held = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.issue_number == 7001)
+        ).one()
+        assert (held.state, held.task_paused) == (state, paused)
+
+
 @pytest.mark.parametrize("change", ["pause", "policy", "new_owner", "goals"])
 def test_broker_delay_cannot_carry_stale_transport_permission(db, monkeypatch, change):
     engine, data = db
@@ -1031,3 +1068,50 @@ def test_broker_delay_cannot_carry_stale_transport_permission(db, monkeypatch, c
 
     monkeypatch.setattr(fence, "fetch_provider_quota_sync", delayed_read)
     assert not fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
+
+
+def test_private_recovery_audits_do_not_enter_publishable_scout_prompts():
+    data = current()
+    data["review_digest"] = "a" * 64
+    data["recovery_events"] = [
+        {"audit_id": 42, "task_id": "exact-task", "action": "pause_task"}
+    ]
+    collect = scout._prompt(data)
+    review = scout._prompt(data, collection={"findings": []})
+    assert '"audit_id": 42' not in collect and '"audit_id": 42' not in review
+    assert "exact-task" not in collect and "exact-task" not in review
+    assert "have unknown duration/outcome" in collect
+    assert "unknown-execution fences" in collect
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "pause_task",
+        "recurring_blocker",
+        "workflow_stranded",
+        "problem_issue_recovery_observed",
+    ],
+)
+def test_context_carries_bounded_pause_audits_as_private_advisory_evidence(db, action):
+    engine, _ = db
+    before = service.context()
+    with Session(engine) as session:
+        session.add(
+            FactoryAudit(
+                actor="test",
+                action=action,
+                task_id="task-a",
+                detail_json=dumps(
+                    {"ok": True, "reason": "x" * 1000, "private_unused": "omit"}
+                ),
+            )
+        )
+        session.commit()
+    after = service.context()
+    event = after["recovery_events"][0]
+    assert event["task_id"] == "task-a" and event["audit_id"]
+    assert event["detail"]["ok"] is True
+    assert event["reason_truncated"] and len(event["reason"]) == 500
+    assert "private_unused" not in str(event)
+    assert after["review_digest"] == before["review_digest"]

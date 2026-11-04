@@ -669,9 +669,8 @@ for line in sys.stdin:
                        "content": [{"type": "text",
                                     "text": os.environ["FAKE_PI_PARTIAL"]}],
                        "stopReason": "length",
+                       "finish_reason": "length",
                        "usage": {"input": 2, "output": 3}}
-            if not os.environ.get("FAKE_PI_OMIT_FINISH_REASON"):
-                message["finish_reason"] = "length"
             emit({"type": "message_end", "message": message})
             emit({"type": "agent_end", "messages": []})
         elif os.environ.get("FAKE_PI_MODE") == "tool-call-leak-balanced":

@@ -211,6 +211,14 @@ defmodule Embervm.SessionManager do
     GenServer.call(server, :create_admission_stats, timeout)
   end
 
+  def session_cessation_evidence(server, session_id, expected, principal) do
+    Embervm.OpLog.safe_server_call(server, {:session_cessation_evidence, session_id, expected, principal}, 50_000)
+  end
+
+  def session_recovery_fence(server, id, request, principal) do
+    Embervm.OpLog.safe_server_call(server, {:session_recovery_fence, id, request, principal}, 100_000)
+  end
+
   def residency_stats(server \\ __MODULE__) do
     GenServer.call(server, :residency_stats, 500)
   end
@@ -584,7 +592,6 @@ defmodule Embervm.SessionManager do
       restore_artifact_fun: Keyword.get(opts, :restore_artifact_fun, &default_restore_artifact/2),
       archive_volume_fun: Keyword.get(opts, :archive_volume_fun, &default_archive_volume/2),
       export_artifact_fun: Keyword.get(opts, :export_artifact_fun, &default_export_artifact/2),
-      cross_node_rejoin: Keyword.get(opts, :cross_node_rejoin, false),
       attach_epochs: %{},
       workspace_evidence: %{},
       handoff_exports: %{},
@@ -722,20 +729,8 @@ defmodule Embervm.SessionManager do
       # writers' keys (the merge-patch coexistence rule).
       status_writer: Keyword.get(opts, :status_writer, &Embervm.K8s.patch_workload_status/3),
       session_status_written: %{},
-      # EMBERVM_NODE_CONFIRMED_DESTROY (ADR embervm/014 decision 5). Off (default):
-      # destroyed is recorded first, then the VM is torn down asynchronously (today's
-      # behaviour). On: the durable destroying intent is recorded, the teardown RPC
-      # runs, and destroyed is recorded ONLY when the node confirms teardown; an
-      # unconfirmed teardown leaves the session in destroying for the reconcile loop.
-      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
-      # EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS. Off (default): a drain edge
-      # interrupts and banks every running session on the NODE. On: only sessions
-      # placed on the draining INSTANCE (node + pod_uid) are drained; a session on a
-      # co-located sibling brick keeps running. See drain_instance/4.
-      drain_instance_scoped: Keyword.get(opts, :drain_instance_scoped, false),
       # Alarm threshold (ms) for a session stuck in destroying, and the grace window
-      # (ms) before fail-closed orphan reconciliation acts (ADR embervm/014). Both
-      # only bite under the node_confirmed_destroy gate.
+      # (ms) before fail-closed orphan reconciliation acts (ADR embervm/014 decision 5).
       destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
       orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
       fleet_freshness_window_ms: Keyword.get(opts, :fleet_freshness_window_ms, @fleet_freshness_window_ms),
@@ -753,8 +748,7 @@ defmodule Embervm.SessionManager do
       # Session ids whose adoption transition was not applicable, with the state
       # that produced the warning. A state change makes the warning eligible again.
       logged_unapplicable: MapSet.new(),
-      unapplicable_states: %{},
-      restart_flush_inflight_invokes: Keyword.get(opts, :restart_flush_inflight_invokes, false)
+      unapplicable_states: %{}
     }
 
     # session_opts always carry a manager reference so the per-session idle timer can
@@ -802,8 +796,7 @@ defmodule Embervm.SessionManager do
         # An exact stop is included: departure is equally final for it, and the
         # completion tuple stays NULL rather than being synthesised, so a caller
         # holding the stop precondition can see that no proof was produced.
-        if state.node_confirmed_destroy and
-             node_gone_for_destroy?(state, session, brick_statuses_for(state, [session])) do
+        if node_gone_for_destroy?(state, session, brick_statuses_for(state, [session])) do
           {:noreply, finish_destroy_node_gone(state, session)}
         else
           {:noreply, spawn_destroy_worker(state, session, false)}
@@ -817,6 +810,43 @@ defmodule Embervm.SessionManager do
   @impl true
   def handle_call(:ping, _from, state) do
     {:reply, :pong, state}
+  end
+
+  def handle_call({:session_cessation_evidence, id, expected, principal}, _from, state) do
+    # This callback serializes against admission and worker completion. A proof
+    # requires absence of *terminal* holders too: they can otherwise authorize
+    # a future workspace restore immediately after this read.
+    result = with {:ok, proof} <- SessionStore.session_cessation_evidence(state.session_store, id, expected, principal),
+                  false <- historical_work_pending?(state, proof) do
+      {:ok, Embervm.SessionCessationEvidence.public(proof, state.clock.())}
+    else
+      true -> {:error, :historical_pending_work, %{}}
+      error -> error
+    end
+    {:reply, result, state}
+  end
+
+  def handle_call({:session_recovery_fence, id, request, principal}, _from, state) do
+    # One manager callback excludes restore admission and worker completions
+    # across the fresh preview, transient checks and durable compare-and-set.
+    result = with true <- Embervm.SessionRecoveryFence.valid_request?(request),
+      {:ok, preview} <- SessionStore.preview_recovery_fence(state.session_store, id, request, principal, state.clock.()),
+      false <- historical_work_pending?(state, preview),
+      :ok <- check_workspace_export_not_pending(state, preview.lineage_id) do
+      applied = if request["operation"] == "apply",
+        do: SessionStore.apply_recovery_fence(state.session_store, id, request, principal, state.clock.(), preview),
+        else: {:ok, preview}
+      case applied do
+        {:ok, proof} -> {:ok, Embervm.SessionRecoveryFence.public(proof, state.clock.())}
+        error -> error
+      end
+    else
+      false -> {:error, :recovery_invalid_request, %{}}
+      true -> {:error, :recovery_pending_work, %{}}
+      {:error, :workspace_export_pending} -> {:error, :recovery_pending_export, %{}}
+      error -> error
+    end
+    {:reply, result, state}
   end
 
   def handle_call(:residency_stats, _from, state) do
@@ -1136,7 +1166,7 @@ defmodule Embervm.SessionManager do
                   "session_id" => session_id,
                   "vm_id" => session.vm_id,
                   "node_id" => session.node_id,
-                  "gate" => state.node_confirmed_destroy,
+                  "gate" => true,
                   "resumed" => false
                 })
 
@@ -1188,7 +1218,7 @@ defmodule Embervm.SessionManager do
               "session_id" => session_id,
               "vm_id" => session.vm_id,
               "node_id" => session.node_id,
-              "gate" => state.node_confirmed_destroy,
+              "gate" => true,
               "resumed" => false
             })
 
@@ -1373,7 +1403,7 @@ defmodule Embervm.SessionManager do
       _ -> false
     end
 
-    if state.cross_node_rejoin and valid do
+    if valid do
       evidence = Map.put(captured, :fingerprint, fingerprint)
       Logger.info("embervm workspace evidence recorded", session_id: session_id,
         volume_node_id: captured.volume_node_id, lineage_id: captured.lineage_id, attach_epoch: captured.epoch)
@@ -1618,6 +1648,17 @@ defmodule Embervm.SessionManager do
   defp validate_restore_lineage(_state, nil, _workload, _principal), do: {:ok, nil}
 
   defp validate_restore_lineage(state, restore_lineage, workload, principal) do
+    with {:ok, holder} <- validate_restore_holder(state, restore_lineage, workload, principal) do
+      case SessionStore.session_restore_allowed(state.session_store, restore_lineage) do
+        :ok -> if is_nil(Map.get(holder, :recovery_fence)), do: {:ok, holder}, else: {:error, :lineage_recovery_fenced}
+        {:error, :recovery_fenced} -> {:error, :lineage_recovery_fenced}
+        {:error, :unknown_lineage} -> {:error, :unknown_lineage}
+        _ -> {:error, :lineage_recovery_store_unavailable}
+      end
+    end
+  end
+
+  defp validate_restore_holder(state, restore_lineage, workload, principal) do
     case SessionStore.get_latest_by_lineage(state.session_store, restore_lineage) do
       :error ->
         {:error, :unknown_lineage}
@@ -2112,7 +2153,7 @@ defmodule Embervm.SessionManager do
   # demand once for this create, keep the cause in the placement-miss log, and
   # deny with the retryable capacity reason the router already maps to 429.
   defp create_failure_reason(state, create, {:node_pressure, rejects}) do
-    _ = safe(fn -> state.note_denial_fun.(create.workload, create.need_mib) end)
+    _ = Embervm.SafeCall.run(fn -> state.note_denial_fun.(create.workload, create.need_mib) end)
     note_placement_miss(create.workload, {:node_pressure, rejects})
     :no_capacity
   end
@@ -2376,7 +2417,7 @@ defmodule Embervm.SessionManager do
       {:ok, channel} ->
         case safe_prime(state, channel, snapshot_ref, entry, lineage_id) do
           {:ok, %PrimeResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" ->
-            _ = safe(fn -> append_primed(state, workload, vm_id, node_id) end)
+            _ = Embervm.SafeCall.run(fn -> append_primed(state, workload, vm_id, node_id) end)
             :ok = reserve_session_vm(state, vm_id)
             shadow_claim(node_id, vm_id, workload, entry)
             {:ok, vm_id}
@@ -2386,7 +2427,7 @@ defmodule Embervm.SessionManager do
             # only that channel identity; do not retry this uncertain Prime.
             # Server refusals such as memory pressure keep the healthy channel.
             if Embervm.NodeChannel.transport_dead?(other) do
-              _ = safe(fn -> state.invalidate_channel_fun.(node_id, channel) end)
+              _ = Embervm.SafeCall.run(fn -> state.invalidate_channel_fun.(node_id, channel) end)
             end
 
             Logger.warning("embervm prime failed",
@@ -2433,16 +2474,6 @@ defmodule Embervm.SessionManager do
   defp append_primed(state, workload, vm_id, node_id) do
     op = PrimedOp.build(state.tenant, workload, vm_id, node_id, :session)
     state.op_log_mod.append(state.op_log, op)
-  end
-
-  defp safe(fun) do
-    try do
-      fun.()
-    rescue
-      _ -> :error
-    catch
-      _, _ -> :error
-    end
   end
 
   # Append session_created (mints id + token), then start the session process. The
@@ -2882,13 +2913,13 @@ defmodule Embervm.SessionManager do
   zero live VMs were scaled down, and every claude-runtime turn on the node's
   8gi brick was interrupted for drain).
 
-  With the `drain_instance_scoped` gate on and a non-empty pod_uid, a session is
-  drained only when it is on that instance, using the same placement evidence as
-  the node-down sweep (`session_on_downed_instance?/4`): the remembered dial, or,
-  when the dial was lost, whether a surviving co-located instance reports the
-  session. A session whose placement cannot be shown to be elsewhere is still
-  drained, so an uncertain placement never escapes a real pod shutdown. With the
-  gate off, or without a pod_uid, this is `drain_node/3`.
+  With a non-empty pod_uid, a session is drained only when it is on that
+  instance, using the same placement evidence as the node-down sweep
+  (`session_on_downed_instance?/4`): the remembered dial, or, when the dial was
+  lost, whether a surviving co-located instance reports the session. A session
+  whose placement cannot be shown to be elsewhere is still drained, so an
+  uncertain placement never escapes a real pod shutdown. Without a pod_uid, this
+  is `drain_node/3`.
   """
   def drain_instance(server, node_id, pod_uid, deadline) do
     GenServer.call(server, {:drain_instance, node_id, pod_uid, deadline}, :infinity)
@@ -2933,18 +2964,15 @@ defmodule Embervm.SessionManager do
       |> Enum.filter(&(&1.state == :parked and &1.volume_node_id == node_id))
       |> Enum.filter(&(persistence_enabled_workload?(session_workload_entry(state, &1.workload))))
 
-    if state.cross_node_rejoin do
-      Enum.each(parked, fn session ->
-        fallback = if is_binary(pod_uid) and pod_uid != "", do: node_id <> "/" <> pod_uid, else: nil
-        capture_workspace_export(state, session, fallback)
-      end)
-      {count, state}
-    else
-      {count, request_archives(state, parked)}
-    end
+    Enum.each(parked, fn session ->
+      fallback = if is_binary(pod_uid) and pod_uid != "", do: node_id <> "/" <> pod_uid, else: nil
+      capture_workspace_export(state, session, fallback)
+    end)
+
+    {count, state}
   end
 
-  defp drain_targets_session?(%{drain_instance_scoped: true} = state, session, node_id, pod_uid)
+  defp drain_targets_session?(state, session, node_id, pod_uid)
        when is_binary(pod_uid) and pod_uid != "" do
     session_on_downed_instance?(state, session, node_id, %{pod_uid: pod_uid})
   end
@@ -3368,17 +3396,9 @@ defmodule Embervm.SessionManager do
           {reply, state} = park_session(state, session_id)
           case reply do
             {:ok, parked} ->
-              state =
-                if MapSet.member?(state.draining_sessions, session_id) do
-                  if state.cross_node_rejoin do
-                    capture_workspace_export(state, parked, pre_park_dial)
-                    state
-                  else
-                    request_archives(state, [parked])
-                  end
-                else
-                  state
-                end
+              if MapSet.member?(state.draining_sessions, session_id) do
+                capture_workspace_export(state, parked, pre_park_dial)
+              end
 
               {:ok, clear_draining_session(state, session_id)}
 
@@ -3399,13 +3419,13 @@ defmodule Embervm.SessionManager do
                   "session_id" => session_id,
                   "vm_id" => session.vm_id,
                   "node_id" => session.node_id,
-                  "gate" => state.node_confirmed_destroy,
+                  "gate" => true,
                   "resumed" => false
                 })
 
                 case SessionStore.get(state.session_store, session_id) do
                   {:ok, updated_session} ->
-                    {destroy_reply, state} = destroy_live_legacy(state, updated_session)
+                    {destroy_reply, state} = destroy_live_direct(state, updated_session)
                     case destroy_reply do
                       {:ok, _} -> {:ok, clear_draining_session(state, session_id)}
                       other -> {other, state}
@@ -3541,7 +3561,7 @@ defmodule Embervm.SessionManager do
                              "ember.generation" => generation
                            }
                          } do
-          with {:ok, channel} <- safe_channel(channel_fun, dial_key),
+          with {:ok, channel} <- Embervm.NodeChannel.safe_dial(channel_fun, dial_key),
                {:ok, %BankResponse{snapshot_ref: ref, size_bytes: size}} when is_binary(ref) and ref != "" <-
                  safe_bank(bank_fun, channel, workload, session_id, vm_id) do
             Tracer.set_attributes(%{"ember.snapshot_bytes" => size})
@@ -3755,14 +3775,10 @@ defmodule Embervm.SessionManager do
   end
 
   defp clear_session_tracking(state, session_id) do
-    state = if state.cross_node_rejoin do
-      case SessionStore.get(state.session_store, session_id) do
-        {:ok, session} ->
-          if SessionState.terminal?(session.state), do: forget_workspace_evidence(state, session_id), else: state
-        :error -> forget_workspace_evidence(state, session_id)
-      end
-    else
-      state
+    state = case SessionStore.get(state.session_store, session_id) do
+      {:ok, session} ->
+        if SessionState.terminal?(session.state), do: forget_workspace_evidence(state, session_id), else: state
+      :error -> forget_workspace_evidence(state, session_id)
     end
     %{
       state
@@ -3833,20 +3849,6 @@ defmodule Embervm.SessionManager do
     kind, reason -> {:error, {:bank_raised, {kind, reason}}}
   end
 
-  # Acquiring a node channel is a GenServer.call that EXITS (not returns) if the
-  # NodeChannel is down or the dial times out. An exit thrown in a bank/relight
-  # worker's `with` head would kill the worker BEFORE it sends {:bank_done}/
-  # {:relight_done}, hanging every parked caller forever and leaking the per-node
-  # bank slot (the node could then never bank again). Trap it into an {:error, _}
-  # value so the worker always reports an outcome the manager can clean up.
-  defp safe_channel(channel_fun, node_id) do
-    channel_fun.(node_id)
-  rescue
-    e -> {:error, {:channel_raised, e}}
-  catch
-    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
-  end
-
   # -- relight-on-invoke (Task 8) --------------------------------------------
 
   # First invoke on a banked/parked session: apply the wake-rate limit, then either
@@ -3861,12 +3863,12 @@ defmodule Embervm.SessionManager do
 
       session.state == :parked and is_binary(session.volume_node_id) and
           not persistence_enabled_workload?(session_workload_entry(state, session.workload)) ->
-        _ = destroy_live_legacy(state, session)
+        _ = destroy_live_direct(state, session)
         GenServer.reply(from, {:error, {:gone, "persistence_disabled"}})
         state
 
-      wake_allowed?(state, principal) ->
-        state = record_wake(state, principal)
+      Embervm.WakeLimit.allowed?(state, principal) ->
+        state = Embervm.WakeLimit.record(state, principal)
         state = park_relighting(state, session.session_id, from, req)
         begin_wake(state, session)
 
@@ -4078,7 +4080,7 @@ defmodule Embervm.SessionManager do
 
   # Evidence belongs to one unattached content epoch and one exact owner/lineage.
   # Deliberately never written to the op log: a CP restart fails closed.
-  defp workspace_evidence(%{cross_node_rejoin: true} = state, session) do
+  defp workspace_evidence(state, session) do
     case Map.get(state.workspace_evidence, session.session_id) do
       %{fingerprint: fingerprint, volume_node_id: node_id, lineage_id: lineage_id, epoch: epoch} = evidence
           when is_binary(fingerprint) and fingerprint != "" ->
@@ -4089,14 +4091,10 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp workspace_evidence(_state, _session), do: nil
-
-  defp invalidate_workspace_evidence(%{cross_node_rejoin: true} = state, session_id) do
+  defp invalidate_workspace_evidence(state, session_id) do
     %{state | attach_epochs: Map.update(state.attach_epochs, session_id, 1, &(&1 + 1)),
       workspace_evidence: Map.delete(state.workspace_evidence, session_id)}
   end
-
-  defp invalidate_workspace_evidence(state, _session_id), do: state
 
   defp forget_workspace_evidence(state, session_id) do
     %{state | attach_epochs: Map.delete(state.attach_epochs, session_id),
@@ -4126,11 +4124,6 @@ defmodule Embervm.SessionManager do
 
   defp exported_workspace_relight_target?(_state, _session, _node_id), do: false
 
-  defp capture_workspace_export(%{cross_node_rejoin: false} = state, session, _fallback) do
-    spawn(fn -> archive_session_volume(state, session) end)
-    :ok
-  end
-
   defp capture_workspace_export(state, session, fallback) do
     owner = self()
     captured = %{epoch: Map.get(state.attach_epochs, session.session_id, 0),
@@ -4152,7 +4145,7 @@ defmodule Embervm.SessionManager do
 
   defp export_workspace(state, dial_id, req, attempts) do
     result = try do
-      with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+      with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_id) do
         state.export_artifact_fun.(channel, req)
       end
     rescue
@@ -4406,7 +4399,7 @@ defmodule Embervm.SessionManager do
               # unification PR-B0b); the durable row keeps the NODE name (session.
               # node_id), which adoption/drain read node-scoped. On the single-instance
               # fleet dial_id == node_id, so this is inert there.
-              with {:ok, channel} <- safe_channel(channel_fun, dial_id),
+              with {:ok, channel} <- Embervm.NodeChannel.safe_dial(channel_fun, dial_id),
                    {:ok, %RelightResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" <-
                      safe_relight(relight_fun, channel, session) do
                 Inflight.settle(dial_id, claim_ref, table: state.inflight_table)
@@ -4569,65 +4562,10 @@ defmodule Embervm.SessionManager do
       expected_fingerprint: Map.get(ctx, :expected_fingerprint, "")}
     # Stamp the vendor from the NODE (a node-scoped fact shared across its instances),
     # but DIAL the specific owning/target instance (dial_id): the restore must land on
-    # the same co-located instance the relight then dials (PR-B0b), mirroring
-    # ServingManager.safe_restore_artifact.
-    req = Embervm.RestoreVendor.stamp(state.capacity_table, node_id, req)
-    brick = restore_brick(state.capacity_table, dial_id, node_id)
-
-    with {:ok, req} <- Embervm.RestoreCapability.stamp(req, brick, ctx),
-         {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
-      # The `artifact_restore` span (Task 11): a child span around the
-      # RestoreArtifact RPC (the restore-on-miss read path). Identity up front,
-      # bytes-moved/skipped stamped from the response.
-      Tracer.with_span "embervm.artifact_restore",
-                       %{
-                         attributes: %{
-                           "ember.workload" => ref.workload,
-                           "ember.artifact_kind" => artifact_kind_string(ref.kind),
-                           "ember.artifact_ref" => ref.ref
-                         }
-                       } do
-        result =
-          try do
-            state.restore_artifact_fun.(channel, req)
-          rescue
-            e -> {:error, {:restore_artifact_raised, e}}
-          catch
-            kind, reason -> {:error, {:restore_artifact_raised, {kind, reason}}}
-          end
-
-        stamp_restore_span(result)
-        result
-      end
-    end
+    # the same co-located instance the relight then dials (PR-B0b). A session restore
+    # never invalidates the channel.
+    Embervm.ArtifactRestore.run(state, dial_id, node_id, req, ctx, artifact_kind_string(ref.kind), fn _dial_id, _channel -> :ok end)
   end
-
-  defp restore_brick(table, dial_id, node_id) do
-    case Enum.find(NodeCapacity.all(table), &(Map.get(&1, :instance_id) == dial_id)) do
-      nil when dial_id == node_id ->
-        case NodeCapacity.fetch(table, node_id) do
-          {:ok, brick} -> brick
-          :error -> %{node_id: node_id, pod_uid: ""}
-        end
-
-      nil ->
-        %{node_id: node_id, pod_uid: ""}
-
-      brick ->
-        brick
-    end
-  end
-
-  # Stamp bytes-moved/skipped onto the current `artifact_restore` span from a
-  # successful RestoreArtifact response. A failure leaves only the identity attrs.
-  defp stamp_restore_span({:ok, resp}) do
-    Tracer.set_attributes(%{
-      "ember.bytes_moved" => Map.get(resp, :bytes_moved, 0),
-      "ember.skipped" => Map.get(resp, :skipped, false)
-    })
-  end
-
-  defp stamp_restore_span(_other), do: :ok
 
   # Append the audit-only :artifact_restored op (no projection table; the log
   # itself is the record). Best-effort: an append failure must never fail the
@@ -5059,34 +4997,6 @@ defmodule Embervm.SessionManager do
     %{state | pressure_waits: Map.delete(state.pressure_waits, session_id)}
   end
 
-  # -- wake-rate limit (Task 8) ----------------------------------------------
-
-  # A sliding-window per-principal relight count: allowed while the count of relight
-  # timestamps within the window is below wake_max. wake_max <= 0 disables the limit
-  # entirely (never rate-limit), matching "0 = off" config idioms; a positive limit
-  # is enforced.
-  defp wake_allowed?(%{wake_max: max}, _principal) when not is_integer(max) or max <= 0, do: true
-
-  defp wake_allowed?(state, principal) do
-    now = state.clock.()
-    recent = recent_wakes(state, principal, now)
-    length(recent) < state.wake_max
-  end
-
-  defp record_wake(state, principal) do
-    now = state.clock.()
-    recent = recent_wakes(state, principal, now)
-    %{state | wake_events: Map.put(state.wake_events, principal, [now | recent])}
-  end
-
-  defp recent_wakes(state, principal, now) do
-    cutoff = now - state.wake_window_ms
-
-    state.wake_events
-    |> Map.get(principal, [])
-    |> Enum.filter(&(&1 > cutoff))
-  end
-
   # -- adoption (Task 8) -----------------------------------------------------
 
   # Reconcile the ETS projection against every node's reported session inventory
@@ -5172,10 +5082,9 @@ defmodule Embervm.SessionManager do
         adopt_one(acc, session, live_vms, claimed_primed, snapshots, inventory_observed_at)
       end)
 
-    # Fail-closed reconciliation toward destruction (ADR embervm/014 decision 5),
-    # Re-drive stuck destroying sessions (Direction 1 completion + alarm), and
-    # destroy reported session VMs with no CP row (Direction 2 orphans). Orphan
-    # cleanup remains gated because it requires the node-confirmed policy.
+    # Fail-closed reconciliation toward destruction (ADR embervm/014 decision 5):
+    # re-drive stuck destroying sessions (Direction 1 completion + alarm), and
+    # destroy reported session VMs with no CP row (Direction 2 orphans).
     state = redrive_destroying(state, live_vms, claimed_primed)
 
     # Run orphan cleanup after destroying sessions have been redriven. A session
@@ -5185,13 +5094,9 @@ defmodule Embervm.SessionManager do
     state = evict_orphan_snapshots(state, facts)
     state = retire_orphan_session_volumes(state, facts, nodes_facts)
 
-    if state.node_confirmed_destroy do
-      state
-      |> destroy_orphan_session_vms(facts, live_vms)
-      |> destroy_unowned_primed_vms(facts, sessions)
-    else
-      state
-    end
+    state
+    |> destroy_orphan_session_vms(facts, live_vms)
+    |> destroy_unowned_primed_vms(facts, sessions)
   end
 
   # Direction 2 for the one VM shape destroy_orphan_session_vms cannot see: a
@@ -5334,7 +5239,7 @@ defmodule Embervm.SessionManager do
         "session_id" => sid,
         "vm_id" => session.vm_id,
         "node_id" => session.node_id,
-        "gate" => state.node_confirmed_destroy,
+        "gate" => true,
         "resumed" => true
       })
     end
@@ -5435,7 +5340,7 @@ defmodule Embervm.SessionManager do
         "session_id" => session.session_id,
         "vm_id" => session.vm_id,
         "node_id" => session.node_id,
-        "gate" => state.node_confirmed_destroy,
+        "gate" => true,
         "had_vm" => vm_resident?(session),
         "node_confirmed" => confirmed_by in ["teardown", "absence"],
         "confirmed_by" => confirmed_by
@@ -5733,7 +5638,7 @@ defmodule Embervm.SessionManager do
         state
 
       [] ->
-        extra_opts = if flush_inflight?, do: adoption_flush_opts(state, session), else: []
+        extra_opts = if flush_inflight?, do: adoption_flush_opts(session), else: []
         {start_result, state} =
           start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id, dial_id, extra_opts)
 
@@ -5753,7 +5658,7 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp adoption_flush_opts(%{restart_flush_inflight_invokes: true}, session) do
+  defp adoption_flush_opts(session) do
     id = session.inflight_dispatch_id
     started = session.invoke_started_at
     last = session.last_invoke_at
@@ -5764,7 +5669,6 @@ defmodule Embervm.SessionManager do
       []
     end
   end
-  defp adoption_flush_opts(_state, _session), do: []
 
   # A session the node reports only as a snapshot: it is banked. Force ETS to banked
   # (idempotent) so a banking/relighting limbo whose bank/relight did not complete
@@ -5940,12 +5844,9 @@ defmodule Embervm.SessionManager do
 
   defp session_vm_absence_confirmed?(_state, _session), do: false
 
-  # Gate off: no grace (today's behaviour, immediate terminalization on an
-  # owner-resolved dial). Gate on: the session's row must be older than orphan_grace_ms
-  # before an owner-resolved dial may terminalize it (ADR embervm/014 decision 5), so a
-  # just-created VM that momentarily does not appear in the owner's report is not lost.
-  defp orphan_grace_elapsed?(%{node_confirmed_destroy: false}, _session), do: true
-
+  # The session's row must be older than orphan_grace_ms before an owner-resolved
+  # dial may terminalize it (ADR embervm/014 decision 5), so a just-created VM that
+  # momentarily does not appear in the owner's report is not lost.
   defp orphan_grace_elapsed?(state, session) do
     state.clock.() - session.updated_at >= state.orphan_grace_ms
   end
@@ -6017,7 +5918,7 @@ defmodule Embervm.SessionManager do
             # copy must not linger to serve an unguarded restore). A relighting
             # row is excluded: its rejoin target legitimately holds the copy
             # while volume_node_id still names the source.
-            if stale_live_copy?(inner, session, f.configured_id) and fact_current and
+            if stale_live_copy?(session, f.configured_id) and fact_current and
                  wall_now - session.updated_at >= inner.orphan_grace_ms do
               _ = delete_session_volume(inner, %{volume_node_id: f.configured_id, workload: volume.workload, lineage_id: volume.lineage_id})
             end
@@ -6029,7 +5930,7 @@ defmodule Embervm.SessionManager do
             inner = %{inner | orphan_volume_first_seen: Map.delete(inner.orphan_volume_first_seen, key)}
             if fact_current and wall_now - row_updated >= inner.orphan_grace_ms do
               copy = %{volume_node_id: f.configured_id, workload: volume.workload, lineage_id: volume.lineage_id}
-              if inner.cross_node_rejoin and is_binary(session.volume_node_id) and session.volume_node_id != f.configured_id do
+              if is_binary(session.volume_node_id) and session.volume_node_id != f.configured_id do
                 _ = delete_session_volume(inner, copy)
               else
                 _ = retire_session_volume(inner, copy)
@@ -6049,8 +5950,8 @@ defmodule Embervm.SessionManager do
     end)
   end
 
-  defp stale_live_copy?(state, %{state: session_state, volume_node_id: owner}, node_id) do
-    state.cross_node_rejoin and session_state != :relighting and is_binary(owner) and owner != node_id
+  defp stale_live_copy?(%{state: session_state, volume_node_id: owner}, node_id) do
+    session_state != :relighting and is_binary(owner) and owner != node_id
   end
 
   # -- sweep: expiry, banked-TTL GC, disk-pressure eviction (Task 7) ---------
@@ -6379,7 +6280,7 @@ defmodule Embervm.SessionManager do
     artifact = %ArtifactRef{kind: :ARTIFACT_KIND_SESSION, workload: workload, ref: snapshot_ref}
     req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
 
-    with {:ok, channel} <- safe_channel(channel_fun, node_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(channel_fun, node_id) do
       try do
         evict_artifact_fun.(channel, req)
       rescue
@@ -6484,7 +6385,7 @@ defmodule Embervm.SessionManager do
           destroy_inflight: MapSet.put(state.destroy_inflight, session_id)
       }
 
-      if state.node_confirmed_destroy and session.state == :destroying do
+      if session.state == :destroying do
         drain_relight_waiters(state, session_id, {:error, {:gone, "destroyed"}})
       else
         state
@@ -6566,19 +6467,10 @@ defmodule Embervm.SessionManager do
   end
 
   defp finish_destroying_session(state, session, confirmed, resumed) do
-    # The second arm preserves the legacy gate-off ordering for callers that start
-    # from a pre-destroying state. Workers normally observe :destroying, so an
-    # unconfirmed live teardown remains eligible for reconcile redrive.
-    finish? = confirmed or (not state.node_confirmed_destroy and session.state != :destroying)
+    # An unconfirmed live teardown remains eligible for reconcile redrive.
+    state = drain_relight_waiters(state, session.session_id, {:error, {:gone, "destroyed"}})
 
-    state =
-      if state.node_confirmed_destroy or finish? do
-        drain_relight_waiters(state, session.session_id, {:error, {:gone, "destroyed"}})
-      else
-        state
-      end
-
-    if finish? do
+    if confirmed do
       retire_session_volume(state, session)
 
       if resumed do
@@ -6595,22 +6487,16 @@ defmodule Embervm.SessionManager do
           )
 
         if match?({:ok, _}, reply) do
-          if confirmed, do: release_residency_vm_claims(state, session.session_id, session.node_id, session.vm_id)
-          node_confirmed =
-            if state.node_confirmed_destroy do
-              confirmed
-            else
-              if(vm_resident?(session), do: confirmed, else: nil)
-            end
+          release_residency_vm_claims(state, session.session_id, session.node_id, session.vm_id)
 
           Embervm.SpecTrace.emit(:adoption, :confirm_destroy, %{
             "session_id" => session.session_id,
             "vm_id" => session.vm_id,
             "node_id" => session.node_id,
             "had_vm" => vm_resident?(session),
-            "node_confirmed" => node_confirmed,
-            "gate" => state.node_confirmed_destroy,
-            "confirmed_by" => if(state.node_confirmed_destroy, do: "teardown", else: "none")
+            "node_confirmed" => confirmed,
+            "gate" => true,
+            "confirmed_by" => "teardown"
           })
         end
 
@@ -6645,32 +6531,28 @@ defmodule Embervm.SessionManager do
   # session is being destroyed). Returns {reply, state} so the drained relighting
   # ledger is threaded back.
   #
-  # Two orderings, selected by EMBERVM_NODE_CONFIRMED_DESTROY (ADR embervm/014
-  # decision 5):
   # For a live session the destroying intent is written by the CALLER
-  # (handle_call({:destroy, _})) before the continue that lands here, in both
-  # orderings and regardless of the gate:
-  #   * off (default): tear the VM down, then record destroyed whether or not the
-  #     node confirmed. A banked session (no VM) is evicted synchronously with no
-  #     intent op.
-  #   * on, live VM: run the node-confirmed teardown
-  #     RPC, and record session_destroyed ONLY when the node confirms teardown. An
-  #     unconfirmed teardown (RPC failure or teardown_confirmed=false) leaves the
-  #     session in destroying for the reconcile loop to re-drive.
+  # (handle_call({:destroy, _})) before the continue that lands here (ADR
+  # embervm/014 decision 5). The node-confirmed teardown RPC runs, and
+  # session_destroyed is recorded ONLY when the node confirms teardown. An
+  # unconfirmed teardown (RPC failure or teardown_confirmed=false) leaves the
+  # session in destroying for the reconcile loop to re-drive. A banked or parked
+  # session (no VM) is evicted synchronously with no intent op.
   defp destroy_live(state, session) do
     destroy_live(state, session, true)
   end
 
   defp destroy_live(state, session, resumed) do
-    if state.node_confirmed_destroy and session.state not in [:banked, :parked] do
-      destroy_live_node_confirmed(state, session, resumed)
+    if session.state in [:banked, :parked] do
+      destroy_live_direct(state, session)
     else
-      destroy_live_legacy(state, session)
+      destroy_live_node_confirmed(state, session, resumed)
     end
   end
 
-  # Gate-off path: tear down after the destroying intent, then record destroyed.
-  defp destroy_live_legacy(state, session) do
+  # Tear down what the session holds, then record destroyed. Serves banked and
+  # parked sessions, and callers that record their own destroying intent first.
+  defp destroy_live_direct(state, session) do
     confirmed =
       if session.state in [:banked, :parked] do
         _ = evict_snapshot(state, session)
@@ -6708,7 +6590,7 @@ defmodule Embervm.SessionManager do
           "node_id" => session.node_id,
           "had_vm" => vm_resident?(session),
           "node_confirmed" => if(vm_resident?(session), do: confirmed, else: nil),
-          "gate" => state.node_confirmed_destroy,
+          "gate" => true,
           "confirmed_by" => "none"
         })
       end
@@ -6732,15 +6614,14 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  # Gate-on path for a live-VM session: (caller-written) destroying intent ->
-  # node-confirmed teardown -> destroyed only on confirmation. Relight waiters drain immediately (the session
-  # is going away regardless of how long teardown takes).
+  # A live-VM session: (caller-written) destroying intent -> node-confirmed
+  # teardown -> destroyed only on confirmation. Relight waiters drain immediately
+  # (the session is going away regardless of how long teardown takes).
   defp destroy_live_node_confirmed(state, session, _resumed) do
     # 1. Durable destroying intent is already on the log. The only caller is
     #    handle_continue({:do_destroy_live, _}), which dispatches a :destroying
     #    row that handle_call({:destroy, _}) transitioned to :session_destroying
-    #    before continuing, and that write happens regardless of
-    #    EMBERVM_NODE_CONFIRMED_DESTROY. This function never writes the
+    #    before continuing. This function never writes the
     #    intent itself (#4804: a second write site here was unreachable and read
     #    as the primary one). The match makes the precondition loud: a new
     #    caller that skips the intent crashes here instead of tearing down a VM
@@ -6773,7 +6654,7 @@ defmodule Embervm.SessionManager do
           "node_id" => session.node_id,
           "had_vm" => vm_resident?(session),
           "node_confirmed" => confirmed,
-          "gate" => state.node_confirmed_destroy,
+          "gate" => true,
           "confirmed_by" => "teardown"
         })
       end
@@ -6841,7 +6722,7 @@ defmodule Embervm.SessionManager do
   # gate; the legacy path discards this and proceeds as today.
   defp destroy_exact_vm(state, intent) do
     with true <- Embervm.SessionStopProof.valid_intent?(intent),
-         {:ok, channel} <- safe_channel(state.channel_fun, intent["instance_id"]) do
+         {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, intent["instance_id"]) do
       request = %Embervm.Node.V1.DestroyRequest{
         vm_id: intent["vm_id"], operation_id: intent["operation_id"],
         expected_boot_id: intent["boot_id"], expected_session_id: intent["session_id"]
@@ -6875,7 +6756,7 @@ defmodule Embervm.SessionManager do
         _ -> residency_teardown_dial(state, session_id, node_id, vm_id)
       end
 
-    channel = if is_binary(dial_key), do: safe_channel(state.channel_fun, dial_key), else: {:error, :unresolved_teardown_owner}
+    channel = if is_binary(dial_key), do: Embervm.NodeChannel.safe_dial(state.channel_fun, dial_key), else: {:error, :unresolved_teardown_owner}
     case channel do
       {:ok, channel} ->
         opts = state.session_opts
@@ -7085,7 +6966,7 @@ defmodule Embervm.SessionManager do
 
       dial_id ->
         result =
-          with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+          with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_id) do
             try do
               state.delete_session_volume_fun.(channel, req)
             rescue
@@ -7192,7 +7073,7 @@ defmodule Embervm.SessionManager do
     req = %ArchiveVolumeRequest{trace: %Trace{workload: workload}, workload: workload, lineage_id: lineage_id}
 
     result =
-      with {:ok, channel} <- safe_channel(state.channel_fun, instance_id) do
+      with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, instance_id) do
         try do
           state.archive_volume_fun.(channel, req)
         rescue
@@ -7242,7 +7123,7 @@ defmodule Embervm.SessionManager do
 
         dial_id ->
           result =
-            with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+            with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_id) do
               try do
                 state.archive_volume_fun.(channel, req)
               rescue
@@ -7335,7 +7216,7 @@ defmodule Embervm.SessionManager do
       lineage_id: lineage_id
     }
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_id) do
       try do
         state.retire_volume_fun.(channel, req)
       rescue
@@ -7425,6 +7306,24 @@ defmodule Embervm.SessionManager do
         }
       _ -> %{available: false}
     end
+  end
+
+  defp historical_work_pending?(state, proof) do
+    id = proof.session_id
+    lineage = proof.lineage_id
+    MapSet.member?(state.inflight_restore_lineages, lineage) or
+      Embervm.LineageFence.held?(lineage, :restore) or
+      Enum.any?(state.create_inflight, fn {_ref, create} ->
+        create.lineage_id == lineage or create.restore_lineage == lineage
+      end) or
+      Enum.any?([state.banking, state.relighting, state.destroy_workers, state.pressure_waits,
+        state.departure_retries], &Map.has_key?(&1, id)) or
+      MapSet.member?(state.destroy_inflight, id) or MapSet.member?(state.draining_sessions, id) or
+      Registry.lookup(state.registry, id) != [] or
+      Enum.any?(NodeCapacity.all(state.capacity_table), fn fact ->
+        Enum.any?(Map.get(fact, :session_vms, []) || [], &(&1.session_id == id or &1.vm_id == proof.vm_id)) or
+          Enum.any?(Map.get(fact, :session_snapshots, []) || [], &(&1.session_id == id))
+      end)
   end
 
   defp residency_rows(state), do: SessionStore.residency_intent(state.session_store, :working)
@@ -7685,7 +7584,7 @@ defmodule Embervm.SessionManager do
             {:relight, _} ->
               cond do
                 length(Enum.uniq_by(active, &get_in(&1, ["restore", "claim_id"]))) >= state.residency_restore_limit -> state
-                not wake_allowed?(state, session.principal) -> state
+                not Embervm.WakeLimit.allowed?(state, session.principal) -> state
                 true -> start_residency_wake(state, session, intent)
               end
             _ -> state
@@ -7748,7 +7647,7 @@ defmodule Embervm.SessionManager do
                   outcome = run_residency_wake(state, session, brick, entry, rejoin, restore_plan)
                   send(owner, {:residency_wake_done, admitted["id"], admitted["attempt_epoch"], restore, outcome})
                 end)
-                state |> record_wake(session.principal) |> Map.put(:residency_last_principal, session.principal)
+                state |> Embervm.WakeLimit.record(session.principal) |> Map.put(:residency_last_principal, session.principal)
               _ -> finish_residency_wake(state, admitted["id"], admitted["attempt_epoch"], restore, {:not_started, :session_changed})
             end
           _ ->
@@ -7817,7 +7716,7 @@ defmodule Embervm.SessionManager do
       _ -> :ok
     end
     with :ok <- restored,
-         {:ok, channel} <- safe_channel(state.channel_fun, dial_id),
+         {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_id),
          {:ok, %RelightResponse{vm_id: vm_id}} <- safe_relight(state.relight_fun, channel, session) do
       {:ok, brick.node_id, vm_id, 0, dial_id}
     end

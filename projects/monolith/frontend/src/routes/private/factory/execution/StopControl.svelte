@@ -1,12 +1,7 @@
 <script>
   import { makeStopRequest, stopInFlight } from "./stop-control.js";
 
-  let {
-    enabled = false,
-    identity = null,
-    status = null,
-    onStop = () => {},
-  } = $props();
+  let { identity = null, status = null, onStop = () => {} } = $props();
 
   const busy = $derived(stopInFlight(status));
   const label = $derived(
@@ -30,7 +25,7 @@
   }
 </script>
 
-{#if enabled && (identity || status)}
+{#if identity || status}
   <div class="stop-control" data-outcome={status?.outcome ?? "idle"}>
     {#if status?.outcome}
       <span class="stop-state" role="status">
@@ -76,7 +71,7 @@
     min-height: 30px;
     padding: 0 12px;
     border: 1px solid var(--err-line);
-    border-radius: var(--radius-md);
+    border-radius: 0;
     color: var(--err);
     background: transparent;
     font: 600 12px var(--font-ui);

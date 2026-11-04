@@ -1,10 +1,10 @@
-"""What the funding judge and the no-progress watchdog weigh, in one place.
+"""The evidence and criteria used inside the funding decision.
 
-Both decide whether a task should keep spending. With
-``FACTORY_MERIT_JUDGE_ENABLED`` they decide on the merits a person would use:
+The funding judge weighs:
 how much verified progress exists, how close the work is to landing, and what
-the issue is worth. ``CRITERIA`` is the prose both prompts carry, and
-``merit_evidence`` is the bounded, server-read brief beside it. Tune the
+the issue is worth. ``CRITERIA`` is the judge prompt's prose, and
+``merit_evidence`` is the bounded, server-read brief beside it. Progress
+crossings use the same judge request, not a second assessment. Tune the
 judgement here, not in the callers; FACTORY.md documents the contract.
 
 The hard ceilings are policy, not prose: see ``ceiling`` and the
@@ -14,18 +14,17 @@ only ask a person when it doubts the work, never raise them.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
 import re
 from collections import Counter
 
-from core.env import flag
 from factory.orchestration.turn_artifact import run_artifact
 
 logger = logging.getLogger(__name__)
 
-ENABLED_ENV = "FACTORY_MERIT_JUDGE_ENABLED"
 MAX_MULTIPLE_ENV = "FACTORY_MERIT_JUDGE_MAX_EXTENSION_MULTIPLE"
 MAX_USD_ENV = "FACTORY_MERIT_JUDGE_MAX_EXTENSION_USD"
 DEFAULT_MAX_MULTIPLE = 1.0
@@ -70,7 +69,17 @@ CRITERIA = (
     "Escalate to the operator, rather than approving or stopping, only when "
     "you doubt it: little verified progress, repeated failure on the same "
     "step, or drift from the issue's scope. Stop only when the objective is no "
-    "longer worth pursuing at all. Name the evidence behind your verdict."
+    "longer worth pursuing at all. Name the evidence behind your verdict. "
+    "Minimize avoidable paused time and operator interruptions within the pinned "
+    "allowance. Distinguish code rejection from transport failure, missing output, "
+    "and waiting for review, CI or a dependency. A lost review is not a code rejection. "
+    "For repeated causes, name new evidence or a changed recovery action; another "
+    "funding request alone is not progress. Prefer the existing bounded recovery "
+    "path when authoritative cessation and exact task/attempt identity are established. "
+    "Unknown execution must reconcile before retry: age, a missing result or a "
+    "settled permit alone proves neither cessation nor safe replay. Preserve holds, "
+    "human ownership, deadlines, stop guards and subscription caps; no paid fallback. "
+    "When blocked, name the evidence needed, next action and its authorized owner."
 )
 
 ASSESSMENT_SCHEMA = {
@@ -88,10 +97,6 @@ ASSESSMENT_SCHEMA = {
         },
     },
 }
-
-
-def enabled() -> bool:
-    return flag(ENABLED_ENV)
 
 
 def _amount(name: str, default: float) -> float:
@@ -151,6 +156,37 @@ def deficit_refusal(deficit: object, bound: dict) -> str | None:
     return None
 
 
+def failure_kind(run: dict) -> str:
+    """Classify evidence for judgement only; this never authorizes a retry."""
+    from factory.orchestration.graph import settled_zero_basis
+
+    if run.get("status") == "uncertain":
+        return "unknown_execution"
+    try:
+        outcome = json.loads(run.get("outcome_json") or "{}")
+    except (TypeError, ValueError):
+        return "missing_output"
+    if not isinstance(outcome, dict):
+        return "missing_output"
+    if settled_zero_basis(outcome):
+        return "transport_before_model"
+    if outcome.get("invocation_phase") == "response_lost":
+        return "unknown_execution"
+    if outcome.get("invocation_phase") == "provider_error_before_work":
+        return "transport_error"
+    artifact = outcome.get("artifact")
+    if isinstance(artifact, dict) and artifact.get("status") in {
+        "missing",
+        "unparsable",
+        "invalid",
+        "not_fresh",
+    }:
+        return "missing_or_invalid_artifact"
+    if not outcome:
+        return "missing_output"
+    return "reported_failure"
+
+
 def progress(runs: list[dict]) -> dict:
     """Verified progress, from node runs alone (no GitHub read)."""
     statuses = Counter(run.get("status") for run in runs)
@@ -182,11 +218,20 @@ def progress(runs: list[dict]) -> dict:
         for run in sorted(reviews, key=lambda item: item.get("id") or 0)
     ]
     failures = Counter(
-        run.get("node_key") for run in runs if run.get("status") == "failed"
+        run.get("node_key")
+        for run in runs
+        if run.get("status") == "failed" and failure_kind(run) == "reported_failure"
     )
     repeated = failures.most_common(1)[0] if failures else None
     return {
         "node_runs": dict(statuses),
+        "failure_causes": dict(
+            Counter(
+                failure_kind(run)
+                for run in runs
+                if run.get("status") in {"failed", "uncertain"}
+            )
+        ),
         "implementation_succeeded": len(implemented),
         "commits_pushed": len(heads),
         "latest_head": heads[-1][:12] if heads else None,

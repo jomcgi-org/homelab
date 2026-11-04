@@ -32,9 +32,6 @@ func NightName(day int32) string {
 	return time.Unix(int64(day)*86400, 0).UTC().Format(time.DateOnly)
 }
 
-// NightOf names the night an instant belongs to.
-func NightOf(t time.Time) string { return NightName(NightDay(t)) }
-
 // WindowsQuery asks for the best sites near a point over the next few nights.
 type WindowsQuery struct {
 	Lat, Lon float64

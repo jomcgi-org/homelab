@@ -127,11 +127,18 @@ def test_factory_tools_are_registered():
         "factory_decide",
         "factory_amend_policy",
         "factory_configure_refill",
+        "factory_configure_problem_issues",
+        "factory_configure_owner_prs",
+        "factory_reconcile",
+        "factory_diagnostics",
+        "factory_session_dispatch_diagnostics",
+        "factory_continue_evidence",
         "factory_release_landing_hold",
         "factory_find_receipts",
         "factory_prepare_validation",
-        "factory_preview_refinement_batch",
-        "factory_apply_refinement_batch",
+        "factory_refinement_batch",
+        "factory_refinement_delivery",
+        "factory_backlog_intake",
         "factory_request_brief",
         "factory_context",
         "factory_verify_synthetics",
@@ -145,31 +152,222 @@ def test_status_distinguishes_native_registration_from_caller_catalog(monkeypatc
     assert catalog["source"] == "native_server_registry"
     assert catalog["caller_visibility"] == "not_observed"
     assert set(catalog["tools"]) == {
+        "factory_status",
+        "factory_session_dispatch_diagnostics",
         "factory_configure_refill",
+        "factory_configure_problem_issues",
+        "factory_configure_owner_prs",
         "factory_amend_policy",
-        "factory_reconcile_learning_execution",
+        "factory_reconcile",
+        "factory_continue_evidence",
     }
+    status = catalog["tools"]["factory_status"]
+    assert status["targets"] == ["factory", "session_dispatch"]
+    assert {"target", "session_id", "seq"} <= set(status["arguments"])
     refill = catalog["tools"]["factory_configure_refill"]
     assert refill["registered"] is True
     assert refill["operations"] == ["preview", "apply"]
     assert refill["models"] == ["astra", "opus"]
+    assert refill["targets"] == ["refill", "problem_issues", "owner_prs"]
+    assert {"target", "recurring_blocker", "workflow_stranded"} <= set(
+        refill["arguments"]
+    )
     assert len(refill["schema_sha256"]) == 64
     assert len(refill["description_sha256"]) == 64
-    assert len(json.dumps(catalog)) < 2500
+    continuation = catalog["tools"]["factory_continue_evidence"]
+    assert continuation["registered"] is True
+    assert continuation["operations"] == ["preview", "apply"]
+    assert "source_run_id" in continuation["arguments"]
+    assert len(json.dumps(catalog)) < 4500
 
 
+def test_problem_issue_activation_requires_operator_and_preview(monkeypatch):
+    from factory.orchestration import factory_problem_issues as producer
+
+    calls = []
+    monkeypatch.setattr(
+        producer, "configure", lambda *a, **kw: calls.append((a, kw)) or {"ok": True}
+    )
+    args = dict(
+        operation="preview",
+        enabled=True,
+        recurring_blocker=True,
+        workflow_stranded=True,
+        expected_version=1,
+        reason="Recovery sources",
+    )
+    for principal in (
+        _principal(groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        assert not _as(principal, lambda: mcp.factory_configure_problem_issues(**args))[
+            "ok"
+        ]
+    assert not calls
+    assert not _as(
+        _principal(),
+        lambda: mcp.factory_configure_problem_issues(**{**args, "operation": "apply"}),
+    )["ok"]
+    assert not calls
+    assert _as(_principal(), lambda: mcp.factory_configure_problem_issues(**args))["ok"]
+    assert calls[0][1]["actor"] == "joe"
+
+
+def test_existing_refill_tool_can_activate_problem_issues_without_refill_changes(db):
+    from core.mcp_app import mcp as shared
+    from fastmcp import Client
+
+    original = {
+        "repo": "owner/repo",
+        "generation": 9,
+        "backlog_refill": {"enabled": False, "model": "opus"},
+        "intake": {"enabled": True},
+        "problem_issues": {"enabled": False, "sources": {"node_stalled": False}},
+    }
+    with Session(db) as session, session.begin():
+        control = session.get(FactoryControl, "factory")
+        control.policy_json = json.dumps(original)
+        version = control.version
+    args = dict(
+        operation="preview",
+        target="problem_issues",
+        enabled=True,
+        model="astra",
+        hourly=False,
+        recurring_blocker=True,
+        workflow_stranded=True,
+        expected_version=version,
+        reason="Enable future recovery signals",
+    )
+
+    async def exercise():
+        async with Client(shared) as client:
+            preview = (await client.call_tool("factory_configure_refill", args)).data
+            assert preview["effective_sources"]["recurring_blocker"]
+            apply = {
+                **args,
+                "operation": "apply",
+                "expected_preview_sha256": preview["preview_sha256"],
+                "request_key": "recovery-sources",
+            }
+            saved = (await client.call_tool("factory_configure_refill", apply)).data
+            assert saved["ok"] and saved["dispatched"] is False
+            assert (
+                await client.call_tool("factory_configure_refill", apply)
+            ).data == saved
+            # Both entry points share the same digest and replay ledger.
+            native = {
+                k: v for k, v in apply.items() if k not in {"target", "model", "hourly"}
+            }
+            assert (
+                await client.call_tool("factory_configure_problem_issues", native)
+            ).data == saved
+            stale = await client.call_tool(
+                "factory_configure_refill", {**apply, "request_key": "other"}
+            )
+            assert stale.data["reason"] == "problem_issues_version_changed"
+
+    _as(_principal(), exercise)
+    with Session(db) as session:
+        after = json.loads(session.get(FactoryControl, "factory").policy_json)
+        assert {k: v for k, v in after.items() if k != "problem_issues"} == {
+            k: v for k, v in original.items() if k != "problem_issues"
+        }
+        assert after["problem_issues"]["sources"] == {
+            "node_stalled": False,
+            "recurring_blocker": True,
+            "workflow_stranded": True,
+        }
+        assert len(session.exec(select(FactoryAudit)).all()) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"hourly": True},
+        {"model": "opus"},
+        {"reset_breaker": True},
+        {"min_new_issues": 1},
+        {"recurring_blocker": None},
+        {"workflow_stranded": None},
+        {"target": "refill"},
+    ],
+)
+def test_refill_problem_issue_target_refuses_mixed_or_missing_arguments(
+    monkeypatch, change
+):
+    from factory.orchestration import factory_problem_issues, refill_control
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid mixed request reached a writer")
+
+    monkeypatch.setattr(factory_problem_issues, "configure", forbidden)
+    monkeypatch.setattr(refill_control, "preview", forbidden)
+    args = dict(
+        operation="preview",
+        target="problem_issues",
+        enabled=True,
+        model="astra",
+        hourly=False,
+        recurring_blocker=True,
+        workflow_stranded=True,
+        expected_version=1,
+        reason="Recovery",
+    )
+    assert not _as(
+        _principal(), lambda: mcp.factory_configure_refill(**{**args, **change})
+    )["ok"]
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+        _principal(groups=()),
+    ],
+)
+def test_refill_problem_issue_target_preserves_operator_gate(monkeypatch, principal):
+    async def forbidden(**kwargs):
+        pytest.fail("unauthorized caller reached recovery control")
+
+    monkeypatch.setattr(mcp, "factory_configure_problem_issues", forbidden)
+    assert (
+        _as(
+            principal,
+            lambda: mcp.factory_configure_refill(
+                "preview",
+                True,
+                "astra",
+                False,
+                1,
+                "Recovery",
+                target="problem_issues",
+                recurring_blocker=True,
+                workflow_stranded=True,
+            ),
+        )["error"]
+        == mcp.OPERATOR_REQUIRED
+    )
+
+
+@pytest.mark.parametrize(
+    "missing_name", ["factory_configure_refill", "factory_continue_evidence"]
+)
 def test_status_reports_missing_native_control_without_inventing_visibility(
     monkeypatch,
+    missing_name,
 ):
     monkeypatch.setattr(mcp, "_status_payload", lambda *_: {"ok": True})
     original = mcp.mcp.get_tool
 
     async def missing(name):
-        return None if name == "factory_configure_refill" else await original(name)
+        return None if name == missing_name else await original(name)
 
     monkeypatch.setattr(mcp.mcp, "get_tool", missing)
     catalog = _as(_principal(), mcp.factory_status)["control_catalog"]
-    assert catalog["tools"]["factory_configure_refill"] == {"registered": False}
+    assert catalog["tools"][missing_name] == {"registered": False}
     assert catalog["tools"]["factory_amend_policy"]["registered"] is True
 
 
@@ -525,6 +723,117 @@ def test_status_payload_includes_recent_on_request(db):
     assert [task["issue_number"] for task in payload["recent"]] == [3]
 
 
+@pytest.mark.parametrize(
+    "superseding",
+    [
+        None,
+        "landing_recovery_requested",
+        "merge_armed",
+        "merged",
+        "owned_pr_merged",
+    ],
+)
+@pytest.mark.parametrize("state", ["landing", "succeeded"])
+def test_status_landing_refusal_is_bounded_read_only_and_epoch_scoped(
+    db, monkeypatch, superseding, state
+):
+    from factory.orchestration import graph
+
+    monkeypatch.setattr(graph, "load_graph", lambda *a, **kw: [])
+    monkeypatch.setattr(graph, "node_runs", lambda *a, **kw: [])
+    with Session(db) as session, session.begin():
+        session.add(
+            SwarmTask(id="synthetic", task_text="work", conductor_model="astra")
+        )
+    seed_operator_rows(
+        db,
+        [
+            {
+                "issue_number": 7,
+                "task_id": "synthetic",
+                "state": state,
+                "task_paused": True,
+                "direction_json": json.dumps({"landing_hold": {"actor": "operator"}}),
+                "policy_json": json.dumps(
+                    {
+                        "task_timeout_seconds": 3600,
+                        "task_budget_usd": 10,
+                        "max_turns_per_task": 9,
+                    }
+                ),
+            }
+        ],
+    )
+    with Session(db) as session, session.begin():
+        session.add(
+            FactoryStart(
+                task_id="synthetic",
+                start_key="unknown",
+                actor="test",
+                model="astra",
+                max_cost_usd=1,
+                status="uncertain",
+            )
+        )
+        session.add(
+            FactoryAudit(
+                actor="factory:landing",
+                task_id="synthetic",
+                action="merge_arm_refused",
+                detail_json=json.dumps(
+                    {
+                        "reason": "merged_delivery_identity_mismatch",
+                        "pr_number": 17,
+                        "private_extra": "not projected",
+                    }
+                ),
+            )
+        )
+    if superseding:
+        with Session(db) as session, session.begin():
+            session.add(
+                FactoryAudit(
+                    actor="factory:landing", task_id="synthetic", action=superseding
+                )
+            )
+    with Session(db) as session:
+        before = [r.model_dump() for r in session.exec(select(FactoryReceipt)).all()]
+        audits_before = [
+            r.model_dump() for r in session.exec(select(FactoryAudit)).all()
+        ]
+        starts_before = [
+            r.model_dump() for r in session.exec(select(FactoryStart)).all()
+        ]
+    payload = mcp._status_payload(True)
+    row = payload["active" if state == "landing" else "recent"][0]
+    refusal = row["landing_refusal"]
+    assert row["unresolved_starts"] == 1
+    assert row["task_paused"] is True
+    if superseding in {"landing_recovery_requested", "merged"}:
+        assert refusal is None
+    else:
+        assert refusal["reason"] == "merged_delivery_identity_mismatch"
+        assert refusal["pr_number"] == 17
+        assert refusal["source"] == "recorded_landing_audit"
+        assert set(refusal) == {
+            "reason",
+            "pr_number",
+            "source",
+            "audit_id",
+            "observed_at",
+        }
+    with Session(db) as session:
+        assert [
+            r.model_dump() for r in session.exec(select(FactoryReceipt)).all()
+        ] == before
+        assert [
+            r.model_dump() for r in session.exec(select(FactoryAudit)).all()
+        ] == audits_before
+        assert [
+            r.model_dump() for r in session.exec(select(FactoryStart)).all()
+        ] == starts_before
+
+
 def test_status_payload_pages_each_bucket_and_keeps_queue_positions(db):
     seed_operator_rows(
         db,
@@ -811,7 +1120,7 @@ def test_receipt_context_has_a_stable_fresh_session_identity(monkeypatch):
         ),
     )
     monkeypatch.setattr(context, "_request_records", lambda db: {})
-    monkeypatch.setattr(context, "continuity_enabled", lambda: False)
+    monkeypatch.setattr(context, "_recent_conversation", lambda *_a: ([], []))
 
     result = context._factory_context(7, actor="joe")
 
@@ -903,7 +1212,6 @@ def test_factory_context_passes_authenticated_operator_to_shared_contract(monkey
 def test_knowledge_failure_does_not_undo_a_completed_decision(monkeypatch):
     from factory.orchestration import conductor_context as context
 
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     monkeypatch.setattr(
         "factory.orchestration.factory_decisions.request_decision",
         lambda *a, **kw: {"ok": True, "state": "completed"},
@@ -917,17 +1225,6 @@ def test_knowledge_failure_does_not_undo_a_completed_decision(monkeypatch):
     assert result["ok"] is True
     assert result["state"] == "completed"
     assert result["knowledge"]["status"] == "unavailable"
-
-
-def test_request_knowledge_maintenance_is_staged_off(monkeypatch):
-    monkeypatch.delenv("CONDUCTOR_CONTINUITY_ENABLED", raising=False)
-    monkeypatch.setattr(
-        "factory.orchestration.factory_decisions.request_decision",
-        lambda *a, **kw: {"ok": True, "state": "completed"},
-    )
-    result = mcp._decide(1, "decision:abc", "close", "r", None, "joe")
-    assert result["state"] == "completed"
-    assert result["knowledge"] == {"status": "disabled"}
 
 
 @pytest.mark.parametrize("action", ["stop", "enable_auto_merge", "disable_auto_merge"])
@@ -1359,10 +1656,19 @@ def test_detail_pages_nodes_and_bounds_attempt_history(monkeypatch):
     )
     monkeypatch.setattr(
         "factory.orchestration.graph.node_runs",
-        lambda task, session: [
-            {"node_key": "node-1", "attempt": i, "status": "failed", "session_id": i}
-            for i in range(1, 6)
-        ],
+        lambda task, session: (
+            [
+                {
+                    "id": 100 + i,
+                    "node_key": "node-1",
+                    "attempt": i,
+                    "status": "failed",
+                    "session_id": i,
+                }
+                for i in range(5, 0, -1)
+            ]
+            + [{"id": 205, "node_key": "node-2", "attempt": 5, "status": "failed"}]
+        ),
     )
     monkeypatch.setattr(
         mcp, "_work_item_context", lambda *args: {"status": "not_linked"}
@@ -1370,7 +1676,7 @@ def test_detail_pages_nodes_and_bounds_attempt_history(monkeypatch):
     monkeypatch.setattr(mcp, "_queue_context", lambda *args: None)
     monkeypatch.setattr(mcp, "_watchdog_detail", lambda *args: None)
     monkeypatch.setattr(
-        "factory.orchestration.factory_progress_continuation.renewal_status",
+        "factory.orchestration.factory_funding.continuation_status",
         lambda session, task: {"reason": "progress_authority_changed", "task_id": task},
     )
     monkeypatch.setattr(
@@ -1391,6 +1697,17 @@ def test_detail_pages_nodes_and_bounds_attempt_history(monkeypatch):
     assert node["deps"] == ["node-0"]
     assert node["attempt_count"] == 5
     assert [a["session_id"] for a in node["attempts"]] == [3, 4, 5]
+    assert [a["run_id"] for a in node["attempts"]] == [103, 104, 105]
+    assert result["nodes"][1]["attempts"][0]["run_id"] == 205
+    from factory.private_view import shape_node
+
+    display = shape_node(
+        {"node_key": "node-1"},
+        [{"id": 105, "node_key": "node-1", "attempt": 5, "session_id": 5}],
+        {},
+    )
+    assert "run_id" not in display["attempts"][0]
+    assert "id" not in display["attempts"][0]
     assert node["state"] == "failed"
     assert result["updated_at"] == "2026-09-14T00:00:00+00:00"
     assert result["lifecycle"]["deployment"]["status"] == "unknown"
@@ -1678,7 +1995,10 @@ def test_permit_diagnostics_require_operator_before_read(monkeypatch):
         raise AssertionError("unauthorized read")
 
     monkeypatch.setattr(admission_diagnostics, "inspect_permits", fail)
-    result = _as(_principal(groups=()), lambda: mcp.factory_permit_diagnostics([11254]))
+    result = _as(
+        _principal(groups=()),
+        lambda: mcp.factory_diagnostics("permits", permit_ids=[11254]),
+    )
     assert result["error"] == mcp.OPERATOR_REQUIRED
 
 
@@ -1693,7 +2013,9 @@ def test_permit_diagnostics_use_worker_thread(monkeypatch):
         return {"ids": ids, "recovery_authorized": False}
 
     monkeypatch.setattr(admission_diagnostics, "inspect_permits", read)
-    assert _as(_principal(), lambda: mcp.factory_permit_diagnostics([11254])) == {
+    assert _as(
+        _principal(), lambda: mcp.factory_diagnostics("permits", permit_ids=[11254])
+    ) == {
         "ids": [11254],
         "recovery_authorized": False,
     }
@@ -1716,13 +2038,13 @@ def test_permit_diagnostics_wire_schema_rejects_invalid_ids(monkeypatch):
         async with Client(shared) as client:
             for ids in ([], [True], ["11254"], [0], [2**63], list(range(1, 22))):
                 result = await client.call_tool(
-                    "factory_permit_diagnostics",
-                    {"permit_ids": ids},
+                    "factory_diagnostics",
+                    {"kind": "permits", "permit_ids": ids},
                     raise_on_error=False,
                 )
                 assert result.is_error
             result = await client.call_tool(
-                "factory_permit_diagnostics", {"permit_ids": [11254]}
+                "factory_diagnostics", {"kind": "permits", "permit_ids": [11254]}
             )
             assert result.data["recovery_authorized"] is False
         assert calls == [[11254]]
@@ -1738,6 +2060,7 @@ def test_permit_diagnostics_wire_schema_rejects_invalid_ids(monkeypatch):
             "classification": "private_internal_reversible",
             "evidence": "Inspected exact diff",
         },
+        {"classification": "public_docs", "evidence": "Operator approved these docs"},
     ],
 )
 def test_landing_release_requires_human_operator_and_reviewed_preview(
@@ -1821,6 +2144,8 @@ def test_expired_task_recovery_requires_human_and_reviewed_preview(monkeypatch):
         assert not _as(principal, invoke)["ok"]
     assert calls == []
 
+
+def test_expired_task_recovery_requires_preview():
     async def unpreviewed():
         return await mcp.factory_recover_expired_task(
             "apply", 838, "2026-10-18T23:00:00+00:00", 9, "Recover"
@@ -1829,6 +2154,54 @@ def test_expired_task_recovery_requires_human_and_reviewed_preview(monkeypatch):
     assert (
         _as(_principal(), unpreviewed)["reason"]
         == "task_recovery_requires_preview_and_request_key"
+    )
+
+
+def test_evidence_continuation_requires_standing_operator_and_exact_preview(
+    monkeypatch,
+):
+    from factory.orchestration import evidence_recovery
+
+    calls = []
+    monkeypatch.setattr(
+        evidence_recovery,
+        "apply",
+        lambda *a, **kw: calls.append((a, kw)) or {"ok": True},
+    )
+    arguments = dict(
+        operation="apply",
+        receipt_id=1061,
+        decision_id="decision:" + "a" * 64,
+        node_key="correct_1",
+        source_run_id=123,
+        expected_revision=10,
+        pr_number=7532,
+        head_sha="b" * 40,
+        evidence_comment_id=99,
+        deadline_at="2026-11-01T09:00:00+00:00",
+        reason="Only the same correction and independent review",
+        request_key="once",
+        expected_preview_sha256="c" * 64,
+    )
+
+    async def invoke():
+        return await mcp.factory_continue_evidence(**arguments)
+
+    assert _as(_principal(), invoke)["ok"]
+    assert calls[0][1]["actor"] == "joe"
+    assert calls[0][0][0]["decision"]["expected_version"] == 10
+    calls.clear()
+    for principal in (
+        _principal(groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        assert not _as(principal, invoke)["ok"]
+    assert calls == []
+    arguments.pop("expected_preview_sha256")
+    assert (
+        _as(_principal(), invoke)["reason"]
+        == "evidence_continuation_requires_preview_and_request_key"
     )
     assert calls == []
 
@@ -2234,7 +2607,7 @@ def test_fresh_issue_preparation_wire_and_authority(monkeypatch):
     assert calls == [((None, "selected work"), {"issue_number": 7275})]
 
 
-def test_fresh_issue_dedicated_tools_require_typed_apply_and_operator(monkeypatch):
+def test_fresh_issue_preparation_requires_typed_apply_and_operator(monkeypatch):
     from fastmcp import Client
     from core.mcp_app import mcp as shared
     from factory.orchestration import factory_validation as validation
@@ -2252,11 +2625,18 @@ def test_fresh_issue_dedicated_tools_require_typed_apply_and_operator(monkeypatc
     )
 
     async def preview():
-        return await mcp.factory_preview_issue_admission(7275, "selected work")
+        return await mcp.factory_prepare_validation(
+            "preview", None, "selected work", issue_number=7275
+        )
 
     async def apply():
-        return await mcp.factory_apply_issue_admission(
-            7275, "selected work", "a" * 64, "exact-key"
+        return await mcp.factory_prepare_validation(
+            "apply",
+            None,
+            "selected work",
+            request_key="exact-key",
+            expected_preview_sha256="a" * 64,
+            issue_number=7275,
         )
 
     for principal in (
@@ -2271,24 +2651,40 @@ def test_fresh_issue_dedicated_tools_require_typed_apply_and_operator(monkeypatc
     async def wire():
         async with Client(shared) as client:
             valid = {
+                "operation": "apply",
+                "receipt_id": None,
                 "issue_number": 7275,
                 "reason": "selected work",
                 "expected_preview_sha256": "a" * 64,
                 "request_key": "exact-key",
             }
-            for field in valid:
+            for field in ("operation", "receipt_id", "reason"):
                 result = await client.call_tool(
-                    "factory_apply_issue_admission",
+                    "factory_prepare_validation",
                     {k: v for k, v in valid.items() if k != field},
                     raise_on_error=False,
                 )
                 assert result.is_error
+            for field in ("expected_preview_sha256", "request_key"):
+                result = await client.call_tool(
+                    "factory_prepare_validation",
+                    {k: v for k, v in valid.items() if k != field},
+                )
+                assert result.data == {
+                    "ok": False,
+                    "reason": "validation_requires_preview_and_request_key",
+                }
             result = await client.call_tool(
-                "factory_preview_issue_admission",
-                {"issue_number": 7275, "reason": "selected work"},
+                "factory_prepare_validation",
+                {
+                    "operation": "preview",
+                    "receipt_id": None,
+                    "issue_number": 7275,
+                    "reason": "selected work",
+                },
             )
             assert result.data["ok"]
-            result = await client.call_tool("factory_apply_issue_admission", valid)
+            result = await client.call_tool("factory_prepare_validation", valid)
             assert result.data["ok"]
 
     _as(_principal(), wire)
@@ -2299,7 +2695,8 @@ def test_fresh_issue_dedicated_tools_require_typed_apply_and_operator(monkeypatc
     assert calls[1][2]["request_key"] == "exact-key"
 
 
-def test_session_dispatch_diagnostics_operator_and_thread(monkeypatch):
+@pytest.mark.parametrize("surface", ["combined", "cached", "status"])
+def test_session_dispatch_diagnostics_operator_and_thread(monkeypatch, surface):
     import threading
     from factory.execution import admission_diagnostics
 
@@ -2312,18 +2709,30 @@ def test_session_dispatch_diagnostics_operator_and_thread(monkeypatch):
         return {"recovery_authorized": False}
 
     monkeypatch.setattr(admission_diagnostics, "inspect_session_turn", read)
+
+    def call():
+        if surface == "cached":
+            return mcp.factory_session_dispatch_diagnostics(21073, 2)
+        if surface == "status":
+            return mcp.factory_status(
+                target="session_dispatch", session_id=21073, seq=2
+            )
+        return mcp.factory_diagnostics("session_dispatch", session_id=21073, seq=2)
+
     result = _as(
         _principal(groups=()),
-        lambda: mcp.factory_session_dispatch_diagnostics(21073, 2),
+        call,
     )
     assert result["error"] == mcp.OPERATOR_REQUIRED and not calls
     assert _as(
-        _principal(), lambda: mcp.factory_session_dispatch_diagnostics(21073, 2)
+        _principal(),
+        call,
     ) == {"recovery_authorized": False}
     assert calls == [(21073, 2)]
 
 
-def test_session_dispatch_diagnostics_strict_wire_identity(monkeypatch):
+@pytest.mark.parametrize("surface", ["combined", "cached", "status"])
+def test_session_dispatch_diagnostics_strict_wire_identity(monkeypatch, surface):
     from fastmcp import Client
     from core.mcp_app import mcp as shared
     from factory.execution import admission_diagnostics
@@ -2334,12 +2743,18 @@ def test_session_dispatch_diagnostics_strict_wire_identity(monkeypatch):
         "inspect_session_turn",
         lambda sid, seq: calls.append((sid, seq)) or {"recovery_authorized": False},
     )
+    name, selector = {
+        "combined": ("factory_diagnostics", {"kind": "session_dispatch"}),
+        "cached": ("factory_session_dispatch_diagnostics", {}),
+        "status": ("factory_status", {"target": "session_dispatch"}),
+    }[surface]
     for principal in (
         _principal(authority=Authority.DELEGATED),
         _principal(kind=PrincipalKind.WORKLOAD),
     ):
         assert not _as(
-            principal, lambda: mcp.factory_session_dispatch_diagnostics(21073, 2)
+            principal,
+            lambda: getattr(mcp, name)(**selector, session_id=21073, seq=2),
         )["ok"]
     assert not calls
 
@@ -2349,18 +2764,47 @@ def test_session_dispatch_diagnostics_strict_wire_identity(monkeypatch):
                 for value in (True, "2", 0, -1, 2**63):
                     args = {"session_id": 21073, "seq": 2, field: value}
                     result = await client.call_tool(
-                        "factory_session_dispatch_diagnostics",
-                        args,
+                        name,
+                        {**selector, **args},
                         raise_on_error=False,
                     )
                     assert result.is_error
             result = await client.call_tool(
-                "factory_session_dispatch_diagnostics", {"session_id": 21073, "seq": 2}
+                name,
+                {**selector, "session_id": 21073, "seq": 2},
             )
             assert result.data["recovery_authorized"] is False
 
     _as(_principal(), wire)
     assert calls == [(21073, 2)]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"target": "session_dispatch"},
+        {"target": "session_dispatch", "session_id": 21073},
+        {"target": "session_dispatch", "seq": 2},
+        {"session_id": 21073, "seq": 2},
+        {"target": "session_dispatch", "session_id": 21073, "seq": 2, "offset": 1},
+        {"target": "session_dispatch", "session_id": 21073, "seq": 2, "limit": 1},
+        {
+            "target": "session_dispatch",
+            "session_id": 21073,
+            "seq": 2,
+            "include_recent": True,
+        },
+    ],
+)
+def test_status_dispatch_rejects_incomplete_or_mixed_reads(monkeypatch, args):
+    from factory.execution import admission_diagnostics
+
+    def forbidden(*_):
+        pytest.fail("invalid read reached an owner")
+
+    monkeypatch.setattr(mcp, "_status_payload", forbidden)
+    monkeypatch.setattr(admission_diagnostics, "inspect_session_turn", forbidden)
+    assert not _as(_principal(), lambda: mcp.factory_status(**args))["ok"]
 
 
 @pytest.mark.parametrize(
@@ -2378,8 +2822,10 @@ def test_refinement_delivery_operator_gate_precedes_owner(principal, monkeypatch
 
     monkeypatch.setattr(mcp, "_refinement_delivery", forbidden)
     for fn in (
-        lambda: mcp.factory_preview_refinement_delivery(902, "continue"),
-        lambda: mcp.factory_apply_refinement_delivery(902, "continue", "key", "a" * 64),
+        lambda: mcp.factory_refinement_delivery("preview", 902, "continue"),
+        lambda: mcp.factory_refinement_delivery(
+            "apply", 902, "continue", "key", "a" * 64
+        ),
     ):
         assert _as(principal, fn)["error"] == mcp.OPERATOR_REQUIRED
 
@@ -2395,12 +2841,18 @@ def test_refinement_delivery_adapter_passes_only_server_actor_and_exact_request(
 
     monkeypatch.setattr(mcp, "_refinement_delivery", owner)
     assert _as(
-        _principal(), lambda: mcp.factory_preview_refinement_delivery(902, "continue")
+        _principal(),
+        lambda: mcp.factory_refinement_delivery("preview", 902, "continue"),
     ) == {"ok": True}
     assert _as(
         _principal(),
-        lambda: mcp.factory_apply_refinement_delivery(902, "continue", "key", "a" * 64),
+        lambda: mcp.factory_refinement_delivery(
+            "apply", 902, "continue", "key", "a" * 64
+        ),
     ) == {"ok": True}
+    assert _as(
+        _principal(), lambda: mcp.factory_refinement_delivery("apply", 902, "continue")
+    ) == {"ok": False, "reason": "refinement_delivery_preview_required"}
     assert calls == [
         ("preview", 902, "continue", "joe"),
         ("apply", 902, "continue", "joe", "key", "a" * 64),
@@ -2411,14 +2863,15 @@ def test_refinement_delivery_tool_schema_has_no_restriction_override():
     from core.mcp_app import mcp as shared
 
     tools = {tool.name: tool for tool in asyncio.run(shared.list_tools())}
-    for name, fields in (
-        ("factory_preview_refinement_delivery", {"receipt_id", "reason"}),
-        (
-            "factory_apply_refinement_delivery",
-            {"receipt_id", "reason", "request_key", "expected_preview_sha256"},
-        ),
-    ):
-        assert set(tools[name].parameters["properties"]) == fields
+    parameters = tools["factory_refinement_delivery"].parameters
+    assert set(parameters["properties"]) == {
+        "operation",
+        "receipt_id",
+        "reason",
+        "request_key",
+        "expected_preview_sha256",
+    }
+    assert set(parameters["required"]) == {"operation", "receipt_id", "reason"}
 
 
 def test_raw_extraction_diagnostics_operator_and_worker_thread(monkeypatch):
@@ -2436,13 +2889,14 @@ def test_raw_extraction_diagnostics_operator_and_worker_thread(monkeypatch):
     monkeypatch.setattr(admission_diagnostics, "inspect_raw_extraction", read)
     name = "kg:" + "a" * 64
     result = _as(
-        _principal(groups=()), lambda: mcp.factory_raw_extraction_diagnostics(name)
+        _principal(groups=()),
+        lambda: mcp.factory_diagnostics("raw_extraction", job_name=name),
     )
     assert result["error"] == mcp.OPERATOR_REQUIRED
     assert calls == []
-    assert _as(_principal(), lambda: mcp.factory_raw_extraction_diagnostics(name)) == {
-        "recovery_authorized": False
-    }
+    assert _as(
+        _principal(), lambda: mcp.factory_diagnostics("raw_extraction", job_name=name)
+    ) == {"recovery_authorized": False}
     assert calls == [name]
 
 
@@ -2470,13 +2924,14 @@ def test_raw_extraction_diagnostics_declared_schema(monkeypatch):
                 "kg:" + "A" * 64,
             ):
                 result = await client.call_tool(
-                    "factory_raw_extraction_diagnostics",
-                    {"job_name": name},
+                    "factory_diagnostics",
+                    {"kind": "raw_extraction", "job_name": name},
                     raise_on_error=False,
                 )
                 assert result.is_error
             result = await client.call_tool(
-                "factory_raw_extraction_diagnostics", {"job_name": "kg:" + "a" * 64}
+                "factory_diagnostics",
+                {"kind": "raw_extraction", "job_name": "kg:" + "a" * 64},
             )
             assert result.data["recovery_authorized"] is False
         assert calls == ["kg:" + "a" * 64]
@@ -2501,7 +2956,8 @@ def test_quota_probe_status_requires_operator_before_read(monkeypatch, principal
 
     monkeypatch.setattr(quota_probe, "probe_status", forbidden)
     assert (
-        _as(principal, mcp.factory_quota_probe_status)["error"] == mcp.OPERATOR_REQUIRED
+        _as(principal, lambda: mcp.factory_diagnostics("quota_probes"))["error"]
+        == mcp.OPERATOR_REQUIRED
     )
 
 
@@ -2509,7 +2965,10 @@ def test_quota_probe_status_delegates_only_bounded_selectors(monkeypatch):
     from factory import quota_probe
 
     monkeypatch.setattr(quota_probe, "probe_status", lambda **kwargs: kwargs)
-    assert _as(_principal(), lambda: mcp.factory_quota_probe_status(7, 3)) == {
+    assert _as(
+        _principal(),
+        lambda: mcp.factory_diagnostics("quota_probes", after_session_id=7, limit=3),
+    ) == {
         "after_session_id": 7,
         "limit": 3,
     }
@@ -2530,18 +2989,28 @@ def test_backlog_preparation_requires_standing_operator_before_any_read(monkeypa
         lambda *a, **kw: calls.append((a, kw)) or {"ok": True},
     )
     for principal in (_principal(groups=()), _principal(authority=Authority.DELEGATED)):
-        assert not _as(principal, lambda: mcp.factory_preview_backlog_intake("resume"))[
-            "ok"
-        ]
+        assert not _as(
+            principal, lambda: mcp.factory_backlog_intake("preview", "resume")
+        )["ok"]
         assert not _as(
             principal,
-            lambda: mcp.factory_apply_backlog_intake("resume", "a" * 64, "key"),
+            lambda: mcp.factory_backlog_intake(
+                "apply", "resume", expected_preview_sha256="a" * 64, request_key="key"
+            ),
         )["ok"]
     assert not calls
-    assert _as(_principal(), lambda: mcp.factory_preview_backlog_intake("resume"))["ok"]
+    assert _as(_principal(), lambda: mcp.factory_backlog_intake("preview", "resume"))[
+        "ok"
+    ]
+    assert _as(_principal(), lambda: mcp.factory_backlog_intake("apply", "resume")) == {
+        "ok": False,
+        "reason": "backlog_intake_preview_required",
+    }
     assert _as(
         _principal(),
-        lambda: mcp.factory_apply_backlog_intake("resume", "a" * 64, "key"),
+        lambda: mcp.factory_backlog_intake(
+            "apply", "resume", expected_preview_sha256="a" * 64, request_key="key"
+        ),
     )["ok"]
     assert calls[0] == (("resume",), {"include_refinement": False})
     assert calls[1][1]["expected_preview_sha256"] == "a" * 64
@@ -2565,21 +3034,26 @@ def test_refinement_batch_requires_standing_operator_before_any_read(monkeypatch
         _principal(kind=PrincipalKind.WORKLOAD),
     ):
         assert not _as(
-            principal, lambda: mcp.factory_preview_refinement_batch([7249], "briefs")
+            principal, lambda: mcp.factory_refinement_batch("preview", [7249], "briefs")
         )["ok"]
         assert not _as(
             principal,
-            lambda: mcp.factory_apply_refinement_batch(
-                [7249], "briefs", "a" * 64, "key"
+            lambda: mcp.factory_refinement_batch(
+                "apply", [7249], "briefs", "a" * 64, "key"
             ),
         )["ok"]
     assert not calls
     assert _as(
-        _principal(), lambda: mcp.factory_preview_refinement_batch([7249], "briefs")
+        _principal(), lambda: mcp.factory_refinement_batch("preview", [7249], "briefs")
     )["ok"]
     assert _as(
+        _principal(), lambda: mcp.factory_refinement_batch("apply", [7249], "briefs")
+    ) == {"ok": False, "reason": "refinement_batch_preview_required"}
+    assert _as(
         _principal(),
-        lambda: mcp.factory_apply_refinement_batch([7249], "briefs", "a" * 64, "key"),
+        lambda: mcp.factory_refinement_batch(
+            "apply", [7249], "briefs", "a" * 64, "key"
+        ),
     )["ok"]
     assert calls[0] == (([7249], "briefs"), {})
     assert calls[1][1]["request_key"] == "key"
@@ -2587,11 +3061,13 @@ def test_refinement_batch_requires_standing_operator_before_any_read(monkeypatch
 
 
 def test_progress_continuation_requires_standing_human_and_preview(monkeypatch):
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
 
     calls = []
     monkeypatch.setattr(
-        progress, "apply", lambda *a, **kw: calls.append((a, kw)) or {"ok": True}
+        progress,
+        "apply_continuation",
+        lambda *a, **kw: calls.append((a, kw)) or {"ok": True},
     )
 
     async def invoke():
@@ -2684,10 +3160,12 @@ def test_model_restriction_requires_standing_human_and_preview(monkeypatch):
     ],
 )
 def test_progress_mode_cannot_mix_policy_or_omit_identity(monkeypatch, overlay):
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
 
     monkeypatch.setattr(
-        progress, "preview", lambda *a: pytest.fail("Invalid mode reached continuation")
+        progress,
+        "preview_continuation",
+        lambda *a: pytest.fail("Invalid mode reached continuation"),
     )
 
     async def invoke():
@@ -2716,8 +3194,13 @@ def test_probe_reconciliation_requires_standing_operator(monkeypatch, principal)
     assert (
         _as(
             principal,
-            lambda: mcp.factory_reconcile_quota_probe(
-                "preview", 6463, 1, 3339, "reason"
+            lambda: mcp.factory_reconcile(
+                "quota_probe",
+                "preview",
+                session_id=6463,
+                seq=1,
+                permit_id=3339,
+                reason="reason",
             ),
         )["error"]
         == mcp.OPERATOR_REQUIRED
@@ -2735,15 +3218,29 @@ def test_probe_reconciliation_adapter_binds_actor_and_requires_preview(monkeypat
     assert (
         _as(
             p,
-            lambda: mcp.factory_reconcile_quota_probe("apply", 6463, 1, 3339, "reason"),
+            lambda: mcp.factory_reconcile(
+                "quota_probe",
+                "apply",
+                session_id=6463,
+                seq=1,
+                permit_id=3339,
+                reason="reason",
+            ),
         )["reason"]
         == "probe_preview_required"
     )
     assert not calls
     assert _as(
         p,
-        lambda: mcp.factory_reconcile_quota_probe(
-            "apply", 6463, 1, 3339, "reason", "key", "digest"
+        lambda: mcp.factory_reconcile(
+            "quota_probe",
+            "apply",
+            session_id=6463,
+            seq=1,
+            permit_id=3339,
+            reason="reason",
+            request_key="key",
+            expected_preview_sha256="digest",
         ),
     )["ok"]
     assert calls == [(p.subject, 6463, 1, 3339, "reason", "key", "digest")]
@@ -2780,7 +3277,9 @@ def test_refill_adapter_binds_actor_and_requires_preview(monkeypatch):
 
     calls = []
     monkeypatch.setattr(
-        refill_control, "apply", lambda *args: calls.append(args) or {"ok": True}
+        refill_control,
+        "apply",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or {"ok": True},
     )
     p = _principal()
     assert (
@@ -2799,11 +3298,24 @@ def test_refill_adapter_binds_actor_and_requires_preview(monkeypatch):
             "apply", True, "astra", True, 0, "reason", "key", "digest"
         ),
     )["ok"]
-    assert calls == [(p.subject, True, "astra", True, 0, "reason", "key", "digest")]
+    assert calls == [
+        (
+            (p.subject, True, "astra", True, 0, "reason", "key", "digest"),
+            {"reset_breaker": False, "min_new_issues": None},
+        )
+    ]
+    calls.clear()
+    assert _as(
+        p,
+        lambda: mcp.factory_configure_refill(
+            "apply", True, "opus", False, 0, "re-arm", "k2", "d2", True, 1
+        ),
+    )["ok"]
+    assert calls[0][1] == {"reset_breaker": True, "min_new_issues": 1}
 
 
 def test_progress_preview_returns_bounded_subscription_refusal(monkeypatch):
-    from factory.orchestration import factory_progress_continuation as progress
+    from factory.orchestration import factory_funding as progress
 
     diagnostics = {
         "refused_model": {
@@ -2818,7 +3330,7 @@ def test_progress_preview_returns_bounded_subscription_refusal(monkeypatch):
             "progress_subscription_evidence_stale", diagnostics
         )
 
-    monkeypatch.setattr(progress, "preview", refuse)
+    monkeypatch.setattr(progress, "preview_continuation", refuse)
     result = _as(
         _principal(),
         lambda: mcp.factory_amend_policy(
@@ -2853,8 +3365,13 @@ def test_learning_reconciliation_requires_standing_operator(monkeypatch, princip
     assert (
         _as(
             principal,
-            lambda: mcp.factory_reconcile_learning_execution(
-                "preview", 18004, 1, 15160, "reason"
+            lambda: mcp.factory_reconcile(
+                "learning_execution",
+                "preview",
+                session_id=18004,
+                seq=1,
+                permit_id=15160,
+                reason="reason",
             ),
         )["error"]
         == mcp.OPERATOR_REQUIRED
@@ -2875,8 +3392,13 @@ def test_learning_reconciliation_adapter_binds_actor_and_requires_digest(monkeyp
     assert (
         _as(
             p,
-            lambda: mcp.factory_reconcile_learning_execution(
-                "apply", 18004, 1, 15160, "reason"
+            lambda: mcp.factory_reconcile(
+                "learning_execution",
+                "apply",
+                session_id=18004,
+                seq=1,
+                permit_id=15160,
+                reason="reason",
             ),
         )["reason"]
         == "learning_preview_required"
@@ -2884,8 +3406,351 @@ def test_learning_reconciliation_adapter_binds_actor_and_requires_digest(monkeyp
     assert not calls
     assert _as(
         p,
-        lambda: mcp.factory_reconcile_learning_execution(
-            "apply", 18004, 1, 15160, "reason", "stable", "digest"
+        lambda: mcp.factory_reconcile(
+            "learning_execution",
+            "apply",
+            session_id=18004,
+            seq=1,
+            permit_id=15160,
+            reason="reason",
+            request_key="stable",
+            expected_preview_sha256="digest",
         ),
     )["ok"]
     assert calls == [(p.subject, 18004, 1, 15160, "reason", "stable", "digest")]
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+        _principal(groups=()),
+    ],
+)
+def test_settled_retry_recovery_requires_standing_operator(monkeypatch, principal):
+    from factory import settled_retry_reconciliation as recovery
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("unauthorized caller reached settled retry recovery")
+
+    monkeypatch.setattr(recovery, "run", forbidden)
+    result = _as(
+        principal,
+        lambda: mcp.factory_reconcile(
+            "settled_retry",
+            "preview",
+            receipt_id=1047,
+            session_id=24399,
+            permit_id=22520,
+            reason="reason",
+            request_key="stable",
+        ),
+    )
+    assert result["error"] == mcp.OPERATOR_REQUIRED
+
+
+@pytest.mark.parametrize("operation,digest", [("preview", None), ("apply", "a" * 64)])
+def test_settled_retry_adapter_binds_operator_and_exact_request(
+    monkeypatch, operation, digest
+):
+    from factory import settled_retry_reconciliation as recovery
+
+    calls = []
+    expected = {"ok": True, "state": "preview" if operation == "preview" else "applied"}
+
+    async def run(*args):
+        calls.append(args)
+        return expected
+
+    monkeypatch.setattr(recovery, "run", run)
+    principal = _principal()
+    result = _as(
+        principal,
+        lambda: mcp.factory_reconcile(
+            "settled_retry",
+            operation,
+            receipt_id=1047,
+            session_id=24399,
+            permit_id=22520,
+            reason="reason",
+            request_key="stable",
+            expected_preview_sha256=digest,
+        ),
+    )
+    assert result == expected
+    assert calls == [
+        (operation, principal.subject, 1047, 24399, 22520, "reason", "stable", digest)
+    ]
+
+
+@pytest.mark.parametrize("digest", [None, "", "not-a-digest"])
+def test_settled_retry_adapter_requires_reviewed_digest_before_recovery(
+    monkeypatch, digest
+):
+    from factory import settled_retry_reconciliation as recovery
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("apply without a digest reached local or remote recovery")
+
+    monkeypatch.setattr(recovery, "_prepare", forbidden)
+    result = _as(
+        _principal(),
+        lambda: mcp.factory_reconcile(
+            "settled_retry",
+            "apply",
+            receipt_id=1047,
+            session_id=24399,
+            permit_id=22520,
+            reason="reason",
+            request_key="stable",
+            expected_preview_sha256=digest,
+        ),
+    )
+    assert result == {"ok": False, "reason": "settled_retry_preview_required"}
+
+
+def test_settled_retry_adapter_preserves_uncertain_remote_outcome(monkeypatch):
+    from factory import settled_retry_reconciliation as recovery
+
+    expected = {
+        "ok": False,
+        "state": "outcome_unknown",
+        "phase": "lineage_fence",
+        "request_key": "stable",
+        "factory_settlement": "not_applied",
+        "reason": "replay_identical_apply_to_reconcile",
+    }
+
+    async def run(*args):
+        return expected
+
+    monkeypatch.setattr(recovery, "run", run)
+    assert (
+        _as(
+            _principal(),
+            lambda: mcp.factory_reconcile(
+                "settled_retry",
+                "apply",
+                receipt_id=1047,
+                session_id=24399,
+                permit_id=22520,
+                reason="reason",
+                request_key="stable",
+                expected_preview_sha256="a" * 64,
+            ),
+        )
+        == expected
+    )
+
+
+def test_settled_retry_adapter_reports_guard_refusal(monkeypatch):
+    from factory import settled_retry_reconciliation as recovery
+
+    async def run(*args):
+        raise ValueError("settled_retry_identity_unconfirmed")
+
+    monkeypatch.setattr(recovery, "run", run)
+    assert _as(
+        _principal(),
+        lambda: mcp.factory_reconcile(
+            "settled_retry",
+            "preview",
+            receipt_id=1047,
+            session_id=24399,
+            permit_id=22520,
+            reason="reason",
+            request_key="stable",
+        ),
+    ) == {
+        "ok": False,
+        "reason": "settled_retry_identity_unconfirmed",
+    }
+
+
+@pytest.mark.parametrize(
+    ("kind", "args", "reason"),
+    [
+        ("permits", {}, "permits_requires_permit_ids"),
+        ("session_dispatch", {"seq": 2}, "session_dispatch_requires_session_and_seq"),
+        (
+            "session_dispatch",
+            {"session_id": 21073},
+            "session_dispatch_requires_session_and_seq",
+        ),
+        ("raw_extraction", {}, "raw_extraction_requires_job_name"),
+    ],
+)
+def test_diagnostics_kind_requires_its_selector_before_read(
+    monkeypatch, kind, args, reason
+):
+    from factory.execution import admission_diagnostics
+
+    for name in ("inspect_permits", "inspect_session_turn", "inspect_raw_extraction"):
+        monkeypatch.setattr(
+            admission_diagnostics,
+            name,
+            lambda *a, **kw: pytest.fail("diagnostic read without its selector"),
+        )
+    assert _as(_principal(), lambda: mcp.factory_diagnostics(kind, **args)) == {
+        "ok": False,
+        "reason": reason,
+    }
+
+
+@pytest.mark.parametrize(
+    ("kind", "args", "reason"),
+    [
+        ("quota_probe", {}, "quota_probe_requires_seq"),
+        ("learning_execution", {}, "learning_execution_requires_seq"),
+        (
+            "settled_retry",
+            {"request_key": "stable"},
+            "settled_retry_requires_receipt_and_request_key",
+        ),
+        (
+            "settled_retry",
+            {"receipt_id": 1047},
+            "settled_retry_requires_receipt_and_request_key",
+        ),
+        (
+            "settled_retry",
+            {"receipt_id": 1047, "request_key": "k" * 129},
+            "settled_retry_requires_receipt_and_request_key",
+        ),
+    ],
+)
+def test_reconcile_kind_requires_its_identity_before_owner(
+    monkeypatch, kind, args, reason
+):
+    from factory import (
+        learning_reconciliation,
+        probe_reconciliation,
+        settled_retry_reconciliation,
+    )
+
+    def forbidden(*a, **kw):
+        pytest.fail("reconcile owner reached without its identity")
+
+    for owner in (probe_reconciliation, learning_reconciliation):
+        monkeypatch.setattr(owner, "preview", forbidden)
+    monkeypatch.setattr(settled_retry_reconciliation, "run", forbidden)
+    assert _as(
+        _principal(),
+        lambda: mcp.factory_reconcile(kind, "preview", 24399, 22520, "reason", **args),
+    ) == {"ok": False, "reason": reason}
+
+
+def test_reconcile_and_diagnostics_refuse_unauthorized_before_selector_checks(
+    monkeypatch,
+):
+    for principal in (
+        _principal(groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        assert (
+            _as(principal, lambda: mcp.factory_diagnostics("permits"))["error"]
+            == mcp.OPERATOR_REQUIRED
+        )
+        assert (
+            _as(
+                principal,
+                lambda: mcp.factory_reconcile(
+                    "settled_retry", "preview", 1, 2, "reason"
+                ),
+            )["error"]
+            == mcp.OPERATOR_REQUIRED
+        )
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+        _principal(groups=()),
+    ],
+)
+def test_owner_pr_control_requires_standing_operator(monkeypatch, principal):
+    from factory.orchestration import owner_pr_control
+
+    monkeypatch.setattr(
+        owner_pr_control, "preview", lambda *_: pytest.fail("unauthorized control")
+    )
+    assert (
+        _as(
+            principal,
+            lambda: mcp.factory_configure_owner_prs("preview", 0, "reason", "joe", 42),
+        )["error"]
+        == mcp.OPERATOR_REQUIRED
+    )
+
+
+def test_owner_pr_adapter_binds_actor_and_requires_preview(monkeypatch):
+    from factory.orchestration import owner_pr_control
+
+    calls = []
+    monkeypatch.setattr(
+        owner_pr_control, "apply", lambda *args: calls.append(args) or {"ok": True}
+    )
+    principal = _principal()
+    assert (
+        _as(
+            principal,
+            lambda: mcp.factory_configure_owner_prs("apply", 0, "reason", "joe", 42),
+        )["reason"]
+        == "owner_pr_preview_required"
+    )
+    assert not calls
+    assert _as(
+        principal,
+        lambda: mcp.factory_configure_owner_prs(
+            "apply", 0, "reason", "joe", 42, "key", "digest"
+        ),
+    )["ok"]
+    assert calls == [
+        (principal.subject, {"login": "joe", "id": 42}, 0, "reason", "key", "digest")
+    ]
+
+
+def test_existing_refill_name_dispatches_only_owner_pr_target(monkeypatch):
+    from factory.orchestration import owner_pr_control
+
+    calls = []
+    monkeypatch.setattr(
+        owner_pr_control, "preview", lambda *args: calls.append(args) or {"ok": True}
+    )
+    result = _as(
+        _principal(),
+        lambda: mcp.factory_configure_refill(
+            "preview",
+            True,
+            "astra",
+            False,
+            8,
+            "Enable owner feed",
+            target="owner_prs",
+            owner_login="joe",
+            owner_id=42,
+        ),
+    )
+    assert result["ok"]
+    assert calls == [({"login": "joe", "id": 42}, 8, "Enable owner feed")]
+    refused = _as(
+        _principal(),
+        lambda: mcp.factory_configure_refill(
+            "preview",
+            True,
+            "astra",
+            False,
+            8,
+            "bad mixed target",
+            target="owner_prs",
+            owner_login="joe",
+            owner_id=42,
+            recurring_blocker=True,
+        ),
+    )
+    assert refused["reason"] == "owner_pr_target_arguments_invalid"
+    assert len(calls) == 1

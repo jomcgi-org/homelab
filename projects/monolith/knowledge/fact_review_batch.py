@@ -225,8 +225,6 @@ def _finish(session, key, now, *, transaction_guard=None, commit=True):
 
 
 def prepare(session: Session, key: str, *, fetch=None, now=None) -> str:
-    if not review.enabled():
-        return review.NO_REVIEW
     fixed_now = now
 
     def completed_now():
@@ -398,8 +396,6 @@ def apply(
     cost_usd=None,
 ) -> dict:
     now = utc(now or datetime.now(UTC))
-    if not review.enabled():
-        return {"summary": "Source review disabled"}
     if transaction_guard:
         transaction_guard(session)
     batch = _batch(session, key, lock=True)

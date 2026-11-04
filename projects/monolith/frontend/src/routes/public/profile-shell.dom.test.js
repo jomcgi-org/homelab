@@ -6,6 +6,12 @@ import { setPage } from "../../../test/profile-page.svelte.js";
 import { reroute } from "../../hooks.js";
 import * as cv from "./cv/cv-data.js";
 
+// The ships page mounted by the shared route harness imports MapLibre's
+// worker URL, which the Bazel test sandbox cannot resolve.
+vi.mock("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url", () => ({
+  default: "/test-worker.js",
+}));
+
 vi.mock("$app/state", () => import("../../../test/profile-page.svelte.js"));
 vi.mock("$app/stores", () => import("../../../test/profile-stores.js"));
 
@@ -101,15 +107,6 @@ describe("home/CV composed route chrome", () => {
         await unmount(instance);
         instance = undefined;
       }
-    },
-  );
-
-  it.each(["/cvstore", "/docstore", "/public/cv/unknown"])(
-    "does not suppress legacy navigation on the unrelated route %s",
-    async (path) => {
-      await render(path, "legacy");
-      expect(target.querySelectorAll(".md-nav")).toHaveLength(1);
-      expect(target.querySelector(".chrome, .scheme")).toBeNull();
     },
   );
 

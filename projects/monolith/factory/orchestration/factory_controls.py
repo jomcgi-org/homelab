@@ -17,9 +17,10 @@ import os
 import re
 from typing import Iterator
 
-from sqlalchemy import or_, update
+from sqlalchemy import func, or_, update
 from sqlmodel import Session, select
 
+from core.clock import utc_now as _now
 from core.db import get_engine
 from core.jsonio import dumps, loads_or
 from factory.orchestration.factory_models import (
@@ -54,6 +55,23 @@ ESCALATED = "escalated"
 # terminal, because a decision can still return it to the lane, but nothing
 # the server does on its own will move it either.
 _SETTLED = (*_TERMINAL, ESCALATED)
+
+# The approved docs release has an operator owner, never a reopened native DAG.
+OPERATOR_DOCS_HANDOFF_TARGET = (
+    1045,
+    "t-a4702857-5c95-41cd-aa21-415e10bc9355",
+    "jomcgi-org/homelab",
+    7492,
+)
+
+
+OPERATOR_DOCS_HANDOFF_ACCEPTED_HEAD = "7da9676f1bdbae60248de2aefaf911493559f33f"
+
+
+def operator_landing_target(task_id):
+    return task_id == OPERATOR_DOCS_HANDOFF_TARGET[1]
+
+
 GENERATION_RECONCILIATION_LIMIT = 50
 GENERATION_RETIREMENT_ACTOR = "factory:generation-retirement"
 _DELIVERY_BRANCH = re.compile(
@@ -89,6 +107,7 @@ _POLICY_KEYS = {
     "auto_merge",
     "repos",
     "backlog_refill",
+    "task_budget_binding",
 }
 _OPTIONAL_POLICY_KEYS = {
     "reviewer_model",
@@ -107,6 +126,7 @@ _OPTIONAL_POLICY_KEYS = {
     "auto_merge",
     "repos",
     "backlog_refill",
+    "task_budget_binding",
 }
 
 
@@ -207,6 +227,8 @@ DEFAULT_INTAKE = {
     "refine_brief_only": False,
     # Author authority permits inspection, never approval or merge.
     "dependency_pr_authors": [],
+    # Verified login plus immutable GitHub user ID; discovery grants no scope.
+    "owner_pr_author": None,
     # Numeric IDs force security evidence; they grant no intake authority.
     "dependency_pr_author_ids": [],
     # Closing an issue is the one refine outcome that destroys something an
@@ -220,18 +242,25 @@ DEFAULT_INTAKE = {
 # it, so the capability arrives inert and an operator opts in.
 DEFAULT_AUTO_MERGE = False
 # Problem issues turn a deliberately small set of exact factory audits into
-# ordinary GitHub issues. Both the producer and every source arrive off. The
-# remaining values are conservative repository defaults supplied by the
-# conductor rescope for #6002; changing live policy remains an operator act.
+# ordinary GitHub issues. The producer arrives off. Every source arrives off
+# except `recurring_blocker`: wherever an operator has enabled the producer,
+# a repeated no-progress blocker becomes one repair issue on normal rollout
+# (watermarked, so no history is replayed); `false` keeps it off. The
+# remaining values are conservative repository defaults. The producer owns a
+# reviewed one-time recovery-source activation for an already-enabled homelab
+# bug lane (#7583). It preserves subsequent operator overrides and generation.
 PROBLEM_ISSUE_SOURCES = (
     "quota_improvement",
     "node_stalled",
     "workflow_stranded",
     "landing_recovery_exhausted",
+    "recurring_blocker",
 )
 DEFAULT_PROBLEM_ISSUES = {
     "enabled": False,
-    "sources": {source: False for source in PROBLEM_ISSUE_SOURCES},
+    "sources": {
+        source: source == "recurring_blocker" for source in PROBLEM_ISSUE_SOURCES
+    },
     "source_audit_limit": 50,
     "issue_pages": 2,
     "issues_per_page": 100,
@@ -282,8 +311,6 @@ REVIEWER_ROUTING_ACTIONS = (
     "review_waiting",
     "quota_guard_unknown",
 )
-# One review node that cannot start yet, audited against its task.
-REVIEW_NODE_WAITING_ACTION = "review_node_waiting"
 # ADR agents/038 decision 5. A class carries a verification mode and a floor on
 # the implementer tier, and judgment work never routes to the cheap lane.
 # DEFAULT_TASK_CLASS is re-exported from factory_models, which owns it because
@@ -593,10 +620,6 @@ def factory_background_reserve() -> int:
     return max(0, int(os.environ.get("FACTORY_BACKGROUND_RESERVE", "2")))
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 def digest(value: object) -> str:
     return hashlib.sha256(dumps(value).encode()).hexdigest()
 
@@ -756,6 +779,13 @@ def validate_policy(policy: dict) -> dict:
     if type(auto_merge) is not bool:
         raise ValueError("invalid auto_merge")
     result["auto_merge"] = auto_merge
+    # An explicit human monetary restriction: only an operator sets it, and a
+    # funding proposal above the approved task budget then waits for an
+    # amendment. Absent, dollars are accounting and never an approval request.
+    if "task_budget_binding" in policy:
+        if type(policy["task_budget_binding"]) is not bool:
+            raise ValueError("invalid task_budget_binding")
+        result["task_budget_binding"] = policy["task_budget_binding"]
     # The repos map is stored sparse and never derived here: a policy
     # without it reads as one primary entry equal to the global blocks
     # (repos_map), so the live policy needs no re-post and homelab follows
@@ -799,6 +829,19 @@ def _validate_intake(value: object) -> dict:
     if not isinstance(value, dict) or not set(value) <= set(DEFAULT_INTAKE):
         raise ValueError("invalid intake")
     result = {}
+    owner = value.get("owner_pr_author")
+    if owner is not None and (
+        not isinstance(owner, dict)
+        or set(owner) != {"login", "id"}
+        or not isinstance(owner.get("login"), str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", owner["login"]) is None
+        or type(owner.get("id")) is not int
+        or owner["id"] <= 0
+    ):
+        raise ValueError("invalid owner_pr_author")
+    result["owner_pr_author"] = (
+        {"login": owner["login"].lower(), "id": owner["id"]} if owner else None
+    )
     authors = value.get("dependency_pr_authors", [])
     if (
         not isinstance(authors, list)
@@ -1354,6 +1397,7 @@ def _policy_for_generation_comparison(policy: dict) -> dict:
 
     comparable["backlog_refill"] = refill_policy(comparable)
     comparable["problem_issues"] = problem_issues_policy(comparable)
+    comparable.setdefault("task_budget_binding", False)
     comparable["progress_watchdog"] = progress_watchdog_policy(comparable)
     # Newly defaulted intake fields must not turn a legacy no-op configure
     # into a generation change while pinned receipts are running.
@@ -1736,6 +1780,7 @@ def _apply_capacity_release(
         row.task_paused = False
     if "landing_hold" in intent:
         direction.pop("landing_hold", None)
+        direction.pop("landing_hold_provenance", None)
     if settling and intent.get("resume"):
         # finish_task revokes the remaining resume with its original identity.
         direction["pending_capacity_release"] = {
@@ -2041,14 +2086,22 @@ def allowance_from_graph(
             work_turns_used += 1
     remaining_turns = 0
     remaining_usd = 0.0
+    from factory.orchestration.evidence_continuation import attempt_limit
+
     for node in nodes:
         key = node["node_key"]
         if key in succeeded:
             continue
-        remaining_usd += max(0.0, node["max_cost_usd"] - charged.get(key, 0.0))
+        grant = node.get("evidence_continuation")
+        if grant and key == grant["node_key"]:
+            remaining_usd += node["max_cost_usd"] * max(
+                0, attempt_limit(node) - attempts.get(key, 0)
+            )
+        else:
+            remaining_usd += max(0.0, node["max_cost_usd"] - charged.get(key, 0.0))
         if key.startswith("conductor_"):
             continue
-        remaining_turns += max(0, node["max_attempts"] - attempts.get(key, 0))
+        remaining_turns += max(0, attempt_limit(node) - attempts.get(key, 0))
     if reviewable is None:
         reviewable = any(node["node_key"].startswith("review_") for node in nodes)
     rounds = min(1, max(0, review_rounds_remaining)) if reviewable else 0
@@ -2164,7 +2217,30 @@ def landing_held(row) -> bool:
         )
     else:
         direction = json.loads(getattr(row, "direction_json", None) or "{}")
-    return "landing_hold" in direction
+    if "landing_hold" not in direction:
+        return False
+    # Unknown and operator holds remain binding. Only an exact server-recorded
+    # refusal of this planner gate can suppress its projection or inheritance.
+    from core.env import flag
+
+    if flag("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED"):
+        source = direction.get("landing_hold_provenance")
+        if (
+            isinstance(source, dict)
+            and source.get("origin") == "planner"
+            and isinstance(source.get("cause"), str)
+            and bool(source["cause"])
+            and isinstance(source.get("gate_id"), str)
+            and bool(source["gate_id"])
+            and isinstance(direction["landing_hold"], dict)
+            and direction["landing_hold"].get("actor") == "factory:conductor"
+            and direction["landing_hold"].get("cause") == source["cause"]
+            and source.get("hold") == direction["landing_hold"]
+            and {"cause": source.get("cause"), "gate_id": source.get("gate_id")}
+            in direction.get("landing_hold_refusals", [])
+        ):
+            return False
+    return True
 
 
 def natural_history_exclusion(rows) -> str | None:
@@ -2259,6 +2335,11 @@ def record_allowance(
         # no dollar figure bounds a plan (#7161).
         grant = continuation_grant(task_id, session=db)
         ceiling = grant["work_turn_ceiling"] if grant else task_turn_ceiling(policy)
+        from factory.orchestration.evidence_continuation import recovery_grant
+
+        evidence = recovery_grant(db, task_id)
+        if evidence:
+            ceiling = min(ceiling, evidence["work_turn_ceiling"])
         allowance["turns"] = min(allowance["turns"], ceiling)
         row.allowance_json = dumps(allowance)
         row.updated_at = _now()
@@ -2400,31 +2481,35 @@ def task_recovery_grant(task_id: str, *, session=None) -> dict | None:
             .order_by(FactoryAudit.id.desc())
             .limit(1)
         ).first()
-        if event is None:
-            return None
-        original = json.loads(event.detail_json)["proposal"]
-        from factory.orchestration.factory_funding_limits import latest
+        return _task_recovery_proposal(db, task_id, event)
 
-        authorization = latest(db, task_id, "progress_continuation_authorized")
-        lease = latest(db, task_id, "progress_continuation_lease")
-        if (
-            authorization
-            and lease
-            and lease["original_recovery_audit_id"] == event.id
-            and authorization["proposal"]["original_recovery"]["audit_id"] == event.id
-        ):
-            return {
-                **original,
-                **{
-                    key: lease[key]
-                    for key in (
-                        "deadline_at",
-                        "work_turn_ceiling",
-                        "planner_turn_ceiling",
-                    )
-                },
-            }
-        return original
+
+def _task_recovery_proposal(db, task_id, event):
+    if event is None:
+        return None
+    original = json.loads(event.detail_json)["proposal"]
+    from factory.orchestration.factory_funding_limits import latest
+
+    authorization = latest(db, task_id, "progress_continuation_authorized")
+    lease = latest(db, task_id, "progress_continuation_lease")
+    if (
+        authorization
+        and lease
+        and lease["original_recovery_audit_id"] == event.id
+        and authorization["proposal"]["original_recovery"]["audit_id"] == event.id
+    ):
+        return {
+            **original,
+            **{
+                key: lease[key]
+                for key in (
+                    "deadline_at",
+                    "work_turn_ceiling",
+                    "planner_turn_ceiling",
+                )
+            },
+        }
+    return original
 
 
 def _recovery_plan_accepted(db, task_id, recovery):
@@ -2450,12 +2535,31 @@ def task_recovery_needs_plan(task_id: str, *, session=None) -> bool:
 
 
 def _recovery_deadline(db, task_id):
-    grant = task_recovery_grant(task_id, session=db)
+    from factory.orchestration.evidence_continuation import RECOVERY
+
+    # Read both bounded audit identities together. A separate grant lookup
+    # for every historical receipt would regress the status work baseline.
+    latest_ids = (
+        select(func.max(FactoryAudit.id))
+        .where(
+            FactoryAudit.task_id == task_id,
+            FactoryAudit.action.in_((TASK_RECOVERY_ACTION, RECOVERY)),
+        )
+        .group_by(FactoryAudit.action)
+    )
+    events = db.exec(select(FactoryAudit).where(FactoryAudit.id.in_(latest_ids))).all()
+    deadlines = []
+    for event in events:
+        grant = (
+            _task_recovery_proposal(db, task_id, event)
+            if event.action == TASK_RECOVERY_ACTION
+            else json.loads(event.detail_json)["proposal"]
+        )
+        deadlines.append(datetime.fromisoformat(grant["deadline_at"]))
     landing = _landing_recovery_deadline(db, task_id)
-    if grant is None:
-        return landing
-    deadline = datetime.fromisoformat(grant["deadline_at"])
-    return min(deadline, landing) if landing else deadline
+    if landing:
+        deadlines.append(landing)
+    return min(deadlines) if deadlines else None
 
 
 def review_recovery_held(task_id: str, *, session=None) -> bool:
@@ -2809,10 +2913,49 @@ NON_TERMINAL_EFFECTS = ("escape-dismiss",)
 
 
 def issue_body_hash(body: object) -> str:
-    """Hash issue text after collapsing changes that carry no new words."""
+    """Hash issue text after collapsing changes that carry no new words.
+
+    The factory's own generated gate contracts are excluded, ticks inside
+    them included: replacing one rewrites the body without changing anything
+    a person asked, and a card that superseded itself on every rescope was
+    most of the dismissals on the escalations page. Line endings are folded
+    first so a CRLF save from the web editor still parses the block markers.
+    """
+    from factory.orchestration import factory_gate_blocks
+
     text = body if isinstance(body, str) else ""
-    normalized = " ".join(text.split())
-    return hashlib.sha256(normalized.encode()).hexdigest()
+    text = factory_gate_blocks.strip(text.replace("\r\n", "\n").replace("\r", "\n"))
+    return _words_hash(text)
+
+
+def _words_hash(text: str) -> str:
+    return hashlib.sha256(" ".join(text.split()).encode()).hexdigest()
+
+
+def issue_body_hashes(body: object) -> set[str]:
+    """Every hash this body has had: the current rule and the whole-text rule.
+
+    Cards and briefs raised before gate blocks were excluded carry the older
+    hash, so a comparison that only knows the new rule would read every one
+    of them as a changed body once.
+    """
+    text = body if isinstance(body, str) else ""
+    return {issue_body_hash(text), _words_hash(text)}
+
+
+def issue_body_unchanged(stored: object, recorded: object, current: object) -> bool:
+    """Whether the current body still says what the card was raised against.
+
+    The stored hash decides under either rule. The receipt's recorded copy
+    stands in only when no hash was stored or the stored one was taken from
+    that copy, so a body edited after the card and edited back to the
+    admission text is still a change.
+    """
+    if isinstance(stored, str) and stored in issue_body_hashes(current):
+        return True
+    if stored is None or stored in issue_body_hashes(recorded):
+        return issue_body_hash(current) == issue_body_hash(recorded)
+    return False
 
 
 def terminal_effect(effect: str | None) -> bool:
@@ -2966,13 +3109,33 @@ def intake_state(policy: dict, *, session: Session | None = None) -> dict:
         # different things.
         admitted_today = delivery_admissions(db, cutoff)
 
+        # Keep the status work bound as producers add observations. Select one
+        # newest row per known action in one read, never materialize its history.
+        actions = (
+            "intake_admitted",
+            "intake_idle",
+            "intake_swept",
+            "intake_evaluated",
+            "intake_error",
+            "owner_pr_backlog",
+        )
+        latest_ids = [
+            select(FactoryAudit.id)
+            .where(FactoryAudit.action == action)
+            .order_by(FactoryAudit.id.desc())
+            .limit(1)
+            .scalar_subquery()
+            for action in actions
+        ]
+        observations = {
+            row.action: row
+            for row in db.exec(
+                select(FactoryAudit).where(FactoryAudit.id.in_(latest_ids))
+            ).all()
+        }
+
         def latest(action: str) -> dict | None:
-            row = db.exec(
-                select(FactoryAudit)
-                .where(FactoryAudit.action == action)
-                .order_by(FactoryAudit.id.desc())
-                .limit(1)
-            ).first()
+            row = observations.get(action)
             if row is None:
                 return None
             created = row.created_at
@@ -2994,6 +3157,7 @@ def intake_state(policy: dict, *, session: Session | None = None) -> dict:
             "last_swept": latest("intake_swept"),
             "last_evaluated": latest("intake_evaluated"),
             "last_error": latest("intake_error"),
+            "owner_pr_backlog": latest("owner_pr_backlog"),
         }
 
 
@@ -3016,6 +3180,9 @@ _PROBLEM_ISSUE_ACTIONS = (
     "problem_issue_reconcile_retry",
     "problem_issue_reconciled",
     "problem_issue_unresolved",
+    "problem_issue_recovery_loop_activated",
+    "problem_issue_recovery_watch",
+    "problem_issue_recovery_observed",
 )
 
 
@@ -3047,8 +3214,12 @@ def problem_issues_state(policy: dict, *, session: Session | None = None) -> dic
                 "created_at": created.isoformat(),
                 "detail": json.loads(last.detail_json),
             }
+        # Effective sources only: a source flag is inert while the producer
+        # switch is off, so it must not read as enabled.
         enabled_sources = sorted(
-            source for source, enabled in block["sources"].items() if enabled
+            source
+            for source, enabled in block["sources"].items()
+            if enabled and block["enabled"]
         )
         return {
             "policy": block,
@@ -3291,7 +3462,7 @@ def receipt_operator_direction(db: Session, row: FactoryReceipt) -> dict | None:
         or not answer.get("actor")
         or option is None
         or option.get("effect") != "agent-ready"
-        or brief.get("issue_body_sha256") != issue_body_hash(row.body)
+        or brief.get("issue_body_sha256") not in issue_body_hashes(row.body)
         or _pending_request(db, prior.id)
         or _pending_request(db, row.id)
     ):
@@ -3836,6 +4007,10 @@ def set_control(
             pending=release_result.get("pending", False),
             **configure_detail,
         )
+        if action == "resume_task" and reason is None:
+            from factory.orchestration import factory_funding
+
+            factory_funding.rearm_progress(db, task_id, actor, action)
         return {
             "ok": reason is None,
             "reason": reason,
@@ -4073,6 +4248,12 @@ def _can_start(
             "conductor_funding_"
         )
         grant = amendment(db, task_id)
+        from factory.orchestration.evidence_continuation import (
+            recovery_grant,
+            recovery_start_refusal,
+        )
+
+        evidence = recovery_grant(db, task_id)
         already_reserved = any(
             s.start_key == start_key and s.status == "reserved"
             for s in _starts(db, task_id)
@@ -4083,7 +4264,11 @@ def _can_start(
         recovery_deadline = _recovery_deadline(db, task_id)
         now = _now()
         if recovery_deadline is not None and now >= recovery_deadline:
-            reason = "task_deadline" if recovery else "landing_recovery_deadline"
+            reason = (
+                "task_deadline" if recovery or evidence else "landing_recovery_deadline"
+            )
+        elif evidence:
+            reason = recovery_start_refusal(db, task_id, start_key)
         elif (
             recovery
             and matched
@@ -4205,6 +4390,9 @@ def authorize_start(
         planner = _planner_key(start_key)
         recovery = task_recovery_grant(task_id, session=db)
         grant = continuation_grant(task_id, session=db)
+        from factory.orchestration.evidence_continuation import recovery_grant
+
+        evidence = recovery_grant(db, task_id)
         matched = _START_KEY.match(start_key)
         node_key = matched.group("node_key") if matched else None
         reason = None
@@ -4212,6 +4400,12 @@ def authorize_start(
         # this is the original single-flight fence, unchanged.
         if sum(s.status == "reserved" for s in starts) >= parallel_limit(policy):
             reason = "start_pending"
+        elif (
+            evidence
+            and budget["planner_turns_used" if planner else "turns_used"]
+            >= evidence["planner_turn_ceiling" if planner else "work_turn_ceiling"]
+        ):
+            reason = "evidence_continuation_turn_limit"
         elif recovery and (
             (
                 planner
@@ -4914,6 +5108,8 @@ def request_landing_recovery(
     if reason not in ("merge_conflict", "queue_ejection"):
         raise ValueError("invalid landing recovery reason")
     with _locked_session(session) as (db, _control):
+        if operator_landing_target(task_id):
+            return {"ok": False, "reason": "operator_landing_ownership"}
         if review_recovery_held(task_id, session=db):
             return {"ok": False, "reason": "review_only_recovery"}
         row = _receipt(db, task_id)
@@ -5196,9 +5392,8 @@ def settle_lost_attempt(
     This applies one of the exact proofs in execution/reconciliation.py and
     refuses with a ValueError naming the first failed condition when the
     attempt is any other shape, so a live start, bound guest, captured receipt
-    or settled permit is never settled by hand here. Deliberately not gated on
-    FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED: while that flag is off this
-    is the repair, and it is a human action either way. There is no HTTP route.
+    or settled permit is never settled by hand here. It is a human action, and
+    there is no HTTP route.
     """
     from factory.execution.api import (
         inspect_lost_before_guest_factory_attempt,

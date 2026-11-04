@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from typing import Any
 
 from sqlmodel import Session, func, select
@@ -40,22 +41,52 @@ def _activity_line(activity: Any) -> str:
 
 
 def swarm_session_views(
-    session: Session, workflow_id: str | None = None
+    session: Session,
+    workflow_id: str | None = None,
+    *,
+    workflow_ids: Iterable[str] | None = None,
 ) -> dict[str, list[dict]]:
-    """Return the enriched, plain-dict session rows consumed by swarm views."""
+    """Return the enriched, plain-dict session rows consumed by swarm views.
+
+    `workflow_id` or `workflow_ids` scope every part of the read, including
+    the per-session turn aggregates, to those runs. With neither, the read
+    covers every swarm session ever recorded, which grows without bound.
+    """
+    scope = None
+    if workflow_id is not None:
+        scope = [workflow_id]
+    elif workflow_ids is not None:
+        scope = sorted({wf for wf in workflow_ids if wf})
+        if not scope:
+            return {}
+    scoped_sessions = (
+        select(AgentSession.id).where(AgentSession.workflow_id.in_(scope))
+        if scope is not None
+        else None
+    )
+
+    def scoped(statement):
+        if scoped_sessions is None:
+            return statement
+        return statement.where(AgentTurn.session_id.in_(scoped_sessions))
+
     totals = (
-        select(
-            AgentTurn.session_id,
-            func.sum(AgentTurn.cost_usd).label("total_cost_usd"),
-            func.count(AgentTurn.id)
-            .filter(AgentTurn.cost_usd.is_(None))
-            .label("reported_cost_missing_turns"),
+        scoped(
+            select(
+                AgentTurn.session_id,
+                func.sum(AgentTurn.cost_usd).label("total_cost_usd"),
+                func.count(AgentTurn.id)
+                .filter(AgentTurn.cost_usd.is_(None))
+                .label("reported_cost_missing_turns"),
+            )
         )
         .group_by(AgentTurn.session_id)
         .subquery()
     )
     latest_turns = (
-        select(AgentTurn.session_id, func.max(AgentTurn.seq).label("latest_seq"))
+        scoped(
+            select(AgentTurn.session_id, func.max(AgentTurn.seq).label("latest_seq"))
+        )
         .group_by(AgentTurn.session_id)
         .subquery()
     )
@@ -78,8 +109,8 @@ def swarm_session_views(
         )
         .where(AgentSession.workflow_id.is_not(None))
     )
-    if workflow_id is not None:
-        statement = statement.where(AgentSession.workflow_id == workflow_id)
+    if scope is not None:
+        statement = statement.where(AgentSession.workflow_id.in_(scope))
     rows = session.exec(statement).all()
     session_ids = [row[0].id for row in rows if row[0].id is not None]
 

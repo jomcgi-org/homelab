@@ -41,7 +41,7 @@ when task-driven workloads need one.
 
 This is the only place the control plane's node-destroy ordering
 (#4758) can run: fault injection on a dev CP is acceptable, never on shared
-production infrastructure. EMBERVM_NODE_CONFIRMED_DESTROY is armed.
+production infrastructure. Node-confirmed destroy is unconditional.
 
 SpecTrace validation (#4770) is enabled (EMBERVM_SPEC_TRACE=on) to log all
 state machine transitions against the TLA+ specs.
@@ -99,15 +99,3 @@ Anything with replicas above 0 that is not `...brick-1gi-node-4` is a bug.
 ADDITIONAL pinned one, so setting both produces two bricks, one free to schedule
 onto a master. #4290 is that failure: an unpinned brick fills a master's 35GiB
 scratch on any chart bump.
-
-**5. The destroy gate is armed in dev and off in production.**
-
-```bash
-for ns in embervm embervm-dev; do
-  kubectl get deploy -n $ns -o jsonpath=\
-'{range .items[*].spec.template.spec.containers[*].env[?(@.name=="EMBERVM_NODE_CONFIRMED_DESTROY")]}{.value}{"\n"}{end}'
-done
-```
-
-Dev must print `true`, production `false`. Per #4758 this ordering has never run
-anywhere, so dev is its first execution.

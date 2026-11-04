@@ -133,6 +133,21 @@ prompts. Supports the speed modes being off by default
   With `--dense fp8` the expert tier already has the VRAM and host placement is
   slower at every length measured (32k-95k).
 
+## Full context (October 5, 2026)
+
+Warm tiers, `k8v6` KV, RTX 4090 ([#6855](https://github.com/jomcgi-org/homelab/issues/6855)).
+Prompts too large to prefill in one pass go through every layer in the fewest
+equal windows that fit.
+
+| Prompt | Windows | Prefill    | Decode     |
+| ------ | ------- | ---------- | ---------- |
+| 95k    | 1       | 1582 tok/s | 28.7 tok/s |
+| 185k   | 2       | 1348 tok/s | 23.2 tok/s |
+| 248k   | 4-5     | 1197 tok/s | 20.7 tok/s |
+| 255k   |         | 1171 tok/s | 22.8 tok/s |
+
+At 255k a needle placed at 10%, 50% and 90% depth was retrieved every time.
+
 ## Task accuracy, exact against max-perf (October 7, 2026)
 
 Paired task runs with `oomeval`, exact (`serve` defaults) against max-perf

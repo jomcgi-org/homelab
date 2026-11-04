@@ -1,6 +1,11 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
+exports_files(
+    ["values-gke.yaml"],
+    visibility = ["//projects/platform-gke/authentik:__pkg__"],
+)
+
 helm_chart(
     name = "chart",
     lint = False,
@@ -63,6 +68,13 @@ filegroup(
         exclude = ["**/node_modules/**"],
     ),
     visibility = ["//projects/monolith:__pkg__"],
+)
+
+py_test(
+    name = "grimoire_refresh_test",
+    srcs = ["grimoire_refresh_test.py"],
+    data = ["blueprints/grimoire-auth.yaml"],
+    deps = ["@pip//pyyaml"],
 )
 
 py_test(

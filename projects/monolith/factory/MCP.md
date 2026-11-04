@@ -62,6 +62,22 @@ unless another owner supplies evidence. Work-item context includes current open
 blockers, the GitHub source timestamp and bounded correction history, without
 turning those records into mutation authority.
 
+`factory_diagnostics(kind="session_dispatch", session_id=..., seq=...)` reads
+exact turn queue, permit and fence metadata. The compatibility name
+`factory_session_dispatch_diagnostics(session_id=..., seq=...)` reaches that
+same owner for connected callers whose tool catalog predates consolidation.
+Both require a standing human operator and strict positive integer identities.
+Neither contacts a guest, changes execution or authorizes recovery; recorded
+cessation metadata is not independent fresh cessation proof.
+
+If a cached caller still cannot invoke that restored name, the established
+`factory_status(target="session_dispatch", session_id=..., seq=...)` reaches
+the same diagnostics owner. Omit status paging and `include_recent`; both
+identities are required. The default `target="factory"` retains ordinary
+status behavior and rejects session identity arguments. Normal status includes
+these native arguments and targets in `control_catalog`, without claiming that
+the gateway or caller catalog has refreshed.
+
 ## Apply controls
 
 Call `factory_control` with an explicit action, a new `request_key`, and
@@ -154,9 +170,7 @@ This is a delivery slice of #5788, not the complete conductor interface.
   exposed by these tools. `capabilities` reports these missing owners
   explicitly. Direction is supported only through an exact pending decision.
 - Exact-attempt stop remains on its existing HTTP owner. It is not an MCP
-  operation. Chart defaults keep it off with
-  `FACTORY_STOP_SUPERVISION_ENABLED=false`; the hub overlay
-  (`deploy/values-gke.yaml`) turns it on.
+  operation.
 - The factory reconciler defaults off under `swarm.factoryEnabled=false` in
   chart values, and the hub overlay turns it on. This repository slice changed
   neither flag and enables no new mutation adapter.
@@ -242,9 +256,9 @@ can require resolving scope ambiguity before preparation can proceed.
 
 ## Continue held completed refinement
 
-`factory_preview_refinement_delivery` and `factory_apply_refinement_delivery`
-create a distinct delivery receipt from a verified completed refinement whose
-only direction is its conductor staging hold and conductor gates. The operator
+`factory_refinement_delivery` (`preview`, then `apply`) creates a distinct
+delivery receipt from a verified completed refinement whose only direction is
+its conductor staging hold and conductor gates. The operator
 supplies an exact source receipt and reason, never replacement restrictions.
 The source receipt, task, accounting and evidence stay terminal and unchanged.
 
@@ -266,11 +280,11 @@ The operation does not reclassify ambiguous PR references or renew old work.
 
 ### Claude quota probe diagnosis
 
-`factory_quota_probe_status` is a standing-operator read. It locates the latest
+`factory_diagnostics` kind `quota_probes` is a standing-operator read. It locates the latest
 Claude probe audit and session and pages every unresolved probe, including older
 ones. Pass `next_after_session_id` as `after_session_id` to continue. The global
 `unresolved_probe_present` flag is independent of that page. Use returned session
-and turn IDs with `factory_session_dispatch_diagnostics` for exact dispatch state.
+and turn IDs with kind `session_dispatch` for exact dispatch state.
 No prompt, result, credential or guest token is returned. Missing sessions or an
 empty page do not authorize retry, cancellation or release of a fence. This tool
 neither refreshes provider observations nor starts inference. The normal probe
@@ -278,10 +292,10 @@ claim uses the same unresolved-session predicate as this diagnostic.
 
 ### Return to backlog intake
 
-`factory_preview_backlog_intake(reason)` and
-`factory_apply_backlog_intake(reason, expected_preview_sha256, request_key)`
-prepare the primary repository to consume its existing agent-ready backlog after
-a bounded validation. Both require a standing human operator. Preview requires
+`factory_backlog_intake(operation, reason, include_refinement,
+expected_preview_sha256, request_key)` prepares the primary repository to
+consume its existing agent-ready backlog after a bounded validation. Both
+operations require a standing human operator. Preview requires
 paused admissions, no active, queued or landing receipts and no reserved or
 uncertain starts. Apply locks and rechecks that snapshot, including receipt
 history and the policy version, and records the before/after policy in audit.
@@ -334,11 +348,18 @@ refused model retained separately if truncated. No prompts or credentials appear
 
 ### Native registration and caller discovery
 
-`factory_status.control_catalog` reports only two entries from the running
-native FastMCP registry: `factory_configure_refill` and `factory_amend_policy`.
+`factory_status.control_catalog` reports five entries from the running native
+FastMCP registry: `factory_configure_refill`, `factory_amend_policy`,
+`factory_reconcile`, `factory_continue_evidence` and `factory_configure_problem_issues`.
 Each includes registration, schema and description hashes, bounded argument
-names and offered operations/models. It is operator-only, read-only and reports
+names and offered operations/models/targets. It is operator-only, read-only and reports
 `caller_visibility=not_observed`. It does not return the whole tool catalogue.
+
+`factory_task_detail.nodes[].attempts[].run_id` identifies the exact persisted
+node run. Use it as `source_run_id` for evidence continuation, never the attempt
+number or session ID. Only the operator detail exposes it; the shared board
+projection is unchanged. Pagination still returns at most three attempts per
+node, so an omitted older run is not evidence of missing history.
 
 A missing native entry identifies a backend registration/deployment problem.
 A registered entry that the caller cannot invoke identifies a remaining
@@ -354,6 +375,144 @@ available, or request its operator to reconcile discovery without changing
 access. If the tool remains absent, report that capability gap and stop the
 activation. Do not substitute legacy configure, a new alias, direct database
 writes, or a previously denied HTTP path.
+
+### Enable recovery problem issues
+
+After reviewed rollout, the operator enables the producer and recovery sources
+through the guarded preview/apply below. Deployment never changes switches:
+general policy history cannot reliably distinguish an intentional disable from
+an old default. Enabling the master through this narrow control refuses when
+an unrelated stored source is true; resolve that separate policy choice through
+its owner first. The control never silently enables or edits those sources.
+
+Fresh per-account spare-quota evidence uses the existing improvement preview
+rules. A waiting source is retried on the next ordinary cadence, without a
+manual trigger. It creates at most one deduplicated `bug` issue per tick within
+the existing daily cap. Discovery accepts either enabled refinement of bugs or
+matching direct intake labels, with repository exclusions, pauses and refinement
+batches preserved. Closed gates and quota waits leave unrelated sources eligible.
+Ordinary intake owns implementation, review, CI and
+merge-queue landing. Repair tickets cannot recursively generate tickets. Public
+issue bodies contain code paths and synthetic-test acceptance, not private
+audit, receipt, workflow or quota details. A held source can produce a separate
+code repair. Existing human cards and unknown starts remain fenced.
+
+A new exhausted-node no-progress pause records `repair_allocation_wait` only
+when the funding owner took a previously unpaused, admitted task with no card
+or hold. After the producer's exact repair has accepted-merge and verified-rollout
+evidence, the existing funding owner rechecks the original pause, card, graph,
+attempts, policy, ownership and uncertainty. In one transaction it uses native
+capacity release and prepares one exact-node funding review. It records
+`repair_funding_requested` and retains the resolved machine card and its audit
+history. A changed pause or card, including an operator reassertion, refuses.
+The rollout is new review evidence, not invented source work progress. Only the
+judge can grant another attempt, within the existing cumulative caps; settlement
+rechecks holds, rollout and pause/resume identity. Transient or unstarted review
+failures retain the same authority through bounded cooldown retries, without
+another resume. Source evidence and the original rollout are revalidated; only
+the funding owner's exact expired-gate retirement is an allowed graph change.
+Refusals never create another repair authorization. Legacy cards are never adopted.
+
+The existing scout remains a one-shot, operator-chartered evidence collector;
+learning remains report-only. Neither is repurposed as an execution authority.
+Blocker, stranded-workflow and observed-recovery events feed their existing
+bounded private recovery sample, without entering publishable scout prompts.
+The recurring event producer is the autonomous repair trigger. Its private
+`problem_issue_recovery_watch` ledger observes at most 50 recent repairs per
+tick. `problem_issue_recovery_observed` requires the repair delivery's recorded
+rollout proof followed by a new successful run of the original task's exact
+node, with no source hold or unknown start. A merge alone, another node or
+task, missing node binding, or an existing escalation is not recovery proof.
+This does not answer historical cards or re-admit tasks; those remain exact
+autonomy gaps. General learning findings are not automatically promoted.
+
+For activation after deployment, use the existing callable
+`factory_configure_refill` as a standing human operator. Its explicit
+`target: "problem_issues"` delegates to the same owner, digest and replay ledger
+as the native `factory_configure_problem_issues` control:
+
+1. Read `factory_status.version`. Confirm `control_catalog` advertises the
+   `problem_issues` target and its source arguments on `factory_configure_refill`.
+2. Call with `operation: "preview"`, `target: "problem_issues"`, `enabled: true`,
+   `recurring_blocker: true`, `workflow_stranded: true`, that `expected_version`
+   and a `reason`. Supply `model: "astra"` and `hourly: false` as compatibility
+   placeholders; neither changes refill or learning settings for this target.
+   Omit `min_new_issues` and leave `reset_breaker: false`. Mixed-target changes
+   are refused. Inspect `before`, `after` and `effective_sources`.
+3. Call with `operation: "apply"`, the identical target/placeholders/switches/version/reason,
+   `expected_preview_sha256` copied from `preview_sha256`, and a new
+   `request_key`. Retry identical arguments and key after a lost response.
+4. Read status again. The next ordinary producer tick watermarks newly enabled
+   sources; subsequent events can create bounded deduplicated `bug` issues.
+   Existing intake/refinement settings must already allow future bug intake.
+
+The control changes only those three switches. It preserves policy generation,
+all other source/settings values, queued and active receipts, holds, ownership,
+unknown starts and producer history. It neither files an issue immediately nor
+dispatches work. Version or policy changes invalidate preview. To reverse a
+switch, preview/apply its false value through the same operation. The control
+does not replay historical signals or recover an existing escalated receipt.
+Pass the version as a JSON integer. Strings, fractional values and booleans
+are refused by the shared exact-integer contract.
+The dedicated native control remains supported with the same arguments except
+`target`, `model` and `hourly`. This existing-name adapter avoids requiring a
+new tool name in a cached caller registry. If the caller also rejects its new
+arguments, supported schema discovery must still be refreshed; server catalog
+evidence alone cannot change a client's schema. Legacy `configure` is not a substitute.
+
+### Verify fresh same-node recovery
+
+Keep the recovery tracking issue open until live evidence proves both repair
+delivery and resumed useful work. Activation, a funding grant and a merged PR
+are intermediate outcomes. Keep receipt, run, quota and audit evidence private.
+
+1. After verified rollout, confirm effective producer sources and an enabled
+   ordinary bug-intake lane. Observe a new producer-created repair issue from
+   a genuine recurring blocker or stranded workflow. Source watermarks exclude
+   historical signals. Follow its ordinary implementation, exact-head review,
+   CI, merge queue and verified rollout. Do not submit a duplicate tracking task.
+2. Select an existing fresh **admitted** task through private status and task
+   detail. Its exact exhausted `work` node must have only failed prior attempts,
+   succeeded dependencies and fewer than ten allowed attempts. Conductor nodes
+   and evidence-continuation nodes are excluded. The task must retain cumulative
+   turn authority and fewer than two prior node-attempt renewals. Verify fresh
+   issue ownership and the synchronized label mirror, enabled execution, no
+   cancellation, human/nonrenewable/landing/review hold, unresolved start
+   or nonterminal run. An escalated receipt is ineligible even if its last work
+   attempt failed. For end-to-end repair observation, select the original task
+   and node bound by that repair's private `problem_issue_recovery_watch`.
+   For a no-progress pause, require its fresh `repair_allocation_wait` provenance;
+   the funding owner must release it for review without an operator resume.
+3. Let ordinary reconciliation request the existing funding judge's decision.
+   It detects the exhausted node automatically; review may refuse or steer.
+   Retry-specific refusals do not suppress ordinary lease/deadline funding or
+   closed-objective handling.
+   On approval, verify `funding_granted.node_retry` and the immutable
+   `renew_node_attempt` plan revision name the original node, preserve previous
+   attempts and add exactly one allowance. Then verify a new actual attempt on
+   that same task/node completes useful work. A grant alone is insufficient.
+4. For the full loop, require `problem_issue_recovery_observed`: the repair
+   delivery succeeded with recorded rollout proof, followed by a new successful
+   run of its original source node. Independent retry proof without that repair
+   binding does not establish the producer-to-recovery loop.
+
+If no eligible live candidate exists, report acceptance pending and wait for
+ordinary intake and real failure evidence. Do not inject a failure, answer an
+escalated card, clear a hold or unknown invocation, replace the node, or start
+competing work to manufacture proof. Historical cards and missing source-node
+bindings remain unsupported by this automatic recovery path.
+
+### Recorded landing refusals
+
+Each compact status row includes `landing_refusal`: the latest recorded
+`merge_arm_refused` reason, PR number, audit ID and timestamp. A newer recovery
+request or accepted merge supersedes it. Arming or merely observing a merged PR
+does not clear the recorded refusal. This is a bounded private
+audit projection, not a live GitHub or queue query. Null does not prove landing
+eligibility or queue membership. A `merged_delivery_identity_mismatch` means
+the existing landing owner refused acceptance; inspect its approved delivery
+identity and the current PR through the owning review/landing workflow. Status
+does not rewrite the approved head, accept a different merge or clear a hold.
 
 ### Separate restriction, continuation and refill activation
 
@@ -418,3 +577,106 @@ two saved-artifact lineages, separate authority/digests, expired paused deadline
 idempotence, changed grants/heads/revisions/funding/holds, fresh subscription
 coverage and an unresolved original despite a later non-invocation. These are
 local regression fixtures, not claims of live continuation or activation.
+
+### Inspecting historical cessation
+
+`factory_reconcile` kind `settled_retry` previews or applies one exact receipt/session/
+permit recovery with the same stable request key. It covers only an empty first
+response receipt whose observer released ownership, followed by a settled
+uninvoked second dispatch. It does not accept the learning or quota-probe shapes.
+The preview names the permanent side effect: that original guest lineage loses
+restore authority. A fresh authenticated, bounded CP journal proof and complete
+successor/pending-work exclusion are mandatory. Apply uses CP digest/CAS and
+idempotency, then rechecks the local owner under control/pool/session locks.
+It fails the exact factory run/start at its existing reserved unknown cost while
+preserving the native session, turn, permit, result receipt and every other hold.
+It never creates a result, deletes a guest, invokes work or changes quota.
+
+An `outcome_unknown` fence response leaves the factory unresolved and its intent
+durable. Reconcile using identical apply arguments and key. A response followed
+by local CAS refusal reports that phase explicitly; it does not undo the fence
+or settle changed work. Normal factory policy owns subsequent continuation.
+This path shares the single-writer CP authority assumption below and does not
+claim that orphan workspace-upload RPCs ceased; those cannot dispatch work and
+the durable fence prevents their bytes from restoring the retired lineage.
+
+`factory_diagnostics` kind `permits` projects `observation.recorded_cessation` from the
+saved supervisor audit: its identity hash, guest identity, generation, invocation
+timestamps, observation time, terminal state, cessation marker and response hash.
+Only those typed, bounded fields leave the query. The free-form evidence document
+is not returned. Invalid or absent fields remain null; the tool does not contact
+the guest, validate the old response hash, or authorize recovery.
+
+`permit_supervision._record` checks the exact permit/session/turn identity and a
+fresh positive guest response before saving `guest_cessation_confirmed`. It stores
+the observation and settles the permit in one transaction, retaining the failed
+turn and its unknown result. A settled observation is not overwritten by later
+supervision. The stored identity hash covered the pre-settlement state; it is
+not a signature or a recomputable hash of the now-settled permit.
+
+Historical settlement and a current recovery preview answer different questions.
+`factory_reconcile` kind `learning_execution` requires fresh positive authority evidence
+for the exact guest, generation and invocation in both preview and apply. When
+the ordinary guest read returns a typed 404/410, it may read EmberVM's bounded
+`cessation-evidence` projection. Permission failures and timeouts do not select
+that path. Missing rows, an old reason string, and saved hashes are never proof.
+
+The historical path accepts only a complete retained original-generation journal
+chain establishing positive parking followed by idle eviction. The control plane
+must prove no surviving lineage holder, retained successor creation, pending
+dispatch-capable restore or unresolved residency claim. The verifier's
+`single_writer_dispatch` authority assumes the deployed one-replica `Recreate`
+control plane. Check the trimmed deployment's strategy, replica counts and
+observed generation before live reconciliation. A crashed manager's orphan
+Restore/Prime RPC may finish, but cannot register, Assign or invoke a session
+through its dead owner; the proof does not claim zero orphan resource work.
+Compacted or bounded-out history refuses
+recovery. Monolith additionally checks the exact local history and all current
+or prior lineage owners under its control/admission locks. It validates the
+authority's own observation timestamp within thirty seconds, separately from
+the local response time. Preview and apply bind the stable evidence digest;
+fresh observation time is recorded separately in the audit so a new read does
+not invalidate an otherwise identical preview. The acknowledgement changes only
+the cadence guard: unknown results, failed sessions, costs, receipts and holds
+remain unchanged. Native refusal codes identify insufficient historical proof.
+
+For an expired guest, corroboration may remain in EmberVM's durable `ops` journal.
+Terminal session projections become eligible for pruning after seven days,
+subject to residency-intent retention pins. Journal prefix compaction uses a
+separate configured horizon, normally thirty days. Retention policy is
+not proof that a particular event still exists. An authorized evidence reader
+would need the exact session's creation, invocation and terminal events, their
+sequence/timestamps and generation, and coverage of any later transitions.
+`session_destroying` is intent, not cessation. A terminal event's writer/version
+must establish its teardown semantics. The supported reconciliation control uses
+only the authenticated bounded verifier, never a general database or journal
+reader. It exposes no raw journal payloads or session credentials.
+
+Any proposal to accept a durable receipt must first corroborate the saved fields
+against that identity-bound history (or a verified archival snapshot), prove the
+terminal identity cannot resume, and retain fresh checks for all local work and
+ownership. It must bind the exact evidence into preview/CAS/idempotency and retain
+unknown results, accounting and unrelated fences. If corroboration is unavailable,
+keep recovery blocked. A new operator attestation would need independently
+verified teardown/absence evidence for the exact worker incarnation and separate
+explicit authority; merely asserting that the record is missing is insufficient.
+
+### Owner PR feed configuration
+
+`factory_configure_owner_prs` supports `preview` and `apply` for one verified
+GitHub `owner_login` and positive numeric `owner_id`; omit both to disable.
+Use current `factory_status.version`, a reason, then the returned preview digest
+and a stable request key on apply. The control changes only
+`intake.owner_pr_author`, leaves generation and unrelated controls untouched,
+and starts no task. It requires standing operator authentication. Enablement
+requires existing intake and refinement with no restricted refinement batch.
+The existing-name compatibility route is `factory_configure_refill` with
+`target=owner_prs`, `enabled=true`, `owner_login`, `owner_id`, `model=astra` and
+`hourly=false`; leave refill/problem-source options omitted/default. Disabling
+uses `enabled=false` and omits both owner fields. It delegates to the same owner,
+so cached client catalogs need no new tool name. The native control catalog
+reports the target and argument names independently of client visibility.
+
+Read `intake.owner_pr_backlog` for the latest observed backlog and separate
+merged/verified delivery counts. An activated producer or queued receipt is not
+operational acceptance; #7597 retains the real autonomous delivery demonstration.

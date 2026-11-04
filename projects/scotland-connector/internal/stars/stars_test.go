@@ -174,7 +174,7 @@ func TestParseRejectsBrokenInput(t *testing.T) {
 	}
 }
 
-func TestNightOfUsesLocalEvening(t *testing.T) {
+func TestNightDayUsesLocalEvening(t *testing.T) {
 	cases := map[string]string{
 		"2026-10-19T21:00:00Z": "2026-10-19",
 		"2026-10-20T01:00:00Z": "2026-10-19", // 02:00 BST still belongs to the 19th
@@ -184,8 +184,8 @@ func TestNightOfUsesLocalEvening(t *testing.T) {
 	}
 	for in, want := range cases {
 		ts, _ := time.Parse(time.RFC3339, in)
-		if got := NightOf(ts); got != want {
-			t.Errorf("NightOf(%s) = %s, want %s", in, got, want)
+		if got := NightName(NightDay(ts)); got != want {
+			t.Errorf("night of %s = %s, want %s", in, got, want)
 		}
 	}
 }

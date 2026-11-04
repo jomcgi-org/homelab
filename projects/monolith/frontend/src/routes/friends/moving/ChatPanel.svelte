@@ -1,5 +1,6 @@
 <script>
   import { onMount } from "svelte";
+  import { Button } from "@homelab/design-system/components";
   import {
     CHARACTER_LIMIT,
     applyFrame,
@@ -110,7 +111,8 @@
       {/if}
     {/each}
   </div>
-  <span class="chat-status" role="status">{completionAnnouncement}</span>
+  <span class="chat-status sr-only" role="status">{completionAnnouncement}</span
+  >
   {#if error}
     <p class="chat-error" role="alert">{error}</p>
   {/if}
@@ -126,9 +128,9 @@
       disabled={busy}
       bind:value={message}
     />
-    <button type="submit" disabled={busy || !message.trim()}>
+    <Button type="submit" disabled={busy || !message.trim()}>
       {busy ? "Thinking" : "Send"}
-    </button>
+    </Button>
   </form>
   <p class="chat-hint">Conversations are not saved.</p>
 </section>

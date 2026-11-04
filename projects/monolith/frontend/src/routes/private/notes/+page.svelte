@@ -5,6 +5,7 @@
   import GraphLegend from "$lib/components/notes/GraphLegend.svelte";
   import GraphSearch from "$lib/components/notes/GraphSearch.svelte";
   import StatusBar from "$lib/components/notes/StatusBar.svelte";
+  import "$lib/public/notes/sheet.css";
 
   let { data } = $props();
 
@@ -42,8 +43,9 @@
   }
 </script>
 
-<div class="notes-root">
+<div class="td notes-root">
   <StatusBar
+    home={{ label: "dashboard", href: "/" }}
     nodeCount={nodes.length}
     edgeCount={edges.length}
     {clusterCount}
@@ -52,8 +54,9 @@
     {indexedAt}
   />
 
-  <div class="notes-stage">
+  <div class="notes-stage sheet-graph">
     <KnowledgeGraph
+      sheet
       nodes={nodesWithDegree}
       {edges}
       {selectedId}
@@ -66,11 +69,13 @@
 
     <GraphSearch value={searchTerm} onChange={(v) => (searchTerm = v)} />
     <GraphLegend
+      sheet
       nodes={nodesWithDegree}
       {activeClusters}
       onToggle={toggleCluster}
     />
     <NotePanel
+      sheet
       {selectedId}
       nodes={nodesWithDegree}
       {edges}
@@ -87,13 +92,15 @@
 </div>
 
 <style>
+  /* The private graph is the public one's sibling: the same components on
+     the same sheet tokens, with the private endpoint behind it. */
   .notes-root {
-    height: calc(100vh - 48px);
+    height: 100vh;
     display: flex;
     flex-direction: column;
-    background: #f1ebdc;
-    color: #141414;
-    font-family: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+    background: var(--sheet);
+    color: var(--ink);
+    font-family: var(--font-code);
     font-size: 13px;
     line-height: 1.45;
   }

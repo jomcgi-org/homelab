@@ -10,6 +10,14 @@ exports_files([
     "source_ratchet.py",
 ])
 
+py_test(
+    name = "complete_validation_test",
+    srcs = ["complete_validation_test.py"],
+    data = ["ci"],
+    target_compatible_with = ["@platforms//os:linux"],
+    deps = ["@pip//pytest"],
+)
+
 py_library(
     name = "central_build_ratchet_lib",
     srcs = ["central_build_ratchet.py"],
@@ -94,6 +102,8 @@ sh_test(
     data = [
         "ci",
         "local-affected-test.sh",
+        "ratchets.sh",
+        "runner-resources.env",
         "//:buildbuddy.yaml",
     ],
 )
@@ -108,4 +118,15 @@ sh_test(
     name = "local_affected_test_test",
     srcs = ["local_affected_test_test.sh"],
     data = ["local-affected-test.sh"],
+)
+
+sh_test(
+    name = "shared_runners_test",
+    srcs = ["shared_runners_test.sh"],
+    data = [
+        "affected-targets.sh",
+        "local-affected-test.sh",
+        "ratchets.sh",
+        "//:buildbuddy.yaml",
+    ],
 )

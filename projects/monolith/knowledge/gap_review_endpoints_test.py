@@ -22,7 +22,6 @@ from knowledge.gaps import (
     GapWrongStateError,
     list_gaps_for_review,
     reject_gap,
-    set_gap_class,
     undelete_gap,
 )
 from knowledge.models import Gap, Note
@@ -677,10 +676,9 @@ class TestTypedGapErrors:
         with pytest.raises(GapWrongStateError):
             reject_gap(session, gap.id)
 
-    def test_invalid_gap_class_raises_gap_error(self, session):
-        gap = _make_gap(session, term="Bar", state="discovered", gap_class=None)
+    def test_invalid_review_mode_raises_gap_error(self, session):
         with pytest.raises(GapError) as exc_info:
-            set_gap_class(session, gap.id, "bogus")
+            list_gaps_for_review(session, mode="bogus")
         # The base class (400), not a more specific subclass.
         assert type(exc_info.value) is GapError
 

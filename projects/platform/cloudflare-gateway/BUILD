@@ -1,5 +1,10 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 
+exports_files(
+    ["values-gke.yaml"],
+    visibility = ["//projects/platform-gke/cloudflare-gateway:__pkg__"],
+)
+
 # Render and version pins for focused consumers that verify the gateway's
 # trusted-origin boundary against the exact chart and CRD bundles deployed.
 filegroup(

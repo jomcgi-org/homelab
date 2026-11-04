@@ -23,9 +23,6 @@
 # release; activating either one means replacing this Application's value
 # files, not stacking a second release.
 
-# Recover interrupted turns before adoption parks them. Rollback: set false.
-restartFlushInflightInvokes: true
-
 # Namespace-scoped RBAC, as the recovery preset chose for this release. At the
 # chart default (cluster scope) the dev control plane, which by design runs
 # chart versions before they are verified, would hold cluster-wide Secret reads
@@ -167,7 +164,3 @@ baseRetention:
   remoteSweepEnabled: ""
 warmthS3Gc:
   enabled: ""
-
-# Instance-scoped session drain, armed ahead of production so the conformance
-# gate runs it first (see deploy/values-gke.yaml).
-drainInstanceScopedSessions: true

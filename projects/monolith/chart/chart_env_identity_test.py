@@ -1920,7 +1920,6 @@ def test_recovery_gke_keeps_real_failover_and_bounded_drainer(recovery_gke_rende
         "DRAINER_ENABLED": "true",
         "DRAINER_JOB_KINDS": "qwen-drain",
         "DRAINER_MAX_JOBS_PER_CYCLE": "1",
-        "DRAINER_NOTIFY_FAILURES": "false",
         "DRAINER_DOCFIX_ENABLED": "false",
         "DRAINER_DOCFIX_AUTO_MERGE": "false",
         "AGENT_SESSIONS_CHANNEL_NOTIFY": "none",

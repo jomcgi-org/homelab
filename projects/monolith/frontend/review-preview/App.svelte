@@ -13,7 +13,7 @@
   }
 </script>
 
-<main>
+<main class="td sheet">
   <a href="../../">All fixture demos</a>
   <h1>Private review components</h1>
   <p>
@@ -76,8 +76,7 @@
 
 <style>
   main {
-    color: var(--fg);
-    background: var(--bg);
+    min-height: 100vh;
     max-width: 54rem;
     margin: auto;
     padding: 1rem;
@@ -95,10 +94,10 @@
      scroll region exposes its desktop width without changing production CSS. */
   .frame {
     overflow-x: auto;
-    border: 1px solid var(--fg);
+    border: 1px solid var(--stroke);
   }
   .frame:focus-visible {
-    outline: 3px solid var(--fg);
+    outline: 3px solid var(--accent-ink);
   }
   .desktop {
     min-width: 50rem;

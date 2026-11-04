@@ -15,7 +15,6 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session, func, select
 
-from core.env import flag
 from factory.execution import (
     SUPPORTED_MODELS,
     mcp,
@@ -72,11 +71,6 @@ _BRANCH_LIST_CACHE_TTL = 60.0
 _BRANCH_LIST_CACHE_FAILURE_TTL = 10.0
 _PREWARM_TTL = 10.0
 _prewarm_timestamps: dict[int, float] = {}
-
-
-def session_stop_control_enabled() -> bool:
-    """The repository-only rollout gate for interactive Stop."""
-    return flag("AGENT_SESSION_STOP_CONTROL_ENABLED")
 
 
 def _aggregate_statement(status: str | None = None, session_id: int | None = None):
@@ -224,12 +218,7 @@ def _active_stop_identity(
     row: AgentSession, pending: list[PendingMessage]
 ) -> dict | None:
     """Return the exact currently claimed dispatch, without changing ownership."""
-    if (
-        not session_stop_control_enabled()
-        or row.id is None
-        or not row.ember_session_id
-        or not row.ember_session_token
-    ):
+    if row.id is None or not row.ember_session_id or not row.ember_session_token:
         return None
     active = next(
         (
@@ -1060,7 +1049,6 @@ def get_session_detail(
         .where(PendingMessage.session_id == session_id)
         .order_by(PendingMessage.seq)
     ).all()
-    stop_enabled = session_stop_control_enabled()
     return {
         "session": _session_payload(
             row,
@@ -1107,10 +1095,7 @@ def get_session_detail(
             }
             for message in pending
         ],
-        "stop_control": {
-            "enabled": stop_enabled,
-            "active": _active_stop_identity(row, pending),
-        },
+        "stop_control": {"active": _active_stop_identity(row, pending)},
     }
 
 
@@ -1511,9 +1496,6 @@ def _stop_dispatch(
     session: Session = Depends(get_session),
 ) -> tuple[str | None, str | None, bool]:
     """Resolve owner and dispatch evidence in FastAPI's sync dependency worker."""
-    if not session_stop_control_enabled():
-        raise HTTPException(status_code=404, detail="session Stop is disabled")
-
     row = session.get(AgentSession, session_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Agent session not found")

@@ -25,7 +25,7 @@ js_library(
         "src/lib/private/components/ModeToggle.svelte",
         "src/lib/private/components/ReviewCard.svelte",
         "src/lib/private/components/UndoToast.svelte",
-        "src/lib/public/styles/design-system.css",
+        "src/lib/public/styles/technical-drawing.css",
         "src/lib/styles/shared/tokens.css",
     ],
     deps = [
@@ -272,6 +272,7 @@ js_library(
         ["src/**/*.test.js"],
         allow_empty = True,
     ) + [
+        "factory-preview/fixtures.js",
         "test/data-display/ChartHarness.svelte",
         "test/data-display/Fixture.svelte",
         "test/data-display/server.js",
@@ -288,8 +289,20 @@ js_library(
         "test/ProfileRoute.svelte",
         "test/SheetRoute.svelte",
         "test/sheet-fixtures.js",
+        "test/TripsRoute.svelte",
+        "test/trips-fixtures.js",
+        "test/trips-map-stub.js",
+        "test/MovingRoute.svelte",
+        "test/moving-fixtures.js",
         "test/profile-page.svelte.js",
         "test/profile-stores.js",
+        "test/stars/Route.svelte",
+        "test/stars/fixtures.js",
+        "test/stars/maplibre.js",
+        "test/hikes/Route.svelte",
+        "test/hikes/fixtures.js",
+        "test/ships-fixtures.js",
+        "test/ships-map-double.js",
         # Resolved by the $env/dynamic/private alias in vitest.config.js; same
         # rationale: lives outside src/ so it never reaches the app bundle.
         "test/env-dynamic-private-stub.js",
@@ -340,6 +353,62 @@ apko_image(
     tars = [":build_tar_public"],
 )
 
+js_library(
+    name = "grimoire_fixture_src",
+    srcs = [
+        "grimoire-preview/App.svelte",
+        "grimoire-preview/Route.svelte",
+        "grimoire-preview/browser_check.py",
+        "grimoire-preview/dom.test.js",
+        "grimoire-preview/fixtures.js",
+        "grimoire-preview/index.html",
+        "grimoire-preview/main.js",
+        "grimoire-preview/navigation.js",
+        "grimoire-preview/page.svelte.js",
+        "grimoire-preview/stores.js",
+        "grimoire-preview/vite.config.js",
+        "grimoire-preview/vitest.config.js",
+        "preview/fonts.css",
+        "preview/fonts/SchibstedGrotesk.ttf",
+        "test/app-environment-stub.js",
+    ],
+    deps = [
+        ":node_modules/vitest",
+        ":src",
+        "//:node_modules/happy-dom",
+        "//projects/design-system:pkg",
+    ],
+)
+
+vitest_bin.vitest_test(
+    name = "grimoire_fixture_contract_test",
+    args = [
+        "run",
+        "--config",
+        "grimoire-preview/vitest.config.js",
+    ],
+    chdir = package_name(),
+    data = [":grimoire_fixture_src"],
+)
+
+js_run_binary(
+    name = "grimoire_fixture_preview",
+    srcs = [":grimoire_fixture_src"],
+    args = [
+        "build",
+        "--config",
+        "grimoire-preview/vite.config.js",
+    ],
+    chdir = package_name(),
+    out_dirs = ["grimoire-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "grimoire_fixture_preview_build_test",
+    targets = [":grimoire_fixture_preview"],
+)
+
 # Keep synthetic preview fixtures out of the production source/build closure.
 
 py_test(
@@ -366,8 +435,8 @@ js_library(
         "src/lib/global.css",
         "src/lib/public/apps.js",
         "src/lib/public/components/Footer.svelte",
-        "src/lib/public/components/Nav.svelte",
         "src/lib/public/components/SchemeToggle.svelte",
+        "src/lib/public/components/SchemePreference.svelte",
         "src/lib/public/components/Seo.svelte",
         "src/lib/public/components/SiteIndex.svelte",
         "src/lib/public/components/TechnicalDrawingChrome.svelte",
@@ -425,13 +494,125 @@ build_test(
     targets = [":sheet_fixture_preview"],
 )
 
+# Trips fixtures use the production route/layout/components with invented data.
+js_library(
+    name = "trips_fixture_src",
+    srcs = glob(
+        ["trips-preview/**"],
+        exclude = ["trips-preview/__pycache__/**"],
+    ) + [
+        "preview/fonts.css",
+        "preview/fonts/OFL.txt",
+        "preview/fonts/SchibstedGrotesk.ttf",
+        "test/TripsRoute.svelte",
+        "test/app-environment-stub.js",
+        "test/profile-page.svelte.js",
+        "test/profile-stores.js",
+        "test/trips-fixtures.js",
+    ],
+    deps = [":src"],
+)
+
+js_run_binary(
+    name = "trips_fixture_preview",
+    srcs = [":trips_fixture_src"],
+    args = [
+        "build",
+        "--config",
+        "trips-preview/vite.config.js",
+    ],
+    chdir = package_name(),
+    out_dirs = ["trips-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "trips_fixture_preview_build_test",
+    targets = [":trips_fixture_preview"],
+)
+
+js_library(
+    name = "stars_fixture_src",
+    srcs = glob(
+        ["stars-preview/**"],
+        exclude = ["stars-preview/__pycache__/**"],
+    ) + [
+        "package.json",
+        "preview/fonts.css",
+        "preview/fonts/OFL.txt",
+        "preview/fonts/SchibstedGrotesk.ttf",
+        "src/lib/global.css",
+        "src/lib/public/apps.js",
+        "src/lib/public/components/Footer.svelte",
+        "src/lib/public/components/SchemePreference.svelte",
+        "src/lib/public/components/SchemeToggle.svelte",
+        "src/lib/public/components/Seo.svelte",
+        "src/lib/public/components/SiteIndex.svelte",
+        "src/lib/public/components/TechnicalDrawingChrome.svelte",
+        "src/lib/public/components/Trail.svelte",
+        "src/lib/public/components/TurnstileGate.svelte",
+        "src/lib/public/components/index.js",
+        "src/lib/public/components/stars/StarsMap.svelte",
+        "src/lib/public/seo.js",
+        "src/lib/public/stars/heat.js",
+        "src/lib/public/stars/mapTheme.js",
+        "src/lib/public/stars/urlParams.js",
+        "src/lib/public/styles/design-system.css",
+        "src/lib/public/styles/map-palette.js",
+        "src/lib/public/styles/technical-drawing.css",
+        "src/lib/styles/shared/tokens.css",
+        "src/routes/+error.svelte",
+        "src/routes/+layout.svelte",
+        "src/routes/public/+layout.svelte",
+        "src/routes/public/app/stars/+page.svelte",
+        "src/routes/public/app/stars/StarsApp.svelte",
+        "test/profile-page.svelte.js",
+        "test/profile-stores.js",
+        "test/stars/Route.svelte",
+        "test/stars/fixtures.js",
+    ],
+    deps = [
+        ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@homelab/design-system",
+        ":node_modules/@rollup/rollup-linux-x64-gnu",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/maplibre-gl",
+        ":node_modules/svelte",
+        ":node_modules/vite",
+        "//projects/design-system:pkg",
+    ],
+)
+
+js_run_binary(
+    name = "stars_fixture_preview",
+    srcs = [":stars_fixture_src"],
+    args = [
+        "build",
+        "--config",
+        "stars-preview/vite.config.js",
+    ],
+    chdir = package_name(),
+    out_dirs = ["stars-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "stars_fixture_preview_build_test",
+    targets = [":stars_fixture_preview"],
+)
+
 # The dedicated Actions job compiles these real route components and runs
 # Chromium. This independent contract target makes fixture edits participate
 # in affected-target CI without making a test output an input to a build.
 js_library(
     name = "factory_fixture_src",
     srcs = glob(
-        ["factory-preview/**"],
+        [
+            "factory-preview/**",
+            "src/routes/private/factory/execution/**/*.js",
+            "src/routes/private/factory/execution/**/*.svelte",
+            "src/routes/private/factory/execution/*.css",
+        ],
         exclude = [
             "factory-preview/.generated/**",
             "factory-preview/__pycache__/**",
@@ -439,9 +620,19 @@ js_library(
     ) + [
         "package.json",
         "src/lib/cache-headers.js",
+        "src/lib/components/notes/markdown.js",
         "src/lib/global.css",
+        "src/lib/private/dashboard-theme.css",
+        "src/lib/public/apps.js",
+        "src/lib/public/components/Footer.svelte",
+        "src/lib/public/components/SchemePreference.svelte",
         "src/lib/public/components/SchemeToggle.svelte",
+        "src/lib/public/components/Seo.svelte",
+        "src/lib/public/components/SiteIndex.svelte",
+        "src/lib/public/components/TechnicalDrawingChrome.svelte",
         "src/lib/public/components/Trail.svelte",
+        "src/lib/public/components/TurnstileGate.svelte",
+        "src/lib/public/components/index.js",
         "src/lib/public/factory/activity.css",
         "src/lib/public/factory/activity-view.js",
         "src/lib/public/factory/activity-view.test.js",
@@ -453,9 +644,14 @@ js_library(
         "src/lib/public/factory/model.test.js",
         "src/lib/public/factory/search-index.js",
         "src/lib/public/factory/search-index.test.js",
+        "src/lib/public/seo.js",
         "src/lib/public/styles/design-system.css",
         "src/lib/public/styles/technical-drawing.css",
+        "src/lib/public/styles/technical-drawing.test.js",
         "src/lib/styles/shared/tokens.css",
+        "src/routes/+layout.svelte",
+        "src/routes/private/+layout.svelte",
+        "src/routes/private/factory/factory-view.js",
         "src/routes/public/slop/Trail.svelte",
         "src/routes/public/slop/factory/+page.server.js",
         "src/routes/public/slop/factory/+page.svelte",
@@ -463,14 +659,19 @@ js_library(
         "src/routes/public/slop/factory/activity/+page.svelte",
         "src/routes/public/slop/factory/context/+page.server.js",
         "src/routes/public/slop/factory/context/+page.svelte",
+        "src/routes/public/slop/factory/page.test.js",
+        "test/app-navigation-stub.js",
+        "test/app-state-stub.js",
     ],
     deps = [
         ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@homelab/design-system",
         ":node_modules/@rollup/rollup-linux-x64-gnu",
         ":node_modules/@sveltejs/vite-plugin-svelte",
         ":node_modules/svelte",
         ":node_modules/vite",
         ":node_modules/vitest",
+        "//:node_modules/happy-dom",
         "//projects/design-system:pkg",
     ],
 )
@@ -503,6 +704,7 @@ js_library(
         ":node_modules/@esbuild/linux-x64",
         ":node_modules/@rollup/rollup-linux-x64-gnu",
         ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/marked",
         ":node_modules/svelte",
         ":node_modules/vite",
         ":node_modules/vitest",
@@ -533,14 +735,25 @@ js_library(
         ],
     ) + [
         "package.json",
+        "src/lib/public/apps.js",
+        "src/lib/public/components/Footer.svelte",
+        "src/lib/public/components/SchemePreference.svelte",
         "src/lib/public/components/SchemeToggle.svelte",
+        "src/lib/public/components/Seo.svelte",
+        "src/lib/public/components/SiteIndex.svelte",
         "src/lib/public/components/TechnicalDrawingChrome.svelte",
         "src/lib/public/components/Trail.svelte",
+        "src/lib/public/components/TurnstileGate.svelte",
+        "src/lib/public/components/index.js",
+        "src/lib/public/dates.js",
         "src/lib/public/posts/CodeOutput.svelte",
+        "src/lib/public/posts/ConformanceReplay.svelte",
         "src/lib/public/posts/DemoDisclosure.svelte",
         "src/lib/public/posts/DraftTrace.svelte",
         "src/lib/public/posts/IncidentGraph.svelte",
         "src/lib/public/posts/QwenReplay.svelte",
+        "src/lib/public/posts/agent-replay.json",
+        "src/lib/public/posts/conformance-replay.json",
         "src/lib/public/posts/draft-steps.js",
         "src/lib/public/posts/incident-graph.js",
         "src/lib/public/posts/ix/Concurrency.svelte",
@@ -549,12 +762,10 @@ js_library(
         "src/lib/public/posts/ix/DraftPays.svelte",
         "src/lib/public/posts/ix/Fig.svelte",
         "src/lib/public/posts/ix/Fit.svelte",
-        "src/lib/public/posts/ix/Interactive.svelte",
         "src/lib/public/posts/ix/Precision.svelte",
         "src/lib/public/posts/ix/PrefixRace.svelte",
         "src/lib/public/posts/ix/Published.svelte",
         "src/lib/public/posts/ix/Residency.svelte",
-        "src/lib/public/posts/ix/Routing.svelte",
         "src/lib/public/posts/ix/data.js",
         "src/lib/public/posts/ix/data-concurrency.js",
         "src/lib/public/posts/ix/data-context.js",
@@ -564,10 +775,11 @@ js_library(
         "src/lib/public/posts/ix/data-precision.js",
         "src/lib/public/posts/ix/data-prefix-race.js",
         "src/lib/public/posts/ix/data-published.js",
-        "src/lib/public/posts/ix/data-routing.js",
         "src/lib/public/posts/ix/index.js",
         "src/lib/public/posts/ix/split.js",
         "src/lib/public/posts/landing-results.js",
+        "src/lib/public/posts/qwen-replay.json",
+        "src/lib/public/seo.js",
         "src/lib/public/styles/design-system.css",
         "src/lib/public/styles/technical-drawing.css",
         "src/routes/public/blog/+layout.svelte",
@@ -600,6 +812,82 @@ js_run_binary(
 build_test(
     name = "fixture_preview_build_test",
     targets = [":fixture_preview"],
+)
+
+# Real friends layouts and moving views with synthetic loader/API data only.
+js_library(
+    name = "moving_fixture_src",
+    srcs = [
+        "moving-preview/App.svelte",
+        "moving-preview/README.md",
+        "moving-preview/browser-check.mjs",
+        "moving-preview/components.js",
+        "moving-preview/index.html",
+        "moving-preview/main.js",
+        "moving-preview/navigation.js",
+        "moving-preview/stores.js",
+        "moving-preview/vite.config.js",
+        "package.json",
+        "preview/fonts.css",
+        "preview/fonts/OFL.txt",
+        "preview/fonts/SchibstedGrotesk.ttf",
+        "src/lib/global.css",
+        "src/lib/public/apps.js",
+        "src/lib/public/components/Footer.svelte",
+        "src/lib/public/components/SchemePreference.svelte",
+        "src/lib/public/components/SchemeToggle.svelte",
+        "src/lib/public/components/Seo.svelte",
+        "src/lib/public/components/SiteIndex.svelte",
+        "src/lib/public/components/TechnicalDrawingChrome.svelte",
+        "src/lib/public/components/Trail.svelte",
+        "src/lib/public/components/TurnstileGate.svelte",
+        "src/lib/public/components/index.js",
+        "src/lib/public/seo.js",
+        "src/lib/public/sse-parser.js",
+        "src/lib/public/styles/design-system.css",
+        "src/lib/public/styles/technical-drawing.css",
+        "src/lib/styles/shared/tokens.css",
+        "src/routes/+error.svelte",
+        "src/routes/+layout.svelte",
+        "src/routes/friends/+layout.svelte",
+        "src/routes/friends/moving/+page.server.js",
+        "src/routes/friends/moving/+page.svelte",
+        "src/routes/friends/moving/AccessPanel.svelte",
+        "src/routes/friends/moving/ChatPanel.svelte",
+        "src/routes/friends/moving/ManagePanel.svelte",
+        "src/routes/friends/moving/chat-stream.js",
+        "src/routes/friends/moving/moving.css",
+        "src/routes/friends/moving/moving.js",
+        "test/MovingRoute.svelte",
+        "test/moving-fixtures.js",
+    ],
+    deps = [
+        ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@homelab/design-system",
+        ":node_modules/@rollup/rollup-linux-x64-gnu",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/svelte",
+        ":node_modules/vite",
+        "//projects/design-system:pkg",
+    ],
+)
+
+js_run_binary(
+    name = "moving_fixture_preview",
+    srcs = [":moving_fixture_src"],
+    args = [
+        "build",
+        "--config",
+        "moving-preview/vite.config.js",
+    ],
+    chdir = package_name(),
+    out_dirs = ["moving-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "moving_fixture_preview_build_test",
+    targets = [":moving_fixture_preview"],
 )
 
 vitest_bin.vitest_test(

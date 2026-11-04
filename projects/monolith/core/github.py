@@ -51,16 +51,22 @@ query MergedPullRequests($owner: String!, $name: String!, $cursor: String) {
 """
 
 
-def _github_headers() -> dict[str, str]:
+def github_headers(user_agent: str, token: str | None = None) -> dict[str, str]:
+    """REST headers; ``None`` reads ``GITHUB_API_TOKEN`` and ``""`` sends none."""
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "monolith-merged-pr-snapshot",
+        "User-Agent": user_agent,
     }
-    token = os.environ.get("GITHUB_API_TOKEN", "")
+    if token is None:
+        token = os.environ.get("GITHUB_API_TOKEN", "")
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
+
+
+def _github_headers() -> dict[str, str]:
+    return github_headers("monolith-merged-pr-snapshot")
 
 
 def _parse_github_datetime(value: str | None) -> datetime | None:

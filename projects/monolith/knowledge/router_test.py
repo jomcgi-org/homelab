@@ -563,7 +563,7 @@ class TestListGapsEndpoint:
         assert r.json() == {"gaps": []}
 
     def test_no_filters_passes_none_to_store(self, note_client):
-        """Omitting state/gap_class passes states=None, classes=None to the store."""
+        """Omitting all params passes states=None, classes=None, limit=100."""
         with patch("knowledge.router.KnowledgeStore") as MockStore:
             MockStore.return_value.list_gaps.return_value = []
             note_client.get("/api/knowledge/gaps")
@@ -620,18 +620,6 @@ class TestListGapsEndpoint:
                 states=None,
                 classes=None,
                 limit=50,
-            )
-
-    def test_default_limit_is_100(self, note_client):
-        """Default limit is 100 when not specified."""
-        with patch("knowledge.router.KnowledgeStore") as MockStore:
-            MockStore.return_value.list_gaps.return_value = []
-            note_client.get("/api/knowledge/gaps")
-
-            MockStore.return_value.list_gaps.assert_called_once_with(
-                states=None,
-                classes=None,
-                limit=100,
             )
 
     def test_limit_over_max_returns_422(self, note_client):

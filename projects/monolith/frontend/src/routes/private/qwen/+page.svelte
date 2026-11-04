@@ -1,4 +1,5 @@
 <script>
+  import "$lib/private/dashboard-theme.css";
   import { renderMarkdown as render } from "./markdown.js";
   import {
     applyChunk,

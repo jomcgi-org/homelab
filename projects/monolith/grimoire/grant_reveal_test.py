@@ -34,7 +34,6 @@ INVALID_UUIDS = [
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     monkeypatch.setattr(search, "knn_embeddings", fake_knn)
     with sqlite_harness(tmp_path / "reveals.db") as h:
         # Grant-write assertions own their reveal stream and corpus candidates.
@@ -220,70 +219,6 @@ def test_current_session_and_explicit_session(harness, status, explicit):
         assert len(events(h)) == (0 if status == "ended" else 1)
         if status != "ended":
             assert events(h)[0].session_id == h.rows["campaign_session"].id
-        poll_all(client, h)
-
-
-def test_flag_off_preserves_grants_and_unfiltered_reads(harness, monkeypatch):
-    h = harness
-    h.prepare("play")
-    remove_grant(h, "grant_name_only")
-    h.rows["campaign_session"].status = "ended"
-    h.session.commit()
-    with TestClient(h.app()) as client:
-        response = call(
-            client, h, "POST", "/grants/bulk", json={"grants": [item(h, "name_only")]}
-        )
-        assert response.status_code == 200
-        assert response.json()[0]["granted_in_session"] is None
-        grant_id = response.json()[0]["id"]
-        monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "false")
-        assert (
-            call(
-                client,
-                h,
-                "PATCH",
-                f"/grants/{grant_id}",
-                json={"grant_scope": "partial"},
-            ).status_code
-            == 200
-        )
-        assert call(client, h, "DELETE", f"/grants/{grant_id}").status_code == 204
-        assert events(h) == []
-        assert (
-            call(
-                client,
-                h,
-                "POST",
-                "/grants/bulk",
-                json={"grants": [item(h, "name_only")]},
-            ).status_code
-            == 404
-        )
-        for route in ("/entities",):
-            params = {}
-            baseline = call(client, h, "GET", route, params=params)
-            assert baseline.status_code == 200
-            for viewer in ROLES:
-                response = call(
-                    client,
-                    h,
-                    "GET",
-                    route,
-                    viewer,
-                    params={**params, "not_granted_to": h.rows["character_a"].id},
-                )
-                assert response.status_code == 404
-                assert response.json()["detail"] == (
-                    "campaign not found"
-                    if viewer in ("outsider", "other_campaign")
-                    else "Not found"
-                )
-            monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
-            assert (
-                call(client, h, "GET", route, params=params).content == baseline.content
-            )
-            monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "false")
-        monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
         poll_all(client, h)
 
 
@@ -710,24 +645,19 @@ def test_filter_invalid_pc_preserves_auth_order(harness, monkeypatch, route, inv
 
     monkeypatch.setattr(h.session, "get", guarded_get)
     with TestClient(h.app()) as client:
-        for flag in ("false", "true"):
-            monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", flag)
-            for viewer in ROLES:
-                response = call(client, h, "GET", route, viewer, params=params)
-                if viewer in ("outsider", "other_campaign"):
-                    assert response.status_code == 404
-                    assert response.json()["detail"] == "campaign not found"
-                elif flag == "false":
-                    assert response.status_code == 404
-                    assert response.json()["detail"] == "Not found"
-                elif viewer != "dm":
-                    assert response.status_code == 403
-                else:
-                    assert response.status_code == 404
-                    assert (
-                        response.json()["detail"]
-                        == "player character not found in this campaign"
-                    )
+        for viewer in ROLES:
+            response = call(client, h, "GET", route, viewer, params=params)
+            if viewer in ("outsider", "other_campaign"):
+                assert response.status_code == 404
+                assert response.json()["detail"] == "campaign not found"
+            elif viewer != "dm":
+                assert response.status_code == 403
+            else:
+                assert response.status_code == 404
+                assert (
+                    response.json()["detail"]
+                    == "player character not found in this campaign"
+                )
 
 
 @pytest.mark.parametrize("field", ["entity_id", "player_character_id", "both"])

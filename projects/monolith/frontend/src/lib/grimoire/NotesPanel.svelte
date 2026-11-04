@@ -261,7 +261,7 @@
     color: var(--text, #222);
   }
   [role="alert"] {
-    border-left: 3px solid #a52525;
+    border-left: 3px solid var(--tone-disk, #a52525);
     padding-left: 0.75rem;
   }
   :is(button, input, textarea, select, summary):focus-visible {

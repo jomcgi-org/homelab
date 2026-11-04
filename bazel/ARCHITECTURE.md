@@ -82,7 +82,7 @@ Lock maintenance: `update-apko-locks.sh` re-resolves a lock (needs Bazel, and pi
 
 One action in `buildbuddy.yaml`, `pr-checks`, handles pull requests, merge-queue candidates (`gh-readonly-queue/*`, which arrive as push events), and pushes to `main`. Its exact name remains the GitHub ruleset's required status check. Every run clones full history (`git_fetch_depth: 0`) and uses the same runner and snapshot namespace. A gate requires `GIT_BRANCH` to equal `GIT_REPO_DEFAULT_BRANCH` and `GIT_PR_NUMBER` to be zero before routing into publishing or chart-version write-back. The PR-number condition keeps a pull request from a fork branch named `main` out of that route: PR events set `GIT_BRANCH` to the head ref and `GIT_PR_NUMBER` non-zero, push events never set a PR number, and a fork's push fires the fork's webhooks. Credential isolation is unchanged by the gate: BuildBuddy injects secrets for every trusted event, including same-repo events and collaborator fork PRs, executes the YAML from the pushed branch, and already supplied `GHCR_TOKEN` to `pr-checks`; `ON_MAIN` is a routing guard inside a PR-controlled script.
 
-Tests run before the main-only publish, so a failing suite cannot ship images or charts. PR and merge-queue runs prove the image build and render the manifest diff but never publish. A normal main run calls `push-changed.sh`, writes published chart versions back as the repository owner through the ruleset's existing bypass, then runs formatting and generators read-only. Publishing stays before formatting so a formatter tool failure cannot prevent tested images from shipping, while format drift still makes the action fail. A main push whose head is the `chore(charts): publish` write-back still runs the tests to refresh the shared snapshot but skips publishing, write-back and formatting: `push.sh.tpl` finds nothing to publish for that head and the commit touches only version lines. A push whose head is a `style: auto-format` commit publishes normally, because rebase merges routinely land the format bot's commit as the head of a PR that changed a chart. A write-back head skips the read-only format check, so generator drift from a write-back surfaces on the next author's commit. PR and merge-queue runs now have a two-hour ceiling, as do main runs, for a wide cold image rebuild.
+Tests run before the main-only publish, so a failing suite cannot ship images or charts. PR and merge-queue runs prove the image build and render the manifest diff but never publish. A normal main run calls `push-changed.sh`, writes published chart versions back as the repository owner through the ruleset's existing bypass, then runs formatting and generators read-only. Publishing stays before formatting so a formatter tool failure cannot prevent tested images from shipping, while format drift still makes the action fail. A main head with subject `chore(charts): publish*` retains the existing skip of images, publishing, write-back and formatting, even when the version-only classifier below rejects it. A push whose head is a `style: auto-format` commit publishes normally, because rebase merges routinely land the format bot's commit as the head of a PR that changed a chart. PR and merge-queue runs have a two-hour ceiling, as do main runs, for a wide cold image rebuild.
 
 Chart versions advance for conventional commits that change effective release inputs, not every file in a Bazel package. `chart-version.sh` queries the concrete source and build-file closure of `chart.package`, including pinned-image and shared sources, and adds the active deploy render targets plus their Application and kustomization inputs. A documentation or test file outside that closure does not publish merely because it shares a package with an input. A documentation-looking file that is packaged or otherwise selected by the graph remains an input. Deletions and renames get a conservative package-level guard because a removed file cannot appear in the current closure. A missing Bazel command, a query error, partial output, an empty closure or an unsupported label falls back to a repo-wide commit walk. This can over-publish, but cannot silently suppress a real release. Git-walk or version-computation failures stop the caller rather than reusing the current published version.
 
@@ -93,6 +93,12 @@ The full format stage still runs `bazel run //bazel/tools/format:format` plus th
 **Why.** Helm proves that templates render, but it does not enforce the API server's required fields or reject unknown fields. `//bazel/helm:chart_admissibility_test` validates every first-party and platform chart render, including admissible GKE value overlays, with kubeconform strict mode against the hub's pinned Kubernetes 1.36.3 schemas and CRD schemas derived from pinned charts. GKE auto-upgrades the control plane, so the pin is hand-maintained against `kubectl version` on the hub and drifts silently otherwise. The offline schemas and an invalid `secretKeyRef` negative control keep the result reproducible and fail closed without giving CI cluster credentials.
 
 Runner cost is dominated by cold snapshot restores, so the action keeps one shared workspace, removes Bazel's sandbox stash before the runner snapshots the VM, and disables the stash under `--config=ci`. `resource_requests` are part of the snapshot key, so changing them invalidates every snapshot and they change rarely. The Buck2 rules action that was disabled in August went with the `buck2/` tree (#6913). `gh run` sees none of this: PR and queue checks live on BuildBuddy, and a red one is re-triggered from there.
+
+`WRITE_BACK_ONLY` defaults to false. Only an `ON_MAIN` head already recognized by the write-back subject can enable it, after a successful, nonempty `git diff --no-renames --name-only -z HEAD~1 HEAD --`. Every path must be exactly `projects/<project>/chart/Chart.yaml` or `projects/<project>/deploy/application.yaml`, with one project component containing only ASCII letters, digits, underscores or hyphens. Multiple projects may occur. NUL records preserve filenames; disabling rename detection exposes both sides of renames. A missing parent, failed or empty diff, an outside path or an unsupported project name leaves the flag false. Ordinary main commits, PRs (including a head branch named main), queue candidates and formatter-bot heads retain their test and generated-source gates.
+
+Verified version-only heads skip stage 2 and the post-format Go-stub build, Gazelle test and stub comparison. No `bazel test` command runs on that path. The central BUILD, verification-genrule, chart-version and source ratchets and `test_source_reachability.py` remain fatal on the head; reachability still queries the Bazel graph. Later checks and the EXIT snapshot-cleanup trap remain active. The snapshot premise is that the publishing run already tested and warmed the same source tree before writing version metadata. The action name and resources stay unchanged. Warm restore on the next PR still needs live evidence.
+
+Stage skipping leaves the workflow invocation in place. The seven-day acceptance target remains about 2 to about 1 total main invocations per merged PR. Measure total invocations separately from full-suite and fast-path runs; unchanged triggers alone cannot establish that target. Repository regression fixtures establish routing behavior. Post-landing BuildBuddy invocations, warm snapshot restore and seven-day counts remain operational acceptance for #7457.
 
 **Why.** Joe's 2026-10-28 decision retired the unused BDD future lane (#7088). Its commented action, CI tag exclusions and macro parameter were removed: no active target carried either excluded tag and no caller supplied the parameter. Ordinary `bdd_test` targets keep the `bdd` tag and run through the standard test selection.
 
@@ -144,7 +150,7 @@ The repo-docs and public docs manifests are genrule outputs, not committed files
 
 Claude PreToolUse hooks (`bazel/tools/hooks/`, wired in `.claude/settings.json`, each with an `sh_test`). Blocking: `prefer-bb-remote.sh`, `check-ci-pipe-mask.sh`, `block-kubectl-mutate.sh` (kubectl write verbs, `--dry-run` aside), `pretooluse-write-edit.sh` (writes under `docs/plans/` are refused; plans live in GitHub Issues), and `check-public-reader-grant.sh` (a `CREATE TABLE` in a public-served schema must carry a `public_reader` grant or an explicit override comment). Advisory: `check-em-dash.sh`, `check-large-migration-sql.sh` (the migrations ConfigMap's 256 KiB annotation cap), `check-constant-change-test-grep.sh` (grep the tests before changing a numeric constant), and `check-adr-architecture-sync.sh` (editing a covered config or build tree reminds you that the domain's `ARCHITECTURE.md` is the source of truth).
 
-Git hooks (`bazel/tools/git/`, installed by pre-commit): `protect-main.sh` refuses commits on main, `check-commit-msg-ascii.sh` is the commit-msg check, `check-stale-pr.sh` blocks pushes to a branch whose PR is closed or merged, `post-rewrite-format.sh` runs selective lint after a rebase, and `pre-push-ci-test.sh` as above.
+Git hooks (`bazel/tools/git/`, installed by pre-commit): `protect-main.sh` refuses commits on main, `check-commit-msg-ascii.sh` is the commit-msg check, `post-rewrite-format.sh` runs selective lint after a rebase, and `pre-push-ci-test.sh` as above. `check-stale-pr.sh` lives in the same directory but is a Claude Bash hook registered in `.claude/settings.json`; it blocks pushes to a branch whose PR is closed or merged.
 
 (see: `bazel/tools/hooks/`, `bazel/tools/git/`, `.claude/settings.json`)
 
@@ -166,13 +172,66 @@ The repo used to carry its own layer: `semgrep_test` / `semgrep_target_test` / `
 
 Both are build-time-only toolchains for EmberVM, vendored prebuilt rather than built. `bazel/erlang` fetches the hex.pm OTP build compiled for the executor's Ubuntu 22.04 (so crypto links the executor's libssl with no provisioning), Elixir, and the hex dependency tarballs as `http_file`s that the `mix_*.sh` drivers unpack into `deps/` as path deps, so mix never contacts hex.pm; the deployed control plane gets its OTP from Wolfi. `bazel/tla` fetches `tla2tools.jar` (v1.7.4, the last tag whose asset is immutable) and a Temurin 21 JRE for the TLC checks over `projects/embervm/specs`, with `tlc.sh` reporting INCOMPLETE rather than PASS when `stopAfter` truncates a run.
 
-Their suites are genrules, not test rules, tagged `verification` so `affected-targets.sh` selects them by tag (#5538); they never appear in the `Executed N out of M` count, and a failure surfaces as a build failure. Nothing stops the next such genrule being added untagged (#5626).
+Their suites are genrules, not test rules, tagged `verification` so `affected-targets.sh` selects them by tag (#5538); they never appear in the `Executed N out of M` count, and a failure surfaces as a build failure. `verification_genrule_guard.py` rejects untagged suite-shaped names (`tlc_*`, `*_smoke`, `*_test`) before selection, including in new packages. Other names remain outside its heuristic.
 
 (see: `bazel/erlang/repositories.bzl`, `bazel/tla/repositories.bzl`, `projects/embervm/control/BUILD`, `projects/embervm/specs/BUILD`)
 
 **Why.** Prebuilt OTP and a vendored JRE were chosen over hermetic rules_erlang and rules_java toolchains because the executor is a known Ubuntu 22.04 image and nothing deployed depends on either artifact; the cost is a pin that moves by hand. The suites stayed genrules rather than test rules because the mix and TLC drivers own their own process lifecycle, and a tag is the cheapest way to make the affected-target walk see them.
 
 ---
+
+## CI runner history
+
+These measurements were recorded in `buildbuddy.yaml` before the shared-runner
+extraction for #7455, at baseline `c7bdbb11bce5d6d10b131e0f948d9c3aa43a2b01`.
+They explain earlier decisions; they are not measurements of today's runner.
+
+- In the seven days through 2026-08-09, the separate Format check, Test and Push
+  images actions each ran about 747 times, with cold rates of 20%, 56% and 62%.
+  The comments attributed 99% of CI_RUNNER downloads to cold snapshot restores.
+  Consolidating into `pr-checks` reused one workspace. #4824 recorded that action
+  names partition snapshot keys even with identical images and resources; a
+  separate deploy action had required a second main test run to seed snapshots.
+- Invocation `e687c0c6` executed 75 of 21,988 actions; 68 were local apko actions,
+  spanning 04:10:49 to 04:16:13 in an execution phase from 04:10:45 to 04:16:15.
+  This supported eight runner CPUs for `no-remote-exec` image builds. Resource
+  platform properties also affect snapshot keys. The shared local values and
+  warning now live in `tools/ci/runner-resources.env`; YAML remains static and
+  parity-tested, including the emitted local `bb remote` arguments.
+- Unlimited history replaced deploy's manual unshallow fetch. Chart versions
+  walk conventional commits since the last version change; a shallow graft can
+  make that range empty. The recorded cold-fetch increase was about 152 MB
+  (12 MB to 164 MB for 12,000 commits with `blob:none`). This was a historical
+  cost estimate, not a current clone-size assertion.
+- Main deploy `1e63fee7` reached the former one-hour limit after all 14 image
+  push children succeeded, before chart publication and version writeback.
+  The recorded wide-rebuild estimate was 10 minutes of tests, 55 minutes of
+  image work and 15 minutes of publication/formatting. The shared two-hour
+  ceiling avoids splitting stages into separate snapshot namespaces.
+- The 120 GB reservation originated at `db9ea2ce0` in July 2026 for earlier
+  action shapes. Between-stage `df` samples understate peak use inside builds;
+  snapshot transfer cost follows stored contents, not reserved capacity.
+  Through 2026-08-28, cold restores accounted for 2.7 TB of 4.5 TB over six
+  days (61%), with 161 restores of 15 to 20 GB. A cold VM reported 38 GB used
+  before steps. Candidate `76ac21dd` refuted #5397's download-cache hypothesis:
+  runner HOME was `/home/buildbuddy/workspace/.home`, its Bazel cache was
+  187 MB and `/var/lib/docker` was 4 KB; 19 GB was in the workspace.
+- Candidate `9e29fc49` (#5401) measured 15 GB in `output-base/external`, 7.8 GB
+  in `execroot/_main`, 6.8 GB in `sandbox/sandbox_stash`, and 30 GB in the
+  workspace, unchanged between start and finish. The then-estimated benefit
+  of removing the stash was 23% of workspace contents, about 100 GB/day.
+  `--noreuse_sandbox_directories` stops new stash accumulation; the EXIT trap
+  removes only the old stash, never active sandbox directories. Cleanup errors
+  are deliberately non-fatal. `workspace_breakdown` remains diagnostic.
+
+The current shared interfaces preserve caller base resolution. Workflow stage 1
+fetches once and freezes a merge-base SHA, then passes it to `ratchets.sh base
+head` and `local-affected-test.sh resolved-base`. A positional affected-test base
+disables ref fetching. Local `ci ratchet` resolves its own merge base; local
+`ci test` embeds the same affected-test script, retains BuildBuddy patch cleanup
+and fetches an `origin/*` base. Explicit targets bypass selection. Both guards
+and selectors fail closed. Reachability remains a separate workflow stage.
+Hook-versus-CI duplication remains intentional for fast feedback.
 
 ## Direction
 

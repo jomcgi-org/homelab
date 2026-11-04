@@ -1,14 +1,23 @@
-// Interactive figures a post can name with a ```interactive marker. Loaded on
-// demand so a post pays only for the figures it uses.
+// Figures a post can name with a ```figure marker. Static and server-rendered:
+// the page needs no JavaScript to show them.
+import Concurrency from "./Concurrency.svelte";
+import Context from "./Context.svelte";
+import CopyQueue from "./CopyQueue.svelte";
+import DraftPays from "./DraftPays.svelte";
+import Fit from "./Fit.svelte";
+import Precision from "./Precision.svelte";
+import PrefixRace from "./PrefixRace.svelte";
+import Published from "./Published.svelte";
+import Residency from "./Residency.svelte";
+
 export const figures = {
-  fit: () => import("./Fit.svelte"),
-  routing: () => import("./Routing.svelte"),
-  residency: () => import("./Residency.svelte"),
-  context: () => import("./Context.svelte"),
-  "copy-queue": () => import("./CopyQueue.svelte"),
-  "draft-pays": () => import("./DraftPays.svelte"),
-  precision: () => import("./Precision.svelte"),
-  "prefix-race": () => import("./PrefixRace.svelte"),
-  concurrency: () => import("./Concurrency.svelte"),
-  published: () => import("./Published.svelte"),
+  fit: Fit,
+  residency: Residency,
+  context: Context,
+  "copy-queue": CopyQueue,
+  "draft-pays": DraftPays,
+  precision: Precision,
+  "prefix-race": PrefixRace,
+  concurrency: Concurrency,
+  published: Published,
 };

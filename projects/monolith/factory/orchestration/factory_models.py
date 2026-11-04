@@ -498,3 +498,34 @@ def same_work(row_or_key, other) -> bool:
         and other_work_item_id is not None
         and work_item_id == other_work_item_id
     ) or (repo == other_repo and issue_number == other_issue_number)
+
+
+# New funding authority uses one family. Legacy projections keep old binaries
+# safe during rolling deployment and rollback; current readers exclude them.
+FUNDING_AUDIT_ALIASES = {
+    "merit_funding_declined": "funding_merit_declined",
+    "allocation_recovery_required": "funding_allocation_recovery_required",
+    "progress_continuation_authorized": "funding_continuation_authorized",
+    "progress_continuation_lease": "funding_continuation_lease",
+    "progress_continuation_renewed": "funding_continuation_renewed",
+    "progress_continuation_renewal_refused": "funding_continuation_renewal_refused",
+    "runtime_meter_bound": "funding_meter_bound",
+    "runtime_meter_usage": "funding_meter_usage",
+    "runtime_meter_tripped": "funding_meter_tripped",
+}
+
+
+def funding_audit_actions(*actions):
+    return tuple(
+        dict.fromkeys(
+            alias
+            for action in actions
+            for alias in (action, FUNDING_AUDIT_ALIASES.get(action, action))
+        )
+    )
+
+
+def funding_audit_filter(*actions):
+    return FactoryAudit.action.in_(
+        funding_audit_actions(*actions)
+    ) & ~FactoryAudit.detail_json.contains('"funding_compatibility_projection"')

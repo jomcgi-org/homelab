@@ -39,6 +39,16 @@ claudeRuntimeWorkload:
 # safe store-disabled mode, and no object-store credentials are rendered.
 noded:
   enforceBundleRootfsIdentity: false
+  # Phase 2b of #5706 (#5757): serve the SPIFFE mTLS NodeService listener on
+  # 9443 beside the plaintext one, which stays on for the dual window. The
+  # empty allowlist derives the control-plane ServiceAccount's SPIFFE ID.
+  # The control-plane dial is a separate, later step (#5706). Rollback is
+  # this line.
+  spiffe:
+    enabled: true
+  # Telemetry only (#5805): report guest memory pressure per activation.
+  guestMemoryFeedback:
+    enabled: true
   jailer:
     # Disarmed again on 2026-09-06 after the arming (#5843) broke every VM
     # restore on the rolled bricks: the jailed Firecracker cannot open the
@@ -68,10 +78,6 @@ noded:
     # actually gives, so the separate short budget remains load-bearing.
     # preemptionTimeoutSeconds stays at the chart default (20s).
     preemptionNoticeEnabled: true
-    # Drain exports used to die with SIGTERM ("post artifact wrap request:
-    # context canceled" on every brick roll on 2026-10-01), so parked sessions
-    # never reached the store and were evicted node_gone when their node left.
-    exportsOutliveSignal: true
   firecracker:
     # Whole-string override: repeat the production progress token from the
     # home values alongside the GKE agent MCP token. guest-init decodes
@@ -302,24 +308,12 @@ scratchSizeGi: 70
 # (a home policy for the scratch-k8s composite). Revisit the session-class
 # ceiling and group-spread when the Spark lane revives (#5459, #5461).
 
-statefulSweeper:
-  pressureBanking:
-    # Armed on the hub (#4667 decision D15). The lane landed off because
-    # cross-brick stateful relight was broken (#5502); #5502 and #5521 are
-    # closed, so the stated reason to stay off is gone. Thresholds stay at the
-    # chart defaults. Revert is this one line.
-    enabled: true
-
-# Drain only the sessions on the draining brick instance. Every size class
-# shares the ember-bricks node, so a node-scoped drain made each autoscaler
-# idle drain of an EMPTY brick interrupt every live turn on the node's 8gi
-# brick (2026-10-01 00:44:42 and 02:04:42). A session with unknown placement
-# is still drained. Revert is this one line.
-drainInstanceScopedSessions: true
-crossNodeRejoin: true
-# Recover interrupted turns before adoption parks them. Rollback: set false.
-restartFlushInflightInvokes: true
 rootfsBuilder:
   inPodBake:
     # This flag flip rolls bricks once. Delete this enabled line to roll back.
     enabled: true
+
+# Background data-key envelope rotation (#4976): metadata-only, ETag
+# compare-and-swap writes, capped per sweep. Rollback is this flag.
+envelopeRewrap:
+  enabled: true

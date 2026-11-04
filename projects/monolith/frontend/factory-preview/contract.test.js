@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,12 @@ import { load as context } from "../src/routes/public/slop/factory/context/+page
 import { ledger, ledgerMeta } from "../src/lib/public/factory/activity-view.js";
 import { decodeSearchIndex } from "../src/lib/public/factory/search-index.js";
 import { NOW, payloads, LONG_TITLE } from "./fixtures.js";
+
+beforeAll(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(NOW));
+});
+afterAll(() => vi.useRealTimers());
 
 const generated = {};
 const views = {
@@ -76,7 +82,8 @@ describe("same-commit factory server-load fixtures", () => {
           ).toBe(true);
         } else if (view === "overview" || view === "activity") {
           const book = ledger(data.board, NOW);
-          expect(book.live).toHaveLength(scenario === "live" ? 2 : 0);
+          expect(book.live).toHaveLength(scenario === "live" ? 1 : 0);
+          expect(book.waiting).toHaveLength(scenario === "live" ? 1 : 0);
           if (scenario === "live") {
             expect(
               data.board.quota.providers.map((provider) => provider.provider),

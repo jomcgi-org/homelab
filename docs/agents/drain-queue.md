@@ -28,7 +28,7 @@ issue filing have separate default-off switches.
 
 ## Queueing work
 
-Register with the MCP tool `monolith-agent-register-routine-job`:
+Register with the MCP tool `monolith-agent-routine-job`, `action: "register"`:
 
 - `kind: "qwen-drain"`, `payload: {"prompt": ...}` (optional `repo`, `branch`,
   `reasoning`, `model`, `digest`).
@@ -40,9 +40,9 @@ Register with the MCP tool `monolith-agent-register-routine-job`:
 - `digest` appends a server-built evidence block to the prompt at claim time.
   The only value is `factory-retro` (see below).
 - One-shot jobs: `interval_secs` null, `next_run_at` now. On completion
-  `next_run_at` goes NULL and the job leaves the queue; `trigger-routine-job`
+  `next_run_at` goes NULL and the job leaves the queue; `action: "trigger"`
   re-arms it.
-- Recurring jobs: set `interval_secs`. To edit a prompt, `deregister-routine-job`
+- Recurring jobs: set `interval_secs`. To edit a prompt, `action: "deregister"`
   then re-register with the original schedule.
 - `next_run_at` is a priority field: `claim_job` orders by it ascending, so a
   past timestamp jumps the queue.
@@ -252,9 +252,9 @@ finding.
 | Symptom in `last_summary` | Cause | Fix |
 |---|---|---|
 | `502 :invoke_timeout` after ~12 hours | the 43200s EmberVM invoke backstop | a non-converging job: check the tool-call count in `usage_json`, then narrow its search space |
-| `502 {:session_down, ...}`, `503 workspace does not exist`, `All connection attempts failed`, `Server disconnected` | a bad guest; the job was fine | `trigger-routine-job`; it usually passes on a fresh guest. These are terminal, so a one-shot stays dead until requeued by hand |
+| `502 {:session_down, ...}`, `503 workspace does not exist`, `All connection attempts failed`, `Server disconnected` | a bad guest; the job was fine | `routine-job` `action: "trigger"`; it usually passes on a fresh guest. These are terminal, so a one-shot stays dead until requeued by hand |
 | jobs due but nothing claimed for hours, ticks firing | a wedged drain cycle holding the concurrency-1 slot | open the drain console. A pod roll does not clear it (DBOS recovery re-enqueues into a PENDING row). The reaper cancels a cycle with no step checkpoint for 1800s; to clear one sooner, `POST /api/swarm/runs/{workflow_id}/cancel` in-pod |
-| `next_run_at` NULL, job gone from the due list | the one-shot completed | `trigger-routine-job` to re-run |
+| `next_run_at` NULL, job gone from the due list | the one-shot completed | `routine-job` `action: "trigger"` to re-run |
 
 ### Harness knobs
 
@@ -313,18 +313,21 @@ The observation records revision provenance, not historical application health.
 The first matching revision observation is the measurement boundary; current
 sync and health must also verify. Compare the immediately preceding 72h with
 `[boundary, boundary + 72h)`, never the overlapping rolling daily digest.
-The reader finds that exact deployment first, then loads only polls inside the
-fixed post-deployment window. `observation_coverage` states the UTC bounds,
-observed row count, limit and completeness. An extra sentinel row detects
-truncation; more than 5,000 polls inside that window holds UNKNOWN. Polls after
-the window cannot exhaust its coverage budget. This repairs collection only:
-an old cohort with insufficient traffic or overlapping deployments remains
-inconclusive, and waiting longer cannot change its admission denominator.
+The reader finds that exact deployment first, then counts the distinct
+revisions deployed inside the fixed post-deployment window, one row per
+revision however many polls observed it. `observation_coverage` states the
+UTC bounds, revisions observed, limit and completeness. An extra sentinel row
+detects truncation; more than 500 distinct revisions inside that window holds
+UNKNOWN. Polls after the window cannot exhaust its coverage budget.
 
 Attempt cohorts use their creation window; terminal outcomes are read as of
-digest collection, allowing attempts near the window's end to finish before
-acceptance. Further deployments during observation make attribution UNKNOWN. Missing
-traffic, classification coverage or a traffic criterion also holds the choice.
+digest collection. Attempts still unresolved when the window ends hold the
+verdict at WAIT for 24 more hours so they can settle. After that the verdict
+is final: ACCEPTED, REGRESSED, or INCONCLUSIVE for missing traffic,
+classification coverage, an unmet traffic criterion or an unknown metric.
+Other deployments inside the window are reported as confounders beside the
+verdict and never hold it. A final verdict releases the selection; UNKNOWN,
+for evidence that was unavailable this run, holds it until the next run.
 A worse target rate reports REGRESSED; a met observation criterion reports
 ACCEPTED as a descriptive association, without a causal savings claim.
 

@@ -626,6 +626,24 @@
       "to": "postgres",
       "maturity": "built",
       "evidence": "projects/monolith/factory/orchestration/factory_policy_amendment.py:277"
+    },
+    {
+      "key": "factory-refill.acknowledge-learning-cessation",
+      "label": "Acknowledge one positively ceased unknown attempt for cadence only",
+      "view": "logical",
+      "from": "mcp-caller",
+      "to": "factory-refill",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/learning_reconciliation.py"
+    },
+    {
+      "key": "agent.reconcile-settled-retry",
+      "label": "Fence exact ceased lineage and fail one unknown factory attempt",
+      "view": "logical",
+      "from": "mcp-caller",
+      "to": "agent-runner",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/settled_retry_reconciliation.py"
     }
   ],
   "feedback": [
@@ -742,6 +760,12 @@
       "from": "refill-producer",
       "to": "factory-refill",
       "signal": "Confirmed new findings and inconclusive publication state"
+    },
+    {
+      "view": "logical",
+      "from": "embervm",
+      "to": "factory-refill",
+      "signal": "Fresh bounded terminal history and complete successor/restore exclusion for exact historical dispatch"
     }
   ]
 }

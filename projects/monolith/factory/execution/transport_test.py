@@ -225,7 +225,6 @@ def test_receipt_observer_limit_preserves_one_synchronous_post(monkeypatch):
         pytest.fail("a full observer pool must not create another observer")
 
     _client(monkeypatch, handler)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "true")
     monkeypatch.setattr(transport, "MAX_RECEIPT_OBSERVERS", 0)
     monkeypatch.setattr(transport, "_observe_native_result", unexpected_observer)
     monkeypatch.setattr(
@@ -3221,6 +3220,110 @@ def test_long_invoke_budget_does_not_expand_create_wait(monkeypatch, read_timeou
     assert all(t.connect == transport.SUBMIT_CONNECT_TIMEOUT for t in timeouts)
 
 
+def test_historical_cessation_read_binds_identity_and_management_auth(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"session_id": "s-1"}, request=request)
+
+    _client(monkeypatch, handler)
+    result = asyncio.run(
+        transport.EmberVmShimTransport().get_session_cessation_evidence(
+            "s-1",
+            generation=0,
+            invoke_started_at=1000,
+            updated_at=2000,
+        )
+    )
+    assert result == {"session_id": "s-1"}
+    assert requests[0].method == "GET"
+    assert requests[0].url.path == "/v1/sessions/s-1/cessation-evidence"
+    assert dict(requests[0].url.params) == {
+        "generation": "0",
+        "invoke_started_at": "1000",
+        "updated_at": "2000",
+    }
+    assert requests[0].headers["Authorization"] == "management"
+
+
+@pytest.mark.parametrize("operation", ["preview", "apply"])
+def test_recovery_fence_binds_exact_body_and_management_auth(monkeypatch, operation):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200, json={"fenced": operation == "apply"}, request=request
+        )
+
+    _client(monkeypatch, handler)
+    body = {
+        "operation": operation,
+        "request_key": "one-exact-key",
+        "dispatch_id": "a" * 64,
+        "expected_preview_sha256": "b" * 64,
+    }
+    result = asyncio.run(
+        transport.EmberVmShimTransport().session_recovery_fence("s-1", body)
+    )
+    assert result == {"fenced": operation == "apply"}
+    assert len(requests) == 1
+    assert requests[0].method == "POST"
+    assert requests[0].url.path == "/v1/sessions/s-1/recovery-fence"
+    assert requests[0].headers["Authorization"] == "management"
+    assert json.loads(requests[0].content) == body
+
+
+@pytest.mark.parametrize("failure", [403, 404, 409, 500, "lost_response"])
+def test_recovery_fence_never_retries_or_turns_a_refusal_into_proof(
+    monkeypatch, failure
+):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        if failure == "lost_response":
+            raise httpx.ReadTimeout("ambiguous write", request=request)
+        return httpx.Response(
+            failure, json={"secret": "do-not-expose"}, request=request
+        )
+
+    _client(monkeypatch, handler)
+    with pytest.raises(EmberVMTransportError, match="^recovery fence unavailable$"):
+        asyncio.run(
+            transport.EmberVmShimTransport().session_recovery_fence(
+                "s-1", {"operation": "apply"}
+            )
+        )
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("status", [403, 404, 409, 500])
+def test_historical_cessation_read_refusals_never_become_positive_evidence(
+    monkeypatch, status
+):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            status, json={"error": "evidence unavailable"}, request=request
+        )
+
+    _client(monkeypatch, handler)
+    with pytest.raises(transport.EmberVMTransportError):
+        asyncio.run(
+            transport.EmberVmShimTransport().get_session_cessation_evidence(
+                "s-1",
+                generation=0,
+                invoke_started_at=1000,
+                updated_at=2000,
+            )
+        )
+    assert len(requests) == 1
+
+
 def test_get_session_reads_exact_session_with_management_auth(monkeypatch):
     requests = []
 
@@ -3239,6 +3342,45 @@ def test_get_session_reads_exact_session_with_management_auth(monkeypatch):
     assert str(requests[0].url) == "https://ember.test/v1/sessions/s-1"
     assert requests[0].method == "GET"
     assert requests[0].headers["Authorization"] == "management"
+
+
+def test_historical_cessation_refusal_exposes_only_bounded_code(monkeypatch):
+    async def handler(request):
+        return httpx.Response(
+            409,
+            json={
+                "reason": "history_compacted",
+                "private": "never expose raw body",
+                "diagnostics": {
+                    "history_complete": False,
+                    "event_count": 5,
+                    "event_kind": "session_evicted",
+                    "event_reason": "idle_ttl",
+                    "private": "hidden",
+                    "terminal_reason": "secret with spaces",
+                },
+            },
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    with pytest.raises(transport.EmberHistoricalCessationUnavailable) as caught:
+        asyncio.run(
+            transport.EmberVmShimTransport().get_session_cessation_evidence(
+                "s-1",
+                generation=0,
+                invoke_started_at=1000,
+                updated_at=2000,
+            )
+        )
+    assert caught.value.reason == "history_compacted"
+    assert str(caught.value) == "history_compacted"
+    assert caught.value.diagnostics == {
+        "history_complete": False,
+        "event_count": 5,
+        "event_kind": "session_evicted",
+        "event_reason": "idle_ttl",
+    }
 
 
 def test_get_session_uses_short_status_timeout_not_invoke_budget(monkeypatch):
@@ -3373,7 +3515,6 @@ def test_metered_synchronous_result_cannot_bypass_terminal_validation(monkeypatc
         return _turn_response(request)
 
     _client(monkeypatch, handler)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "false")
     monkeypatch.setattr(
         result_receipts,
         "prepare_receipt",

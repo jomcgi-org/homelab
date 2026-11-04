@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-base_ref="${CI_BASE_REF:-origin/main}"
+# A positional base is already resolved by the workflow. Never fetch it again.
+if [[ $# -gt 1 || ($# -eq 1 && -z "$1") ]]; then
+	echo "usage: local-affected-test.sh [resolved-base]" >&2
+	exit 2
+fi
+base_ref="${1:-${CI_BASE_REF:-origin/main}}"
 query_args=(
 	--config=ci
 	--deleted_packages=bazel/tools/python
@@ -23,7 +28,7 @@ while IFS= read -r buildbuddy_patch; do
 	fi
 done < <(git ls-files --others --exclude-standard)
 
-if [[ "$base_ref" == origin/* ]]; then
+if [[ $# -eq 0 && "$base_ref" == origin/* ]]; then
 	git fetch origin "${base_ref#origin/}" --quiet
 fi
 

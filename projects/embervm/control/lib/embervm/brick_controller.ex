@@ -1899,8 +1899,7 @@ defmodule Embervm.BrickController do
     |> Enum.filter(&(authorized_bound(&1) > 0))
     |> Enum.map(fn class ->
       name = class_name(class)
-      usable = class_field(class, [:usable_mib, "usable_mib"])
-      capacity = if is_integer(usable), do: usable, else: class_capacity_mib(name)
+      capacity = class_field(class, [:usable_mib, "usable_mib"])
       configured_floor = class_field(class, [:mem_reject_floor_mib, "mem_reject_floor_mib"])
 
       floor =
@@ -1917,13 +1916,6 @@ defmodule Embervm.BrickController do
     end)
     |> Enum.sort_by(fn {_name, capacity, _floor} -> capacity end)
     |> Enum.map(&elem(&1, 0))
-  end
-
-  # Legacy compatibility path for ConfigMaps that predate chart-declared usable_mib.
-  # It parses the class nameplate, which is not guest-schedulable capacity in the
-  # current daemon model.
-  defp class_capacity_mib(name) do
-    nameplate_mib(name)
   end
 
   @doc "Returns the full cgroup nameplate represented by a size-class label."

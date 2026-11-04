@@ -36,7 +36,7 @@ cat >"$ROOT/bazel/tools/ci/affected-targets.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >"$AFFECTED_LOG"
 [[ -n "${AFFECTED_OUTPUT:-}" ]] && printf '%s\n' "$AFFECTED_OUTPUT"
-exit 0
+exit "${AFFECTED_STATUS:-0}"
 EOF
 chmod +x "$ROOT/bazel/tools/ci/affected-targets.sh"
 
@@ -68,7 +68,7 @@ run_runner() {
 		AFFECTED_LOG="$TMP/affected.log" GIT_LOG="$TMP/git.log" \
 		GIT_UNTRACKED_OUTPUT="${GIT_UNTRACKED_OUTPUT:-}" \
 		BAZEL_LOG="$TMP/bazel.log" TARGETS_LOG="$TMP/targets.log" \
-		"$RUNNER"
+		"$RUNNER" "$@"
 }
 
 rm -f "$TMP"/*.log
@@ -118,6 +118,32 @@ if [[ "$status" -eq 3 ]]; then
 	pass "test_failure_propagated"
 else
 	fail "test_failure_propagated" "expected 3, got $status"
+fi
+
+rm -f "$TMP"/*.log
+status=0
+AFFECTED_OUTPUT="//p:test" AFFECTED_STATUS=9 run_runner >"$TMP/selector-failure.out" 2>&1 || status=$?
+if [[ "$status" -eq 9 && ! -e "$TMP/bazel.log" ]]; then
+	pass "selector_failure_stops_test"
+else
+	fail "selector_failure_stops_test" "expected selector exit 9 without bazel, got $status"
+fi
+
+rm -f "$TMP"/*.log
+if AFFECTED_OUTPUT="//p:test" run_runner frozen-merge-base >"$TMP/frozen.out" 2>&1 &&
+	[[ "$(head -n 1 "$TMP/affected.log")" == frozen-merge-base ]] &&
+	! grep -qxF fetch "$TMP/git.log"; then
+	pass "resolved_ci_base_is_not_fetched"
+else
+	fail "resolved_ci_base_is_not_fetched" "CI must use its supplied base verbatim without fetching"
+fi
+
+rm -f "$TMP"/*.log
+if AFFECTED_OUTPUT="" run_runner >"$TMP/local-fetch.out" 2>&1 &&
+	grep -qxF fetch "$TMP/git.log" && grep -qxF main "$TMP/git.log"; then
+	pass "local_origin_base_still_fetches"
+else
+	fail "local_origin_base_still_fetches" "local CI_BASE_REF resolution lost fetch"
 fi
 
 echo "--- $PASS passed, $FAIL failed ---"

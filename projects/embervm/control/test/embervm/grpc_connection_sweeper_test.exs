@@ -16,18 +16,9 @@ defmodule Embervm.GrpcConnectionSweeperTest do
       GenServer.call(supervisor, {:set_children, children})
     end
 
-    def reset_terminated(supervisor) do
-      GenServer.call(supervisor, :reset_terminated)
-    end
-
     @impl true
     def handle_call({:set_children, children}, _from, {_old, terminated}) do
       {:reply, :ok, {children, terminated}}
-    end
-
-    @impl true
-    def handle_call(:reset_terminated, _from, {children, _terminated}) do
-      {:reply, :ok, {children, []}}
     end
 
     @impl true
@@ -104,8 +95,7 @@ defmodule Embervm.GrpcConnectionSweeperTest do
   test "address normalization strips ipv4 prefix" do
     sweeper =
       start_sweeper(
-        status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
-        sweep_enabled: false
+        status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end
       )
 
     result = GrpcConnectionSweeper.sweep_now(sweeper)
@@ -116,8 +106,7 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     # Both formats should be treated as equivalent when normalized
     sweeper =
       start_sweeper(
-        status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
-        sweep_enabled: false
+        status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end
       )
 
     # Verify the sweeper handles both formats without error
@@ -161,8 +150,7 @@ defmodule Embervm.GrpcConnectionSweeperTest do
         status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
         supervisor: supervisor,
         terminate_child_fun: terminate_fun,
-        strikes_required: 1,
-        sweep_enabled: true
+        strikes_required: 1
       )
 
     assert [{^stray_child, _reason}] = GrpcConnectionSweeper.sweep_now(sweeper)
@@ -189,8 +177,7 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     sweeper =
       start_sweeper(
         status_fun: fn -> %{} end,
-        supervisor: supervisor,
-        sweep_enabled: false
+        supervisor: supervisor
       )
 
     result = GrpcConnectionSweeper.sweep_now(sweeper)
@@ -217,8 +204,7 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     sweeper =
       start_sweeper(
         status_fun: fn -> raise "registry error" end,
-        supervisor: supervisor,
-        sweep_enabled: false
+        supervisor: supervisor
       )
 
     result = GrpcConnectionSweeper.sweep_now(sweeper)
@@ -227,32 +213,11 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     assert result == []
   end
 
-  test "sweep logs summary in dry-run mode (gate off)" do
-    sweeper =
-      start_sweeper(
-        status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
-        sweep_enabled: false
-      )
-
-    # The log is internal; we verify the sweeper runs without error
-    result = GrpcConnectionSweeper.sweep_now(sweeper)
-    assert is_list(result)
-  end
-
-  test "sweep respects the enabled flag" do
-    sweeper = start_sweeper(status_fun: fn -> %{} end, sweep_enabled: false)
-
-    # With gate off and empty registry (sweep skipped), result is []
-    result = GrpcConnectionSweeper.sweep_now(sweeper)
-    assert result == []
-  end
-
   test "sweeper can be disabled with sweep_interval_ms = 0" do
     sweeper =
       start_sweeper(
         status_fun: fn -> %{} end,
-        sweep_interval_ms: 0,
-        sweep_enabled: false
+        sweep_interval_ms: 0
       )
 
     # With interval = 0, no periodic sweep is scheduled
@@ -269,8 +234,7 @@ defmodule Embervm.GrpcConnectionSweeperTest do
             "node-0" => %{address: "10.42.3.34:9090"},
             "node-1" => %{address: "ipv4:10.42.1.141:9090"}
           }
-        end,
-        sweep_enabled: false
+        end
       )
 
     result = GrpcConnectionSweeper.sweep_now(sweeper)
@@ -288,8 +252,7 @@ defmodule Embervm.GrpcConnectionSweeperTest do
       start_sweeper(
         status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
         supervisor: supervisor,
-        terminate_child_fun: terminate_fun,
-        sweep_enabled: true
+        terminate_child_fun: terminate_fun
       )
 
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
@@ -316,8 +279,7 @@ defmodule Embervm.GrpcConnectionSweeperTest do
       start_sweeper(
         status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
         supervisor: supervisor,
-        terminate_child_fun: terminate_fun,
-        sweep_enabled: true
+        terminate_child_fun: terminate_fun
       )
 
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
@@ -334,8 +296,8 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     assert Agent.get(calls, & &1) == [second_pid]
   end
 
-  test "armed sweeper logs accumulating strikes before it reaps (#4419)" do
-    # When the gate is ON the sweeper used to log NOTHING until it killed
+  test "sweeper logs accumulating strikes before it reaps (#4419)" do
+    # The armed sweeper used to log NOTHING until it killed
     # something, so "working and finding nothing" and "not running at all"
     # read identically. Every pass must leave a heartbeat, and a pid climbing
     # toward the threshold must be visible before the kill lands.
@@ -349,8 +311,7 @@ defmodule Embervm.GrpcConnectionSweeperTest do
       start_sweeper(
         status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
         supervisor: supervisor,
-        terminate_child_fun: terminate_fun,
-        sweep_enabled: true
+        terminate_child_fun: terminate_fun
       )
 
     log = ExUnit.CaptureLog.capture_log(fn -> GrpcConnectionSweeper.sweep_now(sweeper) end)
@@ -358,10 +319,9 @@ defmodule Embervm.GrpcConnectionSweeperTest do
              "pass complete (children=1, keep_set=1, reaped=0, pending=1, under_threshold=1)"
     assert log =~ "1 orchestrator(s) accumulating strikes"
     assert log =~ "#{inspect(child_pid)}: target #{inspect(target)} not in live set (strike 1 of 3)"
-    refute log =~ "DRY RUN"
   end
 
-  test "dry-run sweeper logs a heartbeat on a clean pass" do
+  test "sweeper logs a heartbeat on a clean pass" do
     supervisor = mock_supervisor()
     live_pid = mock_child("10.42.3.34:9090")
     MockSupervisor.set_children(supervisor, [child(live_pid)])
@@ -369,13 +329,12 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     sweeper =
       start_sweeper(
         status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
-        supervisor: supervisor,
-        sweep_enabled: false
+        supervisor: supervisor
       )
 
     log = ExUnit.CaptureLog.capture_log(fn -> GrpcConnectionSweeper.sweep_now(sweeper) end)
     assert log =~
-             "(DRY RUN, gate off): pass complete (children=1, keep_set=1, reaped=0, pending=0, under_threshold=0)"
+             "embervm grpc connection sweeper: pass complete (children=1, keep_set=1, reaped=0, pending=0, under_threshold=0)"
   end
 
   test "timeout/wedged branch is protected by strikes" do
@@ -418,8 +377,7 @@ defmodule Embervm.GrpcConnectionSweeperTest do
       start_sweeper(
         status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
         supervisor: supervisor,
-        terminate_child_fun: terminate_fun,
-        sweep_enabled: true
+        terminate_child_fun: terminate_fun
       )
 
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
@@ -466,8 +424,7 @@ defmodule Embervm.GrpcConnectionSweeperTest do
         supervisor: supervisor,
         terminate_child_fun: terminate_fun,
         start_args_target_fun: fn ^wedged_pid -> {:ok, "ipv4:#{target}"} end,
-        strikes_required: 1,
-        sweep_enabled: true
+        strikes_required: 1
       )
 
     assert [{^wedged_pid, reason}] = GrpcConnectionSweeper.sweep_now(sweeper)
@@ -484,8 +441,7 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     sweeper =
       start_sweeper(
         status_fun: fn -> exit(:noproc) end,
-        supervisor: supervisor,
-        sweep_enabled: false
+        supervisor: supervisor
       )
 
     result = GrpcConnectionSweeper.sweep_now(sweeper)
@@ -504,8 +460,7 @@ defmodule Embervm.GrpcConnectionSweeperTest do
       start_sweeper(
         status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
         supervisor: supervisor,
-        terminate_child_fun: terminate_fun,
-        sweep_enabled: true
+        terminate_child_fun: terminate_fun
       )
 
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
@@ -532,34 +487,12 @@ defmodule Embervm.GrpcConnectionSweeperTest do
       start_sweeper(
         status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
         supervisor: supervisor,
-        terminate_child_fun: terminate_fun,
-        sweep_enabled: true
+        terminate_child_fun: terminate_fun
       )
 
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
     assert :sys.get_state(sweeper).strikes[{:target, "10.42.9.99:9090"}] == 2
-    assert Agent.get(calls, & &1) == []
-  end
-
-  test "with gate OFF, N consecutive reapable sweeps still terminate NOTHING" do
-    supervisor = mock_supervisor()
-    child_pid = mock_child("10.42.9.99:9090")
-    MockSupervisor.set_children(supervisor, [child(child_pid)])
-    {terminate_fun, calls} = terminate_child_collector()
-
-    sweeper =
-      start_sweeper(
-        status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
-        supervisor: supervisor,
-        terminate_child_fun: terminate_fun,
-        sweep_enabled: false
-      )
-
-    assert GrpcConnectionSweeper.sweep_now(sweeper) == []
-    assert GrpcConnectionSweeper.sweep_now(sweeper) == []
-    assert [{^child_pid, reason}] = GrpcConnectionSweeper.sweep_now(sweeper)
-    assert reason =~ "reapable for 3 consecutive sweeps"
     assert Agent.get(calls, & &1) == []
   end
 
@@ -572,8 +505,7 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     sweeper =
       start_sweeper(
         status_fun: fn -> %{"node-0" => %{address: target}} end,
-        supervisor: supervisor,
-        sweep_enabled: false
+        supervisor: supervisor
       )
 
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
@@ -592,12 +524,13 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     child_a = mock_child("10.42.9.99:9090")
     child_b = mock_child("10.42.9.98:9090")
     MockSupervisor.set_children(supervisor, [child(child_a), child(child_b)])
+    {terminate_fun, calls} = terminate_child_collector()
 
     sweeper =
       start_sweeper(
         status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
         supervisor: supervisor,
-        sweep_enabled: false
+        terminate_child_fun: terminate_fun
       )
 
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
@@ -613,5 +546,6 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     assert [{^child_b, reason}] = GrpcConnectionSweeper.sweep_now(sweeper)
     assert reason =~ "reapable for 3 consecutive sweeps"
     assert :sys.get_state(sweeper).strikes == %{{:target, "10.42.9.98:9090"} => 3}
+    assert Agent.get(calls, & &1) == [child_b]
   end
 end

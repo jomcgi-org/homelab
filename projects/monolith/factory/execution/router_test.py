@@ -2088,30 +2088,6 @@ def _claimed_stop_session(session: Session, name: str = "stop-owner"):
     return row, identity
 
 
-def test_stop_control_is_hidden_and_inert_by_default(client, session, monkeypatch):
-    row, identity = _claimed_stop_session(session, "stop-disabled")
-    forwarded = []
-
-    async def must_not_forward(*args):
-        forwarded.append(args)
-
-    monkeypatch.delenv("AGENT_SESSION_STOP_CONTROL_ENABLED", raising=False)
-    monkeypatch.setattr(
-        "factory.execution.router._transport.interrupt_session", must_not_forward
-    )
-
-    detail = client.get(f"/api/agents/sessions/{row.id}").json()
-    assert detail["stop_control"] == {"enabled": False, "active": None}
-
-    response = client.post(
-        f"/api/agents/sessions/{row.id}/stop",
-        headers={"X-Auth-Email": "owner@example.com"},
-        json=identity,
-    )
-    assert response.status_code == 404
-    assert forwarded == []
-
-
 def test_stop_control_exposes_and_relays_only_the_observed_exact_turn(
     client, session, monkeypatch
 ):
@@ -2136,13 +2112,12 @@ def test_stop_control_exposes_and_relays_only_the_observed_exact_turn(
             },
         }
 
-    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
     monkeypatch.setattr(
         "factory.execution.router._transport.interrupt_session", interrupt
     )
 
     detail = client.get(f"/api/agents/sessions/{row.id}").json()
-    assert detail["stop_control"] == {"enabled": True, "active": identity}
+    assert detail["stop_control"] == {"active": identity}
 
     response = client.post(
         f"/api/agents/sessions/{row.id}/stop",
@@ -2196,7 +2171,6 @@ def test_stop_control_rejects_cross_owner_and_stale_dispatch_without_forwarding(
     async def must_not_forward(*args):
         calls.append(args)
 
-    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
     monkeypatch.setattr(
         "factory.execution.router._transport.interrupt_session", must_not_forward
     )
@@ -2262,7 +2236,6 @@ def test_stop_control_rejects_observed_turn_after_successor_starts(
     async def must_not_forward(*args):
         calls.append(args)
 
-    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
     monkeypatch.setattr(
         "factory.execution.router._transport.interrupt_session", must_not_forward
     )
@@ -2374,7 +2347,6 @@ def test_stop_control_settled_replay_requires_receipt_identity_and_no_successor(
         calls.append(args)
         raise AssertionError("settled Stop must not reach the transport")
 
-    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
     monkeypatch.setattr(
         "factory.execution.router._transport.interrupt_session", must_not_forward
     )
@@ -2427,15 +2399,6 @@ def test_stop_control_settled_replay_requires_receipt_identity_and_no_successor(
                 ).status_code
                 == expected_status
             )
-        monkeypatch.delenv("AGENT_SESSION_STOP_CONTROL_ENABLED")
-        assert (
-            client.post(
-                f"/api/agents/sessions/{row.id}/stop",
-                headers={"X-Auth-Email": "owner@example.com"},
-                json=identity,
-            ).status_code
-            == 404
-        )
     assert calls == []
     assert (
         len(
@@ -2481,7 +2444,6 @@ def test_stop_control_completion_race_preserves_completed_turn(
     async def must_not_forward(*args):
         calls.append(args)
 
-    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
     monkeypatch.setattr(
         "factory.execution.router._transport.interrupt_session", must_not_forward
     )
@@ -2516,7 +2478,6 @@ def test_stop_control_unknown_relay_keeps_active_claim(client, session, monkeypa
         destroyed.append(ember_session_id)
         return {"session_id": ember_session_id, "state": "destroyed"}
 
-    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
     monkeypatch.setattr(
         "factory.execution.router._transport.interrupt_session", unavailable
     )

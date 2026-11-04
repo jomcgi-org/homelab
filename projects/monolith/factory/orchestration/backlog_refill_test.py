@@ -40,7 +40,7 @@ _REAL_REFILL_QUOTA = refill.quota
 
 
 @pytest.fixture
-def world(tmp_path, monkeypatch):
+def world(tmp_path, monkeypatch, request):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'refill.db'}",
         connect_args={"check_same_thread": False, "timeout": 10},
@@ -73,6 +73,23 @@ def world(tmp_path, monkeypatch):
             )
         ],
     )
+    # Existing fixtures exercise the deployed v1 contract and its replay.
+    # New source-contract cases explicitly request the inspection fixture.
+    if getattr(request, "param", None) != "inspection":
+        observe = refill.observe
+
+        def historical_observe(*args, **kwargs):
+            result = observe(*args, **kwargs)
+            if result.get("ok"):
+                with Session(engine) as db:
+                    row = refill.latest_event(db, "started", run_id=result["run_id"])
+                    detail = refill._detail(row)
+                    detail.pop("inspection_contract", None)
+                    row.detail_json = dumps(detail)
+                    db.commit()
+            return result
+
+        monkeypatch.setattr(refill, "observe", historical_observe)
     clock = [NOW]
     monkeypatch.setattr(controls, "get_engine", lambda: engine)
     monkeypatch.setattr(controls, "_now", lambda: clock[0])
@@ -80,7 +97,10 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(
         refill,
         "quota",
-        lambda model: {"model": model, "checked_at": clock[0].isoformat()},
+        lambda model, *, force=True: {
+            "model": model,
+            "checked_at": clock[0].isoformat(),
+        },
     )
     monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
     policy = controls.validate_policy(
@@ -147,6 +167,7 @@ def admit(world, start):
                 id=task_id,
                 task_text="inventory",
                 repo=policy["repo"],
+                base_branch=policy["base_branch"],
                 conductor_model="opus",
                 created_at=clock[0],
                 budget_usd=policy["task_budget_usd"],
@@ -525,6 +546,8 @@ def test_multi_finding_summary_and_breaker_replay(world, github):
     start = publication_start(world)
     with controls._read_session() as db:
         detail = refill._detail(refill._events(db, "started")[0])
+    # A start from before routines keeps its needs-human summary issue.
+    assert detail.pop("routine") == "dead-code"
     value = {
         "summary": "| Project | Evidence |\n| project | source |",
         "findings": [
@@ -1031,7 +1054,9 @@ def reviewed_run(world, github, monkeypatch, request):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
     monkeypatch.setattr(conductor, "_free_background_slots", lambda: 3)
     monkeypatch.setattr(
-        conductor, "github_get", lambda *_: {"object": {"sha": "a" * 40}}
+        conductor,
+        "github_get",
+        lambda *_: {"sha": "a" * 40, "object": {"sha": "a" * 40}},
     )
     monkeypatch.setattr(conductor, "github_list", lambda *_: [])
     update(world, backlog_refill={"enabled": True, "model": "opus", "max_findings": 5})
@@ -1043,7 +1068,9 @@ def reviewed_run(world, github, monkeypatch, request):
             refill.latest_event(db, "started", run_id=start["run_id"])
         )
     checked = []
-    monkeypatch.setattr(refill, "quota", lambda model: checked.append(model) or {})
+    monkeypatch.setattr(
+        refill, "quota", lambda model, *, force=True: checked.append(model) or {}
+    )
 
     def reconcile():
         worker.reconcile(
@@ -1141,8 +1168,38 @@ def reviewed_run(world, github, monkeypatch, request):
         }
     reconcile()
     collector = dispatch(refill.NODE)
+    if "inspection_contract" in detail:
+        collection.update(status="completed", source_sha="a" * 40)
+    scenario = getattr(request, "param", None)
+    if scenario == "preflight":
+        return SimpleNamespace(
+            engine=engine,
+            task_id=task_id,
+            task=task,
+            policy=policy,
+            start=detail,
+            collector=collector,
+            reconcile=reconcile,
+            github=github,
+        )
+    if scenario in {"empty", "blocked", "source_mismatch"}:
+        collection["findings"] = []
+    if scenario == "blocked":
+        collection.update(status="blocked", source_sha=None)
+    if scenario == "source_mismatch":
+        collection["source_sha"] = "b" * 40
     settle(collector, collection)
     reconcile()
+    if scenario in {"blocked", "source_mismatch"}:
+        return SimpleNamespace(
+            engine=engine,
+            task_id=task_id,
+            start=detail,
+            collection=collection,
+            collector=collector,
+            reconcile=reconcile,
+            github=github,
+        )
     assert writer.advance(detail) is None and not github[1]
     reviewer = dispatch(refill.REVIEW_NODE)
     assert reviewer["pin"]["model"] == "astra" and reviewer["pin"]["effort"] == "xhigh"
@@ -1180,6 +1237,12 @@ def reviewed_run(world, github, monkeypatch, request):
             }
             for finding in collection["findings"]
         ]
+    if "inspection_contract" in detail:
+        verdict.update(status="completed", source_sha="a" * 40)
+    if scenario == "empty":
+        verdict["decisions"] = []
+    if scenario == "review_blocked":
+        verdict.update(status="blocked", source_sha=None, decisions=[])
     settle(reviewer, verdict)
     return SimpleNamespace(
         engine=engine,
@@ -1193,6 +1256,7 @@ def reviewed_run(world, github, monkeypatch, request):
         collection=collection,
         reconcile=reconcile,
         checked=checked,
+        settle=settle,
         github=github,
     )
 
@@ -1202,13 +1266,13 @@ def test_independent_refill_review_precedes_every_new_issue(reviewed_run):
     assert not state.github[1]
     for _ in range(3):
         state.reconcile()
-    assert len(state.github[1]) == 2
-    finding, summary = state.github[0]
+    # Routine runs publish only findings; the summary stays in the audit.
+    assert len(state.github[1]) == 1
+    (finding,) = state.github[0]
     assert finding["title"] == state.collection["findings"][0]["title"]
     assert "Implementation plan:" in finding["body"]
     assert "Acceptance criteria:" in finding["body"]
     assert "expect every test to pass" in finding["body"]
-    assert "Independent review:" in summary["body"]
     with controls._read_session() as db:
         evidence = refill._detail(
             refill.latest_event(db, "reviewed", run_id=state.start["run_id"])
@@ -1341,8 +1405,7 @@ def test_rejected_refill_findings_settle_as_zero_yield(reviewed_run):
         )
         db.commit()
     state.reconcile()
-    assert len(state.github[1]) == 1
-    assert state.github[1][0]["labels"] == ["needs-human"]
+    assert state.github[1] == []
     with controls._read_session() as db:
         result = refill._detail(
             refill.latest_event(db, "completed", run_id=state.start["run_id"])
@@ -1529,13 +1592,11 @@ def test_maximum_new_collection_and_review_publish_without_truncation(reviewed_r
     state = reviewed_run
     for _ in range(6):
         state.reconcile()
-    assert len(state.github[0]) == 6
-    for original, published in zip(state.collection["findings"], state.github[0][:5]):
+    assert len(state.github[0]) == 5
+    for original, published in zip(state.collection["findings"], state.github[0]):
         assert published["body"].startswith(original["body"])
         for field in ("evidence", "plan", "acceptance"):
             assert field[0] * 3000 in published["body"]
-    assert state.collection["summary"] in state.github[0][-1]["body"]
-    assert state.verdict["summary"] in state.github[0][-1]["body"]
     with controls._read_session() as db:
         completed = refill._detail(
             refill.latest_event(db, "completed", run_id=state.start["run_id"])
@@ -1772,7 +1833,7 @@ def test_exhausted_publication_releases_run_and_late_reconciliation_is_read_only
         writer.advance(detail)
     outcome = writer.advance(detail)
     assert outcome["inconclusive"] and outcome["new_issues"] == 1
-    assert len(attempts) == 3  # Ambiguous finding, healthy finding, summary.
+    assert len(attempts) == 2  # Ambiguous finding, healthy finding.
     with Session(engine) as db:
         db.get(FactoryReceipt, start["receipt_id"]).state = "failed"
         db.commit()
@@ -1791,7 +1852,7 @@ def test_exhausted_publication_releases_run_and_late_reconciliation_is_read_only
         ["agent-ready"],
     )
     assert writer.publish(replay)["status"] == "quarantined"
-    assert len(attempts) == 3
+    assert len(attempts) == 2
     # An operator reset/disable cannot erase the original no-repost fence.
     assert controls.set_control("configure", "operator", policy=policy)["ok"]
     update(world, backlog_refill={"enabled": False})
@@ -1811,7 +1872,7 @@ def test_exhausted_publication_releases_run_and_late_reconciliation_is_read_only
         reconciled = writer._last(db, original["output_id"])
         assert reconciled["status"] == "created" and reconciled["issue_number"] == 999
     worker.tick(policy)
-    assert len(attempts) == 3
+    assert len(attempts) == 2
 
 
 @pytest.mark.parametrize("interruption", ["generation", "pause"])
@@ -2041,6 +2102,49 @@ def test_safe_refill_control_minimal_diff_hourly_replay_and_history(control_worl
     assert r["generation"] == before["generation"] and not r["dispatched"]
 
 
+def test_refill_control_reset_breaker_rearms_without_generation_change(
+    control_world,
+):
+    import json
+
+    from factory.orchestration import refill_control as api
+
+    engine, _, _ = control_world
+    with Session(engine) as db:
+        before = json.loads(db.get(FactoryControl, "factory").policy_json)
+        refill.record(
+            db, "breaker_open", repo=before["repo"], reason="low_yield", runs=["old"]
+        )
+        db.commit()
+    args = (True, "opus", False, 0, "re-arm routines")
+    plain = api.preview(*args)
+    p = api.preview(*args, reset_breaker=True, min_new_issues=1)
+    assert p["reset_breaker"] and p["preview_sha256"] != plain["preview_sha256"]
+    assert p["refill_after"]["min_new_issues"] == 1
+    # A digest previewed without the reset cannot apply one.
+    with pytest.raises(ValueError, match="refill_preview_changed"):
+        api.apply(
+            "operator",
+            *args,
+            "wrong",
+            plain["preview_sha256"],
+            reset_breaker=True,
+            min_new_issues=1,
+        )
+    call = ("operator", *args, "rearm", p["preview_sha256"])
+    result = api.apply(*call, reset_breaker=True, min_new_issues=1)
+    assert api.apply(*call, reset_breaker=True, min_new_issues=1) == result
+    with pytest.raises(ValueError, match="refill_request_conflict"):
+        api.apply(*call)
+    with Session(engine) as db:
+        after = json.loads(db.get(FactoryControl, "factory").policy_json)
+        assert after["generation"] == before["generation"]
+        assert after["backlog_refill"]["min_new_issues"] == 1
+        assert refill.state(after, session=db)["breaker"] is None
+        assert not db.exec(select(FactoryReceipt)).all()
+    assert not result["dispatched"]
+
+
 def test_refill_control_checks_both_roles_without_hourly_learning(
     control_world, monkeypatch
 ):
@@ -2256,6 +2360,27 @@ def test_disable_legacy_refill_keeps_unavailable_default_inert(control_world):
             api.status(db, db.get(FactoryControl, "factory"))["policy"]["enabled"]
             is False
         )
+    # A floor on a disabled legacy block still drops the unavailable default.
+    floor = api.preview(False, "opus", False, 1, "floor", min_new_issues=1)
+    assert "model" not in floor["refill_after"]
+    assert floor["refill_after"]["min_new_issues"] == 1
+
+
+def test_refill_control_reset_refuses_while_a_run_is_in_flight(control_world):
+    import json
+
+    from factory.orchestration import refill_control as api
+
+    engine, _, _ = control_world
+    with Session(engine) as db:
+        repo = json.loads(db.get(FactoryControl, "factory").policy_json)["repo"]
+        refill.record(db, "started", repo=repo, run_id="r1")
+        db.commit()
+    # The block itself is unchanged, so only the reset can trip the guard.
+    args = (False, "opus", False, 0, "re-arm")
+    assert api.preview(*args)["ok"]
+    with pytest.raises(ValueError, match="refill_in_flight"):
+        api.preview(*args, reset_breaker=True)
 
 
 def test_refill_control_preserves_existing_active_uncertain_and_held_receipts(
@@ -2413,6 +2538,13 @@ def learning_recovery_world(control_world, monkeypatch):
         return deepcopy(observed)
 
     monkeypatch.setattr(EmberVmShimTransport, "get_session", get_session)
+
+    async def no_history(*args, **kwargs):
+        raise RuntimeError("historical evidence unavailable")
+
+    monkeypatch.setattr(
+        EmberVmShimTransport, "get_session_cessation_evidence", no_history
+    )
     return SimpleNamespace(
         engine=engine,
         clock=clock,
@@ -2545,13 +2677,29 @@ async def test_learning_reconciliation_requires_exact_positive_cessation(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["missing", "timeout", "gone", "permission"])
+@pytest.mark.parametrize(
+    "failure", ["missing", "timeout", "gone", "http_404", "permission"]
+)
 async def test_learning_reconciliation_remote_failure_never_authorizes_apply(
     learning_recovery_world, monkeypatch, failure
 ):
+    from factory.execution.models import ProbeObservation
     from factory.execution.transport import EmberSessionGone, EmberVmShimTransport
 
     s = learning_recovery_world
+    with Session(s.engine) as db, db.begin():
+        audit = db.get(ProbeObservation, s.ids[2])
+        audit.evidence_json = dumps(
+            {
+                **s.observed,
+                "terminal_state": s.observed["state"],
+                "cessation_evidence": "terminal_dispatch",
+                "observed_at": audit.checked_at.isoformat(),
+                "response_sha256": "b" * 64,
+            }
+        )
+        db.add(audit)
+    original = _learning_snapshot(s)
     p = await s.recovery.preview(*s.ids, "reason")
 
     async def read(*args, **kwargs):
@@ -2559,11 +2707,18 @@ async def test_learning_reconciliation_remote_failure_never_authorizes_apply(
             return
         if failure == "gone":
             raise EmberSessionGone("gone")
+        if failure == "http_404":
+            response = httpx.Response(
+                404, request=httpx.Request("GET", "https://guest.invalid")
+            )
+            response.raise_for_status()
         if failure == "permission":
             raise PermissionError("denied")
         raise TimeoutError("unavailable")
 
     monkeypatch.setattr(EmberVmShimTransport, "get_session", read)
+    with pytest.raises(ValueError, match="cessation_unavailable"):
+        await s.recovery.preview(*s.ids, "reason")
     with pytest.raises(ValueError, match="cessation_unavailable"):
         await s.recovery.apply(
             "operator", *s.ids, "reason", "stable", p["preview_sha256"]
@@ -2573,6 +2728,7 @@ async def test_learning_reconciliation_remote_failure_never_authorizes_apply(
             select(FactoryAudit).where(FactoryAudit.action == s.recovery.ACTION)
         ).all()
         assert db.get(FactoryControl, "factory").version == 0
+    assert _learning_snapshot(s) == original
 
 
 @pytest.mark.asyncio
@@ -2856,3 +3012,912 @@ async def test_learning_reconciliation_rejects_nonexact_identity(
     with pytest.raises(ValueError):
         await s.recovery.preview(*identity, "reason")
     assert not s.calls
+
+
+@pytest.fixture
+def historical_learning_world(learning_recovery_world, monkeypatch):
+    from copy import deepcopy
+
+    from factory.execution.transport import EmberSessionGone, EmberVmShimTransport
+
+    s = learning_recovery_world
+    s.observed["state"] = "evicted"
+    s.observed["historical_cessation"] = {
+        "schema": 1,
+        "source": "retained_control_plane_journal",
+        "authority_scope": "single_writer_dispatch",
+        "lineage_id": "old-guest",
+        "node_id": "original-node",
+        "vm_id": "original-vm",
+        "evidence_sha256": "e" * 64,
+        "observed_at_unix_ms": int(s.clock[0].timestamp() * 1000),
+        "complete": True,
+        "no_successor": True,
+        "no_pending_restore": True,
+    }
+    s.historical_calls = []
+
+    async def missing(*args, **kwargs):
+        raise EmberSessionGone("projection pruned")
+
+    async def evidence(self, guest_id, **identity):
+        s.historical_calls.append((guest_id, identity))
+        return deepcopy(s.observed)
+
+    monkeypatch.setattr(EmberVmShimTransport, "get_session", missing)
+    monkeypatch.setattr(
+        EmberVmShimTransport, "get_session_cessation_evidence", evidence
+    )
+    return s
+
+
+@pytest.mark.asyncio
+async def test_historical_learning_proof_replays_concurrently_and_preserves_history(
+    historical_learning_world,
+    monkeypatch,
+):
+    import asyncio
+    import json
+
+    from factory.execution.transport import EmberVmShimTransport
+
+    s = historical_learning_world
+    before = _learning_snapshot(s)
+    p = await s.recovery.preview(*s.ids, "exact historical cessation")
+    assert s.historical_calls == [
+        (
+            "old-guest",
+            {
+                "generation": 0,
+                "invoke_started_at": s.observed["invoke_started_at"],
+                "updated_at": s.observed["updated_at"],
+            },
+        )
+    ]
+    s.clock[0] += timedelta(seconds=1)
+    s.observed["historical_cessation"]["observed_at_unix_ms"] += 1000
+    args = (
+        "operator",
+        *s.ids,
+        "exact historical cessation",
+        "stable-historical",
+        p["preview_sha256"],
+    )
+    results = await asyncio.gather(s.recovery.apply(*args), s.recovery.apply(*args))
+    assert results[0] == results[1]
+    assert results[0]["unknown_outcome_preserved"] is True
+    assert _learning_snapshot(s) == before
+    with Session(s.engine) as db:
+        rows = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == s.recovery.ACTION)
+        ).all()
+        assert len(rows) == 1
+        detail = json.loads(rows[0].detail_json)
+        assert (
+            detail["authority_observed_at_unix_ms"]
+            == s.observed["historical_cessation"]["observed_at_unix_ms"]
+        )
+        assert s.recovery.resolutions(db, {s.ids[0]}) == {s.ids[0]}
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("durable replay must precede remote I/O")
+
+    monkeypatch.setattr(EmberVmShimTransport, "get_session", forbidden)
+    assert await s.recovery.apply(*args) == results[0]
+    with pytest.raises(ValueError, match="learning_request_conflict"):
+        await s.recovery.apply(
+            "operator", *s.ids, "changed", "stable-historical", p["preview_sha256"]
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema", True),
+        ("source", "saved_supervisor_observation"),
+        ("authority_scope", "inventory_absence"),
+        ("complete", False),
+        ("no_successor", 1),
+        ("no_pending_restore", False),
+        ("lineage_id", ""),
+        ("lineage_id", "x" * 129),
+        ("node_id", ""),
+        ("vm_id", None),
+        ("evidence_sha256", "invalid"),
+        ("observed_at_unix_ms", None),
+        ("observed_at_unix_ms", True),
+        ("observed_at_unix_ms", int((NOW - timedelta(seconds=31)).timestamp() * 1000)),
+        ("observed_at_unix_ms", int((NOW + timedelta(seconds=1)).timestamp() * 1000)),
+    ],
+)
+async def test_historical_learning_requires_complete_fresh_authority(
+    historical_learning_world,
+    field,
+    value,
+):
+    s = historical_learning_world
+    s.observed["historical_cessation"][field] = value
+    with pytest.raises(ValueError, match="learning_historical_cessation_invalid"):
+        await s.recovery.preview(*s.ids, "reason")
+    with Session(s.engine) as db:
+        assert not s.recovery.resolutions(db, {s.ids[0]})
+
+
+@pytest.mark.asyncio
+async def test_historical_learning_rejects_changed_journal_between_preview_apply(
+    historical_learning_world,
+):
+    s = historical_learning_world
+    p = await s.recovery.preview(*s.ids, "reason")
+    s.observed["historical_cessation"]["evidence_sha256"] = "f" * 64
+    with pytest.raises(ValueError, match="learning_preview_changed"):
+        await s.recovery.apply(
+            "operator", *s.ids, "reason", "stable", p["preview_sha256"]
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field", ["ember_lineage_id", "prior_ember_lineage_id", "ember_session_id"]
+)
+async def test_historical_learning_rechecks_local_lineage_successor(
+    historical_learning_world,
+    field,
+):
+    from factory.execution.models import AgentSession
+
+    s = historical_learning_world
+    p = await s.recovery.preview(*s.ids, "reason")
+    with Session(s.engine) as db:
+        other = AgentSession(
+            local_session_id="successor",
+            status="failed",
+            model="luna",
+            workspace=".",
+            branch="main",
+        )
+        setattr(other, field, "old-guest")
+        db.add(other)
+        db.commit()
+    expected = (
+        "learning_delivery_or_pending_work"
+        if field == "ember_session_id"
+        else "learning_historical_lineage_owned"
+    )
+    with pytest.raises(ValueError, match=expected):
+        await s.recovery.apply(
+            "operator", *s.ids, "reason", "stable", p["preview_sha256"]
+        )
+
+
+@pytest.mark.asyncio
+async def test_historical_learning_resolution_does_not_hide_later_lineage_owner(
+    historical_learning_world,
+):
+    from factory.execution.models import AgentSession
+
+    s = historical_learning_world
+    p = await s.recovery.preview(*s.ids, "reason")
+    await s.recovery.apply("operator", *s.ids, "reason", "stable", p["preview_sha256"])
+    with Session(s.engine) as db:
+        db.add(
+            AgentSession(
+                local_session_id="successor",
+                status="running",
+                ember_lineage_id="old-guest",
+                model="luna",
+                workspace=".",
+                branch="main",
+            )
+        )
+        db.commit()
+        assert not s.recovery.resolutions(db, {s.ids[0]})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", [PermissionError("denied"), TimeoutError("timeout")]
+)
+async def test_learning_permission_or_timeout_does_not_select_historical_reader(
+    historical_learning_world,
+    monkeypatch,
+    failure,
+):
+    from factory.execution.transport import EmberVmShimTransport
+
+    s = historical_learning_world
+
+    async def blocked(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(EmberVmShimTransport, "get_session", blocked)
+    with pytest.raises(ValueError, match="learning_cessation_unavailable"):
+        await s.recovery.preview(*s.ids, "reason")
+    assert not s.historical_calls
+
+
+@pytest.mark.asyncio
+async def test_historical_learning_refusal_remains_auditable_and_fenced(
+    historical_learning_world,
+    monkeypatch,
+):
+    from factory.execution.transport import (
+        EmberHistoricalCessationUnavailable,
+        EmberVmShimTransport,
+    )
+
+    s = historical_learning_world
+    before = _learning_snapshot(s)
+
+    async def incomplete(*args, **kwargs):
+        raise EmberHistoricalCessationUnavailable("history_compacted")
+
+    monkeypatch.setattr(
+        EmberVmShimTransport, "get_session_cessation_evidence", incomplete
+    )
+    with pytest.raises(
+        ValueError, match="learning_historical_cessation_unavailable:history_compacted"
+    ):
+        await s.recovery.preview(*s.ids, "reason")
+    assert _learning_snapshot(s) == before
+
+
+@pytest.mark.asyncio
+async def test_historical_learning_rejects_conflicting_original_lineage(
+    historical_learning_world,
+):
+    from factory.execution.models import AgentSession
+
+    s = historical_learning_world
+    with Session(s.engine) as db:
+        db.get(AgentSession, s.ids[0]).prior_ember_lineage_id = "different-lineage"
+        db.commit()
+    with pytest.raises(ValueError, match="learning_historical_lineage_changed"):
+        await s.recovery.preview(*s.ids, "reason")
+
+
+def test_routines_rotate_one_sentence_briefs(world):
+    _engine, policy, clock = world
+    seen = []
+    for _ in range(len(refill.ROUTINES) + 1):
+        start = refill.observe(policy, eligible=0, complete=True)
+        assert start["ok"]
+        with controls._read_session() as db:
+            detail = refill._detail(
+                refill.latest_event(db, "started", run_id=start["run_id"])
+            )
+            body = db.get(FactoryReceipt, start["receipt_id"]).body
+        seen.append(detail["routine"])
+        assert refill.ROUTINES[detail["routine"]] in body
+        assert refill.READ_ONLY_BOUNDARY in body
+        refill.settle(start["run_id"], success=True, new_issues=3, summary="ok")
+        with Session(world[0]) as db:
+            db.get(FactoryReceipt, start["receipt_id"]).state = "succeeded"
+            db.commit()
+        clock[0] += timedelta(minutes=normalize(policy)["cooldown_minutes"])
+    assert seen == [*refill.ROUTINES, next(iter(refill.ROUTINES))]
+    # Each routine is a single sentence.
+    assert all(text.count(". ") == 0 for text in refill.ROUTINES.values())
+
+
+@pytest.mark.parametrize(
+    ("walled", "allowed", "expected"),
+    [
+        (set(), ["opus", "astra"], "astra"),
+        ({"astra"}, ["opus", "astra"], "opus"),
+        ({"astra", "opus"}, ["opus", "astra"], "astra"),
+        ({"astra"}, ["astra"], "astra"),
+    ],
+)
+def test_refill_review_falls_back_to_opus_while_astra_is_walled(
+    world, monkeypatch, walled, allowed, expected
+):
+    import json
+
+    _engine, policy, _clock = world
+
+    def quota(model, *, force=True):
+        assert force is False
+        if model in walled:
+            raise ValueError("refill_subscription_unavailable")
+        return {"provider": model}
+
+    monkeypatch.setattr(refill, "quota", quota)
+    if allowed != policy["allowed_models"]:
+        update(world, allowed_models=allowed)
+        with Session(world[0]) as db:
+            policy = json.loads(db.get(FactoryControl, "factory").policy_json)
+    start = refill.observe(policy, eligible=0, complete=True)
+    assert start["ok"]
+    with controls._read_session() as db:
+        detail = refill._detail(
+            refill.latest_event(db, "started", run_id=start["run_id"])
+        )
+    assert detail["review_contract"]["model"] == expected
+    assert refill.role(detail, refill.REVIEW_NODE) == {
+        "model": expected,
+        "effort": "xhigh",
+    }
+    with pytest.raises(ValueError, match="invalid refill review contract"):
+        refill.role(
+            {**detail, "review_contract": {**detail["review_contract"], "model": "x"}},
+            refill.REVIEW_NODE,
+        )
+
+
+def test_refill_control_accepts_opus_review_evidence_unless_hourly(
+    control_world, monkeypatch
+):
+    from factory.orchestration import refill_control as api
+
+    _engine, _policy, clock = control_world
+
+    def quota(model):
+        if model == "astra":
+            raise ValueError("refill_subscription_unavailable")
+        return {"provider": "claude", "checked_at": clock[0].isoformat()}
+
+    monkeypatch.setattr(api, "_quota", quota)
+    p = api.preview(True, "opus", False, 0, "astra walled")
+    assert p["new_run_review_contract"] == refill.REVIEW_FALLBACK
+    assert set(p["subscription"]) == {"opus"}
+    with pytest.raises(ValueError, match="refill_subscription_unavailable"):
+        api.preview(True, "opus", True, 0, "hourly learning needs codex")
+    # observe() requires Astra allowed, so the control must too.
+    update(
+        control_world,
+        allowed_models=["opus"],
+        backlog_refill={"enabled": False, "model": "opus"},
+    )
+    with pytest.raises(ValueError, match="refill_model_not_allowed"):
+        api.preview(True, "opus", False, 0, "astra not allowed")
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+def test_inspection_commit_is_shared_and_does_not_follow_ref_movement(
+    reviewed_run, monkeypatch
+):
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import node_workflows
+
+    state = reviewed_run
+    source = refill.inspection_source(state.start)
+    assert source == {
+        "version": 1,
+        "repo": state.start["repo"],
+        "ref": "main",
+        "sha": "a" * 40,
+    }
+    for run in (state.collector, state.reviewer):
+        pin = node_workflows._validate_pin(run["pin"])
+        assert pin["branch"] == pin["hydration_branch"] == "commit:" + source["sha"]
+        prompt = node_workflows._node_prompt(
+            pin["prompt"],
+            pin["artifact_path"],
+            pin["artifact_schema"],
+            branch=pin["branch"],
+        )
+        assert f"Inspect exactly commit {source['sha']}" in prompt
+        assert f"Inspect branch factory/{state.task_id}" not in prompt
+        assert pin["artifact_schema"]["x-factory-refill-inspection"] == source
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_: pytest.fail("pinned source read again")
+    )
+    assert refill.prepare_inspection(conductor._task(state.task_id), state.start)
+    state.reconcile()
+    assert refill.inspection_source(state.start) == source
+    with controls._read_session() as db:
+        assert len(refill._events(db, "inspection_pinned")) == 1
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize(
+    "reviewed_run",
+    ["empty", "blocked", "source_mismatch", "review_blocked"],
+    indirect=True,
+)
+def test_inspection_outcomes_distinguish_completed_empty_from_blocked(
+    reviewed_run, request
+):
+    from factory.orchestration import factory_conductor as conductor
+
+    state = reviewed_run
+    state.reconcile()
+    scenario = request.node.callspec.params["reviewed_run"]
+    expected = "succeeded" if scenario == "empty" else "failed"
+    with Session(state.engine) as db:
+        owner = db.get(FactoryReceipt, state.start["receipt_id"])
+        assert owner.state == expected
+        if scenario != "source_mismatch":
+            completed = refill.latest_event(
+                db, "completed", run_id=state.start["run_id"]
+            )
+            assert refill._detail(completed)["success"] == (scenario == "empty")
+            assert refill._detail(completed)["new_issues"] == 0
+    runs = conductor.graph.node_runs(state.task_id)
+    assert len(runs) == (1 if scenario in {"blocked", "source_mismatch"} else 2)
+    assert not state.github[1]
+    before = [(r["id"], r["status"], r["cost_usd"]) for r in runs]
+    state.reconcile()
+    assert [
+        (r["id"], r["status"], r["cost_usd"])
+        for r in conductor.graph.node_runs(state.task_id)
+    ] == before
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize("failure", ["missing", "malformed", "changed_owner"])
+def test_inspection_preparation_fails_before_any_model_start(
+    world, monkeypatch, failure
+):
+    from factory.orchestration import backlog_refill_worker as worker
+    from factory.orchestration import factory_conductor as conductor
+
+    engine, policy, _clock = world
+    for module in (conductor, conductor.graph):
+        monkeypatch.setattr(module, "get_engine", lambda: engine)
+    start = refill.observe(policy, eligible=0, complete=True)
+    task_id = admit(world, start)
+    task = conductor._task(task_id)
+
+    def read(_repo, suffix):
+        assert suffix == "commits/main"
+        if failure == "missing":
+            response = httpx.Response(
+                404,
+                request=httpx.Request(
+                    "GET",
+                    "https://api.github.com/repos/jomcgi-org/homelab/commits/main",
+                ),
+            )
+            response.raise_for_status()
+        if failure == "changed_owner":
+            with Session(engine) as db:
+                db.get(FactoryReceipt, start["receipt_id"]).task_paused = True
+                db.commit()
+            return {"sha": "a" * 40}
+        return {"sha": "not-a-commit"}
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    worker.reconcile(task, policy, [], [], 0)
+    assert conductor.graph.node_runs(task_id) == []
+    assert conductor.graph.load_graph(task_id) == []
+    with Session(engine) as db:
+        owner = db.get(FactoryReceipt, start["receipt_id"])
+        assert owner.state == ("admitted" if failure == "changed_owner" else "failed")
+        assert not refill._events(db, "inspection_pinned")
+        assert db.exec(select(FactoryStart)).all() == []
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+def test_inspection_source_cannot_be_changed_by_artifact_or_dispatch_pin(reviewed_run):
+    from factory.orchestration import node_workflows
+
+    state = reviewed_run
+    for field in ("branch", "hydration_branch", "repo"):
+        pin = {**state.collector["pin"], field: "b" * 40}
+        with pytest.raises(ValueError, match="inspection pin"):
+            node_workflows._validate_pin(pin)
+    with Session(state.engine) as db:
+        row = db.get(SwarmNodeRun, state.collector["id"])
+        import json
+
+        pin = json.loads(row.pin_json)
+        pin["branch"] = "b" * 40
+        row.pin_json = dumps(pin)
+        db.commit()
+    with pytest.raises(ValueError, match="inspection pin|source mismatch"):
+        writer.review(state.start["run_id"], state.reviewer["id"])
+    assert not state.github[1]
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+def test_losing_preparation_failure_cannot_settle_pinned_run(world, monkeypatch):
+    from factory.orchestration import backlog_refill_worker as worker
+    from factory.orchestration import factory_conductor as conductor
+
+    engine, policy, _clock = world
+    for module in (conductor, conductor.graph):
+        monkeypatch.setattr(module, "get_engine", lambda: engine)
+    start = refill.observe(policy, eligible=0, complete=True)
+    task_id = admit(world, start)
+
+    def read(_repo, _suffix):
+        with controls._locked_session() as (db, _control):
+            refill.record(
+                db,
+                "inspection_pinned",
+                run_id=start["run_id"],
+                source={
+                    "version": 1,
+                    "repo": policy["repo"],
+                    "ref": "main",
+                    "sha": "a" * 40,
+                },
+            )
+        httpx.Response(
+            404, request=httpx.Request("GET", "https://api.github.com")
+        ).raise_for_status()
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    worker.reconcile(conductor._task(task_id), policy, [], [], 0)
+    with Session(engine) as db:
+        assert db.get(FactoryReceipt, start["receipt_id"]).state == "admitted"
+        assert len(refill._events(db, "inspection_pinned")) == 1
+        assert not refill._events(db, "completed")
+        assert db.exec(select(FactoryStart)).all() == []
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+def test_concurrent_source_preparation_keeps_first_pinned_commit(world, monkeypatch):
+    from threading import Barrier, Lock
+    from factory.orchestration import factory_conductor as conductor
+
+    engine, policy, _clock = world
+    monkeypatch.setattr(conductor, "get_engine", lambda: engine)
+    start = refill.observe(policy, eligible=0, complete=True)
+    task_id = admit(world, start)
+    task = conductor._task(task_id)
+    with controls._read_session() as db:
+        detail = refill._detail(
+            refill.latest_event(db, "started", run_id=start["run_id"])
+        )
+    barrier, lock, counter = Barrier(2), Lock(), []
+
+    def read(_repo, _suffix):
+        with lock:
+            counter.append(len(counter))
+            sha = ("a" if len(counter) == 1 else "b") * 40
+        barrier.wait(timeout=5)
+        return {"sha": sha}
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(lambda _: refill.prepare_inspection(task, detail), range(2))
+        )
+    assert results == [True, True]
+    with controls._read_session() as db:
+        assert len(refill._events(db, "inspection_pinned")) == 1
+        assert db.exec(select(FactoryStart)).all() == []
+    assert refill.inspection_source(detail)["sha"] in {"a" * 40, "b" * 40}
+
+
+@pytest.fixture
+def preflight_run(reviewed_run, monkeypatch, request):
+    """Persist an authenticated guest preflight error through the real writer."""
+    import hashlib
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    from factory.execution import admission, store, result_receipts
+    from factory.execution.constants import exact_dispatch_id
+    from factory.execution.models import (
+        AgentSession,
+        AgentTurn,
+        AgentCapacityPool,
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        PendingMessage,
+    )
+    from factory.execution import transport
+    from factory.execution.transport import parse_native_turn
+    from factory.orchestration import factory_conductor as conductor, node_workflows
+
+    s = reviewed_run
+    SQLModel.metadata.create_all(
+        s.engine,
+        tables=[
+            m.__table__
+            for m in (
+                AgentTurn,
+                AgentCapacityPool,
+                AgentCapacityReservation,
+                AgentResultReceipt,
+                PendingMessage,
+            )
+        ],
+    )
+    import core.db
+
+    for module in (admission, store, result_receipts, core.db):
+        monkeypatch.setattr(module, "get_engine", lambda: s.engine)
+    pin = s.collector["pin"]
+    with Session(s.engine) as db:
+        agent = AgentSession(
+            **node_workflows._expected_session_identity(pin),
+            workspace="guest",
+            admission_tier="project",
+            ember_session_id="preflight-guest",
+        )
+        db.add(agent)
+        db.flush()
+        s.sid = agent.id
+        db.add(
+            PendingMessage(
+                session_id=s.sid, seq=1, message_text="inspect", model="opus"
+            )
+        )
+        db.commit()
+    owner = "preflight-executor"
+    assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
+    assert admission.recheck(s.sid, 1, owner, "claude-runtime")
+    dispatch = exact_dispatch_id(s.sid, "preflight-guest", 1, owner, 1)
+    s.native = {
+        "result": "Pinned inspection checkout unavailable before model execution",
+        "terminal_reason": "error",
+        "stop_reason": "refill_inspection_preflight_failed",
+        "is_error": True,
+        "num_turns": 0,
+        "activities": [],
+        "permission_denials": [],
+        "dispatch_id": dispatch,
+        "turn_seq": 1,
+        "usage": {
+            "refill_inspection_preflight": {
+                "version": 1,
+                "expected_sha": "a" * 40,
+                "observed_sha": None,
+                "tracked_clean": False,
+                "invocation_started": False,
+                "dispatch_id": dispatch,
+                "turn_seq": 1,
+            }
+        },
+    }
+    envelope = result_receipts.prepare_receipt(
+        s.sid, owner, 1, "preflight-guest", b"request"
+    )
+    s.receipt_id = envelope["id"]
+    with Session(s.engine) as db:
+        receipt = db.get(AgentResultReceipt, s.receipt_id)
+        body = dumps(s.native).encode()
+        receipt.result_body = body
+        receipt.result_sha256 = hashlib.sha256(body).hexdigest()
+        receipt.received_at = datetime.now(timezone.utc)
+        db.add(receipt)
+        db.commit()
+    import asyncio
+
+    ordering = getattr(request, "param", "callback")
+
+    async def observe():
+        post_release, observed = asyncio.Event(), asyncio.Event()
+
+        async def database_call(fn, *args, **kwargs):
+            if fn is result_receipts.read_active_result and ordering == "http":
+                await observed.wait()
+            value = fn(*args, **kwargs)
+            if fn is result_receipts.mark_response_observed:
+                observed.set()
+            return value
+
+        monkeypatch.setattr(transport, "_receipt_database_call", database_call)
+
+        async def post():
+            if ordering != "http":
+                await post_release.wait()
+            if ordering == "lost":
+                raise OSError("original response lost after callback committed")
+            return parse_native_turn(s.native, "preflight-guest")
+
+        result = await transport._observe_native_result(
+            post,
+            {
+                "receipt_id": s.receipt_id,
+                "session_id": s.sid,
+                "claim_owner": owner,
+                "dispatch_count": 1,
+                "guest_id": "preflight-guest",
+                "request_sha256": hashlib.sha256(b"request").hexdigest(),
+            },
+            None,
+            None,
+            5,
+        )
+        post_release.set()
+        await asyncio.gather(
+            *list(transport._receipt_observers), return_exceptions=True
+        )
+        assert (result.native_receipt is None) == (ordering == "http")
+        return result
+
+    turn = asyncio.run(observe())
+    store.persist_turn_from_pending_sync(
+        s.sid,
+        1,
+        "inspect",
+        turn,
+        s.native["result"],
+        store.turn_status(turn),
+        claim_owner=owner,
+        dispatch_count=1,
+    )
+    if ordering == "lost":
+        # The ordinary execution owner releases a receipt winner in its finally
+        # before cleanup. Recovery must refuse until that fence actually clears.
+        from factory.execution.api import read_refill_preflight_factory_attempt
+
+        with Session(s.engine) as db:
+            assert (
+                read_refill_preflight_factory_attempt(db, pin, s.sid, "SUCCESS") is None
+            )
+        assert result_receipts.release_unobserved_fence(
+            s.receipt_id, s.sid, owner, 1, "preflight-guest"
+        )
+        with Session(s.engine) as db:
+            assert store.clear_ember_bindings_by_ember_id(db, "preflight-guest") == [
+                s.sid
+            ]
+    assert conductor.graph.record_dispatch(s.task_id, refill.NODE, 1, s.sid, None).ok
+    s.result = {
+        "status": "uncertain",
+        "session_id": s.sid,
+        "attempt": 1,
+        "cost_usd": None,
+        "head_sha": None,
+        "artifact": None,
+        "value": None,
+        "reason": "terminal reason does not confirm clean completion; reconcile before retry",
+        "cost_basis": "unknown",
+        "accounting": "reserved_cost",
+    }
+    s.dbos = SimpleNamespace(
+        get_workflow_status=lambda _: SimpleNamespace(status="SUCCESS"),
+        retrieve_workflow=lambda _: SimpleNamespace(get_result=lambda: s.result),
+    )
+    return s
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize("reviewed_run", ["preflight"], indirect=True)
+@pytest.mark.parametrize("preflight_run", ["http", "callback", "lost"], indirect=True)
+def test_authenticated_refill_preflight_settles_failure_without_refunding_unknown_spend(
+    preflight_run,
+):
+    import json
+    from factory.execution.models import AgentTurn, AgentCapacityReservation
+    from factory.orchestration import factory_conductor as conductor
+
+    s = preflight_run
+    conductor.reconcile_task(s.task_id, s.policy, s.dbos)
+    [run] = conductor.graph.node_runs(s.task_id)
+    assert run["status"] == "failed"
+    outcome = json.loads(run["outcome_json"])
+    assert outcome["invocation_phase"] == "refill_inspection_preflight_failed"
+    assert outcome["cost_usd"] is None and outcome["cost_basis"] == "unknown"
+    snapshot = controls.task_snapshot(s.task_id)
+    assert snapshot["unresolved_starts"] == 0
+    assert snapshot["starts"][0]["status"] == "failed"
+    assert snapshot["committed_cost_usd"] > 0  # consumed reservation, never free work
+    with Session(s.engine) as db:
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert permit.state == "settled"
+        assert permit.outcome == "error"  # preserve the native permit settlement
+        turn = db.exec(select(AgentTurn)).one()
+        assert turn.terminal_reason == "error" and turn.cost_usd is None
+        assert (
+            json.loads(turn.usage_json)["refill_inspection_preflight"]
+            == s.native["usage"]["refill_inspection_preflight"]
+        )
+    # Reconciliation replay cannot consume another attempt or fabricate an audit.
+    conductor.reconcile_task(s.task_id, s.policy, s.dbos)
+    assert len(conductor.graph.node_runs(s.task_id)) == 1
+    assert not s.github[1]
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize("reviewed_run", ["preflight"], indirect=True)
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing_receipt",
+        "digest",
+        "unobserved",
+        "new_dispatch",
+        "wrong_guest",
+        "wrong_source",
+        "wrong_dispatch",
+        "invoked",
+        "recovery",
+        "activity",
+        "fence",
+        "pending",
+        "missing_contract",
+        "changed_pin",
+        "usage_forgery",
+        "unknown",
+    ],
+)
+def test_refill_preflight_refuses_incomplete_or_changed_proof(preflight_run, case):
+    import json
+    import hashlib
+    from factory.execution.models import (
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from factory.execution.api import read_refill_preflight_factory_attempt
+    from factory.execution import result_receipts
+
+    s = preflight_run
+    pin = dict(s.collector["pin"])
+    with Session(s.engine) as db:
+        receipt = db.get(AgentResultReceipt, s.receipt_id)
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn)).one()
+        usage = json.loads(turn.usage_json)
+        if case == "missing_receipt":
+            db.delete(receipt)
+        elif case == "digest":
+            receipt.result_sha256 = "b" * 64
+        elif case == "unobserved":
+            receipt.response_observed_at = None
+            receipt.response_observer_released_at = None
+        elif case == "new_dispatch":
+            receipt.dispatch_count = 2
+        elif case == "wrong_guest":
+            agent.ember_session_id = "successor"
+        elif case in {"wrong_source", "wrong_dispatch", "invoked"}:
+            field, value = {
+                "wrong_source": ("expected_sha", "b" * 40),
+                "wrong_dispatch": ("dispatch_id", "b" * 64),
+                "invoked": ("invocation_started", True),
+            }[case]
+            s.native["usage"]["refill_inspection_preflight"][field] = value
+            receipt.result_body = dumps(s.native).encode()
+            receipt.result_sha256 = hashlib.sha256(receipt.result_body).hexdigest()
+            db.flush()
+            usage["native_result_receipt"] = result_receipts._result(
+                db, result_receipts._receipt_metadata(db, s.receipt_id)
+            )["provenance"]
+            usage["refill_inspection_preflight"] = s.native["usage"][
+                "refill_inspection_preflight"
+            ]
+        elif case == "recovery":
+            usage["recovery"] = {}
+        elif case == "activity":
+            usage["activities"] = ["ran a tool"]
+        elif case == "fence":
+            agent.result_receipt_fence_id = s.receipt_id
+        elif case == "pending":
+            db.add(PendingMessage(session_id=s.sid, seq=2, message_text="new work"))
+        elif case == "missing_contract":
+            event = refill.latest_event(db, "started", run_id=s.start["run_id"])
+            detail = json.loads(event.detail_json)
+            detail.pop("inspection_contract")
+            event.detail_json = dumps(detail)
+        elif case == "changed_pin":
+            pin["artifact_schema"] = {}
+        elif case == "usage_forgery":
+            usage["native_result_receipt"] = {}
+        elif case == "unknown":
+            from factory.execution.constants import UNKNOWN_INVOCATION
+
+            turn.stop_reason = UNKNOWN_INVOCATION
+        turn.usage_json = dumps(usage)
+        db.commit()
+        assert read_refill_preflight_factory_attempt(db, pin, s.sid, "SUCCESS") is None
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize("reviewed_run", ["preflight"], indirect=True)
+def test_refill_preflight_settlement_rechecks_receipt_after_read(preflight_run):
+    from factory.execution.models import AgentResultReceipt, AgentCapacityReservation
+    from factory.execution.api import (
+        read_refill_preflight_factory_attempt,
+        settle_refill_preflight_factory_attempt,
+    )
+
+    s = preflight_run
+    with Session(s.engine) as db:
+        proof = read_refill_preflight_factory_attempt(
+            db, s.collector["pin"], s.sid, "SUCCESS"
+        )
+        assert proof is not None
+        db.get(AgentResultReceipt, s.receipt_id).superseded_at = NOW
+        db.flush()
+        with pytest.raises(ValueError, match="factory_attempt_changed"):
+            settle_refill_preflight_factory_attempt(db, s.collector["pin"], proof)
+        assert db.exec(select(AgentCapacityReservation)).one().outcome == "error"

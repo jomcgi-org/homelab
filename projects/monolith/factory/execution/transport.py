@@ -25,12 +25,11 @@ import random
 import re
 import threading
 import zlib
-from typing import Awaitable, Callable, NamedTuple, Protocol
+from typing import Awaitable, Callable, NamedTuple
 
 import httpx
 from opentelemetry import trace
 
-from core.env import flag
 from factory import execution as agent_sessions
 from factory.execution import model_family
 from factory.execution import create_outcome
@@ -223,11 +222,6 @@ def _capacity_denial_reason(exc: httpx.HTTPStatusError) -> str | None:
     return reason if reason in _CAPACITY_DENIAL_REASONS else None
 
 
-def _capacity_denial(exc: httpx.HTTPStatusError) -> bool:
-    """True when a 429 says the workload is at capacity, not merely busy."""
-    return _capacity_denial_reason(exc) is not None
-
-
 def _capacity_event(name: str, attributes: dict) -> None:
     """Record one capacity-ladder step on the current span.
 
@@ -375,6 +369,15 @@ def _resolve_pi_workload() -> str:
 PI_WORKLOAD = _resolve_pi_workload()
 
 
+class EmberHistoricalCessationUnavailable(EmberVMTransportError):
+    """A bounded authority refusal; its code is safe for operator diagnostics."""
+
+    def __init__(self, reason: str, diagnostics: dict | None = None):
+        self.reason = reason
+        self.diagnostics = diagnostics or {}
+        super().__init__(reason)
+
+
 class EmberSessionGone(EmberVMTransportError):
     """Raised when a reused EmberVM session is confirmed dead by the CP (403/410)
     and the retry also failed. The ORIGINAL binding is dead regardless of retry failure reason."""
@@ -519,10 +522,6 @@ _receipt_db_slots = threading.BoundedSemaphore(2)
 _receipt_db_executor = ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="native-receipt"
 )
-
-
-def receipt_adoption_enabled() -> bool:
-    return flag("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED")
 
 
 async def _receipt_database_call(fn, *args, **kwargs):
@@ -867,35 +866,6 @@ class EmberSession(NamedTuple):
     restored: bool = False
     workspace_lost: bool = False
     workspace_fingerprint: str | None = None
-
-
-class ShimTransport(Protocol):
-    async def deliver(
-        self,
-        ember: EmberSession | None,
-        cli_session_id: str | None,
-        message: str,
-        model: str | None = None,
-        restore_from: str | None = None,
-        on_create: Callable[[EmberSession, str | None], Awaitable[None]] | None = None,
-        repo: str | None = None,
-        branch: str | None = None,
-        progress_token: str | None = None,
-        system_prompt: str | None = None,
-        reasoning: bool = False,
-        artifact_path: str | None = None,
-        agent_session_id: int | None = None,
-        turn_seq: int | None = None,
-        claim_owner: str | None = None,
-        dispatch_count: int = 0,
-        admission_check: Callable[[], Awaitable[None]] | None = None,
-        receipt_claim_owner: str | None = None,
-        invocation_record: dict | None = None,
-        residency: dict | None = None,
-        expected_workspace_fingerprint: str | None = None,
-        workspace_handoff: dict | None = None,
-        capture_evidence_ttl_seconds: int | None = None,
-    ) -> tuple[Turn, EmberSession]: ...
 
 
 # Read timeout for invoke calls: the OUTER (wall-clock) bound on turn duration.
@@ -1450,6 +1420,103 @@ class EmberVmShimTransport:
         except httpx.TransportError as exc:
             raise EmberVMTransportError(str(exc)) from exc
 
+    async def session_recovery_fence(
+        self, ember_session_id: str, payload: dict
+    ) -> dict:
+        """Preview or durably fence restore of one journal-proven ceased lineage.
+
+        Uses existing management authentication, never a session token. The CP
+        owns identity, history, successor checks and CAS/idempotency. An apply
+        transport error can follow a committed fence and must remain uncertain.
+        """
+        if not EMBERVM_URL or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,128}", ember_session_id
+        ):
+            raise EmberVMTransportError("recovery fence unavailable")
+        timeout = httpx.Timeout(55, connect=SUBMIT_CONNECT_TIMEOUT)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    f"{EMBERVM_URL}/v1/sessions/{ember_session_id}/recovery-fence",
+                    headers=auth_headers(),
+                    json=payload,
+                )
+                response.raise_for_status()
+                return response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise EmberVMTransportError("recovery fence unavailable") from exc
+
+    async def get_session_cessation_evidence(
+        self,
+        ember_session_id: str,
+        *,
+        generation: int,
+        invoke_started_at: int,
+        updated_at: int,
+    ) -> dict:
+        """Read bounded authoritative journal evidence for one exact old dispatch.
+
+        This management-authenticated read does not stop, restore or invoke a
+        guest. Missing/compacted history and current successor or restore work
+        are refusals, never evidence of cessation. Callers validate both the
+        identity and the control plane's fresh coverage assertion.
+        """
+        if not EMBERVM_URL:
+            raise EmberVMTransportError("EMBERVM_URL is not configured")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", ember_session_id):
+            raise EmberVMTransportError("invalid cessation guest identity")
+        timeout = httpx.Timeout(
+            LIST_SESSIONS_READ_TIMEOUT, connect=SUBMIT_CONNECT_TIMEOUT
+        )
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(
+                    f"{EMBERVM_URL}/v1/sessions/{ember_session_id}/cessation-evidence",
+                    headers=auth_headers(),
+                    params={
+                        "generation": generation,
+                        "invoke_started_at": invoke_started_at,
+                        "updated_at": updated_at,
+                    },
+                )
+                if response.status_code == 409:
+                    body = response.json()
+                    reason = body.get("reason") if isinstance(body, dict) else None
+                    if isinstance(reason, str) and re.fullmatch(
+                        r"[a-z_]{1,80}", reason
+                    ):
+                        diagnostics = body.get("diagnostics")
+                        safe = {}
+                        if isinstance(diagnostics, dict):
+                            for key in (
+                                "history_complete",
+                                "creation_history_complete",
+                            ):
+                                if type(diagnostics.get(key)) is bool:
+                                    safe[key] = diagnostics[key]
+                            count = diagnostics.get("event_count")
+                            if type(count) is int and 0 <= count <= 256:
+                                safe["event_count"] = count
+                            for key in (
+                                "terminal_state",
+                                "preceding_state",
+                                "terminal_reason",
+                                "event_kind",
+                                "event_reason",
+                            ):
+                                value = diagnostics.get(key)
+                                if isinstance(value, str) and re.fullmatch(
+                                    r"[a-z_]{1,80}", value
+                                ):
+                                    safe[key] = value
+                        raise EmberHistoricalCessationUnavailable(reason, safe)
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as exc:
+            raise EmberVMTransportError(_status_error_detail(exc)) from exc
+        except (httpx.TransportError, ValueError) as exc:
+            raise EmberVMTransportError("cessation evidence unavailable") from exc
+
     async def get_session(
         self, ember_session_id: str, session_token: str | None = None
     ) -> dict:
@@ -1603,19 +1670,14 @@ class EmberVmShimTransport:
         residency: dict | None = None,
         expected_workspace_fingerprint: str | None = None,
         workspace_handoff: dict | None = None,
+        push_format: dict | None = None,
         capture_evidence_ttl_seconds: int | None = None,
     ) -> tuple[Turn, EmberSession]:
         # Set None explicitly for unrelated deliveries, including a nested
         # delivery started in a factory callback. Always restore the caller's
         # context on success, denial, transport failure, or cancellation.
         token = _delivery_admission_check.set(admission_check)
-        from factory.execution.store import rollout_handoff_enabled
-
-        invocation = _DeliveryInvocation(
-            observer_record=invocation_record
-            if rollout_handoff_enabled() or residency is not None
-            else None
-        )
+        invocation = _DeliveryInvocation(observer_record=invocation_record)
         invocation_token = _delivery_invocation.set(invocation)
         try:
             with tracer.start_as_current_span("agent_sessions.deliver") as span:
@@ -1655,6 +1717,7 @@ class EmberVmShimTransport:
                     residency=residency,
                     expected_workspace_fingerprint=expected_workspace_fingerprint,
                     workspace_handoff=workspace_handoff,
+                    push_format=push_format,
                     capture_evidence_ttl_seconds=capture_evidence_ttl_seconds,
                 )
                 if turn.terminal_reason is not None:
@@ -1700,6 +1763,7 @@ class EmberVmShimTransport:
         residency: dict | None = None,
         expected_workspace_fingerprint: str | None = None,
         workspace_handoff: dict | None = None,
+        push_format: dict | None = None,
         capture_evidence_ttl_seconds: int | None = None,
     ) -> tuple[Turn, EmberSession]:
         """Execute one turn on the guest session and return the result.
@@ -1857,6 +1921,8 @@ class EmberVmShimTransport:
                 payload["effort"] = effort
             if artifact_path is not None:
                 payload["artifact_path"] = artifact_path
+            if push_format is not None:
+                payload["push_format"] = push_format
             body = json.dumps(payload)
             url = f"{EMBERVM_URL}/v1/sessions/{current.session_id}/invoke"
             headers = {
@@ -1900,12 +1966,9 @@ class EmberVmShimTransport:
 
                 async def post() -> Turn:
                     async with httpx.AsyncClient(timeout=timeout) as client:
-                        from factory.execution.store import rollout_handoff_enabled
-
-                        if rollout_handoff_enabled() or residency is not None:
-                            # Receipt preparation yields after the admission
-                            # check above. Fence a shutdown in that window too.
-                            await _check_delivery_admission()
+                        # Receipt preparation yields after the admission
+                        # check above. Fence a shutdown in that window too.
+                        await _check_delivery_admission()
                         # Mark before yielding to I/O. Even a connect/write/read
                         # failure after this point retains the conservative hold.
                         invocation = _delivery_invocation.get()
@@ -1961,7 +2024,6 @@ class EmberVmShimTransport:
 
                 if (
                     receipt is not None
-                    and receipt_adoption_enabled()
                     and len(_receipt_observers) < MAX_RECEIPT_OBSERVERS
                 ):
                     return await _observe_native_result(

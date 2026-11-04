@@ -91,7 +91,7 @@ defmodule Embervm.GroupManager do
 
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{GroupState, GroupStore, NodeCapacity, WakeInstance, WorkloadCatalog}
+  alias Embervm.{GroupStore, NodeCapacity, WakeInstance, WorkloadCatalog}
   alias Embervm.Scheduler.Inflight
 
   alias Embervm.Node.V1.{
@@ -232,7 +232,7 @@ defmodule Embervm.GroupManager do
       # NodeService stub over the shared NodeChannel).
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       # Drop the shared node channel when a group verb reveals its transport is dead
-      # (a noded rollout), so the next safe_channel/2 re-dials instead of every member
+      # (a noded rollout), so the next NodeChannel.safe_dial/2 re-dials instead of every member
       # start failing on a dead ConnectionProcess until the control plane restarts
       # (D-R2.7.2). Injected for tests.
       invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
@@ -249,7 +249,6 @@ defmodule Embervm.GroupManager do
       get_secret_fun: Keyword.get(opts, :get_secret_fun, &Embervm.K8s.get_secret/2),
       secret_fun: Keyword.get(opts, :secret_fun, &mint_secret/0),
       # ADR embervm/014 decision 5: node-confirmed destroy config plumbing.
-      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
       destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
       orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
       # The bank set_id minter (injected in tests to pin the opaque set directory);
@@ -739,7 +738,7 @@ defmodule Embervm.GroupManager do
 
         {{:error, {:member_teardown_unconfirmed, reason}}, state}
 
-      _ ->
+      true ->
         continue_fallback_fresh(
           state,
           instance,
@@ -1454,7 +1453,7 @@ defmodule Embervm.GroupManager do
   defp delete_network(state) do
     req = %DeleteGroupNetworkRequest{trace: %Trace{workload: state.workload}, group_instance_id: state.instance_id}
 
-    with {:ok, channel} <- safe_channel(state, state.dial_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, state.dial_id) do
       try do
         state.delete_group_network_fun.(channel, req)
       rescue
@@ -1501,23 +1500,15 @@ defmodule Embervm.GroupManager do
     kind, reason -> {:error, {:start_group_member_raised, {kind, reason}}}
   end
 
-  defp safe_channel(state, node_id) do
-    state.channel_fun.(node_id)
-  rescue
-    e -> {:error, {:channel_raised, e}}
-  catch
-    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
-  end
-
   # Acquire the node's shared channel and run a group verb over it, invalidating that
-  # channel (so the next safe_channel/2 re-dials) when the call reveals the transport
+  # channel (so the next NodeChannel.safe_dial/2 re-dials) when the call reveals the transport
   # is dead: a transport_dead? error return, or an :exit from the Mint ConnectionProcess
   # dying (its crash on an in-flight stream RST during a noded rollout surfaces here as
   # an exit). A server-returned gRPC status rode a HEALTHY channel and never invalidates
   # it (Embervm.NodeChannel.transport_dead?/1, D-R2.7.2). Returns the verb's raw result,
-  # {:error, {:exit, reason}} on an exit, or the safe_channel error if no channel.
+  # {:error, {:exit, reason}} on an exit, or the safe_dial error if no channel.
   defp over_channel(state, node_id, call_fun) do
-    with {:ok, channel} <- safe_channel(state, node_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, node_id) do
       try do
         result = call_fun.(channel)
         if Embervm.NodeChannel.transport_dead?(result), do: state.invalidate_fun.(node_id, channel)
@@ -1570,31 +1561,13 @@ defmodule Embervm.GroupManager do
   # resumed some members before aborting), freeing each member's pinned tap+IP in
   # noded's group allocator (StopGroupMember DESTROY -> RemoveMemberTap +
   # ReleaseMember) so the fresh re-pin does not collide. Drains from the instance's
-  # stored member rows: a member with a live vm_id is one that came up. Best-effort
-  # per member (a failed DESTROY leaves its tap held, which the fresh boot's own
-  # collision surfaces loudly rather than being silently skipped here).
-  defp destroy_live_members(state) do
-    if state.node_confirmed_destroy do
-      destroy_live_members_node_confirmed(state)
-    else
-      destroy_live_members_legacy(state)
-    end
-  end
-
-  defp destroy_live_members_legacy(state) do
-    state.store
-    |> GroupStore.members(state.instance_id)
-    |> Enum.filter(fn m -> is_binary(m.vm_id) and m.vm_id != "" end)
-    |> Enum.each(fn m -> _ = destroy_one_member(state, m) end)
-
-    :ok
-  end
-
+  # stored member rows: a member with a live vm_id is one that came up.
+  #
   # This is the relight-to-fresh cleanup path, not a terminal group destroy, so it
-  # does not write group lifecycle ops. Under the gate it still collects the real
-  # daemon confirmation for every reachable member; an unconfirmed member defers the
+  # does not write group lifecycle ops. It still collects the real daemon
+  # confirmation for every reachable member; an unconfirmed member defers the
   # fresh boot so it never re-pins over a tap the daemon may still hold.
-  defp destroy_live_members_node_confirmed(state) do
+  defp destroy_live_members(state) do
     confirmations =
       state.store
       |> GroupStore.members(state.instance_id)
@@ -1609,28 +1582,6 @@ defmodule Embervm.GroupManager do
     Enum.all?(confirmations)
   end
 
-  defp destroy_one_member(state, member) do
-    req = %StopGroupMemberRequest{
-      trace: %Trace{workload: state.workload},
-      vm_id: member.vm_id,
-      mode: :STOP_GROUP_MEMBER_MODE_DESTROY,
-      set_id: "",
-      member_name: member.member_name
-    }
-
-    with {:ok, channel} <- safe_channel(state, state.dial_id) do
-      try do
-        state.stop_group_member_fun.(channel, req)
-      rescue
-        _ -> :error
-      catch
-        _, _ -> :error
-      end
-    end
-
-    :ok
-  end
-
   defp destroy_one_member_confirmed(state, member) do
     req = %StopGroupMemberRequest{
       trace: %Trace{workload: state.workload},
@@ -1640,7 +1591,7 @@ defmodule Embervm.GroupManager do
       member_name: member.member_name
     }
 
-    with {:ok, channel} <- safe_channel(state, state.dial_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, state.dial_id) do
       try do
         case state.stop_group_member_fun.(channel, req) do
           {:ok, %{teardown_confirmed: true}} ->
@@ -1667,7 +1618,7 @@ defmodule Embervm.GroupManager do
   defp evict_snapshot(state, snapshot_ref) do
     req = %EvictSnapshotRequest{trace: %Trace{workload: state.workload}, snapshot_ref: snapshot_ref}
 
-    with {:ok, channel} <- safe_channel(state, state.dial_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, state.dial_id) do
       try do
         state.evict_snapshot_fun.(channel, req)
       rescue
@@ -1783,7 +1734,4 @@ defmodule Embervm.GroupManager do
         :error
     end
   end
-
-  @doc false
-  def group_state_module, do: GroupState
 end

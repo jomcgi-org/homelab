@@ -27,7 +27,6 @@ def test_concurrent_batches_reserve_distinct_claims_and_replay_once(pg, monkeypa
     scope = f"repo:batch-test/{identity}"
     now = datetime.now(UTC)
     engine = create_engine(pg.url)
-    monkeypatch.setenv("KG_FACT_REVIEW_ENABLED", "true")
     monkeypatch.setenv("KG_FACT_REVIEW_BATCH_SIZE", "2")
     monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "20000")
     monkeypatch.setattr(review, "_get_repo_scope", lambda: scope)
@@ -164,7 +163,6 @@ def test_coverage_migration_restart_and_concurrent_probe_reservations(pg, monkey
     repo = scope.removeprefix("repo:")
     now = datetime.now(UTC)
     engine = create_engine(pg.url)
-    monkeypatch.setenv("KG_FACT_REVIEW_ENABLED", "true")
     monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "20000")
     monkeypatch.setattr(review, "_get_repo_scope", lambda: scope)

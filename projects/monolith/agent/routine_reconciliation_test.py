@@ -1,17 +1,11 @@
 """File-backed integration tests for explicit routine cessation reconciliation."""
 
-from concurrent.futures import ThreadPoolExecutor
 import asyncio
-from datetime import datetime, timedelta, timezone
 import json
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import text
-from sqlmodel import Session, SQLModel, create_engine, select
-
-from agent import routine_jobs
-from agent import routine_reconciliation as reconciliation
-from agent.routine_reconciliation_models import RoutineReconciliation
 from factory.execution import admission, store
 from factory.execution.constants import UNKNOWN_INVOCATION
 from factory.execution.models import (
@@ -22,6 +16,14 @@ from factory.execution.models import (
     PendingMessage,
     ProbeObservation,
 )
+from factory.orchestration.factory_models import FactoryAudit
+from factory.orchestration.models import SwarmTask
+from sqlalchemy import text
+from sqlmodel import Session, SQLModel, create_engine, select
+
+from agent import routine_jobs
+from agent import routine_reconciliation as reconciliation
+from agent.routine_reconciliation_models import RoutineReconciliation
 
 
 @pytest.fixture
@@ -30,7 +32,11 @@ def database(tmp_path, monkeypatch):
         f"sqlite:///{tmp_path / 'reconcile.db'}",
         connect_args={"check_same_thread": False, "timeout": 10},
         execution_options={
-            "schema_translate_map": {"agent_sessions": None, "claude_agent": None}
+            "schema_translate_map": {
+                "agent_sessions": None,
+                "claude_agent": None,
+                "swarm": None,
+            }
         },
     )
     SQLModel.metadata.create_all(
@@ -44,6 +50,8 @@ def database(tmp_path, monkeypatch):
                 AgentTurn,
                 PendingMessage,
                 RoutineReconciliation,
+                FactoryAudit,
+                SwarmTask,
             )
         ],
     )
@@ -723,9 +731,7 @@ def test_supervision_recovers_held_kg_correction_atomically(
             )
         ],
     )
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
-    monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     request, _ = held(engine, applied=True, delivery_error=True)
     sid = request["session_id"]
@@ -1282,11 +1288,12 @@ def test_factory_supervision_atomically_reconciles_terminal_held_job(
     database, monkeypatch, applied, guest_state, review_mode, early_terminal
 ):
     import asyncio
+
     from factory.execution import permit_supervision as supervision
     from factory.execution.models import ProbeObservation
     from factory.execution.review_leases import ReservationReview
     from factory.orchestration.factory_models import FactoryStart
-    from factory.orchestration.models import SwarmTask, SwarmNodeRun
+    from factory.orchestration.models import SwarmNodeRun, SwarmTask
 
     request, before = held(database, delivery_error=True, applied=applied)
     engine = database.execution_options(
@@ -1310,7 +1317,6 @@ def test_factory_supervision_atomically_reconciles_terminal_held_job(
         ],
     )
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     now = datetime.now(timezone.utc)
 
@@ -1484,7 +1490,6 @@ def test_predispatch_review_stop_prevents_routine_failure_retry_and_next_claim(
 ):
     from factory import reservation_reviews as reviews
     from factory.execution import review_leases as leases
-
     from factory.execution.models import ProbeObservation
 
     SQLModel.metadata.create_all(
@@ -1594,7 +1599,7 @@ def unbound_held(database, monkeypatch, *, applied=False, outcome="lease_expired
     from factory.execution.models import ProbeObservation
     from factory.execution.review_leases import ReservationReview
     from factory.orchestration.factory_models import FactoryStart
-    from factory.orchestration.models import SwarmTask, SwarmNodeRun
+    from factory.orchestration.models import SwarmNodeRun, SwarmTask
 
     request, _ = held(database, delivery_error=True, applied=applied)
     engine = database.execution_options(
@@ -1618,7 +1623,6 @@ def unbound_held(database, monkeypatch, *, applied=False, outcome="lease_expired
         ],
     )
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     with Session(engine) as db, db.begin():
         agent = db.get(AgentSession, request["session_id"])
@@ -1663,6 +1667,7 @@ def test_supervision_recovers_unbound_job_atomically(
     database, monkeypatch, applied, outcome
 ):
     import asyncio
+
     from factory.execution import permit_supervision as supervision
 
     engine, request, pid = unbound_held(
@@ -1810,11 +1815,12 @@ class NoGuestTransport:
 @pytest.fixture
 def interrupted_dispatch(database, monkeypatch):
     """Compose the real writers, cancelling before the binding callback runs."""
-    from factory.execution import mcp, permit_supervision as supervision
+    from factory.execution import mcp
+    from factory.execution import permit_supervision as supervision
     from factory.execution.models import ProbeObservation
     from factory.execution.review_leases import ReservationReview
     from factory.orchestration.factory_models import FactoryStart
-    from factory.orchestration.models import SwarmTask, SwarmNodeRun
+    from factory.orchestration.models import SwarmNodeRun, SwarmTask
 
     engine = database.execution_options(
         schema_translate_map={
@@ -1858,7 +1864,6 @@ def interrupted_dispatch(database, monkeypatch):
     for module in (store, admission, reconciliation):
         monkeypatch.setattr(module, "datetime", Clock)
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervision, "_now", lambda: attempt["clock"])
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _: None)
 
@@ -1926,8 +1931,18 @@ def interrupted_dispatch(database, monkeypatch):
         }
     with Session(engine) as db:
         store.create_pending_message(db, attempt["sid"], attempt["prompt"], "luna")
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(mcp._execute_pending_message(attempt["sid"]))
+
+    # A cancellation before any POST is normally recorded not_invoked and
+    # settles at once. These cases cover the fallback when that bounded write
+    # fails inside the termination grace: the turn is left as an unknown
+    # outcome for supervision to settle.
+    def not_invoked_write_fails(*_args, **_kwargs):
+        raise TimeoutError("lock timeout inside the termination grace")
+
+    with monkeypatch.context() as during_shutdown:
+        during_shutdown.setattr(store, "mark_turn_error_sync", not_invoked_write_fails)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(mcp._execute_pending_message(attempt["sid"]))
     assert routine_jobs.hold_job_for_unknown_outcome(
         attempt["name"], attempt["sid"], "executor cancelled", **attempt["guard"]
     )
@@ -2724,7 +2739,6 @@ def test_recovered_review_redispatch_settles_only_exact_audited_attempt(
         ],
     )
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
     now = datetime.now(timezone.utc)
 
@@ -2859,15 +2873,15 @@ def test_recovered_review_redispatch_settles_only_exact_audited_attempt(
 
 @pytest.fixture
 def completed_raw(database, monkeypatch):
-    from knowledge.models import (
-        RawInput,
-        AtomRawProvenance,
-        Note,
-        Chunk,
-        NoteLink,
-        Dispute,
-    )
     from knowledge.entities import Entity, NoteEntity
+    from knowledge.models import (
+        AtomRawProvenance,
+        Chunk,
+        Dispute,
+        Note,
+        NoteLink,
+        RawInput,
+    )
 
     held_request, _ = held(database)
     name, sid = held_request["job_name"], held_request["session_id"]
@@ -2955,7 +2969,7 @@ def _completed_apply(request, preview):
 
 
 def test_completed_raw_applies_original_result_and_replays_receipt(completed_raw):
-    from knowledge.models import RawInput, AtomRawProvenance
+    from knowledge.models import AtomRawProvenance, RawInput
 
     engine, request = completed_raw
     preview = reconciliation.recover_completed_raw(actor="operator", recovery=request)
@@ -3026,7 +3040,7 @@ def test_completed_raw_changed_result_and_disabled_apply_stay_fenced(
 def test_completed_raw_failure_rolls_back_application_and_lease(
     completed_raw, monkeypatch
 ):
-    from knowledge.models import RawInput, AtomRawProvenance
+    from knowledge.models import AtomRawProvenance, RawInput
 
     engine, request = completed_raw
     preview = reconciliation.recover_completed_raw(actor="operator", recovery=request)
@@ -3120,7 +3134,7 @@ def test_completed_raw_concurrent_same_key_returns_one_receipt(
 def test_completed_raw_nonempty_application_rolls_back_with_receipt_failure(
     completed_raw, monkeypatch
 ):
-    from knowledge.models import Note, Chunk, AtomRawProvenance, RawInput
+    from knowledge.models import AtomRawProvenance, Chunk, Note, RawInput
 
     engine, request = completed_raw
 

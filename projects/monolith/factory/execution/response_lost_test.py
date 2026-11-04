@@ -56,7 +56,6 @@ def database(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp, "_rollout_drain_started", False)
     monkeypatch.setattr(mcp, "_rollout_handoffs", {})
     monkeypatch.setattr(mcp, "_inflight_tasks", set())
-    monkeypatch.setenv("AGENT_ROLLOUT_HANDOFF_ENABLED", "false")
     engine = create_engine(
         f"sqlite:///{tmp_path / 'response-lost.db'}",
         connect_args={"check_same_thread": False, "timeout": 3},
@@ -82,9 +81,6 @@ def database(tmp_path, monkeypatch):
     )
     for module in (admission, store, mcp, execution_api, result_receipts, core_db):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
-    monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "false")
-    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "true")
     monkeypatch.setattr(transport, "RECEIPT_POLL_SECONDS", 0.005)
     observer_executor = ThreadPoolExecutor(max_workers=2)
     monkeypatch.setattr(transport, "_receipt_db_executor", observer_executor)
@@ -417,13 +413,7 @@ def test_factory_pin_reaches_real_invoke_and_response_loss_hold(
     assert bytes(turn["artifact_blob"]) == b'{"status": "ok"}'
 
 
-@pytest.mark.parametrize("recovery_enabled", [True, False])
-def test_persistence_failure_recovers_receipt_without_reinvoking(
-    database, monkeypatch, recovery_enabled
-):
-    monkeypatch.setenv(
-        "AGENT_RESPONSE_LOST_RECOVERY_ENABLED", str(recovery_enabled).lower()
-    )
+def test_persistence_failure_recovers_receipt_without_reinvoking(database, monkeypatch):
     sid = queue(database)
     record = native_record(artifact=False)
 
@@ -440,9 +430,6 @@ def test_persistence_failure_recovers_receipt_without_reinvoking(
     monkeypatch.setattr(mcp, "_persist_turn_from_pending_sync", unavailable)
     asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
     assert len(requests) == 1
-    if not recovery_enabled:
-        assert_unknown(database, sid)
-        return
     assert_held(database, sid, "result_persistence_failed")
     monkeypatch.setattr(mcp, "_persist_turn_from_pending_sync", original)
     outcome = store.adopt_response_lost_result(sid)
@@ -677,7 +664,8 @@ def test_adoption_is_idempotent_across_a_restart_between_receipt_and_turn(
     database, monkeypatch
 ):
     record = native_record()
-    sid, requests = lose_the_response(database, monkeypatch, record=record)
+    sid, requests = lose_the_response(database, monkeypatch)
+    publish(record, requests[0])
     assert_held(database, sid, "invoke_response_lost")
 
     assert store.adopt_response_lost_result(sid, ARTIFACT_PATH)["status"] == "adopted"
@@ -742,7 +730,8 @@ def test_node_recovery_adopts_a_still_running_guests_published_result(
     from factory.orchestration import node_workflows
 
     record = native_record()
-    sid, requests = lose_the_response(database, monkeypatch, record=record)
+    sid, requests = lose_the_response(database, monkeypatch)
+    publish(record, requests[0])
     assert_held(database, sid, "invoke_response_lost")
     observed = []
 
@@ -893,15 +882,6 @@ def test_guest_http_failure_is_not_reclassified_when_liveness_is_unavailable(
     assert store.read_response_lost_hold_sync(sid) is None
 
 
-def test_recovery_disabled_records_unknown_exactly_as_before(database, monkeypatch):
-    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "false")
-    sid, _requests = lose_the_response(database, monkeypatch, guest_state=None)
-    state = snapshot(database, sid)
-    assert state["pending"] == []
-    assert state["turns"][0]["stop_reason"] is None
-    assert [row["state"] for row in state["permits"]] == ["uncertain"]
-
-
 @pytest.mark.parametrize("published_before_expiry", [False, True])
 def test_lease_backstop_recovers_exact_result_published_before_or_after_owner_loss(
     database, monkeypatch, published_before_expiry
@@ -1023,7 +1003,8 @@ def test_unpublished_lease_hold_expires_once_within_capture_window(database):
 
 def test_the_sweep_finishes_executor_written_holds(database, monkeypatch):
     record = native_record(artifact=False)
-    sid, requests = lose_the_response(database, monkeypatch, record=record)
+    sid, requests = lose_the_response(database, monkeypatch)
+    publish(record, requests[0])
     assert_held(database, sid, "invoke_response_lost")
     assert store.find_response_lost_session_ids() == [sid]
     assert mcp._adopt_response_lost_results() == [sid]
@@ -1035,43 +1016,11 @@ def test_the_sweep_finishes_executor_written_holds(database, monkeypatch):
     assert mcp._adopt_response_lost_results() == []
 
 
-def test_recovery_disabled_leaves_every_owner_on_todays_behaviour(
-    database, monkeypatch
-):
-    """The flag off is the whole machinery off, whatever the receipt flags say."""
-    from factory.orchestration import node_workflows
-
-    record = native_record(artifact=False)
-    sid, _requests = lose_the_response(database, monkeypatch, record=record)
-    held = assert_held(database, sid, "invoke_response_lost")
-    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "false")
-
-    assert store.adopt_response_lost_result(sid) is None
-    assert mcp._adopt_response_lost_results() == []
-    assert node_workflows._recover_response_lost({"artifact_path": None}, sid) is None
-    assert snapshot(database, sid) == held
-
-    # The lease backstop is off too, so a stale claim with an unconsumed
-    # receipt settles unknown exactly as it did before this change.
-    other = queue(database, "disabled-backstop")
-    owner = "killed-replica"
-    assert store.claim_pending_message_for_session_sync(other, owner) == 1
-    assert admission.recheck(other, 1, owner)
-    receipt = result_receipts.prepare_receipt(
-        other, owner, 1, f"guest-{other}", b'{"message":"request"}'
-    )
-    result_receipts.capture_result(
-        receipt["id"], receipt["token"], json.dumps(record).encode()
-    )
-    age_claim(database, other)
-    assert store.reclaim_stale_claims_sync() == 1
-    assert_unknown(database, other)
-
-
 def test_an_expired_hold_is_never_held_again_and_settles_unknown(database, monkeypatch):
     """One hold per dispatch: the twelve-hour bound has to actually bound it."""
     record = native_record(artifact=False)
-    sid, _requests = lose_the_response(database, monkeypatch, record=record)
+    sid, requests = lose_the_response(database, monkeypatch)
+    publish(record, requests[0])
     assert_held(database, sid, "invoke_response_lost")
     expire_hold(database, sid)
     age_claim(database, sid)
@@ -1216,7 +1165,8 @@ def test_a_receipt_minted_for_another_request_cannot_finish_a_hold(
     database, monkeypatch
 ):
     record = native_record()
-    sid, requests = lose_the_response(database, monkeypatch, record=record)
+    sid, requests = lose_the_response(database, monkeypatch)
+    publish(record, requests[0])
     held = assert_held(database, sid, "invoke_response_lost")
     hold = hold_of(sid)
     assert hold["request_sha256"]
@@ -1531,7 +1481,7 @@ def test_factory_never_retires_a_replacement_parked_invocation(database, monkeyp
     assert len(requests) == 1
 
 
-def _drained_case(database, monkeypatch, *, relay_enabled=True):
+def _drained_case(database, monkeypatch):
     """A held turn whose guest a brick drain interrupted on this dispatch.
 
     The 2026-10-01 case 2 shape: the observer was lost to a rollout, then a
@@ -1540,9 +1490,6 @@ def _drained_case(database, monkeypatch, *, relay_enabled=True):
     """
     from factory.execution.constants import exact_dispatch_id
 
-    monkeypatch.setenv(
-        "AGENT_RESPONSE_LOST_DRAIN_RELAY_ENABLED", "true" if relay_enabled else "false"
-    )
     started = int(datetime.now(timezone.utc).timestamp() * 1000) + 5_000
     sid, requests = lose_the_response(
         database, monkeypatch, guest_state=working_guest(1, started=started)
@@ -1616,19 +1563,6 @@ def test_factory_drained_held_turn_relays_instead_of_settling(database, monkeypa
     assert after["pending"][0]["claimed_by_replica"] == "replica-2"
     assert after["permits"][0]["owner"] == "replica-2"
     assert len(requests) == 1
-
-
-def test_drained_held_turn_settles_as_today_with_the_relay_off(database, monkeypatch):
-    from factory.orchestration import node_workflows
-
-    sid, _requests, _hold, view = _drained_case(
-        database, monkeypatch, relay_enabled=False
-    )
-    monkeypatch.setattr(node_workflows, "_observe_held_guest", lambda _: view)
-    assert node_workflows._recover_response_lost(
-        {"artifact_path": ARTIFACT_PATH}, sid, relay_drained=True
-    ) == {"status": "settled", "reason": "response_lost_unpublished"}
-    assert_unknown(database, sid)
 
 
 def test_only_the_live_owner_relays_a_drained_held_turn(database, monkeypatch):
@@ -1747,7 +1681,6 @@ def _cancel_mid_delivery(database, monkeypatch, *, posted: bool):
 def test_cancelled_executor_that_never_posted_records_not_invoked(
     database, monkeypatch
 ):
-    monkeypatch.setenv("AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED", "true")
     sid = _cancel_mid_delivery(database, monkeypatch, posted=False)
     state = snapshot(database, sid)
     assert state["pending"] == []
@@ -1764,19 +1697,10 @@ def test_cancelled_executor_that_never_posted_records_not_invoked(
     assert state["session"]["status"] == "warn"
 
 
-def test_cancelled_executor_that_never_posted_is_unknown_with_the_record_off(
-    database, monkeypatch
-):
-    monkeypatch.setenv("AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED", "false")
-    sid = _cancel_mid_delivery(database, monkeypatch, posted=False)
-    assert_unknown(database, sid)
-
-
 def test_cancelled_executor_with_a_post_in_flight_is_never_not_invoked(
     database, monkeypatch
 ):
     """A POST that may have reached the guest keeps today's conservative hold."""
-    monkeypatch.setenv("AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED", "true")
     sid = _cancel_mid_delivery(database, monkeypatch, posted=True)
     state = assert_held(database, sid, "replica_shutdown")
     assert state["permits"][0]["outcome"] is None
@@ -1787,14 +1711,10 @@ def test_rollout_drain_bounds_are_literal():
     assert mcp.SHUTDOWN_HOLD_LOCK_SECONDS == 2.0
 
 
-@pytest.mark.parametrize("enabled", [True, False])
-def test_private_entrypoint_installs_the_signal_server_only_when_enabled(
-    database, monkeypatch, enabled
-):
+def test_private_entrypoint_installs_the_signal_server(database, monkeypatch):
     from factory.module import RolloutHandoffServer
     import uvicorn
 
-    monkeypatch.setenv("AGENT_ROLLOUT_HANDOFF_ENABLED", str(enabled).lower())
     served = []
     app = object()
 
@@ -1826,28 +1746,24 @@ def test_private_entrypoint_installs_the_signal_server_only_when_enabled(
     )
     assert served == [
         (
-            "handoff" if enabled else "legacy",
+            "handoff",
             app,
             "0.0.0.0",
             8000,
             "warning",
-            5 if enabled else None,
+            5,
         )
     ]
 
 
-@pytest.mark.parametrize("enabled", [True, False])
-def test_sigterm_fences_scheduler_executor_and_claim_only_when_enabled(
-    database, monkeypatch, enabled
-):
+def test_sigterm_fences_scheduler_executor_and_claim(database, monkeypatch):
     from factory.module import RolloutHandoffServer
     from uvicorn import Config
 
-    monkeypatch.setenv("AGENT_ROLLOUT_HANDOFF_ENABLED", str(enabled).lower())
     server = RolloutHandoffServer(Config("unused:app"))
     server.handle_exit(signal.SIGTERM, None)
     assert server.should_exit is True
-    assert mcp.rollout_shutdown_in_progress() is enabled
+    assert mcp.rollout_shutdown_in_progress() is True
     started = []
 
     async def execute(sid):
@@ -1860,7 +1776,7 @@ def test_sigterm_fences_scheduler_executor_and_claim_only_when_enabled(
             await asyncio.sleep(0)
 
     asyncio.run(schedule())
-    assert started == ([] if enabled else [17])
+    assert started == []
     claimed = []
     loaded = []
     monkeypatch.setattr(mcp, "_load_session", lambda sid: (loaded.append(sid), []))
@@ -1870,22 +1786,16 @@ def test_sigterm_fences_scheduler_executor_and_claim_only_when_enabled(
         lambda sid, owner: claimed.append((sid, owner)),
     )
     asyncio.run(mcp._execute_pending_message(18))
-    assert loaded == ([] if enabled else [18])
-    assert len(claimed) == (0 if enabled else 1)
-    if not enabled:
-        assert claimed[0][0] == 18
-        assert claimed[0][1].startswith(f"{mcp._REPLICA_ID}:")
+    assert loaded == []
+    assert len(claimed) == 0
     claimed.clear()
     _REAL_CLAIM_PENDING_MESSAGE(19, "claim-owner")
-    assert claimed == ([] if enabled else [(19, "claim-owner")])
+    assert claimed == []
 
 
-@pytest.mark.parametrize("enabled", [True, False])
 def test_shutdown_during_receipt_preparation_fences_the_physical_post(
-    database, monkeypatch, enabled
+    database, monkeypatch
 ):
-    monkeypatch.setenv("AGENT_ROLLOUT_HANDOFF_ENABLED", str(enabled).lower())
-    monkeypatch.setenv("AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED", "true")
     sid = queue(database)
     prepare = result_receipts.prepare_receipt
     recheck = admission.recheck
@@ -1910,25 +1820,19 @@ def test_shutdown_during_receipt_preparation_fences_the_physical_post(
     requests = fake_http(monkeypatch, handler)
 
     async def run():
-        if enabled:
-            with pytest.raises(asyncio.CancelledError):
-                await mcp._execute_pending_message(sid)
-        else:
+        with pytest.raises(asyncio.CancelledError):
             await mcp._execute_pending_message(sid)
 
     asyncio.run(run())
     assert len(admission_calls) == 1
-    assert len(requests) == (0 if enabled else 1)
+    assert len(requests) == 0
     state = snapshot(database, sid)
-    assert state["permits"][0]["outcome"] == ("not_invoked" if enabled else "end_turn")
+    assert state["permits"][0]["outcome"] == "not_invoked"
 
 
-@pytest.mark.parametrize("enabled", [True, False])
 def test_shutdown_during_final_admission_recheck_fences_the_physical_post(
-    database, monkeypatch, enabled
+    database, monkeypatch
 ):
-    monkeypatch.setenv("AGENT_ROLLOUT_HANDOFF_ENABLED", str(enabled).lower())
-    monkeypatch.setenv("AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED", "true")
     sid = queue(database)
     recheck = admission.recheck
     admission_calls = []
@@ -1936,9 +1840,9 @@ def test_shutdown_during_final_admission_recheck_fences_the_physical_post(
     def checking(*args, **kwargs):
         allowed = recheck(*args, **kwargs)
         admission_calls.append(args)
-        # Enabled delivery checks twice, the final check follows receipt
+        # Delivery checks twice, the final check follows receipt
         # preparation. SIGTERM arrives while that DB call is off-thread.
-        if len(admission_calls) == (2 if enabled else 1):
+        if len(admission_calls) == 2:
             mcp.begin_rollout_shutdown()
         return allowed
 
@@ -1950,30 +1854,24 @@ def test_shutdown_during_final_admission_recheck_fences_the_physical_post(
     requests = fake_http(monkeypatch, handler)
 
     async def run():
-        if enabled:
-            with pytest.raises(asyncio.CancelledError):
-                await mcp._execute_pending_message(sid)
-        else:
+        with pytest.raises(asyncio.CancelledError):
             await mcp._execute_pending_message(sid)
 
     asyncio.run(run())
-    assert len(admission_calls) == (2 if enabled else 1)
-    assert len(requests) == (0 if enabled else 1)
+    assert len(admission_calls) == 2
+    assert len(requests) == 0
     state = snapshot(database, sid)
-    assert state["permits"][0]["outcome"] == ("not_invoked" if enabled else "end_turn")
+    assert state["permits"][0]["outcome"] == "not_invoked"
 
 
-@pytest.mark.parametrize("enabled", [True, False])
 def test_roll_mid_invoke_hands_off_before_observer_cleanup_and_node_succeeds(
-    database, monkeypatch, enabled
+    database, monkeypatch
 ):
     """Two replica identities, one physical POST and the ordinary result writer."""
     from factory.module import RolloutHandoffServer
     from factory.orchestration import node_workflows as nodes, steps
     from uvicorn import Config
 
-    monkeypatch.setenv("AGENT_ROLLOUT_HANDOFF_ENABLED", str(enabled).lower())
-    monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "true")
     monkeypatch.setattr(mcp, "_REPLICA_ID", "replica-A")
     sid = queue(database, key="factory:roll-mid-invoke")
     record = native_record()
@@ -2032,128 +1930,108 @@ def test_roll_mid_invoke_hands_off_before_observer_cleanup_and_node_succeeds(
         with Session(database) as db:
             prepared = db.get(AgentResultReceipt, receipt["id"])
             request_sha256 = prepared.request_sha256
-        assert live_records == (
-            [
-                {
-                    "attempted": True,
-                    "receipt_id": receipt["id"],
-                    "guest_id": f"guest-{sid}",
-                    "request_sha256": request_sha256,
-                    "cli_session_id": None,
-                    "artifact_path": None,
-                }
-            ]
-            if enabled
-            else [{}]
-        )
+        assert live_records == [
+            {
+                "attempted": True,
+                "receipt_id": receipt["id"],
+                "guest_id": f"guest-{sid}",
+                "request_sha256": request_sha256,
+                "cli_session_id": None,
+                "artifact_path": None,
+            }
+        ]
         server = RolloutHandoffServer(Config("unused:app"))
         server.handle_exit(signal.SIGTERM, None)
         assert await mcp.drain_inflight_executors() == 0
         assert drain_waits == [5.0]
         await asyncio.wait_for(cleanup.wait(), 5)
-        if enabled:
-            assert len(hold_writes) == 1
-            assert hold_writes[0][0] == (sid, 1, dispatched["claimed_by_replica"], 1)
-            assert hold_writes[0][1]["lock_timeout_seconds"] == 2.0
-            state = assert_held(database, sid, "replica_shutdown")
-            hold = hold_of(sid)
-            assert hold["receipt_id"] == receipt["id"]
-            assert hold["guest_id"] == f"guest-{sid}"
-            assert hold["dispatch_count"] == 1
-            assert hold["dispatch_count"] == dispatched["dispatch_count"]
-            assert hold["claim_owner"] == dispatched["claimed_by_replica"]
-            assert hold["claim_owner"].startswith("replica-A:")
-            assert hold["source"] == "executor"
-            assert hold["request_sha256"] == request_sha256
-            assert state["turns"][0]["stop_reason"] != UNKNOWN_INVOCATION
-            before = set(mcp._inflight_tasks)
-            _REAL_SCHEDULE_NEXT_MESSAGE(sid)
-            assert mcp._inflight_tasks == before
-            # The second lifecycle hook must not cancel cleanup again.
-            assert await mcp.drain_inflight_executors() == 0
-            assert not task.done()
-            monkeypatch.setattr(mcp, "_REPLICA_ID", "replica-B")
-            monkeypatch.setattr(mcp, "_rollout_shutdown_started", False)
-            publish(record, requests[0])
-            outcome = await asyncio.to_thread(
-                nodes._recover_response_lost, {"artifact_path": ARTIFACT_PATH}, sid
-            )
-            assert outcome == {
-                "status": "adopted",
-                "seq": 1,
-                "receipt_id": receipt["id"],
-            }
-            state = snapshot(database, sid)
-            assert state["pending"] == []
-            assert state["session"]["status"] == "completed"
-            assert state["permits"][0]["state"] == "settled"
-            assert state["permits"][0]["outcome"] == "end_turn"
-            assert state["turns"][0]["terminal_reason"] == "end_turn"
-            assert state["turns"][0]["cost_usd"] == 0.125
-        else:
-            # Today's cancellation waits for observer cleanup before a hold.
-            assert hold_writes == []
-            assert hold_of(sid) is None
-            assert snapshot(database, sid)["turns"] == []
+        assert len(hold_writes) == 1
+        assert hold_writes[0][0] == (sid, 1, dispatched["claimed_by_replica"], 1)
+        assert hold_writes[0][1]["lock_timeout_seconds"] == 2.0
+        state = assert_held(database, sid, "replica_shutdown")
+        hold = hold_of(sid)
+        assert hold["receipt_id"] == receipt["id"]
+        assert hold["guest_id"] == f"guest-{sid}"
+        assert hold["dispatch_count"] == 1
+        assert hold["dispatch_count"] == dispatched["dispatch_count"]
+        assert hold["claim_owner"] == dispatched["claimed_by_replica"]
+        assert hold["claim_owner"].startswith("replica-A:")
+        assert hold["source"] == "executor"
+        assert hold["request_sha256"] == request_sha256
+        assert state["turns"][0]["stop_reason"] != UNKNOWN_INVOCATION
+        before = set(mcp._inflight_tasks)
+        _REAL_SCHEDULE_NEXT_MESSAGE(sid)
+        assert mcp._inflight_tasks == before
+        # The second lifecycle hook must not cancel cleanup again.
+        assert await mcp.drain_inflight_executors() == 0
+        assert not task.done()
+        monkeypatch.setattr(mcp, "_REPLICA_ID", "replica-B")
+        monkeypatch.setattr(mcp, "_rollout_shutdown_started", False)
+        publish(record, requests[0])
+        outcome = await asyncio.to_thread(
+            nodes._recover_response_lost, {"artifact_path": ARTIFACT_PATH}, sid
+        )
+        assert outcome == {
+            "status": "adopted",
+            "seq": 1,
+            "receipt_id": receipt["id"],
+        }
+        state = snapshot(database, sid)
+        assert state["pending"] == []
+        assert state["session"]["status"] == "completed"
+        assert state["permits"][0]["state"] == "settled"
+        assert state["permits"][0]["outcome"] == "end_turn"
+        assert state["turns"][0]["terminal_reason"] == "end_turn"
+        assert state["turns"][0]["cost_usd"] == 0.125
         release.set()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, 5)
-        if not enabled:
-            assert_held(database, sid, "replica_shutdown")
-        else:
-            state = snapshot(database, sid)
-            assert state["session"]["status"] == "completed"
-            assert state["permits"][0]["outcome"] == "end_turn"
+        state = snapshot(database, sid)
+        assert state["session"]["status"] == "completed"
+        assert state["permits"][0]["outcome"] == "end_turn"
         assert len(requests) == 1
 
     asyncio.run(scenario())
-    if enabled:
-        monkeypatch.setattr(nodes, "poll_turn", steps.poll_turn.__wrapped__)
-        monkeypatch.setattr(nodes, "observe_clock", steps.observe_clock.__wrapped__)
-        monkeypatch.setattr(
-            nodes, "_read_turn_artifact", nodes._read_turn_artifact.__wrapped__
-        )
-        monkeypatch.setattr(
-            nodes,
-            "_start_node_session",
-            lambda *_args: {"started": True, "session_id": sid},
-        )
-        monkeypatch.setattr(nodes, "read_branch_head", lambda *_args: "a" * 40)
-        monkeypatch.setattr(
-            nodes, "_cleanup_node", lambda *_args: {"status": "completed"}
-        )
-        result = nodes.execute_node.__wrapped__(
-            {
-                "task_id": "roll-mid-invoke",
-                "node_key": "implement",
-                "attempt": 1,
-                "repo": "org/repo",
-                "branch": "factory/roll-mid-invoke",
-                "prompt": "Implement.",
-                "model": "luna",
-                "max_cost_usd": 2.0,
-                "max_attempts": 1,
-                "turn_timeout_seconds": 600,
-                "workflow_id": "roll-mid-invoke-parent",
-                "artifact_path": ARTIFACT_PATH,
-                "artifact_schema": {
-                    "type": "object",
-                    "properties": {"status": {"const": "ok"}},
-                    "required": ["status"],
-                    "additionalProperties": False,
-                },
-            }
-        )
-        assert result["status"] == "succeeded"
-        assert result["value"] == {"status": "ok"}
-        assert result["reason"] is None
+    monkeypatch.setattr(nodes, "poll_turn", steps.poll_turn.__wrapped__)
+    monkeypatch.setattr(nodes, "observe_clock", steps.observe_clock.__wrapped__)
+    monkeypatch.setattr(
+        nodes, "_read_turn_artifact", nodes._read_turn_artifact.__wrapped__
+    )
+    monkeypatch.setattr(
+        nodes,
+        "_start_node_session",
+        lambda *_args: {"started": True, "session_id": sid},
+    )
+    monkeypatch.setattr(nodes, "read_branch_head", lambda *_args: "a" * 40)
+    monkeypatch.setattr(nodes, "_cleanup_node", lambda *_args: {"status": "completed"})
+    result = nodes.execute_node.__wrapped__(
+        {
+            "task_id": "roll-mid-invoke",
+            "node_key": "implement",
+            "attempt": 1,
+            "repo": "org/repo",
+            "branch": "factory/roll-mid-invoke",
+            "prompt": "Implement.",
+            "model": "luna",
+            "max_cost_usd": 2.0,
+            "max_attempts": 1,
+            "turn_timeout_seconds": 600,
+            "workflow_id": "roll-mid-invoke-parent",
+            "artifact_path": ARTIFACT_PATH,
+            "artifact_schema": {
+                "type": "object",
+                "properties": {"status": {"const": "ok"}},
+                "required": ["status"],
+                "additionalProperties": False,
+            },
+        }
+    )
+    assert result["status"] == "succeeded"
+    assert result["value"] == {"status": "ok"}
+    assert result["reason"] is None
 
 
-@pytest.mark.parametrize("enabled", [True, False])
-def test_rollout_gives_non_adoptable_turns_a_bounded_grace_only_when_enabled(
-    database, monkeypatch, enabled
-):
-    monkeypatch.setenv("AGENT_ROLLOUT_HANDOFF_ENABLED", str(enabled).lower())
+def test_rollout_gives_non_adoptable_turns_a_bounded_grace(database, monkeypatch):
     real_wait = asyncio.wait
     waits = []
 
@@ -2164,26 +2042,22 @@ def test_rollout_gives_non_adoptable_turns_a_bounded_grace_only_when_enabled(
 
         async def wait(tasks, *, timeout):
             waits.append(timeout)
-            assert task.cancelling() == (0 if enabled else 1)
+            assert task.cancelling() == 0
             finish.set()
             return await real_wait(tasks, timeout=timeout)
 
         monkeypatch.setattr(mcp.asyncio, "wait", wait)
         assert await mcp.drain_inflight_executors() == 1
-        assert task.cancelled() is not enabled
+        assert not task.cancelled()
 
     asyncio.run(scenario())
-    assert waits == ([5.0, 5.0] if enabled else [5.0])
+    assert waits == [5.0, 5.0]
 
 
-@pytest.mark.parametrize("enabled", [True, False])
-def test_leader_hands_off_before_dbos_destroy_only_on_rollout(
-    database, monkeypatch, enabled
-):
+def test_leader_hands_off_before_dbos_destroy_only_on_rollout(database, monkeypatch):
     from factory import module
     from factory.orchestration import runtime, factory_conductor
 
-    monkeypatch.setenv("AGENT_ROLLOUT_HANDOFF_ENABLED", str(enabled).lower())
     mcp.begin_rollout_shutdown()
     events = []
 
@@ -2195,16 +2069,14 @@ def test_leader_hands_off_before_dbos_destroy_only_on_rollout(
     monkeypatch.setattr(factory_conductor, "disarm_watchdog", lambda: None)
     app = SimpleNamespace(state=SimpleNamespace(leader_singletons_dbos_launched=True))
     asyncio.run(module._leader_stop(app))
-    assert events == (["drain", "destroy"] if enabled else ["destroy"])
+    assert events == ["drain", "destroy"]
     assert app.state.leader_singletons_dbos_launched is False
 
 
-@pytest.mark.parametrize("enabled", [True, False])
 @pytest.mark.parametrize("phase", ["before", "during_sleep"])
 def test_sweep_stops_reclaiming_after_shutdown_during_sleep(
-    database, monkeypatch, enabled, phase
+    database, monkeypatch, phase
 ):
-    monkeypatch.setenv("AGENT_ROLLOUT_HANDOFF_ENABLED", str(enabled).lower())
     events = []
 
     async def zombies():
@@ -2216,7 +2088,7 @@ def test_sweep_stops_reclaiming_after_shutdown_during_sleep(
 
     def reclaim():
         events.append("reclaim")
-        # End the flag-off infinite sweep after its existing reclaim step.
+        # A reclaim after shutdown would end the sweep here.
         raise asyncio.CancelledError
 
     monkeypatch.setattr(mcp, "_reconcile_zombie_sessions", zombies)
@@ -2224,24 +2096,11 @@ def test_sweep_stops_reclaiming_after_shutdown_during_sleep(
     monkeypatch.setattr(mcp, "_reclaim_stale_claims_sync", reclaim)
     if phase == "before":
         mcp.begin_rollout_shutdown()
-    if enabled:
-        asyncio.run(mcp._sweep_orphaned_pending_messages())
-    else:
-        with pytest.raises(asyncio.CancelledError):
-            asyncio.run(mcp._sweep_orphaned_pending_messages())
-    assert events == (
-        ([] if phase == "before" else ["zombies"])
-        if enabled
-        else ["zombies", "reclaim"]
-    )
+    asyncio.run(mcp._sweep_orphaned_pending_messages())
+    assert events == ([] if phase == "before" else ["zombies"])
 
 
-@pytest.mark.parametrize("enabled", [True, False])
-def test_shutdown_after_claim_prevents_delivery_only_when_enabled(
-    database, monkeypatch, enabled
-):
-    monkeypatch.setenv("AGENT_ROLLOUT_HANDOFF_ENABLED", str(enabled).lower())
-    monkeypatch.setenv("AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED", "true")
+def test_shutdown_after_claim_prevents_delivery(database, monkeypatch):
     sid = queue(database)
 
     def claim(*args):
@@ -2265,23 +2124,19 @@ def test_shutdown_after_claim_prevents_delivery_only_when_enabled(
     monkeypatch.setattr(mcp._transport, "deliver", observed_delivery)
 
     async def run():
-        if enabled:
-            with pytest.raises(asyncio.CancelledError):
-                await mcp._execute_pending_message(sid)
-        else:
+        with pytest.raises(asyncio.CancelledError):
             await mcp._execute_pending_message(sid)
 
     asyncio.run(run())
-    assert len(requests) == (0 if enabled else 1)
-    assert len(deliveries) == (0 if enabled else 1)
+    assert len(requests) == 0
+    assert len(deliveries) == 0
     state = snapshot(database, sid)
-    assert state["permits"][0]["outcome"] == ("not_invoked" if enabled else "end_turn")
+    assert state["permits"][0]["outcome"] == "not_invoked"
 
 
 def test_rollout_cancels_non_adoptable_turns_only_after_grace_expires(
     database, monkeypatch
 ):
-    monkeypatch.setenv("AGENT_ROLLOUT_HANDOFF_ENABLED", "true")
     waits = []
     real_wait = asyncio.wait
 
@@ -2306,7 +2161,6 @@ def test_rollout_cancels_non_adoptable_turns_only_after_grace_expires(
 def test_sweep_reaches_later_holds_when_first_batch_never_resolves(
     monkeypatch, blocked
 ):
-    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "true")
     monkeypatch.setattr(mcp, "_response_lost_sweep_cursor", 0, raising=False)
     seen = []
 
@@ -2372,7 +2226,6 @@ def test_response_loss_candidates_page_without_mutating_holds(database):
 def test_sweep_revisits_old_and_newly_eligible_holds_despite_continuous_arrivals(
     monkeypatch,
 ):
-    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "true")
     monkeypatch.setattr(mcp, "_response_lost_sweep_cursor", 0)
     monkeypatch.setattr(mcp, "_response_lost_sweep_ceiling", 0)
     eligible = {1, 3, 4, 5, 6, 7, 8}
@@ -2415,7 +2268,6 @@ def test_sweep_revisits_old_and_newly_eligible_holds_despite_continuous_arrivals
 
 
 def test_sweep_restart_safely_revisits_candidates(monkeypatch):
-    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "true")
     monkeypatch.setattr(mcp, "_response_lost_sweep_cursor", 9)
     monkeypatch.setattr(mcp, "_response_lost_sweep_ceiling", 10)
     monkeypatch.setattr(store, "response_lost_session_ceiling", lambda: 10)

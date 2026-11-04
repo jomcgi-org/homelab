@@ -34,7 +34,7 @@ export async function apiFetch(path, options = {}) {
 // backend's ingest.OPEN_LICENSE_BOOK_IDS: only these books are Reader-readable,
 // so a missing key (copyrighted book) simply yields no credit line. Shown at
 // the end of the continuous Reader.
-export const BOOK_ATTRIBUTION = {
+const BOOK_ATTRIBUTION = {
   "system-reference-doc-5-1":
     "Includes material from the System Reference Document 5.1, © Wizards of the Coast LLC, licensed under CC BY 4.0.",
   "system-reference-doc-5-2":
@@ -49,7 +49,6 @@ export const bookAttribution = (bookId) => BOOK_ATTRIBUTION[bookId] ?? "";
 
 // ── Route builders (public URL structure: no [campaign], no ?as=) ──
 
-export const homeHref = () => "/app/grimoire";
 export const libraryHref = () => "/app/grimoire/library";
 // World is the merged Entities+Explore surface. With an id it deep-links to
 // that entity focused (the ?e= contract the dock, chat mentions, and the World

@@ -12,8 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from sqlmodel import Session, SQLModel, create_engine, select
-from sqlmodel.pool import StaticPool
+from sqlmodel import Session, select
 
 from grimoire import extract
 from grimoire.extract import (
@@ -38,28 +37,13 @@ from grimoire.models import (
     KnowledgeChunk,
     Relationship,
 )
+from shared.testing.sqlite import sqlite_session
 
 
 @pytest.fixture(name="session")
 def session_fixture():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
+    with sqlite_session() as session:
+        yield session
 
 
 class FakeOpenRouterClient:
@@ -1613,7 +1597,10 @@ async def test_openrouter_client_extract_self_corrects_once_on_bad_json():
     assert mock_client.post.call_count == 2
 
     second_call_messages = mock_client.post.call_args_list[1][1]["json"]["messages"]
-    assert second_call_messages[0]["content"] == extract.EXTRACTION_PROMPT
+    assert (
+        second_call_messages[0]["content"]
+        == extract.PROMPT_VERSIONS[extract.ACTIVE_PROMPT_VERSION].text
+    )
     assert second_call_messages[1]["content"] == "chunk text"
     assert second_call_messages[2]["role"] == "assistant"
     assert second_call_messages[2]["content"] == "not json"

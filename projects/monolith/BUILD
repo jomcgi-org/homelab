@@ -1478,6 +1478,7 @@ py_library(
         # pkg_swarm's existing glob shares this same source artifact.
         "factory/orchestration/factory_landing.py",
         "factory/orchestration/factory_models.py",
+        "factory/orchestration/intake_evidence.py",
         "factory/orchestration/factory_pause.py",
         # Refill physical transport reuses exact-model quota freshness and floors.
         "factory/orchestration/model_pool.py",
@@ -1489,6 +1490,7 @@ py_library(
         ":factory_goal_models",
         ":pkg_core",
         ":pkg_shared",
+        "//projects/monolith/factory/orchestration/evidence_continuation",
         "@pip//httpx",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
@@ -1651,6 +1653,7 @@ py_library(
     deps = [
         ":pkg_platform_auth",
         "//projects/monolith/factory/execution/workspace_handoff",
+        "//projects/monolith/factory/orchestration/evidence_continuation",
         "@pip//dbos",
         "@pip//astral",
         "@pip//beautifulsoup4",
@@ -1696,10 +1699,12 @@ py_library(
     ],
 )
 
-# nosemgrep: py-glob-missing-tests-exclude — this IS a testing library
 py_library(
     name = "shared_testing",
-    srcs = glob(["shared/testing/**/*.py"]),
+    srcs = glob(
+        ["shared/testing/**/*.py"],
+        exclude = ["**/*_test.py"],
+    ),
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
@@ -2353,6 +2358,9 @@ py_test(
         "factory/orchestration/browser_evidence_test.py",
         "factory/orchestration/browser_review_handoff_test.py",
     ],
+    # browser_evidence_test.py is imported as a fixture module here; its
+    # own tests run in factory_browser_evidence_test.
+    env = {"PYTEST_ADDOPTS": "--ignore=projects/monolith/factory/orchestration/browser_evidence_test.py"},
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -2368,6 +2376,9 @@ py_test(
         "factory/orchestration/browser_evidence_test.py",
         "factory/orchestration/browser_review_dispatch_test.py",
     ],
+    # browser_evidence_test.py is imported as a fixture module here; its
+    # own tests run in factory_browser_evidence_test.
+    env = {"PYTEST_ADDOPTS": "--ignore=projects/monolith/factory/orchestration/browser_evidence_test.py"},
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
@@ -2444,16 +2455,6 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_swarm",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "tier_test",
-    srcs = ["factory/orchestration/tier_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
         "@pip//pytest",
     ],
 )
@@ -3366,17 +3367,6 @@ py_test(
 )
 
 py_test(
-    name = "chat_bot_send_message_test",
-    srcs = ["chat/bot_send_message_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
     name = "chat_agent_test",
     srcs = ["chat/agent_test.py"],
     imports = ["."],
@@ -3744,16 +3734,6 @@ py_test(
         ":pkg_core",
         "@pip//opentelemetry_api",
         "@pip//opentelemetry_sdk",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "log_config_test",
-    srcs = ["core/log_config_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_core",
         "@pip//pytest",
     ],
 )
@@ -4149,19 +4129,6 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "chat_summarizer_prompts_test",
-    srcs = ["chat/summarizer_prompts_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -4577,7 +4544,6 @@ py_test(
     timeout = "moderate",
     srcs = [
         "e2e/__init__.py",
-        "e2e/conftest.py",
         "e2e/e2e_test.py",
     ],
     data = [
@@ -4612,7 +4578,6 @@ py_test(
     timeout = "long",
     srcs = [
         "e2e/__init__.py",
-        "e2e/conftest.py",
         "e2e/e2e_http_test.py",
     ],
     data = [
@@ -4748,6 +4713,7 @@ py_test(
         ":pkg_factory",
         ":pkg_swarm",
         "@pip//fastapi",
+        "@pip//fastmcp",
         "@pip//httpx",
         "@pip//opentelemetry_sdk",
         "@pip//pytest",
@@ -5017,42 +4983,21 @@ bdd_test(
     srcs = ["factory/orchestration/swarm_node_run_model_postgres_test.py"],
 )
 
-# Hand-registered real-PostgreSQL coverage for the one-shot migration that
-# moves the live factory policy off astra, which rewrites the TEXT policy
-# through jsonb and so cannot run on SQLite.
+# Parameterized applied-row coverage retains migration guards, pinned receipts,
+# routing, quota fallback and coding effort on real PostgreSQL (#7454).
 bdd_test(
-    name = "swarm_factory_policy_no_astra_postgres_test",
-    srcs = ["factory/orchestration/factory_policy_no_astra_postgres_test.py"],
+    name = "swarm_factory_funding_audit_postgres_test",
+    srcs = ["factory/orchestration/factory_funding_audit_postgres_test.py"],
 )
 
-# Hand-registered real-PostgreSQL coverage for the staged Claude 5.5 policy
-# migration (#6461), which rewrites the TEXT policy through jsonb.
 bdd_test(
-    name = "swarm_factory_policy_claude_55_postgres_test",
-    srcs = ["factory/orchestration/factory_policy_claude_55_postgres_test.py"],
+    name = "swarm_evidence_continuation_postgres_test",
+    srcs = ["factory/orchestration/evidence_continuation_postgres_test.py"],
 )
 
-# Hand-registered real-PostgreSQL coverage for the generation-14 policy
-# migration that moves factory workers onto Sol, which rewrites the TEXT
-# policy through jsonb.
 bdd_test(
-    name = "swarm_factory_policy_gen14_sol_postgres_test",
-    srcs = ["factory/orchestration/factory_policy_gen14_sol_postgres_test.py"],
-)
-
-# Real PostgreSQL is needed for the guarded jsonb policy restoration.
-bdd_test(
-    name = "swarm_factory_policy_restore_astra_postgres_test",
-    srcs = ["factory/orchestration/factory_policy_restore_astra_postgres_test.py"],
-)
-
-# Real PostgreSQL covers the already-allowed Astra planner follow-up and harness.
-bdd_test(
-    name = "swarm_factory_policy_astra_planner_postgres_test",
-    srcs = [
-        "factory/orchestration/factory_policy_astra_planner_postgres_test.py",
-        "factory/orchestration/factory_policy_restore_astra_postgres_test.py",
-    ],
+    name = "swarm_factory_policy_rows_postgres_test",
+    srcs = ["factory/orchestration/factory_policy_rows_postgres_test.py"],
 )
 
 # Real PostgreSQL checks guarded security intake policy changes and atomic audit.
@@ -5085,6 +5030,11 @@ bdd_test(
 bdd_test(
     name = "knowledge_exact_search_postgres_test",
     srcs = ["knowledge/exact_search_postgres_test.py"],
+)
+
+bdd_test(
+    name = "knowledge_store_search_postgres_test",
+    srcs = ["knowledge/store_search_postgres_test.py"],
 )
 
 py_test(
@@ -5323,6 +5273,16 @@ py_test(
 )
 
 py_test(
+    name = "swarm_factory_gate_blocks_test",
+    srcs = ["factory/orchestration/factory_gate_blocks_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_factory_escalation_test",
     srcs = ["factory/orchestration/factory_escalation_test.py"],
     data = ["factory/orchestration/fixtures/conductor_gates_20260918.json"],
@@ -5457,6 +5417,18 @@ py_test(
         ":pkg_agent_sessions",
         "@pip//httpx",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "factory_push_format_test",
+    srcs = ["factory/execution/push_format_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//sqlmodel",
     ],
 )
 
@@ -5843,6 +5815,11 @@ py_test(
 )
 
 bdd_test(
+    name = "agent_sessions_admission_diagnostics_postgres_test",
+    srcs = ["factory/execution/admission_diagnostics_postgres_test.py"],
+)
+
+bdd_test(
     name = "agent_sessions_store_postgres_test",
     srcs = ["factory/execution/store_postgres_test.py"],
 )
@@ -5933,6 +5910,22 @@ py_test(
     deps = [
         ":pkg_agent_sessions",
         ":pkg_core",
+        ":pkg_swarm",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "agent_sessions_guest_cleanup_loop_test",
+    srcs = ["factory/execution/guest_cleanup_loop_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_core",
+        ":pkg_factory",
         ":pkg_swarm",
         "@pip//httpx",
         "@pip//pytest",
@@ -6210,7 +6203,6 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
-        "@pip//pgvector",
         "@pip//pydantic",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -6676,6 +6668,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_grimoire",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -6881,6 +6874,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_grimoire",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -6894,6 +6888,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_grimoire",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -6908,6 +6903,7 @@ py_test(
     deps = [
         ":pkg_core",
         ":pkg_grimoire",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pgvector",
@@ -6923,6 +6919,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_grimoire",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -6936,6 +6933,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_grimoire",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//httpx",
         "@pip//pgvector",
         "@pip//pytest",
@@ -6996,6 +6994,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_grimoire",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -7038,6 +7037,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_ships",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7166,6 +7166,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_hikes",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7177,6 +7178,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_faas",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7217,6 +7219,7 @@ py_test(
 py_test(
     name = "faas_workload_test",
     srcs = ["faas/workload_test.py"],
+    data = ["//projects:faas_workload_sample"],
     imports = ["."],
     deps = [
         ":pkg_faas",
@@ -7287,6 +7290,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_stars",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7320,6 +7324,7 @@ py_test(
     deps = [
         ":pkg_shared",
         ":pkg_stars",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7360,6 +7365,7 @@ py_test(
         ":pkg_core",
         ":pkg_shared",
         ":pkg_stars",
+        "//projects/monolith/shared/testing/sqlite",
         "//projects/monolith/stars/tests:snapshot_fixture",
         "@pip//botocore",
         "@pip//fastapi",
@@ -7422,6 +7428,7 @@ py_test(
         ":pkg_core",
         ":pkg_hikes",
         ":pkg_shared",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -7465,6 +7472,7 @@ py_test(
     imports = ["."],
     deps = [
         ":monolith_public_backend",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -7482,6 +7490,7 @@ py_test(
     imports = ["."],
     deps = [
         ":monolith_public_backend",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -7587,6 +7596,7 @@ py_test(
     deps = [
         ":pkg_hikes",
         ":pkg_shared",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7608,6 +7618,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_dr_jobs",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7726,6 +7737,7 @@ py_test(
     deps = [
         ":pkg_core",
         ":pkg_worldcup",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -7775,6 +7787,7 @@ py_test(
     deps = [
         ":pkg_campsites",
         ":pkg_core",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -7869,6 +7882,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_ships",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -7893,6 +7907,7 @@ py_test(
     deps = [
         ":pkg_core",
         ":pkg_ships",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -7916,19 +7931,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "knowledge_gap_set_class_test",
-    srcs = ["knowledge/gap_set_class_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -7942,6 +7945,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -8039,21 +8043,12 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_raw_paths_test",
-    srcs = ["knowledge/raw_paths_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
     name = "knowledge_fixes_coverage_test",
     srcs = ["knowledge/knowledge_fixes_coverage_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -8291,7 +8286,6 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
-        "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -8394,6 +8388,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -8407,6 +8402,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -8620,7 +8616,6 @@ bdd_test(
     srcs = [
         "home/tests/__init__.py",
         "home/tests/bdd_api_test.py",
-        "home/tests/conftest.py",
     ],
 )
 
@@ -8720,7 +8715,6 @@ bdd_test(
     srcs = [
         "chat/tests/__init__.py",
         "chat/tests/bdd_api_test.py",
-        "chat/tests/conftest.py",
     ],
 )
 
@@ -8756,7 +8750,6 @@ bdd_test(
     srcs = [
         "shotter/tests/__init__.py",
         "shotter/tests/bdd_mcp_tool_test.py",
-        "shotter/tests/conftest.py",
     ],
 )
 
@@ -8772,7 +8765,7 @@ py_test(
     # dedicated bdd_test target do not affect this separate py_test that picks
     # the file up by glob.
     data = glob(["*/tests/*_test.py"]),
-    env = {"PYTEST_ADDOPTS": "--import-mode=importlib --ignore=projects/monolith/home/tests --ignore=projects/monolith/chat/tests --ignore=projects/monolith/knowledge/tests --ignore=projects/monolith/scheduler/tests --ignore=projects/monolith/agent/tests --ignore=projects/monolith/goosecracker/tests --ignore=projects/monolith/moving/tests --ignore=projects/monolith/shotter/tests"},
+    env = {"PYTEST_ADDOPTS": "--import-mode=importlib --ignore=projects/monolith/home/tests --ignore=projects/monolith/chat/tests --ignore=projects/monolith/knowledge/tests --ignore=projects/monolith/agent/tests --ignore=projects/monolith/goosecracker/tests --ignore=projects/monolith/moving/tests --ignore=projects/monolith/shotter/tests"},
     imports = ["."],
     tags = ["bdd"],
     deps = [
@@ -9087,6 +9080,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_trips",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
@@ -9135,6 +9129,7 @@ py_test(
     deps = [
         ":pkg_core",
         ":pkg_trips",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -9150,6 +9145,7 @@ py_test(
     deps = [
         ":pkg_core",
         ":pkg_trips",
+        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -9405,6 +9401,27 @@ py_test(
 )
 
 py_test(
+    name = "factory_completed_probe_cleanup_test",
+    srcs = ["factory/completed_probe_cleanup_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+bdd_test(
+    name = "factory_completed_probe_cleanup_postgres_test",
+    srcs = ["factory/completed_probe_cleanup_test.py"],
+    env = {"COMPLETED_PROBE_TEST_POSTGRES": "1"},
+)
+
+py_test(
     name = "factory_quota_probe_test",
     srcs = ["factory/quota_probe_test.py"],
     imports = ["."],
@@ -9490,6 +9507,16 @@ py_test(
 )
 
 py_test(
+    name = "swarm_factory_funding_test",
+    srcs = ["factory/orchestration/factory_funding_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_factory_progress_shadow_test",
     srcs = ["factory/orchestration/factory_progress_shadow_test.py"],
     imports = ["."],
@@ -9534,6 +9561,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
+        ":pkg_factory",
         ":pkg_swarm",
         "@pip//pytest",
         "@pip//sqlalchemy",

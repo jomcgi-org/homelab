@@ -7,7 +7,10 @@ exports_files(glob(["*.sh"]))
 sh_test(
     name = "prefer_bb_remote_test",
     srcs = ["prefer-bb-remote_test.sh"],
-    data = [":prefer-bb-remote.sh"],
+    data = [
+        ":prefer-bb-remote.sh",
+        ":testlib.sh",
+    ],
 )
 
 sh_test(
@@ -22,25 +25,37 @@ sh_test(
 sh_test(
     name = "check_ci_pipe_mask_test",
     srcs = ["check-ci-pipe-mask_test.sh"],
-    data = [":check-ci-pipe-mask.sh"],
+    data = [
+        ":check-ci-pipe-mask.sh",
+        ":testlib.sh",
+    ],
 )
 
 sh_test(
     name = "check_public_reader_grant_test",
     srcs = ["check-public-reader-grant_test.sh"],
-    data = [":check-public-reader-grant.sh"],
+    data = [
+        ":check-public-reader-grant.sh",
+        ":testlib.sh",
+    ],
 )
 
 sh_test(
     name = "check_large_migration_sql_test",
     srcs = ["check-large-migration-sql_test.sh"],
-    data = [":check-large-migration-sql.sh"],
+    data = [
+        ":check-large-migration-sql.sh",
+        ":testlib.sh",
+    ],
 )
 
 sh_test(
     name = "check_constant_change_test_grep_test",
     srcs = ["check-constant-change-test-grep_test.sh"],
-    data = [":check-constant-change-test-grep.sh"],
+    data = [
+        ":check-constant-change-test-grep.sh",
+        ":testlib.sh",
+    ],
 )
 
 sh_test(

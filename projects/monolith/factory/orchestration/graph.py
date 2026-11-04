@@ -47,6 +47,7 @@ from factory.orchestration.models import (
 _NODE_KINDS = ("work", "gate", "merge", "fable_escalation")
 TERMINAL_RUN_STATUSES = ("succeeded", "failed", "escalated", "cancelled")
 MAX_ATTEMPTS = 10
+MAX_FUNDING_RETRIES = 2
 MAX_PLAN_EDITS = 20
 MAX_TURN_TIMEOUT_SECONDS = 43200
 _CONTEXT_FIELDS = frozenset(
@@ -175,6 +176,26 @@ def _node_deps(node: SwarmPlanNode) -> list[str]:
     return deps
 
 
+def _node_fields(node: SwarmPlanNode) -> dict:
+    return {
+        "node_key": node.node_key,
+        "kind": node.kind,
+        "prompt": node.prompt,
+        "model": node.model,
+        "effort": node.effort,
+        "deps": _node_deps(node),
+        "max_cost_usd": node.max_cost_usd,
+        "side_effects": node.side_effects,
+        "max_attempts": node.max_attempts,
+        "turn_timeout_seconds": node.turn_timeout_seconds,
+        "created_in_version": node.created_in_version,
+        "discarded_in_version": node.discarded_in_version,
+        "cancelled_in_version": node.cancelled_in_version,
+        "armed_at": node.armed_at,
+        "base_artifact_sha": node.base_artifact_sha,
+    }
+
+
 def load_graph(
     task_id: str,
     version: int | None = None,
@@ -185,28 +206,19 @@ def load_graph(
 
     with _session(session) as db:
         selected_version = _current_version(db, task_id) if version is None else version
+        from factory.orchestration.evidence_continuation import project
+
         if version is not None and version < _current_version(db, task_id):
-            return _historical_nodes(db, task_id, selected_version)
-        return [
-            {
-                "node_key": node.node_key,
-                "kind": node.kind,
-                "prompt": node.prompt,
-                "model": node.model,
-                "effort": node.effort,
-                "deps": _node_deps(node),
-                "max_cost_usd": node.max_cost_usd,
-                "side_effects": node.side_effects,
-                "max_attempts": node.max_attempts,
-                "turn_timeout_seconds": node.turn_timeout_seconds,
-                "created_in_version": node.created_in_version,
-                "discarded_in_version": node.discarded_in_version,
-                "cancelled_in_version": node.cancelled_in_version,
-                "armed_at": node.armed_at,
-                "base_artifact_sha": node.base_artifact_sha,
-            }
-            for node in _visible_nodes(db, task_id, selected_version)
+            return project(
+                db,
+                task_id,
+                _historical_nodes(db, task_id, selected_version),
+                selected_version,
+            )
+        nodes = [
+            _node_fields(node) for node in _visible_nodes(db, task_id, selected_version)
         ]
+        return project(db, task_id, nodes, selected_version)
 
 
 def _historical_nodes(db: Session, task_id: str, version: int) -> list[dict]:
@@ -232,23 +244,7 @@ def _historical_nodes(db: Session, task_id: str, version: int) -> list[dict]:
     )
     incarnations: dict[tuple[str, int], dict] = {}
     for node in rows:
-        incarnations[(node.node_key, node.created_in_version)] = {
-            "node_key": node.node_key,
-            "kind": node.kind,
-            "prompt": node.prompt,
-            "model": node.model,
-            "effort": node.effort,
-            "deps": _node_deps(node),
-            "max_cost_usd": node.max_cost_usd,
-            "side_effects": node.side_effects,
-            "max_attempts": node.max_attempts,
-            "turn_timeout_seconds": node.turn_timeout_seconds,
-            "created_in_version": node.created_in_version,
-            "discarded_in_version": node.discarded_in_version,
-            "cancelled_in_version": node.cancelled_in_version,
-            "armed_at": node.armed_at,
-            "base_artifact_sha": node.base_artifact_sha,
-        }
+        incarnations[(node.node_key, node.created_in_version)] = _node_fields(node)
     for change in changes:
         if change.op != "add_node":
             continue
@@ -280,6 +276,22 @@ def _historical_nodes(db: Session, task_id: str, version: int) -> list[dict]:
         if candidates:
             key = max(candidates, key=lambda item: item[1])
             incarnations[key]["discarded_in_version"] = change.version
+    # A funding renewal changes one bound in place. Earlier revisions retain
+    # the old bound, including when this incarnation was later discarded.
+    for change in reversed(changes):
+        if change.op == "renew_node_attempt" and change.version > version:
+            fields = json.loads(change.change_json)
+            key = (fields["node_key"], fields["created_in_version"])
+            if key in incarnations:
+                incarnations[key]["max_attempts"] = fields["before"]
+    # Re-added keys are reconstructed from add snapshots above. Replay the
+    # renewals visible at this revision on their original incarnation too.
+    for change in changes:
+        if change.op == "renew_node_attempt" and change.version <= version:
+            fields = json.loads(change.change_json)
+            key = (fields["node_key"], fields["created_in_version"])
+            if key in incarnations:
+                incarnations[key]["max_attempts"] = fields["after"]
     return [
         node
         for _, node in sorted(incarnations.items(), key=lambda item: item[0][1])
@@ -302,6 +314,78 @@ def _lock_task(db: Session, task_id: str) -> SwarmTask:
     if task is None:
         raise ValueError(f"Unknown swarm task {task_id}")
     return task
+
+
+def renew_funded_attempt(db, task_id, target, *, expected_version, request_id):
+    """Funding's exact-node amendment, within the caller's control transaction.
+
+    No run, admitted pin, identity or lifecycle marker is rewritten. Funding
+    owns hold/evidence/turn authority; graph owns history and attempt bounds.
+    """
+    task = _lock_task(db, task_id)
+    version = _current_version(db, task_id)
+    node = next(
+        (
+            n
+            for n in _visible_nodes(db, task_id, version)
+            if n.node_key == target["node_key"]
+        ),
+        None,
+    )
+    runs = _runs(db, task_id)
+    prior = [r for r in runs if r.node_key == target["node_key"]]
+    renewals = db.exec(
+        select(SwarmPlanVersion).where(
+            SwarmPlanVersion.task_id == task_id,
+            SwarmPlanVersion.op == "renew_node_attempt",
+        )
+    ).all()
+    if (
+        version != expected_version
+        or node is None
+        or _ledger_snapshot(_node_fields(node)) != target["node"]
+        or node.kind != "work"
+        or node.node_key.startswith("conductor_")
+        or not prior
+        or any(r.status != "failed" for r in prior)
+        or max(r.id for r in prior) != target["source_run_id"]
+        or _spent_attempts(prior) != node.max_attempts
+        or node.max_attempts >= MAX_ATTEMPTS
+        or len(renewals) >= MAX_FUNDING_RETRIES
+        or any(r.status not in TERMINAL_RUN_STATUSES for r in runs)
+    ):
+        raise ValueError("funding_retry_evidence_changed")
+    fields = dict(
+        node_key=node.node_key,
+        created_in_version=node.created_in_version,
+        before=node.max_attempts,
+        after=node.max_attempts + 1,
+        source_run_id=target["source_run_id"],
+        request_id=request_id,
+    )
+    node.max_attempts += 1
+    db.add(
+        SwarmPlanVersion(
+            task_id=task_id,
+            version=version + 1,
+            op="renew_node_attempt",
+            author_kind="engine",
+            author="factory:funding",
+            change_json=dumps(fields),
+            cause_kind="factory_conductor",
+            cause_ref=f"funding:{request_id}",
+            stated_reason="One evidence-bound funded retry of the same failed node",
+        )
+    )
+    _finish(
+        db,
+        task,
+        "renew_node_attempt",
+        fields,
+        version,
+        GraphOp(ok=True, version=version + 1),
+    )
+    return fields
 
 
 def _finish(
@@ -1377,6 +1461,12 @@ def admit_dispatch(
                 != backlog_refill.dispatch_schema(task_id, node_key, session=db)
             ):
                 return refuse("invalid_execution_context")
+            source = context["artifact_schema"].get("x-factory-refill-inspection")
+            if source is not None and (
+                context.get("branch") != "commit:" + source["sha"]
+                or context.get("hydration_branch") != "commit:" + source["sha"]
+            ):
+                return refuse("invalid_execution_context")
             context_fields = context_fields | {"read_only"}
         if not isinstance(context, dict) or set(context) - context_fields:
             return refuse("invalid_execution_context")
@@ -1430,7 +1520,20 @@ def admit_dispatch(
             return refuse("node_succeeded")
         if any(run.status not in TERMINAL_RUN_STATUSES for run in runs):
             return refuse("active_attempt")
-        if _spent_attempts(runs) >= node.max_attempts:
+        from factory.orchestration import evidence_continuation
+
+        projected = next(
+            n for n in load_graph(task_id, session=db) if n["node_key"] == node_key
+        )
+        grant = projected.get("evidence_continuation")
+        limit = node.max_attempts
+        if grant:
+            try:
+                evidence_continuation.validate_dispatch(db, task_id, projected, context)
+            except ValueError as exc:
+                return refuse(str(exc))
+            limit = evidence_continuation.attempt_limit(projected)
+        if _spent_attempts(runs) >= limit:
             return refuse("attempts_exhausted")
         for dependency in _node_deps(node):
             if dependency not in live or not any(
@@ -1453,10 +1556,12 @@ def admit_dispatch(
             "task_id": task_id,
             "node_key": node_key,
             "attempt": attempt,
-            "prompt": dispatch_prompt(db, task_id, node_key, node.prompt),
+            "prompt": evidence_continuation.prompt(grant)
+            if grant and node_key == grant["node_key"]
+            else dispatch_prompt(db, task_id, node_key, node.prompt),
             "model": model or node.model,
             "max_cost_usd": reservation,
-            "max_attempts": node.max_attempts + excused,
+            "max_attempts": limit + excused,
             "turn_timeout_seconds": node.turn_timeout_seconds,
             **stepped,
         }

@@ -318,13 +318,6 @@ def chart_catalog(repo: str, receipt: dict, get) -> dict[str, tuple[str, str]]:
     return result
 
 
-def chart_versions(repo: str, receipt: dict, get) -> dict[str, str]:
-    return {
-        name: version
-        for name, (_, version) in chart_catalog(repo, receipt, get).items()
-    }
-
-
 class CoveringPublications:
     """Share bounded candidate proof across the scoped fleet in one observation."""
 

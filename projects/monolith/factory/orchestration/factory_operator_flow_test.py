@@ -19,7 +19,7 @@ from factory.execution.models import AgentSession, PendingMessage
 from factory.orchestration import factory_conductor as conductor
 from factory.orchestration import factory_controls as controls
 from factory.orchestration import factory_funding_limits as funding
-from factory.orchestration import factory_progress_continuation as progress
+from factory.orchestration import factory_funding as progress
 from factory.orchestration import mcp
 from factory.orchestration.factory_models import (
     FactoryAudit,
@@ -581,7 +581,10 @@ def test_fresh_continuation_apply_rechecks_every_boundary_after_removal(
     assert ledger(engine) == before
     with Session(engine) as db:
         assert db.get(FactoryReceipt, receipt_id).task_paused
-        assert funding.latest(db, f"task-{receipt_id}", progress.ACTION) is None
+        assert (
+            funding.latest(db, f"task-{receipt_id}", progress.CONTINUATION_AUTHORIZED)
+            is None
+        )
 
 
 def test_removal_cannot_resume_or_reconcile_an_unknown_original(flow):
@@ -703,12 +706,12 @@ def test_progress_renewal_preserves_appended_staged_hold_and_funds_correction(
     before = ledger(engine)
     with Session(engine) as db:
         direction = db.get(FactoryReceipt, 927).direction_json
-    assert progress.renew("task-927")
+    assert progress.renew_continuation("task-927")
     assert (
         ledger(engine) == before
     )  # No new dispatch, model run or accounting identity.
     with Session(engine) as db:
-        lease = funding.latest(db, "task-927", progress.LEASE)
+        lease = funding.latest(db, "task-927", progress.CONTINUATION_LEASE)
         assert lease["work_turn_ceiling"] == 10
         assert lease["consecutive_failures"] == 1
         assert db.get(FactoryReceipt, 927).direction_json == direction
@@ -716,7 +719,9 @@ def test_progress_renewal_preserves_appended_staged_hold_and_funds_correction(
         assert db.get(FactoryControl, "factory").version == 272
         assert db.get(FactoryReceipt, 1027).task_paused
         assert db.get(FactoryReceipt, 996).task_paused
-    assert not progress.renew("task-927")  # Same reviewed head is never renewed twice.
+    assert not progress.renew_continuation(
+        "task-927"
+    )  # Same reviewed head is never renewed twice.
 
 
 @pytest.mark.parametrize(
@@ -744,21 +749,28 @@ def test_progress_renewal_refuses_changed_boundaries(renewed_review, change):
             gates[-1]["unknown"] = "new instruction"
         row.direction_json = json.dumps(direction)
     before = ledger(engine)
-    assert not progress.renew("task-927")
+    assert not progress.renew_continuation("task-927")
     assert ledger(engine) == before
     with Session(engine) as db:
-        assert funding.latest(db, "task-927", progress.LEASE)["work_turn_ceiling"] == 8
-        diagnostic = progress.renewal_status(db, "task-927")
+        assert (
+            funding.latest(db, "task-927", progress.CONTINUATION_LEASE)[
+                "work_turn_ceiling"
+            ]
+            == 8
+        )
+        diagnostic = progress.continuation_status(db, "task-927")
         assert diagnostic["reason"] == "progress_authority_changed"
         assert diagnostic["head_sha"] == "c" * 40
         assert diagnostic["review_id"] is not None
     # Repeated observation must not flood the durable audit.
-    assert not progress.renew("task-927")
+    assert not progress.renew_continuation("task-927")
     with Session(engine) as db:
         assert (
             len(
                 db.exec(
-                    select(FactoryAudit).where(FactoryAudit.action == progress.REFUSAL)
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == progress.CONTINUATION_REFUSED
+                    )
                 ).all()
             )
             == 1
@@ -782,7 +794,7 @@ def test_exact_operator_renewal_recovers_allocation_pause_without_regrant(
     before = ledger(engine)
     with Session(engine) as db:
         direction = db.get(FactoryReceipt, 927).direction_json
-        original = funding.latest(db, "task-927", progress.ACTION)
+        original = funding.latest(db, "task-927", progress.CONTINUATION_AUTHORIZED)
     preview = call(
         "preview",
         927,
@@ -820,7 +832,9 @@ def test_exact_operator_renewal_recovers_allocation_pause_without_regrant(
     assert len(observations["quota"]) == reads
     assert ledger(engine) == before
     with Session(engine) as db:
-        assert funding.latest(db, "task-927", progress.ACTION) == original
+        assert (
+            funding.latest(db, "task-927", progress.CONTINUATION_AUTHORIZED) == original
+        )
         row = db.get(FactoryReceipt, 927)
         assert not row.task_paused and row.direction_json == direction
         assert (
@@ -885,7 +899,12 @@ def test_operator_renewal_rechecks_pause_identity_artifact_and_quota(
     assert ledger(engine) == before
     with Session(engine) as db:
         assert db.get(FactoryReceipt, 927).task_paused
-        assert funding.latest(db, "task-927", progress.LEASE)["work_turn_ceiling"] == 8
+        assert (
+            funding.latest(db, "task-927", progress.CONTINUATION_LEASE)[
+                "work_turn_ceiling"
+            ]
+            == 8
+        )
 
 
 def test_renewed_lease_admits_existing_engine_correction_and_independent_review(
@@ -975,7 +994,7 @@ def test_renewed_lease_admits_existing_engine_correction_and_independent_review(
         fan_ins_remaining=0,
     )
     assert '"allowed": 8' in refusal and '"needed": 10' in refusal
-    assert progress.renew("task-927")
+    assert progress.renew_continuation("task-927")
     with Session(engine) as db:
         policy = funding.effective_policy(db, db.get(FactoryReceipt, 927))
     assert conductor._insert_review_round(
@@ -1002,7 +1021,7 @@ def test_appended_hold_may_require_more_checks_but_next_lease_cannot_remove_it(
             "Additional private-host regression check"
         )
         row.direction_json = json.dumps(direction)
-    assert progress.renew("task-927")
+    assert progress.renew_continuation("task-927")
     pulls[7436]["head"]["sha"] = "d" * 40
     with Session(engine) as db, db.begin():
         row = db.get(FactoryReceipt, 927)
@@ -1044,10 +1063,10 @@ def test_appended_hold_may_require_more_checks_but_next_lease_cannot_remove_it(
                 ),
             ]
         )
-    assert not progress.renew("task-927")
+    assert not progress.renew_continuation("task-927")
     with Session(engine) as db:
         assert (
-            progress.renewal_status(db, "task-927")["reason"]
+            progress.continuation_status(db, "task-927")["reason"]
             == "progress_authority_changed"
         )
 
@@ -1077,10 +1096,10 @@ def test_renewal_records_exact_observation_refusal_without_grant(
 
         monkeypatch.setattr(conductor, "github_get", unavailable)
     before = ledger(engine)
-    assert not progress.renew("task-927")
+    assert not progress.renew_continuation("task-927")
     assert ledger(engine) == before
     with Session(engine) as db:
-        status = progress.renewal_status(db, "task-927")
+        status = progress.continuation_status(db, "task-927")
         assert status["reason"] == reason
         assert status["coverage"] == "last_recorded_attempt"
         if fault == "quota":
@@ -1088,7 +1107,12 @@ def test_renewal_records_exact_observation_refusal_without_grant(
                 status["subscription_diagnostics"]["refused_model"]["provider"]
                 == "claude"
             )
-        assert funding.latest(db, "task-927", progress.LEASE)["work_turn_ceiling"] == 8
+        assert (
+            funding.latest(db, "task-927", progress.CONTINUATION_LEASE)[
+                "work_turn_ceiling"
+            ]
+            == 8
+        )
 
 
 def test_operator_renewal_refuses_same_actor_new_pause_with_retained_old_card(
@@ -1111,4 +1135,9 @@ def test_operator_renewal_refuses_same_actor_new_pause_with_retained_old_card(
     assert ledger(engine) == before
     with Session(engine) as db:
         assert db.get(FactoryReceipt, 927).task_paused
-        assert funding.latest(db, "task-927", progress.LEASE)["work_turn_ceiling"] == 8
+        assert (
+            funding.latest(db, "task-927", progress.CONTINUATION_LEASE)[
+                "work_turn_ceiling"
+            ]
+            == 8
+        )

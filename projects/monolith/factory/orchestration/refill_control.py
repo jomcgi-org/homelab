@@ -142,7 +142,14 @@ def _observations(enabled, model, hourly):
         observations[model] = _quota(model)
     if (enabled or hourly) and "astra" not in observations:
         # The existing Luna evidence job and Astra evaluation use Codex capacity.
-        observations["astra"] = _quota("astra")
+        try:
+            observations["astra"] = _quota("astra")
+        except ValueError:
+            # Hourly learning needs Codex; the refill review spills to Opus.
+            if hourly:
+                raise
+            if "opus" not in observations:
+                observations["opus"] = _quota("opus")
     return observations
 
 
@@ -212,11 +219,24 @@ def unknown_learning_sessions(db):
     ).all()
 
 
-def _plan(db, control, enabled, model, hourly, expected_version, reason, quota):
+def _plan(
+    db,
+    control,
+    enabled,
+    model,
+    hourly,
+    expected_version,
+    reason,
+    quota,
+    reset_breaker=False,
+    min_new_issues=None,
+):
     if (
         type(enabled) is not bool
         or type(hourly) is not bool
         or type(expected_version) is not int
+        or type(reset_breaker) is not bool
+        or (min_new_issues is not None and type(min_new_issues) is not int)
     ):
         raise ValueError("refill_invalid_request")
     if control.version != expected_version:
@@ -225,6 +245,7 @@ def _plan(db, control, enabled, model, hourly, expected_version, reason, quota):
         raise ValueError("refill_factory_stopped")
     policy = json.loads(control.policy_json or "{}")
     block = normalize(policy)
+    reviewer = "astra" if "astra" in quota or not enabled else "opus"
     if enabled:
         if (
             control.state != "enabled"
@@ -232,9 +253,10 @@ def _plan(db, control, enabled, model, hourly, expected_version, reason, quota):
             or policy.get("repo") not in controls.enabled_repos(policy)
         ):
             raise ValueError("refill_intake_not_enabled")
-        if not {model, "astra"} <= set(policy.get("allowed_models", [])):
+        # observe() still requires Astra, the primary reviewer.
+        if not {model, "astra", reviewer} <= set(policy.get("allowed_models", [])):
             raise ValueError("refill_model_not_allowed")
-    for required in ({model, "astra"} if enabled else set()) | (
+    for required in ({model, reviewer} if enabled else set()) | (
         {"astra"} if hourly else set()
     ):
         if required not in quota or controls._now() - aware(
@@ -248,8 +270,12 @@ def _plan(db, control, enabled, model, hourly, expected_version, reason, quota):
         # Omitted legacy policies may have an unavailable inert default.
         # Do not persist that default as an explicitly configured model.
         changed.pop("model")
+    if min_new_issues is not None:
+        changed["min_new_issues"] = min_new_issues
     normalize({**policy, "backlog_refill": changed})
-    if changed != block and refill._ledger(db, policy.get("repo", ""))[2]:
+    if (changed != block or reset_breaker) and refill._ledger(
+        db, policy.get("repo", "")
+    )[2]:
         raise ValueError("refill_in_flight")
     job = learning_job(db) if hourly else None
     if hourly:
@@ -269,18 +295,44 @@ def _plan(db, control, enabled, model, hourly, expected_version, reason, quota):
         "reason": controls._text(reason, "reason"),
         "generation": policy.get("generation"),
         "preserves_breaker_history": True,
-        "new_run_review_contract": refill.REVIEW_CONTRACT if enabled else None,
+        # An explicit operator re-arm, the same reset a policy re-post records.
+        "reset_breaker": reset_breaker,
+        "new_run_review_contract": (
+            None
+            if not enabled
+            else refill.REVIEW_CONTRACT
+            if reviewer == "astra"
+            else refill.REVIEW_FALLBACK
+        ),
     }
     proposal["preview_sha256"] = digest(proposal)
     return proposal, job
 
 
-def preview(enabled, model, hourly, expected_version, reason):
+def preview(
+    enabled,
+    model,
+    hourly,
+    expected_version,
+    reason,
+    *,
+    reset_breaker=False,
+    min_new_issues=None,
+):
     quota = _observations(enabled, model, hourly)
     with controls._locked_session() as (db, control):
         admission.lock_pool(db)
         proposal, _job_row = _plan(
-            db, control, enabled, model, hourly, expected_version, reason, quota
+            db,
+            control,
+            enabled,
+            model,
+            hourly,
+            expected_version,
+            reason,
+            quota,
+            reset_breaker,
+            min_new_issues,
         )
         return {**proposal, "subscription": quota}
 
@@ -294,6 +346,9 @@ def apply(
     reason,
     request_key,
     expected_preview_sha256,
+    *,
+    reset_breaker=False,
+    min_new_issues=None,
 ):
     request = {
         "enabled": enabled,
@@ -304,6 +359,12 @@ def apply(
         "request_key": controls._text(request_key, "request_key"),
         "expected_preview_sha256": expected_preview_sha256,
     }
+    # Older audits carry neither field; record them only when used so a
+    # replay of an earlier request still compares equal.
+    if reset_breaker:
+        request["reset_breaker"] = True
+    if min_new_issues is not None:
+        request["min_new_issues"] = min_new_issues
     actor = controls._text(actor, "actor")
 
     def replay(db):
@@ -329,13 +390,24 @@ def apply(
         if prior:
             return prior
         proposal, job = _plan(
-            db, control, enabled, model, hourly, expected_version, reason, quota
+            db,
+            control,
+            enabled,
+            model,
+            hourly,
+            expected_version,
+            reason,
+            quota,
+            reset_breaker,
+            min_new_issues,
         )
         if proposal["preview_sha256"] != expected_preview_sha256:
             raise ValueError("refill_preview_changed")
         policy = json.loads(control.policy_json)
         policy["backlog_refill"] = proposal["refill_after"]
         control.policy_json = dumps(policy)
+        if reset_breaker:
+            refill.reset(db, policy)
         if hourly and job["interval_secs"] != 3600:
             table = learning._table(db, "claude_agent", "routine_jobs")
             # Keep overdue work due. Never rearm a held job or clear its lease.

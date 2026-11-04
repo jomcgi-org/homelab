@@ -24,24 +24,6 @@ rootfsReclaim:
   # stops the retention sweep from reaching the node at all).
   enabled: "1"
 
-# Node-confirmed destroy ordering (ADR embervm/014 decision 5, #4758). ARMED
-# 2026-08-22. With the gate on, a destroy records a durable destroying intent,
-# runs the node-confirmed teardown RPC, and records destroyed ONLY when the
-# node confirms; an unconfirmed attempt leaves the session in :destroying for
-# the reconcile loop to re-drive (fail closed), instead of the legacy
-# tear-down-locally-then-record ordering.
-#
-# The chart's arming contract asked for dev to exercise the ordering first.
-# Met by the embervm-dev drill of 2026-08-22 (chart 0.27.4): create -> destroy
-# ran the full gate-on lifecycle live, including the fail-closed unconfirmed
-# -> left-:destroying -> reconcile-confirm path; evidence is on issue #4758.
-# ADR 034's harness lane remains future work and is not a dependency of this
-# flip. Costs one control-plane roll (Recreate); prod destroys are unaffected
-# while no session is being destroyed.
-#
-# Rollback: set back to false and bump the chart.
-nodeConfirmedDestroy: true
-
 opLog:
   # Postgres op-log tier (ADR embervm/007), hosted as its own database on the
   # existing monolith-pg CNPG cluster. This retires the node-pinned RWO SQLite
@@ -214,19 +196,11 @@ noded:
     enabled: true
     onepassword:
       itemPath: "vaults/k8s-homelab/items/embervm-noded-token"
-  # Step 3 of the #4691 production rollout: refuse an enveloped artifact unless
-  # the control plane supplies a short-lived capability scoped to the principal,
-  # artifact lineage, target brick, workload, generation, and lease.
-  requireRestoreCapability: true
   # SigV4 credentials for the artifact store (#4708). The embervm identity in
   # the SeaweedFS identities policy; clients sign every request once these are
   # present, and the gateway starts checking them when s3.enableAuth flips in
   # projects/platform/seaweedfs.
   store:
-    # The reader is already unconditional on every brick. New session,
-    # session-workspace, stateful, volume, and group-set exports are encrypted;
-    # shared immutable bases remain plaintext and deduplicable.
-    encrypt: true
     credentials:
       enabled: true
       onepassword:
@@ -467,12 +441,6 @@ demoPostgres:
 statefulSweeper:
   sweepIntervalMs: "1000"
   wakeMax: "30"
-
-# Arm orphaned gRPC connection cleanup in the deployed control plane. The
-# interval remains unset so the application default of 60s applies.
-grpcConnectionSweeper:
-  enabled: "1"
-  sweepIntervalMs: ""
 
 # Arm the base-retention sweep (base-durability PR-3): one-shot supervised
 # reclaim of ~290G of superseded base versions on node-4, then the ongoing

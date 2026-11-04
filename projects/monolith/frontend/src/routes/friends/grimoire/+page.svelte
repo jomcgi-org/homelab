@@ -22,16 +22,6 @@
       Saved.
     </p>{/if}
 
-  {#if data.can_administer_accounts && !data.invitation_links_enabled}
-    <aside>
-      <strong>Account invitations are unavailable right now.</strong>
-      <p>
-        Campaign owners can still invite players who have already signed in to
-        Grimoire.
-      </p>
-    </aside>
-  {/if}
-
   {#if data.invitations.length}
     <section aria-labelledby="invites-heading">
       <h2 id="invites-heading">Your invitations</h2>
@@ -83,9 +73,7 @@
         {:else if campaign.role === "player"}
           <p>Your character: {campaign.character_name}</p>
         {/if}
-        {#if data.playEnabled}<a
-            href={`/grimoire/campaigns/${campaign.id}/session`}>Open session</a
-          >{/if}
+        <a href={`/grimoire/campaigns/${campaign.id}/session`}>Open session</a>
         <a
           href={campaign.player_character_id
             ? `/grimoire/sheets#character-${campaign.player_character_id}`
@@ -195,7 +183,7 @@
               {/each}
             </ul>
             {#if campaign.is_owner}
-              {#if data.invitation_links_enabled && !campaign.join_links_error}
+              {#if !campaign.join_links_error}
                 <JoinLinks
                   {campaign}
                   {form}
@@ -304,8 +292,7 @@
     color: inherit;
     text-underline-offset: 0.2em;
   }
-  article,
-  aside {
+  article {
     border: 1px solid var(--grim-line);
     border-radius: 0.6rem;
     padding: 1.5rem;

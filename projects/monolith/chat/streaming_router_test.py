@@ -384,13 +384,11 @@ def database(monkeypatch, tmp_path):
     engine.dispose()
 
 
+@pytest.mark.parametrize("endpoint", ["explore"])
 @pytest.mark.parametrize("outcome", ["success", "entry", "partial", "close"])
 async def test_explorer_uses_live_worker_sessions_and_releases_them(
     make_response, endpoint, database, outcome
 ):
-    if endpoint != "explore":
-        pytest.skip("Only the explorer owns knowledge-store sessions")
-
     async def tool(deps):
         await explorer._search_kg(deps, "query")
         await explorer._expand_node(deps, "note")
@@ -409,11 +407,10 @@ async def test_explorer_uses_live_worker_sessions_and_releases_them(
     assert all(session.closed for session in database.sessions)
 
 
+@pytest.mark.parametrize("endpoint", ["explore"])
 async def test_explorer_cancellation_waits_for_inflight_session(
     make_response, endpoint, database, monkeypatch
 ):
-    if endpoint != "explore":
-        pytest.skip("Only the explorer owns knowledge-store sessions")
     started = asyncio.Event()
     release = threading.Event()
     loop = asyncio.get_running_loop()
@@ -461,13 +458,11 @@ async def test_unconsumed_response_has_no_producer_or_session(
     assert database.sessions == []
 
 
+@pytest.mark.parametrize("endpoint", ["explore"])
 @pytest.mark.parametrize("failure", ["store_setup", "store_read"])
 async def test_store_failures_close_live_session(
     make_response, endpoint, database, monkeypatch, failure
 ):
-    if endpoint != "explore":
-        pytest.skip("Only the explorer owns knowledge-store sessions")
-
     def store(session):
         database.check(session)
         if failure == "store_setup":

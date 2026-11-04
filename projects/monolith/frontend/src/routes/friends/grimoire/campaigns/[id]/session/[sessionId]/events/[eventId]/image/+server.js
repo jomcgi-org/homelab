@@ -7,8 +7,6 @@ const UUID = /^[0-9a-f-]{36}$/i;
 // backend audience predicate decides who sees the bytes. Each route param is
 // one encoded path segment; nothing else reaches the backend path.
 export async function GET({ fetch, cookies, params }) {
-  if (process.env.GRIMOIRE_PLAY_ENABLED !== "true")
-    error(404, "Session play is not enabled.");
   for (const id of [params.id, params.sessionId, params.eventId])
     if (!UUID.test(id)) error(404, "Handout image not found.");
   let headers;

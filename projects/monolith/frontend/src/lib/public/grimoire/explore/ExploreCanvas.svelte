@@ -1,4 +1,5 @@
 <script>
+  import { observeScheme } from "../observe-scheme.js";
   // Force-directed EXPLORE canvas: ported from the interaction/render spec at
   // the grimoire reskin mockup (the EXPLORE view's
   // exTick/exDraw/exHit/pan/zoom code), swapped from globals to a Svelte 5
@@ -82,7 +83,7 @@
   let colors = { line: "", ink: "", dim: "", faint: "", accent: "", paper: "" };
   let typeColors = {};
 
-  function readVar(name, fallback) {
+  function readVar(name, fallback = getComputedStyle(canvasEl).color) {
     if (!canvasEl) return fallback;
     const v = getComputedStyle(canvasEl).getPropertyValue(name).trim();
     return v || fallback;
@@ -91,12 +92,12 @@
   function refreshColors() {
     if (!canvasEl) return;
     colors = {
-      line: readVar("--grim-line", "#999"),
-      ink: readVar("--grim-ink", "#111"),
-      dim: readVar("--grim-text-dim", "#666"),
-      faint: readVar("--grim-text-faint", "#999"),
-      accent: readVar("--grim-accent", "#33507a"),
-      paper: readVar("--grim-paper", "#fff"),
+      line: readVar("--stroke"),
+      ink: readVar("--ink"),
+      dim: readVar("--ink-2"),
+      faint: readVar("--ink-2"),
+      accent: readVar("--accent-ink"),
+      paper: readVar("--sheet"),
     };
     const nextTypeColors = {};
     for (const n of sim) {
@@ -292,9 +293,6 @@
       const r = rFull * scale;
       const dim = focusId && n.id !== focusId && !focusAdj?.has(n.id);
       ctx.globalAlpha = (dim ? 0.32 : 1) * fade;
-      ctx.shadowColor = "rgba(20,30,50,0.25)";
-      ctx.shadowBlur = dim ? 0 : 6;
-      ctx.shadowOffsetY = dim ? 0 : 1;
       ctx.fillStyle = nodeColor(n);
       ctx.beginPath();
       ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
@@ -350,7 +348,7 @@
       const dim = focusId && !isFocus && !isNeighbor;
       ctx.font =
         (isFocus ? "600 14px " : "13px ") +
-        '"Iowan Old Style", Palatino, Georgia, serif';
+        getComputedStyle(canvasEl).getPropertyValue("--font-ui");
       const ty = p.y + r + 5;
       ctx.lineWidth = 3.5;
       ctx.strokeStyle = colors.paper;
@@ -537,12 +535,7 @@
     // instead of on the next data change. There is no dark mode today; this
     // is a harmless no-op that keeps color init robust to a future class
     // change on that root.
-    const root = canvasEl.closest(".grimoire");
-    let mo = null;
-    if (root) {
-      mo = new MutationObserver(() => refreshColors());
-      mo.observe(root, { attributes: true, attributeFilter: ["class"] });
-    }
+    const stopScheme = observeScheme(refreshColors);
 
     // Unified pointer handling (mouse, touch, pen) via Pointer Events: one
     // active pointer pans (or, if it didn't move, taps-to-select on
@@ -720,7 +713,7 @@
     return () => {
       if (rafId) cancelAnimationFrame(rafId);
       ro.disconnect();
-      mo?.disconnect();
+      stopScheme();
       canvasEl.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);

@@ -30,7 +30,7 @@
   // Relative times need a clock, and the server has a different one from the
   // browser. Starting from the snapshot the payload carries means SSR and the
   // first client render agree; the effect below then tracks real time.
-  let now = $state(data.board.snapshotted_at ?? new Date().toISOString());
+  let now = $state(data.evaluatedAt ?? new Date().toISOString());
 
   // The filters are the page's URL state, read once from the address on both
   // the server and the client so a shared link renders filtered. Each change
@@ -40,9 +40,19 @@
 
   const policy = $derived(data.board.policy ?? {});
   const book = $derived(ledger(data.board, now));
-  const everything = $derived([...book.live, ...book.queued, ...book.done]);
+  const everything = $derived([
+    ...book.live,
+    ...book.waiting,
+    ...book.uncertain,
+    ...book.queued,
+    ...book.done,
+  ]);
   const types = $derived(taskTypes(everything));
-  const live = $derived(filterTasks([...book.live, ...book.queued], filters));
+  const live = $derived(filterTasks(book.live, filters));
+  const waiting = $derived(
+    filterTasks([...book.waiting, ...book.queued], filters),
+  );
+  const uncertain = $derived(filterTasks(book.uncertain, filters));
   const done = $derived(filterTasks(book.done, filters));
   const pages = $derived(paginate(done, filters.page - 1, LEDGER_PAGE));
   const days = $derived(groupByDay(pages.rows));
@@ -101,7 +111,7 @@
     <span>Nodes</span>
     <span class="r">Starts</span>
     <span class="r">Spend</span>
-    <span class="r">Time</span>
+    <span class="r">Task age</span>
     <span></span>
   </li>
 {/snippet}
@@ -144,13 +154,14 @@
           ? "–"
           : money(task.cost_usd)}</span
       >
-      <span class="r num"><span class="mobile-label">time</span>{time}</span>
+      <span class="r num"><span class="mobile-label">task age</span>{time}</span
+      >
       <span class="go" aria-hidden="true">›</span>
     </a>
   </li>
 {/snippet}
 
-<main class="td factory-page activity-page">
+<main class="td sheet factory-page activity-page">
   <div class="frame">
     <header class="masthead">
       <h1 class="sr-only">Ember Software Factory</h1>
@@ -176,6 +187,12 @@
       <p class="unavailable">Unavailable right now.</p>
     {/if}
 
+    {#if book.stale && !data.unavailable}
+      <p class="unavailable">
+        Snapshot is stale or undated. Current execution is uncertain.
+      </p>
+    {/if}
+
     <div class="stats">
       <div>
         <div class="k">Line</div>
@@ -191,11 +208,9 @@
         </div>
       </div>
       <div>
-        <div class="k">In flight</div>
+        <div class="k">Executing</div>
         <div class="v num">
-          {book.live.length}{#if policy.max_tasks != null}<small
-              >of {policy.max_tasks}</small
-            >{/if}
+          {book.live.length}
         </div>
       </div>
       <div>
@@ -259,14 +274,23 @@
         </select></label
       >
       <span class="count num"
-        >{live.length + done.length}{#if filtering}
+        >{live.length +
+          waiting.length +
+          uncertain.length +
+          done.length}{#if filtering}
           of {everything.length}{/if}</span
       >
     </div>
 
+    <p class="m">
+      Executing means a fresh worker dispatch observed in the snapshot,
+      including invocation preparation. Task age includes waits; it is not model
+      execution time.
+    </p>
+
     <section class="panel">
       <p class="sec-label">
-        / In flight
+        / Executing
         <span class="win"
           >{data.board.snapshotted_at
             ? `as of ${isoClock(data.board.snapshotted_at)} UTC`
@@ -284,10 +308,28 @@
       </ul>
       {#if !live.length}
         <p class="empty">
-          {filtering ? "nothing matches" : "nothing in the lane"}
+          {filtering ? "nothing matches" : "no current execution confirmed"}
         </p>
       {/if}
     </section>
+
+    {#each [{ label: "Waiting / paused / landing", tasks: waiting }, { label: "Uncertain execution", tasks: uncertain }] as section (section.label)}
+      <section class="panel">
+        <p class="sec-label">
+          / {section.label}<span class="win">{section.tasks.length}</span>
+        </p>
+        <ul class="rows">
+          {@render ledgerHead()}
+          {#each section.tasks as task, index (`${task.issue_number}-${index}`)}
+            {@render row(
+              task,
+              task.state === "queued" ? "–" : relative(task.admitted_at, now),
+            )}
+          {/each}
+        </ul>
+        {#if !section.tasks.length}<p class="empty">nothing here</p>{/if}
+      </section>
+    {/each}
 
     <section class="panel">
       <p class="sec-label">

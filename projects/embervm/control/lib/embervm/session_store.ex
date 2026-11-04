@@ -39,6 +39,7 @@ defmodule Embervm.SessionStore do
   require Logger
   use GenServer
 
+  alias Embervm.InstanceTable
   alias Embervm.OpLog.Op
   alias Embervm.{SessionId, SessionState}
 
@@ -69,6 +70,23 @@ defmodule Embervm.SessionStore do
   @record_invoke_started_timeout_ms 25_000
 
   # -- Client API ------------------------------------------------------------
+
+  def session_cessation_evidence(store, session_id, expected, principal) do
+    Embervm.OpLog.safe_server_call(store, {:session_cessation_evidence, session_id, expected, principal}, 45_000)
+  end
+
+  def preview_recovery_fence(store, id, request, principal, now) do
+    Embervm.OpLog.safe_server_call(store, {:preview_recovery_fence, id, request, principal, now}, 45_000)
+  end
+
+  def apply_recovery_fence(store, id, request, principal, now, preview) do
+    Embervm.OpLog.safe_server_call(store, {:apply_recovery_fence, id, request, principal, now, preview}, 45_000)
+  end
+
+  def session_restore_allowed(store, lineage) do
+    Embervm.OpLog.safe_server_call(store, {:session_restore_allowed, lineage}, 45_000)
+  end
+
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -453,6 +471,7 @@ defmodule Embervm.SessionStore do
       idempotency_key: Map.get(row, :idempotency_key),
       stop_intent: Map.get(row, :stop_intent),
       stop_completion: Map.get(row, :stop_completion),
+      recovery_fence: Map.get(row, :recovery_fence),
       turn_seq: Map.get(row, :turn_seq, 0),
       interrupted_turn: Map.get(row, :interrupted_turn)
     }
@@ -548,6 +567,73 @@ defmodule Embervm.SessionStore do
 
   def handle_call({:record_invoke_started, session_id, dispatch_id}, _from, state) do
     do_record_invoke_started(state, session_id, dispatch_id)
+  end
+
+  def handle_call({:session_cessation_evidence, id, expected, principal}, _from, state) do
+    result = with false <- state.residency_uncertain,
+                  {:ok, proof} <- state.op_log_mod.session_cessation_evidence(state.op_log, id, expected, principal) do
+      hot_owner = :ets.foldl(fn {_sid, row}, found ->
+        found or row.session_id == id or row.lineage_id == proof.lineage_id or row.vm_id == proof.vm_id
+      end, false, state.sessions)
+      intent = Enum.any?(state.residency_intents, fn {_id, row} -> Embervm.SessionCessationEvidence.related_intent?(row, proof) end)
+      if hot_owner or intent,
+        do: {:error, :historical_current_owner, Embervm.SessionCessationEvidence.summary(proof, proof.event_count)},
+        else: {:ok, proof}
+    else
+      true -> {:error, :historical_store_unavailable, %{}}
+      error -> error
+    end
+    {:reply, result, state}
+  end
+
+  def handle_call({:session_restore_allowed, lineage}, _from, state) do
+    # Always read the durable projection. A fence append can commit after its
+    # caller times out; unchanged ETS must never reopen restoration in that case.
+    {:reply, state.op_log_mod.session_restore_allowed(state.op_log, lineage), state}
+  end
+
+  def handle_call({:preview_recovery_fence, id, request, principal, now}, _from, state) do
+    result = with false <- state.residency_uncertain,
+      {:ok, proof} <- state.op_log_mod.session_recovery_fence(state.op_log, id,
+        Embervm.SessionRecoveryFence.preview_request(request), principal, now),
+      :ok <- recovery_hot_check(state, proof) do
+      {:ok, proof}
+    else
+      true -> {:error, :recovery_store_unavailable, %{}}
+      error -> error
+    end
+    {:reply, result, state}
+  end
+
+  def handle_call({:apply_recovery_fence, id, request, principal, now, preview}, _from, state) do
+    result = with false <- state.residency_uncertain,
+      true <- request["operation"] == "apply" and id == preview.session_id and principal == preview.principal,
+      :ok <- recovery_hot_check(state, preview),
+      {:ok, proof} <- state.op_log_mod.session_recovery_fence(state.op_log, id, request, principal, now) do
+      # Only the extra audit field changes. Preserve all lifecycle/result data.
+      case :ets.lookup(state.sessions, id) do
+        [{^id, row}] -> :ets.insert(state.sessions, {id, Map.put(row, :recovery_fence, proof.recovery_fence)})
+        _ -> :ok
+      end
+      {:ok, proof}
+    else
+      value when is_boolean(value) -> {:error, :recovery_store_unavailable, %{}}
+      error -> error
+    end
+    {:reply, result, state}
+  end
+
+  defp recovery_hot_check(state, proof) do
+    owners = :ets.foldl(fn {_sid, row}, found ->
+      if row.session_id == proof.session_id or row.lineage_id == proof.lineage_id or row.vm_id == proof.vm_id,
+        do: [row | found], else: found
+    end, [], state.sessions)
+    aliases = Enum.any?(state.residency_intents, fn {_id, row} -> Embervm.SessionCessationEvidence.related_intent?(row, proof) end)
+    case owners do
+      [row] -> if not aliases and Embervm.SessionRecoveryFence.hot_owner?(row, proof),
+        do: :ok, else: {:error, :recovery_owner_changed, %{}}
+      _ -> {:error, :recovery_owner_changed, %{}}
+    end
   end
 
   def handle_call({:get, session_id}, _from, state) do
@@ -797,6 +883,7 @@ defmodule Embervm.SessionStore do
       terminal_reason: nil,
       stop_intent: nil,
       stop_completion: nil,
+      recovery_fence: nil,
       turn_seq: 0,
       interrupted_turn: nil,
       idempotency_key: idempotency_key
@@ -1223,14 +1310,7 @@ defmodule Embervm.SessionStore do
   # prior bucket and increment the next. A terminal state is neither live nor
   # banked, so it decrements without a matching increment.
   defp bump_counts(state, prior, next, workload) do
-    counts = Map.get(state.counts, workload, %{live: 0, banked: 0})
-
-    counts =
-      counts
-      |> dec_bucket(bucket_of(prior))
-      |> inc_bucket(bucket_of(next))
-
-    %{state | counts: Map.put(state.counts, workload, counts)}
+    %{state | counts: InstanceTable.bump_counts(state.counts, workload, bucket_of(prior), bucket_of(next))}
   end
 
   defp bucket_of(nil), do: nil
@@ -1238,12 +1318,6 @@ defmodule Embervm.SessionStore do
   defp bucket_of(:parked), do: :banked
   defp bucket_of(state) when state in @live_states, do: :live
   defp bucket_of(_terminal), do: nil
-
-  defp inc_bucket(counts, nil), do: counts
-  defp inc_bucket(counts, bucket), do: Map.update!(counts, bucket, &(&1 + 1))
-
-  defp dec_bucket(counts, nil), do: counts
-  defp dec_bucket(counts, bucket), do: Map.update!(counts, bucket, &max(&1 - 1, 0))
 
   # -- helpers ---------------------------------------------------------------
 

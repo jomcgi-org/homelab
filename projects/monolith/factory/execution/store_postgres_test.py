@@ -113,7 +113,8 @@ def _pause_after_session_lock(lane, monkeypatch, actor):
     """Pause only after production SQL acquired the winner's real row lock."""
     locked = Queue(maxsize=1)
     proceed = Event()
-    original = store._lock_session
+    # Every lane writer reaches the row lock here, with or without the pool.
+    original = store._lock_session_row
 
     def lock(session, session_id):
         row = original(session, session_id)
@@ -125,7 +126,7 @@ def _pause_after_session_lock(lane, monkeypatch, actor):
             assert proceed.wait(HOLDER_WAIT_SECONDS), "row-lock holder was not released"
         return row
 
-    monkeypatch.setattr(store, "_lock_session", lock)
+    monkeypatch.setattr(store, "_lock_session_row", lock)
     return locked, proceed
 
 
@@ -153,9 +154,20 @@ def _wait_for_blocked_connection(lane, actor, blocker_pid):
 
 
 def _hold(lane):
-    return store.finish_unknown_pending_sync(
-        lane.session_id, 1, OWNER, 1, "observer_lost"
-    )
+    with Session(store.get_engine()) as session:
+        held = store.finish_unknown_pending_in_session(
+            session,
+            lane.session_id,
+            1,
+            OWNER,
+            1,
+            "observer_lost",
+            expected_guest_id="guest-retain",
+            expected_workflow_id=None,
+        )
+        if held:
+            session.commit()
+        return held
 
 
 def _complete(lane):
@@ -227,7 +239,6 @@ def test_session_lock_heartbeat_does_not_queue_on_pool_holder(lane, monkeypatch)
     """A long capacity_pool holder no longer delays a heartbeat past its lease."""
     from factory.execution import admission
 
-    monkeypatch.setenv("AGENT_CLAIM_HEARTBEAT_SESSION_LOCK_ENABLED", "true")
     holder = lane.engine.connect()
     transaction = holder.begin()
     try:

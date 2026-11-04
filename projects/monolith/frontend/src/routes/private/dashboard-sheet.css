@@ -1,0 +1,800 @@
+/* Dashboard-owned layout on the shared sheet. One column read top to
+ * bottom: masthead, what needs a hand, the keypad, today, shipping, chat.
+ * Descendant tools keep their own styles and scroll. */
+
+/* The trail docks inline on a wide screen; the chrome row carries it on
+ * a phone, so the inline copy hides there (same rule as the spine dock). */
+.dashboard .dashboard-trail {
+  display: inline-block;
+}
+
+.dashboard .content > * + * {
+  margin-top: 1.5rem;
+}
+
+/* ── Masthead ── */
+.dashboard .masthead {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 1rem;
+}
+.dashboard .greeting {
+  margin: 0;
+  font-size: clamp(1.6rem, 4vw, 2.4rem);
+  font-weight: 650;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+}
+.dashboard .greeting-mark {
+  color: var(--accent-ink);
+}
+.dashboard .masthead-date {
+  margin: 0.4rem 0 0;
+  color: var(--ink-2);
+  font-size: 0.92rem;
+}
+.dashboard .clock {
+  font: 1.35rem var(--font-code);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ── Bands ──
+   The sheet's head band, carried by the section headings themselves so the
+   outline reads as a diagram: band, rows, foot. */
+.dashboard h2.ed-head {
+  gap: 0.35em 0.7em;
+  font-weight: 500;
+}
+.dashboard .ed-head--stacked {
+  border-top: 1px solid var(--stroke);
+}
+.dashboard .sub-label {
+  margin: 0;
+  padding: 0.5rem 1rem;
+  border-block: 1px solid var(--line);
+  font: 500 0.72rem var(--font-code);
+  color: var(--ink-2);
+}
+.dashboard .none,
+.dashboard .unavail {
+  padding: 0.9rem 1rem;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.88rem;
+}
+
+/* ── Needs you ── */
+.dashboard .needs .answered {
+  margin: 0;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--line);
+  color: var(--ok);
+  font-size: 0.88rem;
+}
+.dashboard .needs .decision + .needs-list,
+.dashboard .needs .decision + .none,
+.dashboard .needs .queue + .needs-list {
+  border-top: 1px solid var(--stroke);
+}
+/* Anything else red: one line each, mark, name, what it is. The whole row
+   is the target: a failing PR opens the PR, a workload asks the cluster. */
+.dashboard .needs-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dashboard .needs-list li + li {
+  border-top: 1px solid var(--line);
+}
+.dashboard .need {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  min-height: 48px;
+  padding: 0.55rem 1rem;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.dashboard .need:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.dashboard .need-mark {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  background: var(--tone-disk);
+}
+.dashboard .need-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.92rem;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.dashboard .need-title.mono {
+  font: 500 0.86rem var(--font-code);
+}
+.dashboard .need-tag {
+  flex: none;
+  color: var(--ink-2);
+  font: 0.72rem var(--font-code);
+}
+
+/* The readings strip: cluster, then factory. One cell each, the dot its
+   only colour. */
+.dashboard .pulse {
+  border: 1px solid var(--stroke);
+}
+.dashboard .pulse .reading {
+  display: flex;
+  flex: 1 1 14em;
+  align-items: center;
+  gap: 0.55em;
+  min-height: 44px;
+  padding: 0.45em 1rem;
+  border-top: 0;
+}
+.dashboard .pulse .reading:first-child {
+  border-left: 0;
+}
+.dashboard .pulse .reading a {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: 0.55em;
+  min-height: 44px;
+  color: inherit;
+  text-decoration: none;
+}
+.dashboard .pulse .reading a:hover {
+  color: var(--accent-ink);
+}
+.dashboard .pulse-sub {
+  color: var(--ink-2);
+}
+.dashboard .pulse-dot,
+.dashboard .ci-dot {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 0.5rem;
+  height: 0.5rem;
+  background: var(--ink-2);
+}
+.dashboard .pulse-dot--ok,
+.dashboard .ci-dot--ok {
+  background: var(--ok);
+}
+.dashboard .pulse-dot--bad,
+.dashboard .ci-dot--bad {
+  background: var(--tone-disk);
+}
+.dashboard .pulse-dot--warn,
+.dashboard .ci-dot--pending {
+  background: var(--warn);
+}
+.dashboard .pulse--bad .reading:first-child {
+  color: var(--ink);
+}
+
+/* ── Keypad ──
+   A divided row of keys, each a 44px cell: label in mono, the decisions
+   count in ink, an arrow on the three that leave the host. */
+.dashboard .keys > li {
+  display: flex;
+  padding: 0;
+}
+.dashboard .key {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: 0.5em;
+  min-height: 44px;
+  padding: 0 1rem;
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 0.8rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.dashboard .key:hover {
+  background: var(--band);
+  color: var(--accent-ink);
+}
+.dashboard .key .num {
+  padding: 0 0.4em;
+  border: 1px solid var(--ink);
+  font-weight: 600;
+  line-height: 1.4;
+}
+.dashboard .key .ext {
+  color: var(--ink-2);
+  font-size: 0.9em;
+}
+
+/* ── Panels ──
+   Tools across the top, today and shipping side by side, ask across the
+   foot. On a phone each becomes a bottom sheet (see Phone below). */
+.dashboard .panels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-areas: "tools tools" "today shipping" "ask ask";
+  gap: 1.5rem;
+  align-items: start;
+}
+.dashboard .panel--tools {
+  grid-area: tools;
+}
+.dashboard .panel--today {
+  grid-area: today;
+}
+.dashboard .panel--shipping {
+  grid-area: shipping;
+}
+.dashboard .panel--ask {
+  grid-area: ask;
+}
+.dashboard .edition {
+  min-width: 0;
+}
+.dashboard .panel {
+  margin: 0;
+}
+.dashboard .grab {
+  display: block;
+}
+.dashboard .grab-bar,
+.dashboard .grab .close,
+.dashboard .dock,
+.dashboard .glance,
+.dashboard .scrim {
+  display: none;
+}
+.dashboard .sub-label--tasks {
+  border-top: 1px solid var(--stroke);
+}
+
+/* ── Deck ── */
+.dashboard .queue {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--stroke);
+}
+.dashboard .queue li + li {
+  border-top: 1px solid var(--line);
+}
+.dashboard .queued {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 48px;
+  padding: 0.6rem 1rem;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dashboard .queued:active {
+  background: var(--band);
+}
+.dashboard .queued-label {
+  flex: none;
+  color: var(--ink-2);
+  font: 0.72rem var(--font-code);
+}
+.dashboard .queued-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.9rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .dashboard .deck-front {
+    animation: deck-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+}
+@keyframes deck-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+.dashboard .event-list,
+.dashboard .task-list,
+.dashboard .plain-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.dashboard .event-row,
+.dashboard .task-row,
+.dashboard .pr-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.65rem;
+  padding: 0.7rem 1rem;
+  font-size: 0.88rem;
+  min-width: 0;
+}
+.dashboard .event-row + .event-row,
+.dashboard .task-row + .task-row,
+.dashboard .plain-list li + li {
+  border-top: 1px solid var(--line);
+}
+.dashboard .event-title,
+.dashboard .task-title,
+.dashboard .pr-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dashboard .event-time,
+.dashboard .event-meta,
+.dashboard .task-due,
+.dashboard .mono,
+.dashboard .dim {
+  font-family: var(--font-code);
+  font-size: 0.75rem;
+}
+.dashboard .event-time {
+  min-width: 3rem;
+}
+.dashboard .event-meta,
+.dashboard .task-due,
+.dashboard .dim {
+  color: var(--ink-2);
+}
+.dashboard .event-location {
+  display: block;
+  color: var(--ink-2);
+  font-size: 0.8rem;
+}
+.dashboard .event-row--past .event-title {
+  text-decoration: line-through;
+}
+.dashboard .event-row--active {
+  background: var(--band);
+  border-left: 2px solid var(--accent-ink);
+}
+.dashboard .task-row {
+  align-items: center;
+  padding-block: 0.35rem;
+}
+/* A thumb target: 44px, the mark drawn inside it. */
+.dashboard .task-check {
+  flex: 0 0 2.75rem;
+  width: 2.75rem;
+  height: 2.75rem;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--stroke);
+  background: var(--sheet);
+  color: var(--ink);
+  padding: 0.75rem;
+  cursor: pointer;
+}
+.dashboard .task-check svg {
+  width: 100%;
+  stroke: transparent;
+}
+.dashboard .task-check--done svg {
+  stroke: var(--ok);
+}
+.dashboard .task-error {
+  border-top: 1px solid var(--line);
+  color: var(--tone-disk);
+}
+.dashboard .task-title--done {
+  text-decoration: line-through;
+}
+.dashboard .task-title--weekly {
+  font-weight: 550;
+}
+.dashboard .pr-row {
+  min-height: 44px;
+  align-items: center;
+  color: var(--ink);
+  text-decoration: none;
+}
+.dashboard .pr-row:hover {
+  background: var(--band);
+  color: var(--accent-ink);
+}
+
+/* ── Ask the cluster ── */
+/* The log grows with the conversation up to the panel's cap, so an empty
+   panel is one line of hint and the input, not a blank window. */
+.dashboard .panel--ask .cluster-chat {
+  padding: 0.75rem 1rem 0.5rem;
+  min-height: 0;
+}
+.dashboard .panel--ask .chat-log {
+  flex: 1 1 auto;
+}
+.dashboard .panel--ask {
+  scroll-margin-top: 1rem;
+}
+
+.dashboard :is(a, button, input):focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: -2px;
+}
+
+/* ── Phone ──
+   One screen, no page scroll. The masthead and readings sit at the top, the
+   decision deck fills the middle and scrolls inside itself, and the dock
+   holds the rest in thumb reach. A dock key slides its panel up as a sheet
+   over a scrim; the sheet scrolls inside itself and follows a drag on its
+   grab bar. */
+@media (max-width: 760px) {
+  html:has(main.dashboard),
+  body:has(main.dashboard) {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  body:has(main.dashboard) .td.chrome {
+    position: absolute;
+    top: 0.6rem;
+    right: 1rem;
+    padding: 0;
+    background: none;
+  }
+  body:has(main.dashboard) .td.chrome .trail-slot {
+    display: none;
+  }
+  /* An open sheet dims everything behind it, the scheme switch included. */
+  body:has(main.dashboard.sheet-open) .td.chrome {
+    z-index: 0;
+  }
+  .dashboard.sheet {
+    height: 100dvh;
+    padding: 0;
+    overflow: hidden;
+  }
+  .dashboard .frame,
+  .dashboard .journal,
+  .dashboard .content {
+    height: 100%;
+  }
+  /* One calm column: type and hairlines carry the structure, not boxes. */
+  .dashboard .content {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+    padding: 1rem 1.25rem calc(4.5rem + env(safe-area-inset-bottom, 0px));
+  }
+  .dashboard .content > * + * {
+    margin-top: 0;
+  }
+  .dashboard .dashboard-trail {
+    display: none;
+  }
+  .dashboard .masthead {
+    align-items: baseline;
+    padding: 0 2.75rem 0 0;
+    border: 0;
+  }
+  .dashboard .greeting {
+    font-size: 1.2rem;
+    letter-spacing: -0.01em;
+  }
+  .dashboard .masthead-date {
+    margin-top: 0.1rem;
+    color: var(--ink-2);
+    font-size: 0.78rem;
+  }
+  .dashboard .clock {
+    display: none;
+  }
+  body:has(main.dashboard) .td.chrome .scheme {
+    border-color: transparent;
+    background: none;
+  }
+
+  /* Readings: two quiet lines. */
+  .dashboard .pulse {
+    display: grid;
+    gap: 0.15rem;
+    border: 0;
+  }
+  .dashboard .pulse .reading,
+  .dashboard .pulse .reading + .reading {
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    font-size: 0.76rem;
+  }
+  .dashboard .pulse .reading a {
+    min-height: 32px;
+  }
+  .dashboard .pulse .reading:first-child {
+    min-height: 32px;
+  }
+
+  /* Needs you: a label, then rows on hairlines. As tall as what it holds,
+     scrolling inside itself past that. */
+  .dashboard .needs {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    border: 0;
+    background: none;
+  }
+  .dashboard .needs > .ed-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 0 0 0.4rem;
+    border: 0;
+    background: var(--sheet);
+    color: var(--ink-2);
+    font: 500 0.68rem var(--font-code);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .dashboard .needs .none {
+    padding: 0.5rem 0;
+    font-size: 0.85rem;
+  }
+  .dashboard .needs .answered {
+    padding: 0.4rem 0;
+    border: 0;
+  }
+  .dashboard .needs-list,
+  .dashboard .needs .queue {
+    border-top: 1px solid var(--line);
+  }
+  .dashboard .needs .decision + .needs-list,
+  .dashboard .needs .queue + .needs-list {
+    border-top: 1px solid var(--line);
+  }
+  .dashboard .need,
+  .dashboard .needs .queued {
+    min-height: 44px;
+    padding: 0.45rem 0;
+  }
+  .dashboard .need-title {
+    font-size: 0.86rem;
+  }
+  .dashboard .need-title.mono {
+    font-size: 0.8rem;
+  }
+  .dashboard .need-tag {
+    font-size: 0.68rem;
+  }
+
+  /* The decision card, sized for a thumb, not a poster. */
+  .dashboard .needs .decision {
+    padding: 0 0 0.75rem;
+  }
+  .dashboard .decision .ref a {
+    min-height: 32px;
+  }
+  .dashboard .decision .title {
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--ink-2);
+  }
+  .dashboard .decision .question {
+    margin-top: 0.3rem;
+    font-size: 0.98rem;
+  }
+  .dashboard .decision summary {
+    min-height: 36px;
+    font-size: 0.72rem;
+  }
+  .dashboard .decision .answers {
+    gap: 0;
+    margin-top: 0.4rem;
+    border-top: 1px solid var(--line);
+  }
+  .dashboard .decision .answer {
+    min-height: 48px;
+    padding: 0.55rem 0 0.55rem 0.75rem;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-left: 2px solid transparent;
+    background: none;
+  }
+  .dashboard .decision .answer.recommended {
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-left: 2px solid var(--ink);
+  }
+  .dashboard .decision .label {
+    font-size: 0.9rem;
+  }
+  .dashboard .decision .effect {
+    font-size: 0.76rem;
+  }
+
+  /* Today and shipping: one line each, a label and what is in it. */
+  .dashboard .glance {
+    display: grid;
+    border-top: 1px solid var(--line);
+  }
+  .dashboard .glance-row {
+    display: grid;
+    grid-template-columns: 5.5rem minmax(0, 1fr);
+    align-items: center;
+    min-height: 44px;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    background: none;
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .dashboard .glance-label {
+    color: var(--ink-2);
+    font: 500 0.68rem var(--font-code);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .dashboard .glance-line {
+    overflow: hidden;
+    font-size: 0.86rem;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* The ask bar and Tools, in thumb reach above the home indicator. */
+  .dashboard .dock {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.5rem 1.25rem calc(0.5rem + env(safe-area-inset-bottom, 0px));
+    background: var(--sheet);
+  }
+  .dashboard .ask-bar {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 44px;
+    padding: 0 0.9rem;
+    border: 1px solid var(--line);
+    background: none;
+    color: var(--ink-2);
+    font: inherit;
+    font-size: 0.88rem;
+    text-align: left;
+    cursor: text;
+    touch-action: manipulation;
+  }
+  .dashboard .dock-key {
+    min-height: 44px;
+    padding: 0 0.5rem;
+    border: 0;
+    background: none;
+    color: var(--ink-2);
+    font: 500 0.76rem var(--font-code);
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+
+  /* Sheets. */
+  .dashboard .panels {
+    display: contents;
+  }
+  .dashboard .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: block;
+    border: 0;
+    background: color-mix(in srgb, var(--ink) 35%, transparent);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .dashboard.sheet-open .scrim {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .dashboard .panel {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    max-height: 86dvh;
+    border: 0;
+    border-top: 1px solid var(--ink);
+    background: var(--sheet);
+    /* Closed sheets wait below the fold; inert keeps them out of focus and
+       the accessibility tree. No visibility toggle: the shared
+       reduced-motion rule would transition it and leave an opening sheet
+       unfocusable for a frame. */
+    transform: translateY(100%);
+  }
+  .dashboard .panel.open {
+    transform: translateY(var(--drag, 0px));
+  }
+  .dashboard .grab {
+    position: relative;
+    flex: none;
+    touch-action: none;
+    cursor: grab;
+  }
+  .dashboard .grab-bar {
+    display: block;
+    width: 2.5rem;
+    height: 4px;
+    margin: 0.5rem auto 0;
+    background: var(--stroke);
+  }
+  .dashboard .grab .ed-head {
+    border-bottom: 1px solid var(--stroke);
+    background: none;
+    padding-right: 5rem;
+  }
+  .dashboard .grab .close {
+    position: absolute;
+    right: 0.25rem;
+    bottom: 0;
+    display: inline-flex;
+    align-items: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 0.75rem;
+    border: 0;
+    background: none;
+    color: var(--accent-ink);
+    font: 500 0.82rem var(--font-code);
+    cursor: pointer;
+  }
+  .dashboard .panel-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .dashboard .panel--ask .cluster-chat {
+    max-height: none;
+  }
+  .dashboard .task-row {
+    flex-wrap: wrap;
+  }
+  .dashboard .task-due {
+    margin-left: auto;
+  }
+}
+
+@media (max-width: 760px) and (prefers-reduced-motion: no-preference) {
+  .dashboard .scrim {
+    transition: opacity 0.24s ease;
+  }
+  .dashboard .panel {
+    transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .dashboard .panel.dragging {
+    transition: none;
+  }
+}

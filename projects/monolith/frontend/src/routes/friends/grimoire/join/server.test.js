@@ -53,7 +53,6 @@ function event(body, options = {}) {
 }
 beforeEach(() => {
   process.env.API_BASE = "http://backend.test";
-  process.env.GRIMOIRE_INVITATION_LINKS_ENABLED = "true";
 });
 
 describe("public invitation landing", () => {
@@ -72,19 +71,6 @@ describe("public invitation landing", () => {
     expect(result.headers.get("content-security-policy")).not.toContain(
       "unsafe-inline",
     );
-  });
-
-  it("is disabled without a flag and clears any fragment without making requests", async () => {
-    delete process.env.GRIMOIRE_INVITATION_LINKS_ENABLED;
-    const result = GET();
-    expect(result.status).toBe(503);
-    const html = await result.text();
-    expect(html).toContain("unavailable");
-    expect(html).toContain("history.replaceState");
-    expect(html).not.toContain("fetch(");
-    const request = event({ action: "capture", token });
-    expect((await POST(request)).status).toBe(503);
-    expect(request.fetch).not.toHaveBeenCalled();
   });
 
   it("captures the bearer in a secure resume cookie and serializes only metadata", async () => {

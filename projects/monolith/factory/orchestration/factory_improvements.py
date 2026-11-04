@@ -13,6 +13,7 @@ from core.clock import aware
 from sqlmodel import select
 
 from factory.orchestration import factory_controls as controls
+from factory.orchestration import factory_improvement_fence as fence
 from factory.orchestration.factory_improvement_preview import (
     PreviewPolicy,
     digest,
@@ -137,6 +138,14 @@ def _database_context(db, control, *, scout_receipt_id=None):
         }
         for row in active
     ]
+    # Work that is waiting on a person, a pause or an unknown execution outcome
+    # is not delivery in progress. Repair preparation is read-only and must not
+    # wait on it; the work itself stays owned and untouched in `owners`.
+    progressing = [
+        row
+        for row in active
+        if row.state in fence.PROGRESSING_STATES and not row.task_paused
+    ]
     sweep = db.exec(
         select(FactoryAudit)
         .where(FactoryAudit.action == "intake_evaluated")
@@ -155,7 +164,7 @@ def _database_context(db, control, *, scout_receipt_id=None):
             and detail.get("generation") == policy.get("generation")
             and counts.get("delivery") == 0
             and counts.get("advisory") == 0
-            and not owners
+            and not progressing
         )
     return {
         "control_version": control.version,
@@ -174,6 +183,49 @@ def _review_digest(db_context, inventory):
     return digest({**db_context, "inventory": inventory})
 
 
+def recovery_events(db):
+    # Private advisory evidence, outside the stable authorization digest.
+    # Audit IDs preserve exact identity; a capped sample is not a total.
+    events = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.action.in_(
+                (
+                    "pause_task",
+                    "resume_task",
+                    "allocation_recovery_required",
+                    "paused_card_created",
+                    "paused_card_superseded",
+                    "recurring_blocker",
+                    "workflow_stranded",
+                    "problem_issue_recovery_observed",
+                )
+            )
+        )
+        .order_by(FactoryAudit.id.desc())
+        .limit(40)
+    ).all()
+    recovery = []
+    for event in events:
+        detail = json.loads(event.detail_json)
+        reason = detail.get("reason")
+        recovery.append(
+            {
+                "audit_id": event.id,
+                "task_id": event.task_id,
+                "action": event.action,
+                "at": aware(event.created_at).isoformat(),
+                "detail": {
+                    key: detail.get(key)
+                    for key in ("ok", "code", "grant_id", "decision_id")
+                },
+                "reason": str(reason)[:500] if reason is not None else None,
+                "reason_truncated": reason is not None and len(str(reason)) > 500,
+            }
+        )
+    return recovery
+
+
 def context(*, scout_receipt_id=None) -> dict:
     """Fresh read-only context for a bounded operator review, no reservations."""
     inventory = _inventory()
@@ -182,10 +234,12 @@ def context(*, scout_receipt_id=None) -> dict:
         control = db.get(FactoryControl, "factory")
         current = _database_context(db, control, scout_receipt_id=scout_receipt_id)
         history = _history(db, current["policy"])
+        recovery = recovery_events(db)
     return {
         **current,
         "inventory": inventory,
         "improvement_history": history,
+        "recovery_events": recovery,
         "quota": quota,
         "review_digest": _review_digest(current, inventory),
         "captured_at": controls._now().isoformat(),

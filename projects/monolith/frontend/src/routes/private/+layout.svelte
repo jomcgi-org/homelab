@@ -1,25 +1,13 @@
 <script>
-  import "$lib/private/dashboard-theme.css";
+  import "$lib/public/styles/technical-drawing.css";
+  import SchemePreference from "$lib/public/components/SchemePreference.svelte";
   import { page } from "$app/stores";
 
   let { children } = $props();
-  // Clean light/dark from the color scheme, matching the document pages
-  // under it; the clock-drift palette stays a dashboard-only feature.
-  let dark = $state(
-    typeof window !== "undefined" &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches,
-  );
-  $effect(() => {
-    const scheme = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => (dark = scheme.matches);
-    apply();
-    scheme.addEventListener("change", apply);
-    return () => scheme.removeEventListener("change", apply);
-  });
 
-  // Minimal private-tier chrome: the shared Nav is suppressed for the whole
-  // tier (see routes/+layout.svelte), so every private page other than the
-  // dashboard root gets a small fixed "back to dashboard" link.
+  // Minimal private-tier chrome: the tier has no nav bar (the dashboard
+  // root is the nav), so every private page other than the dashboard root
+  // gets a small "back to dashboard" link.
   //
   // Suppressed on:
   // - the dashboard root itself ("/"): it IS the nav
@@ -30,57 +18,73 @@
   // - /chat and /notes: both render their own top-left chrome (the explorer
   //   header and the notes status bar) that the link would overlap
   // - /qwen: its session list fills the top-left; the page links home itself
+  // - /updates: carries its own Trail and scheme switch, like the factory
+  //   documents
   //
   // $page.url reflects the browser URL (hooks.js reroute keeps private
   // paths un-prefixed), but strip a literal /private prefix too in case a
   // route is hit directly.
+  let path = $derived(
+    $page.url.pathname.replace(/^\/private(?=\/|$)/, "") || "/",
+  );
   let showBack = $derived.by(() => {
-    const path = $page.url.pathname.replace(/^\/private(?=\/|$)/, "") || "/";
     if (path === "/") return false;
     if (/^\/(app|review|chat|notes|qwen)(\/|$)/.test(path)) return false;
-    // These factory documents carry their own Trail and persisted scheme
-    // switch. Execution routes still need the legacy dashboard link.
-    if (/^\/factory(?:\/?|\/escalations\/?|\/work-items\/[^/]+\/?)$/.test(path))
+    // The factory documents, the execution console and the updates journal
+    // carry their own Trail, whose root is the dashboard, and their own
+    // persisted scheme switch.
+    if (
+      /^\/factory(?:\/?|\/escalations\/?|\/work-items\/[^/]+\/?|\/execution(?:\/.*)?)$/.test(
+        path,
+      )
+    )
       return false;
+    if (/^\/updates\/?$/.test(path)) return false;
     return true;
   });
 </script>
 
-{#if showBack}
-  <a class="back-to-dashboard shell {dark ? 'night' : 'day'}" href="/"
-    >&larr; dashboard</a
-  >
-{/if}
+<!-- The back link can be the only sheet surface on a fresh child load.
+     The shared bootstrap restores the stored scheme before it is painted. -->
+<SchemePreference />
 
+{#snippet backLink()}
+  <a class="back-to-dashboard td-chrome" href="/">&larr; dashboard</a>
+{/snippet}
+
+{#if showBack}{@render backLink()}{/if}
 {@render children()}
 
 <style>
-  /* A quiet text link. This renders OUTSIDE any page's .shell, so it carries
-     the current period itself. dashboard-theme.css's .shell class only defines
-     custom properties, making the matching palette resolve here without
-     inheriting any page styling. */
+  /* Token-only chrome must not match body:has(.td): full-screen children
+     own their scroll containers. The shared palette follows data-theme. */
   .back-to-dashboard {
     position: fixed;
-    top: 1.1rem;
+    top: 8px;
     left: 1.2rem;
     z-index: 1000;
-    font-family: var(--font-ui);
+    display: inline-flex;
+    align-items: center;
+    /* The one control a child page is guaranteed to have: a thumb target. */
+    min-height: 44px;
+    font-family: var(--font-code);
     font-size: 13px;
+    line-height: 1.3;
     font-weight: 500;
     letter-spacing: 0.01em;
     color: var(--ink-2);
     text-decoration: none;
-    padding: 4px 2px;
-    transition: color 0.15s ease;
+    padding: 6px 12px;
+    border: 1px solid var(--stroke);
+    background: var(--sheet);
   }
 
   .back-to-dashboard:hover {
-    color: var(--accent);
+    color: var(--accent-ink);
   }
 
   .back-to-dashboard:focus-visible {
-    outline: 1.5px solid var(--accent);
+    outline: 2px solid var(--accent-ink);
     outline-offset: 2px;
-    border-radius: 4px;
   }
 </style>

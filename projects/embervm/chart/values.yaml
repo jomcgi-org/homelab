@@ -228,37 +228,6 @@ opLog:
   # audit is retained by the configured telemetry backend.
   journalHorizonDays: 30
 
-# SpecTrace gate for spec validation (GitHub issue #4770). A debug-gated, spec-shaped
-# trace that validates TLA+ specs against real behaviour, read once at boot. OFF means
-# no process, no connection, no sweep.
-#
-# Backend selection reuses EMBERVM_OPLOG_DSN: set means the Postgres backend (its own
-# table in the existing `embervm_oplog` database), unset means SQLite. This mirrors the
-# Node-confirmed destroy ordering (ADR embervm/014 decision 5). FALSE keeps the
-# legacy ordering: tear the VM down locally, then record destroyed. TRUE records
-# the durable destroying intent, runs the node-confirmed teardown RPC, and
-# records destroyed ONLY when the node confirms.
-#
-# #4758: the control plane has read this gate since the ADR landed and no
-# template rendered it, so the ordering has never run in any environment and two
-# modeled invariants (NoDestroyBeforeConfirm, DestroyIntentPrecedesRecord)
-# describe behaviour production has never performed. Production stays false
-# until dev has exercised it under the conformance harness.
-nodeConfirmedDestroy: false
-
-# Flush exact unfinished invokes on control-plane restart before idle parking.
-# Default off for staged rollout; recovery evidence is never fabricated.
-restartFlushInflightInvokes: false
-
-# Instance-scoped session drain. Read at boot as
-# EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS. False (the default) keeps the old
-# behaviour: a brick drain edge interrupts and banks every running session on
-# the node. True drains only the sessions placed on the draining brick instance
-# (node + pod_uid), so the autoscaler's idle drain of an empty brick does not
-# interrupt live turns on a co-located brick of another size class. A session
-# whose placement is unknown is still drained.
-drainInstanceScopedSessions: false
-
 # Instance-scoped class drain for serving, stateful and group workloads. Read
 # at boot as EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS. False (the default) keeps
 # the old behaviour: a brick drain edge force-banks every serving, stateful and
@@ -267,11 +236,12 @@ drainInstanceScopedSessions: false
 # neighbours' guests. A guest whose placement is unknown is still drained.
 drainInstanceScopedWorkloads: false
 
-# EMBERVM_CROSS_NODE_REJOIN. False preserves node-pinned workspace rejoin.
-# True permits another brick only after a synchronous export proves the current
-# unattached workspace fingerprint. CP restarts discard that in-memory proof.
-crossNodeRejoin: false
-
+# SpecTrace gate for spec validation (GitHub issue #4770). A debug-gated, spec-shaped
+# trace that validates TLA+ specs against real behaviour, read once at boot. OFF means
+# no process, no connection, no sweep.
+#
+# Backend selection reuses EMBERVM_OPLOG_DSN: set means the Postgres backend (its own
+# table in the existing `embervm_oplog` database), unset means SQLite. This mirrors the
 # existing op_log_mod/0 selection and avoids inventing a second switch.
 specTrace:
   # Default OFF in production. ON in dev for local spec validation.
@@ -1112,22 +1082,16 @@ demoPostgres:
 statefulSweeper:
   sweepIntervalMs: ""
   wakeMax: ""
+  # Resident-memory hysteresis for pressure banking, which always runs.
   pressureBanking:
-    # Lane lands off and is armed by a later values-only change after live verification.
-    # Cross-brick stateful relight is currently broken (#5502) and every extra bank
-    # is another exposure to it.
-    enabled: false
     highWaterFraction: 0.85
     lowWaterFraction: 0.70
     idleFloorMs: 5000
     sessionPressureIdleFloorMs: 60000
 
-# gRPC connection sweep gate for orphaned channels. Empty means off: the
-# sweeper only logs what it would clean up and leaves connections untouched.
-# Set enabled to "1" or "true" to arm the destructive sweep, which terminates
-# orphaned connections. This is a deploy values gate, not an application default.
+# Orphaned gRPC connection sweep, always on. Empty interval uses the 60s
+# application default.
 grpcConnectionSweeper:
-  enabled: ""
   sweepIntervalMs: ""
 
 # Base-retention sweep gate (base-durability PR-3, control-plane env). Empty
@@ -1408,15 +1372,6 @@ noded:
   # Keep this aligned with noded's daemon fallback.
   memRejectFloorMib: 512
 
-  # Use Firecracker dirty-page diffs for repeated memory banks. Disabled by
-  # default until the staged XFS path in #5699 is validated on a dev node and
-  # the #4970 demo-postgres rollout records latency and correctness. The merge
-  # helper uses FICLONE on capable storage and falls back to a byte copy on ext4.
-  diffBanking: false
-  # Comma-separated workload allowlist for dirty tracking at both Prime and
-  # Relight. Keep task and park-only workloads outside the diff path.
-  diffBankingWorkloads: sandbox-session
-
   # New banks write bundle.json v1 with the ext4 UUID of their actual rootfs.
   # Keep rejection off for the observation roll: unstamped v0 is always
   # grandfathered, while invalid stamped v1 bundles are logged. A staged values
@@ -1571,11 +1526,6 @@ noded:
     # Watches GCE's instance/preempted metadata value with hanging GETs. Landed
     # off so a deployment can verify the mechanism before arming it in values.
     preemptionNoticeEnabled: false
-    # Keep the artifact export and restore workers running after SIGTERM so the
-    # drain can actually move parked workspaces and banked sessions into the
-    # store. Off, the workers stop with the signal and every drain export fails
-    # "context canceled", so a parked session can only relight on its own node.
-    exportsOutliveSignal: false
     # GCE's approximately 30s Spot shutdown period, less notice-observation
     # latency and noded's final stop, leaves 20s to publish to the control plane.
     # Re-derive this from the GCE contract if that contract changes. Do not tune
@@ -1626,15 +1576,6 @@ noded:
     # rootfs.ext4.sha256 in that identity prefix names the complete payload.
     # Remote retention remains default-off staged follow-up work on #5772.
     bucket: embervm
-    # Reader support shipped while writer compression remained inert, the first
-    # phase of the two-phase rollout. Every brick in the fleet now runs a daemon
-    # that honors the per-file zstd marker, so the arming precondition is met and
-    # new objects can be compressed safely.
-    compress: true
-    # EMBERVM_NODED_STORE_ENCRYPT. Phase 1 ships the reader fleet-wide with the
-    # writer inert. Arm only after every daemon can read enveloped artifacts and
-    # the control plane wrap endpoint is available.
-    encrypt: false
     # Optional override for the daemon's retry suppression period after an
     # artifact-specific control-plane wrap refusal. Empty uses the Go default.
     unexportableTTL: ""
@@ -1656,11 +1597,6 @@ noded:
   # issuer of volume generations. noded rejects an unblessed writable attach
   # (blessed_generation == 0) FAILED_PRECONDITION unconditionally; the
   # EMBERVM_NODED_REQUIRE_BLESSING rollout gate was collapsed in #4950.
-
-  # EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY. Phase 1 validates restore
-  # capabilities with enforcement inert. Arm only after the control plane
-  # supplies a capability on every enveloped restore.
-  requireRestoreCapability: false
 
   # 256Mi req / 36Gi limit (Task 14b full side-by-side). The limit is a cgroup
   # OOM CEILING, not a scheduling reservation (the request stays 256Mi), so it
