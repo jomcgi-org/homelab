@@ -29,6 +29,10 @@ case "$*" in
         [[ "${MISSING_BASE:-0}" == 0 ]] || exit 8
         echo frozen-base ;;
     'ls-files --others --exclude-standard') ;;
+    'diff --name-only frozen-base HEAD -- projects/monolith/frontend')
+        [[ "${FRONTEND_DIFF_STATUS:-0}" == 0 ]] || exit "$FRONTEND_DIFF_STATUS"
+        [[ -z "${FRONTEND_PATHS:-}" ]] || printf '%s\n' "$FRONTEND_PATHS" ;;
+    'rev-parse HEAD') echo exact-head ;;
     *) echo "unexpected git: $*" >&2; exit 99 ;;
 esac
 EOF
@@ -55,7 +59,12 @@ EOF
 cat >"$tmp/bin/bazel" <<'EOF'
 #!/usr/bin/env bash
 set -eu
-if [[ "${2:-}" == '//...' ]]; then
+if [[ "${2:-}" == '//projects/monolith/frontend:test' ]]; then
+    [[ "$*" == 'test //projects/monolith/frontend:test //projects/monolith/frontend:build_test --config=ci --deleted_packages=bazel/tools/python --nocache_test_results --test_summary=detailed' ]]
+    printf 'frontend exact targets, uncached, detailed\n' >>"$LOG"
+    echo 'Executed 2 out of 2 tests: 2 tests pass.'
+    exit "${FRONTEND_BAZEL_STATUS:-0}"
+elif [[ "${2:-}" == '//...' ]]; then
     [[ "$*" == 'test //... --config=ci --deleted_packages=bazel/tools/python' ]]
     printf 'full //...\n' >>"$LOG"
 else
@@ -81,7 +90,7 @@ run() {
 }
 export GIT_PR_NUMBER=7455 GIT_BRANCH=factory/test PATTERNS=//p:unit_test WRITE_BACK_ONLY=false
 run 0
-expected=$'git fetch origin main --quiet\ngit merge-base origin/main HEAD\nguard ./bazel/tools/ci/verification_genrule_guard.py .\nguard ./bazel/tools/ci/central_build_ratchet.py frozen-base HEAD\nguard ./bazel/tools/ci/chart_version_guard.py frozen-base HEAD\nguard ./bazel/tools/ci/source_ratchet.py frozen-base HEAD\ngit ls-files --others --exclude-standard\nselector frozen-base HEAD -- --config=ci --deleted_packages=bazel/tools/python\nsubset //p:unit_test\nreached'
+expected=$'git fetch origin main --quiet\ngit merge-base origin/main HEAD\nguard ./bazel/tools/ci/verification_genrule_guard.py .\nguard ./bazel/tools/ci/central_build_ratchet.py frozen-base HEAD\nguard ./bazel/tools/ci/chart_version_guard.py frozen-base HEAD\nguard ./bazel/tools/ci/source_ratchet.py frozen-base HEAD\ngit ls-files --others --exclude-standard\nselector frozen-base HEAD -- --config=ci --deleted_packages=bazel/tools/python\nsubset //p:unit_test\ngit diff --name-only frozen-base HEAD -- projects/monolith/frontend\nreached'
 [[ "$(cat "$LOG")" == "$expected" ]]
 echo 'PASS workflow PR frozen base, ordered guards and selective target-pattern file'
 for guard in verification_genrule_guard.py central_build_ratchet.py chart_version_guard.py source_ratchet.py; do
@@ -103,6 +112,19 @@ BAZEL_STATUS=3 run 3
 SELECTOR_STATUS=9 run 9
 ! grep -qE '^subset|^full|reached' "$LOG"
 echo 'PASS workflow empty selection, exit 4, real Bazel failure and selector failure'
+export FRONTEND_PATHS=projects/monolith/frontend/BUILD
+run 0
+grep -qxF 'frontend exact targets, uncached, detailed' "$LOG"
+grep -qxF 'Frontend target validation at exact-head' "$tmp/out"
+grep -qxF 'Executed 2 out of 2 tests: 2 tests pass.' "$tmp/out"
+FRONTEND_BAZEL_STATUS=3 run 3
+! grep -qF reached "$LOG"
+FRONTEND_DIFF_STATUS=9 run 9
+! grep -qE '^frontend|reached' "$LOG"
+PATTERNS='' run 0
+grep -qxF 'frontend exact targets, uncached, detailed' "$LOG"
+echo 'PASS frontend PR targets execute uncached with exact-head evidence and fail closed'
+unset FRONTEND_PATHS
 for route in queue main push fork-pr; do
 	export GIT_PR_NUMBER=0 GIT_BRANCH=main
 	case "$route" in
@@ -111,6 +133,7 @@ for route in queue main push fork-pr; do
 	fork-pr) GIT_PR_NUMBER=7455 ;;
 	esac
 	run 0
+	! grep -qF 'frontend exact targets' "$LOG"
 	if [[ "$route" == fork-pr ]]; then
 		grep -qxF 'subset //p:unit_test' "$LOG"
 	else

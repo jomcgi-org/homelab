@@ -173,6 +173,16 @@ actions:
             bazel test //... --config=ci --deleted_packages=bazel/tools/python
           else
             ./bazel/tools/ci/local-affected-test.sh "$base_ref"
+
+            # Frontend BUILD edits can select //..., whose aggregate summary
+            # does not prove these acceptance targets ran rather than skipped.
+            frontend_paths="$(git diff --name-only "$base_ref" HEAD -- projects/monolith/frontend)"
+            if [ -n "$frontend_paths" ]; then
+              echo "Frontend target validation at $(git rev-parse HEAD)"
+              bazel test //projects/monolith/frontend:test //projects/monolith/frontend:build_test \
+                --config=ci --deleted_packages=bazel/tools/python \
+                --nocache_test_results --test_summary=detailed
+            fi
           fi
 
           # ---- 3. deploy on main, prove images everywhere else ------------
