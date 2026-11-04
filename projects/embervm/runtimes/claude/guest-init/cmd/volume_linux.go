@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/guestvolume"
 	"golang.org/x/sys/unix"
 )
 
@@ -242,49 +243,24 @@ func seedTrustRecord(logger *slog.Logger) error {
 }
 
 func mountVolumeDevice(logger *slog.Logger, dev, mountPath string) error {
-	blank, err := deviceIsBlank(dev)
-	if err != nil {
-		return fmt.Errorf("probe volume device %s: %w", dev, err)
-	}
-	if blank {
-		// Lazy init keeps a first boot off the readiness cliff: a plain mkfs of
-		// a 10 GiB volume writes every inode table and the journal up front,
-		// inside the guest, ON the boot path, which blows the readiness budget
-		// and the guest never serves /shim/ready (observed live: the VM boots,
-		// both drives attach, then silence until the deadline). With lazy
-		// itable/journal init the kernel finishes that work in the background
-		// after mount, and discard skips trimming a freshly sparse file.
-		start := time.Now()
-		logger.Info("session volume: no filesystem signature, formatting ext4", "device", dev)
-		args := []string{"-q", "-E", "lazy_itable_init=1,lazy_journal_init=1,nodiscard", dev}
-		if out, err := exec.Command("mkfs.ext4", args...).CombinedOutput(); err != nil {
-			return fmt.Errorf("mkfs.ext4 %s: %w: %s", dev, err, string(out))
-		}
-		logger.Info("session volume: formatted", "device", dev, "took", time.Since(start).String())
-	}
-	if err := mkdirAllFn(mountPath, 0o755); err != nil {
-		return fmt.Errorf("mkdir volume mount path %s: %w", mountPath, err)
-	}
-	if err := mountFn(dev, mountPath, "ext4", 0, ""); err != nil {
-		return fmt.Errorf("mount %s at %s: %w", dev, mountPath, err)
-	}
-	return nil
+	return mountVolumeWithOps(logger, dev, mountPath, guestvolume.Operations{
+		CombinedOutput: func(name string, args ...string) ([]byte, error) { return exec.Command(name, args...).CombinedOutput() },
+		MkdirAll:       mkdirAllFn, Mount: mountFn,
+	})
 }
 
-func deviceIsBlank(dev string) (bool, error) {
-	out, err := exec.Command("blkid", "-o", "value", "-s", "TYPE", dev).CombinedOutput()
-	if err == nil {
-		return len(trimTrailingNewline(out)) == 0, nil
-	}
-	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 {
-		return true, nil
-	}
-	return false, fmt.Errorf("blkid %s: %w: %s", dev, err, string(out))
-}
-
-func trimTrailingNewline(b []byte) []byte {
-	if n := len(b); n > 0 && b[n-1] == '\n' {
-		return b[:n-1]
-	}
-	return b
+func mountVolumeWithOps(logger *slog.Logger, dev, mountPath string, ops guestvolume.Operations) error {
+	// Lazy inode/journal initialization keeps formatting off the readiness
+	// cliff. Avoid discarding a freshly sparse backing file.
+	args := []string{"-q", "-E", "lazy_itable_init=1,lazy_journal_init=1,nodiscard", dev}
+	var start time.Time
+	return guestvolume.Mount(dev, mountPath, args, ops, guestvolume.Hooks{
+		BeforeFormat: func() {
+			start = time.Now()
+			logger.Info("session volume: no filesystem signature, formatting ext4", "device", dev)
+		},
+		AfterFormat: func() {
+			logger.Info("session volume: formatted", "device", dev, "took", time.Since(start).String())
+		},
+	})
 }
