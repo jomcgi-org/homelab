@@ -452,7 +452,7 @@ def test_automatic_pause_stop_is_local_and_keeps_unknown_reservations(
     )["applied"]
 
 
-@pytest.mark.parametrize("transition", ["resume", "terminal", "stale_generation"])
+@pytest.mark.parametrize("transition", ["resume", "terminal"])
 def test_pause_view_never_offers_a_refused_stop(db, policy, transition):
     from factory.orchestration import factory_pause
 
@@ -461,15 +461,43 @@ def test_pause_view_never_offers_a_refused_stop(db, policy, transition):
     if transition == "resume":
         controls.set_control("resume_task", "operator", task_id=task_id)
     else:
-        with controls._locked_session() as (session, control):
-            if transition == "terminal":
-                controls._receipt(session, task_id).state = "cancelled"
-            else:
-                control.policy_json = json.dumps({**policy, "generation": 1})
+        with controls._locked_session() as (session, _control):
+            controls._receipt(session, task_id).state = "cancelled"
     snapshot = controls.task_snapshot(task_id)
     card = controls.escalation_view(snapshot)
     assert not card["open"] and card["options"] == [] and card["escape"] == []
-    assert bool(snapshot["pause_warning"]) is (transition == "stale_generation")
+    assert snapshot["pause_warning"] is None
+
+
+@pytest.mark.parametrize("state", ["admitted", "uncertain", "landing"])
+def test_active_generation_advance_preserves_only_eligible_automatic_cards(
+    db, policy, monkeypatch, state
+):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    task_id = admitted(policy)
+    assert factory_pause.pause(task_id, "test", "blocked")
+    before = controls.task_snapshot(task_id)
+    identity = controls.decision_identity(before)
+    with controls._locked_session() as (session, control):
+        controls._receipt(session, task_id).state = state
+        control.policy_json = json.dumps({**policy, "generation": 1})
+        assert decisions._pinned_and_active(controls._receipt(session, task_id))
+    snapshot = controls.task_snapshot(task_id)
+    card = controls.escalation_view(snapshot)
+    assert controls.decision_identity(snapshot) == identity
+    assert card["open"] is (state != "landing")
+    if state == "landing":
+        assert card["options"] == []
+        return
+    assert snapshot["pause_warning"] is None
+    assert snapshot["escalation"]["options"] == [factory_pause.STOP]
+    assert [option["key"] for option in card["options"]] == ["stop"]
+    monkeypatch.setattr(decisions, "_github", lambda: pytest.fail("stop must be local"))
+    result = decisions.apply_decision(
+        snapshot["id"], "stop", "operator", expected_decision_id=identity
+    )
+    assert result["resolution"]["effects"]["cancellation_requested"]
 
 
 @pytest.mark.parametrize("durable", [False, True])
