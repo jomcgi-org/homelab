@@ -2594,11 +2594,11 @@ async def factory_configure_owner_prs(
     request_key: str | None = None,
     expected_preview_sha256: str | None = None,
 ) -> dict:
-    """Configure owner PR discovery on existing intake; omit both owner fields to disable.
+    """Configure owner PR discovery on existing intake. Omit both owner fields to disable.
 
     First verify the GitHub owner's login and numeric user ID. Preview using
     current factory_status version, then apply its digest and a stable request
-    key. Changes only intake.owner_pr_author; preserves generation, all receipts,
+    key. Changes only intake.owner_pr_author and preserves generation, all receipts,
     holds, budgets, unrelated producers, review and merge controls. Starts no work.
     Existing intake and refinement must already be enabled, without a batch hold.
     """
@@ -2667,9 +2667,9 @@ async def factory_configure_refill(
     hourly false as compatibility placeholders. Refill settings stay unchanged.
     reset_breaker and min_new_issues are not permitted for that target. This
     delegates to the same guarded preview/apply as factory_configure_problem_issues.
-    For target owner_prs, enabled true requires verified owner_login and owner_id;
-    enabled false requires both omitted. Use model astra and hourly false;
-    all refill/problem-issue options must be omitted/default. This delegates to
+    For target owner_prs, enabled true requires verified owner_login and owner_id.
+    Enabled false requires both omitted. Use model astra and hourly false.
+    All refill/problem-issue options must be omitted/default. This delegates to
     factory_configure_owner_prs, preserving every unrelated producer setting.
     Native factory_status.control_catalog advertises targets and argument names.
     """
