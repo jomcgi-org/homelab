@@ -3573,3 +3573,30 @@ def test_hold_or_label_set_before_settlement_blocks_the_grant(
         return
     assert _settled(task)["refusal"].startswith("routine pause held")
     assert state["cards"] == [routine_pause()["question"]]
+
+
+def test_held_refusal_retries_the_card_without_another_review(db, routine, monkeypatch):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    request = _pending(task)
+    _set_hold(db, task, "landing_hold")
+    calls = []
+
+    def flaky(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            raise ValueError("GitHub response exceeds factory limit")
+        state["cards"].append(args[1]["question"])
+
+    monkeypatch.setattr(conductor, "_escalate_task", flaky)
+    with pytest.raises(ValueError):
+        settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
+    assert _settled(task)["failure_category"] == "routine_pause_held"
+    funding.reconcile(
+        conductor._task(task["id"]),
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    assert state["cards"] == [routine_pause()["question"]]
+    assert len(audits_of(db, "funding_review_requested")) == 1
