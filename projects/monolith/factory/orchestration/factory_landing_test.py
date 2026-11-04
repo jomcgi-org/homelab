@@ -79,7 +79,7 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setattr(landing, "_notify_stuck", lambda *_args: None)
     from factory import review_publisher
 
-    def reviewed(task_id):
+    def reviewed(task_id, *, session=None):
         with Session(engine) as session:
             number, head = landing._delivery_prs(session, [task_id])[task_id]
         return review_publisher.ReviewEvidence(
@@ -608,7 +608,7 @@ def test_missing_publisher_token_refuses_to_arm_when_enabled(db, monkeypatch):
     monkeypatch.setattr(
         review_publisher,
         "collect",
-        lambda _task_id: review_publisher.ReviewEvidence(
+        lambda _task_id, **_: review_publisher.ReviewEvidence(
             task_id="t-1",
             repo="owner/repo",
             pr_number=3,
@@ -653,7 +653,7 @@ def test_review_canary_publishes_while_merge_remains_disabled(db, monkeypatch):
         policy_version=1,
         details_url="https://private.jomcgi.dev/agents/session/11",
     )
-    monkeypatch.setattr(review_publisher, "collect", lambda _task_id: evidence)
+    monkeypatch.setattr(review_publisher, "collect", lambda _task_id, **_: evidence)
     monkeypatch.setattr(
         review_publisher,
         "publish",
@@ -1553,9 +1553,11 @@ def test_a_terminal_delivery_leaves_the_batch(db, monkeypatch):
     # The landed delivery is not read again; only the one still working is.
     assert [suffix for suffix in calls["get"][reads:]] == [
         "pulls/4",
+        "pulls/4",  # Fresh queue authority under the control lock.
         "issues/12",
         "pulls/4",
         "pulls/4",
+        "pulls/4",  # The holder observation rechecks the same fence.
     ]
 
 
@@ -3198,7 +3200,7 @@ def test_scoped_grant_never_substitutes_for_independent_review(
     monkeypatch.setattr(
         review_publisher,
         "collect",
-        lambda task: review_publisher.Refusal(task, "review_not_independent"),
+        lambda task, **_: review_publisher.Refusal(task, "review_not_independent"),
     )
     landing.landing_tick(POLICY)
     assert not audits(db, "merge_armed")

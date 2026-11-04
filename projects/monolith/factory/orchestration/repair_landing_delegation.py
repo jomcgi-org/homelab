@@ -256,15 +256,13 @@ def _authority(db):
         and proposal["policy_sha256"] == controls.digest(policy),
         "policy_changed",
     )
-    # A later general policy replacement cannot resurrect the delegation by
-    # reverting its bytes. Only a fresh standing preview/apply can renew it.
+    # Every successful policy owner participates, including landing-only off/on.
+    # Restoring the bytes cannot renew standing authority or a derived grant.
+    from factory.orchestration.factory_landing_release import latest_policy_transition
+
+    transition = latest_policy_transition(db)
     _require(
-        db.exec(
-            select(FactoryAudit.id).where(
-                FactoryAudit.action == "configure", FactoryAudit.id > event.id
-            )
-        ).first()
-        is None,
+        transition is None or transition.id <= event.id,
         "policy_replaced",
     )
     return event, proposal, result

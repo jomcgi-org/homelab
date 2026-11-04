@@ -21,12 +21,47 @@ from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 
 ACTION = "operator_landing_hold_released"
 SCOPE_ACTION = "operator_scoped_landing_authorized"
+POLICY_TRANSITIONS = (
+    "configure",
+    "owner_pr_control_applied",
+    "refill_control_applied",
+    "problem_issues_control_applied",
+    "set_auto_merge",
+    "restore_active_intake",
+    "prepare_refinement_batch",
+    "prepare_broad_refinement",
+    "enable",
+    "pause_admissions",
+    "stop",
+    *controls.REPO_ACTIONS,
+)
 # This operator-approved exception is deliberately not a generic terminal handoff.
 HANDOFF_ACCEPTED_HEAD = controls.OPERATOR_DOCS_HANDOFF_ACCEPTED_HEAD
 HANDOFF_REVIEW_SESSION = 24402
 
 
 operator_target = controls.operator_landing_target
+
+
+def latest_policy_transition(db):
+    """Durable fence shared by delegates, even after policy bytes are restored.
+
+    Reads, failed mutations and request replays do not renew or revoke authority.
+    Setting the already-current landing flag is not a policy transition either.
+    Legacy policy audits without an outcome remain an indeterminate transition,
+    preserving their existing fail-closed fence instead of resurrecting a grant.
+    """
+    return db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.action.in_(POLICY_TRANSITIONS),
+            ~FactoryAudit.detail_json.contains('"ok":false'),
+            (FactoryAudit.action != "set_auto_merge")
+            | ~FactoryAudit.detail_json.contains('"changed":false'),
+        )
+        .order_by(FactoryAudit.id.desc())
+        .limit(1)
+    ).first()
 
 
 PUBLIC_DOCS = frozenset(
@@ -300,8 +335,25 @@ def _observe(receipt_id, pr_number, head_sha, scope):
     return pull, evidence
 
 
+def delegation_owner(row):
+    """Select one authority owner without falling through an explicit grant."""
+    try:
+        direction = json.loads(row.direction_json or "{}")
+        if not isinstance(direction, dict) or "landing_authorization" in direction:
+            return None
+        if "owner_pr" in direction:
+            from factory.orchestration import owner_pr_landing_delegation
+
+            return owner_pr_landing_delegation
+        from factory.orchestration import repair_landing_delegation
+
+        return repair_landing_delegation
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def scoped_refusal(db, row, pr_number, head_sha):
-    """Require the exact operator-audited grant; old releases are not grants."""
+    """Require the explicit grant or its single, separately audited delegate."""
     if row is None or row.task_paused or row.cancellation_requested:
         return "landing_receipt_unavailable"
     if row.state not in ("succeeded", "landing") or controls.landing_held(row):
@@ -311,9 +363,12 @@ def scoped_refusal(db, row, pr_number, head_sha):
     try:
         direction = json.loads(row.direction_json or "{}")
         if "landing_authorization" not in direction:
-            from factory.orchestration import repair_landing_delegation
-
-            return repair_landing_delegation.refusal(db, row, pr_number, head_sha)
+            owner = delegation_owner(row)
+            return (
+                owner.refusal(db, row, pr_number, head_sha)
+                if owner is not None
+                else "scoped_landing_authorization_missing"
+            )
         grant = direction.get("landing_authorization")
         if (
             not isinstance(grant, dict)

@@ -788,3 +788,20 @@ reports the target and argument names independently of client visibility.
 Read `intake.owner_pr_backlog` for the latest observed backlog and separate
 merged/verified delivery counts. An activated producer or queued receipt is not
 operational acceptance; #7597 retains the real autonomous delivery demonstration.
+
+### Owner PR standing landing decision
+
+`factory_configure_refill` also accepts `target=owner_pr_landing`. This distinct
+decision is default off. Use `model=astra`, `hourly=false`, the current version,
+`enabled`, and a reason. Omit owner identity and all refill/problem/repair
+options: preview binds the already configured numeric owner identity and lists
+the exact frozen private paths. Apply with its digest and a stable request key.
+It preserves policy, producer settings and history, and dispatches no work.
+
+The preview explicitly permits pre-existing adopted PRs and fixes the bounds at
+three new exact-head derivations per rolling 24 hours across authorizations and
+three per canonical PR across receipts/generations. Required CI, independent
+typed review and the existing queue remain mandatory. Status is reported under
+`factory_status.owner_pr_landing`. Disable fences existing queued grants on the
+next landing observation. Changing and restoring intake policy cannot revive an
+earlier authorization. Activation alone is not autonomous backlog acceptance.
