@@ -19,9 +19,8 @@ def path_style_client(endpoint: str):
     # scheme-less legacy/test endpoints; explicit schemes pass through.
     if not endpoint.startswith(("http://", "https://")):
         endpoint = "http://" + endpoint
-    # Scheme guaranteed above; the inline nosemgrep clears the pre-commit
-    # boto3-endpoint-url-missing-scheme hook.
-    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
+    # The endpoint has an explicit scheme before boto3 sees it.
+    return boto3.client(
         "s3",
         endpoint_url=endpoint,
         aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),
