@@ -3205,6 +3205,49 @@ def test_scoped_grant_never_substitutes_for_independent_review(
     assert calls["graphql"] == []
 
 
+@pytest.mark.parametrize("publication", [False, True])
+@pytest.mark.parametrize("ready_index", [6, 16])
+def test_scope_waits_do_not_starve_later_observation_page_candidates(
+    db, monkeypatch, publication, ready_index
+):
+    from factory import review_publisher
+
+    pulls = {}
+    for index in range(1, ready_index + 1):
+        task_id = f"t-{index}"
+        delivered(db, task_id, 100 + index, index, state="landing")
+        pulls[index] = pull(index, task_id=task_id)
+        if index != ready_index:
+            with Session(db) as session, session.begin():
+                row = controls._receipt(session, task_id)
+                direction = json.loads(row.direction_json)
+                direction.pop("landing_authorization")
+                row.direction_json = json.dumps(direction)
+    calls = github(monkeypatch, pulls=pulls)
+    monkeypatch.setattr(review_publisher, "enabled", lambda: publication)
+    monkeypatch.setattr(
+        review_publisher,
+        "publish",
+        lambda evidence: {
+            "action": "published",
+            "conclusion": "success",
+            "check_id": evidence.pr_number,
+            "head_sha": evidence.head_sha,
+            "review_run_id": evidence.review_run_id,
+        },
+    )
+
+    # More than one complete observation cycle must reach the eligible suffix,
+    # including when publication has its own bounded candidate batch.
+    for _ in range(8):
+        landing.landing_tick(POLICY)
+
+    assert calls["graphql"] == [{"pullRequestId": f"PR_{ready_index}"}]
+    assert len(audits(db, "merge_armed", f"t-{ready_index}")) == 1
+    assert len(audits(db, "landing_authorization_wait")) == ready_index - 1
+    assert audits(db, "merge_arm_refused") == []
+
+
 @pytest.mark.parametrize("race", ["head", "base", "draft", "grant", "hold", "policy"])
 def test_scoped_landing_rechecks_after_review_collection(db, monkeypatch, race):
     from factory import review_publisher

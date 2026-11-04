@@ -52,7 +52,11 @@ ACTOR = "factory:landing"
 # that has waited longest takes the free slot.
 LANDING_BATCH = 200
 REVIEW_PUBLISH_BATCH = 5
-OBSERVATION_BATCH = 10
+ARM_BATCH = 5
+# Rotate only as many receipts as both downstream stages can examine. A larger
+# page lets transient scope waits occupy the same prefix on every visit, so
+# reviewed, authorized deliveries in its suffix never reach either stage.
+OBSERVATION_BATCH = min(REVIEW_PUBLISH_BATCH, ARM_BATCH)
 _delivery_cursors: dict[str, int] = {}
 # Only for a delivery landing has never touched. Turning the flag on for the
 # first time must not stampede over every delivery in the lane's history, but
@@ -1629,7 +1633,7 @@ def landing_tick(policy: dict) -> None:
             return
         # A capacity-blocked recovery must not block unrelated ready PRs.
         # Bound reads while allowing a refused candidate to release this tick.
-        for index, first in enumerate(waiting[:5]):
+        for index, first in enumerate(waiting[:ARM_BATCH]):
             _arm(repo, first)
             if first["merged"] and not first["closed"]:
                 _close_issue(repo, first)
