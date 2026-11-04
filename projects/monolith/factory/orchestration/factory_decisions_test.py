@@ -3645,3 +3645,37 @@ def test_lane_paused_between_request_and_settle_never_grants(db, routine, contro
         assert controls.set_control("enable", "operator")["ok"]
         settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
         assert _grant(task) is not None
+
+
+def test_retry_of_a_routed_review_keeps_provenance_and_its_locked_checks(
+    db, routine, monkeypatch
+):
+    from datetime import timedelta
+
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    settle_funding_request(task, _pending(task), {"action": "nonsense"})
+    clock = {"now": controls._now() + timedelta(minutes=6)}
+    monkeypatch.setattr(controls, "_now", lambda: clock["now"])
+    # A hold lands before the retry: the retry is refused under the lock.
+    _set_hold(db, task, "landing_hold")
+    args = (
+        conductor._task(task["id"]),
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    funding.reconcile(*args)
+    assert len(audits_of(db, "funding_review_requested")) == 1
+
+
+def test_settle_uses_the_exact_request_provenance(db, routine, monkeypatch):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    request = _pending(task)
+    # Even if the run lookup misses it, the request's own provenance holds.
+    monkeypatch.setattr(funding, "_routed_pause", lambda _task_id: None)
+    _set_hold(db, task, "landing_hold")
+    settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
+    assert _grant(task) is None
+    assert _settled(task)["failure_category"] == "routine_pause_held"
