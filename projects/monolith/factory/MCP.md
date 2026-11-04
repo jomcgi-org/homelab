@@ -391,8 +391,11 @@ capacity release and prepares one exact-node funding review. It records
 history. A changed pause or card, including an operator reassertion, refuses.
 The rollout is new review evidence, not invented source work progress. Only the
 judge can grant another attempt, within the existing cumulative caps; settlement
-rechecks holds, rollout and pause/resume identity. A refusal does not create
-another repair authorization. Legacy cards are never adopted.
+rechecks holds, rollout and pause/resume identity. Transient or unstarted review
+failures retain the same authority through bounded cooldown retries, without
+another resume. Source evidence and the original rollout are revalidated; only
+the funding owner's exact expired-gate retirement is an allowed graph change.
+Refusals never create another repair authorization. Legacy cards are never adopted.
 
 The existing scout remains a one-shot, operator-chartered evidence collector;
 learning remains report-only. Neither is repurposed as an execution authority.
