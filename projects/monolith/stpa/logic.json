@@ -1,11 +1,11 @@
 {
   "lens": "logic",
-  "commit": "188286240",
+  "commit": "bc1d4dfa2",
   "scope": {
     "summary": "A single Postgres-backed personal platform served as two composed binaries: a private read-write binary (full app capabilities, private.jomcgi.dev) and an isolated public binary (jomcgi.dev via the separate monolith-public chart). The public binary is read-only for public datasets with two constrained write/invocation paths, the private binary now also serves an agent-session console, a six-language code sandbox, a screenshot tool, and MCP over native streamable HTTP; safety is governed data access, bounded public capabilities, the secret boundary, and correct claim/lease ownership of queued agent work.",
     "built": "framework/core.py composition and profiles, separate private/public module registries, Postgres leader-lease singletons (Discord bot, AIS ingest, outbox drain, message-lock sweep), the agent_sessions claim-lease turn engine (atomic per-message claiming across all replicas plus a leader-owned stale-claim sweep) backing both the Discord bot and the private /agents console HTTP API, goosecracker recipe/repo catalog, chat feature ACL with 30s grant cache, public_reader/public_writer roles with schema/view confinement, public/private HTTPRoutes, Turnstile secret isolation, public chat admission/concurrency limits, public FaaS identity gate, observability snapshot rollup, the shotter MCP domain (URL/host validation, EmberVM task dispatch, best-effort SeaweedFS PNG storage with a random per-call Idempotency-Key), the sandbox MCP domain (run_code, six per-language EmberVM task workloads, zero-egress except an optional scratch-Postgres credential), the native /mcp mount on stateless streamable HTTP with PrincipalMiddleware authenticating every message via cached JWKS, and the docs/posts manifest generators that publish an exact allowlist of committed repository documents to the public site. The factory knowledge-graph evidence lanes (#5527, ADR agents/063) add a shared raw-input write boundary (knowledge/raw_write.py persist_raw_with_status) reached by the generic POST /api/knowledge/raws endpoint, three MCP tools (report_knowledge, dispute_fact, report_distress), and a leader-owned Ember-session exporter (factory/execution/kg_feed.py), a daily-capped DBOS drainer (factory/orchestration/drainer.py) that runs Luna extraction in an EmberVM guest and writes atoms with server-side provenance (knowledge/extraction.py, knowledge/atoms.py), and a live disputed/verification_state signal on search results (knowledge/store.py). The shared CNPG backup checker publishes bounded observations through one precreated ConfigMap, the private monolith evaluates their freshness and 36-hour backup age as advisory health, and its leader queues transitions through the existing durable Discord outbox. The default-off backlog refill controller reserves advisory inventory work from fresh intake counts, validates the artifact, publishes through durable per-output intents and records conclusive yield separately from interrupted or uncertain runs. Focused historical learning cessation repair against 434907e17 with this diff: authenticated retained journal proof, fresh successor/restore and local lineage checks, digest/CAS/idempotent audit; no live recovery or activation is claimed.",
     "designed": "Strict per-domain database isolation and the ADR 010 cross-domain contract remain architectural goals; the Module/build_app framework itself is built. ADR 059 (Draft) proposes removing Context Forge entirely as the MCP entry point and serving /mcp directly behind Cloudflare; only the first, independently-sequenced slice (the stateless-HTTP transport switch) has landed, Context Forge is still deployed and still in the request path. The Context Forge tool-visibility reconcile pass (#4569) that would scope which principal may call which tool is designed, not built, so per-tool authorization beyond bearer-token authentication does not exist for any MCP tool yet.",
-    "note": "Focused #7002 backup-advisory activation analysis at e7905ea1c; the hub overlays opt in, but live operational acceptance remains open on #7002. Earlier findings retain their prior review scope and are not revalidated by this focused update. Focused #7376 refill analysis against 15550c9 with the accompanying repair diff; this feature remains omitted from shipped policy and its live drills remain open on #7376. Focused #7014 knowledge-lane analysis at 970f6df81: raw redaction, missed-enqueue repair, dead-letter retry and replay, and the session-collector producers re-grounded; findings outside that lane retain their prior review scope. Focused receipt model-restriction analysis at 68c9ca11c with the accompanying repair diff: operator amendment, effective-policy continuation, same-receipt readmission and native model admission. Live operational acceptance is not claimed. Focused refill role review against 631c56c59 with this repair: new starts require independent Astra planning and exact-role fresh quota, while existing receipt restriction findings and legacy ledgers are retained. The same focused change adds bounded native-registry feedback and authenticated restriction-to-continuation regression coverage; it makes no live activation or downstream client-visibility claim. Focused #7613 start-diagnostics analysis at 188286240: existing operator reads expose finite or unknown control-subgate observations and sanitized historical funding linkage. No control authority is added; transport, quota and physical capacity remain unevaluated, and deployment or autonomous recovery acceptance is not claimed."
+    "note": "Focused #7002 backup-advisory activation analysis at e7905ea1c; the hub overlays opt in, but live operational acceptance remains open on #7002. Earlier findings retain their prior review scope and are not revalidated by this focused update. Focused #7376 refill analysis against 15550c9 with the accompanying repair diff; this feature remains omitted from shipped policy and its live drills remain open on #7376. Focused #7014 knowledge-lane analysis at 970f6df81: raw redaction, missed-enqueue repair, dead-letter retry and replay, and the session-collector producers re-grounded; findings outside that lane retain their prior review scope. Focused receipt model-restriction analysis at 68c9ca11c with the accompanying repair diff: operator amendment, effective-policy continuation, same-receipt readmission and native model admission. Live operational acceptance is not claimed. Focused refill role review against 631c56c59 with this repair: new starts require independent Astra planning and exact-role fresh quota, while existing receipt restriction findings and legacy ledgers are retained. The same focused change adds bounded native-registry feedback and authenticated restriction-to-continuation regression coverage; it makes no live activation or downstream client-visibility claim. Focused #7613 start-diagnostics analysis at 188286240: existing operator reads expose finite or unknown control-subgate observations and sanitized historical funding linkage. No control authority is added; transport, quota and physical capacity remain unevaluated, and deployment or autonomous recovery acceptance is not claimed. Focused landing analysis at ecf76742f adds standing decisions, separate owner/repair grants, durable policy-transition feedback and native queue controls. These controls are built and default-off; prior semantic keys and security.json are preserved. Activation and live acceptance remain on #7583, #7601 and #7597. Integration on bc1d4dfa2 preserves both approved focused models; the standing landing controls remain default-off and live acceptance is unchanged."
   },
   "losses": [
     {
@@ -235,6 +235,45 @@
         "L.liveness-loss"
       ],
       "maturity": "built"
+    },
+    {
+      "key": "landing-authority-outside-scope",
+      "view": "logical",
+      "statement": "A machine landing grant authorizes a PR outside the standing operator's fixed paths, authentic objective provenance or cumulative derivation limits",
+      "losses": [
+        "L.integrity-loss",
+        "L.provenance-loss"
+      ],
+      "maturity": "built"
+    },
+    {
+      "key": "landing-authority-resurrected",
+      "view": "logical",
+      "statement": "Restoring policy bytes after a successful or indeterminate transition revives an earlier standing decision or exact-head grant",
+      "losses": [
+        "L.integrity-loss",
+        "L.silent-incorrectness"
+      ],
+      "maturity": "built"
+    },
+    {
+      "key": "landing-queued-with-stale-authority",
+      "view": "logical",
+      "statement": "A PR enters or remains in the merge queue after its head, independent review, CI, holds or execution ownership cease to satisfy the grant",
+      "losses": [
+        "L.integrity-loss",
+        "L.provenance-loss"
+      ],
+      "maturity": "built"
+    },
+    {
+      "key": "landing-valid-authority-disarmed",
+      "view": "logical",
+      "statement": "A stale queue observation removes a newly authorized current head or treats an unrelated base advance as a changed reviewed diff",
+      "losses": [
+        "L.liveness-loss"
+      ],
+      "maturity": "built"
     }
   ],
   "ucas": [
@@ -395,6 +434,91 @@
         "unredacted-transcript-raw"
       ],
       "evidence": "projects/monolith/knowledge/raw_write.py:110"
+    },
+    {
+      "key": "standing-landing-operator.configure-owner.providing",
+      "view": "logical",
+      "control_action": "standing-landing-operator.configure-owner",
+      "guideword": "providing",
+      "condition": "Applying owner authority from a stale preview, ambiguous owner identity or changed intake policy would grant unintended scope; standing-human checks, version/digest comparison and a separate idempotent audit bind the exact decision",
+      "severity": "high",
+      "hazards": [
+        "landing-authority-outside-scope"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:65; projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:104"
+    },
+    {
+      "key": "standing-landing-operator.configure-repair.providing",
+      "view": "logical",
+      "control_action": "standing-landing-operator.configure-repair",
+      "guideword": "providing",
+      "condition": "Applying a repair decision with changed mode, path profile or limits would expand authority; standing-human preview/apply binds version, digest and prior authorization with explicit finite-trial or bounded ongoing mode",
+      "severity": "high",
+      "hazards": [
+        "landing-authority-outside-scope"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/repair_landing_delegation.py:107"
+    },
+    {
+      "key": "owner-pr-delegation.derive-grant.providing",
+      "view": "logical",
+      "control_action": "owner-pr-delegation.derive-grant",
+      "guideword": "providing",
+      "condition": "Deriving from a copied owner marker, absent accepted objective/refinement, broader diff or reset receipt history would grant unintended or repeated authority; authentic intake, canonical ownership, exact typed review, fixed eight-file profile and three-per-day/three-per-canonical-PR limits are checked under locks",
+      "severity": "high",
+      "hazards": [
+        "landing-authority-outside-scope"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:314; projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:393; projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:541; projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:705"
+    },
+    {
+      "key": "repair-delegation.derive-grant.providing",
+      "view": "logical",
+      "control_action": "repair-delegation.derive-grant",
+      "guideword": "providing",
+      "condition": "Deriving for a legacy card, recursive repair, unmatched machine pause or replenished task allowance would exceed the decision; exact post-authorization producer/watch provenance, fixed reviewed paths and trial or rolling plus cumulative task/source bounds gate each distinct grant",
+      "severity": "high",
+      "hazards": [
+        "landing-authority-outside-scope"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/repair_landing_delegation.py:296; projects/monolith/factory/orchestration/repair_landing_delegation.py:391; projects/monolith/factory/orchestration/repair_landing_delegation.py:555"
+    },
+    {
+      "key": "factory-landing.arm.wrong-timing",
+      "view": "logical",
+      "control_action": "factory-landing.arm",
+      "guideword": "wrong-timing",
+      "condition": "Arming after a changed head/review, new hold, unknown start or claimed message would use stale authority; derivation and final locked validation share the quiescence guard, reobserve exact review/diff/CI and preserve explicit human-grant precedence",
+      "severity": "high",
+      "hazards": [
+        "landing-queued-with-stale-authority"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:691; projects/monolith/factory/orchestration/factory_landing_release.py:211; projects/monolith/factory/orchestration/factory_landing_release.py:338"
+    },
+    {
+      "key": "factory-landing.dequeue.not-providing",
+      "view": "logical",
+      "control_action": "factory-landing.dequeue",
+      "guideword": "not-providing",
+      "condition": "Leaving an armed entry after revocation, expiry, policy transition or failed current-head checks retains obsolete authority; the native observer revalidates known deliveries before eligibility filters and disarms/dequeues invalid entries, with errors retained for later observation",
+      "severity": "high",
+      "hazards": [
+        "landing-authority-resurrected",
+        "landing-queued-with-stale-authority"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:902; projects/monolith/factory/orchestration/factory_landing_release.py:46"
+    },
+    {
+      "key": "factory-landing.dequeue.wrong-timing",
+      "view": "logical",
+      "control_action": "factory-landing.dequeue",
+      "guideword": "wrong-timing",
+      "condition": "Dequeuing using an observation from before a concurrent authorization would discard valid work; the queue fence re-reads PR identity, queue membership and authority under the same control lock used by grant application",
+      "severity": "medium",
+      "hazards": [
+        "landing-valid-authority-disarmed"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:902"
     }
   ],
   "unsafe_feedback": [
@@ -566,6 +690,48 @@
         "factory-start-diagnostics.misattributed-history"
       ],
       "evidence": "projects/monolith/factory/orchestration/factory_start_diagnostics.py:107,116,157,193; projects/monolith/factory/orchestration/mcp_test.py:173,211"
+    },
+    {
+      "key": "owner-landing-policy-history.stale",
+      "view": "logical",
+      "from": "postgres",
+      "to": "owner-pr-delegation",
+      "signal": "Standing decision and durable policy-transition identity",
+      "guideword": "stale",
+      "condition": "Comparing only restored policy bytes would resurrect a grant; the binding includes the latest successful or indeterminate policy event, excluding explicit failures and proven landing-toggle no-ops while identical command replay creates no new authority",
+      "severity": "high",
+      "hazards": [
+        "landing-authority-resurrected"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/factory_landing_release.py:46; projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:65; projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:183"
+    },
+    {
+      "key": "repair-landing-policy-history.stale",
+      "view": "logical",
+      "from": "postgres",
+      "to": "repair-delegation",
+      "signal": "Standing decision and durable policy-transition identity",
+      "guideword": "stale",
+      "condition": "A later successful or indeterminate transition invalidates repair authority even if policy bytes are restored; latest_policy_transition must retain legacy outcome-absent events and distinguish failed/no-op/replayed commands from transitions",
+      "severity": "high",
+      "hazards": [
+        "landing-authority-resurrected"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/factory_landing_release.py:46; projects/monolith/factory/orchestration/repair_landing_delegation.py:225"
+    },
+    {
+      "key": "landing-execution-ownership.missing",
+      "view": "logical",
+      "from": "postgres",
+      "to": "factory-landing",
+      "signal": "Task/start quiescence and claimed PendingMessage ownership",
+      "guideword": "missing",
+      "condition": "Terminal graph/start records alone can conceal a still-claimed session; the shared execution_refusal checks claimed messages as well as native quiescence for the delivery and applicable source/canonical history without inferring cessation or resetting claims",
+      "severity": "high",
+      "hazards": [
+        "landing-queued-with-stale-authority"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/factory_landing_release.py:211; projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:256; projects/monolith/factory/orchestration/repair_landing_delegation.py:391"
     }
   ],
   "non_ucas": [
@@ -756,6 +922,18 @@
     {
       "item": "factory-start-diagnostics: funding history leaking private plans or expanding reads with audit history",
       "reason": "Latest request, settlement and grant reads use exact-task action filters and LIMIT 1. The projection emits bounded identifiers, validated timestamps, finite failure categories and flags, verifies a source run belongs to the task, and excludes plan, direction and refusal prose; history-growth and no-write regressions cover the observational contract (projects/monolith/factory/orchestration/factory_start_diagnostics.py:107,116; projects/monolith/factory/orchestration/mcp_test.py:314,480,504)."
+    },
+    {
+      "item": "identical grant replay or a fresh standing authorization replenishing cumulative derivations",
+      "reason": "Exact candidate replay is free. Distinct owner grants count by canonical repository/PR across receipts and authorizations; ongoing repair grants count by repair and source tasks across authorizations, with a separate rolling rate bound (projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:705; projects/monolith/factory/orchestration/repair_landing_delegation.py:555)."
+    },
+    {
+      "item": "machine delegation replacing an explicit human grant or falling through to another delegate",
+      "reason": "delegation_owner returns no delegate whenever landing_authorization exists, including malformed authority. Owner-marked receipts select only the owner delegate; refusal cannot fall through to repair authority (projects/monolith/factory/orchestration/factory_landing_release.py:338)."
+    },
+    {
+      "item": "an unrelated main advance invalidating an identical reviewed diff",
+      "reason": "Delegation compares the review's immutable merge base and exact head/path evidence rather than persisting mutable PR base.sha. Changed comparison evidence still refuses (projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:653; projects/monolith/factory/orchestration/repair_landing_delegation.py:466)."
     }
   ],
   "open_questions": [
@@ -770,7 +948,8 @@
     "The public backend has a deliberate primary write path and public FaaS invocation path. Confirm production database grants and service-account permissions match the chart claims: public_writer must remain limited to chat_public, and the public service account must remain identity-only with no Kubernetes RBAC. The removed Cilium templates provide no replacement network enforcement; that remains separate work under #5276 and #5277.",
     "When the scratch-Postgres feature is re-enabled (embervm side), should run_code's docstring be corrected to stop claiming zero network for python, or should the DSN injection move behind a separate, explicitly-network-capable tool so the isolation claim stays true for the tool most callers reach for?",
     "#7002: verify fresh successful-backup timestamps, scheduled checker completion, metric/advisory arrival, runtime ConfigMap preservation and effective additive RBAC on the hub; live Cluster/RBAC reads and Honeycomb queries were unavailable to this activation session. Checker-absence notifications remain outside the current advisory contract.",
-    "Default-off refill live acceptance remains on #7376: verify ordinary intake, inventory outputs, a restart and ambiguous-write drill, breaker reset, rolling-limit recovery and disable reconciliation before enablement."
+    "Default-off refill live acceptance remains on #7376: verify ordinary intake, inventory outputs, a restart and ambiguous-write drill, breaker reset, rolling-limit recovery and disable reconciliation before enablement.",
+    "Revocation cannot undo an already completed GitHub merge. The native observer disarms/dequeues on its next tick, and failed external calls retain errors for observation; confirm this external-action boundary during parent-owned operational acceptance (#7601, #7597)."
   ],
   "system_dir": "projects/monolith"
 }

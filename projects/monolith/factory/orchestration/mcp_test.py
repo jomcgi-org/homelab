@@ -686,6 +686,7 @@ def test_status_distinguishes_native_registration_from_caller_catalog(monkeypatc
         "problem_issues",
         "owner_prs",
         "repair_landing",
+        "owner_pr_landing",
     ]
     assert refill["arguments_complete"] is True
     assert {
@@ -4416,7 +4417,8 @@ def test_owner_pr_control_requires_standing_operator(monkeypatch, principal):
 
 
 @pytest.mark.parametrize(
-    "target", ["refill", "problem_issues", "owner_prs", "repair_landing"]
+    "target",
+    ["refill", "problem_issues", "owner_prs", "repair_landing", "owner_pr_landing"],
 )
 def test_refill_wire_targets_reject_every_foreign_option(monkeypatch, target):
     from fastmcp import Client
@@ -4424,6 +4426,7 @@ def test_refill_wire_targets_reject_every_foreign_option(monkeypatch, target):
     from factory.orchestration import (
         factory_problem_issues,
         owner_pr_control,
+        owner_pr_landing_delegation,
         refill_control,
         repair_landing_delegation,
     )
@@ -4432,6 +4435,7 @@ def test_refill_wire_targets_reject_every_foreign_option(monkeypatch, target):
         "refill": {"reset_breaker": True, "min_new_issues": 1},
         "problem_issues": {"recurring_blocker": True, "workflow_stranded": False},
         "owner_prs": {"owner_login": "joe", "owner_id": 42},
+        "owner_pr_landing": {},
         "repair_landing": {
             "duration_minutes": 60,
             "max_repairs": 3,
@@ -4451,6 +4455,9 @@ def test_refill_wire_targets_reject_every_foreign_option(monkeypatch, target):
     monkeypatch.setattr(refill_control, "preview", routed("refill"))
     monkeypatch.setattr(factory_problem_issues, "configure", routed("problem_issues"))
     monkeypatch.setattr(owner_pr_control, "preview", routed("owner_prs"))
+    monkeypatch.setattr(
+        owner_pr_landing_delegation, "configure", routed("owner_pr_landing")
+    )
     monkeypatch.setattr(
         repair_landing_delegation, "configure", routed("repair_landing")
     )
@@ -4483,6 +4490,91 @@ def test_refill_wire_targets_reject_every_foreign_option(monkeypatch, target):
             assert calls == [target]
 
     _as(_principal(), wire)
+
+
+def test_owner_pr_landing_wire_binds_identity_and_preserves_unrelated_policy(db):
+    from fastmcp import Client
+    from core.mcp_app import mcp as shared
+    from factory.orchestration import owner_pr_landing_delegation as delegation
+
+    original = {
+        "repo": delegation.REPO,
+        "base_branch": "main",
+        "generation": 9,
+        "auto_merge": True,
+        "problem_issues": None,
+        "intake": {
+            "enabled": True,
+            "refine_enabled": True,
+            "owner_pr_author": {"login": "jomcgi", "id": 116890464},
+        },
+    }
+    with Session(db) as session, session.begin():
+        control = session.get(FactoryControl, "factory")
+        control.state = "enabled"
+        control.policy_json = json.dumps(original)
+        version = control.version
+    args = dict(
+        operation="preview",
+        target="owner_pr_landing",
+        enabled=True,
+        model="astra",
+        hourly=False,
+        expected_version=version,
+        reason="Bounded owner backlog delegation",
+    )
+
+    async def exercise():
+        async with Client(shared) as client:
+            preview = (await client.call_tool("factory_configure_refill", args)).data
+            assert preview["binding"]["owner"] == original["intake"]["owner_pr_author"]
+            assert preview["allowed_paths"] == sorted(delegation.ALLOWED_PATHS)
+            assert preview["max_derivations"] == preview["max_pr_derivations"] == 3
+            apply = {
+                **args,
+                "operation": "apply",
+                "request_key": "owner-landing",
+                "expected_preview_sha256": preview["preview_sha256"],
+            }
+            applied = (await client.call_tool("factory_configure_refill", apply)).data
+            assert applied["ok"] and applied["enabled"]
+            assert not applied["dispatched"]
+            assert (
+                await client.call_tool("factory_configure_refill", apply)
+            ).data == applied
+            stale = (
+                await client.call_tool(
+                    "factory_configure_refill", {**apply, "request_key": "other"}
+                )
+            ).data
+            assert stale["reason"] == "owner_pr_landing_version_changed"
+            revoke = {**args, "enabled": False, "expected_version": applied["version"]}
+            preview = (await client.call_tool("factory_configure_refill", revoke)).data
+            result = (
+                await client.call_tool(
+                    "factory_configure_refill",
+                    {
+                        **revoke,
+                        "operation": "apply",
+                        "request_key": "revoke-owner-landing",
+                        "expected_preview_sha256": preview["preview_sha256"],
+                    },
+                )
+            ).data
+            assert result["ok"] and not result["enabled"]
+
+    _as(_principal(), exercise)
+    with Session(db) as session:
+        assert (
+            json.loads(session.get(FactoryControl, "factory").policy_json) == original
+        )
+        assert not delegation.status(session)["enabled"]
+        assert session.exec(select(FactoryReceipt)).all() == []
+    for actor in (
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        assert not _as(actor, lambda: mcp.factory_configure_refill(**args)).get("ok")
 
 
 def test_owner_pr_adapter_binds_actor_and_requires_preview(monkeypatch):
