@@ -2254,6 +2254,17 @@ the race; retries cover a transient connection failure without re-executing a
 request that reached the application.
 
 
+**Why receipt schema precedes runtime rollout.** The nullable `attempt_phase`
+column is added before the staged-receipt runtime in
+[PR #7619](https://github.com/jomcgi-org/homelab/pull/7619). Atlas migration and
+Deployment resources can apply concurrently, and flag-off binaries still name
+the column. This schema-only prerequisite is inert to existing code and does not
+rewrite receipts. Verify Atlas application before landing the runtime, keep its
+flag off until every compatible backend and progress-ingest replica is deployed,
+and enable only through a separate reviewed GitOps change. Keep the additive
+column on rollback; live recovery acceptance remains on
+[#7583](https://github.com/jomcgi-org/homelab/issues/7583).
+
 **Why bounded permit diagnostics.** Unknown execution retains admission capacity
 until exact cessation evidence is reconciled. The operator-only
 `factory_diagnostics` kind `permits` read accepts at most twenty exact permit
