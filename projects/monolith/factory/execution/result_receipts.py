@@ -94,19 +94,85 @@ def _prepare_transaction(session_id):
             yield db, False
 
 
+def _preparation_owner(db, session_id, claim_owner, dispatch_count, guest_id):
+    """Recheck ownership and the first-hold fence under the existing lock order."""
+    from factory.execution import store
+
+    admission.lock_pool(db)
+    db.execute(
+        update(AgentSession)
+        .where(AgentSession.id == session_id)
+        .values(last_turn_at=AgentSession.last_turn_at)
+    )
+    agent = db.get(AgentSession, session_id, populate_existing=True)
+    pending = db.exec(
+        select(PendingMessage)
+        .where(PendingMessage.session_id == session_id)
+        .order_by(PendingMessage.seq)
+        .limit(1)
+    ).first()
+    now = _now()
+    if (
+        agent is None
+        or agent.status in {"failed", "awaiting_login"}
+        or agent.ember_session_id != guest_id
+        or agent.result_receipt_fence_id is not None
+        or admission.cleanup_pending(db, agent)
+        or pending is None
+        or pending.claimed_by_replica != claim_owner
+        or pending.dispatch_count != dispatch_count
+        or pending.claimed_at is None
+        or not 0 <= (now - _aware(pending.claimed_at)).total_seconds() < 30
+    ):
+        raise ReceiptRejected(409, "executor_ownership_changed")
+    permit = db.exec(
+        select(AgentCapacityReservation).where(
+            AgentCapacityReservation.session_id == session_id,
+            AgentCapacityReservation.pending_seq == pending.seq,
+        )
+    ).one_or_none()
+    previous = db.exec(
+        select(AgentTurn).where(
+            AgentTurn.session_id == session_id,
+            AgentTurn.seq == pending.seq,
+        )
+    ).one_or_none()
+    if (
+        permit is None
+        or permit.state != "running"
+        or permit.owner != claim_owner
+        or permit.local_session_id != agent.local_session_id
+        or store.has_unknown_outcome(db, session_id)
+        or store._covered_response_lost_hold(previous, claim_owner, dispatch_count)
+        or (
+            previous is not None
+            and previous.terminal_reason not in INTERRUPTED_TERMINAL_REASONS
+        )
+    ):
+        raise ReceiptRejected(409, "invocation_not_admitted")
+    return agent, pending, now
+
+
+def staged_preparation_enabled() -> bool:
+    return flag("AGENT_STAGED_RECEIPTS_ENABLED")
+
+
 def prepare_receipt(
     session_id: int,
     claim_owner: str,
     dispatch_count: int,
     guest_id: str,
     request_body: bytes,
+    *,
+    staged: bool = False,
 ) -> dict:
     """Pin one physical invoke while the exact executor still owns the lane.
 
     Called immediately before each POST, after admission. The request digest
     excludes the receipt credential subsequently added to the guest envelope.
-    A new physical invoke supersedes earlier receipts for the same turn, even
-    if transport recovery reuses its dispatch_count or Ember session.
+    Legacy calls immediately supersede earlier receipts. Staged preparation
+    leaves predecessors intact and creates a row old readers already exclude;
+    only attempt_prepared_receipt can promote it at the attempt-intent boundary.
     """
     if (
         type(session_id) is not int
@@ -120,70 +186,20 @@ def prepare_receipt(
         or not isinstance(request_body, bytes)
     ):
         raise ReceiptRejected(409, "invalid_invocation_identity")
-    # Import lazily: the existing store imports the transport which calls here.
-    from factory.execution import store
-
     with _prepare_transaction(session_id) as (db, metered):
-        admission.lock_pool(db)
-        db.execute(
-            update(AgentSession)
-            .where(AgentSession.id == session_id)
-            .values(last_turn_at=AgentSession.last_turn_at)
+        agent, pending, now = _preparation_owner(
+            db, session_id, claim_owner, dispatch_count, guest_id
         )
-        agent = db.get(AgentSession, session_id, populate_existing=True)
-        pending = db.exec(
-            select(PendingMessage)
-            .where(PendingMessage.session_id == session_id)
-            .order_by(PendingMessage.seq)
-            .limit(1)
-        ).first()
-        now = _now()
-        if (
-            agent is None
-            or agent.status in {"failed", "awaiting_login"}
-            or agent.ember_session_id != guest_id
-            or agent.result_receipt_fence_id is not None
-            or admission.cleanup_pending(db, agent)
-            or pending is None
-            or pending.claimed_by_replica != claim_owner
-            or pending.dispatch_count != dispatch_count
-            or pending.claimed_at is None
-            or not 0 <= (now - _aware(pending.claimed_at)).total_seconds() < 30
-        ):
-            raise ReceiptRejected(409, "executor_ownership_changed")
-        permit = db.exec(
-            select(AgentCapacityReservation).where(
-                AgentCapacityReservation.session_id == session_id,
-                AgentCapacityReservation.pending_seq == pending.seq,
+        if not staged:
+            db.execute(
+                update(AgentResultReceipt)
+                .where(
+                    AgentResultReceipt.session_id == session_id,
+                    AgentResultReceipt.seq == pending.seq,
+                    AgentResultReceipt.superseded_at.is_(None),
+                )
+                .values(superseded_at=now)
             )
-        ).one_or_none()
-        previous = db.exec(
-            select(AgentTurn).where(
-                AgentTurn.session_id == session_id,
-                AgentTurn.seq == pending.seq,
-            )
-        ).one_or_none()
-        if (
-            permit is None
-            or permit.state != "running"
-            or permit.owner != claim_owner
-            or permit.local_session_id != agent.local_session_id
-            or store.has_unknown_outcome(db, session_id)
-            or (
-                previous is not None
-                and previous.terminal_reason not in INTERRUPTED_TERMINAL_REASONS
-            )
-        ):
-            raise ReceiptRejected(409, "invocation_not_admitted")
-        db.execute(
-            update(AgentResultReceipt)
-            .where(
-                AgentResultReceipt.session_id == session_id,
-                AgentResultReceipt.seq == pending.seq,
-                AgentResultReceipt.superseded_at.is_(None),
-            )
-            .values(superseded_at=now)
-        )
         token = secrets.token_urlsafe(32)
         receipt = AgentResultReceipt(
             id=uuid4().hex,
@@ -198,14 +214,95 @@ def prepare_receipt(
             created_at=now,
             accept_until=now + timedelta(hours=ACCEPT_HOURS),
             retain_until=now + timedelta(days=RETAIN_DAYS),
+            attempt_phase="prepared" if staged else None,
+            superseded_at=now if staged else None,
         )
         db.add(receipt)
         result = {"id": receipt.id, "token": token}
-        if metered:
+        if metered and not staged:
             from factory.orchestration import factory_runtime_meter as meter
 
             result["runtime_meter"] = meter.bind(db, receipt, agent, request_body)
             result["runtime_meter_max_age_seconds"] = meter.MAX_USAGE_AGE_SECONDS
+        return result
+
+
+def attempt_prepared_receipt(
+    receipt_id: str,
+    session_id: int,
+    claim_owner: str,
+    dispatch_count: int,
+    guest_id: str,
+    request_body: bytes,
+    on_attempt,
+) -> dict:
+    """Promote only this executor's fresh empty preparation into attempt intent.
+
+    The transport serializes this transaction with its shutdown handoff. Intent
+    is conservative: a lost commit/transport response is never nonexecution.
+    Legacy and historical superseded rows cannot enter this transition.
+    """
+    with _prepare_transaction(session_id) as (db, metered):
+        _bound_observer_transaction(db)
+        agent, pending, now = _preparation_owner(
+            db, session_id, claim_owner, dispatch_count, guest_id
+        )
+        receipt = _locked_receipt(db, receipt_id)
+        if receipt is None:
+            raise ReceiptRejected(409, "receipt_unavailable")
+        _check_identity(receipt, session_id, claim_owner, dispatch_count, guest_id)
+        empty = db.exec(
+            select(AgentResultReceipt.result_body.is_(None)).where(
+                AgentResultReceipt.id == receipt_id
+            )
+        ).one()
+        newer = db.exec(
+            select(AgentResultReceipt.id)
+            .where(
+                AgentResultReceipt.session_id == session_id,
+                AgentResultReceipt.seq == pending.seq,
+                AgentResultReceipt.id != receipt_id,
+                AgentResultReceipt.created_at >= receipt["created_at"],
+            )
+            .limit(1)
+        ).first()
+        if (
+            receipt["attempt_phase"] != "prepared"
+            or receipt["superseded_at"] != receipt["created_at"]
+            or receipt["local_session_id"] != agent.local_session_id
+            or receipt["seq"] != pending.seq
+            or receipt["request_sha256"] != _sha(request_body)
+            or receipt["result_sha256"] is not None
+            or receipt["received_at"] is not None
+            or receipt["response_observed_at"] is not None
+            or receipt["response_observer_released_at"] is not None
+            or not empty
+            or newer is not None
+            or now >= _aware(receipt["accept_until"])
+        ):
+            raise ReceiptRejected(409, "receipt_not_prepared")
+        db.execute(
+            update(AgentResultReceipt)
+            .where(
+                AgentResultReceipt.session_id == session_id,
+                AgentResultReceipt.seq == pending.seq,
+                AgentResultReceipt.superseded_at.is_(None),
+            )
+            .values(superseded_at=now)
+        )
+        row = db.get(AgentResultReceipt, receipt_id, populate_existing=True)
+        row.attempt_phase = "attempted"
+        row.superseded_at = None
+        result = {}
+        if metered:
+            from factory.orchestration import factory_runtime_meter as meter
+
+            result["runtime_meter"] = meter.bind(db, row, agent, request_body)
+            result["runtime_meter_max_age_seconds"] = meter.MAX_USAGE_AGE_SECONDS
+        # Publish before commit: an indeterminate commit remains an attempted
+        # outcome, never a claim that no invocation was possible. The caller's
+        # handoff guard remains held until this transaction has ended.
+        on_attempt()
         return result
 
 
@@ -338,6 +435,7 @@ def _active_owner(db: Session, receipt: dict) -> AgentSession:
     now = _now()
     if (
         receipt["superseded_at"] is not None
+        or receipt.get("attempt_phase") not in {None, "attempted"}
         or now >= _aware(receipt["retain_until"])
         or agent is None
         or agent.local_session_id != receipt["local_session_id"]
@@ -887,6 +985,7 @@ def capture_result(receipt_id: str, token: str, body: bytes) -> dict:
         receipt = db.exec(
             select(
                 AgentResultReceipt.token_sha256,
+                AgentResultReceipt.attempt_phase,
                 AgentResultReceipt.retain_until,
                 AgentResultReceipt.accept_until,
                 AgentResultReceipt.result_sha256,
@@ -896,6 +995,8 @@ def capture_result(receipt_id: str, token: str, body: bytes) -> dict:
             receipt.token_sha256, _sha(token.encode())
         ):
             raise ReceiptRejected(401, "invalid_receipt_token")
+        if receipt.attempt_phase not in {None, "attempted"}:
+            raise ReceiptRejected(409, "receipt_not_attempted")
         now = _now()
         if now >= _aware(receipt.retain_until):
             raise ReceiptRejected(410, "receipt_expired")

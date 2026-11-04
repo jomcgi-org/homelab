@@ -68,13 +68,15 @@ class _DeliveryInvocation:
     artifact_path: str | None = None
 
     observer_record: dict | None = None
+    handoff_guard: object | None = None
+    attempt_pending: bool = False
 
     def publish(self) -> None:
         if self.observer_record is not None:
             self.observer_record.update(self.record())
 
     def record(self) -> dict:
-        return {
+        record = {
             "attempted": self.attempted,
             "receipt_id": self.receipt_id,
             "guest_id": self.guest_id,
@@ -82,6 +84,9 @@ class _DeliveryInvocation:
             "cli_session_id": self.cli_session_id,
             "artifact_path": self.artifact_path,
         }
+        if self.handoff_guard is not None:
+            record["attempt_pending"] = self.attempt_pending
+        return record
 
 
 _delivery_invocation: ContextVar[_DeliveryInvocation | None] = ContextVar(
@@ -562,6 +567,8 @@ async def _observe_native_result(
     cli_session_id: str | None,
     artifact_path: str | None,
     timeout_seconds: float,
+    *,
+    ready: asyncio.Event | None = None,
 ) -> Turn:
     """Race two observations of one POST, with one caller and result writer."""
     from factory.execution import result_receipts
@@ -596,6 +603,11 @@ async def _observe_native_result(
         )
 
     async def receive() -> Turn:
+        # A staged row is intentionally unreadable until promotion commits.
+        # Do not turn that temporary phase into permanent observer refusal;
+        # changed ownership after promotion still fails through the same reader.
+        if ready is not None:
+            await ready.wait()
         while True:
             try:
                 captured = await _receipt_database_call(
@@ -1667,6 +1679,7 @@ class EmberVmShimTransport:
         admission_check: Callable[[], Awaitable[None]] | None = None,
         receipt_claim_owner: str | None = None,
         invocation_record: dict | None = None,
+        invocation_guard=None,
         residency: dict | None = None,
         expected_workspace_fingerprint: str | None = None,
         workspace_handoff: dict | None = None,
@@ -1677,7 +1690,9 @@ class EmberVmShimTransport:
         # delivery started in a factory callback. Always restore the caller's
         # context on success, denial, transport failure, or cancellation.
         token = _delivery_admission_check.set(admission_check)
-        invocation = _DeliveryInvocation(observer_record=invocation_record)
+        invocation = _DeliveryInvocation(
+            observer_record=invocation_record, handoff_guard=invocation_guard
+        )
         invocation_token = _delivery_invocation.set(invocation)
         try:
             with tracer.start_as_current_span("agent_sessions.deliver") as span:
@@ -1937,7 +1952,10 @@ class EmberVmShimTransport:
             try:
                 await _check_delivery_admission()
                 receipt = None
-                request_sha256 = hashlib.sha256(body.encode()).hexdigest()
+                delivery = _delivery_invocation.get()
+                staged = bool(delivery and delivery.handoff_guard is not None)
+                request_body = body.encode()
+                request_sha256 = hashlib.sha256(request_body).hexdigest()
                 if receipt_claim_owner is not None:
                     from factory.execution import result_receipts
 
@@ -1949,26 +1967,75 @@ class EmberVmShimTransport:
                         receipt_claim_owner,
                         dispatch_count,
                         current.session_id,
-                        body.encode(),
+                        request_body,
+                        **({"staged": True} if staged else {}),
                     )
                     payload["result_receipt"] = receipt
                     body = json.dumps(payload)
                     # Publish the identity of this physical POST before it is
                     # sent, so a caller that never sees a response can still
                     # name the exact receipt the guest was told to publish to.
-                    delivery = _delivery_invocation.get()
-                    if delivery is not None:
+                    if delivery is not None and not staged:
                         delivery.receipt_id = receipt["id"]
                         delivery.guest_id = current.session_id
                         delivery.request_sha256 = request_sha256
                         delivery.cli_session_id = current_cli_session_id
                         delivery.artifact_path = artifact_path
 
+                observation_ready = asyncio.Event() if staged else None
+
+                def promote():
+                    guard = delivery.handoff_guard
+                    if not guard.acquire(timeout=2.0):
+                        raise result_receipts.ReceiptRejected(
+                            409, "handoff_in_progress"
+                        )
+                    try:
+
+                        def publish_attempt():
+                            delivery.receipt_id = receipt["id"]
+                            delivery.guest_id = current.session_id
+                            delivery.request_sha256 = request_sha256
+                            delivery.cli_session_id = current_cli_session_id
+                            delivery.artifact_path = artifact_path
+                            delivery.attempted = True
+                            delivery.publish()
+
+                        return result_receipts.attempt_prepared_receipt(
+                            receipt["id"],
+                            agent_session_id,
+                            receipt_claim_owner,
+                            dispatch_count,
+                            current.session_id,
+                            request_body,
+                            publish_attempt,
+                        )
+                    finally:
+                        guard.release()
+
                 async def post() -> Turn:
+                    nonlocal body
                     async with httpx.AsyncClient(timeout=timeout) as client:
                         # Receipt preparation yields after the admission
                         # check above. Fence a shutdown in that window too.
                         await _check_delivery_admission()
+                        if staged:
+                            delivery.attempt_pending = True
+                            delivery.publish()
+                            try:
+                                additions = await asyncio.to_thread(promote)
+                            except result_receipts.ReceiptRejected:
+                                delivery.attempt_pending = False
+                                delivery.publish()
+                                raise
+                            delivery.attempt_pending = False
+                            delivery.publish()
+                            receipt.update(additions)
+                            body = json.dumps(payload)
+                            observation_ready.set()
+                            # Cancellation or shutdown after committed attempt
+                            # intent remains uncertain, never not_invoked.
+                            await _check_delivery_admission()
                         # Mark before yielding to I/O. Even a connect/write/read
                         # failure after this point retains the conservative hold.
                         invocation = _delivery_invocation.get()
@@ -2039,6 +2106,7 @@ class EmberVmShimTransport:
                         current_cli_session_id,
                         artifact_path,
                         self.read_timeout,
+                        **({"ready": observation_ready} if staged else {}),
                     )
                 return await post()
             except httpx.TimeoutException as exc:
