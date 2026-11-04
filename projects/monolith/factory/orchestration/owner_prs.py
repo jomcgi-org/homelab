@@ -25,6 +25,29 @@ HOLD = re.compile(
     r"(?:merge|deployment)\b[^\n.]{0,60}\brequires? separate authorization",
     re.IGNORECASE,
 )
+# These complete absence assertions occurred in accepted native briefs. They
+# describe an observation, never grant authority or release another hold. Keep
+# the vocabulary deliberately finite rather than interpreting arbitrary prose.
+_ABSENCE = re.compile(
+    r"No explicit human, security or leave-unmerged hold was found in the PR "
+    r"labels, discussion or reviews\."
+    r"|Current discussion contains no explicit leave-unmerged hold\."
+)
+_QUALIFIER_WORDS = re.compile(
+    r"\b(?:if|unless|until|when|once|provided|assuming|suppose|imagine|"
+    r"but|however|except|although|yet|conditional|hypothetical|"
+    r"say|says|said|write|writes|wrote|quote|quoted|quoting|example|template|"
+    r"wording|phrase|sentence|claim|claims|claimed|alleged|false)\b",
+    re.IGNORECASE,
+)
+_RETRACTION_WORDS = re.compile(
+    r"\b(?:incorrect|untrue|fiction|contrary|wrong|disregard|ignore|retract|retracted|"
+    r"withdraw|withdrawn|revoke|revoked|superseded|inaccurate|unreliable|"
+    r"mistaken|mistake|invalid|nonbinding)\b|\b(?:is|was|are|were) false\b|"
+    r"\bnot (?:accurate|true|correct|binding|authoritative|valid|current)\b",
+    re.IGNORECASE,
+)
+_QUOTED = re.compile(r"[\"'\u2018\u2019\u201c\u201d<>\\]|(?:^|\n)[ \t]{4}")
 SHA = re.compile(r"[0-9a-f]{40}")
 MAX_REFERENCES = 5
 MAX_REFERENCE_READS = 20
@@ -32,6 +55,73 @@ MAX_REFERENCE_READS = 20
 
 class OwnerPRHold(ValueError):
     """Positive, non-mutating observation of an explicit ownership hold."""
+
+
+def has_hold(body: str) -> bool:
+    """Recognize two literal absence assertions, retaining text-veto backstops."""
+    if not HOLD.search(body):
+        return False
+    # Retractions can follow an assertion across headings, paragraphs or list
+    # items. Keep this finite conservative veto independent of context filtering.
+    if _RETRACTION_WORDS.search(body):
+        return True
+    # Code/HTML quotations can span paragraphs. Unknown presentation remains a
+    # veto, even if another paragraph contains a recognized absence sentence.
+    if re.search(
+        r"```|~~~|<(?:blockquote|pre|code|q)\b|^[ \t]*[\"'\u201c\u2018]",
+        body,
+        re.IGNORECASE | re.MULTILINE,
+    ):
+        return True
+    paragraphs = re.split(r"\n[ \t]*\n|\n(?=[ \t]*[-*] )", body)
+    # A leading qualifier is still a sentence-level veto in a separate list
+    # item. Match words at its start, not status/config literals elsewhere.
+    for paragraph in paragraphs:
+        item = paragraph.lstrip()
+        if item.startswith(("- ", "* ")) and _QUALIFIER_WORDS.match(item[2:].lstrip()):
+            return True
+    for index, paragraph in enumerate(paragraphs):
+        if not HOLD.search(paragraph):
+            continue
+        # Qualifying prose immediately around a paragraph can introduce a
+        # quote/example or retract the assertion without repeating the phrase.
+        neighbors = (
+            paragraphs[max(0, index - 1) : index] + paragraphs[index + 1 : index + 2]
+        )
+        context = "\n".join(
+            [paragraph]
+            + [
+                part
+                for part in neighbors
+                if not part.lstrip().startswith(("- ", "* "))
+                or part.rstrip().endswith(":")
+            ]
+        )
+        if (
+            len(paragraph) > 4096
+            or _QUOTED.search(paragraph)
+            or _QUALIFIER_WORDS.search(context)
+        ):
+            return True
+        remaining = paragraph
+        for match in reversed(list(_ABSENCE.finditer(paragraph))):
+            prefix, suffix = paragraph[: match.start()], paragraph[match.end() :]
+            # No clauses, quotations, inline code or sentence fragments. A
+            # balanced earlier code span (e.g. a head SHA) is not this sentence.
+            if (
+                (prefix.strip() and not prefix.rstrip().endswith("."))
+                or (suffix and not suffix[0].isspace())
+                or prefix.count("`") % 2
+            ):
+                continue
+            remaining = (
+                remaining[: match.start()]
+                + " " * len(match[0])
+                + remaining[match.end() :]
+            )
+        if HOLD.search(remaining):
+            return True
+    return False
 
 
 def closing_references(body: str, repo: str) -> set[tuple[str, int]]:
@@ -129,7 +219,7 @@ def _hold(item: dict, excluded: set[str]) -> str | None:
         re.search(r"hold|blocked|do-not-merge|manual|agent-skip", x) for x in labels
     ):
         return "explicit_hold"
-    if HOLD.search(item.get("body") or ""):
+    if has_hold(item.get("body") or ""):
         return "explicit_hold"
     return None
 
@@ -509,7 +599,7 @@ def receive(repo: str, number: int, policy: dict, *, generation: int) -> dict:
         for n in sorted(reference_numbers | {number, expected_issue})
     ):
         comments = _pages(repo, resource, conductor.github_list)
-        if any(HOLD.search(comment.get("body") or "") for comment in comments):
+        if any(has_hold(comment.get("body") or "") for comment in comments):
             raise OwnerPRHold("explicit_discussion_hold")
     # Evidence was fetched outside the control lock; all competing intake and
     # branch grants serialize with this final policy/history check.
@@ -631,7 +721,7 @@ def assert_unheld(
     if _hold(pull, set()):
         raise OwnerPRHold("owner_pr_explicit_hold")
     comments = _pages(task["repo"], f"issues/{number}/comments", read_list)
-    if any(HOLD.search(comment.get("body") or "") for comment in comments):
+    if any(has_hold(comment.get("body") or "") for comment in comments):
         raise OwnerPRHold("owner_pr_explicit_discussion_hold")
     if pull.get("state") != "open" and not pull.get("merged"):
         raise ValueError("owner_pr_closed_without_merge")

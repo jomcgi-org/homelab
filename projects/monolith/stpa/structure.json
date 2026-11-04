@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "bc1d4dfa2",
+  "commit": "52a8dde2a",
   "nodes": [
     {
       "key": "console-caller",
@@ -338,6 +338,14 @@
       "layer": "store",
       "maturity": "built",
       "evidence": "projects/monolith/factory/orchestration/factory_landing.py:606"
+    },
+    {
+      "key": "factory-owner-hold-text",
+      "label": "Existing owner PR text-hold check",
+      "view": "logical",
+      "layer": "enforcement",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/owner_prs.py:57,209,589,711"
     }
   ],
   "control_actions": [
@@ -950,6 +958,13 @@
       "from": "repair-delegation",
       "to": "factory-landing",
       "signal": "Exact candidate matches durable repair grant, or explicit refusal"
+    },
+    {
+      "view": "logical",
+      "from": "github-issues",
+      "to": "factory-owner-hold-text",
+      "signal": "Fresh PR and referenced-objective bodies and discussion text; veto evidence only",
+      "evidence": "projects/monolith/factory/orchestration/owner_prs.py:556,691"
     }
   ]
 }
