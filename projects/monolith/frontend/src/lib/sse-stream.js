@@ -17,7 +17,9 @@ export async function consumeSseStream(body, onFrame, { signal } = {}) {
   function dispatch(frames) {
     for (const frame of frames) {
       signal?.throwIfAborted();
-      if (onFrame?.(frame) === false) return false;
+      const stop = onFrame?.(frame) === false;
+      signal?.throwIfAborted();
+      if (stop) return false;
     }
     return true;
   }

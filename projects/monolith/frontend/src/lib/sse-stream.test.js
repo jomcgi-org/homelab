@@ -107,6 +107,22 @@ describe("synthetic SSE response consumption", () => {
     expect(body.locked).toBe(false);
   });
 
+  it("rejects an abort from the final EOF callback", async () => {
+    const abort = new AbortController();
+    const reason = new Error("stop at EOF");
+    const body = bodyFrom([encoder.encode('data: {"type":"done"}')]);
+    await expect(
+      consumeSseStream(
+        body,
+        () => {
+          abort.abort(reason);
+        },
+        { signal: abort.signal },
+      ),
+    ).rejects.toBe(reason);
+    expect(body.locked).toBe(false);
+  });
+
   for (const mode of ["throw", "stop", "abort"]) {
     it(`${mode} suppresses later buffered frames and cancels before unlocking`, async () => {
       const abort = new AbortController();
