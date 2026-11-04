@@ -660,6 +660,7 @@ def _task(task_id: str, *, session: Session | None = None) -> dict:
                 else receipt.issue_number
             ),
             "dependency_review": (direction or {}).get("dependency_review"),
+            "owner_pr": (direction or {}).get("owner_pr"),
             "landing_hold": landing_held(receipt),
             "task_paused": bool(receipt and receipt.task_paused),
             "cancellation_requested": bool(receipt and receipt.cancellation_requested),
@@ -1348,6 +1349,8 @@ def _closing_instruction(task: dict, *, review: bool = False) -> str:
 
 
 def _issue_closing_instruction(task: dict, *, review: bool = False) -> str:
+    if (task.get("owner_pr") or {}).get("direct"):
+        return "Keep the existing PR; do not add a closing keyword for the PR itself."
     issue = task.get("issue_number")
     if not isinstance(issue, int):
         return ""
@@ -2565,6 +2568,9 @@ def verify_delivery(
     if granted_pr is not None and number != granted_pr:
         raise ValueError("delivery PR does not match the operator-granted PR")
     pr = github_get(task["repo"], f"pulls/{number}")
+    from factory.orchestration.owner_prs import assert_unheld
+
+    assert_unheld(task, pr)
     merged = allow_merged and pr.get("merged") is True
     if merged and task.get("landing_hold"):
         raise DeliveryRefused(
@@ -2647,8 +2653,10 @@ def verify_delivery(
             raise DeliveryRefused(
                 "pr_missing_rescope", "state the conductor rescope in the PR body"
             )
-    elif issue_number is not None and not closes_issue(
-        pr.get("body"), task["repo"], issue_number
+    elif (
+        issue_number is not None
+        and not (task.get("owner_pr") or {}).get("direct")
+        and not closes_issue(pr.get("body"), task["repo"], issue_number)
     ):
         raise DeliveryRefused(
             "pr_missing_close_keyword",
@@ -7723,6 +7731,15 @@ def _dispatch_ready(
     ready = _ready_nodes(nodes, runs, funding_review=funding_review)
     if not ready or slots <= 0:
         return False
+    if task.get("owner_pr"):
+        from factory.orchestration.owner_prs import assert_unheld
+        from factory.orchestration import factory_pause
+
+        try:
+            assert_unheld(task)
+        except ValueError as exc:
+            factory_pause.pause(task["id"], ACTOR, str(exc))
+            return False
     budget = _slot_budget()
     solo = 0 if fan_out else 1
     extra = max(0, slots - solo)

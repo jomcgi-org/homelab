@@ -805,6 +805,7 @@ async def _control_catalog() -> dict:
         "factory_session_dispatch_diagnostics",
         "factory_configure_refill",
         "factory_configure_problem_issues",
+        "factory_configure_owner_prs",
         "factory_amend_policy",
         "factory_reconcile",
         "factory_continue_evidence",
@@ -2584,6 +2585,53 @@ async def factory_reconcile(
 
 
 @mcp.tool
+async def factory_configure_owner_prs(
+    operation: Literal["preview", "apply"],
+    expected_version: Annotated[MCPInteger, Field(ge=0)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    owner_login: str | None = None,
+    owner_id: Annotated[MCPInteger, Field(ge=1)] | None = None,
+    request_key: str | None = None,
+    expected_preview_sha256: str | None = None,
+) -> dict:
+    """Configure owner PR discovery on existing intake; omit both owner fields to disable.
+
+    First verify the GitHub owner's login and numeric user ID. Preview using
+    current factory_status version, then apply its digest and a stable request
+    key. Changes only intake.owner_pr_author; preserves generation, all receipts,
+    holds, budgets, unrelated producers, review and merge controls. Starts no work.
+    Existing intake and refinement must already be enabled, without a batch hold.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from factory.orchestration import owner_pr_control
+
+    if (owner_login is None) != (owner_id is None):
+        return {"ok": False, "reason": "owner_identity_incomplete"}
+    owner = {"login": owner_login, "id": owner_id} if owner_login is not None else None
+    try:
+        if operation == "preview":
+            return await asyncio.to_thread(
+                owner_pr_control.preview, owner, expected_version, reason
+            )
+        if not request_key or not expected_preview_sha256:
+            return {"ok": False, "reason": "owner_pr_preview_required"}
+        return await asyncio.to_thread(
+            owner_pr_control.apply,
+            principal.subject,
+            owner,
+            expected_version,
+            reason,
+            request_key,
+            expected_preview_sha256,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
 async def factory_configure_refill(
     operation: Literal["preview", "apply"],
     enabled: bool,
@@ -2595,9 +2643,11 @@ async def factory_configure_refill(
     expected_preview_sha256: str | None = None,
     reset_breaker: bool = False,
     min_new_issues: Annotated[MCPInteger, Field(ge=0, le=100)] | None = None,
-    target: Literal["refill", "problem_issues"] = "refill",
+    target: Literal["refill", "problem_issues", "owner_prs"] = "refill",
     recurring_blocker: bool | None = None,
     workflow_stranded: bool | None = None,
+    owner_login: str | None = None,
+    owner_id: Annotated[MCPInteger, Field(ge=1)] | None = None,
 ) -> dict:
     """Preview or apply bounded refill and existing learning cadence as an operator.
 
@@ -2617,15 +2667,42 @@ async def factory_configure_refill(
     hourly false as compatibility placeholders. Refill settings stay unchanged.
     reset_breaker and min_new_issues are not permitted for that target. This
     delegates to the same guarded preview/apply as factory_configure_problem_issues.
+    For target owner_prs, enabled true requires verified owner_login and owner_id;
+    enabled false requires both omitted. Use model astra and hourly false;
+    all refill/problem-issue options must be omitted/default. This delegates to
+    factory_configure_owner_prs, preserving every unrelated producer setting.
     Native factory_status.control_catalog advertises targets and argument names.
     """
     principal = current_principal()
     refusal = _refuse(principal)
     if refusal is not None:
         return refusal
-    if target == "problem_issues":
+    if target == "owner_prs":
         if (
             model != "astra"
+            or hourly is not False
+            or reset_breaker
+            or min_new_issues is not None
+            or recurring_blocker is not None
+            or workflow_stranded is not None
+            or (enabled and (owner_login is None or owner_id is None))
+            or (not enabled and (owner_login is not None or owner_id is not None))
+        ):
+            return {"ok": False, "reason": "owner_pr_target_arguments_invalid"}
+        return await factory_configure_owner_prs(
+            operation=operation,
+            expected_version=expected_version,
+            reason=reason,
+            owner_login=owner_login,
+            owner_id=owner_id,
+            request_key=request_key,
+            expected_preview_sha256=expected_preview_sha256,
+        )
+    if target == "problem_issues":
+        if (
+            owner_login is not None
+            or owner_id is not None
+            or model != "astra"
             or hourly is not False
             or reset_breaker
             or min_new_issues is not None
@@ -2645,6 +2722,8 @@ async def factory_configure_refill(
         )
     if (
         target != "refill"
+        or owner_login is not None
+        or owner_id is not None
         or recurring_blocker is not None
         or workflow_stranded is not None
     ):

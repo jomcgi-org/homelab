@@ -3400,3 +3400,159 @@ def test_holder_scan_bounds_serialized_pages_and_preserves_later_owner(
         assert audits(db, "merge_deferred", "t-1")[-1]["blocked_by_pr"] == 143
     else:
         assert calls["graphql"] == [{"pullRequestId": "PR_3"}]
+
+
+def owner_delivery(db, *, direct=False):
+    delivered(db, "t-1", 3 if direct else 11, 3)
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, "t-1")
+        direction = json.loads(row.direction_json)
+        direction["owner_pr"] = {"author_id": 42, "direct": direct}
+        row.direction_json = json.dumps(direction)
+
+
+@pytest.mark.parametrize("direct", [False, True])
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize(
+    "kind", ["discussion", "needs-human", "security", "assignment"]
+)
+def test_owner_pr_late_hold_fences_landing_and_existing_queue(
+    db, monkeypatch, direct, queued, kind
+):
+    owner_delivery(db, direct=direct)
+    pulls = {
+        3: {
+            **pull(3, armed=queued),
+            "user": {"id": 42},
+            "queue_entry": {"id": "MQ_3"} if queued else None,
+        }
+    }
+    calls = github(monkeypatch, pulls=pulls)
+    listing = landing.github_list
+    monkeypatch.setattr(
+        landing,
+        "github_list",
+        lambda repo, path: (
+            (
+                [{"body": "Do not merge; explicit human hold."}]
+                if kind == "discussion"
+                else []
+            )
+            if "/comments?" in path
+            else listing(repo, path)
+        ),
+    )
+    if kind in ("needs-human", "security"):
+        pulls[3]["labels"] = [{"name": kind}]
+    if kind == "assignment":
+        pulls[3]["assignees"] = [{"login": "joe"}]
+    landing.landing_tick(POLICY)
+    assert not audits(db, "merge_armed")
+    assert not calls["arm_heads"]
+    assert pulls[3]["auto_merge"] is None
+    assert not pulls[3].get("queue_entry")
+    assert audits(db, "landing_authorization_wait")
+    assert receipt_state(db, "t-1") == "succeeded"
+
+
+def test_owner_pr_landing_rechecks_discussion_after_review_collection(db, monkeypatch):
+    from factory import review_publisher
+
+    owner_delivery(db)
+    pulls = {3: {**pull(3), "user": {"id": 42}}}
+    calls = github(monkeypatch, pulls=pulls)
+    held = []
+    listing = landing.github_list
+    monkeypatch.setattr(
+        landing,
+        "github_list",
+        lambda repo, path: held if "/comments?" in path else listing(repo, path),
+    )
+    reviewed = review_publisher.collect
+
+    def race(task_id):
+        result = reviewed(task_id)
+        held.append({"body": "Do not merge; newly observed operator hold."})
+        return result
+
+    monkeypatch.setattr(review_publisher, "collect", race)
+    landing.landing_tick(POLICY)
+    assert not calls["arm_heads"]
+    assert not audits(db, "merge_armed")
+    assert audits(db, "landing_authorization_wait")
+
+
+@pytest.mark.parametrize(
+    "stale_review,check_state,accepted",
+    [(False, "success", True), (True, "success", False), (False, "failure", False)],
+)
+def test_direct_owner_pr_preserves_exact_head_gates_without_self_closing_keyword(
+    monkeypatch, stale_review, check_state, accepted
+):
+    from factory.orchestration import factory_conductor as conductor
+
+    # Pure GitHub/evidence verification. Durable owner holds are covered by the
+    # landing_tick regressions above using real receipts and queue observations.
+    monkeypatch.setattr(controls, "review_recovery_held", lambda *_: False)
+    task = {
+        "id": "t-1",
+        "repo": "owner/repo",
+        "base_branch": "main",
+        "conductor_model": "opus",
+        "issue_number": 3,
+        "delivery_pr_number": 3,
+        "owner_pr": {"direct": True, "author_id": 42},
+    }
+    pull = {
+        "state": "open",
+        "draft": False,
+        "user": {"id": 42},
+        "body": "Existing authorized maintenance PR",
+        "head": {
+            "sha": HEAD,
+            "ref": "factory/t-1",
+            "repo": {"full_name": "owner/repo"},
+        },
+        "base": {"ref": "main"},
+        "html_url": "https://github.com/owner/repo/pull/3",
+    }
+    checks = {"statuses": [{"context": "pr-checks", "state": check_state}]}
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda _repo, path: pull if path.startswith("pulls/") else checks,
+    )
+    monkeypatch.setattr(conductor, "github_list", lambda *_: [])
+    runs = [
+        {
+            "id": 1,
+            "node_key": "implement_fix",
+            "status": "succeeded",
+            "session_id": 10,
+            "outcome_json": json.dumps({"value": {"pr_number": 3, "head_sha": HEAD}}),
+        },
+        {
+            "id": 2,
+            "node_key": "review_fix",
+            "status": "succeeded",
+            "session_id": 11,
+            "head_sha": HEAD,
+            "pin": {"model": "opus"},
+            "outcome_json": json.dumps(
+                {
+                    "value": {
+                        "pr_number": 3,
+                        "head_sha": "b" * 40 if stale_review else HEAD,
+                        "verdict": "approve",
+                    }
+                }
+            ),
+        },
+    ]
+    if accepted:
+        assert (
+            conductor.verify_delivery(task, 3, runs, issue_number=3)["head_sha"] == HEAD
+        )
+    else:
+        with pytest.raises(ValueError, match="exact-head|integrated PR checks"):
+            conductor.verify_delivery(task, 3, runs, issue_number=3)

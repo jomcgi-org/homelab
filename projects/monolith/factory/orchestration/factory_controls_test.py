@@ -2164,6 +2164,7 @@ def test_status_defaults_intake_for_empty_control_policy(db):
         "last_swept": None,
         "last_evaluated": None,
         "last_error": None,
+        "owner_pr_backlog": None,
     }
 
 
@@ -6519,3 +6520,19 @@ def test_issue_body_hash_ignores_the_factorys_own_gate_contracts():
         "Acceptance rewritten by a person\n\n"
         + blocks.render("t-1", "a" * 20, contract)
     )
+
+
+@pytest.mark.parametrize(
+    "owner",
+    [
+        {},
+        {"login": "joe"},
+        {"login": "joe", "id": True},
+        {"login": "joe", "id": 0},
+        {"login": "bot[bot]", "id": 42},
+        {"login": "joe", "id": 42, "scope": "all"},
+    ],
+)
+def test_owner_pr_intake_identity_rejects_incomplete_or_ambiguous_grants(owner):
+    with pytest.raises(ValueError, match="invalid owner_pr_author"):
+        controls.intake_policy({"intake": {"owner_pr_author": owner}})
