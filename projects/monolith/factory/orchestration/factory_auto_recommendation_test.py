@@ -263,6 +263,9 @@ def test_card_inside_the_grace_window_is_left_to_a_person(db, github):
         (card(first="close"), "recommendation_not_continue"),
         (card(question="Rotate the API token?"), "sensitive_scope"),
         (card(reason="Needs a destructive migration."), "sensitive_scope"),
+        (card(question="Grant the agent access to production?"), "sensitive_scope"),
+        (card(reason="Includes deleting stale rows."), "sensitive_scope"),
+        (card(summary="Dropping the old table."), "sensitive_scope"),
         (card(kind="watchdog"), "not_routine_kind"),
         (card(dispatch_refusal={"x": 1}), "funding_gate"),
         (card(resolved={"effect": "hold"}), "not_open"),
@@ -378,3 +381,20 @@ def test_concurrent_considerations_apply_the_card_once(db, github):
     assert second != "applied"
     assert len(actions(db, "decision_applied")) == 1
     assert len(actions(db, auto.APPLIED)) == 1
+
+
+
+
+@pytest.mark.parametrize("state", ["accepted", "outcome_unknown"])
+def test_an_unconfirmed_outcome_is_neither_counted_nor_a_repeated_blocker(
+    db, github, monkeypatch, state
+):
+    configure()
+    escalate(db)
+    monkeypatch.setattr(
+        decisions, "request_decision", lambda *a, **k: {"ok": False, "state": state}
+    )
+    assert tick() == {"unconfirmed": 1}
+    assert tick() == {"unconfirmed": 1}
+    assert actions(db, auto.APPLIED) == []
+    assert actions(db, auto.BLOCKER) == []

@@ -142,7 +142,9 @@ A `needs-human` verdict arrives as two to four options, recommendation first; `e
 
 `FACTORY_AUTO_RECOMMENDATION_ENABLED` (chart false) lets the conductor tick, even with a full lane, answer a routine escalation through `request_decision` with request key `auto:<decision_id>` as `factory:auto-recommendation`. It applies only a validated first option whose effect is `agent-ready`, after a 15-minute grace, and only when the card is open, not a pause, watchdog or funding card, the issue is open, unedited and not `human`/`security-finding`, no landing hold or model restriction is pinned, the text names no access, secret or destructive scope, and the pull request has no standing changes-requested review. Unreadable evidence fails closed. Re-admission keeps receipt, task lineage, PR and accounting.
 
-Progress is a different question or a moved pull request head. The same question at the same head, or a fourth answer on a receipt, is not answered: one `recurring_blocker` audit feeds the `recurring_blocker` problem-issue source (default off), which deduplicates by blocker identity and marker. A receipt whose body carries a factory problem marker never emits another, so repair does not recurse. A full lane also runs the improvement scout, which admits nothing.
+Progress is a different question or a moved pull request head. The same question at the same head, or a fourth answer on a receipt, is not answered: one `recurring_blocker` audit feeds the `recurring_blocker` problem-issue source (default off), which deduplicates by blocker identity and marker. A receipt whose body carries a factory problem marker never emits another, so repair does not recurse. A full lane also runs the improvement scout, which admits nothing. Escalated, uncertain and paused receipts stay owners but no longer make the improvement context incomplete, so repair preparation proceeds without touching them.
+
+A funding proposal above the approved `task_budget_usd` is accounting and is granted; only the explicit operator policy key `task_budget_binding: true` keeps it waiting for an amendment.
 
 ## Execution and evidence
 

@@ -107,6 +107,7 @@ _POLICY_KEYS = {
     "auto_merge",
     "repos",
     "backlog_refill",
+    "task_budget_binding",
 }
 _OPTIONAL_POLICY_KEYS = {
     "reviewer_model",
@@ -125,6 +126,7 @@ _OPTIONAL_POLICY_KEYS = {
     "auto_merge",
     "repos",
     "backlog_refill",
+    "task_budget_binding",
 }
 
 
@@ -769,6 +771,13 @@ def validate_policy(policy: dict) -> dict:
     if type(auto_merge) is not bool:
         raise ValueError("invalid auto_merge")
     result["auto_merge"] = auto_merge
+    # An explicit human monetary restriction: only an operator sets it, and a
+    # funding proposal above the approved task budget then waits for an
+    # amendment. Absent, dollars are accounting and never an approval request.
+    if "task_budget_binding" in policy:
+        if type(policy["task_budget_binding"]) is not bool:
+            raise ValueError("invalid task_budget_binding")
+        result["task_budget_binding"] = policy["task_budget_binding"]
     # The repos map is stored sparse and never derived here: a policy
     # without it reads as one primary entry equal to the global blocks
     # (repos_map), so the live policy needs no re-post and homelab follows
