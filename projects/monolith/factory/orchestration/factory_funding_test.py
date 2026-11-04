@@ -97,9 +97,7 @@ def test_budget_proposals_retain_an_explicit_human_restriction(proposal, deficit
 @pytest.mark.parametrize(
     "proposal,deficit", [(75, None), (50, {"usd": {"needed": 75}})]
 )
-def test_budget_proposals_are_accounting_without_a_human_restriction(
-    proposal, deficit
-):
+def test_budget_proposals_are_accounting_without_a_human_restriction(proposal, deficit):
     result = resolve(
         decision(task_budget_usd=proposal),
         deficit=deficit,

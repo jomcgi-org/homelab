@@ -809,9 +809,7 @@ def routine_pause(task, decision, cause=None):
     ):
         return False
     text = _routine_text(decision)
-    if factory_gates.HUMAN_GATE_BACKSTOP.search(text) or _ROUTINE_BACKSTOP.search(
-        text
-    ):
+    if factory_gates.HUMAN_GATE_BACKSTOP.search(text) or _ROUTINE_BACKSTOP.search(text):
         return False
     with controls._read_session() as db:
         row = controls._receipt(db, task["id"])

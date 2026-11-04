@@ -994,7 +994,8 @@ def test_leaf_transport_requires_current_database_and_quota_evidence(db, change)
 
 
 @pytest.mark.parametrize(
-    ("state", "paused"), [("escalated", False), ("uncertain", False), ("admitted", True)]
+    ("state", "paused"),
+    [("escalated", False), ("uncertain", False), ("admitted", True)],
 )
 def test_stalled_owner_neither_blocks_nor_is_touched_by_scout_transport(
     db, state, paused
