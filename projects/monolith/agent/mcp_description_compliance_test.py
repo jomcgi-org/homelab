@@ -133,6 +133,7 @@ def _register_all_tools() -> int:
 SENTINEL_TOOLS = {
     "factory_control",
     "factory_configure_refill",
+    "factory_configure_problem_issues",
     "factory_amend_policy",
     "k8s_list_resources",
     "monolith_agent_notify",
