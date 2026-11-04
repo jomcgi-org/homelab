@@ -2085,6 +2085,21 @@ async def factory_find_routine_permits(
 
 
 @mcp.tool
+async def factory_session_dispatch_diagnostics(
+    session_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+    seq: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+) -> dict:
+    """Read exact session-turn metadata for callers with a cached tool catalog.
+
+    Compatibility name for factory_diagnostics kind session_dispatch. Requires
+    a standing human operator and uses the same bounded read owner. Does not
+    contact guests, retry, reconcile, change state or authorize recovery.
+    Missing records and old observations never establish current cessation.
+    """
+    return await factory_diagnostics("session_dispatch", session_id=session_id, seq=seq)
+
+
+@mcp.tool
 async def factory_diagnostics(
     kind: Literal["permits", "session_dispatch", "raw_extraction", "quota_probes"],
     permit_ids: Annotated[

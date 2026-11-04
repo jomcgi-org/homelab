@@ -343,6 +343,12 @@ read-only projections and the restricted public database role.
 See [domain ownership](factory/orchestration/FACTORY.md#domain-ownership) and
 [planner preview](factory/orchestration/FACTORY.md#planner-preview).
 
+**Why.** Connected MCP callers can retain a tool catalog after the native server
+consolidates names. The session dispatch diagnostics compatibility name delegates
+to `factory_diagnostics` so those callers can inspect an uncertain turn without
+guessing that it stopped. Both names keep the same standing-operator gate, strict
+identity and bounded read owner; neither grants recovery authority (#7603).
+
 ### Owned records
 
 Schema and durable workflow identities survive the package consolidation.

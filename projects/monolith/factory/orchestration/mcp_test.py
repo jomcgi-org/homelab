@@ -130,6 +130,7 @@ def test_factory_tools_are_registered():
         "factory_configure_problem_issues",
         "factory_reconcile",
         "factory_diagnostics",
+        "factory_session_dispatch_diagnostics",
         "factory_continue_evidence",
         "factory_release_landing_hold",
         "factory_find_receipts",
@@ -2687,7 +2688,8 @@ def test_fresh_issue_preparation_requires_typed_apply_and_operator(monkeypatch):
     assert calls[1][2]["request_key"] == "exact-key"
 
 
-def test_session_dispatch_diagnostics_operator_and_thread(monkeypatch):
+@pytest.mark.parametrize("cached_name", [False, True])
+def test_session_dispatch_diagnostics_operator_and_thread(monkeypatch, cached_name):
     import threading
     from factory.execution import admission_diagnostics
 
@@ -2700,19 +2702,26 @@ def test_session_dispatch_diagnostics_operator_and_thread(monkeypatch):
         return {"recovery_authorized": False}
 
     monkeypatch.setattr(admission_diagnostics, "inspect_session_turn", read)
+
+    def call():
+        if cached_name:
+            return mcp.factory_session_dispatch_diagnostics(21073, 2)
+        return mcp.factory_diagnostics("session_dispatch", session_id=21073, seq=2)
+
     result = _as(
         _principal(groups=()),
-        lambda: mcp.factory_diagnostics("session_dispatch", session_id=21073, seq=2),
+        call,
     )
     assert result["error"] == mcp.OPERATOR_REQUIRED and not calls
     assert _as(
         _principal(),
-        lambda: mcp.factory_diagnostics("session_dispatch", session_id=21073, seq=2),
+        call,
     ) == {"recovery_authorized": False}
     assert calls == [(21073, 2)]
 
 
-def test_session_dispatch_diagnostics_strict_wire_identity(monkeypatch):
+@pytest.mark.parametrize("cached_name", [False, True])
+def test_session_dispatch_diagnostics_strict_wire_identity(monkeypatch, cached_name):
     from fastmcp import Client
     from core.mcp_app import mcp as shared
     from factory.execution import admission_diagnostics
@@ -2729,26 +2738,36 @@ def test_session_dispatch_diagnostics_strict_wire_identity(monkeypatch):
     ):
         assert not _as(
             principal,
-            lambda: mcp.factory_diagnostics(
-                "session_dispatch", session_id=21073, seq=2
+            lambda: (
+                mcp.factory_session_dispatch_diagnostics(21073, 2)
+                if cached_name
+                else mcp.factory_diagnostics(
+                    "session_dispatch", session_id=21073, seq=2
+                )
             ),
         )["ok"]
     assert not calls
 
     async def wire():
+        name = (
+            "factory_session_dispatch_diagnostics"
+            if cached_name
+            else "factory_diagnostics"
+        )
+        selector = {} if cached_name else {"kind": "session_dispatch"}
         async with Client(shared) as client:
             for field in ("session_id", "seq"):
                 for value in (True, "2", 0, -1, 2**63):
                     args = {"session_id": 21073, "seq": 2, field: value}
                     result = await client.call_tool(
-                        "factory_diagnostics",
-                        {"kind": "session_dispatch", **args},
+                        name,
+                        {**selector, **args},
                         raise_on_error=False,
                     )
                     assert result.is_error
             result = await client.call_tool(
-                "factory_diagnostics",
-                {"kind": "session_dispatch", "session_id": 21073, "seq": 2},
+                name,
+                {**selector, "session_id": 21073, "seq": 2},
             )
             assert result.data["recovery_authorized"] is False
 
