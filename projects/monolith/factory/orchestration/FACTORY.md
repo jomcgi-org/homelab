@@ -408,9 +408,16 @@ Operational handoff makes "repository work delivered, only live checks remain" a
 
 The existing problem producer owns the automatic loop for stranded workflows
 and recurring blockers after guarded operator activation. Deployment never
-changes policy switches. Fresh surplus quota gates discovery using
-the improvement preview's existing per-grant rules. Enabled refinement or
+changes policy switches. Required recovery discovery accepts fresh, complete
+per-grant ordinary permitted quota, including on-pace accounts without surplus
+due for scouting. It retains preview's evidence, pacing and short-window guards
+and the ordinary per-account availability check. Opportunistic scouting keeps
+its separate surplus, remaining-quota and reset-horizon thresholds. Discovery
+grants no paid-start authority. Enabled refinement or
 matching direct labels permit bug intake; exclusions, pauses and batches bind.
+Required recovery repairs blocked work; optional scouting spends surplus finding
+new work. The scout's due threshold must not suppress otherwise permitted repair
+discovery.
 Waiting recovery sources do not block unrelated sources. Ordinary intake,
 exact-head review, CI, merge queue and managed
 rollout retain authority over the separate repair issue.

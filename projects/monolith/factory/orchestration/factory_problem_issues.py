@@ -79,24 +79,49 @@ def _delivery_enabled(policy: dict) -> bool:
     )
 
 
-def _spare_quota() -> bool:
-    """Reuse improvement's fresh per-grant surplus evidence, not a headline.
+def _recovery_quota() -> bool:
+    """Require ordinary permitted quota, independently of surplus scouting.
 
-    This authorizes issue discovery only. Normal admission and provider routing
-    still own every paid start; no scout subscription or execution fence changes.
+    Preview's ``not_due`` means its freshness, pacing and every short-window
+    guard passed, but its optional surplus/horizon/remaining target did not.
+    Required repair discovery accepts that evidence and applies the ordinary
+    per-account availability owner as well. This never authorizes a paid start
+    or selects a model/account; admission and provider routing still own those.
     """
-    from factory.execution.provider_quota import fetch_provider_quota_sync
+    from factory.execution.provider_quota import (
+        fetch_provider_quota_sync,
+        summarise_grants,
+    )
     from factory.orchestration.factory_improvement_preview import (
         PreviewPolicy,
         quota_decisions,
     )
+    from factory.orchestration.model_pool import _confirmed_view_availability
 
-    return any(
-        row["eligible"]
-        for row in quota_decisions(
-            fetch_provider_quota_sync(force=True), now=_now(), policy=PreviewPolicy()
-        )
-    )
+    payload = fetch_provider_quota_sync(force=True)
+    if not isinstance(payload, dict) or payload.get("grants_valid") is not True:
+        return False
+    grants = payload.get("grants")
+    if (
+        not isinstance(grants, dict)
+        or not 1 <= len(grants) <= 64
+        or any(not isinstance(k, str) for k in grants)
+    ):
+        return False
+    views, validity = summarise_grants(grants)
+    now = _now()
+    for row in quota_decisions(payload, now=now, policy=PreviewPolicy()):
+        if row["reason"] not in {"underused", "not_due"}:
+            continue
+        provider = row["provider"]
+        if (
+            validity.get(provider)
+            and _confirmed_view_availability(
+                views[row["grant"]], provider=provider, role=None, now=now
+            )[0]
+        ):
+            return True
+    return False
 
 
 def _recovery_owner(db, row):
@@ -956,7 +981,7 @@ def problem_issues_tick(policy: dict) -> None:
         observed["effective_sources"].get(source) for source in RECOVERY_SOURCES
     ):
         try:
-            recovery_ready = _delivery_enabled(policy) and _spare_quota()
+            recovery_ready = _delivery_enabled(policy) and _recovery_quota()
         except Exception:  # Unavailable recovery evidence must not block other sources.
             logger.exception("factory recovery discovery evidence unavailable")
             recovery_ready = False
