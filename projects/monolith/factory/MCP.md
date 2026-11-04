@@ -428,6 +428,44 @@ new tool name in a cached caller registry. If the caller also rejects its new
 arguments, supported schema discovery must still be refreshed; server catalog
 evidence alone cannot change a client's schema. Legacy `configure` is not a substitute.
 
+### Verify fresh same-node recovery
+
+Keep the recovery tracking issue open until live evidence proves both repair
+delivery and resumed useful work. Activation, a funding grant and a merged PR
+are intermediate outcomes. Keep receipt, run, quota and audit evidence private.
+
+1. After verified rollout, confirm effective producer sources and an enabled
+   ordinary bug-intake lane. Observe a new producer-created repair issue from
+   a genuine recurring blocker or stranded workflow. Source watermarks exclude
+   historical signals. Follow its ordinary implementation, exact-head review,
+   CI, merge queue and verified rollout. Do not submit a duplicate tracking task.
+2. Select an existing fresh **admitted** task through private status and task
+   detail. Its exact exhausted `work` node must have only failed prior attempts,
+   succeeded dependencies and fewer than ten allowed attempts. Conductor nodes
+   and evidence-continuation nodes are excluded. The task must retain cumulative
+   turn authority and fewer than two prior node-attempt renewals. Verify fresh
+   issue ownership and the synchronized label mirror, enabled execution, no
+   pause/cancellation, human/nonrenewable/landing/review hold, unresolved start
+   or nonterminal run. An escalated receipt is ineligible even if its last work
+   attempt failed. For end-to-end repair observation, select the original task
+   and node bound by that repair's private `problem_issue_recovery_watch`.
+3. Let ordinary reconciliation request the existing funding judge's decision.
+   It detects the exhausted node automatically; review may refuse or steer.
+   On approval, verify `funding_granted.node_retry` and the immutable
+   `renew_node_attempt` plan revision name the original node, preserve previous
+   attempts and add exactly one allowance. Then verify a new actual attempt on
+   that same task/node completes useful work. A grant alone is insufficient.
+4. For the full loop, require `problem_issue_recovery_observed`: the repair
+   delivery succeeded with recorded rollout proof, followed by a new successful
+   run of its original source node. Independent retry proof without that repair
+   binding does not establish the producer-to-recovery loop.
+
+If no eligible live candidate exists, report acceptance pending and wait for
+ordinary intake and real failure evidence. Do not inject a failure, answer an
+escalated card, clear a hold or unknown invocation, replace the node, or start
+competing work to manufacture proof. Historical cards and missing source-node
+bindings remain unsupported by this automatic recovery path.
+
 ### Recorded landing refusals
 
 Each compact status row includes `landing_refusal`: the latest recorded
