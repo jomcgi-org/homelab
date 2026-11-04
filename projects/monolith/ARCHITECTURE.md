@@ -2259,7 +2259,11 @@ column is added before the staged-receipt runtime in
 [PR #7619](https://github.com/jomcgi-org/homelab/pull/7619). Atlas migration and
 Deployment resources can apply concurrently, and flag-off binaries still name
 the column. This schema-only prerequisite is inert to existing code and does not
-rewrite receipts. Verify Atlas application before landing the runtime, keep its
+rewrite receipts. A metadata-only postcondition requires exactly one live,
+nullable scalar pg_catalog.text column with no default, identity or generated
+expression; a mismatch raises a fixed error without repairing data or schema.
+An Applied result therefore establishes this shape even when ADD skipped an
+existing column. Verify Atlas application before landing the runtime, keep its
 flag off until every compatible backend and progress-ingest replica is deployed,
 and enable only through a separate reviewed GitOps change. Keep the additive
 column on rollback; live recovery acceptance remains on
