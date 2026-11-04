@@ -2590,8 +2590,8 @@ async def factory_configure_refill(
     Target repair_landing configures only a default-off standing delegation:
     specify duration_minutes and max_repairs (recommended 1440 and 3), model astra
     and hourly false. Omit producer switches and other refill options. Preview
-    lists the fixed private file boundary. Disabling revokes future arming;
-    the native landing observer fences queued grants on its next tick. This
+    lists the fixed private file boundary. Disabling revokes future arming.
+    The native landing observer fences queued grants on its next tick. This
     does not undo completed external actions or activate producer/intake.
     """
     principal = current_principal()
