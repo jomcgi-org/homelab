@@ -801,6 +801,8 @@ async def _control_catalog() -> dict:
     """Bounded native evidence, not a claim about gateway or client discovery."""
     tools = {}
     for name in (
+        "factory_status",
+        "factory_session_dispatch_diagnostics",
         "factory_configure_refill",
         "factory_configure_problem_issues",
         "factory_amend_policy",
@@ -841,6 +843,9 @@ async def factory_status(
     include_recent: bool = False,
     offset: Annotated[MCPInteger, Field(ge=0)] = 0,
     limit: Annotated[MCPInteger, Field(ge=1, le=STATUS_LIMIT_MAX)] = STATUS_LIMIT,
+    target: Literal["factory", "session_dispatch"] = "factory",
+    session_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)] | None = None,
+    seq: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)] | None = None,
 ) -> dict:
     """Read what the software factory is working on and what is blocked.
 
@@ -854,6 +859,11 @@ async def factory_status(
             now rather than what already finished.
         offset: Zero-based offset applied independently to each state bucket.
         limit: Maximum rows returned per bucket, from one to fifty.
+        target: Factory status by default. session_dispatch reads exact turn
+            metadata through the existing diagnostics owner for cached callers.
+        session_id: Required only for session_dispatch, together with seq.
+        seq: Exact positive turn sequence. Dispatch reads do not accept status
+            paging or include_recent and never authorize execution or recovery.
 
     Returns:
         The control state and policy, the intake block and lane usage that
@@ -872,6 +882,16 @@ async def factory_status(
     refusal = _refuse(current_principal())
     if refusal is not None:
         return refusal
+    if target == "session_dispatch":
+        if session_id is None or seq is None:
+            return {"ok": False, "reason": "session_dispatch_requires_session_and_seq"}
+        if include_recent or offset or limit != STATUS_LIMIT:
+            return {"ok": False, "reason": "session_dispatch_does_not_accept_paging"}
+        return await factory_diagnostics(
+            "session_dispatch", session_id=session_id, seq=seq
+        )
+    if session_id is not None or seq is not None:
+        return {"ok": False, "reason": "session_identity_requires_dispatch_target"}
     result = await asyncio.to_thread(_status_payload, include_recent, offset, limit)
     if result.get("ok"):
         result["control_catalog"] = await _control_catalog()

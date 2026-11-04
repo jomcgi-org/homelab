@@ -70,6 +70,14 @@ Both require a standing human operator and strict positive integer identities.
 Neither contacts a guest, changes execution or authorizes recovery; recorded
 cessation metadata is not independent fresh cessation proof.
 
+If a cached caller still cannot invoke that restored name, the established
+`factory_status(target="session_dispatch", session_id=..., seq=...)` reaches
+the same diagnostics owner. Omit status paging and `include_recent`; both
+identities are required. The default `target="factory"` retains ordinary
+status behavior and rejects session identity arguments. Normal status includes
+these native arguments and targets in `control_catalog`, without claiming that
+the gateway or caller catalog has refreshed.
+
 ## Apply controls
 
 Call `factory_control` with an explicit action, a new `request_key`, and
