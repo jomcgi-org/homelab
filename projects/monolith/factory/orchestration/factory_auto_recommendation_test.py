@@ -177,8 +177,13 @@ def escalate(db, document=None, *, body="Untrusted issue body.", age=3600):
         row = session.exec(select(FactoryReceipt)).first()
     if row is None:
         receive_issue(
-            REPO, ISSUE, "Fix", body, f"https://github.com/{REPO}/issues/{ISSUE}",
-            "factory:intake", task_class="bug-fix",
+            REPO,
+            ISSUE,
+            "Fix",
+            body,
+            f"https://github.com/{REPO}/issues/{ISSUE}",
+            "factory:intake",
+            task_class="bug-fix",
         )
     with Session(db) as session:
         row = session.exec(select(FactoryReceipt)).one()
@@ -225,7 +230,11 @@ def test_routine_card_defaults_to_its_recommendation_once(db, github):
     assert tick() == {}
     decision = decisions._fields(row)["decision_id"]
     decisions.request_decision(
-        receipt_id, decision, "go", auto.ACTOR, request_key=f"auto:{decision}",
+        receipt_id,
+        decision,
+        "go",
+        auto.ACTOR,
+        request_key=f"auto:{decision}",
         note=auto.NOTE,
     )
     assert len(actions(db, "decision_applied")) == 1
@@ -369,5 +378,3 @@ def test_concurrent_considerations_apply_the_card_once(db, github):
     assert second != "applied"
     assert len(actions(db, "decision_applied")) == 1
     assert len(actions(db, auto.APPLIED)) == 1
-
-
