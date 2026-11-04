@@ -256,8 +256,6 @@ spec:
               value: {{ .Values.swarm.factoryWorkItemBaseUrl | default "https://jomcgi.dev/slop" | quote }}
             - name: FACTORY_CONDUCTOR_FUNDING_ENABLED
               value: {{ .Values.swarm.factoryConductorFundingEnabled | default false | quote }}
-            - name: FACTORY_MERIT_JUDGE_ENABLED
-              value: {{ .Values.swarm.factoryMeritJudgeEnabled | default false | quote }}
             - name: FACTORY_MERIT_JUDGE_MAX_EXTENSION_MULTIPLE
               value: {{ .Values.swarm.factoryMeritJudgeMaxExtensionMultiple | default 1 | quote }}
             - name: FACTORY_MERIT_JUDGE_MAX_EXTENSION_USD

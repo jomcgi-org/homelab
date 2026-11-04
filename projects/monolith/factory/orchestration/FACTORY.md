@@ -292,10 +292,11 @@ Linux orchestrator CI and a real bounded operating trial stay the delivery gates
 
 Funding lives in `factory_funding.py`: `request` records one judge node, `settle` verifies its authority, `decide` resolves a validated artifact to `continue`, `steer` or `stop`. A continue or steer grants at most 20 work turns and a 30-minute review horizon. Reservations and unknown outcomes stay charged; a factory start reserves a ceiling and settles at the reported cost, falling back to the token-usage list price. A judge proposing a larger budget pauses the receipt for operator approval. Continuation contracts remain: the legacy pair below and an operator `progress_continuation` two-hour lease for one paused recovered task.
 
-Four switches stage funding, each false in the chart and enabled in the GKE overlay:
+Eligible funding reviews include progress, proximity-to-landing and issue-value criteria and server-read evidence from `factory_judge.py`. Explicit doubt steers to an operator card, and the turn ceiling is the original allowance plus `factoryMeritJudgeMaxExtensionMultiple` times it. Missing pinned policy and historical requests without merit metadata retain their legacy handling.
+
+Three switches stage funding, each false in the chart and enabled in the GKE overlay:
 
 - `FACTORY_CONDUCTOR_FUNDING_ENABLED`: new funding reviews when work turns, review rounds or a lease run out. Enrolled reviews finish after it is disabled, a failed or stale review waits five minutes, and six consecutive refusals end the task.
-- `FACTORY_MERIT_JUDGE_ENABLED`: adds the progress, proximity-to-landing and issue-value criteria and server-read evidence in `factory_judge.py`. Explicit doubt steers to an operator card, and the turn ceiling is the original allowance plus `factoryMeritJudgeMaxExtensionMultiple` times it.
 - `FACTORY_RESERVATION_REVIEW_ENABLED`: a 30-minute lease on the running invocation, reviewed from five minutes before expiry. Heartbeats never renew it.
 - `FACTORY_AUTONOMOUS_CONTINUATION_ENABLED`: the legacy pair, one final named correction plus independent review at a work-turn limit. It cannot renew itself, and funding supersedes it for enrolled tasks.
 

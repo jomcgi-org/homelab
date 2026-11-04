@@ -490,9 +490,7 @@ def judge_deficit(task, deficit, reason):
     raises no card. A deficit past the policy ceiling is a hard cap: it audits
     ``merit_funding_declined`` and returns False, and the card stands.
     """
-    if not factory_judge.enabled() or not (
-        enabled() or task.get("funding_enrolled", False)
-    ):
+    if not (enabled() or task.get("funding_enrolled", False)):
         return False
     bound = _pinned_ceiling(task["id"])
     if bound is None:
@@ -560,19 +558,16 @@ def request(task, reason, *, recover=False, progress=False, routine=None):
     if issue.get("number") != task["issue_number"]:
         return False
     merit = None
-    if factory_judge.enabled():
-        with controls._read_session() as db:
-            if pending(db, task["id"]):
-                return not routine
-        bound = _pinned_ceiling(task["id"])
-        if bound is not None:
-            # GitHub reads stay outside the control lock.
-            merit = {
-                "ceiling": bound,
-                "evidence": factory_judge.merit_evidence(
-                    task, graph.node_runs(task["id"])
-                ),
-            }
+    with controls._read_session() as db:
+        if pending(db, task["id"]):
+            return not routine
+    bound = _pinned_ceiling(task["id"])
+    if bound is not None:
+        # GitHub reads stay outside the control lock.
+        merit = {
+            "ceiling": bound,
+            "evidence": factory_judge.merit_evidence(task, graph.node_runs(task["id"])),
+        }
     with controls._locked_session() as (db, control):
         row = controls._receipt(db, task["id"])
         # A hold set while labels were read wins here, without mutating it.

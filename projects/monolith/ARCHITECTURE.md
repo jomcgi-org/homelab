@@ -389,8 +389,8 @@ acceptance, not numeric gates. Required CI and independent exact-head review
 remain mandatory. Rollback is reverting the PR.
 
 **Why.** `FACTORY_CONDUCTOR_FUNDING_ENABLED` stages judge-reviewed funding.
-`FACTORY_MERIT_JUDGE_ENABLED` adds criteria and server-read evidence to the same
-judge path, and doubt steers to an operator card under a pinned turn ceiling.
+Eligible funding reviews carry merit criteria and server-read evidence on the
+same judge path. Doubt steers to an operator card under a pinned turn ceiling.
 `FACTORY_RESERVATION_REVIEW_ENABLED` reviews the running invocation's lease. Two
 continuation contracts remain: the legacy final correction pair behind
 `FACTORY_AUTONOMOUS_CONTINUATION_ENABLED`, which cannot renew itself, and an

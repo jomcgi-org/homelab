@@ -19031,6 +19031,11 @@ def funding_decision(**changes):
         "task_budget_usd": 20.0,
         "additional_work_turns": 4,
         "lease_minutes": 30,
+        "assessment": {
+            "progress": "Review identified a bounded retry correction.",
+            "proximity": "Correction and independent review remain.",
+            "value": "Repair the retry bug within the existing scope.",
+        },
         **changes,
     }
 
