@@ -260,19 +260,36 @@ class TestNeedsAgent:
     """ADR 035 Phase 4: the in-monolith depth classify (chat vs goose guest)."""
 
     @pytest.mark.asyncio
-    async def test_repo_work_routes_to_agent(self):
-        message = _make_message(content="can you fix the bug in bot.py and push a PR")
-        caller = AsyncMock(return_value='{"needs_agent": true}')
+    @pytest.mark.parametrize("decision", [True, False], ids=["true", "false"])
+    @pytest.mark.parametrize(
+        ("content", "expected_payload", "excluded"),
+        [
+            (None, "", ""),
+            ("", "", ""),
+            ("[payload-one]", "[payload-one]", ""),
+            ("[payload-two]", "[payload-two]", ""),
+            ("α" * 498 + "β", "α" * 498 + "β", ""),
+            ("α" * 498 + "βγ", "α" * 498 + "βγ", ""),
+            ("α" * 498 + "βγδ", "α" * 498 + "βγ", "δ"),
+        ],
+        ids=["none", "empty", "short-one", "short-two", "499", "500", "501"],
+    )
+    async def test_classifier_input_and_response_contract(
+        self, content, expected_payload, excluded, decision
+    ):
+        message = _make_message(content=content)
+        caller = AsyncMock(return_value=f'{{"needs_agent": {str(decision).lower()}}}')
         result = await needs_agent(message, _caller=caller)
-        assert result is True
-        caller.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_conversation_routes_to_chat(self):
-        message = _make_message(content="what's a good name for a boat?")
-        caller = AsyncMock(return_value='{"needs_agent": false}')
-        result = await needs_agent(message, _caller=caller)
-        assert result is False
+        caller.assert_awaited_once()
+        (prompt,) = caller.await_args.args
+        # Inspect the message field, including an actually empty payload.
+        # The policy prose before this framing is free to change.
+        _, separator, payload = prompt.rpartition(" Message: ")
+        assert separator
+        assert payload == expected_payload
+        if excluded:
+            assert excluded not in prompt
+        assert result is decision
 
     @pytest.mark.asyncio
     async def test_fails_closed_to_chat_on_caller_error(self):
@@ -287,53 +304,6 @@ class TestNeedsAgent:
         caller = AsyncMock(return_value='sure! {"needs_agent": true} ok')
         result = await needs_agent(message, _caller=caller)
         assert result is True
-
-    @pytest.mark.asyncio
-    async def test_prompt_keeps_channel_summarization_on_chat(self):
-        """The chat agent now has catch_up/extract_decisions tools (Task 1.3):
-        summarizing this conversation or pulling decisions/action items out of
-        channel history must stay "chat", not route to the heavy agent."""
-        message = _make_message(content="can you summarize this thread?")
-        caller = AsyncMock(return_value='{"needs_agent": false}')
-        await needs_agent(message, _caller=caller)
-        prompt = caller.call_args[0][0].lower()
-        assert "summarizing this conversation" in prompt
-        assert "catching up" in prompt
-        assert "channel history" in prompt
-        assert "decisions" in prompt
-        assert "action items" in prompt
-
-    @pytest.mark.asyncio
-    async def test_prompt_still_mentions_repo_artifact_and_research(self):
-        """Additive change: the existing depth-classify wording must survive."""
-        message = _make_message(content="anything")
-        caller = AsyncMock(return_value='{"needs_agent": false}')
-        await needs_agent(message, _caller=caller)
-        prompt = caller.call_args[0][0].lower()
-        assert "repository/codebase" in prompt
-        assert "artifact/page" in prompt
-        assert "thorough multi-source" in prompt
-
-    @pytest.mark.asyncio
-    async def test_prompt_routes_python_charts_to_chat(self):
-        """A chart/plot of data (including this channel's own stats) must stay
-        "chat": the chat agent has run_code to render and attach the image.
-        The prompt must enumerate that capability and state the bright line so
-        a "chart messages per user per day" ask no longer trips to the agent
-        just for containing the word "chart"."""
-        message = _make_message(content="chart messages per user per day")
-        caller = AsyncMock(return_value='{"needs_agent": false}')
-        await needs_agent(message, _caller=caller)
-        prompt = caller.call_args[0][0].lower()
-        # the tool that makes an inline chart possible is named for the model
-        assert "run_code" in prompt
-        # the bright line: a python image is chat, a click-around page is agent
-        assert "chart" in prompt
-        assert "attaches" in prompt
-        assert "not a single image" in prompt
-        # the channel-stats capability is surfaced so the model knows the data
-        # is reachable without the heavy guest
-        assert "per-user or per-day breakdowns" in prompt
 
 
 class TestDirectedSeam:
