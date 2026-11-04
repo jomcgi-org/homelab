@@ -3254,6 +3254,7 @@ def test_routine_pause_is_answered_by_the_judge_on_the_same_task(db, routine):
         ({"question": "Grant the agent access to the cluster?"}, "true"),
         ({"reason": "This would delete the old bucket."}, "true"),
         ({"question": "This is a security finding; continue?"}, "true"),
+        ({"question": "   "}, "true"),
     ],
 )
 def test_non_routine_pauses_keep_their_card(db, routine, monkeypatch, change, env):
@@ -3377,7 +3378,8 @@ def test_concurrent_routine_pauses_request_one_review(db, routine):
     for thread in threads:
         thread.join()
     assert len(audits_of(db, "funding_review_requested")) == 1
-    assert results.count(True) >= 1
+    # Exactly one pause owns the review; any other keeps its own card.
+    assert results.count(True) == 1
 
 
 def test_routine_pause_never_rides_another_pending_review(db, routine):
@@ -3426,3 +3428,50 @@ def test_scout_tasks_are_never_routed(db, routine, monkeypatch):
     pause(task, policy, routine_pause())
     assert len(state["cards"]) == 1
     assert audits_of(db, "funding_review_requested") == []
+
+
+def test_a_refusal_run_after_a_judge_answer_does_not_revive_an_old_pause(
+    db, routine, monkeypatch
+):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    # The judge answers without a grant (a stop); the routed pause is spent.
+    settle_funding_request(
+        task,
+        _pending(task),
+        funding_decision(
+            action="stop",
+            additional_work_turns=0,
+            lease_minutes=0,
+            assessment=ASSESSMENT,
+        ),
+    )
+    assert _settled(task)["refusal"] is None
+    assert funding._routed_pause(task["id"]) is None
+
+
+def test_exhausted_refusals_with_an_unpostable_card_fail_instead_of_wedging(
+    db, routine, monkeypatch
+):
+    from datetime import timedelta
+
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+
+    def refuse(*_args, **_kwargs):
+        raise conductor._EditRefused("pause_without_question", "no question")
+
+    monkeypatch.setattr(conductor, "_escalate_task", refuse)
+    clock = {"now": controls._now()}
+    monkeypatch.setattr(controls, "_now", lambda: clock["now"])
+    for _ in range(funding.FUNDING_REFUSAL_LIMIT):
+        settle_funding_request(task, _pending(task), {"action": "nonsense"})
+        clock["now"] += timedelta(minutes=6)
+        funding.reconcile(
+            conductor._task(task["id"]),
+            policy,
+            conductor.graph.node_runs(task["id"]),
+            controls.can_start(task["id"]),
+        )
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).one().state == "failed"
