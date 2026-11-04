@@ -1345,9 +1345,11 @@ def reconcile(task, policy, runs, permission):
                 try:
                     c._escalate_task(task, routed["decision"], routed["cause"], runs)
                     return True
-                except ValueError:
-                    # A card the escalation owner refuses must not wedge the
-                    # task; it fails below exactly as an unrouted one would.
+                except c._EditRefused:
+                    # A card the escalation owner refuses (before any write)
+                    # must not wedge the task; it fails below as an unrouted
+                    # one would. GitHub I/O errors propagate and the next tick
+                    # retries the idempotent card writes.
                     pass
             controls.finish_task(
                 task["id"],

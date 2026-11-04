@@ -3475,3 +3475,35 @@ def test_exhausted_refusals_with_an_unpostable_card_fail_instead_of_wedging(
         )
     with Session(db) as session:
         assert session.exec(select(FactoryReceipt)).one().state == "failed"
+
+
+def test_github_errors_while_raising_the_routed_card_retry_not_fail(
+    db, routine, monkeypatch
+):
+    from datetime import timedelta
+
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+
+    def unreadable(*_args, **_kwargs):
+        raise ValueError("GitHub response exceeds factory limit")
+
+    monkeypatch.setattr(conductor, "_escalate_task", unreadable)
+    clock = {"now": controls._now()}
+    monkeypatch.setattr(controls, "_now", lambda: clock["now"])
+    for attempt in range(funding.FUNDING_REFUSAL_LIMIT):
+        settle_funding_request(task, _pending(task), {"action": "nonsense"})
+        clock["now"] += timedelta(minutes=6)
+        args = (
+            conductor._task(task["id"]),
+            policy,
+            conductor.graph.node_runs(task["id"]),
+            controls.can_start(task["id"]),
+        )
+        if attempt < funding.FUNDING_REFUSAL_LIMIT - 1:
+            funding.reconcile(*args)
+        else:
+            with pytest.raises(ValueError):
+                funding.reconcile(*args)
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).one().state != "failed"
