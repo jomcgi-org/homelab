@@ -480,6 +480,11 @@ capability does not establish that any current backlog PR fits its profile.
 Fresh PR/discussion holds fence dispatch and verification. The private
 `intake.owner_pr_backlog` projection reports the latest sweep's states, age,
 receipt owners and blockers, alongside merged and verified delivery counts.
+The shared text check recognizes only two exact, unqualified absence-of-hold
+sentences seen in accepted briefs; it does not infer scope or release authority.
+Other hold matches, quoted or qualified wording, labels and durable holds still
+veto work. Existing discussion-refusal cache entries keep their normal expiry
+and fresh observation path; this classification never clears them.
 Superseded or closed PRs keep their history; advisory refinement cannot close a
 PR. External merges retain the existing merged-delivery verification owner and
 its review/operational fences. #7428 owns that owner's remaining external-review
