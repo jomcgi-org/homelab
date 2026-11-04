@@ -127,6 +127,7 @@ def test_factory_tools_are_registered():
         "factory_decide",
         "factory_amend_policy",
         "factory_configure_refill",
+        "factory_configure_problem_issues",
         "factory_reconcile",
         "factory_diagnostics",
         "factory_continue_evidence",
@@ -150,6 +151,7 @@ def test_status_distinguishes_native_registration_from_caller_catalog(monkeypatc
     assert catalog["caller_visibility"] == "not_observed"
     assert set(catalog["tools"]) == {
         "factory_configure_refill",
+        "factory_configure_problem_issues",
         "factory_amend_policy",
         "factory_reconcile",
         "factory_continue_evidence",
@@ -164,7 +166,40 @@ def test_status_distinguishes_native_registration_from_caller_catalog(monkeypatc
     assert continuation["registered"] is True
     assert continuation["operations"] == ["preview", "apply"]
     assert "source_run_id" in continuation["arguments"]
-    assert len(json.dumps(catalog)) < 3500
+    assert len(json.dumps(catalog)) < 4500
+
+
+def test_problem_issue_activation_requires_operator_and_preview(monkeypatch):
+    from factory.orchestration import factory_problem_issues as producer
+
+    calls = []
+    monkeypatch.setattr(
+        producer, "configure", lambda *a, **kw: calls.append((a, kw)) or {"ok": True}
+    )
+    args = dict(
+        operation="preview",
+        enabled=True,
+        recurring_blocker=True,
+        workflow_stranded=True,
+        expected_version=1,
+        reason="Recovery sources",
+    )
+    for principal in (
+        _principal(groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        assert not _as(principal, lambda: mcp.factory_configure_problem_issues(**args))[
+            "ok"
+        ]
+    assert not calls
+    assert not _as(
+        _principal(),
+        lambda: mcp.factory_configure_problem_issues(**{**args, "operation": "apply"}),
+    )["ok"]
+    assert not calls
+    assert _as(_principal(), lambda: mcp.factory_configure_problem_issues(**args))["ok"]
+    assert calls[0][1]["actor"] == "joe"
 
 
 @pytest.mark.parametrize(

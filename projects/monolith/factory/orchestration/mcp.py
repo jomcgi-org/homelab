@@ -764,6 +764,7 @@ async def _control_catalog() -> dict:
     tools = {}
     for name in (
         "factory_configure_refill",
+        "factory_configure_problem_issues",
         "factory_amend_policy",
         "factory_reconcile",
         "factory_continue_evidence",
@@ -2562,6 +2563,53 @@ async def factory_configure_refill(
             expected_preview_sha256,
             reset_breaker=reset_breaker,
             min_new_issues=min_new_issues,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
+async def factory_configure_problem_issues(
+    operation: Literal["preview", "apply"],
+    enabled: bool,
+    recurring_blocker: bool,
+    workflow_stranded: bool,
+    expected_version: Annotated[MCPInteger, Field(ge=0)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    request_key: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
+    expected_preview_sha256: Annotated[
+        str | None, Field(pattern=r"^[0-9a-f]{64}$")
+    ] = None,
+) -> dict:
+    """Preview/apply problem-issue recovery sources as a standing operator.
+
+    Read factory_status for version, then preview the three exact switches.
+    Apply identical arguments with preview_sha256 and a new request_key;
+    retry the same key after an unknown outcome. Changes only enabled and
+    sources.recurring_blocker/workflow_stranded. Preserves all other policy,
+    generation, receipts, ownership, holds and uncertain starts. No dispatch.
+    Ordinary producer ticks watermark newly enabled sources, deduplicate and
+    file bounded bug issues; ordinary intake/refinement owns future work.
+    """
+    refusal = _refuse(current_principal())
+    if refusal is not None:
+        return refusal
+    from factory.orchestration import factory_problem_issues
+
+    if operation == "apply" and (not request_key or not expected_preview_sha256):
+        return {"ok": False, "reason": "problem_issues_preview_required"}
+    try:
+        return await asyncio.to_thread(
+            factory_problem_issues.configure,
+            operation,
+            enabled,
+            recurring_blocker,
+            workflow_stranded,
+            expected_version,
+            reason,
+            actor=current_principal().subject,
+            request_key=request_key,
+            expected_preview_sha256=expected_preview_sha256,
         )
     except ValueError as exc:
         return {"ok": False, "reason": str(exc)}
