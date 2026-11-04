@@ -2584,12 +2584,12 @@ async def factory_configure_problem_issues(
     """Preview/apply problem-issue recovery sources as a standing operator.
 
     Read factory_status for version, then preview the three exact switches.
-    Apply identical arguments with preview_sha256 and a new request_key;
-    retry the same key after an unknown outcome. Changes only enabled and
+    Apply identical arguments with expected_preview_sha256 and a new request_key.
+    Retry the same key after an unknown outcome. Changes only enabled and
     sources.recurring_blocker/workflow_stranded. Preserves all other policy,
     generation, receipts, ownership, holds and uncertain starts. No dispatch.
     Ordinary producer ticks watermark newly enabled sources, deduplicate and
-    file bounded bug issues; ordinary intake/refinement owns future work.
+    file bounded bug issues. Ordinary intake/refinement owns future work.
     """
     refusal = _refuse(current_principal())
     if refusal is not None:
