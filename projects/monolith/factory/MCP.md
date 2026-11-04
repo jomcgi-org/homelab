@@ -444,6 +444,65 @@ new tool name in a cached caller registry. If the caller also rejects its new
 arguments, supported schema discovery must still be refreshed; server catalog
 evidence alone cannot change a client's schema. Legacy `configure` is not a substitute.
 
+### Enable bounded repair landing
+
+Default-off standing delegation closes the producer-to-landing handoff for a
+limited class of new repairs (#7601). It does not enable intake, producer sources,
+global auto-merge or funding. Set those through their existing owners first;
+any later policy change invalidates this delegation. No rollout migration
+activates it.
+
+After independent review and verified rollout, a standing human operator uses
+the existing callable `factory_configure_refill`:
+
+1. Read `factory_status.version` and confirm `control_catalog` advertises target
+   `repair_landing`, `duration_minutes` and `max_repairs`. Caller schemas that
+   reject these arguments must be refreshed; a new tool name is unnecessary.
+2. Preview with `operation: "preview"`, `target: "repair_landing"`,
+   `enabled: true`, `model: "astra"`, `hourly: false`, `duration_minutes: 1440`,
+   `max_repairs: 3`, the current `expected_version`, and a trial `reason`.
+   The model/hourly arguments are unchanged compatibility placeholders.
+   Omit producer switches, `reset_breaker` and `min_new_issues`. Inspect the
+   returned fixed `allowed_paths`, policy digest, expiry duration and count.
+3. Apply with identical arguments except `operation: "apply"`; add a fresh
+   `request_key` and the exact `expected_preview_sha256` from preview. Reuse
+   the same key and arguments after an uncertain response. This writes only
+   standing authorization to the existing audit journal and increments control
+   version. Policy, generation, receipts and ownership stay unchanged.
+4. Re-read `factory_status.repair_landing`. A successful replay reports the
+   original command's outcome, so replaying an old enable after revocation
+   cannot establish current authority. Fresh source and producer events must
+   occur after this authorization. There is no historical adoption.
+
+Duration is 1–1440 minutes; the limit is 1–10 exact machine derivations. The
+recommended trial is three derivations over 24 hours. Each changed head, review
+or source proof needs another slot; unchanged replay spends none. A derivation
+does not guarantee queue entry and is not refunded after refusal. To revoke,
+preview/apply `enabled: false` with the current version, the same target and
+explicit duration/count. New arming stops immediately under the control lock;
+the existing observer disarms/dequeues outstanding grants on its next tick.
+Already completed external actions cannot be undone by revocation.
+
+Only new node-bound `recurring_blocker` repairs from a fresh recoverable machine
+pause qualify. The initial fixed paths are `.py` and `_test.py` files for
+`factory_problem_issues`, `factory_intake_loop`, `factory_progress_watchdog` and
+`factory_feedback` under `projects/monolith/factory/orchestration/`. Changes must
+modify existing regular non-executable UTF-8 files. A separate independent
+exact-head review must provide `landing_scope`, including the exact base commit
+and complete path list, and positively classify the change as private, internal
+and reversible. Its public/security/credential/destructive flags must all be
+false. Authority or safety-gate changes and ambiguous scope require an operator.
+Required CI, protected merge queue and source/repair holds remain binding.
+
+Unsupported automatic scope includes arbitrary stranded workflows without
+node-bound machine-pause proof, historical cards, authority-owner repairs
+(funding, graph, controls, landing or MCP), public files, new/deleted/renamed
+files, security or credential changes. This follow-up itself therefore cannot
+use the delegation it adds. It requires the assigned independent delivery owner.
+Native integration tests exercise real producer, intake, independent review,
+scope derivation and queue arming. They do not establish live acceptance; keep
+#7583 and #7601 open until the full proof below is recorded privately.
+
 ### Verify fresh same-node recovery
 
 Keep the recovery tracking issue open until live evidence proves both repair
@@ -452,7 +511,10 @@ are intermediate outcomes. Keep receipt, run, quota and audit evidence private.
 
 1. After verified rollout, confirm effective producer sources and an enabled
    ordinary bug-intake lane. Observe a new producer-created repair issue from
-   a genuine recurring blocker or stranded workflow. Source watermarks exclude
+   a genuine recurring blocker. For unattended landing, activate the bounded
+   delegation before the fresh source signal and use its supported file scope.
+   Stranded workflows outside that scope still need their own landing authority.
+   Source watermarks exclude
    historical signals. Follow its ordinary implementation, exact-head review,
    CI, merge queue and verified rollout. Do not submit a duplicate tracking task.
 2. Select an existing fresh **admitted** task through private status and task

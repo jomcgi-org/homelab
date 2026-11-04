@@ -88,16 +88,19 @@ def _scope(value):
 
 
 def _public_docs(pull):
-    """Immutable GitHub evidence, not a caller-supplied docs classification.
+    return regular_file_evidence(pull, PUBLIC_DOCS, "landing_public_docs_unverified")
 
-    Only edits to two existing contracts qualify. Modes and UTF-8 content are
-    checked as well as paths: renames, executable files, symlinks, binary files
-    and incomplete responses must not turn this into a generic public grant.
+
+def regular_file_evidence(pull, allowed_paths, refusal):
+    """Immutable GitHub evidence within the owner's fixed path boundary.
+
+    Only modifications of existing regular UTF-8 files qualify. Renames,
+    executable files, symlinks, binaries and incomplete responses refuse.
     """
     from factory.orchestration.factory_conductor import github_get
 
     def reject():
-        raise ValueError("landing_public_docs_unverified")
+        raise ValueError(refusal)
 
     try:
         repo = pull["base"]["repo"]["full_name"]
@@ -108,14 +111,14 @@ def _public_docs(pull):
         ):
             reject()
         count = pull["changed_files"]
-        if type(count) is not int or not 1 <= count <= len(PUBLIC_DOCS):
+        if type(count) is not int or not 1 <= count <= len(allowed_paths):
             reject()
         files = github_get(repo, f"compare/{base}...{head}")["files"]
         paths = [f["filename"] for f in files]
         if (
             len(files) != count
             or len(set(paths)) != count
-            or not set(paths) <= PUBLIC_DOCS
+            or not set(paths) <= allowed_paths
             or any(
                 f["status"] != "modified" or f.get("previous_filename") for f in files
             )
@@ -280,7 +283,12 @@ def scoped_refusal(db, row, pr_number, head_sha):
     if controls.review_recovery_held(row.task_id, session=db):
         return "review_only_recovery"
     try:
-        grant = json.loads(row.direction_json or "{}").get("landing_authorization")
+        direction = json.loads(row.direction_json or "{}")
+        if "landing_authorization" not in direction:
+            from factory.orchestration import repair_landing_delegation
+
+            return repair_landing_delegation.refusal(db, row, pr_number, head_sha)
+        grant = direction.get("landing_authorization")
         if (
             not isinstance(grant, dict)
             or type(grant.get("schema_version")) is not int

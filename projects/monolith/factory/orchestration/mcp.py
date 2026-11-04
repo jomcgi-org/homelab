@@ -370,6 +370,7 @@ def _status_payload(
         "lanes": view.get("lanes"),
         "review_routing": view.get("review_routing"),
         "refill": view.get("refill"),
+        "repair_landing": view.get("repair_landing"),
         "active": active,
         "queued": queued,
         "needs_operator": needs_operator,
@@ -768,7 +769,7 @@ def _operator_view(
         ]
         decisions = _decision_page(db, False, offset, limit)
         generated = _now()
-        from factory.orchestration import refill_control
+        from factory.orchestration import refill_control, repair_landing_delegation
 
         refill_status = refill_control.status(db, control)
         return {
@@ -784,6 +785,7 @@ def _operator_view(
             "admitted_count": control.admitted_count,
             "generated_at": generated,
             "refill": refill_status,
+            "repair_landing": repair_landing_delegation.status(db),
             "intake": controls.intake_state(policy, session=db),
             "lanes": controls.lane_usage(
                 policy,
@@ -2560,9 +2562,11 @@ async def factory_configure_refill(
     expected_preview_sha256: str | None = None,
     reset_breaker: bool = False,
     min_new_issues: Annotated[MCPInteger, Field(ge=0, le=100)] | None = None,
-    target: Literal["refill", "problem_issues"] = "refill",
+    target: Literal["refill", "problem_issues", "repair_landing"] = "refill",
     recurring_blocker: bool | None = None,
     workflow_stranded: bool | None = None,
+    duration_minutes: Annotated[MCPInteger | None, Field(ge=1, le=1440)] = None,
+    max_repairs: Annotated[MCPInteger | None, Field(ge=1, le=10)] = None,
 ) -> dict:
     """Preview or apply bounded refill and existing learning cadence as an operator.
 
@@ -2583,11 +2587,48 @@ async def factory_configure_refill(
     reset_breaker and min_new_issues are not permitted for that target. This
     delegates to the same guarded preview/apply as factory_configure_problem_issues.
     Native factory_status.control_catalog advertises targets and argument names.
+    Target repair_landing configures only a default-off standing delegation:
+    specify duration_minutes and max_repairs (recommended 1440 and 3), model astra
+    and hourly false. Omit producer switches and other refill options. Preview
+    lists the fixed private file boundary. Disabling revokes future arming;
+    the native landing observer fences queued grants on its next tick. This
+    does not undo completed external actions or activate producer/intake.
     """
     principal = current_principal()
     refusal = _refuse(principal)
     if refusal is not None:
         return refusal
+    if target == "repair_landing":
+        if (
+            model != "astra"
+            or hourly is not False
+            or reset_breaker
+            or min_new_issues is not None
+            or recurring_blocker is not None
+            or workflow_stranded is not None
+            or duration_minutes is None
+            or max_repairs is None
+        ):
+            return {"ok": False, "reason": "repair_landing_target_arguments_invalid"}
+        from factory.orchestration import repair_landing_delegation
+
+        try:
+            return await asyncio.to_thread(
+                repair_landing_delegation.configure,
+                principal,
+                operation,
+                enabled,
+                expected_version,
+                reason,
+                duration_minutes=duration_minutes,
+                max_repairs=max_repairs,
+                request_key=request_key,
+                expected_preview_sha256=expected_preview_sha256,
+            )
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+    if duration_minutes is not None or max_repairs is not None:
+        return {"ok": False, "reason": "refill_target_arguments_invalid"}
     if target == "problem_issues":
         if (
             model != "astra"

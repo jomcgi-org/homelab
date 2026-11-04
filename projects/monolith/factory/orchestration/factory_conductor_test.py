@@ -20262,7 +20262,9 @@ def test_ordinary_funding_does_not_attach_exhausted_node(feedback_db, monkeypatc
     assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == 2
 
 
-def producer_repair_after_real_blocker(monkeypatch):
+def producer_repair_after_real_blocker(
+    monkeypatch, *, before_signal=None, complete=True
+):
     from factory.orchestration import (
         factory_controls as controls,
         factory_funding as funding,
@@ -20307,6 +20309,8 @@ def producer_repair_after_real_blocker(monkeypatch):
             "sources": {"recurring_blocker": True},
         }
         control.policy_json = json.dumps(live)
+    if before_signal:
+        before_signal(task, live)
     producer.problem_issues_tick(live)  # Watermark before the real new signal.
     assert funding.reconcile(
         task,
@@ -20341,10 +20345,13 @@ def producer_repair_after_real_blocker(monkeypatch):
         "https://github.com/owner/repo/issues/71",
         intake.INTAKE_ACTOR,
         task_class="bug-fix",
+        issue=issues[71],
     )
     admitted = intake.admit_next("scheduler")
     assert admitted["ok"], admitted
     repair_id = admitted["task_id"]
+    if not complete:
+        return task, live, issues, repair_id
     landing._record(repair_id, "merged", pr_number=72, merge_commit_sha="a" * 40)
     landing._record(
         repair_id,
@@ -20822,6 +20829,584 @@ def test_failed_node_review_retry_keeps_existing_refusal_limit(
     assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == (
         3 if repair else 2
     )
+
+
+def native_repair_landing_case(monkeypatch, *, enabled=True, max_repairs=3):
+    """Real producer/intake/review/landing owners; only external I/O is synthetic."""
+    import base64
+    import hashlib
+    from factory import review_publisher
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+    from factory.orchestration.models import SwarmTask, SwarmNodeRun
+
+    def activate(task, live):
+        monkeypatch.setattr(delegation, "REPO", task["repo"])
+        live["auto_merge"] = True
+        with controls._locked_session() as (db, control):
+            control.policy_json = json.dumps(live)
+            version = control.version
+        if enabled:
+            args = dict(duration_minutes=1440, max_repairs=max_repairs)
+            preview = delegation.configure(
+                delegation_principal(),
+                "preview",
+                True,
+                version,
+                "Bounded internal repair trial",
+                **args,
+            )
+            delegation.configure(
+                delegation_principal(),
+                "apply",
+                True,
+                version,
+                "Bounded internal repair trial",
+                request_key="repair-trial",
+                expected_preview_sha256=preview["preview_sha256"],
+                **args,
+            )
+
+    source, live, issues, repair_id = producer_repair_after_real_blocker(
+        monkeypatch, before_signal=activate, complete=False
+    )
+    with controls._read_session() as db:
+        repair = db.get(SwarmTask, repair_id).model_dump()
+    policy = controls.task_snapshot(repair_id)["policy"]
+    head, base = "b" * 40, "a" * 40
+    path = "projects/monolith/factory/orchestration/factory_feedback.py"
+    issue_reader = conductor.github_get
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda repo, suffix: (
+            {"additions": 1, "deletions": 1}
+            if suffix == "pulls/72"
+            else issue_reader(repo, suffix)
+        ),
+    )
+    scope = dict(
+        classification="private_internal_reversible",
+        public_facing=False,
+        security_sensitive=False,
+        authentication_or_credentials=False,
+        destructive=False,
+        evidence="Only private observation formatting changes; no authority or storage mutation.",
+        base_sha=base,
+        paths=[path],
+    )
+    complete_feedback_node(
+        repair,
+        policy,
+        "implement_repair",
+        {"status": "complete", "summary": "repair", "pr_number": 72, "head_sha": head},
+        head=head,
+    )
+    review = complete_feedback_node(
+        repair,
+        policy,
+        "review_repair",
+        {
+            "verdict": "approve",
+            "summary": "independent review",
+            "pr_number": 72,
+            "head_sha": head,
+            "landing_scope": scope,
+        },
+        head=head,
+        deps=["implement_repair"],
+    )
+    # Model the validated worker artifact, including its validation diagnostics.
+    with controls._locked_session() as (db, _):
+        row = db.get(SwarmNodeRun, review["id"])
+        outcome = json.loads(row.outcome_json)
+        outcome["artifact"]["errors"] = []
+        row.outcome_json = json.dumps(outcome)
+    proof = dict(
+        pr_url=f"https://github.com/{repair['repo']}/pull/72",
+        head_sha=head,
+        review_session_id=review["session_id"],
+        state="ready_for_review",
+    )
+    assert (
+        controls.finish_task(
+            repair_id, "succeeded", "factory:conductor", evidence=proof
+        )["state"]
+        == "landing"
+    )
+    pull = dict(
+        number=72,
+        node_id="repair-pr",
+        state="open",
+        draft=False,
+        merged=False,
+        head={
+            "sha": head,
+            "ref": f"factory/{repair_id}",
+            "repo": {"full_name": repair["repo"]},
+        },
+        base={"sha": base, "ref": "main", "repo": {"full_name": repair["repo"]}},
+        changed_files=1,
+        auto_merge=None,
+    )
+    changed = dict(filename=path, status="modified", sha="c" * 40)
+    trees = {}
+    for revision in (base, head):
+        parts = path.split("/")
+        tree = revision
+        for i, part in enumerate(parts):
+            child = hashlib.sha1(
+                (revision + "/".join(parts[: i + 1])).encode()
+            ).hexdigest()
+            leaf = i == len(parts) - 1
+            trees[tree] = {
+                "truncated": False,
+                "tree": [
+                    dict(
+                        path=part,
+                        type="blob" if leaf else "tree",
+                        mode="100644" if leaf else "040000",
+                        sha=("c" if revision == head else "d") * 40 if leaf else child,
+                    )
+                ],
+            }
+            tree = child
+    checks = {"sha": head, "statuses": [{"context": "pr-checks", "state": "success"}]}
+
+    def github(repo, suffix):
+        assert repo == repair["repo"]
+        if suffix.startswith("issues/"):
+            return issues[int(suffix.split("/")[-1])]
+        if suffix == "pulls/72":
+            return pull
+        if suffix.startswith("compare/"):
+            return {"files": [changed]}
+        if suffix.startswith("git/commits/"):
+            return {"tree": {"sha": suffix.split("/")[-1]}}
+        if suffix.startswith("git/trees/"):
+            return trees[suffix.split("/")[-1]]
+        if suffix == "git/blobs/" + "c" * 40:
+            return {
+                "encoding": "base64",
+                "size": 5,
+                "content": base64.b64encode(b"pass\n").decode(),
+            }
+        if suffix == f"commits/{head}/status":
+            return checks
+        pytest.fail(f"unexpected GitHub read: {suffix}")
+
+    monkeypatch.setattr(conductor, "github_get", github)
+    mutations = []
+    queue = set()
+
+    def graphql(query, args):
+        if query == landing._QUEUE_ENTRIES:
+            return {
+                "nodes": [
+                    {
+                        "id": node,
+                        "mergeQueueEntry": {"id": "entry"} if node in queue else None,
+                    }
+                    for node in args["ids"]
+                ]
+            }
+        mutations.append((query, args))
+        if query == landing._ARM_AUTO_MERGE:
+            pull["auto_merge"] = {"enabledBy": {"login": "factory"}}
+            queue.add("repair-pr")
+        elif query == landing._DISARM_AUTO_MERGE:
+            pull["auto_merge"] = None
+        elif query == landing._DEQUEUE_PULL_REQUEST:
+            queue.discard("repair-pr")
+        return {}
+
+    monkeypatch.setattr(landing, "github_graphql", graphql)
+    evidence = review_publisher.collect(repair_id)
+    assert isinstance(evidence, review_publisher.ReviewEvidence), evidence
+    item = next(x for x in landing._deliveries(live) if x["task_id"] == repair_id)
+    return SimpleNamespace(
+        source=source,
+        repair=repair,
+        live=live,
+        issues=issues,
+        pull=pull,
+        changed=changed,
+        trees=trees,
+        checks=checks,
+        review=review,
+        item=item,
+        mutations=mutations,
+        queue=queue,
+        proof=proof,
+    )
+
+
+def test_delegated_repair_lands_through_native_scope_and_queue(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import (
+        factory_landing_release as releases,
+        repair_landing_delegation as delegation,
+    )
+    from factory.orchestration.factory_models import FactoryAudit
+
+    case = native_repair_landing_case(monkeypatch)
+    landing._arm(case.repair["repo"], case.item)
+    assert case.mutations == [
+        (
+            landing._ARM_AUTO_MERGE,
+            {"pullRequestId": "repair-pr", "expectedHeadOid": case.pull["head"]["sha"]},
+        )
+    ]
+    assert delegation.prepare(case.repair["id"], 72, case.pull["head"]["sha"]) is None
+    with controls._read_session() as db:
+        row = controls._receipt(db, case.repair["id"])
+        assert "landing_authorization" not in json.loads(row.direction_json or "{}")
+        assert releases.scoped_refusal(db, row, 72, case.pull["head"]["sha"]) is None
+        grants = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == delegation.GRANT)
+        ).all()
+        assert len(grants) == 1 and grants[0].actor == delegation.ACTOR
+        assert (
+            db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == releases.SCOPE_ACTION)
+            ).first()
+            is None
+        )
+        proof = json.loads(grants[0].detail_json)
+        assert proof["standing_actor"] == delegation_principal().subject
+        assert proof["review"]["review_run_id"] == case.review["id"]
+        assert proof["provenance"]["source_task_id"] == case.source["id"]
+        assert controls._receipt(db, case.source["id"]).task_paused
+
+
+@pytest.mark.parametrize(
+    "hold",
+    [
+        "disabled",
+        "revoked",
+        "expired",
+        "policy",
+        "head",
+        "base",
+        "paths",
+        "symlink",
+        "delete",
+        "scope",
+        "public_facing",
+        "authentication_or_credentials",
+        "destructive",
+        "ambiguous_scope",
+        "missing_scope",
+        "human",
+        "unknown",
+        "landing",
+        "nonrenewable",
+        "source_pause",
+        "source_graph",
+        "source_human",
+        "ci",
+        "review_identity",
+        "review_recovery",
+        "limit",
+        "provenance",
+        "source_unknown",
+        "legacy_pause",
+        "ownership",
+        "wrong_branch",
+        "malformed_pull",
+    ],
+)
+def test_delegated_repair_native_landing_refuses(feedback_db, monkeypatch, hold):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+    from factory.orchestration.factory_models import FactoryAudit, FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    case = native_repair_landing_case(monkeypatch, enabled=hold != "disabled")
+    with controls._locked_session() as (db, control):
+        row = controls._receipt(db, case.repair["id"])
+        if hold == "revoked":
+            control_version = control.version
+        elif hold == "policy":
+            control.policy_json = json.dumps({**case.live, "auto_merge": False})
+        elif hold == "human":
+            db.get(WorkItem, row.work_item_id).labels = ["human"]
+        elif hold == "source_human":
+            db.get(
+                WorkItem, controls._receipt(db, case.source["id"]).work_item_id
+            ).labels = ["human"]
+        elif hold in {"unknown", "source_unknown"}:
+            db.add(
+                FactoryStart(
+                    task_id=case.source["id"]
+                    if hold == "source_unknown"
+                    else row.task_id,
+                    start_key="unknown",
+                    actor="test",
+                    model="opus",
+                    max_cost_usd=1,
+                    status="uncertain",
+                )
+            )
+        elif hold in {"landing", "nonrenewable"}:
+            row.direction_json = json.dumps(
+                {"landing_hold" if hold == "landing" else "nonrenewable_recovery": True}
+            )
+        elif hold == "source_pause":
+            controls.set_control(
+                "pause_task", "operator:joe", task_id=case.source["id"], session=db
+            )
+        elif hold in {
+            "scope",
+            "missing_scope",
+            "review_identity",
+            "public_facing",
+            "authentication_or_credentials",
+            "destructive",
+            "ambiguous_scope",
+        }:
+            run = db.get(SwarmNodeRun, case.review["id"])
+            if hold == "review_identity":
+                run.session_id = 101
+            else:
+                outcome = json.loads(run.outcome_json)
+                for value in (outcome["value"], outcome["artifact"]["value"]):
+                    if hold == "scope":
+                        value["landing_scope"]["security_sensitive"] = True
+                    elif hold == "ambiguous_scope":
+                        value["landing_scope"]["classification"] = "requires_operator"
+                    elif hold != "missing_scope":
+                        value["landing_scope"][hold] = True
+                    else:
+                        value.pop("landing_scope", None)
+                run.outcome_json = json.dumps(outcome)
+        elif hold == "limit":
+            for _ in range(landing.MAX_EJECTIONS):
+                controls._audit(db, landing.ACTOR, "merge_ejected", task_id=row.task_id)
+        elif hold == "provenance":
+            row.body = "Unrelated work without the producer marker"
+        elif hold == "legacy_pause":
+            delegation._latest(
+                db, "repair_allocation_wait", case.source["id"]
+            ).action = "legacy_wait"
+        elif hold == "review_recovery":
+            controls._audit(
+                db, "operator:joe", "review_recovery_authorized", task_id=row.task_id
+            )
+    if hold == "revoked":
+        preview = delegation.configure(
+            delegation_principal(), "preview", False, control_version, "Revoke trial"
+        )
+        delegation.configure(
+            delegation_principal(),
+            "apply",
+            False,
+            control_version,
+            "Revoke trial",
+            request_key="revoke",
+            expected_preview_sha256=preview["preview_sha256"],
+        )
+    elif hold == "expired":
+        now = controls._now() + timedelta(days=2)
+        monkeypatch.setattr(controls, "_now", lambda: now)
+    elif hold == "head":
+        case.pull["head"]["sha"] = "f" * 40
+    elif hold == "wrong_branch":
+        case.pull["head"]["ref"] = "someone-else"
+    elif hold == "malformed_pull":
+        case.pull["base"] = None
+    elif hold == "ownership":
+        case.issues[71]["assignees"] = [{"login": "somebody"}]
+    elif hold == "base":
+        case.pull["base"]["sha"] = "e" * 40
+    elif hold == "paths":
+        case.changed["filename"] = "projects/monolith/auth/api.py"
+    elif hold == "delete":
+        case.changed["status"] = "removed"
+    elif hold == "symlink":
+        for tree in case.trees.values():
+            if tree["tree"][0]["type"] == "blob":
+                tree["tree"][0]["mode"] = "120000"
+    elif hold == "ci":
+        case.checks["statuses"][0]["state"] = "pending"
+    elif hold == "source_graph":
+        assert conductor.graph.discard_node(
+            case.source["id"],
+            "implement_manifest",
+            author_kind="engine",
+            author="test",
+            cause_kind="test",
+            cause_ref="changed",
+            stated_reason="Changed source graph",
+            expected_version=conductor.graph.current_version(case.source["id"]),
+        ).ok
+    landing._arm(case.repair["repo"], case.item)
+    assert not case.mutations
+    with controls._read_session() as db:
+        assert (
+            db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == delegation.GRANT)
+            ).first()
+            is None
+        )
+
+
+@pytest.mark.parametrize(
+    "change", ["revoked", "head", "review", "source_hold", "unknown"]
+)
+def test_delegated_repair_rechecks_between_prepare_and_arm(
+    feedback_db, monkeypatch, change
+):
+    from factory import review_publisher
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    case = native_repair_landing_case(monkeypatch)
+    collect = review_publisher.collect
+
+    def raced(task_id, *, session=None):
+        result = collect(task_id, session=session)
+        if session is None:
+            with controls._locked_session() as (db, control):
+                assert delegation._latest(db, delegation.GRANT) is not None
+                version = control.version
+                if change == "source_hold":
+                    controls.set_control(
+                        "pause_task",
+                        "operator:joe",
+                        task_id=case.source["id"],
+                        session=db,
+                    )
+                elif change == "review":
+                    db.get(SwarmNodeRun, case.review["id"]).session_id = 101
+                elif change == "unknown":
+                    db.add(
+                        FactoryStart(
+                            task_id=task_id,
+                            start_key="raced",
+                            actor="test",
+                            model="opus",
+                            max_cost_usd=1,
+                            status="uncertain",
+                        )
+                    )
+            if change == "revoked":
+                preview = delegation.configure(
+                    delegation_principal(), "preview", False, version, "Stop trial"
+                )
+                delegation.configure(
+                    delegation_principal(),
+                    "apply",
+                    False,
+                    version,
+                    "Stop trial",
+                    request_key="revoke-raced",
+                    expected_preview_sha256=preview["preview_sha256"],
+                )
+            elif change == "head":
+                case.pull["head"]["sha"] = "f" * 40
+        return result
+
+    monkeypatch.setattr(review_publisher, "collect", raced)
+    landing._arm(case.repair["repo"], case.item)
+    assert not case.mutations
+
+
+@pytest.mark.parametrize(
+    "change", ["revoked", "expired", "policy", "source_hold", "head"]
+)
+def test_delegated_repair_native_queue_revocation(feedback_db, monkeypatch, change):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    case = native_repair_landing_case(monkeypatch)
+    landing._arm(case.repair["repo"], case.item)
+    assert case.queue == {"repair-pr"}
+    assert not landing._fence_ungranted_queue_entry(case.repair["repo"], case.item)
+    if change == "revoked":
+        with controls._read_session() as db:
+            version = db.get(controls.FactoryControl, "factory").version
+        preview = delegation.configure(
+            delegation_principal(), "preview", False, version, "Stop trial"
+        )
+        delegation.configure(
+            delegation_principal(),
+            "apply",
+            False,
+            version,
+            "Stop trial",
+            request_key="revoke-queued",
+            expected_preview_sha256=preview["preview_sha256"],
+        )
+    elif change == "expired":
+        now = controls._now() + timedelta(days=2)
+        monkeypatch.setattr(controls, "_now", lambda: now)
+    elif change == "policy":
+        with controls._locked_session() as (db, control):
+            controls._audit(db, "operator:joe", "configure")
+    elif change == "source_hold":
+        controls.set_control("pause_task", "operator:joe", task_id=case.source["id"])
+    elif change == "head":
+        case.pull["head"]["sha"] = "f" * 40
+    assert landing._fence_ungranted_queue_entry(case.repair["repo"], case.item)
+    assert not case.queue and case.pull["auto_merge"] is None
+    assert [query for query, _ in case.mutations] == [
+        landing._ARM_AUTO_MERGE,
+        landing._DISARM_AUTO_MERGE,
+        landing._DEQUEUE_PULL_REQUEST,
+    ]
+
+
+def test_delegated_repair_grants_are_finite_and_replay_does_not_spend(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import repair_landing_delegation as delegation
+    from factory.orchestration.factory_models import FactoryAudit
+
+    case = native_repair_landing_case(monkeypatch, max_repairs=1)
+    args = (case.repair["id"], 72, case.pull["head"]["sha"])
+    assert delegation.prepare(*args) is None
+    assert delegation.prepare(*args) is None
+    # A changed independent scope assessment needs a new exact derivation;
+    # exhausting the standing allowance cannot be evaded by changing evidence.
+    from factory.orchestration.models import SwarmNodeRun
+
+    with controls._locked_session() as (db, _):
+        run = db.get(SwarmNodeRun, case.review["id"])
+        outcome = json.loads(run.outcome_json)
+        for value in (outcome["value"], outcome["artifact"]["value"]):
+            value["landing_scope"]["evidence"] += " Additional independent analysis."
+        run.outcome_json = json.dumps(outcome)
+    assert delegation.prepare(*args) == "repair_landing_delegation_exhausted"
+    with controls._read_session() as db:
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(FactoryAudit.action == delegation.GRANT)
+                ).all()
+            )
+            == 1
+        )
 
 
 def test_discard_and_rename_keep_spent_history_charged(feedback_db, monkeypatch):

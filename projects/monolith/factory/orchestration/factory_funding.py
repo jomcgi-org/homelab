@@ -1921,12 +1921,8 @@ def _repair_rollout_valid(db, proof):
     )
 
 
-def _repair_evidence(db, task_id):
-    """Only a fresh machine pause can trade a verified repair for one review.
-
-    The original card, latest successful pause, graph, failed attempts and
-    pinned policy remain exact. This never adopts legacy or operator cards.
-    """
+def repair_pause_evidence(db, task_id):
+    """Shared pre-rollout proof of a fresh, bounded machine-owned pause."""
     from factory.orchestration import factory_problem_issues as producer
 
     row = controls._receipt(db, task_id)
@@ -1967,6 +1963,18 @@ def _repair_evidence(db, task_id):
     consumed = latest(db, task_id, "repair_funding_requested")
     if consumed and consumed["wait_id"] == wait["audit_id"]:
         return None
+    return wait
+
+
+def _repair_evidence(db, task_id):
+    """Only a fresh machine pause can trade a verified repair for one review."""
+    from factory.orchestration import factory_problem_issues as producer
+
+    wait = repair_pause_evidence(db, task_id)
+    if wait is None:
+        return None
+    row = controls._receipt(db, task_id)
+    control = db.get(FactoryControl, "factory")
     watches = db.exec(
         select(FactoryAudit)
         .where(

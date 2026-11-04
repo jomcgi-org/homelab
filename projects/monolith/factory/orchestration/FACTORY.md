@@ -134,6 +134,33 @@ The optional `backlog_refill` block ships omitted; omission and `enabled: false`
 
 Optional `problem_issues` creates GitHub issues from `node_stalled`, `workflow_stranded`, `recurring_blocker` and terminal `landing_recovery_exhausted`. It neither creates receipts nor admits tasks. The master switch defaults false; `recurring_blocker` defaults true behind it. Each tick scans at most 50 source audits, creating at most one issue within a rolling 24-hour cap of 3. `factory_configure_problem_issues` lets a standing operator preview/apply the master, recurring-blocker and stranded-workflow switches without changing generation, existing receipts or any other settings. Newly enabled sources are watermarked on the next producer tick. The existing producer owns deduplication and recursion prevention; ordinary intake/refinement owns future work. [MCP activation](../MCP.md#enable-recovery-problem-issues) records the exact arguments.
 
+### Bounded repair landing delegation
+
+Repair delivery still needs native scoped landing authority. The default-off
+`repair_landing_delegation` owner derives it only after a standing human's
+guarded `factory_configure_refill` preview/apply with `target: repair_landing`.
+It records the standing decision and a separate `factory:repair-landing` audit
+in the existing factory journal. It never writes a human per-head grant or
+delegates identity credentials. Explicit per-head operator grants stay separate.
+
+The initial boundary permits modifications of existing regular UTF-8 files in
+the problem producer, intake loop, progress watchdog and feedback modules,
+including their tests. Only fresh node-bound recurring-blocker repairs created
+after activation qualify. Native independent exact-head review must attest the
+complete diff's private, internal, reversible scope; public, security, authority,
+credential and destructive changes require a separate operator decision. Missing
+or ambiguous review scope refuses. The standing authorization expires within
+24 hours and allows at most ten exact derivations, with no automatic renewal.
+An unchanged derivation replays without spending another slot.
+
+Landing rechecks source machine-pause provenance, both issues' ownership, holds,
+unknown execution, review, immutable file evidence and CI before arming through
+the existing protected queue. Revocation fences new arming and the native queue
+observer disarms/dequeues outstanding grants on its next tick. It cannot undo
+an external action that already completed. Policy replacement or drift invalidates
+the authorization. Rollout and same-node recovery remain their existing owners.
+See [activation and limitations](../MCP.md#enable-bounded-repair-landing).
+
 ### Escalation decisions
 
 A `needs-human` verdict arrives as two to four options, recommendation first; `effect` is one of `agent-ready`, `close`, `split`, `defer`, `hold`, `supersede`. Every unresolved escalation also carries the fixed escape group, of which only the dismiss is non-final. Deciding uses `POST /api/swarm/factory/decisions/{receipt_id}` with an exact `decision_id` and a stable `request_key`. `FACTORY_OPERATOR_EMAILS` is empty by default. The derived allowance is `max_attempts` over live unsucceeded nodes plus spent turns plus engine-insertable rounds; an edit exceeding the envelope refuses with `envelope_exceeded`, never for dollars.

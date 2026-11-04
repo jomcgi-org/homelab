@@ -743,6 +743,12 @@ def _arm(repo: str, item: dict) -> None:
             refusal = releases.scoped_refusal(
                 db, _receipt(db, item["task_id"]), number, head
             )
+        if refusal == "scoped_landing_authorization_missing" or (
+            refusal and refusal.startswith("repair_landing_")
+        ):
+            from factory.orchestration import repair_landing_delegation
+
+            refusal = repair_landing_delegation.prepare(item["task_id"], number, head)
         if refusal:
             _scope_wait(item, refusal)
             return

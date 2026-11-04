@@ -160,10 +160,14 @@ def test_status_distinguishes_native_registration_from_caller_catalog(monkeypatc
     assert refill["registered"] is True
     assert refill["operations"] == ["preview", "apply"]
     assert refill["models"] == ["astra", "opus"]
-    assert refill["targets"] == ["refill", "problem_issues"]
-    assert {"target", "recurring_blocker", "workflow_stranded"} <= set(
-        refill["arguments"]
-    )
+    assert refill["targets"] == ["refill", "problem_issues", "repair_landing"]
+    assert {
+        "target",
+        "recurring_blocker",
+        "workflow_stranded",
+        "duration_minutes",
+        "max_repairs",
+    } <= set(refill["arguments"])
     assert len(refill["schema_sha256"]) == 64
     assert len(refill["description_sha256"]) == 64
     continuation = catalog["tools"]["factory_continue_evidence"]
@@ -204,6 +208,174 @@ def test_problem_issue_activation_requires_operator_and_preview(monkeypatch):
     assert not calls
     assert _as(_principal(), lambda: mcp.factory_configure_problem_issues(**args))["ok"]
     assert calls[0][1]["actor"] == "joe"
+
+
+def test_existing_refill_tool_bounds_repair_landing_and_replay_after_revoke(db):
+    from core.mcp_app import mcp as shared
+    from fastmcp import Client
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    original = {
+        "repo": delegation.REPO,
+        "generation": 9,
+        "auto_merge": True,
+        "problem_issues": None,
+    }
+    with Session(db) as session, session.begin():
+        control = session.get(FactoryControl, "factory")
+        control.state = "enabled"
+        control.policy_json = json.dumps(original)
+        version = control.version
+        assert delegation.status(session)["enabled"] is False
+    args = dict(
+        operation="preview",
+        target="repair_landing",
+        enabled=True,
+        model="astra",
+        hourly=False,
+        duration_minutes=1440,
+        max_repairs=2,
+        expected_version=version,
+        reason="Bounded internal repair trial",
+    )
+
+    async def exercise():
+        async with Client(shared) as client:
+            preview = (await client.call_tool("factory_configure_refill", args)).data
+            assert preview["allowed_paths"] == sorted(delegation.ALLOWED_PATHS)
+            apply = {
+                **args,
+                "operation": "apply",
+                "expected_preview_sha256": preview["preview_sha256"],
+                "request_key": "repair-trial",
+            }
+            bad = (
+                await client.call_tool(
+                    "factory_configure_refill", {**apply, "max_repairs": 3}
+                )
+            ).data
+            assert bad["reason"] == "repair_landing_preview_changed"
+            saved = (await client.call_tool("factory_configure_refill", apply)).data
+            assert saved["ok"] and saved["dispatched"] is False
+            stale = (
+                await client.call_tool(
+                    "factory_configure_refill", {**apply, "request_key": "new"}
+                )
+            ).data
+            assert stale["reason"] == "repair_landing_version_changed"
+            conflict = (
+                await client.call_tool(
+                    "factory_configure_refill", {**apply, "max_repairs": 1}
+                )
+            ).data
+            assert conflict["reason"] == "repair_landing_request_conflict"
+            revoke = {**args, "enabled": False, "expected_version": saved["version"]}
+            revpreview = (
+                await client.call_tool("factory_configure_refill", revoke)
+            ).data
+            revoked = (
+                await client.call_tool(
+                    "factory_configure_refill",
+                    {
+                        **revoke,
+                        "operation": "apply",
+                        "request_key": "revoke",
+                        "expected_preview_sha256": revpreview["preview_sha256"],
+                    },
+                )
+            ).data
+            assert revoked["ok"]
+            assert (
+                await client.call_tool("factory_configure_refill", apply)
+            ).data == saved
+
+    _as(_principal(), exercise)
+    with Session(db) as session:
+        assert (
+            json.loads(session.get(FactoryControl, "factory").policy_json) == original
+        )
+        assert delegation.status(session)["enabled"] is False
+        assert (
+            len(
+                session.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == delegation.CONTROL
+                    )
+                ).all()
+            )
+            == 2
+        )
+        assert not session.exec(select(FactoryReceipt)).all()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"hourly": True},
+        {"recurring_blocker": True},
+        {"workflow_stranded": False},
+        {"model": "opus"},
+        {"reset_breaker": True},
+        {"min_new_issues": 1},
+        {"duration_minutes": None},
+        {"max_repairs": None},
+        {"target": "refill"},
+        {"target": "problem_issues"},
+    ],
+)
+def test_repair_landing_control_rejects_mixed_targets(monkeypatch, change):
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    monkeypatch.setattr(
+        delegation, "configure", lambda *a, **kw: pytest.fail("must not configure")
+    )
+    args = dict(
+        operation="preview",
+        target="repair_landing",
+        enabled=True,
+        model="astra",
+        hourly=False,
+        duration_minutes=60,
+        max_repairs=3,
+        expected_version=0,
+        reason="Bounded trial",
+    )
+    result = _as(
+        _principal(), lambda: mcp.factory_configure_refill(**{**args, **change})
+    )
+    assert not result["ok"]
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+        _principal(groups=()),
+    ],
+)
+def test_repair_landing_requires_standing_operator_even_at_domain_owner(principal):
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    with pytest.raises(ValueError, match="standing_human_required"):
+        delegation.configure(principal, "preview", True, 0, "Bounded trial")
+    assert (
+        _as(
+            principal,
+            lambda: mcp.factory_configure_refill(
+                "preview",
+                True,
+                "astra",
+                False,
+                0,
+                "Bounded trial",
+                target="repair_landing",
+                duration_minutes=60,
+                max_repairs=3,
+            ),
+        )["error"]
+        == mcp.OPERATOR_REQUIRED
+    )
 
 
 def test_existing_refill_tool_can_activate_problem_issues_without_refill_changes(db):

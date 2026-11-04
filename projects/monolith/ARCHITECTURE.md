@@ -755,6 +755,19 @@ attempt authority; source holds and pause identity are rechecked at settlement.
 Legacy cards and uncertainty remain fenced. Public tickets carry only
 scoped code repairs and synthetic acceptance criteria.
 
+**Why.** Producer-created repairs need an authorization owner at native landing
+(#7601, follow-up to #7583). An operator can enable a count- and time-bounded
+standing delegation through existing guarded controls. The landing owner derives
+a separate machine audit from that decision, fresh machine-pause provenance,
+the repair's exact PR/head and independent typed scope review. Human per-head
+grants and their audit remain separate. No identity token, credential, scheduler
+or ledger is added. The first fixed path boundary covers existing private
+observation/discovery modules and their tests; authority-owner or public changes
+remain operator exceptions. Native queue fences enforce revocation, policy drift,
+holds and uncertainty. Synthetic native landing tests establish code reachability;
+operational acceptance still requires an activated producer repair to land, roll
+out and resume its original node without a per-PR manual grant.
+
 ## 5. Chat
 
 The Discord bot handles direct messages, mentions, replies, ambient engagement,
