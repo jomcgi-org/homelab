@@ -3187,6 +3187,7 @@ def routine(db, monkeypatch):
     task, policy = envelope_task(max_turns=20)
     _merit_judge(monkeypatch)
     monkeypatch.setenv(funding.ROUTINE_PAUSE_ENV, "true")
+    _mirror_label(db, None)  # a synchronized work-item mirror, no labels
     state = {"labels": [], "state": "open", "cards": []}
     monkeypatch.setattr(
         conductor,
@@ -3724,12 +3725,15 @@ def _mirror_label(db, label):
             row.work_item_id = item.id
             session.add(row)
         item = session.get(WorkItem, row.work_item_id)
-        item.labels = [*item.labels, label]
+        if label is not None:
+            item.labels = [*item.labels, label]
         session.add(item)
         session.commit()
 
 
-@pytest.mark.parametrize("label", ["human", "needs-human", "security-finding"])
+@pytest.mark.parametrize(
+    "label", ["human", "needs-human", "needs-thought", "security-finding", "security"]
+)
 def test_mirrored_label_after_the_github_read_is_revalidated_before_the_grant(
     db, routine, label
 ):
@@ -3767,3 +3771,61 @@ def test_unrelated_mirror_labels_do_not_hold(db, routine):
     pause(task, policy, routine_pause())
     settle_funding_request(task, _pending(task), funding_decision(assessment=ASSESSMENT))
     assert _grant(task) is not None
+
+
+def test_receipt_without_a_label_mirror_is_never_routine(db, routine):
+    task, policy, state = routine
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        row.work_item_id = None
+        session.add(row)
+        session.commit()
+    pause(task, policy, routine_pause())
+    assert audits_of(db, "funding_review_requested") == []
+    assert len(state["cards"]) == 1
+
+
+def test_retry_refused_by_a_mirrored_label_raises_the_card(db, routine, monkeypatch):
+    from datetime import timedelta
+
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    settle_funding_request(task, _pending(task), {"action": "nonsense"})
+    later = controls._now() + timedelta(minutes=6)
+    monkeypatch.setattr(controls, "_now", lambda: later)
+    _mirror_label(db, "needs-human")
+    assert funding.reconcile(
+        conductor._task(task["id"]),
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    assert state["cards"] == [routine_pause()["question"]]
+    assert len(audits_of(db, "funding_review_requested")) == 1
+
+
+def test_held_retry_with_an_unpostable_card_ends_instead_of_wedging(
+    db, routine, monkeypatch
+):
+    from datetime import timedelta
+
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    settle_funding_request(task, _pending(task), {"action": "nonsense"})
+    later = controls._now() + timedelta(minutes=6)
+    monkeypatch.setattr(controls, "_now", lambda: later)
+    _set_hold(db, task, "landing_hold")
+
+    def refuse(*_args, **_kwargs):
+        raise conductor._EditRefused("pause_without_question", "no question")
+
+    monkeypatch.setattr(conductor, "_escalate_task", refuse)
+    assert funding.reconcile(
+        conductor._task(task["id"]),
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).one().state == "failed"
+    assert len(audits_of(db, "funding_review_requested")) == 1
