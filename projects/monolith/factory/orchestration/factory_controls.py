@@ -3174,8 +3174,12 @@ def problem_issues_state(policy: dict, *, session: Session | None = None) -> dic
                 "created_at": created.isoformat(),
                 "detail": json.loads(last.detail_json),
             }
+        # Effective sources only: a source flag is inert while the producer
+        # switch is off, so it must not read as enabled.
         enabled_sources = sorted(
-            source for source, enabled in block["sources"].items() if enabled
+            source
+            for source, enabled in block["sources"].items()
+            if enabled and block["enabled"]
         )
         return {
             "policy": block,
