@@ -20280,7 +20280,7 @@ def producer_repair_after_real_blocker(
 
     task, policy = retry_exhausted_task(monkeypatch)
     monkeypatch.setattr(producer, "RECOVERY_REPO", task["repo"])
-    monkeypatch.setattr(producer, "_spare_quota", lambda: True)
+    monkeypatch.setattr(producer, "_recovery_quota", lambda: True)
     monkeypatch.setattr(producer, "github_list", lambda *_: [])
     issues = {
         task["issue_number"]: {

@@ -151,7 +151,7 @@ def test_activated_repair_producer_reaches_ordinary_bug_intake(db, monkeypatch, 
     )
     with Session(db) as session:
         configured = json.loads(session.get(FactoryControl, "factory").policy_json)
-    monkeypatch.setattr(producer, "_spare_quota", lambda: True)
+    monkeypatch.setattr(producer, "_recovery_quota", lambda: True)
     monkeypatch.setattr(producer, "_now", lambda: NOW)
     monkeypatch.setattr(
         factory_conductor, "github_get", lambda *args: issue(1, ["bug"])
