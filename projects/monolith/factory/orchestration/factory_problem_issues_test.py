@@ -110,8 +110,12 @@ def autonomous_policy(db, monkeypatch):
         "generation": 7,
         "task_budget_usd": 10,
         "turn_budget_usd": 1,
-        "intake": {"enabled": True, "labels": ["bug"]},
-        "problem_issues": {"enabled": False, "max_per_24_hours": 2},
+        "intake": {"enabled": True, "labels": ["agent-ready"], "refine_enabled": True},
+        "problem_issues": {
+            "enabled": True,
+            "max_per_24_hours": 2,
+            "sources": dict.fromkeys(producer.RECOVERY_SOURCES, True),
+        },
     }
     with Session(engine) as session:
         control = session.get(FactoryControl, "factory")
@@ -136,6 +140,136 @@ def autonomous_policy(db, monkeypatch):
 def stored_policy(engine):
     with Session(engine) as session:
         return json.loads(session.get(FactoryControl, "factory").policy_json)
+
+
+@pytest.mark.parametrize("block", [None, "master", "general_policy_disable"])
+def test_ticks_preserve_explicit_policy_and_nullable_block(db, monkeypatch, block):
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch)
+    selected["problem_issues"] = (
+        None
+        if block is None
+        else {
+            "enabled": False,
+            "sources": {"node_stalled": True, "recurring_blocker": True},
+        }
+    )
+    with Session(engine) as session:
+        control = session.get(FactoryControl, "factory")
+        control.policy_json = dumps(selected)
+        version = control.version
+        if block == "general_policy_disable":
+            session.add(
+                FactoryAudit(
+                    actor="operator:joe",
+                    action="configure",
+                    detail_json=dumps({"policy": selected}),
+                )
+            )
+        session.commit()
+    producer.problem_issues_tick(selected)
+    assert stored_policy(engine) == selected
+    with Session(engine) as session:
+        assert session.get(FactoryControl, "factory").version == version
+
+
+def test_narrow_activation_refuses_unrelated_stored_true_source(db):
+    engine, _ = db
+    with Session(engine) as session:
+        control = session.get(FactoryControl, "factory")
+        control.policy_json = dumps(policy(enabled=False))
+        version = control.version
+        session.commit()
+    with pytest.raises(ValueError, match="unrelated_sources_enabled"):
+        producer.configure(
+            "preview", True, True, True, version, "Recovery only", actor="operator:joe"
+        )
+
+
+def test_narrow_activation_normalizes_null_block(db):
+    engine, _ = db
+    with Session(engine) as session:
+        control = session.get(FactoryControl, "factory")
+        control.policy_json = dumps({"repo": "owner/repo", "problem_issues": None})
+        version = control.version
+        session.commit()
+    args = dict(
+        enabled=True,
+        recurring_blocker=True,
+        workflow_stranded=True,
+        expected_version=version,
+        reason="Recovery",
+        actor="operator:joe",
+    )
+    preview = producer.configure("preview", **args)
+    producer.configure(
+        "apply",
+        **args,
+        request_key="null",
+        expected_preview_sha256=preview["preview_sha256"],
+    )
+    assert stored_policy(engine)["problem_issues"]["enabled"]
+
+
+@pytest.mark.parametrize(
+    "refine,direct,excluded,paused,batch,expected",
+    [
+        (True, False, False, False, False, True),
+        (False, True, False, False, False, True),
+        (False, False, False, False, False, False),
+        (True, False, True, False, False, False),
+        (True, False, False, True, False, False),
+        (True, False, False, False, True, False),
+    ],
+)
+def test_repair_discovery_matches_real_intake(
+    refine, direct, excluded, paused, batch, expected
+):
+    selected = {
+        "repo": producer.RECOVERY_REPO,
+        "task_budget_usd": 10,
+        "turn_budget_usd": 1,
+        "intake": {
+            "enabled": True,
+            "labels": ["bug"] if direct else ["agent-ready"],
+            "refine_enabled": refine,
+            "exclude_labels": ["bug"] if excluded else [],
+            "refinement_batch": [1] if batch else [],
+        },
+        "repos": {producer.RECOVERY_REPO: {"paused": paused}},
+    }
+    assert producer._delivery_enabled(selected) is expected
+
+
+@pytest.mark.parametrize("gate", ["quota", "intake", "quota_error"])
+def test_recovery_wait_does_not_block_unrelated_source(db, monkeypatch, gate):
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch)
+    selected["problem_issues"]["sources"]["node_stalled"] = True
+    if gate == "intake":
+        selected["intake"]["enabled"] = False
+    with Session(engine) as session:
+        session.get(FactoryControl, "factory").policy_json = dumps(selected)
+        session.commit()
+    state = github(monkeypatch)
+    producer.problem_issues_tick(selected)
+    add_event(engine, action="recurring_blocker", blocker_key="d" * 64)
+    add_event(engine, action="node_stalled")
+    if gate == "quota":
+        monkeypatch.setattr(producer, "_spare_quota", lambda: False)
+    if gate == "quota_error":
+
+        def unavailable():
+            raise RuntimeError("quota unavailable")
+
+        monkeypatch.setattr(producer, "_spare_quota", unavailable)
+    producer.problem_issues_tick(selected)
+    assert len(state["writes"]) == 1
+    assert (
+        json.loads(audits(engine, "problem_issue_created")[0].detail_json)["source"]
+        == "node_stalled"
+    )
+    assert not audits(engine, "problem_issue_source_refused")
 
 
 @pytest.mark.parametrize(
@@ -191,6 +325,9 @@ def test_repair_quota_uses_existing_fresh_per_grant_surplus_rules(
         "hold",
         "card",
         "binding",
+        "unverified_rollout",
+        "wrong_rollout_owner",
+        "merge_mismatch",
     ],
 )
 def test_recovery_observation_requires_exact_post_rollout_execution(
@@ -256,10 +393,33 @@ def test_recovery_observation_requires_exact_post_rollout_execution(
             session.add(
                 FactoryAudit(
                     actor="factory:landing",
+                    action="merged",
+                    task_id="repair",
+                    created_at=rollout_at - timedelta(minutes=1),
+                    detail_json=dumps(
+                        {"pr_number": 7002, "merge_commit_sha": "a" * 40}
+                    ),
+                )
+            )
+            session.add(
+                FactoryAudit(
+                    actor="test"
+                    if refusal == "wrong_rollout_owner"
+                    else "factory:landing",
                     action="rollout_verified",
                     task_id="repair",
                     created_at=rollout_at,
-                    detail_json='{"verified":true}',
+                    detail_json=dumps(
+                        {
+                            "verified": refusal != "unverified_rollout",
+                            "pr_number": 7002,
+                            "merge_commit_sha": (
+                                "c" if refusal == "merge_mismatch" else "a"
+                            )
+                            * 40,
+                            "approved_head_sha": "b" * 40,
+                        }
+                    ),
                 )
             )
         session.add(
@@ -311,9 +471,7 @@ def test_recovery_observation_requires_exact_post_rollout_execution(
         assert observed[0]["repair_task_id"] == "repair"
 
 
-def test_autonomous_rollout_activates_once_without_operator_or_rollover(
-    db, monkeypatch
-):
+def test_explicitly_enabled_loop_produces_without_policy_mutation(db, monkeypatch):
     engine, _ = db
     selected = autonomous_policy(db, monkeypatch)
     state = github(monkeypatch)
@@ -344,7 +502,7 @@ def test_autonomous_rollout_activates_once_without_operator_or_rollover(
         secret not in body
         for secret in ("PRIVATE", "private-workflow", "t-1", "Source audit")
     )
-    assert len(audits(engine, producer.RECOVERY_ACTIVATION)) == 1
+    assert not audits(engine, producer.RECOVERY_ACTIVATION)
     # A later operator disable stays off, even without generation rollover.
     with Session(engine) as session:
         control = session.get(FactoryControl, "factory")
@@ -386,20 +544,22 @@ def test_rollout_does_not_expand_authority_or_override_control(db, monkeypatch, 
             )
         session.commit()
     before = stored_policy(engine)
-    assert producer._activate_recovery_loop(selected) == before
+    producer.problem_issues_tick(selected)
     assert stored_policy(engine) == before
     assert not audits(engine, producer.RECOVERY_ACTIVATION)
 
 
-def test_concurrent_rollout_has_one_transition_and_same_effective_policy(
-    db, monkeypatch
-):
+def test_concurrent_ticks_never_enable_disabled_producer(db, monkeypatch):
     engine, _ = db
     selected = autonomous_policy(db, monkeypatch)
+    selected["problem_issues"]["enabled"] = False
+    with Session(engine) as session:
+        session.get(FactoryControl, "factory").policy_json = dumps(selected)
+        session.commit()
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(producer._activate_recovery_loop, [selected, selected]))
-    assert results[0] == results[1] == stored_policy(engine)
-    assert len(audits(engine, producer.RECOVERY_ACTIVATION)) == 1
+        list(pool.map(producer.problem_issues_tick, [selected, selected]))
+    assert stored_policy(engine) == selected
+    assert not audits(engine, producer.RECOVERY_ACTIVATION)
 
 
 def test_spare_quota_unlocks_existing_event_without_manual_reset(db, monkeypatch):
@@ -505,7 +665,7 @@ def test_repair_discovery_preserves_unknown_execution_and_existing_card(
 def test_recovery_producer_control_preserves_owners_and_is_replayable(db, state):
     engine, _ = db
     original = {
-        **policy(enabled=False),
+        **policy(enabled=False, sources={"node_stalled": False}),
         "generation": 8,
         "intake": {"enabled": True},
         "max_attempts": 2,
@@ -570,7 +730,9 @@ def test_recovery_producer_concurrent_replay_applies_once(db):
     engine, _ = db
     with Session(engine) as session:
         control = session.get(FactoryControl, "factory")
-        control.policy_json = dumps(policy(enabled=False))
+        control.policy_json = dumps(
+            policy(enabled=False, sources={"node_stalled": False})
+        )
         session.commit()
         version = control.version
     args = dict(
@@ -596,7 +758,9 @@ def test_recovery_producer_preview_rejects_unversioned_policy_change(db):
     engine, _ = db
     with Session(engine) as session:
         control = session.get(FactoryControl, "factory")
-        control.policy_json = dumps(policy(enabled=False))
+        control.policy_json = dumps(
+            policy(enabled=False, sources={"node_stalled": False})
+        )
         session.commit()
         version = control.version
     args = dict(

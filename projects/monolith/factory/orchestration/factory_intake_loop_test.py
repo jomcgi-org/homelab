@@ -116,7 +116,8 @@ def fake_pages(monkeypatch, issues, pulls=()):
     return calls
 
 
-def test_autonomous_repair_producer_reaches_ordinary_bug_intake(db, monkeypatch):
+@pytest.mark.parametrize("refine", [False, True])
+def test_activated_repair_producer_reaches_ordinary_bug_intake(db, monkeypatch, refine):
     from core.jsonio import dumps
     from factory.orchestration import factory_problem_issues as producer
     from factory.orchestration import factory_conductor
@@ -124,10 +125,32 @@ def test_autonomous_repair_producer_reaches_ordinary_bug_intake(db, monkeypatch)
     configured = multi_repo_policy(
         repo=producer.RECOVERY_REPO,
         repos={producer.RECOVERY_REPO: {}},
-        intake={"enabled": True, "labels": ["bug"], "exclude_labels": ["needs-human"]},
+        intake={
+            "enabled": True,
+            "labels": ["agent-ready"] if refine else ["bug"],
+            "refine_enabled": refine,
+            "exclude_labels": ["needs-human"],
+        },
     )
     controls.set_control("configure", "operator", policy=configured)
-    controls.set_control("enable", "operator")
+    enabled = controls.set_control("enable", "operator")
+    args = dict(
+        enabled=True,
+        recurring_blocker=True,
+        workflow_stranded=True,
+        expected_version=enabled["version"],
+        reason="Enable reviewed recovery",
+        actor="operator",
+    )
+    preview = producer.configure("preview", **args)
+    producer.configure(
+        "apply",
+        **args,
+        request_key="activate",
+        expected_preview_sha256=preview["preview_sha256"],
+    )
+    with Session(db) as session:
+        configured = json.loads(session.get(FactoryControl, "factory").policy_json)
     monkeypatch.setattr(producer, "_spare_quota", lambda: True)
     monkeypatch.setattr(producer, "_now", lambda: NOW)
     monkeypatch.setattr(
@@ -189,7 +212,7 @@ def test_autonomous_repair_producer_reaches_ordinary_bug_intake(db, monkeypatch)
     received = intake_loop.intake_tick(configured, generation=configured["generation"])
     assert len(received) == 1
     assert received[0]["receipt"]["issue_number"] == 2
-    assert received[0]["receipt"]["task_class"] == "bug-fix"
+    assert received[0]["receipt"]["task_class"] == ("refine" if refine else "bug-fix")
     with Session(db) as session:
         original = session.exec(
             select(FactoryReceipt).where(FactoryReceipt.task_id == "stalled")
