@@ -3109,13 +3109,33 @@ def intake_state(policy: dict, *, session: Session | None = None) -> dict:
         # different things.
         admitted_today = delivery_admissions(db, cutoff)
 
+        # Keep the status work bound as producers add observations. Select one
+        # newest row per known action in one read, never materialize its history.
+        actions = (
+            "intake_admitted",
+            "intake_idle",
+            "intake_swept",
+            "intake_evaluated",
+            "intake_error",
+            "owner_pr_backlog",
+        )
+        latest_ids = [
+            select(FactoryAudit.id)
+            .where(FactoryAudit.action == action)
+            .order_by(FactoryAudit.id.desc())
+            .limit(1)
+            .scalar_subquery()
+            for action in actions
+        ]
+        observations = {
+            row.action: row
+            for row in db.exec(
+                select(FactoryAudit).where(FactoryAudit.id.in_(latest_ids))
+            ).all()
+        }
+
         def latest(action: str) -> dict | None:
-            row = db.exec(
-                select(FactoryAudit)
-                .where(FactoryAudit.action == action)
-                .order_by(FactoryAudit.id.desc())
-                .limit(1)
-            ).first()
+            row = observations.get(action)
             if row is None:
                 return None
             created = row.created_at

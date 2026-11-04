@@ -4214,3 +4214,43 @@ def test_owner_pr_reference_reads_are_bounded_even_when_unavailable(db, monkeypa
         == []
     )
     assert len(reads) == owner_prs.MAX_REFERENCE_READS
+
+
+def test_intake_observations_keep_latest_history_with_bounded_status_reads(db):
+    actions = {
+        "last_admitted": "intake_admitted",
+        "last_idle": "intake_idle",
+        "last_swept": "intake_swept",
+        "last_evaluated": "intake_evaluated",
+        "last_error": "intake_error",
+        "owner_pr_backlog": "owner_pr_backlog",
+    }
+    with Session(db) as session:
+        session.add_all(
+            [
+                FactoryAudit(
+                    actor="test",
+                    action=action,
+                    detail_json=json.dumps({"revision": revision}),
+                )
+                for revision in range(4)
+                for action in (*actions.values(), "unrelated")
+            ]
+        )
+        session.commit()
+    reads = []
+
+    def counted(_connection, _cursor, statement, *_args):
+        reads.append(statement)
+
+    event.listen(db, "before_cursor_execute", counted)
+    try:
+        result = controls.intake_state(owner_policy())
+    finally:
+        event.remove(db, "before_cursor_execute", counted)
+    assert {key: result[key]["detail"] for key in actions} == {
+        key: {"revision": 3} for key in actions
+    }
+    assert len(reads) <= 2, (
+        "owner backlog visibility must not increase status read work"
+    )
