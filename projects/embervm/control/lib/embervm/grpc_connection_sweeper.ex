@@ -212,6 +212,9 @@ defmodule Embervm.GrpcConnectionSweeper do
     reapable =
       classifications
       |> Enum.filter(&should_reap?/1)
+      |> Enum.filter(fn {_pid, strike_key, _reason} ->
+        MapSet.member?(reapable_keys, strike_key)
+      end)
       |> Enum.map(fn {pid, strike_key, reason} ->
         strike_count = Map.fetch!(strikes, strike_key)
 
