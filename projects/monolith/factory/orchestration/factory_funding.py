@@ -752,9 +752,24 @@ def request(task, reason, *, recover=False, progress=False, routine=None):
 
 
 def _routed_pause(task_id):
-    """The planner pause routed to the judge since the last grant, if any."""
+    """The planner pause routed into the current run of refused reviews."""
     with controls._read_session() as db:
         granted = latest(db, task_id, "funding_granted")
+        floor = granted["audit_id"] if granted is not None else 0
+        for raw_id, raw in db.exec(
+            select(FactoryAudit.id, FactoryAudit.detail_json)
+            .where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "funding_review_settled",
+                FactoryAudit.id > floor,
+            )
+            .order_by(FactoryAudit.id.desc())
+        ).all():
+            # The run starts after the last settlement that was not a refusal.
+            if not json.loads(raw).get("refusal"):
+                floor = raw_id
+                break
+        granted = {"audit_id": floor} if floor else None
         rows = db.exec(
             select(FactoryAudit.detail_json)
             .where(
@@ -804,7 +819,8 @@ def routine_pause(task, decision, cause=None):
         return False
     options = decision.get("options")
     if (
-        controls.verify_option_list(options, subject="pause") is not None
+        not str(decision.get("question") or "").strip()
+        or controls.verify_option_list(options, subject="pause") is not None
         or options[0]["effect"] != controls.CONTINUE_EFFECT
     ):
         return False
@@ -1326,8 +1342,13 @@ def reconcile(task, policy, runs, permission):
             if routed is not None:
                 # The judge never answered the planner's question: it goes to
                 # a person as the ordinary card it would have been.
-                c._escalate_task(task, routed["decision"], routed["cause"], runs)
-                return True
+                try:
+                    c._escalate_task(task, routed["decision"], routed["cause"], runs)
+                    return True
+                except ValueError:
+                    # A card the escalation owner refuses must not wedge the
+                    # task; it fails below exactly as an unrouted one would.
+                    pass
             controls.finish_task(
                 task["id"],
                 "failed",
