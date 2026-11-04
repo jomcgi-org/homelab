@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "631c56c59",
+  "commit": "188286240",
   "nodes": [
     {
       "key": "console-caller",
@@ -282,6 +282,22 @@
       "layer": "store",
       "maturity": "built",
       "evidence": "projects/monolith/factory/orchestration/backlog_refill_producer.py:150"
+    },
+    {
+      "key": "factory-start-diagnostics",
+      "label": "Read-only factory start and funding diagnostics",
+      "view": "logical",
+      "layer": "serving",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/factory_start_diagnostics.py:176,233"
+    },
+    {
+      "key": "factory-start-diagnostics-operator",
+      "label": "Standing human operator inspecting factory diagnostics",
+      "view": "logical",
+      "layer": "actor",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/mcp.py:1336,2174"
     }
   ],
   "control_actions": [
@@ -766,6 +782,20 @@
       "from": "embervm",
       "to": "factory-refill",
       "signal": "Fresh bounded terminal history and complete successor/restore exclusion for exact historical dispatch"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "factory-start-diagnostics",
+      "signal": "Exact receipt and canonical attempt identity, current control subgate and latest linked funding audit identities",
+      "evidence": "projects/monolith/factory/orchestration/factory_start_diagnostics.py:91,107,176,233"
+    },
+    {
+      "view": "logical",
+      "from": "factory-start-diagnostics",
+      "to": "factory-start-diagnostics-operator",
+      "signal": "Finite or unknown can_start observation and historical funding linkage; racy read, no dispatch or recovery authority",
+      "evidence": "projects/monolith/factory/orchestration/factory_start_diagnostics.py:53,176,233; projects/monolith/factory/MCP.md:65"
     }
   ]
 }

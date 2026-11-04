@@ -1,11 +1,11 @@
 {
   "lens": "logic",
-  "commit": "631c56c59",
+  "commit": "188286240",
   "scope": {
     "summary": "A single Postgres-backed personal platform served as two composed binaries: a private read-write binary (full app capabilities, private.jomcgi.dev) and an isolated public binary (jomcgi.dev via the separate monolith-public chart). The public binary is read-only for public datasets with two constrained write/invocation paths, the private binary now also serves an agent-session console, a six-language code sandbox, a screenshot tool, and MCP over native streamable HTTP; safety is governed data access, bounded public capabilities, the secret boundary, and correct claim/lease ownership of queued agent work.",
     "built": "framework/core.py composition and profiles, separate private/public module registries, Postgres leader-lease singletons (Discord bot, AIS ingest, outbox drain, message-lock sweep), the agent_sessions claim-lease turn engine (atomic per-message claiming across all replicas plus a leader-owned stale-claim sweep) backing both the Discord bot and the private /agents console HTTP API, goosecracker recipe/repo catalog, chat feature ACL with 30s grant cache, public_reader/public_writer roles with schema/view confinement, public/private HTTPRoutes, Turnstile secret isolation, public chat admission/concurrency limits, public FaaS identity gate, observability snapshot rollup, the shotter MCP domain (URL/host validation, EmberVM task dispatch, best-effort SeaweedFS PNG storage with a random per-call Idempotency-Key), the sandbox MCP domain (run_code, six per-language EmberVM task workloads, zero-egress except an optional scratch-Postgres credential), the native /mcp mount on stateless streamable HTTP with PrincipalMiddleware authenticating every message via cached JWKS, and the docs/posts manifest generators that publish an exact allowlist of committed repository documents to the public site. The factory knowledge-graph evidence lanes (#5527, ADR agents/063) add a shared raw-input write boundary (knowledge/raw_write.py persist_raw_with_status) reached by the generic POST /api/knowledge/raws endpoint, three MCP tools (report_knowledge, dispute_fact, report_distress), and a leader-owned Ember-session exporter (factory/execution/kg_feed.py), a daily-capped DBOS drainer (factory/orchestration/drainer.py) that runs Luna extraction in an EmberVM guest and writes atoms with server-side provenance (knowledge/extraction.py, knowledge/atoms.py), and a live disputed/verification_state signal on search results (knowledge/store.py). The shared CNPG backup checker publishes bounded observations through one precreated ConfigMap, the private monolith evaluates their freshness and 36-hour backup age as advisory health, and its leader queues transitions through the existing durable Discord outbox. The default-off backlog refill controller reserves advisory inventory work from fresh intake counts, validates the artifact, publishes through durable per-output intents and records conclusive yield separately from interrupted or uncertain runs. Focused historical learning cessation repair against 434907e17 with this diff: authenticated retained journal proof, fresh successor/restore and local lineage checks, digest/CAS/idempotent audit; no live recovery or activation is claimed.",
     "designed": "Strict per-domain database isolation and the ADR 010 cross-domain contract remain architectural goals; the Module/build_app framework itself is built. ADR 059 (Draft) proposes removing Context Forge entirely as the MCP entry point and serving /mcp directly behind Cloudflare; only the first, independently-sequenced slice (the stateless-HTTP transport switch) has landed, Context Forge is still deployed and still in the request path. The Context Forge tool-visibility reconcile pass (#4569) that would scope which principal may call which tool is designed, not built, so per-tool authorization beyond bearer-token authentication does not exist for any MCP tool yet.",
-    "note": "Focused #7002 backup-advisory activation analysis at e7905ea1c; the hub overlays opt in, but live operational acceptance remains open on #7002. Earlier findings retain their prior review scope and are not revalidated by this focused update. Focused #7376 refill analysis against 15550c9 with the accompanying repair diff; this feature remains omitted from shipped policy and its live drills remain open on #7376. Focused #7014 knowledge-lane analysis at 970f6df81: raw redaction, missed-enqueue repair, dead-letter retry and replay, and the session-collector producers re-grounded; findings outside that lane retain their prior review scope. Focused receipt model-restriction analysis at 68c9ca11c with the accompanying repair diff: operator amendment, effective-policy continuation, same-receipt readmission and native model admission. Live operational acceptance is not claimed. Focused refill role review against 631c56c59 with this repair: new starts require independent Astra planning and exact-role fresh quota, while existing receipt restriction findings and legacy ledgers are retained. The same focused change adds bounded native-registry feedback and authenticated restriction-to-continuation regression coverage; it makes no live activation or downstream client-visibility claim."
+    "note": "Focused #7002 backup-advisory activation analysis at e7905ea1c; the hub overlays opt in, but live operational acceptance remains open on #7002. Earlier findings retain their prior review scope and are not revalidated by this focused update. Focused #7376 refill analysis against 15550c9 with the accompanying repair diff; this feature remains omitted from shipped policy and its live drills remain open on #7376. Focused #7014 knowledge-lane analysis at 970f6df81: raw redaction, missed-enqueue repair, dead-letter retry and replay, and the session-collector producers re-grounded; findings outside that lane retain their prior review scope. Focused receipt model-restriction analysis at 68c9ca11c with the accompanying repair diff: operator amendment, effective-policy continuation, same-receipt readmission and native model admission. Live operational acceptance is not claimed. Focused refill role review against 631c56c59 with this repair: new starts require independent Astra planning and exact-role fresh quota, while existing receipt restriction findings and legacy ledgers are retained. The same focused change adds bounded native-registry feedback and authenticated restriction-to-continuation regression coverage; it makes no live activation or downstream client-visibility claim. Focused #7613 start-diagnostics analysis at 188286240: existing operator reads expose finite or unknown control-subgate observations and sanitized historical funding linkage. No control authority is added; transport, quota and physical capacity remain unevaluated, and deployment or autonomous recovery acceptance is not claimed."
   },
   "losses": [
     {
@@ -213,6 +213,26 @@
       "statement": "The backup checker stops publishing fresh observations while base backups fail, leaving operators without a backup-failure notification because unknown observations intentionally cause neither a transition nor reminder",
       "losses": [
         "L.silent-incorrectness"
+      ],
+      "maturity": "built"
+    },
+    {
+      "key": "factory-start-diagnostics.permission-confusion",
+      "view": "logical",
+      "statement": "An operator treats an observational control-subgate result or missing evidence as permission to dispatch or recover, bypassing fresh execution checks or overlapping an uncertain execution",
+      "losses": [
+        "L.integrity-loss",
+        "L.liveness-loss"
+      ],
+      "maturity": "built"
+    },
+    {
+      "key": "factory-start-diagnostics.misattributed-history",
+      "view": "logical",
+      "statement": "An operator attributes a historical funding decision or session observation to the wrong current request or canonical attempt, selecting an unsupported recovery or leaving eligible work stalled",
+      "losses": [
+        "L.provenance-loss",
+        "L.liveness-loss"
       ],
       "maturity": "built"
     }
@@ -503,6 +523,49 @@
         "backup-observability-blind"
       ],
       "evidence": "projects/monolith/factory/ops_health.py:688; projects/monolith/factory/health_alerts.py:110; docs/observability.md; #7002"
+    },
+    {
+      "key": "factory-start-diagnostics.gate.stale",
+      "view": "logical",
+      "from": "factory-start-diagnostics",
+      "to": "factory-start-diagnostics-operator",
+      "signal": "Current can_start control subgate and observation coverage",
+      "guideword": "stale",
+      "condition": "Separate database reads can race with holds, funding or execution changes; treating an earlier positive subgate as a complete dispatch decision skips transport, quota and physical-capacity checks. Coverage explicitly marks those gates unevaluated and recovery_authorized remains false; execution must still use its existing fresh controls",
+      "severity": "high",
+      "hazards": [
+        "factory-start-diagnostics.permission-confusion"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/factory_start_diagnostics.py:53,91,181,235; projects/monolith/factory/orchestration/mcp_test.py:371"
+    },
+    {
+      "key": "factory-start-diagnostics.gate.missing",
+      "view": "logical",
+      "from": "factory-start-diagnostics",
+      "to": "factory-start-diagnostics-operator",
+      "signal": "Unknown control result or unavailable canonical identity",
+      "guideword": "missing",
+      "condition": "Missing identity, malformed evidence or an unrecognized control reason cannot establish that a reconciliation tick ran, that execution never started or that a guest ceased. Substituting a recovery decision for the returned unknown state can duplicate work; the projection returns ok null and grants no recovery authority",
+      "severity": "high",
+      "hazards": [
+        "factory-start-diagnostics.permission-confusion",
+        "factory-start-diagnostics.misattributed-history"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/factory_start_diagnostics.py:83,97,233; projects/monolith/factory/orchestration/mcp_test.py:314,430"
+    },
+    {
+      "key": "factory-start-diagnostics.funding.corrupted",
+      "view": "logical",
+      "from": "factory-start-diagnostics",
+      "to": "factory-start-diagnostics-operator",
+      "signal": "Latest funding request, settlement and grant audit identities with request relationship",
+      "guideword": "corrupted",
+      "condition": "The latest settlement or grant can belong to older funding history; treating its presence as settlement of the latest request or as a current execution decision loses lineage. The projection exposes audit identities, requires the settlement request_id to match the latest request audit_id, preserves different-request pending state and returns unavailable for malformed linkage",
+      "severity": "medium",
+      "hazards": [
+        "factory-start-diagnostics.misattributed-history"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/factory_start_diagnostics.py:107,116,157,193; projects/monolith/factory/orchestration/mcp_test.py:173,211"
     }
   ],
   "non_ucas": [
@@ -681,6 +744,18 @@
     {
       "item": "An uninvoked retry is mistaken for proof that an earlier missing dispatch never ran",
       "reason": "Explicit operator recovery requires an empty exact first receipt, released observer, unchanged terminal workflow and native ownership. The CP must independently prove positive idled parking and complete journal/successor coverage, then durably fence that original lineage against restore. Digest/CAS and audited intent bind replay; the final lock rechecks local identity and preserves the native turn, settled permit, unknown result, reserved cost and unrelated holds. Partial remote effects remain explicit, never a success or a zero-cost refund. Evidence: projects/monolith/factory/settled_retry_reconciliation.py; factory/execution/reconciliation.py:read_unknown_retry_factory_attempt."
+    },
+    {
+      "item": "factory-start-diagnostics: a positive read granting dispatch or recovery authority",
+      "reason": "The helper only observes the existing can_start subgate under no_autoflush and emits recovery_authorized false. It neither calls transport or provider paths nor claims, resumes or changes a queued turn; the exact-session regression preserves the latent pending message for both positive and negative gate results (projects/monolith/factory/orchestration/factory_start_diagnostics.py:91,176,233; projects/monolith/factory/orchestration/mcp_test.py:371,480)."
+    },
+    {
+      "item": "factory-start-diagnostics: a loosely matching session exporting another attempt as current",
+      "reason": "Canonical task, node and positive attempt syntax must agree with the session workflow and node metadata, the exact durable run session/dispatch identity and a receipt. Missing or conflicting identity returns unknown before can_start is called; no correction or execution permission is inferred (projects/monolith/factory/orchestration/factory_start_diagnostics.py:243; projects/monolith/factory/orchestration/mcp_test.py:430)."
+    },
+    {
+      "item": "factory-start-diagnostics: funding history leaking private plans or expanding reads with audit history",
+      "reason": "Latest request, settlement and grant reads use exact-task action filters and LIMIT 1. The projection emits bounded identifiers, validated timestamps, finite failure categories and flags, verifies a source run belongs to the task, and excludes plan, direction and refusal prose; history-growth and no-write regressions cover the observational contract (projects/monolith/factory/orchestration/factory_start_diagnostics.py:107,116; projects/monolith/factory/orchestration/mcp_test.py:314,480,504)."
     }
   ],
   "open_questions": [
