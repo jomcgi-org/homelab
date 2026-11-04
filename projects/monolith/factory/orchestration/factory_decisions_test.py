@@ -3604,3 +3604,46 @@ def test_held_refusal_retries_the_card_without_another_review(db, routine, monke
     )
     assert state["cards"] == [routine_pause()["question"]]
     assert len(audits_of(db, "funding_review_requested")) == 1
+
+
+def test_routine_provenance_is_persisted_on_the_review_request(db, routine):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    request = _pending(task)
+    assert request["routine_pause"]["cause"] == "factory-decision:conductor_1:1"
+    assert request["routine_pause"]["decision"] == routine_pause()
+
+
+@pytest.mark.parametrize("hold", HOLDS)
+def test_hold_inside_request_before_its_lock_still_wins(db, routine, monkeypatch, hold):
+    """The window inside request(): after its unlocked reads, before the lock."""
+    task, policy, state = routine
+    original = funding._issue
+
+    def racing_issue(task_arg):
+        _set_hold(db, task, hold)
+        return original(task_arg)
+
+    monkeypatch.setattr(funding, "_issue", racing_issue)
+    pause(task, policy, routine_pause())
+    assert audits_of(db, "funding_review_requested") == []
+    assert len(state["cards"]) == 1
+    assert not controls.task_snapshot(task["id"])["task_paused"]
+
+
+@pytest.mark.parametrize("control", ["pause_admissions", "stop"])
+def test_lane_paused_between_request_and_settle_never_grants(
+    db, routine, control
+):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    request = _pending(task)
+    assert controls.set_control(control, "operator")["ok"]
+    settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
+    assert _grant(task) is None
+    assert _settled(task) is None
+    assert state["cards"] == []
+    if control == "pause_admissions":
+        assert controls.set_control("enable", "operator")["ok"]
+        settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
+        assert _grant(task) is not None
