@@ -8,6 +8,9 @@ from sqlmodel import Session, select
 from factory.orchestration import factory_conductor as conductor
 from factory.orchestration.factory_models import FactoryReceipt, WorkItem
 from factory.orchestration.turn_artifact import schema_errors
+from factory.orchestration.factory_funding import (
+    routine_labels_held as _REAL_ROUTINE_LABELS_HELD,
+)
 
 _REAL_OBSERVE_HUMAN_OWNERSHIP = conductor._observe_human_ownership
 
@@ -19986,7 +19989,7 @@ def test_funded_retry_never_crosses_a_hold(feedback_db, monkeypatch, when, hold)
 
     task, _ = retry_exhausted_task(monkeypatch)
     if when == "settle":
-        assert funding.request(task, "Renew exact attempt")
+        assert funding.request(task, "Renew exact attempt", retry_only=True)
         with controls._read_session() as db:
             request = funding.pending(db, task["id"])
         run = run_feedback_node(task, request["node_key"], funding_decision())
@@ -20016,7 +20019,7 @@ def test_funded_retry_never_crosses_a_hold(feedback_db, monkeypatch, when, hold)
     if hold == "review":
         monkeypatch.setattr(controls, "review_recovery_held", lambda *a, **kw: True)
     if when == "request":
-        assert not funding.request(task, "Renew exact attempt")
+        assert not funding.request(task, "Renew exact attempt", retry_only=True)
     else:
         funding.settle(task, run, request)
     node = conductor.graph.load_graph(task["id"])[0]
@@ -20036,7 +20039,7 @@ def test_funded_retry_revalidates_evidence(feedback_db, monkeypatch, change):
     from factory.orchestration.models import SwarmPlanNode, SwarmNodeRun
 
     task, _ = retry_exhausted_task(monkeypatch)
-    assert funding.request(task, "Renew exact attempt")
+    assert funding.request(task, "Renew exact attempt", retry_only=True)
     with controls._read_session() as db:
         request = funding.pending(db, task["id"])
     run = run_feedback_node(task, request["node_key"], funding_decision())
@@ -20098,7 +20101,7 @@ def test_funded_retry_history_survives_readded_key(feedback_db, monkeypatch):
 
     task, _ = retry_exhausted_task(monkeypatch)
     original = conductor.graph.load_graph(task["id"])
-    assert funding.request(task, "One exact retry")
+    assert funding.request(task, "One exact retry", retry_only=True)
     settle_funding(task, funding_decision())
     version = conductor.graph.current_version(task["id"])
     renewed = conductor.graph.load_graph(task["id"])
@@ -20143,7 +20146,7 @@ def test_funded_retry_cumulative_limit_and_no_progress(feedback_db, monkeypatch)
 
     task, _ = retry_exhausted_task(monkeypatch)
     for attempt in (3, 4):
-        assert funding.request(task, "New exact failure evidence")
+        assert funding.request(task, "New exact failure evidence", retry_only=True)
         settle_funding(task, funding_decision())
         admitted = conductor.graph.admit_dispatch(task["id"], "implement_manifest")
         assert admitted.ok and admitted.attempt == attempt
@@ -20168,13 +20171,13 @@ def test_funded_retry_without_new_work_evidence_stays_bounded(feedback_db, monke
     )
 
     task, _ = retry_exhausted_task(monkeypatch)
-    assert funding.request(task, "One recovery attempt")
+    assert funding.request(task, "One recovery attempt", retry_only=True)
     settle_funding(task, funding_decision())
     assert conductor.graph.admit_dispatch(task["id"], "implement_manifest").ok
     assert conductor.graph.record_outcome(
         task["id"], "implement_manifest", 3, "failed", 0.25, None, "{}"
     ).ok
-    assert not funding.request(task, "Repeat without progress")
+    assert not funding.request(task, "Repeat without progress", retry_only=True)
     assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == 3
     assert controls.task_snapshot(task["id"])["task_paused"]
     with controls._read_session() as db:
@@ -20201,6 +20204,386 @@ def test_funding_settles_against_a_spent_node_allocation(feedback_db, monkeypatc
         assert funding.pending(db, task["id"]) is None
         settled = funding.latest(db, task["id"], "funding_review_settled")
         assert settled["refusal"] is None
+
+
+@pytest.mark.parametrize(
+    "restriction", ["needs-human", "no_mirror", "paused_lane", "closed"]
+)
+def test_retry_refusal_does_not_starve_ordinary_funding(
+    feedback_db, monkeypatch, restriction
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, policy = retry_exhausted_task(monkeypatch)
+    with controls._locked_session() as (db, control):
+        row = controls._receipt(db, task["id"])
+        if restriction == "needs-human":
+            db.get(WorkItem, row.work_item_id).labels = ["needs-human"]
+        elif restriction == "no_mirror":
+            row.work_item_id = None
+        elif restriction == "paused_lane":
+            control.state = "paused"
+    if restriction == "closed":
+        monkeypatch.setattr(
+            funding,
+            "_issue",
+            lambda _: {"number": task["issue_number"], "state": "closed"},
+        )
+        monkeypatch.setattr(funding, "routine_labels_held", lambda _: "issue_not_open")
+    assert funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        {"ok": False, "reason": "task_deadline"},
+    )
+    with controls._read_session() as db:
+        if restriction == "closed":
+            assert controls._receipt(db, task["id"]).state == "failed"
+            assert funding.pending(db, task["id"]) is None
+        else:
+            assert "node_retry" not in funding.pending(db, task["id"])
+    assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == 2
+
+
+def test_ordinary_funding_does_not_attach_exhausted_node(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, _ = retry_exhausted_task(monkeypatch)
+    assert funding.request(task, "Ordinary allocation reassessment")
+    with controls._read_session() as db:
+        assert "node_retry" not in funding.pending(db, task["id"])
+    settle_funding(task, funding_decision())
+    assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == 2
+
+
+def producer_repair_after_real_blocker(monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+        factory_problem_issues as producer,
+        factory_intake as intake,
+        factory_landing as landing,
+    )
+
+    task, policy = retry_exhausted_task(monkeypatch)
+    monkeypatch.setattr(producer, "RECOVERY_REPO", task["repo"])
+    monkeypatch.setattr(producer, "_spare_quota", lambda: True)
+    monkeypatch.setattr(producer, "github_list", lambda *_: [])
+    issues = {
+        task["issue_number"]: {
+            "number": task["issue_number"],
+            "state": "open",
+            "labels": [],
+            "body": "Fix source",
+            "assignees": [],
+        }
+    }
+    monkeypatch.setattr(
+        conductor, "github_get", lambda repo, path: issues[int(path.split("/")[-1])]
+    )
+    # Exercise fresh GitHub labels too, rather than the retry fixture's stub.
+    monkeypatch.setattr(funding, "routine_labels_held", _REAL_ROUTINE_LABELS_HELD)
+
+    def create(repo, payload):
+        issues[71] = {**payload, "number": 71, "state": "open", "assignees": []}
+        return issues[71]
+
+    monkeypatch.setattr(producer, "github_write", create)
+    with controls._locked_session() as (db, control):
+        live = json.loads(control.policy_json)
+        live["intake"] = {
+            "enabled": True,
+            "refine_enabled": True,
+            "labels": ["agent-ready"],
+        }
+        live["problem_issues"] = {
+            "enabled": True,
+            "sources": {"recurring_blocker": True},
+        }
+        control.policy_json = json.dumps(live)
+    producer.problem_issues_tick(live)  # Watermark before the real new signal.
+    assert funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    settle_funding(task, funding_decision())
+    assert conductor.graph.admit_dispatch(task["id"], "implement_manifest").ok
+    assert conductor.graph.record_outcome(
+        task["id"], "implement_manifest", 3, "failed", 0.25, None, "{}"
+    ).ok
+    # Real caller records the signal, takes the pause and writes its stop-only card.
+    funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    assert controls.task_snapshot(task["id"])["task_paused"]
+    with controls._read_session() as db:
+        assert funding.latest(db, task["id"], "repair_allocation_wait")
+    producer.problem_issues_tick(live)
+    assert 71 in issues
+    # Ordinary intake admits the synthetic completed repair. Landing's existing
+    # accepted-merge and verified-rollout records are the external delivery boundary.
+    intake.receive_issue(
+        task["repo"],
+        71,
+        issues[71]["title"],
+        issues[71]["body"],
+        "https://github.com/owner/repo/issues/71",
+        intake.INTAKE_ACTOR,
+        task_class="bug-fix",
+    )
+    admitted = intake.admit_next("scheduler")
+    assert admitted["ok"], admitted
+    repair_id = admitted["task_id"]
+    landing._record(repair_id, "merged", pr_number=72, merge_commit_sha="a" * 40)
+    landing._record(
+        repair_id,
+        "rollout_verified",
+        pr_number=72,
+        merge_commit_sha="a" * 40,
+        approved_head_sha="b" * 40,
+        verified=True,
+    )
+    controls.finish_task(
+        repair_id,
+        "succeeded",
+        "factory:landing",
+        evidence={"state": "rollout_verified"},
+    )
+    return task, live, issues, repair_id
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        None,
+        "human",
+        "unknown",
+        "landing",
+        "nonrenewable",
+        "operator_pause",
+        "card",
+        "graph",
+        "policy",
+        "rollout",
+        "lane",
+        "decision",
+        "no_mirror",
+        "legacy",
+        "concurrent_pause",
+        "capacity_wait",
+    ],
+)
+def test_real_blocker_repair_rollout_requests_bounded_same_node_review(
+    feedback_db, monkeypatch, refusal
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+        factory_problem_issues as producer,
+    )
+    from factory.orchestration.factory_models import FactoryStart
+
+    task, live, issues, repair_id = producer_repair_after_real_blocker(monkeypatch)
+    history = conductor.graph.node_runs(task["id"])
+    with controls._locked_session() as (db, control):
+        row = controls._receipt(db, task["id"])
+        if refusal == "human":
+            db.get(WorkItem, row.work_item_id).labels = ["human"]
+            issues[task["issue_number"]]["labels"] = [{"name": "human"}]
+        elif refusal == "unknown":
+            db.add(
+                FactoryStart(
+                    task_id=task["id"],
+                    start_key="unknown",
+                    actor="test",
+                    model="opus",
+                    max_cost_usd=1,
+                    status="uncertain",
+                )
+            )
+        elif refusal in {"landing", "nonrenewable"}:
+            row.direction_json = json.dumps(
+                {
+                    "landing_hold"
+                    if refusal == "landing"
+                    else "nonrenewable_recovery": True
+                }
+            )
+        elif refusal == "operator_pause":
+            controls.set_control(
+                "pause_task", "operator:joe", task_id=task["id"], session=db
+            )
+        elif refusal == "card":
+            row.escalation_json = json.dumps({"kind": "human", "question": "Keep held"})
+        elif refusal == "policy":
+            row.policy_json = json.dumps(
+                {**json.loads(row.policy_json), "max_attempts": 5}
+            )
+        elif refusal == "lane":
+            control.state = "paused"
+        elif refusal == "rollout":
+            controls._receipt(db, repair_id).state = "landing"
+        elif refusal == "no_mirror":
+            row.work_item_id = None
+        elif refusal == "legacy":
+            from sqlalchemy import delete
+            from factory.orchestration.factory_models import FactoryAudit
+
+            db.exec(
+                delete(FactoryAudit).where(
+                    FactoryAudit.task_id == task["id"],
+                    FactoryAudit.action == "repair_allocation_wait",
+                )
+            )
+    if refusal == "decision":
+        monkeypatch.setattr(controls, "decision_in_flight", lambda *a: True)
+    if refusal == "capacity_wait":
+        original = controls.set_control
+
+        def pending_release(*args, **kwargs):
+            # Even a race after native mutation rolls back with preparation.
+            return {**original(*args, **kwargs), "pending": True}
+
+        monkeypatch.setattr(controls, "set_control", pending_release)
+    if refusal == "concurrent_pause":
+
+        def change_after_observation(task):
+            controls.set_control("pause_task", "operator:joe", task_id=task["id"])
+            return None
+
+        monkeypatch.setattr(funding, "routine_labels_held", change_after_observation)
+    if refusal == "graph":
+        conductor.graph.discard_node(
+            task["id"],
+            "implement_manifest",
+            author_kind="engine",
+            author="test",
+            cause_kind="test",
+            cause_ref="changed",
+            stated_reason="changed",
+            expected_version=conductor.graph.current_version(task["id"]),
+        )
+    producer.problem_issues_tick(live)
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+        if refusal:
+            assert controls._receipt(db, task["id"]).task_paused
+            assert request is None
+            assert funding.latest(db, task["id"], "repair_funding_requested") is None
+            return
+        assert request["repair_recovery"]["repair_task_id"] == repair_id
+        assert not controls._receipt(db, task["id"]).task_paused
+    producer.problem_issues_tick(live)  # No second review on replay.
+    settle_funding(task, funding_decision())
+    prior_ids = {run["id"] for run in history}
+    assert [
+        run for run in conductor.graph.node_runs(task["id"]) if run["id"] in prior_ids
+    ] == history
+    assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == 4
+    attempt = conductor.graph.admit_dispatch(task["id"], "implement_manifest")
+    assert attempt.ok and attempt.attempt == 4
+    assert conductor.graph.record_outcome(
+        task["id"],
+        "implement_manifest",
+        4,
+        "succeeded",
+        0.25,
+        "c" * 40,
+        json.dumps({"artifact": {"result": "useful repair work"}}),
+    ).ok
+    producer.problem_issues_tick(live)
+    with controls._read_session() as db:
+        assert funding.latest(db, task["id"], "problem_issue_recovery_observed")
+        assert funding._retry_target(db, task["id"]) is None
+
+
+def test_expired_machine_pause_keeps_repair_funding_path(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+        factory_merged_delivery as merged,
+        factory_problem_issues as producer,
+    )
+
+    task, live, _, _ = producer_repair_after_real_blocker(monkeypatch)
+    snapshot = controls.task_snapshot(task["id"])
+    now = datetime.fromisoformat(snapshot["deadline_at"]) + timedelta(seconds=1)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    monkeypatch.setattr(merged, "reconcile_merged_delivery", lambda *a: False)
+    assert conductor._settle_paused_task(
+        task, snapshot["policy"], conductor.graph.node_runs(task["id"])
+    )
+    producer.problem_issues_tick(live)
+    with controls._read_session() as db:
+        assert controls._receipt(db, task["id"]).state == "admitted"
+        assert funding.pending(db, task["id"])["repair_recovery"]
+    settle_funding(task, funding_decision())
+    assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == 4
+
+
+@pytest.mark.parametrize(
+    "change", ["stop", "human", "unknown", "repaused", "rollout_changed"]
+)
+def test_repair_review_rechecks_authority_before_node_renewal(
+    feedback_db, monkeypatch, change
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+        factory_problem_issues as producer,
+    )
+    from factory.orchestration.factory_models import FactoryStart
+
+    task, live, issues, repair_id = producer_repair_after_real_blocker(monkeypatch)
+    producer.problem_issues_tick(live)
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    decision = funding_decision()
+    if change == "stop":
+        decision.update(
+            action="stop", task_budget_usd=0, additional_work_turns=0, lease_minutes=0
+        )
+    run = run_feedback_node(task, request["node_key"], decision)
+    with controls._locked_session() as (db, _):
+        row = controls._receipt(db, task["id"])
+        if change == "human":
+            db.get(WorkItem, row.work_item_id).labels = ["human"]
+            issues[task["issue_number"]]["labels"] = [{"name": "human"}]
+        elif change == "unknown":
+            db.add(
+                FactoryStart(
+                    task_id=task["id"],
+                    start_key="unknown",
+                    actor="test",
+                    model="opus",
+                    max_cost_usd=1,
+                    status="uncertain",
+                )
+            )
+        elif change == "rollout_changed":
+            controls._receipt(db, repair_id).state = "landing"
+        elif change == "repaused":
+            controls.set_control(
+                "pause_task", "operator:joe", task_id=task["id"], session=db
+            )
+            controls.set_control(
+                "resume_task", "operator:joe", task_id=task["id"], session=db
+            )
+    funding.settle(task, run, request)
+    assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == 3
+    with controls._read_session() as db:
+        assert funding.latest(db, task["id"], "problem_issue_recovery_observed") is None
 
 
 def test_discard_and_rename_keep_spent_history_charged(feedback_db, monkeypatch):

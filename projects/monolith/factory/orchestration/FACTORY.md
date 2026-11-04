@@ -356,16 +356,22 @@ Operational handoff makes "repository work delivered, only live checks remain" a
 ### Recurring repair discovery and observed recovery
 
 The existing problem producer owns the automatic loop for stranded workflows
-and recurring blockers. Its reviewed one-time rollout transition enables only
-those two sources and the producer in an already-enabled homelab bug-intake
-lane. It preserves generation, receipts and other policy; dedicated operator
-decisions and later disables win. Fresh surplus quota gates discovery using
-the improvement preview's existing per-grant rules. No model is started by
-the producer. Ordinary intake, exact-head review, CI, merge queue and managed
+and recurring blockers after guarded operator activation. Deployment never
+changes policy switches. Fresh surplus quota gates discovery using
+the improvement preview's existing per-grant rules. Enabled refinement or
+matching direct labels permit bug intake; exclusions, pauses and batches bind.
+Waiting recovery sources do not block unrelated sources. Ordinary intake,
+exact-head review, CI, merge queue and managed
 rollout retain authority over the separate repair issue.
 
 Repair descriptions expose code paths and synthetic acceptance only; the
 private ledger retains exact source identity. Recursive repair issues refuse.
+For a fresh exhausted-node allocation pause, funding records exact machine
+provenance before any repair. Verified rollout of the bound producer repair
+permits one funding review using native capacity release, with no manual resume.
+The review and settlement preserve cumulative caps, prior attempts, ownership,
+uncertainty and explicit holds. Legacy cards are never adopted; operator
+reassertion or concurrent evidence changes refuse this authority.
 A passive check records recovery only after the repair's rollout proof and
 a later successful attempt on the original task/node, with holds and unknown
 starts absent. Missing bindings or historical cards remain unverified; this

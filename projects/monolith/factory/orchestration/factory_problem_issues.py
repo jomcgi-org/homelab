@@ -67,67 +67,16 @@ def _delivery_enabled(policy: dict) -> bool:
     if not intake["enabled"] or intake["refinement_batch"]:
         return False
     entry = controls.repo_entry(policy, RECOVERY_REPO)
+    labels = {label.lower() for label in problem_issues_policy(policy)["labels"]}
     return bool(
         entry["enabled"]
         and not entry["paused"]
-        and "bug" in entry["labels"]
-        and "bug" not in entry["exclude_labels"]
-    )
-
-
-def _activate_recovery_loop(policy: dict) -> dict:
-    """One reviewed rollout transition, not a recurring override of controls.
-
-    Only the already-authorized homelab bug lane qualifies. A dedicated
-    operator decision (including a disable), or a previous rollout transition,
-    wins forever. No receipt, generation, intake or landing policy is changed.
-    """
-    from core.jsonio import dumps
-
-    if not _delivery_enabled(policy):
-        return policy
-    with _locked_session() as (db, control):
-        live = json.loads(control.policy_json or "{}")
-        if live != policy:
-            return live
-        if control.state != "enabled":
-            return policy
-        if (
-            db.exec(
-                select(FactoryAudit.id)
-                .where(
-                    FactoryAudit.action.in_(
-                        (RECOVERY_ACTIVATION, "problem_issues_control_applied")
-                    )
-                )
-                .limit(1)
-            ).first()
-            is not None
-        ):
-            return policy
-        before = live.get("problem_issues", {})
-        live["problem_issues"] = {
-            **before,
-            "enabled": True,
-            "sources": {
-                **before.get("sources", {}),
-                **dict.fromkeys(RECOVERY_SOURCES, True),
-            },
-        }
-        problem_issues_policy(live)  # Validate before committing the upgrade.
-        control.policy_json = dumps(live)
-        control.version += 1
-        control.actor, control.updated_at = ACTOR, _now()
-        _audit(
-            db,
-            ACTOR,
-            RECOVERY_ACTIVATION,
-            before=before,
-            after=live["problem_issues"],
-            generation=live.get("generation"),
-            version=control.version,
+        and (
+            intake["refine_enabled"]
+            or labels.intersection(label.lower() for label in entry["labels"])
         )
-        return live
+        and not labels.intersection(label.lower() for label in entry["exclude_labels"])
+    )
 
 
 def _spare_quota() -> bool:
@@ -242,7 +191,10 @@ def _observe_recoveries():
     cards, holds, missing bindings and unknown starts stay unverified.
     """
     from factory.orchestration import factory_controls as controls
-    from factory.orchestration.factory_funding import routine_hold
+    from factory.orchestration.factory_funding import (
+        routine_hold,
+        _repair_rollout_valid,
+    )
     from factory.orchestration.models import SwarmNodeRun
 
     with _locked_session() as (db, _control):
@@ -306,6 +258,19 @@ def _observe_recoveries():
                     .limit(1)
                 ).first()
                 if rollout is None:
+                    continue
+                if not _repair_rollout_valid(
+                    db,
+                    {
+                        "repo": source.repo,
+                        "repair_task_id": repair.task_id,
+                        "repair_issue": repair.issue_number,
+                        "rollout_audit_id": rollout.id,
+                        "rollout_sha256": controls.digest(
+                            json.loads(rollout.detail_json)
+                        ),
+                    },
+                ):
                     continue
                 recovered = db.exec(
                     select(SwarmNodeRun)
@@ -391,12 +356,22 @@ def configure(
         policy = json.loads(control.policy_json or "{}")
         if not policy.get("repo") or control.state == "stopped":
             raise ValueError("problem_issues_control_unavailable")
-        before = policy.get("problem_issues", {})
+        before = policy.get("problem_issues") or {}
+        if (
+            enabled
+            and not before.get("enabled")
+            and any(
+                value
+                for name, value in (before.get("sources") or {}).items()
+                if name not in RECOVERY_SOURCES
+            )
+        ):
+            raise ValueError("problem_issues_unrelated_sources_enabled")
         after = {
             **before,
             "enabled": enabled,
             "sources": {
-                **before.get("sources", {}),
+                **(before.get("sources") or {}),
                 "recurring_blocker": recurring_blocker,
                 "workflow_stranded": workflow_stranded,
             },
@@ -924,13 +899,13 @@ def _reconcile_pending(block: dict, started: FactoryAudit, detail: dict):
     )
 
 
-def _next_event(block: dict, observed: dict):
+def _next_event(block: dict, observed: dict, *, skip_sources=()):
     effective = observed["effective_sources"]
     watermarks = observed.get("watermarks") or {}
     with _read_session() as db:
         filters = []
         for source in PROBLEM_ISSUE_SOURCES:
-            if effective.get(source):
+            if effective.get(source) and source not in skip_sources:
                 filters.append(
                     _event_filter(
                         source,
@@ -951,8 +926,10 @@ def _next_event(block: dict, observed: dict):
 
 def problem_issues_tick(policy: dict) -> None:
     """Reconcile at most one exact source event and create at most one issue."""
-    policy = _activate_recovery_loop(policy)
     if policy.get("repo") == RECOVERY_REPO:
+        from factory.orchestration.factory_funding import repair_recovery_tick
+
+        repair_recovery_tick()
         _observe_recoveries()
     block = problem_issues_policy(policy)
     # Old policies omit the block. They remain inert for new source events, but
@@ -974,7 +951,18 @@ def problem_issues_tick(policy: dict) -> None:
     if changed or not any(observed["effective_sources"].values()):
         return
 
-    row, capped = _next_event(block, observed)
+    skip_sources = ()
+    if policy.get("repo") == RECOVERY_REPO and any(
+        observed["effective_sources"].get(source) for source in RECOVERY_SOURCES
+    ):
+        try:
+            recovery_ready = _delivery_enabled(policy) and _spare_quota()
+        except Exception:  # Unavailable recovery evidence must not block other sources.
+            logger.exception("factory recovery discovery evidence unavailable")
+            recovery_ready = False
+        if not recovery_ready:
+            skip_sources = RECOVERY_SOURCES
+    row, capped = _next_event(block, observed, skip_sources=skip_sources)
     if row is None:
         return
     parsed = _source(row)
@@ -1007,8 +995,6 @@ def problem_issues_tick(policy: dict) -> None:
         # decides that a person's card or unknown invocation is safe to retry.
         # Refusal waits without consuming the event, so fresh quota can unlock
         # discovery without a reset, manual trigger or generation rollover.
-        if not _delivery_enabled(policy) or not _spare_quota():
-            return
         recovery_owner = _recovery_context(policy, row)
         if recovery_owner is None:
             from factory.orchestration.factory_models import FactoryControl

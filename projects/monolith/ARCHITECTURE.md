@@ -744,12 +744,15 @@ cause on #6091 (#6256).
 
 **Why.** The recurring repair loop belongs to the existing problem producer,
 not the one-shot improvement scout or report-only learning pipeline (#7583).
-A reviewed, once-only rollout transition enables its two recovery sources in
-an already-authorized homelab bug lane; it cannot widen intake or repeatedly
-override operator disables. The improvement quota rules gate discovery and
+The operator enables its recovery sources through guarded preview/apply after
+rollout. General policy history cannot distinguish old defaults from explicit
+disables, so deployment never changes switches. The improvement quota rules gate discovery and
 ordinary delivery owns review, CI, merge and rollout. Private exact-node
-observation distinguishes deployed repair from actual recovery, without
-resuming historical cards or clearing uncertainty. Public tickets carry only
+observation distinguishes deployed repair from actual recovery. Funding records
+fresh machine-pause provenance, then verified exact repair rollout permits one
+same-node review through native capacity release. The judge retains bounded
+attempt authority; source holds and pause identity are rechecked at settlement.
+Legacy cards and uncertainty remain fenced. Public tickets carry only
 scoped code repairs and synthetic acceptance criteria.
 
 ## 5. Chat

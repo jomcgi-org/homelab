@@ -517,7 +517,16 @@ def judge_deficit(task, deficit, reason):
     )
 
 
-def request(task, reason, *, recover=False, progress=False, routine=None):
+def request(
+    task,
+    reason,
+    *,
+    recover=False,
+    progress=False,
+    routine=None,
+    retry_only=False,
+    repair=None,
+):
     """Reserve one exact judge decision, even when task soft limits ran out.
 
     ``routine`` carries a planner pause (``decision`` and ``cause``) the
@@ -560,7 +569,9 @@ def request(task, reason, *, recover=False, progress=False, routine=None):
     if issue.get("number") != task["issue_number"]:
         return False
     with controls._read_session() as db:
-        retry = _retry_target(db, task["id"])
+        retry = _retry_target(db, task["id"]) if retry_only else None
+    if retry_only and retry is None:
+        return False
     retry_label_hold = routine_labels_held(task) if retry else None
     merit = None
     if factory_judge.enabled():
@@ -581,13 +592,10 @@ def request(task, reason, *, recover=False, progress=False, routine=None):
         if row is None:
             return False
         graph._lock_task(db, task["id"])
-        if retry != _retry_target(db, task["id"]):
+        if retry and retry != _retry_target(db, task["id"]):
             return False
-        if retry and (
-            retry_label_hold
-            or routine_hold(db, row, task["id"])
-            or control.state != "enabled"
-            or row.state != "admitted"
+        if repair is not None and (
+            not retry or repair != _repair_evidence(db, task["id"])
         ):
             return False
         # A hold set while labels were read wins here, without mutating it.
@@ -604,7 +612,7 @@ def request(task, reason, *, recover=False, progress=False, routine=None):
             or control.state not in ("enabled", "paused")
             or (routine and control.state != "enabled")
             or row.cancellation_requested
-            or row.task_paused
+            or (row.task_paused and repair is None)
         ):
             return False
         if row.state not in ("admitted", "failed", "escalated") or (
@@ -634,15 +642,6 @@ def request(task, reason, *, recover=False, progress=False, routine=None):
             or watchdog.delivered_since(runs, watch["run_watermark"])
         ):
             return False
-        blocker = funding_blocker(db, task["id"], runs)
-        if blocker and (routine or retry):
-            _record_blocker(db, row, task["id"], blocker, retry=retry)
-            if routine:
-                return False
-        if blocker:
-            pause_allocation(db, task["id"], blocker)
-            return False
-        total = objective(db, task["id"])
         if issue["state"] != "open":
             controls.finish_task(
                 task["id"],
@@ -655,6 +654,22 @@ def request(task, reason, *, recover=False, progress=False, routine=None):
                 session=db,
             )
             return True
+        if retry and (
+            retry_label_hold
+            or routine_hold(db, row, task["id"], machine_pause=repair is not None)
+            or control.state != "enabled"
+            or row.state != "admitted"
+        ):
+            return False
+        blocker = funding_blocker(db, task["id"], runs, repair=repair)
+        if blocker and (routine or retry):
+            _record_blocker(db, row, task["id"], blocker, retry=retry)
+            if routine:
+                return False
+        if blocker:
+            pause_allocation(db, task["id"], blocker, retry=retry)
+            return False
+        total = objective(db, task["id"])
         if (
             recover and control.state != "enabled"
         ) or not controls.execution_capacity_available(db, control, row):
@@ -663,6 +678,22 @@ def request(task, reason, *, recover=False, progress=False, routine=None):
         judge = model_pool.select_model("judge", policy)["model"]
         if judge not in policy["allowed_models"]:
             return False
+        if repair is not None:
+            # Same transaction as the pending review. Native capacity release
+            # retains its owner; no queued release may outlive a failed review
+            # preparation. The only next dispatch is funding's decision gate.
+            resumed = controls.set_control(
+                "resume_task", ACTOR, task_id=task["id"], session=db
+            )
+            if not resumed["ok"] or resumed.get("pending"):
+                raise ValueError("repair_review_capacity_changed")
+            repair = {
+                **repair,
+                "resume_id": latest(db, task["id"], "resume_task")["audit_id"],
+            }
+            card = json.loads(row.escalation_json)
+            card["resolved"] = {"kind": "verified_repair_review", **repair}
+            row.escalation_json = dumps(card)
         revision = graph.current_version(task["id"], session=db)
         previous_request = latest(db, task["id"], "funding_review_requested")
         ordinal = (
@@ -679,6 +710,7 @@ def request(task, reason, *, recover=False, progress=False, routine=None):
         )
         context = {
             "trigger": reason,
+            "repair_recovery": repair,
             "deficit": deficit,
             "objective": issue,
             "accounting": total,
@@ -727,6 +759,11 @@ def request(task, reason, *, recover=False, progress=False, routine=None):
             audit_detail["retry_authority_sha256"] = _retry_authority(row)
             audit_detail["retry_ceiling"] = factory_judge.ceiling(
                 json.loads(row.policy_json)
+            )
+        if repair is not None:
+            audit_detail["repair_recovery"] = repair
+            record_audit(
+                db, ACTOR, "repair_funding_requested", task_id=task["id"], **repair
             )
         if routine:
             audit_detail["routine_pause"] = routine
@@ -822,14 +859,14 @@ def _routed_pause(task_id):
     return None
 
 
-def routine_hold(db, row, task_id):
+def routine_hold(db, row, task_id, *, machine_pause=False):
     """The shared human or operator restriction that keeps a pause with a
     person, or None. Read under the caller's session; request and settle call
     it again under the control lock, so a hold set meanwhile still wins."""
     direction = json.loads(row.direction_json or "{}") if row is not None else {}
     if row is None:
         return "receipt_missing"
-    if row.task_paused or row.cancellation_requested:
+    if (row.task_paused and not machine_pause) or row.cancellation_requested:
         return "task_held"
     if controls.nonrenewable_recovery(row):
         return "nonrenewable_recovery"
@@ -873,6 +910,8 @@ def routine_labels_held(task):
     }
     if issue.get("state") != "open":
         return "issue_not_open"
+    if issue.get("assignees"):
+        return "issue_owned"
     if labels & ROUTINE_HELD_LABELS:
         return "held_label"
     return None
@@ -1032,6 +1071,14 @@ def settle(task, run, request):
                 or request.get("retry_authority_sha256") != _retry_authority(row)
             ):
                 raise ValueError("funding retry held or evidence changed")
+            repair = request.get("repair_recovery")
+            if repair and (
+                not _repair_rollout_valid(db, repair)
+                or _latest_pause(db, task["id"]).id != repair["pause_id"]
+                or latest(db, task["id"], "resume_task")["audit_id"]
+                != repair["resume_id"]
+            ):
+                raise ValueError("repair recovery authority changed")
             if (
                 run["pin"]["model"] != review_model(request)
                 or run["dispatch_key"] != request["start_key"]
@@ -1084,7 +1131,10 @@ def settle(task, run, request):
             escalation = resolved["escalation"]
             if resolved["action"] != "stop" and escalation is None:
                 blocker = funding_blocker(
-                    db, task["id"], graph.node_runs(task["id"], session=db)
+                    db,
+                    task["id"],
+                    graph.node_runs(task["id"], session=db),
+                    repair=request.get("repair_recovery"),
                 )
                 if blocker:
                     pause_allocation(db, task["id"], blocker)
@@ -1531,8 +1581,10 @@ def reconcile(task, policy, runs, permission):
     legacy = controls.continuation_grant(task["id"])
     with controls._read_session() as db:
         retry = _retry_target(db, task["id"])
-    if retry:
-        return request(task, "Exhausted work node needs one evidence-bound retry")
+    if retry and request(
+        task, "Exhausted work node needs one evidence-bound retry", retry_only=True
+    ):
+        return True
     if (
         permission.get("reason") in {"task_deadline", "funding_lease_due"}
         or snapshot["turns_used"] >= controls.task_turn_ceiling(policy)
@@ -1655,21 +1707,40 @@ def work_progress(runs, through_run_id=None):
     return controls.digest(sorted(evidence))
 
 
-def funding_blocker(db, task_id, runs):
+def funding_blocker(db, task_id, runs, *, repair=None):
     prior = amendment(db, task_id)
     if prior and prior.get("grant_kind") != "exact_operator_amendment":
         previous = prior.get("progress_sha256")
         if previous is None and prior.get("source_run_id") is not None:
             previous = work_progress(runs, prior["source_run_id"])
         if previous == work_progress(runs):
+            if (
+                repair
+                and repair.get("grant_id") == prior["audit_id"]
+                and _repair_rollout_valid(db, repair)
+            ):
+                return None
             return {"code": "funding_without_progress", "grant_id": prior["audit_id"]}
     return None
 
 
-def pause_allocation(db, task_id, blocker):
+def pause_allocation(db, task_id, blocker, *, retry=None):
     from factory.orchestration import factory_pause
 
     row = controls._receipt(db, task_id)
+    # Only a newly owned, quiescent machine pause receives repair authority.
+    # Existing cards and pauses retain their original owner forever.
+    repair_wait = bool(
+        retry
+        and row is not None
+        and row.state == "admitted"
+        and not row.task_paused
+        and not row.escalation_json
+        and not routine_hold(db, row, task_id)
+        and not _recovery_held(db, task_id)
+        and not controls._accounting(controls._starts(db, task_id))["unresolved_starts"]
+        and REPAIR_MARKER not in (row.body or "")
+    )
     actor = "factory:allocation-recovery"
     if row is not None and row.state in controls._ACTIVE:
         controls.revoke_capacity_release(db, row, actor, "pause_task")
@@ -1677,6 +1748,209 @@ def pause_allocation(db, task_id, blocker):
         record_audit(
             db, actor, "allocation_recovery_required", task_id=task_id, **blocker
         )
+        if repair_wait:
+            pause = _latest_pause(db, task_id)
+            source = latest(db, task_id, BLOCKER)
+            record_audit(
+                db,
+                ACTOR,
+                "repair_allocation_wait",
+                task_id=task_id,
+                retry=retry,
+                grant_id=blocker["grant_id"],
+                pause_id=pause.id,
+                card=json.loads(row.escalation_json),
+                authority_sha256=_retry_authority(row),
+                revision=graph.current_version(task_id, session=db),
+                policy_sha256=controls.digest(effective_policy(db, row)),
+                source_audit_id=source["audit_id"] if source else None,
+            )
+
+
+def _latest_pause(db, task_id):
+    rows = db.exec(
+        select(FactoryAudit)
+        .where(FactoryAudit.task_id == task_id, FactoryAudit.action == "pause_task")
+        .order_by(FactoryAudit.id.desc())
+    )
+    return next((row for row in rows if json.loads(row.detail_json).get("ok")), None)
+
+
+def _repair_rollout_valid(db, proof):
+    """Revalidate exact factory-accepted delivery and its verified rollout."""
+    from factory.orchestration import factory_problem_issues as producer
+
+    control = db.get(FactoryControl, "factory")
+    live = json.loads(control.policy_json or "{}") if control else {}
+    block = controls.problem_issues_policy(live)
+    if (
+        control is None
+        or control.state != "enabled"
+        or not block["enabled"]
+        or not block["sources"]["recurring_blocker"]
+        or not producer._delivery_enabled(live)
+    ):
+        return False
+    repair = controls._receipt(db, proof["repair_task_id"])
+    rollout = db.get(FactoryAudit, proof["rollout_audit_id"])
+    if (
+        repair is None
+        or repair.state != "succeeded"
+        or repair.task_class != "bug-fix"
+        or repair.repo != proof["repo"]
+        or repair.issue_number != proof["repair_issue"]
+        or rollout is None
+        or rollout.task_id != repair.task_id
+        or rollout.action != "rollout_verified"
+        or rollout.actor != "factory:landing"
+    ):
+        return False
+    detail = json.loads(rollout.detail_json)
+    merged = latest(db, repair.task_id, "merged")
+    return bool(
+        detail.get("verified") is True
+        and merged
+        and db.get(FactoryAudit, merged["audit_id"]).actor == "factory:landing"
+        and re.fullmatch(r"[0-9a-f]{40}", detail.get("approved_head_sha") or "")
+        and re.fullmatch(r"[0-9a-f]{40}", detail.get("merge_commit_sha") or "")
+        and detail.get("merge_commit_sha") == merged.get("merge_commit_sha")
+        and detail.get("pr_number") == merged.get("pr_number")
+        and controls.digest(detail) == proof["rollout_sha256"]
+    )
+
+
+def _repair_evidence(db, task_id):
+    """Only a fresh machine pause can trade a verified repair for one review.
+
+    The original card, latest successful pause, graph, failed attempts and
+    pinned policy remain exact. This never adopts legacy or operator cards.
+    """
+    from factory.orchestration import factory_problem_issues as producer
+
+    row = controls._receipt(db, task_id)
+    wait = latest(db, task_id, "repair_allocation_wait")
+    control = db.get(FactoryControl, "factory")
+    live = json.loads(control.policy_json or "{}") if control else {}
+    block = controls.problem_issues_policy(live)
+    pause = _latest_pause(db, task_id)
+    if (
+        row is None
+        or wait is None
+        or not wait.get("source_audit_id")
+        or control is None
+        or control.state != "enabled"
+        or not block["enabled"]
+        or not block["sources"]["recurring_blocker"]
+        or not producer._delivery_enabled(live)
+        or row.state != "admitted"
+        or not row.task_paused
+        or routine_hold(db, row, task_id, machine_pause=True)
+        or _recovery_held(db, task_id)
+        or controls.decision_in_flight(db, row.id)
+        or pause is None
+        or pause.id != wait["pause_id"]
+        or pause.actor != "factory:allocation-recovery"
+        or json.loads(row.escalation_json or "null") != wait["card"]
+        or _retry_authority(row) != wait["authority_sha256"]
+        or controls.digest(effective_policy(db, row)) != wait["policy_sha256"]
+        or graph.current_version(task_id, session=db) != wait["revision"]
+        or _retry_target(db, task_id) != wait["retry"]
+        or controls._accounting(controls._starts(db, task_id))["unresolved_starts"]
+        or any(
+            r["status"] not in graph.TERMINAL_RUN_STATUSES
+            for r in graph.node_runs(task_id, session=db)
+        )
+    ):
+        return None
+    consumed = latest(db, task_id, "repair_funding_requested")
+    if consumed and consumed["wait_id"] == wait["audit_id"]:
+        return None
+    watches = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.task_id == task_id,
+            FactoryAudit.action == "problem_issue_recovery_watch",
+            FactoryAudit.id > wait["audit_id"],
+        )
+        .order_by(FactoryAudit.id.desc())
+        .limit(50)
+    ).all()
+    for watch in watches:
+        detail = json.loads(watch.detail_json)
+        if (
+            detail.get("source_audit_id") != wait["source_audit_id"]
+            or detail.get("node_key") != wait["retry"]["node_key"]
+            or detail.get("source_run_id") != wait["retry"]["source_run_id"]
+        ):
+            continue
+        created = producer._last_matching(
+            db,
+            detail["fingerprint"],
+            ("problem_issue_created", "problem_issue_reconciled"),
+            task_id,
+        )
+        if created is None:
+            continue
+        result = json.loads(created.detail_json)
+        numbers = result.get("issue_numbers") or [result.get("issue_number")]
+        repairs = db.exec(
+            select(FactoryReceipt).where(
+                FactoryReceipt.repo == row.repo,
+                FactoryReceipt.issue_number.in_([n for n in numbers if type(n) is int]),
+                FactoryReceipt.state == "succeeded",
+                FactoryReceipt.task_class == "bug-fix",
+            )
+        ).all()
+        for repair in repairs:
+            rollout = latest(db, repair.task_id, "rollout_verified")
+            if rollout is None or rollout["audit_id"] <= created.id:
+                continue
+            raw = db.get(FactoryAudit, rollout["audit_id"])
+            proof = dict(
+                wait_id=wait["audit_id"],
+                control_version=control.version,
+                grant_id=wait["grant_id"],
+                pause_id=wait["pause_id"],
+                watch_id=watch.id,
+                repo=row.repo,
+                repair_issue=repair.issue_number,
+                repair_task_id=repair.task_id,
+                rollout_audit_id=raw.id,
+                rollout_sha256=controls.digest(json.loads(raw.detail_json)),
+            )
+            if _repair_rollout_valid(db, proof):
+                return proof
+    return None
+
+
+def repair_recovery_tick():
+    """Producer cadence delegates newly repaired machine pauses to funding."""
+    from factory.orchestration import factory_conductor as c
+
+    with controls._read_session() as db:
+        waits = db.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action == "repair_allocation_wait")
+            .order_by(FactoryAudit.id.desc())
+            .limit(50)
+        ).all()
+        task_ids = list(dict.fromkeys(row.task_id for row in waits))
+    for task_id in task_ids:
+        with controls._read_session() as db:
+            proof = _repair_evidence(db, task_id)
+        if proof is not None:
+            try:
+                request(
+                    c._task(task_id),
+                    "Verified producer repair needs exact-node review",
+                    retry_only=True,
+                    repair=proof,
+                )
+            except (ValueError, httpx.HTTPError):
+                # Preparation rolls back the native release with the review.
+                # A capacity race or unavailable evidence must not stop the
+                # producer from examining unrelated problem sources.
+                c.logger.exception("factory repair review preparation refused")
 
 
 CONTINUATION_AUTHORIZED = "progress_continuation_authorized"

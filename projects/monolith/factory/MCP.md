@@ -362,24 +362,37 @@ writes, or a previously denied HTTP path.
 
 ### Enable recovery problem issues
 
-The ordinary producer now activates recovery automatically on its first tick
-after this rollout **only** for an enabled homelab lane whose existing intake
-accepts `bug`, outside a refinement batch. It records
-`problem_issue_recovery_loop_activated`, advances control version once, and
-changes only the master switch plus `recurring_blocker` and `workflow_stranded`.
-Generation, receipts, other sources, budgets, intake and landing remain unchanged.
-A prior dedicated operator decision prevents this rollout transition; after
-the transition, later disables remain off. The producer does not repeatedly
-enforce its switches. Disabled/restricted intake is never widened.
+After reviewed rollout, the operator enables the producer and recovery sources
+through the guarded preview/apply below. Deployment never changes switches:
+general policy history cannot reliably distinguish an intentional disable from
+an old default. Enabling the master through this narrow control refuses when
+an unrelated stored source is true; resolve that separate policy choice through
+its owner first. The control never silently enables or edits those sources.
 
 Fresh per-account spare-quota evidence uses the existing improvement preview
 rules. A waiting source is retried on the next ordinary cadence, without a
 manual trigger. It creates at most one deduplicated `bug` issue per tick within
-the existing daily cap; ordinary intake owns implementation, review, CI and
+the existing daily cap. Discovery accepts either enabled refinement of bugs or
+matching direct intake labels, with repository exclusions, pauses and refinement
+batches preserved. Closed gates and quota waits leave unrelated sources eligible.
+Ordinary intake owns implementation, review, CI and
 merge-queue landing. Repair tickets cannot recursively generate tickets. Public
 issue bodies contain code paths and synthetic-test acceptance, not private
 audit, receipt, workflow or quota details. A held source can produce a separate
-code repair but its card, unknown starts and execution authority never change.
+code repair. Existing human cards and unknown starts remain fenced.
+
+A new exhausted-node no-progress pause records `repair_allocation_wait` only
+when the funding owner took a previously unpaused, admitted task with no card
+or hold. After the producer's exact repair has accepted-merge and verified-rollout
+evidence, the existing funding owner rechecks the original pause, card, graph,
+attempts, policy, ownership and uncertainty. In one transaction it uses native
+capacity release and prepares one exact-node funding review. It records
+`repair_funding_requested` and retains the resolved machine card and its audit
+history. A changed pause or card, including an operator reassertion, refuses.
+The rollout is new review evidence, not invented source work progress. Only the
+judge can grant another attempt, within the existing cumulative caps; settlement
+rechecks holds, rollout and pause/resume identity. A refusal does not create
+another repair authorization. Legacy cards are never adopted.
 
 The existing scout remains a one-shot, operator-chartered evidence collector;
 learning remains report-only. Neither is repurposed as an execution authority.
@@ -394,7 +407,7 @@ task, missing node binding, or an existing escalation is not recovery proof.
 This does not answer historical cards or re-admit tasks; those remain exact
 autonomy gaps. General learning findings are not automatically promoted.
 
-For an explicit override after deployment, use the existing callable
+For activation after deployment, use the existing callable
 `factory_configure_refill` as a standing human operator. Its explicit
 `target: "problem_issues"` delegates to the same owner, digest and replay ledger
 as the native `factory_configure_problem_issues` control:
@@ -445,12 +458,16 @@ are intermediate outcomes. Keep receipt, run, quota and audit evidence private.
    and evidence-continuation nodes are excluded. The task must retain cumulative
    turn authority and fewer than two prior node-attempt renewals. Verify fresh
    issue ownership and the synchronized label mirror, enabled execution, no
-   pause/cancellation, human/nonrenewable/landing/review hold, unresolved start
+   cancellation, human/nonrenewable/landing/review hold, unresolved start
    or nonterminal run. An escalated receipt is ineligible even if its last work
    attempt failed. For end-to-end repair observation, select the original task
    and node bound by that repair's private `problem_issue_recovery_watch`.
+   For a no-progress pause, require its fresh `repair_allocation_wait` provenance;
+   the funding owner must release it for review without an operator resume.
 3. Let ordinary reconciliation request the existing funding judge's decision.
    It detects the exhausted node automatically; review may refuse or steer.
+   Retry-specific refusals do not suppress ordinary lease/deadline funding or
+   closed-objective handling.
    On approval, verify `funding_granted.node_retry` and the immutable
    `renew_node_attempt` plan revision name the original node, preserve previous
    attempts and add exactly one allowance. Then verify a new actual attempt on
