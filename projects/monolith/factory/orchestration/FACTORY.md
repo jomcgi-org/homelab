@@ -353,5 +353,25 @@ Operational handoff makes "repository work delivered, only live checks remain" a
 
 ## Factory evolution follows delivery authority
 
+### Recurring repair discovery and observed recovery
+
+The existing problem producer owns the automatic loop for stranded workflows
+and recurring blockers. Its reviewed one-time rollout transition enables only
+those two sources and the producer in an already-enabled homelab bug-intake
+lane. It preserves generation, receipts and other policy; dedicated operator
+decisions and later disables win. Fresh surplus quota gates discovery using
+the improvement preview's existing per-grant rules. No model is started by
+the producer. Ordinary intake, exact-head review, CI, merge queue and managed
+rollout retain authority over the separate repair issue.
+
+Repair descriptions expose code paths and synthetic acceptance only; the
+private ledger retains exact source identity. Recursive repair issues refuse.
+A passive check records recovery only after the repair's rollout proof and
+a later successful attempt on the original task/node, with holds and unknown
+starts absent. Missing bindings or historical cards remain unverified; this
+does not re-admit them. The one-shot improvement scout and report-only learning
+pipeline keep their existing contracts. See the activation and limitations in
+[MCP.md](../MCP.md#enable-recovery-problem-issues).
+
 The Conductor pursues continuous self-improvement and delivery velocity toward Joe goals. Factory-owned budgets and workflow policies evolve through their owning interfaces; dollars stay accounting. Root `AGENTS.md` defines standing delivery authority; the [evolution contract](../../../../docs/agents/evolution.md) defines how improvements evaluate and retain.
 (see: /projects/monolith/factory/orchestration/factory_improvements.py)

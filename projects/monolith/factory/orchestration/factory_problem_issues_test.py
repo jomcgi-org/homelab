@@ -19,9 +19,10 @@ from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryControl,
     FactoryReceipt,
+    FactoryStart,
     WorkItem,
 )
-from factory.orchestration.models import SwarmTask
+from factory.orchestration.models import SwarmTask, SwarmNodeRun
 
 START = datetime(2026, 9, 20, 12, tzinfo=timezone.utc)
 
@@ -48,6 +49,8 @@ def db(tmp_path, monkeypatch):
                 WorkItem,
                 FactoryReceipt,
                 FactoryAudit,
+                FactoryStart,
+                SwarmNodeRun,
             )
         ],
     )
@@ -96,6 +99,406 @@ def policy(**overrides):
         **overrides,
     }
     return {"repo": "owner/repo", "problem_issues": block}
+
+
+def autonomous_policy(db, monkeypatch):
+    from factory.orchestration import factory_conductor
+
+    engine, _clock = db
+    selected = {
+        "repo": producer.RECOVERY_REPO,
+        "generation": 7,
+        "task_budget_usd": 10,
+        "turn_budget_usd": 1,
+        "intake": {"enabled": True, "labels": ["bug"]},
+        "problem_issues": {"enabled": False, "max_per_24_hours": 2},
+    }
+    with Session(engine) as session:
+        control = session.get(FactoryControl, "factory")
+        control.policy_json, control.state = dumps(selected), "enabled"
+        source = session.exec(select(FactoryReceipt)).one()
+        source.repo, source.state = producer.RECOVERY_REPO, "admitted"
+        session.commit()
+    monkeypatch.setattr(producer, "_spare_quota", lambda: True)
+    monkeypatch.setattr(
+        factory_conductor,
+        "github_get",
+        lambda repo, path: {
+            "number": 6002,
+            "state": "open",
+            "labels": [],
+            "assignees": [],
+        },
+    )
+    return selected
+
+
+def stored_policy(engine):
+    with Session(engine) as session:
+        return json.loads(session.get(FactoryControl, "factory").policy_json)
+
+
+@pytest.mark.parametrize(
+    "condition", ["spare", "stale", "exhausted", "incomplete", "conserve"]
+)
+def test_repair_quota_uses_existing_fresh_per_grant_surplus_rules(
+    db, monkeypatch, condition
+):
+    from factory.execution import provider_quota
+
+    grant = {
+        "grant": "synthetic",
+        "provider": "codex",
+        "observed": True,
+        "observed_at": START.isoformat(),
+        "status": "allowed",
+        "exhausted": False,
+        "windows": [
+            {
+                "used_percent": 0,
+                "window_minutes": 10080,
+                "resets_at": (START + timedelta(days=2)).isoformat(),
+                "expired": False,
+            }
+        ],
+    }
+    quota = {
+        "available": True,
+        "grants_complete": True,
+        "fetched_at": START.isoformat(),
+        "grants": {"synthetic": grant},
+    }
+    if condition == "stale":
+        grant["observed_at"] = (START - timedelta(hours=1)).isoformat()
+    if condition == "exhausted":
+        grant["exhausted"] = True
+    if condition == "incomplete":
+        quota["grants_complete"] = False
+    if condition == "conserve":
+        grant["pacing"] = {"state": "conserve"}
+    monkeypatch.setattr(provider_quota, "fetch_provider_quota_sync", lambda **kw: quota)
+    assert producer._spare_quota() is (condition == "spare")
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        None,
+        "no_rollout",
+        "before_rollout",
+        "other_node",
+        "unknown",
+        "hold",
+        "card",
+        "binding",
+    ],
+)
+def test_recovery_observation_requires_exact_post_rollout_execution(
+    db, monkeypatch, refusal
+):
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch)
+    state = github(monkeypatch)
+    producer.problem_issues_tick(selected)
+    selected = stored_policy(engine)
+    with Session(engine) as session:
+        source = session.exec(select(FactoryReceipt)).one()
+        item = WorkItem(
+            title="source",
+            state="active",
+            labels=["bug"],
+            source_kind="github",
+            trust="trusted",
+        )
+        session.add(item)
+        session.flush()
+        source.work_item_id = item.id
+        session.add(
+            SwarmNodeRun(
+                task_id="t-1",
+                node_key="implement",
+                attempt=1,
+                status="failed",
+                created_at=START - timedelta(minutes=1),
+                finished_at=START,
+            )
+        )
+        session.commit()
+    add_event(engine, action="recurring_blocker", blocker_key="b" * 64)
+    producer.problem_issues_tick(selected)
+    assert len(state["writes"]) == 1
+    with Session(engine) as session:
+        session.add(
+            SwarmTask(
+                id="repair",
+                task_text="repair",
+                repo=producer.RECOVERY_REPO,
+                base_branch="main",
+                conductor_model="astra",
+            )
+        )
+        session.flush()
+        session.add(
+            FactoryReceipt(
+                repo=producer.RECOVERY_REPO,
+                issue_number=7001,
+                title="repair",
+                body="repair",
+                url="url",
+                actor="test",
+                task_class="bug-fix",
+                task_id="repair",
+                state="succeeded",
+            )
+        )
+        rollout_at = START + timedelta(minutes=5)
+        if refusal != "no_rollout":
+            session.add(
+                FactoryAudit(
+                    actor="factory:landing",
+                    action="rollout_verified",
+                    task_id="repair",
+                    created_at=rollout_at,
+                    detail_json='{"verified":true}',
+                )
+            )
+        session.add(
+            SwarmNodeRun(
+                task_id="t-1",
+                node_key="other" if refusal == "other_node" else "implement",
+                attempt=2,
+                status="succeeded",
+                created_at=START
+                if refusal == "before_rollout"
+                else rollout_at + timedelta(minutes=1),
+                finished_at=rollout_at + timedelta(minutes=2),
+            )
+        )
+        source = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == "t-1")
+        ).one()
+        if refusal == "unknown":
+            session.add(
+                FactoryStart(
+                    task_id="t-1",
+                    start_key="unknown",
+                    actor="test",
+                    model="astra",
+                    max_cost_usd=1,
+                    status="uncertain",
+                )
+            )
+        if refusal == "hold":
+            source.direction_json = '{"landing_hold":{"actor":"joe"}}'
+        if refusal == "card":
+            source.state = "escalated"
+        if refusal == "binding":
+            watch = session.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.action == "problem_issue_recovery_watch"
+                )
+            ).one()
+            detail = json.loads(watch.detail_json)
+            detail["source_run_id"] = None
+            watch.detail_json = dumps(detail)
+        session.commit()
+    producer._observe_recoveries()
+    producer._observe_recoveries()
+    observed = details(audits(engine, "problem_issue_recovery_observed"))
+    assert len(observed) == (1 if refusal is None else 0)
+    if observed:
+        assert observed[0]["node_key"] == "implement"
+        assert observed[0]["repair_task_id"] == "repair"
+
+
+def test_autonomous_rollout_activates_once_without_operator_or_rollover(
+    db, monkeypatch
+):
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch)
+    state = github(monkeypatch)
+    add_event(engine, action="workflow_stranded", workflow="old-private-workflow")
+    producer.problem_issues_tick(selected)
+    current = stored_policy(engine)
+    assert current["problem_issues"]["enabled"] is True
+    assert current["problem_issues"]["sources"] == dict.fromkeys(
+        producer.RECOVERY_SOURCES, True
+    )
+    assert current["intake"] == selected["intake"]
+    assert current["generation"] == selected["generation"]
+    assert current["problem_issues"]["max_per_24_hours"] == 2
+    assert not state["writes"]  # Existing records are watermarked, not replayed.
+    add_event(
+        engine,
+        action="workflow_stranded",
+        workflow="private-workflow",
+        reason="PRIVATE OPERATIONAL DETAIL",
+    )
+    producer.problem_issues_tick(current)
+    producer.problem_issues_tick(current)
+    assert len(state["writes"]) == 1
+    body = state["writes"][0]["body"]
+    assert state["writes"][0]["labels"] == ["bug"]
+    assert "same-task recovery after rollout" in body
+    assert all(
+        secret not in body
+        for secret in ("PRIVATE", "private-workflow", "t-1", "Source audit")
+    )
+    assert len(audits(engine, producer.RECOVERY_ACTIVATION)) == 1
+    # A later operator disable stays off, even without generation rollover.
+    with Session(engine) as session:
+        control = session.get(FactoryControl, "factory")
+        current["problem_issues"]["enabled"] = False
+        control.policy_json = dumps(current)
+        session.commit()
+    producer.problem_issues_tick(current)
+    assert stored_policy(engine) == current
+
+
+@pytest.mark.parametrize(
+    "block", ["paused", "stopped", "intake", "batch", "bug", "repo", "operator", "race"]
+)
+def test_rollout_does_not_expand_authority_or_override_control(db, monkeypatch, block):
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch)
+    with Session(engine) as session:
+        control = session.get(FactoryControl, "factory")
+        if block in {"paused", "stopped"}:
+            control.state = block
+        if block == "intake":
+            selected["intake"]["enabled"] = False
+        if block == "batch":
+            selected["intake"]["refinement_batch"] = [1]
+        if block == "bug":
+            selected["intake"]["labels"] = ["agent-ready"]
+        if block == "repo":
+            selected["repos"] = {producer.RECOVERY_REPO: {"paused": True}}
+        control.policy_json = dumps(selected)
+        if block == "race":
+            control.policy_json = dumps({**selected, "generation": 8})
+        if block == "operator":
+            session.add(
+                FactoryAudit(
+                    actor="joe",
+                    action="problem_issues_control_applied",
+                    detail_json="{}",
+                )
+            )
+        session.commit()
+    before = stored_policy(engine)
+    assert producer._activate_recovery_loop(selected) == before
+    assert stored_policy(engine) == before
+    assert not audits(engine, producer.RECOVERY_ACTIVATION)
+
+
+def test_concurrent_rollout_has_one_transition_and_same_effective_policy(
+    db, monkeypatch
+):
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(producer._activate_recovery_loop, [selected, selected]))
+    assert results[0] == results[1] == stored_policy(engine)
+    assert len(audits(engine, producer.RECOVERY_ACTIVATION)) == 1
+
+
+def test_spare_quota_unlocks_existing_event_without_manual_reset(db, monkeypatch):
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch)
+    state = github(monkeypatch)
+    producer.problem_issues_tick(selected)
+    selected = stored_policy(engine)
+    add_event(engine, action="recurring_blocker", blocker_key="f" * 64)
+    monkeypatch.setattr(producer, "_spare_quota", lambda: False)
+    producer.problem_issues_tick(selected)
+    assert not state["writes"]
+    assert not audits(engine, "problem_issue_source_refused")
+    monkeypatch.setattr(producer, "_spare_quota", lambda: True)
+    producer.problem_issues_tick(selected)
+    assert len(state["writes"]) == 1
+
+
+@pytest.mark.parametrize("cause", ["human", "recursive", "race", "paused_lane"])
+def test_automatic_publication_refuses_ownership_recursion_and_races(
+    db, monkeypatch, cause
+):
+    from factory.orchestration import factory_conductor
+
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch)
+    state = github(monkeypatch)
+    producer.problem_issues_tick(selected)
+    selected = stored_policy(engine)
+    add_event(engine, action="workflow_stranded")
+    if cause == "human":
+        monkeypatch.setattr(
+            factory_conductor,
+            "github_get",
+            lambda *args: {
+                "number": 6002,
+                "state": "open",
+                "labels": [{"name": "human"}],
+            },
+        )
+    elif cause == "recursive":
+        with Session(engine) as session:
+            session.exec(
+                select(FactoryReceipt)
+            ).one().body = "<!-- factory-problem:existing -->"
+            session.commit()
+    else:
+        read = producer.github_list
+
+        def raced(repo, suffix):
+            with Session(engine) as session:
+                control = session.get(FactoryControl, "factory")
+                if cause == "paused_lane":
+                    control.state = "paused"
+                else:
+                    session.exec(
+                        select(FactoryReceipt)
+                    ).one().direction_json = '{"human_handoff":true}'
+                session.commit()
+            return read(repo, suffix)
+
+        monkeypatch.setattr(producer, "github_list", raced)
+    producer.problem_issues_tick(selected)
+    assert not state["writes"]
+
+
+def test_repair_discovery_preserves_unknown_execution_and_existing_card(
+    db, monkeypatch
+):
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch)
+    state = github(monkeypatch)
+    producer.problem_issues_tick(selected)
+    selected = stored_policy(engine)
+    with Session(engine) as session:
+        receipt = session.exec(select(FactoryReceipt)).one()
+        receipt.task_paused, receipt.state = True, "uncertain"
+        receipt.direction_json = '{"landing_hold":{"actor":"joe"}}'
+        receipt.escalation_json = '{"decision_id":"private-card"}'
+        session.add(
+            FactoryStart(
+                task_id="t-1",
+                start_key="unknown",
+                actor="test",
+                model="astra",
+                max_cost_usd=1,
+                status="uncertain",
+            )
+        )
+        session.commit()
+        session.refresh(receipt)
+        before = receipt.model_dump()
+    add_event(engine, action="recurring_blocker", blocker_key="a" * 64)
+    producer.problem_issues_tick(selected)
+    assert len(state["writes"]) == 1  # A separate code repair, NOT source resumption.
+    with Session(engine) as session:
+        assert session.exec(select(FactoryReceipt)).one().model_dump() == before
+        assert session.exec(select(FactoryStart)).one().status == "uncertain"
+    assert not audits(engine, "problem_issue_recovery_observed")
 
 
 @pytest.mark.parametrize("state", ["admitted", "uncertain", "escalated"])
@@ -384,10 +787,14 @@ def test_omission_watermarks_events_before_reenable(db, monkeypatch):
     producer.problem_issues_tick(selected)
     assert state["writes"] == []
 
-    add_event(engine, workflow="after-reenable")
+    source_id = add_event(engine, workflow="after-reenable")
     producer.problem_issues_tick(selected)
     assert len(state["writes"]) == 1
-    assert "after-reenable" in state["writes"][0]["body"]
+    assert (
+        details(audits(engine, "problem_issue_created"))[-1]["source_audit_id"]
+        == source_id
+    )
+    assert "after-reenable" not in state["writes"][0]["body"]
 
 
 def test_first_enabled_tick_watermarks_history_then_creates_source_linked_issue(
@@ -431,7 +838,7 @@ def test_first_enabled_tick_watermarks_history_then_creates_source_linked_issue(
             "workflow_stranded",
             {"workflow": "wf-stranded", "running_version": "v2"},
             "workflow stranded",
-            "Running Version: `v2`",
+            "durable workflow reconciliation",
         ),
         (
             "landing_recovery_exhausted",
@@ -445,7 +852,7 @@ def test_first_enabled_tick_watermarks_history_then_creates_source_linked_issue(
             "recurring_blocker",
             {"blocker_key": "a" * 64, "reason": "no_progress"},
             "repeated blocker without progress",
-            "Reason: `no_progress`",
+            "factory_progress_watchdog.py",
         ),
     ],
 )
@@ -1409,7 +1816,7 @@ def test_scout_review_requires_successful_independent_sessions(improvements):
     service, engine, _clock, _policy, batch, _inventory, _quota, _writes = improvements
     from factory.orchestration.models import SwarmNodeRun
 
-    SwarmNodeRun.__table__.create(engine)
+    SwarmNodeRun.__table__.create(engine, checkfirst=True)
     with Session(engine) as session:
         row = session.exec(select(FactoryReceipt)).first()
         row.repo, row.actor, row.task_class = (

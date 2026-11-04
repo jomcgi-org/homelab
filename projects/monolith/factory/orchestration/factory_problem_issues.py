@@ -39,6 +39,9 @@ ACTOR = "factory:problem-issues"
 WRITE_TIMEOUT_SECONDS = 15
 RESPONSE_LIMIT_BYTES = 1_000_000
 MARKER_PREFIX = "factory-problem"
+RECOVERY_SOURCES = frozenset({"recurring_blocker", "workflow_stranded"})
+RECOVERY_ACTIVATION = "problem_issue_recovery_loop_activated"
+RECOVERY_REPO = "jomcgi-org/homelab"
 _TERMINAL_ACTIONS = (
     "problem_issue_created",
     "problem_issue_reconciled",
@@ -53,6 +56,284 @@ _EVENT_ACTIONS = {
     "landing_recovery_exhausted": "merge_arm_refused",
     "recurring_blocker": "recurring_blocker",
 }
+
+
+def _delivery_enabled(policy: dict) -> bool:
+    from factory.orchestration import factory_controls as controls
+
+    if policy.get("repo") != RECOVERY_REPO:
+        return False
+    intake = controls.intake_policy(policy)
+    if not intake["enabled"] or intake["refinement_batch"]:
+        return False
+    entry = controls.repo_entry(policy, RECOVERY_REPO)
+    return bool(
+        entry["enabled"]
+        and not entry["paused"]
+        and "bug" in entry["labels"]
+        and "bug" not in entry["exclude_labels"]
+    )
+
+
+def _activate_recovery_loop(policy: dict) -> dict:
+    """One reviewed rollout transition, not a recurring override of controls.
+
+    Only the already-authorized homelab bug lane qualifies. A dedicated
+    operator decision (including a disable), or a previous rollout transition,
+    wins forever. No receipt, generation, intake or landing policy is changed.
+    """
+    from core.jsonio import dumps
+
+    if not _delivery_enabled(policy):
+        return policy
+    with _locked_session() as (db, control):
+        live = json.loads(control.policy_json or "{}")
+        if live != policy:
+            return live
+        if control.state != "enabled":
+            return policy
+        if (
+            db.exec(
+                select(FactoryAudit.id)
+                .where(
+                    FactoryAudit.action.in_(
+                        (RECOVERY_ACTIVATION, "problem_issues_control_applied")
+                    )
+                )
+                .limit(1)
+            ).first()
+            is not None
+        ):
+            return policy
+        before = live.get("problem_issues", {})
+        live["problem_issues"] = {
+            **before,
+            "enabled": True,
+            "sources": {
+                **before.get("sources", {}),
+                **dict.fromkeys(RECOVERY_SOURCES, True),
+            },
+        }
+        problem_issues_policy(live)  # Validate before committing the upgrade.
+        control.policy_json = dumps(live)
+        control.version += 1
+        control.actor, control.updated_at = ACTOR, _now()
+        _audit(
+            db,
+            ACTOR,
+            RECOVERY_ACTIVATION,
+            before=before,
+            after=live["problem_issues"],
+            generation=live.get("generation"),
+            version=control.version,
+        )
+        return live
+
+
+def _spare_quota() -> bool:
+    """Reuse improvement's fresh per-grant surplus evidence, not a headline.
+
+    This authorizes issue discovery only. Normal admission and provider routing
+    still own every paid start; no scout subscription or execution fence changes.
+    """
+    from factory.execution.provider_quota import fetch_provider_quota_sync
+    from factory.orchestration.factory_improvement_preview import (
+        PreviewPolicy,
+        quota_decisions,
+    )
+
+    return any(
+        row["eligible"]
+        for row in quota_decisions(
+            fetch_provider_quota_sync(force=True), now=_now(), policy=PreviewPolicy()
+        )
+    )
+
+
+def _recovery_owner(db, row):
+    """Bind local ownership without interpreting a card as resume authority."""
+    from factory.orchestration.factory_models import FactoryControl, WorkItem
+
+    receipt = _receipt(db, row.task_id)
+    if receipt is None:
+        return None
+    item = db.get(WorkItem, receipt.work_item_id) if receipt.work_item_id else None
+    labels = set(item.labels) if item else set()
+    if (
+        receipt.state in {"succeeded", "cancelled"}
+        or "human" in labels
+        or f"{MARKER_PREFIX}:" in (receipt.body or "")
+    ):
+        return None
+    control = db.get(FactoryControl, "factory")
+    if control is None or control.state != "enabled":
+        return None
+    return {
+        **receipt.model_dump(mode="json"),
+        "control_version": control.version,
+        "label_mirror": item.model_dump(mode="json") if item else None,
+    }
+
+
+def _recovery_context(policy, row):
+    from factory.orchestration.factory_conductor import github_get
+
+    with _read_session() as db:
+        owner = _recovery_owner(db, row)
+    if owner is None or owner["repo"] != RECOVERY_REPO:
+        return None
+    issue = github_get(owner["repo"], f"issues/{owner['issue_number']}")
+    labels = {x["name"].lower() for x in issue.get("labels", [])}
+    if (
+        issue.get("number") != owner["issue_number"]
+        or issue.get("state") != "open"
+        or issue.get("assignees")
+        or labels & {"human", "security-finding", "security"}
+        or f"{MARKER_PREFIX}:" in (issue.get("body") or "")
+    ):
+        return None
+    return owner
+
+
+def _watch_recovery(db, row, source, fingerprint):
+    """Retain an exact private target; absent bindings cannot prove recovery."""
+    from factory.orchestration.models import SwarmNodeRun
+
+    detail = json.loads(row.detail_json)
+    node_key = detail.get("node_key")
+    run = (
+        db.exec(
+            select(SwarmNodeRun)
+            .where(
+                SwarmNodeRun.task_id == row.task_id,
+                SwarmNodeRun.node_key == node_key,
+                SwarmNodeRun.created_at <= row.created_at,
+            )
+            .order_by(SwarmNodeRun.id.desc())
+            .limit(1)
+        ).first()
+        if node_key
+        else None
+    )
+    if detail.get("source_run_id") is not None and (
+        run is None or run.id != detail["source_run_id"]
+    ):
+        run = None
+    _audit(
+        db,
+        ACTOR,
+        "problem_issue_recovery_watch",
+        task_id=row.task_id,
+        **_detail(
+            row,
+            source,
+            fingerprint,
+            node_key=node_key,
+            source_run_id=run.id if run else None,
+        ),
+    )
+
+
+def _observe_recoveries():
+    """Observe, never resume: merged/deployed repair is not runtime recovery.
+
+    A bounded pending set reuses the producer ledger. Exact successful node
+    execution must follow the repair's existing rollout proof. Historical
+    cards, holds, missing bindings and unknown starts stay unverified.
+    """
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_funding import routine_hold
+    from factory.orchestration.models import SwarmNodeRun
+
+    with _locked_session() as (db, _control):
+        watches = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.action == "problem_issue_recovery_watch",
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(50)
+        ).all()
+        if not watches:
+            return
+        unknown = controls.unresolved_start_task_ids(db)
+        for watch in watches:
+            detail = json.loads(watch.detail_json)
+            fingerprint = detail["fingerprint"]
+            if _last_matching(
+                db, fingerprint, ("problem_issue_recovery_observed",), watch.task_id
+            ):
+                continue
+            source = _receipt(db, watch.task_id)
+            if (
+                source is None
+                or source.task_paused
+                or source.cancellation_requested
+                or source.state in {"escalated", "cancelled", "uncertain"}
+                or source.task_id in unknown
+                or not detail.get("source_run_id")
+                or routine_hold(db, source, source.task_id)
+            ):
+                continue
+            created = _last_matching(
+                db,
+                fingerprint,
+                ("problem_issue_created", "problem_issue_reconciled"),
+                watch.task_id,
+            )
+            if created is None:
+                continue
+            result = json.loads(created.detail_json)
+            numbers = result.get("issue_numbers") or [result.get("issue_number")]
+            repairs = db.exec(
+                select(FactoryReceipt).where(
+                    FactoryReceipt.repo == source.repo,
+                    FactoryReceipt.issue_number.in_(
+                        [n for n in numbers if type(n) is int]
+                    ),
+                    FactoryReceipt.task_class == "bug-fix",
+                    FactoryReceipt.state == "succeeded",
+                )
+            ).all()
+            for repair in repairs:
+                rollout = db.exec(
+                    select(FactoryAudit)
+                    .where(
+                        FactoryAudit.task_id == repair.task_id,
+                        FactoryAudit.action == "rollout_verified",
+                    )
+                    .order_by(FactoryAudit.id.desc())
+                    .limit(1)
+                ).first()
+                if rollout is None:
+                    continue
+                recovered = db.exec(
+                    select(SwarmNodeRun)
+                    .where(
+                        SwarmNodeRun.task_id == watch.task_id,
+                        SwarmNodeRun.node_key == detail["node_key"],
+                        SwarmNodeRun.id > detail["source_run_id"],
+                        SwarmNodeRun.status == "succeeded",
+                        SwarmNodeRun.created_at > rollout.created_at,
+                        SwarmNodeRun.finished_at.is_not(None),
+                    )
+                    .order_by(SwarmNodeRun.id)
+                    .limit(1)
+                ).first()
+                if recovered is not None:
+                    _audit(
+                        db,
+                        ACTOR,
+                        "problem_issue_recovery_observed",
+                        task_id=watch.task_id,
+                        fingerprint=fingerprint,
+                        repair_task_id=repair.task_id,
+                        rollout_audit_id=rollout.id,
+                        node_key=detail["node_key"],
+                        source_run_id=detail["source_run_id"],
+                        recovered_run_id=recovered.id,
+                    )
+                    break
 
 
 def configure(
@@ -454,28 +735,40 @@ def _issue(
         lines.append(
             f"- [Pull request #{pr_number}](https://github.com/{repo}/pull/{pr_number})"
         )
+    paths = {
+        "recurring_blocker": "factory_funding.py and factory_progress_watchdog.py",
+        "workflow_stranded": "factory_conductor.py and durable workflow reconciliation",
+        "node_stalled": "factory_conductor.py and node timeout supervision",
+        "landing_recovery_exhausted": "factory_landing.py and exact-head recovery",
+    }
     lines.extend(
         [
             "",
-            "## Evidence",
+            "## Scoped repair",
             "",
-            f"- Factory task: `{row.task_id}`",
-            f"- Source audit: `{row.id}`",
+            "Inspect `projects/monolith/factory/orchestration/`: "
+            + paths[source]
+            + ".",
+            "Reproduce the missing recovery transition with synthetic evidence and "
+            "fix it in the existing owner. Check existing issues and PRs before "
+            "implementation; reuse an existing repair rather than competing with it.",
+            "Private receipts, audit details, invocations and quota observations "
+            "stay in private factory records. Do not copy them into GitHub.",
+            "",
+            "## Acceptance",
+            "",
+            "- Regression tests prove eligible recovery and refusal on human holds, "
+            "unknown starts, stale evidence and concurrent changes.",
+            "- Independent exact-head review and required CI precede normal merge "
+            "queue landing; verify the managed rollout through the existing owner.",
+            "- Observe an eligible same-task recovery after rollout. A merged repair "
+            "alone is not recovery evidence. Historical cards and explicit holds "
+            "remain with their owners; report unsupported recovery rather than "
+            "clearing them or fabricating success.",
+            "- Do not reset retry history, bypass admission or create another "
+            "recovery engine. Repair tickets must not recursively produce repairs.",
         ]
     )
-    for key in (
-        "workflow_id",
-        "node_key",
-        "idle_seconds",
-        "turn_timeout_seconds",
-        "workflow_version",
-        "running_version",
-        "pr_number",
-        "reason",
-    ):
-        value = detail.get(key)
-        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
-            lines.append(f"- {key.replace('_', ' ').title()}: `{str(value)[:500]}`")
     lines.extend(
         [
             "",
@@ -658,6 +951,9 @@ def _next_event(block: dict, observed: dict):
 
 def problem_issues_tick(policy: dict) -> None:
     """Reconcile at most one exact source event and create at most one issue."""
+    policy = _activate_recovery_loop(policy)
+    if policy.get("repo") == RECOVERY_REPO:
+        _observe_recoveries()
     block = problem_issues_policy(policy)
     # Old policies omit the block. They remain inert for new source events, but
     # an intent recorded before an operator removed the block still needs its
@@ -705,6 +1001,34 @@ def problem_issues_tick(policy: dict) -> None:
             reason="missing_exact_event_identity",
         )
         return
+    recovery_owner = None
+    if source in RECOVERY_SOURCES and policy.get("repo") == RECOVERY_REPO:
+        # A held source may still need a code fix, but this producer never
+        # decides that a person's card or unknown invocation is safe to retry.
+        # Refusal waits without consuming the event, so fresh quota can unlock
+        # discovery without a reset, manual trigger or generation rollover.
+        if not _delivery_enabled(policy) or not _spare_quota():
+            return
+        recovery_owner = _recovery_context(policy, row)
+        if recovery_owner is None:
+            from factory.orchestration.factory_models import FactoryControl
+
+            with _read_session() as db:
+                control = db.get(FactoryControl, "factory")
+                if (
+                    control is None
+                    or control.state != "enabled"
+                    or json.loads(control.policy_json or "{}") != policy
+                ):
+                    return
+            _record(
+                "problem_issue_source_refused",
+                row,
+                source,
+                fingerprint,
+                reason="source_owned_or_recursive_or_unavailable",
+            )
+            return
     with _read_session() as db:
         completed = _last_matching(db, fingerprint, _TERMINAL_ACTIONS, row.task_id)
         delayed = _last_matching(
@@ -826,6 +1150,13 @@ def problem_issues_tick(policy: dict) -> None:
         issue = _issue(source, row, source_detail, repo, issue_number, marker)
 
     with _locked_session() as (db, _control):
+        if recovery_owner is not None:
+            if (
+                _control.state != "enabled"
+                or json.loads(_control.policy_json or "{}") != policy
+                or _recovery_owner(db, row) != recovery_owner
+            ):
+                return
         if source == "quota_improvement":
             from factory.orchestration.factory_improvement_preview import digest
             from factory.orchestration.factory_improvements import (
@@ -900,6 +1231,8 @@ def problem_issues_tick(policy: dict) -> None:
                 repo=repo,
             ),
         )
+        if recovery_owner is not None:
+            _watch_recovery(db, row, source, fingerprint)
 
     payload = {
         **issue,

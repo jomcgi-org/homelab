@@ -742,6 +742,16 @@ stop supervision; a stranded state otherwise needs the control-plane root
 cause on #6091 (#6256).
 
 
+**Why.** The recurring repair loop belongs to the existing problem producer,
+not the one-shot improvement scout or report-only learning pipeline (#7583).
+A reviewed, once-only rollout transition enables its two recovery sources in
+an already-authorized homelab bug lane; it cannot widen intake or repeatedly
+override operator disables. The improvement quota rules gate discovery and
+ordinary delivery owns review, CI, merge and rollout. Private exact-node
+observation distinguishes deployed repair from actual recovery, without
+resuming historical cards or clearing uncertainty. Public tickets carry only
+scoped code repairs and synthetic acceptance criteria.
+
 ## 5. Chat
 
 The Discord bot handles direct messages, mentions, replies, ambient engagement,

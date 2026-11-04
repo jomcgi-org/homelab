@@ -362,7 +362,37 @@ writes, or a previously denied HTTP path.
 
 ### Enable recovery problem issues
 
-After the reviewed code is deployed, use the existing callable
+The ordinary producer now activates recovery automatically on its first tick
+after this rollout **only** for an enabled homelab lane whose existing intake
+accepts `bug`, outside a refinement batch. It records
+`problem_issue_recovery_loop_activated`, advances control version once, and
+changes only the master switch plus `recurring_blocker` and `workflow_stranded`.
+Generation, receipts, other sources, budgets, intake and landing remain unchanged.
+A prior dedicated operator decision prevents this rollout transition; after
+the transition, later disables remain off. The producer does not repeatedly
+enforce its switches. Disabled/restricted intake is never widened.
+
+Fresh per-account spare-quota evidence uses the existing improvement preview
+rules. A waiting source is retried on the next ordinary cadence, without a
+manual trigger. It creates at most one deduplicated `bug` issue per tick within
+the existing daily cap; ordinary intake owns implementation, review, CI and
+merge-queue landing. Repair tickets cannot recursively generate tickets. Public
+issue bodies contain code paths and synthetic-test acceptance, not private
+audit, receipt, workflow or quota details. A held source can produce a separate
+code repair but its card, unknown starts and execution authority never change.
+
+The existing scout remains a one-shot, operator-chartered evidence collector;
+learning remains report-only. Neither is repurposed as an execution authority.
+The recurring event producer is the autonomous repair trigger. Its private
+`problem_issue_recovery_watch` ledger observes at most 50 recent repairs per
+tick. `problem_issue_recovery_observed` requires the repair delivery's recorded
+rollout proof followed by a new successful run of the original task's exact
+node, with no source hold or unknown start. A merge alone, another node or
+task, missing node binding, or an existing escalation is not recovery proof.
+This does not answer historical cards or re-admit tasks; those remain exact
+autonomy gaps. General learning findings are not automatically promoted.
+
+For an explicit override after deployment, use the existing callable
 `factory_configure_refill` as a standing human operator. Its explicit
 `target: "problem_issues"` delegates to the same owner, digest and replay ledger
 as the native `factory_configure_problem_issues` control:

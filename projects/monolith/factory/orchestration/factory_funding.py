@@ -636,7 +636,7 @@ def request(task, reason, *, recover=False, progress=False, routine=None):
             return False
         blocker = funding_blocker(db, task["id"], runs)
         if blocker and (routine or retry):
-            _record_blocker(db, row, task["id"], blocker)
+            _record_blocker(db, row, task["id"], blocker, retry=retry)
             if routine:
                 return False
         if blocker:
@@ -941,7 +941,7 @@ def blocker_key(repo, issue_number, code):
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _record_blocker(db, row, task_id, blocker):
+def _record_blocker(db, row, task_id, blocker, *, retry=None):
     """One repair signal per blocker; repair issues never recurse."""
     if REPAIR_MARKER in (row.body or ""):
         return
@@ -962,6 +962,8 @@ def _record_blocker(db, row, task_id, blocker):
         blocker_key=key,
         reason=blocker["code"],
         grant_id=blocker.get("grant_id"),
+        node_key=retry.get("node_key") if retry else None,
+        source_run_id=retry.get("source_run_id") if retry else None,
     )
 
 
