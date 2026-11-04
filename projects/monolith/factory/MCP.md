@@ -62,6 +62,13 @@ unless another owner supplies evidence. Work-item context includes current open
 blockers, the GitHub source timestamp and bounded correction history, without
 turning those records into mutation authority.
 
+Task detail's `start_diagnostics` reports the current `can_start` control gate,
+effective deadline, and latest funding request, settlement and grant identities.
+The funding projection retains pending-request relationships, cooldown and
+operator/recovery fences while excluding private plans and refusal prose.
+These are current observations, with no evidence that a reconciliation tick ran.
+Malformed evidence produces unknown diagnostics.
+
 `factory_diagnostics(kind="session_dispatch", session_id=..., seq=...)` reads
 exact turn queue, permit and fence metadata. The compatibility name
 `factory_session_dispatch_diagnostics(session_id=..., seq=...)` reaches that
@@ -69,6 +76,13 @@ same owner for connected callers whose tool catalog predates consolidation.
 Both require a standing human operator and strict positive integer identities.
 Neither contacts a guest, changes execution or authorizes recovery; recorded
 cessation metadata is not independent fresh cessation proof.
+
+Session dispatch also reports `factory_gate` after matching the session's
+canonical task, node, attempt and workflow against its durable run. A missing
+or conflicting identity remains unknown. This is the same `can_start` subgate
+the executor checks before claiming a pending message. Transport, quota and
+physical capacity gates remain unevaluated. A positive subgate grants no
+dispatch or recovery authority. These reads never claim or alter queued turns.
 
 If a cached caller still cannot invoke that restored name, the established
 `factory_status(target="session_dispatch", session_id=..., seq=...)` reaches

@@ -28,6 +28,7 @@ def latest(db, task_id, action):
         select(FactoryAudit)
         .where(FactoryAudit.task_id == task_id, funding_audit_filter(action))
         .order_by(FactoryAudit.id.desc())
+        .limit(1)
     ).first()
     return None if row is None else {**json.loads(row.detail_json), "audit_id": row.id}
 
