@@ -336,7 +336,7 @@ refused model retained separately if truncated. No prompts or credentials appear
 FastMCP registry: `factory_configure_refill`, `factory_amend_policy`,
 `factory_reconcile`, `factory_continue_evidence` and `factory_configure_problem_issues`.
 Each includes registration, schema and description hashes, bounded argument
-names and offered operations/models. It is operator-only, read-only and reports
+names and offered operations/models/targets. It is operator-only, read-only and reports
 `caller_visibility=not_observed`. It does not return the whole tool catalogue.
 
 `factory_task_detail.nodes[].attempts[].run_id` identifies the exact persisted
@@ -362,14 +362,20 @@ writes, or a previously denied HTTP path.
 
 ### Enable recovery problem issues
 
-After the reviewed code is deployed, use the native
-`factory_configure_problem_issues` control as a standing human operator:
+After the reviewed code is deployed, use the existing callable
+`factory_configure_refill` as a standing human operator. Its explicit
+`target: "problem_issues"` delegates to the same owner, digest and replay ledger
+as the native `factory_configure_problem_issues` control:
 
-1. Read `factory_status.version` and verify the control's native registration.
-2. Call with `operation: "preview"`, `enabled: true`,
+1. Read `factory_status.version`. Confirm `control_catalog` advertises the
+   `problem_issues` target and its source arguments on `factory_configure_refill`.
+2. Call with `operation: "preview"`, `target: "problem_issues"`, `enabled: true`,
    `recurring_blocker: true`, `workflow_stranded: true`, that `expected_version`
-   and a `reason`. Inspect `before`, `after` and `effective_sources`.
-3. Call with `operation: "apply"`, the identical switches/version/reason,
+   and a `reason`. Supply `model: "astra"` and `hourly: false` as compatibility
+   placeholders; neither changes refill or learning settings for this target.
+   Omit `min_new_issues` and leave `reset_breaker: false`. Mixed-target changes
+   are refused. Inspect `before`, `after` and `effective_sources`.
+3. Call with `operation: "apply"`, the identical target/placeholders/switches/version/reason,
    `expected_preview_sha256` copied from `preview_sha256`, and a new
    `request_key`. Retry identical arguments and key after a lost response.
 4. Read status again. The next ordinary producer tick watermarks newly enabled
@@ -384,8 +390,22 @@ switch, preview/apply its false value through the same operation. The control
 does not replay historical signals or recover an existing escalated receipt.
 Pass the version as a JSON integer. Strings, fractional values and booleans
 are refused by the shared exact-integer contract.
-If native registration exists but the client lacks the tool, follow the caller
-discovery procedure above; legacy `configure` is not a substitute.
+The dedicated native control remains supported with the same arguments except
+`target`, `model` and `hourly`. This existing-name adapter avoids requiring a
+new tool name in a cached caller registry. If the caller also rejects its new
+arguments, supported schema discovery must still be refreshed; server catalog
+evidence alone cannot change a client's schema. Legacy `configure` is not a substitute.
+
+### Recorded landing refusals
+
+Each compact status row includes `landing_refusal`: the latest recorded
+`merge_arm_refused` reason, PR number, audit ID and timestamp. A newer recovery
+request, arming or merge observation supersedes it. This is a bounded private
+audit projection, not a live GitHub or queue query. Null does not prove landing
+eligibility or queue membership. A `merged_delivery_identity_mismatch` means
+the existing landing owner refused acceptance; inspect its approved delivery
+identity and the current PR through the owning review/landing workflow. Status
+does not rewrite the approved head, accept a different merge or clear a hold.
 
 ### Separate restriction, continuation and refill activation
 
