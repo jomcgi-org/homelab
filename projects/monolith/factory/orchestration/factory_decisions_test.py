@@ -3246,7 +3246,10 @@ def test_routine_pause_is_answered_by_the_judge_on_the_same_task(db, routine):
     [
         ({}, "false"),
         ({"gate": {"kind": "parameter"}}, "true"),
-        ({"options": [routine_pause()["options"][1], routine_pause()["options"][0]]}, "true"),
+        (
+            {"options": [routine_pause()["options"][1], routine_pause()["options"][0]]},
+            "true",
+        ),
         ({"question": "Rotate the deploy token before continuing?"}, "true"),
         ({"question": "Grant the agent access to the cluster?"}, "true"),
         ({"reason": "This would delete the old bucket."}, "true"),
@@ -3274,7 +3277,10 @@ def test_held_issue_labels_keep_the_card(db, routine, label):
 
 @pytest.mark.parametrize(
     "direction",
-    [{"nonrenewable_recovery": {"actor": "operator"}}, {"landing_hold": {"actor": "op"}}],
+    [
+        {"nonrenewable_recovery": {"actor": "operator"}},
+        {"landing_hold": {"actor": "op"}},
+    ],
 )
 def test_shared_holds_keep_the_card_without_mutating_the_receipt(
     db, routine, direction
@@ -3314,7 +3320,9 @@ def test_paused_or_stopped_lane_never_routes_a_pause(db, routine, control):
 def test_repeat_without_new_work_is_one_repair_signal_and_a_card(db, routine):
     task, policy, state = routine
     pause(task, policy, routine_pause())
-    settle_funding_request(task, _pending(task), funding_decision(assessment=ASSESSMENT))
+    settle_funding_request(
+        task, _pending(task), funding_decision(assessment=ASSESSMENT)
+    )
     assert _grant(task) is not None
 
     # The same question again, reworded, with no new artifact or head.
@@ -3341,7 +3349,9 @@ def test_repair_issue_stall_never_spawns_another_repair(db, routine):
         session.add(row)
         session.commit()
     pause(task, policy, routine_pause())
-    settle_funding_request(task, _pending(task), funding_decision(assessment=ASSESSMENT))
+    settle_funding_request(
+        task, _pending(task), funding_decision(assessment=ASSESSMENT)
+    )
     pause(task, policy, routine_pause(), 2)
     assert len(state["cards"]) == 1
     assert audits_of(db, funding.BLOCKER) == []
