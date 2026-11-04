@@ -62,6 +62,14 @@ unless another owner supplies evidence. Work-item context includes current open
 blockers, the GitHub source timestamp and bounded correction history, without
 turning those records into mutation authority.
 
+`factory_diagnostics(kind="session_dispatch", session_id=..., seq=...)` reads
+exact turn queue, permit and fence metadata. The compatibility name
+`factory_session_dispatch_diagnostics(session_id=..., seq=...)` reaches that
+same owner for connected callers whose tool catalog predates consolidation.
+Both require a standing human operator and strict positive integer identities.
+Neither contacts a guest, changes execution or authorizes recovery; recorded
+cessation metadata is not independent fresh cessation proof.
+
 ## Apply controls
 
 Call `factory_control` with an explicit action, a new `request_key`, and
