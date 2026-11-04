@@ -3665,7 +3665,30 @@ def test_retry_of_a_routed_review_keeps_provenance_and_its_locked_checks(
         conductor.graph.node_runs(task["id"]),
         controls.can_start(task["id"]),
     )
-    funding.reconcile(*args)
+    assert funding.reconcile(*args) is True
+    # No second paid review, and the held question reaches a person.
+    assert len(audits_of(db, "funding_review_requested")) == 1
+    assert state["cards"] == [routine_pause()["question"]]
+
+
+def test_transient_refusal_of_a_routed_retry_only_retries(db, routine, monkeypatch):
+    from datetime import timedelta
+
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    settle_funding_request(task, _pending(task), {"action": "nonsense"})
+    clock = {"now": controls._now() + timedelta(minutes=6)}
+    monkeypatch.setattr(controls, "_now", lambda: clock["now"])
+    monkeypatch.setattr(
+        controls, "execution_capacity_available", lambda *_args, **_kwargs: False
+    )
+    funding.reconcile(
+        conductor._task(task["id"]),
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    assert state["cards"] == []
     assert len(audits_of(db, "funding_review_requested")) == 1
 
 
