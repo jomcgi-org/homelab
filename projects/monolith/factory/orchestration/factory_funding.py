@@ -63,8 +63,7 @@ SCHEMA = {
         "action": {"enum": ["continue", "steer", "stop", ESCALATE]},
         "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
         "next_plan": {"type": "string", "minLength": 1, "maxLength": 4000},
-        # No fixed dollar cap: a larger proposal needs operator approval,
-        # rather than being rejected as a malformed judge artifact.
+        # No fixed dollar cap: a larger proposal is accepted as a valid artifact.
         "task_budget_usd": {"type": "number", "minimum": 0},
         "additional_work_turns": {"type": "integer", "minimum": 0, "maximum": 20},
         "lease_minutes": {"type": "integer", "minimum": 0, "maximum": 30},
@@ -162,8 +161,9 @@ def decide(
     with an escalation grants no work. Callers own evidence revalidation and
     persist the result under the task and control locks. An operator-authorized
     continuation supplies its exact-head review and prior lease instead of a
-    second judge. Dollar accounting
-    cannot enlarge the approved budget; a proposed amendment remains explicit.
+    second judge. A proposed budget above the approved
+    one is granted unless the policy carries an explicit operator
+    ``task_budget_binding`` restriction, which keeps the amendment explicit.
     """
     if reservation is not None:
         return _reservation_decision(decision, reservation)
@@ -232,6 +232,10 @@ def decide(
     if not math.isfinite(proposed_budget):
         raise ValueError("extension budget is not finite")
     if proposed_budget > policy["task_budget_usd"]:
+        if policy.get("task_budget_binding") is not True:
+            # No standing dollar cap: the figure is accounting. Record the
+            # raised ceiling and keep the task moving.
+            return {**result, "work_turns": turns, "task_budget_usd": proposed_budget}
         return {
             **result,
             "action": "steer",
@@ -667,9 +671,9 @@ def request(task, reason, *, recover=False, progress=False):
                 "to hand the decision to the operator. Policy caps any continue "
                 f"or steer at {merit['ceiling']['turn_ceiling']} total work "
                 "turns: a higher figure is reduced to that cap. task_budget_usd "
-                "has no fixed cap, but an increase over the current approved "
-                "budget requires an operator amendment. A recorded dollar "
-                "deficit raises the proposal, not its authority. Merit evidence "
+                "has no fixed cap and is recorded as accounting; only an explicit "
+                "operator budget restriction makes an increase wait for an "
+                "amendment. Merit evidence "
                 "(server-read, untrusted):\n"
                 + json.dumps(merit["evidence"], default=str)
             )

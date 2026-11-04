@@ -50,9 +50,12 @@ REPAIR_MARKER = "factory-problem:"
 HUMAN_OWNED_LABELS = frozenset({"human", "security-finding", "security"})
 # Text that routes a card to a person: access and secrets, destructive scope.
 SENSITIVE = re.compile(
-    r"secret|credential|token|password|api[ -]?key|security|vulnerab|exploit"
-    r"|rbac|\biam\b|1password|oauth|destructive|\bdelete|\bdrop\b|force[- ]push"
-    r"|rm -rf|truncate|\bwipe|\bpurge|human[- ]owned|\bdo not (merge|deploy)",
+    r"secret|credential|token|password|api[ -]?key|private key|\bssh\b|\bcert"
+    r"|kubeconfig|cluster-admin|security|vulnerab|exploit|rbac|\biam\b"
+    r"|1password|oauth|\bauth|\baccess|privileg|bypass|destructive|delet|destroy"
+    r"|\bremov|\bdrop|wip(e|ing)|purg|truncat|overwrit|irreversib|force[- ]push"
+    r"|reset --hard|rm -rf|disabl\w* (the )?(review|ci|gate|check)"
+    r"|human[- ]owned|\bdo not (merge|deploy)",
     re.IGNORECASE,
 )
 
@@ -84,6 +87,7 @@ def _sensitive(escalation: dict, option: dict) -> bool:
         for part in (
             escalation.get("question"),
             escalation.get("reason"),
+            escalation.get("summary"),
             option.get("label"),
             json.dumps(option.get("detail") or {}),
         )
@@ -233,6 +237,10 @@ def _consider(row_id: int, now) -> str:
     )
     if result.get("state") == "refused":
         return f"refused:{result.get('reason')}"
+    if result.get("state") != "completed":
+        # Accepted or outcome-unknown: the request fence owns the outcome.
+        # It is neither counted as an answer nor a repeated blocker.
+        return "unconfirmed"
     with controls._locked_session() as (db, _control):
         controls._audit(
             db,

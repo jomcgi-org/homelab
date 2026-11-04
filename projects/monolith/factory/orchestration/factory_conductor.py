@@ -8892,7 +8892,8 @@ def _tick(checkpoint) -> None:
     try:
         from factory.orchestration import factory_auto_recommendation
 
-        factory_auto_recommendation.tick()
+        if snapshot["state"] == "enabled":
+            factory_auto_recommendation.tick()
     except Exception:  # noqa: BLE001 - defaulting cards cannot stop reconciliation
         logger.exception("factory auto-recommendation failed")
     active = list(snapshot["active_tasks"])

@@ -1211,6 +1211,34 @@ def test_scout_context_excludes_only_exact_durable_owner(improvements):
     assert [owner["issue_number"] for owner in current["owners"]] == [999]
 
 
+@pytest.mark.parametrize(
+    ("state", "paused", "complete"),
+    [
+        ("escalated", False, True),
+        ("uncertain", False, True),
+        ("admitted", True, True),
+        ("admitted", False, False),
+        ("landing", False, False),
+    ],
+)
+def test_stalled_owned_work_does_not_block_repair_preparation_or_change(
+    improvements, state, paused, complete
+):
+    service, engine, _clock, _policy, _batch, _inventory, _quota, _writes = improvements
+    with Session(engine) as session:
+        row = session.exec(select(FactoryReceipt)).first()
+        row.repo, row.state, row.task_paused = service.REPO, state, paused
+        session.commit()
+        receipt_id = row.id
+    current = service.context()
+    assert current["intake_complete"] is complete
+    # The held or uncertain work stays visible as an owner and is not mutated.
+    assert [o["receipt_id"] for o in current["owners"]] == [receipt_id]
+    with Session(engine) as session:
+        after = session.get(FactoryReceipt, receipt_id)
+        assert (after.state, after.task_paused) == (state, paused)
+
+
 def test_scout_review_requires_successful_independent_sessions(improvements):
     service, engine, _clock, _policy, batch, _inventory, _quota, _writes = improvements
     from factory.orchestration.models import SwarmNodeRun

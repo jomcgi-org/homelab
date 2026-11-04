@@ -137,6 +137,14 @@ def _database_context(db, control, *, scout_receipt_id=None):
         }
         for row in active
     ]
+    # Work that is waiting on a person, a pause or an unknown execution outcome
+    # is not delivery in progress. Repair preparation is read-only and must not
+    # wait on it; the work itself stays owned and untouched in `owners`.
+    progressing = [
+        row
+        for row in active
+        if row.state in ("queued", "admitted", "landing") and not row.task_paused
+    ]
     sweep = db.exec(
         select(FactoryAudit)
         .where(FactoryAudit.action == "intake_evaluated")
@@ -155,7 +163,7 @@ def _database_context(db, control, *, scout_receipt_id=None):
             and detail.get("generation") == policy.get("generation")
             and counts.get("delivery") == 0
             and counts.get("advisory") == 0
-            and not owners
+            and not progressing
         )
     return {
         "control_version": control.version,

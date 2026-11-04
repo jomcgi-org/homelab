@@ -1960,7 +1960,7 @@ def test_a_dismiss_repeated_returns_the_first_one_rather_than_a_second(db, githu
     assert audit_actions(db).count("decision_applied") == 1
 
 
-def envelope_task(*, max_turns=6, max_attempts=1):
+def envelope_task(*, max_turns=6, max_attempts=1, binding=True):
     policy = {
         "repo": REPO,
         "issue_numbers": [ISSUE],
@@ -1978,6 +1978,8 @@ def envelope_task(*, max_turns=6, max_attempts=1):
         "max_attempts": max_attempts,
         "intake": {"enabled": True, "refine_enabled": True},
     }
+    if binding:
+        policy["task_budget_binding"] = True
     assert controls.set_control("configure", "operator", policy=policy)["ok"]
     assert controls.set_control("enable", "operator")["ok"]
     receive_issue(
