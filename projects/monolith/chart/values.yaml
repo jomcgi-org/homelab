@@ -1730,7 +1730,6 @@ swarm:
   # Every judge grant is capped at the pinned task_budget_usd plus
   # min(MaxExtensionMultiple x task_budget_usd, MaxExtensionUsd). A grant the
   # cap cannot hold goes to a person. Needs factoryConductorFundingEnabled.
-  factoryMeritJudgeEnabled: false
   factoryMeritJudgeMaxExtensionMultiple: 1
   factoryMeritJudgeMaxExtensionUsd: 50
   # Issue numbers the judge reads as roadmap or factory-unblocking work,
