@@ -1391,8 +1391,11 @@ def test_executor_passes_session_repo_to_transport(monkeypatch, session, repo):
         assert deliver_kwargs[0]["branch"] == "main"
 
 
-def test_pending_message_executed_in_background(monkeypatch, session):
+@pytest.mark.parametrize("block_delivery", [False, True], ids=["immediate", "blocked"])
+def test_pending_message_executed_in_background(monkeypatch, session, block_delivery):
     row = store.create_session(session, "sid-123", "/workspace", "main")
+    delivery_started = asyncio.Event()
+    release_delivery = asyncio.Event()
 
     async def mock_deliver(
         _ember,
@@ -1408,6 +1411,9 @@ def test_pending_message_executed_in_background(monkeypatch, session):
         reasoning=False,
         **_kwargs,
     ):
+        delivery_started.set()
+        if block_delivery:
+            await release_delivery.wait()
         return _completed_delivery(message)
 
     monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
@@ -1418,9 +1424,21 @@ def test_pending_message_executed_in_background(monkeypatch, session):
     monkeypatch.setattr(mcp.agent_api, "notify", notify)
 
     async def run():
-        result = await mcp.monolith_agent_session_send(row.id, "hello")
-        await asyncio.sleep(0.1)
-        return result
+        # This deadline only bounds a hang; completion is the executor's result.
+        async with asyncio.timeout(5):
+            existing_tasks = set(mcp._inflight_tasks)
+            result = await mcp.monolith_agent_session_send(row.id, "hello")
+            assert result["accepted"] is True
+            spawned_tasks = mcp._inflight_tasks - existing_tasks
+            assert len(spawned_tasks) == 1
+            task = spawned_tasks.pop()
+            if block_delivery:
+                await delivery_started.wait()
+                assert not task.done()
+                release_delivery.set()
+            # Include durable persistence before asyncio.run tears down the loop.
+            await task
+            return result
 
     result = asyncio.run(run())
     session.expire_all()
