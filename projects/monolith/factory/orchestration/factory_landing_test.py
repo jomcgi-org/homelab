@@ -3411,6 +3411,47 @@ def owner_delivery(db, *, direct=False):
         row.direction_json = json.dumps(direction)
 
 
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize(
+    "absence",
+    [
+        "No explicit human, security or leave-unmerged hold was found in the PR labels, discussion or reviews.",
+        "Current discussion contains no explicit leave-unmerged hold.",
+    ],
+)
+def test_owner_pr_absence_feedback_keeps_native_landing_gates(
+    db, monkeypatch, queued, absence
+):
+    owner_delivery(db)
+    pulls = {
+        3: {
+            **pull(3, armed=queued),
+            "user": {"id": 42},
+            "queue_entry": {"id": "MQ_3"} if queued else None,
+        }
+    }
+    calls = github(monkeypatch, pulls=pulls)
+    listing = landing.github_list
+    comments = [{"body": absence}]
+    monkeypatch.setattr(
+        landing,
+        "github_list",
+        lambda repo, path: comments if "/comments?" in path else listing(repo, path),
+    )
+    landing.landing_tick(POLICY)
+    assert not audits(db, "landing_authorization_wait")
+    assert pulls[3]["auto_merge"]
+    assert bool(calls["arm_heads"]) is not queued
+
+    # A positive hold elsewhere in that same comment wins on the next native
+    # observation, including for a previously queued exact-head delivery.
+    comments[0]["body"] += " Do not merge; explicit human hold."
+    landing.landing_tick(POLICY)
+    assert pulls[3]["auto_merge"] is None
+    assert not pulls[3].get("queue_entry")
+    assert audits(db, "landing_authorization_wait")
+
+
 @pytest.mark.parametrize("direct", [False, True])
 @pytest.mark.parametrize("queued", [False, True])
 @pytest.mark.parametrize(

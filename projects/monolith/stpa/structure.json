@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "188286240",
+  "commit": "9f5051f01",
   "nodes": [
     {
       "key": "console-caller",
@@ -298,6 +298,14 @@
       "layer": "actor",
       "maturity": "built",
       "evidence": "projects/monolith/factory/orchestration/mcp.py:1336,2174"
+    },
+    {
+      "key": "factory-owner-hold-text",
+      "label": "Existing owner PR text-hold check",
+      "view": "logical",
+      "layer": "enforcement",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/owner_prs.py:57,209,589,711"
     }
   ],
   "control_actions": [
@@ -796,6 +804,13 @@
       "to": "factory-start-diagnostics-operator",
       "signal": "Finite or unknown can_start observation and historical funding linkage; racy read, no dispatch or recovery authority",
       "evidence": "projects/monolith/factory/orchestration/factory_start_diagnostics.py:53,176,233; projects/monolith/factory/MCP.md:65"
+    },
+    {
+      "view": "logical",
+      "from": "github-issues",
+      "to": "factory-owner-hold-text",
+      "signal": "Fresh PR and referenced-objective bodies and discussion text; veto evidence only",
+      "evidence": "projects/monolith/factory/orchestration/owner_prs.py:556,691"
     }
   ]
 }
