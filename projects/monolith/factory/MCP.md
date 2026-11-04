@@ -385,8 +385,10 @@ an old default. Enabling the master through this narrow control refuses when
 an unrelated stored source is true; resolve that separate policy choice through
 its owner first. The control never silently enables or edits those sources.
 
-Fresh per-account spare-quota evidence uses the existing improvement preview
-rules. A waiting source is retried on the next ordinary cadence, without a
+Required recovery discovery uses fresh per-account ordinary permitted quota.
+The existing evidence, pacing and short-window guards still apply; optional
+scouting's surplus, remaining-quota and reset-horizon targets do not. Discovery
+does not authorize a paid start. A waiting source is retried on the next ordinary cadence, without a
 manual trigger. It creates at most one deduplicated `bug` issue per tick within
 the existing daily cap. Discovery accepts either enabled refinement of bugs or
 matching direct intake labels, with repository exclusions, pauses and refinement
