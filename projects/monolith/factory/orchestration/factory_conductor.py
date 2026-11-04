@@ -5881,6 +5881,8 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
             detail = {
                 "workflow_version": workflow_version,
                 "running_version": running_version,
+                "node_key": run["node_key"],
+                "source_run_id": run["id"],
             }
             audit_action, notify = "workflow_stranded", None
             reason = "node workflow stranded by application version change"

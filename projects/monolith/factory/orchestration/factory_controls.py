@@ -244,8 +244,9 @@ DEFAULT_AUTO_MERGE = False
 # except `recurring_blocker`: wherever an operator has enabled the producer,
 # a repeated no-progress blocker becomes one repair issue on normal rollout
 # (watermarked, so no history is replayed); `false` keeps it off. The
-# remaining values are conservative repository defaults supplied by the
-# conductor rescope for #6002; changing live policy remains an operator act.
+# remaining values are conservative repository defaults. The producer owns a
+# reviewed one-time recovery-source activation for an already-enabled homelab
+# bug lane (#7583). It preserves subsequent operator overrides and generation.
 PROBLEM_ISSUE_SOURCES = (
     "quota_improvement",
     "node_stalled",
@@ -3143,6 +3144,9 @@ _PROBLEM_ISSUE_ACTIONS = (
     "problem_issue_reconcile_retry",
     "problem_issue_reconciled",
     "problem_issue_unresolved",
+    "problem_issue_recovery_loop_activated",
+    "problem_issue_recovery_watch",
+    "problem_issue_recovery_observed",
 )
 
 

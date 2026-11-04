@@ -7380,6 +7380,8 @@ def test_a_version_stranded_never_dispatched_workflow_is_cancelled_and_failed(
             "workflow_id": s.key,
             "workflow_version": "deployed-version",
             "running_version": "running-version",
+            "node_key": s.run["node_key"],
+            "source_run_id": s.run["id"],
         }
     ]
     run = conductor.graph.node_runs(s.task["id"])[0]

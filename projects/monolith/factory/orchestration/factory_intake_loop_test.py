@@ -116,6 +116,87 @@ def fake_pages(monkeypatch, issues, pulls=()):
     return calls
 
 
+def test_autonomous_repair_producer_reaches_ordinary_bug_intake(db, monkeypatch):
+    from core.jsonio import dumps
+    from factory.orchestration import factory_problem_issues as producer
+    from factory.orchestration import factory_conductor
+
+    configured = multi_repo_policy(
+        repo=producer.RECOVERY_REPO,
+        repos={producer.RECOVERY_REPO: {}},
+        intake={"enabled": True, "labels": ["bug"], "exclude_labels": ["needs-human"]},
+    )
+    controls.set_control("configure", "operator", policy=configured)
+    controls.set_control("enable", "operator")
+    monkeypatch.setattr(producer, "_spare_quota", lambda: True)
+    monkeypatch.setattr(producer, "_now", lambda: NOW)
+    monkeypatch.setattr(
+        factory_conductor, "github_get", lambda *args: issue(1, ["bug"])
+    )
+    produced = []
+    monkeypatch.setattr(producer, "github_list", lambda *args: list(produced))
+
+    def publish(repo, payload):
+        created = issue(
+            2,
+            payload["labels"],
+            body=payload["body"],
+            title=payload["title"],
+            html_url=f"https://github.com/{repo}/issues/2",
+        )
+        produced.append(created)
+        return created
+
+    monkeypatch.setattr(producer, "github_write", publish)
+    producer.problem_issues_tick(configured)
+    with Session(db) as session:
+        configured = json.loads(session.get(FactoryControl, "factory").policy_json)
+        session.add(
+            SwarmTask(
+                id="stalled",
+                task_text="source",
+                repo=producer.RECOVERY_REPO,
+                base_branch="main",
+                conductor_model="astra",
+            )
+        )
+        session.flush()
+        session.add(
+            FactoryReceipt(
+                repo=producer.RECOVERY_REPO,
+                issue_number=1,
+                title="source",
+                body="body",
+                url="url",
+                actor="test",
+                task_id="stalled",
+                state="admitted",
+                task_paused=True,
+            )
+        )
+        session.add(
+            FactoryAudit(
+                actor="factory:conductor",
+                task_id="stalled",
+                action="workflow_stranded",
+                detail_json=dumps({"workflow_id": "private"}),
+            )
+        )
+        session.commit()
+    producer.problem_issues_tick(configured)
+    assert len(produced) == 1
+    fake_pages(monkeypatch, produced)
+    received = intake_loop.intake_tick(configured, generation=configured["generation"])
+    assert len(received) == 1
+    assert received[0]["receipt"]["issue_number"] == 2
+    assert received[0]["receipt"]["task_class"] == "bug-fix"
+    with Session(db) as session:
+        original = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == "stalled")
+        ).one()
+        assert original.task_paused and original.state == "admitted"
+
+
 def candidate_evidence(db):
     return [json.loads(row.detail_json) for row in audits(db, "intake_candidate")]
 
