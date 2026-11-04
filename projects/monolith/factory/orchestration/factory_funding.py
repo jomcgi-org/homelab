@@ -534,6 +534,10 @@ def request(task, reason, *, recover=False, progress=False, routine=None):
     if scout.owns_task(task["id"]):
         scout._finish(task["id"], "scout_nonrenewable")
         return False
+    if routine:
+        with controls._read_session() as db:
+            if controls.nonrenewable_recovery(controls._receipt(db, task["id"])):
+                return False
     if controls.pause_nonrenewable_recovery(task["id"], reason):
         return False
     # No funding decision can extend an expired landing-recovery cap.
@@ -571,6 +575,9 @@ def request(task, reason, *, recover=False, progress=False, routine=None):
             }
     with controls._locked_session() as (db, control):
         row = controls._receipt(db, task["id"])
+        # A hold set while labels were read wins here, without mutating it.
+        if routine and routine_hold(db, row, task["id"]):
+            return False
         if controls.pause_nonrenewable_recovery(task["id"], reason, session=db):
             return False
         if _recovery_held(db, task["id"]):
@@ -790,6 +797,53 @@ def _routed_pause(task_id):
     return None
 
 
+def routine_hold(db, row, task_id):
+    """The shared human or operator restriction that keeps a pause with a
+    person, or None. Read under the caller's session; request and settle call
+    it again under the control lock, so a hold set meanwhile still wins."""
+    direction = json.loads(row.direction_json or "{}") if row is not None else {}
+    if row is None:
+        return "receipt_missing"
+    if row.task_paused or row.cancellation_requested:
+        return "task_held"
+    if controls.nonrenewable_recovery(row):
+        return "nonrenewable_recovery"
+    if "landing_hold" in direction:
+        return "landing_hold"
+    if controls.review_recovery_held(task_id, session=db):
+        return "review_recovery_held"
+    if (
+        db.exec(
+            select(FactoryAudit.id).where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "human_handoff",
+            )
+        ).first()
+        is not None
+    ):
+        return "human_handoff"
+    return None
+
+
+def routine_labels_held(task):
+    """Fresh issue read: None when open and unlabelled, else the reason."""
+    from factory.orchestration.factory_conductor import github_get
+
+    try:
+        issue = github_get(task["repo"], f"issues/{task['issue_number']}")
+    except Exception:  # noqa: BLE001 - unreadable labels keep the card
+        return "labels_unreadable"
+    labels = {
+        (item.get("name", "") if isinstance(item, dict) else str(item)).lower()
+        for item in issue.get("labels") or []
+    }
+    if issue.get("state") != "open":
+        return "issue_not_open"
+    if labels & ROUTINE_HELD_LABELS:
+        return "held_label"
+    return None
+
+
 def _routine_text(decision):
     parts = [decision.get("question"), decision.get("reason")]
     for option in decision.get("options") or []:
@@ -828,33 +882,9 @@ def routine_pause(task, decision, cause=None):
     if factory_gates.HUMAN_GATE_BACKSTOP.search(text) or _ROUTINE_BACKSTOP.search(text):
         return False
     with controls._read_session() as db:
-        row = controls._receipt(db, task["id"])
-        direction = json.loads(row.direction_json or "{}") if row else {}
-        if (
-            row is None
-            or controls.nonrenewable_recovery(row)
-            or "landing_hold" in direction
-            or controls.review_recovery_held(task["id"], session=db)
-            or db.exec(
-                select(FactoryAudit.id).where(
-                    FactoryAudit.task_id == task["id"],
-                    FactoryAudit.action == "human_handoff",
-                )
-            ).first()
-            is not None
-        ):
+        if routine_hold(db, controls._receipt(db, task["id"]), task["id"]):
             return False
-    from factory.orchestration.factory_conductor import github_get
-
-    try:
-        issue = github_get(task["repo"], f"issues/{task['issue_number']}")
-    except Exception:  # noqa: BLE001 - unreadable labels keep the card
-        return False
-    labels = {
-        (item.get("name", "") if isinstance(item, dict) else str(item)).lower()
-        for item in issue.get("labels") or []
-    }
-    if labels & ROUTINE_HELD_LABELS or issue.get("state") != "open":
+    if routine_labels_held(task):
         return False
     option = options[0]
     reason = (
@@ -910,6 +940,11 @@ def settle(task, run, request):
     outcome = c._outcome(run)
     execution_reason = str(outcome.get("reason") or "")[:1000] or None
     accounting_basis = graph.settled_zero_basis(outcome)
+    # A routed planner pause is rechecked at settlement: a hold or label set
+    # after the request still keeps the question with a person.
+    routed = _routed_pause(task["id"])
+    label_hold = routine_labels_held(task) if routed is not None else None
+    routine_held = None
     with controls._locked_session() as (db, control):
         current = pending(db, task["id"])
         row = controls._receipt(db, task["id"])
@@ -942,6 +977,11 @@ def settle(task, run, request):
                 raise ValueError(
                     "landing recovery deadline expired; operator recovery required"
                 )
+            if routed is not None:
+                routine_held = label_hold or routine_hold(db, row, task["id"])
+                if routine_held:
+                    failure_category = "routine_pause_held"
+                    raise ValueError(f"routine pause held: {routine_held}")
             if (
                 run["pin"]["model"] != review_model(request)
                 or run["dispatch_key"] != request["start_key"]
@@ -1127,6 +1167,15 @@ def settle(task, run, request):
     if escalation and not refusal:
         # Outside the control lock: the card writes to GitHub.
         c._escalate_funding_doubt(task["id"], escalation, cause)
+    if routine_held:
+        # No grant was made; the planner's question goes to a person now.
+        try:
+            c._escalate_task(
+                task, routed["decision"], routed["cause"], graph.node_runs(task["id"])
+            )
+        except c._EditRefused:
+            # The refused-review limit in reconcile still owns this task.
+            pass
 
 
 def reconcile(task, policy, runs, permission):

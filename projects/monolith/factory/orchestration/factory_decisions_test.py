@@ -3507,3 +3507,69 @@ def test_github_errors_while_raising_the_routed_card_retry_not_fail(
                 funding.reconcile(*args)
     with Session(db) as session:
         assert session.exec(select(FactoryReceipt)).one().state != "failed"
+
+
+def _set_hold(db, task, hold):
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        direction = json.loads(row.direction_json or "{}")
+        if hold == "landing_hold":
+            direction["landing_hold"] = {"actor": "operator"}
+        elif hold == "nonrenewable_recovery":
+            direction["nonrenewable_recovery"] = {"actor": "operator"}
+        row.direction_json = json.dumps(direction)
+        session.add(row)
+        session.commit()
+    if hold in ("human_handoff", "review_recovery_authorized"):
+        with controls._locked_session() as (session, _control):
+            controls._audit(session, "operator", hold, task_id=task["id"])
+
+
+HOLDS = (
+    "landing_hold",
+    "nonrenewable_recovery",
+    "human_handoff",
+    "review_recovery_authorized",
+)
+
+
+@pytest.mark.parametrize("hold", HOLDS)
+def test_hold_set_while_labels_are_read_still_wins_under_the_lock(
+    db, routine, monkeypatch, hold
+):
+    task, policy, state = routine
+    original = conductor.github_get
+
+    def racing_read(repo, suffix):
+        # The hold lands after the unlocked pre-check, mid label read.
+        _set_hold(db, task, hold)
+        return original(repo, suffix)
+
+    monkeypatch.setattr(conductor, "github_get", racing_read)
+    pause(task, policy, routine_pause())
+    assert audits_of(db, "funding_review_requested") == []
+    assert len(state["cards"]) == 1
+    # The routine path never mutates the held receipt itself.
+    assert not controls.task_snapshot(task["id"])["task_paused"]
+
+
+@pytest.mark.parametrize("hold", (*HOLDS, "label"))
+def test_hold_or_label_set_before_settlement_blocks_the_grant(
+    db, routine, monkeypatch, hold
+):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    request = _pending(task)
+    assert state["cards"] == []
+    if hold == "label":
+        state["labels"] = ["human"]
+    else:
+        _set_hold(db, task, hold)
+    settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
+    assert _grant(task) is None
+    if hold == "nonrenewable_recovery":
+        # Its existing locked owner pauses the task for the operator first.
+        assert controls.task_snapshot(task["id"])["task_paused"]
+        return
+    assert _settled(task)["refusal"].startswith("routine pause held")
+    assert state["cards"] == [routine_pause()["question"]]
