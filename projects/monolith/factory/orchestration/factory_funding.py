@@ -1361,6 +1361,16 @@ def reconcile(task, policy, runs, permission):
             c._escalate_funding_doubt(task["id"], last["escalated"], last.get("cause"))
         return True
     if last and last.get("refusal"):
+        if last.get("failure_category") == "routine_pause_held":
+            # A hold already answered this pause: raise its card again (the
+            # writes are idempotent) instead of paying for another review.
+            routed = _routed_pause(task["id"])
+            if routed is not None:
+                try:
+                    c._escalate_task(task, routed["decision"], routed["cause"], runs)
+                    return True
+                except c._EditRefused:
+                    pass
         if _refusal_wait(last):
             return True
         with controls._read_session() as db:
