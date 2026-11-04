@@ -275,6 +275,13 @@ def test_first_enabled_tick_watermarks_history_then_creates_source_linked_issue(
             "landing recovery exhausted",
             "https://github.com/owner/repo/pull/6123",
         ),
+        (
+            "recurring_blocker",
+            "recurring_blocker",
+            {"blocker_key": "a" * 64, "reason": "no_progress"},
+            "repeated blocker without progress",
+            "Reason: `no_progress`",
+        ),
     ],
 )
 def test_other_selected_exact_sources_create_the_same_bounded_issue_shape(
@@ -292,6 +299,7 @@ def test_other_selected_exact_sources_create_the_same_bounded_issue_shape(
             "node_stalled": False,
             "workflow_stranded": source == "workflow_stranded",
             "landing_recovery_exhausted": source == "landing_recovery_exhausted",
+            "recurring_blocker": source == "recurring_blocker",
         }
     )
     state = github(monkeypatch)
@@ -304,6 +312,37 @@ def test_other_selected_exact_sources_create_the_same_bounded_issue_shape(
     assert title_fragment in state["writes"][0]["title"]
     assert body_fragment in state["writes"][0]["body"]
     assert details(audits(engine, "problem_issue_created"))[-1]["source"] == source
+
+
+def test_repeated_blocker_signal_creates_one_issue_per_blocker_identity(
+    db, monkeypatch
+):
+    engine, _clock = db
+    selected = policy(
+        sources={"node_stalled": False, "recurring_blocker": True},
+    )
+    state = github(monkeypatch)
+    enable_after_watermark(engine, selected)
+    add_event(engine, action="recurring_blocker", blocker_key="a" * 64)
+    add_event(engine, action="recurring_blocker", blocker_key="a" * 64)
+    add_event(engine, action="recurring_blocker", blocker_key="b" * 64)
+    for _ in range(4):
+        producer.problem_issues_tick(selected)
+
+    assert len(state["writes"]) == 2
+    assert details(audits(engine, "problem_issue_reconciled"))
+
+
+def test_blocker_signal_without_a_stable_key_is_refused(db, monkeypatch):
+    engine, _clock = db
+    selected = policy(sources={"node_stalled": False, "recurring_blocker": True})
+    state = github(monkeypatch)
+    enable_after_watermark(engine, selected)
+    add_event(engine, action="recurring_blocker", blocker_key="short")
+    producer.problem_issues_tick(selected)
+
+    assert state["writes"] == []
+    assert audits(engine, "problem_issue_source_refused")
 
 
 def test_replayed_exact_event_reconciles_marker_without_duplicate_write(

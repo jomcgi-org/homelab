@@ -51,6 +51,7 @@ _EVENT_ACTIONS = {
     "node_stalled": "node_stalled",
     "workflow_stranded": "workflow_stranded",
     "landing_recovery_exhausted": "merge_arm_refused",
+    "recurring_blocker": "recurring_blocker",
 }
 
 
@@ -90,7 +91,7 @@ def _source(row: FactoryAudit) -> tuple[str, dict] | None:
         return None
     if row.action == "improvement_candidate":
         return "quota_improvement", detail
-    if row.action in ("node_stalled", "workflow_stranded"):
+    if row.action in ("node_stalled", "workflow_stranded", "recurring_blocker"):
         return row.action, detail
     if (
         row.action == "merge_arm_refused"
@@ -110,6 +111,12 @@ def _identity(source: str, row: FactoryAudit, detail: dict) -> dict | None:
             "task_id": row.task_id,
             "workflow_id": workflow_id,
         }
+    if source == "recurring_blocker":
+        key = detail.get("blocker_key")
+        if not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{64}", key):
+            return None
+        # The problem, not the task: a re-admitted receipt repeats the key.
+        return {"source": source, "blocker_key": key}
     number = detail.get("pr_number")
     if type(number) is not int or number <= 0:
         return None
@@ -332,6 +339,9 @@ def _issue(
         "landing_recovery_exhausted": (
             f"factory: landing recovery exhausted for #{issue_number}"
         ),
+        "recurring_blocker": (
+            f"factory: repeated blocker without progress on #{issue_number}"
+        ),
     }
     lines = [
         marker,
@@ -366,6 +376,7 @@ def _issue(
         "workflow_version",
         "running_version",
         "pr_number",
+        "reason",
     ):
         value = detail.get(key)
         if isinstance(value, (str, int, float)) and not isinstance(value, bool):

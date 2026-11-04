@@ -5258,6 +5258,21 @@ py_test(
 )
 
 py_test(
+    name = "swarm_factory_auto_recommendation_test",
+    srcs = ["factory/orchestration/factory_auto_recommendation_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_factory_decisions_test",
     srcs = ["factory/orchestration/factory_decisions_test.py"],
     imports = ["."],
