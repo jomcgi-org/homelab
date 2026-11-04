@@ -383,8 +383,6 @@ def test_concurrent_considerations_apply_the_card_once(db, github):
     assert len(actions(db, auto.APPLIED)) == 1
 
 
-
-
 @pytest.mark.parametrize("state", ["accepted", "outcome_unknown"])
 def test_an_unconfirmed_outcome_is_neither_counted_nor_a_repeated_blocker(
     db, github, monkeypatch, state
