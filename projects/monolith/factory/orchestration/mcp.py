@@ -1276,7 +1276,7 @@ def _detail_payload(
     receipt_id: int, node_offset: int, limit: int, history_limit: int = 10
 ) -> dict:
     from factory.orchestration import factory_controls as controls
-    from factory.orchestration import factory_funding, graph
+    from factory.orchestration import factory_funding, factory_start_diagnostics, graph
     from factory.orchestration.factory_models import FactoryReceipt
     from factory.private_view import shape_node
 
@@ -1318,6 +1318,9 @@ def _detail_payload(
             "progress_continuation": factory_funding.continuation_status(
                 db, row.task_id
             ),
+            "start_diagnostics": factory_start_diagnostics.receipt_diagnostics(
+                db, row, snapshot
+            ),
             "source_timestamps": {
                 "receipt_created_at": iso_or_str(getattr(row, "created_at", None)),
                 "receipt_updated_at": iso_or_str(getattr(row, "updated_at", None)),
@@ -1346,6 +1349,8 @@ async def factory_task_detail(
     Follow next_node_offset for more nodes. Node success alone is not evidence
     of accepted delivery or deployment. This read requires a human operator.
     history_limit bounds work-item edges and correction history independently.
+    start_diagnostics observes the control subgate and sanitized funding history.
+    Transport and capacity gates remain unevaluated and no recovery is authorized.
     """
     refusal = _refuse(current_principal())
     if refusal is not None:

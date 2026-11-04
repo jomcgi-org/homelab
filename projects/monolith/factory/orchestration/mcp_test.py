@@ -26,6 +26,519 @@ from factory.orchestration.factory_models import (
 from factory.orchestration.models import SwarmTask
 
 
+@pytest.fixture
+def diagnostic_db(tmp_path, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from factory.execution.models import (
+        AgentCapacityReservation,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from factory.orchestration.models import SwarmNodeRun
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'diagnostics.db'}",
+        execution_options={
+            "schema_translate_map": {"swarm": None, "agent_sessions": None}
+        },
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            model.__table__
+            for model in (
+                SwarmTask,
+                SwarmNodeRun,
+                FactoryControl,
+                FactoryReceipt,
+                FactoryStart,
+                FactoryAudit,
+                WorkItem,
+                AgentSession,
+                AgentTurn,
+                PendingMessage,
+                AgentCapacityReservation,
+            )
+        ],
+    )
+    now = datetime(2026, 11, 4, 15, tzinfo=UTC)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    monkeypatch.setattr(controls, "get_engine", lambda: engine)
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    with Session(engine) as session:
+        session.add_all(
+            [
+                FactoryControl(
+                    id="factory", actor="operator", state="enabled", version=7
+                ),
+                SwarmTask(
+                    id="t-diagnostic",
+                    conductor_model="astra",
+                    task_text="private",
+                    created_at=now - timedelta(days=1),
+                ),
+                FactoryReceipt(
+                    id=1050,
+                    repo="owner/repo",
+                    issue_number=1,
+                    title="private",
+                    body="private",
+                    url="private",
+                    actor="factory:intake",
+                    state="admitted",
+                    task_id="t-diagnostic",
+                    policy_json='{"task_timeout_seconds":3600}',
+                ),
+                SwarmNodeRun(
+                    id=9259,
+                    task_id="t-diagnostic",
+                    node_key="correct_4",
+                    attempt=1,
+                    status="failed",
+                    finished_at=now - timedelta(hours=1),
+                ),
+            ]
+        )
+        session.commit()
+    yield engine
+    engine.dispose()
+
+
+def _diagnostic_read(session):
+    from factory.orchestration.factory_start_diagnostics import receipt_diagnostics
+
+    row = session.get(FactoryReceipt, 1050)
+    return receipt_diagnostics(
+        session, row, {"state": row.state, "deadline_at": "2026-11-03T16:00:00+00:00"}
+    )
+
+
+def _diagnostic_event(session, action, **detail):
+    row = FactoryAudit(
+        task_id="t-diagnostic",
+        actor="factory:funding",
+        action=action,
+        detail_json=json.dumps(detail),
+    )
+    session.add(row)
+    session.commit()
+    return row.id
+
+
+def test_diagnostic_expired_failed_first_attempt_reads_without_mutation(
+    diagnostic_db, monkeypatch
+):
+    from factory.orchestration import factory_funding as funding
+    from factory.execution import admission, capacity_wait
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("diagnostic called a mutation")
+
+    for module, name in (
+        (controls, "set_control"),
+        (funding, "request"),
+        (funding, "reconcile"),
+        (admission, "reserve_start_verdict"),
+        (capacity_wait, "poll"),
+    ):
+        monkeypatch.setattr(module, name, forbidden)
+    statements = []
+
+    def capture(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    event.listen(diagnostic_db, "before_cursor_execute", capture)
+    try:
+        with Session(diagnostic_db) as session:
+            result = _diagnostic_read(session)
+            assert result["can_start"] == {"ok": False, "reason": "task_deadline"}
+            assert result["funding"]["review_relationship"] == {
+                "state": "none",
+                "request_id": None,
+            }
+            assert result["funding"]["enabled"] is True
+            assert result["recovery_authorized"] is False
+            assert session.get(FactoryControl, "factory").version == 7
+            assert session.get(FactoryReceipt, 1050).state == "admitted"
+            assert not session.new and not session.dirty and not session.deleted
+    finally:
+        event.remove(diagnostic_db, "before_cursor_execute", capture)
+    assert statements and all(
+        s.lstrip().upper().startswith("SELECT") for s in statements
+    )
+
+
+@pytest.mark.parametrize("settlement", ["missing", "matching", "different"])
+def test_diagnostic_funding_request_settlement_linkage(diagnostic_db, settlement):
+    from factory.orchestration.factory_funding_limits import pending
+
+    with Session(diagnostic_db) as session:
+        request = _diagnostic_event(
+            session,
+            "funding_review_requested",
+            node_key="conductor_funding_1",
+            start_key="factory-node:t-diagnostic:conductor_funding_1:1",
+            deadline_at="2026-11-04T16:00:00+00:00",
+        )
+        if settlement != "missing":
+            settled = _diagnostic_event(
+                session,
+                "funding_review_settled",
+                request_id=request if settlement == "matching" else request + 1,
+                refusal="private refusal",
+                failure_category="execution_failed",
+                source_run_id=9259,
+                retry_after="2026-11-04T16:00:00+00:00",
+            )
+        result = _diagnostic_read(session)
+        expected_pending = settlement != "matching"
+        assert bool(pending(session, "t-diagnostic")) is expected_pending
+        assert result["funding"]["review_relationship"] == {
+            "state": "pending" if expected_pending else "settled",
+            "request_id": request,
+        }
+        assert result["can_start"]["reason"] == (
+            "funding_review_pending" if expected_pending else "task_deadline"
+        )
+        if settlement != "missing":
+            row = result["funding"]["latest"]["review_settled"]
+            assert row["audit_id"] == settled and row["source_run_id"] == 9259
+            assert result["funding"]["refusal_cooldown_active"] is True
+        assert "private refusal" not in json.dumps(result)
+
+
+def test_diagnostic_funding_latest_aliases_compatibility_and_operator_response(
+    diagnostic_db,
+):
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration.factory_funding_limits import latest
+
+    with Session(diagnostic_db) as session:
+        request = _diagnostic_event(
+            session, "funding_review_requested", node_key="conductor_funding_1"
+        )
+        settled = _diagnostic_event(
+            session,
+            "funding_review_settled",
+            request_id=request,
+            escalated="private question",
+        )
+        grant = _diagnostic_event(
+            session,
+            "funding_granted",
+            request_id=request,
+            policy_overlay={"task_timeout_seconds": 200000},
+            review_due_at="2026-11-04T14:00:00+00:00",
+            next_plan="private plan",
+        )
+        _diagnostic_event(
+            session,
+            "funding_review_settled",
+            request_id=request,
+            funding_compatibility_projection=True,
+            refusal="private projection",
+        )
+        _diagnostic_event(
+            session,
+            "funding_granted",
+            funding_compatibility_projection=True,
+            next_plan="private projection",
+        )
+        result = _diagnostic_read(session)
+        assert result["can_start"]["reason"] == "funding_lease_due"
+        assert result["funding"]["latest"]["review_settled"]["audit_id"] == settled
+        assert result["funding"]["latest"]["granted"]["audit_id"] == grant
+        assert result["funding"]["awaiting_operator"] is True
+        _diagnostic_event(session, funding.PROGRESS_REARMED, settlement_id=settled)
+        assert _diagnostic_read(session)["funding"]["awaiting_operator"] is False
+        assert "private" not in json.dumps(result)
+        legacy = _diagnostic_event(
+            session, "allocation_recovery_required", code="legacy"
+        )
+        assert (
+            latest(session, "t-diagnostic", "allocation_recovery_required")["audit_id"]
+            == legacy
+        )
+        native = _diagnostic_event(
+            session, "funding_allocation_recovery_required", code="native"
+        )
+        assert (
+            latest(session, "t-diagnostic", "allocation_recovery_required")["audit_id"]
+            == native
+        )
+
+
+@pytest.mark.parametrize(
+    "state,paused,cancel,control,reason",
+    [
+        ("admitted", True, False, "enabled", "task_paused"),
+        ("admitted", False, True, "enabled", "cancellation_pending"),
+        ("uncertain", False, False, "enabled", "uncertain_outcome"),
+        ("admitted", False, False, "disabled", "disabled"),
+        ("admitted", False, False, "stopped", "stopped"),
+        ("landing", False, False, "enabled", "task_not_active"),
+    ],
+)
+def test_diagnostic_exact_owner_refusals(
+    diagnostic_db, state, paused, cancel, control, reason
+):
+    with Session(diagnostic_db) as session:
+        row = session.get(FactoryReceipt, 1050)
+        row.state, row.task_paused, row.cancellation_requested = state, paused, cancel
+        session.get(FactoryControl, "factory").state = control
+        session.commit()
+        assert _diagnostic_read(session)["can_start"] == {"ok": False, "reason": reason}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "[]",
+        "null",
+        "not-json",
+        json.dumps(
+            {
+                "request_id": {"private": "secret"},
+                "node_key": "secret/invalid",
+                "source_run_id": True,
+                "failure_category": "secret",
+                "retry_after": "secret",
+                "refusal": "secret",
+                "escalated": "secret",
+                "next_plan": "secret",
+            }
+        ),
+    ],
+)
+def test_diagnostic_malformed_funding_remains_unknown_and_redacted(diagnostic_db, raw):
+    with Session(diagnostic_db) as session:
+        _diagnostic_event(
+            session, "funding_review_requested", node_key="conductor_funding_1"
+        )
+        session.add(
+            FactoryAudit(
+                task_id="t-diagnostic",
+                actor="test",
+                action="funding_review_settled",
+                detail_json=raw,
+            )
+        )
+        session.commit()
+        result = _diagnostic_read(session)
+        assert result["funding"]["review_relationship"]["state"] == "unavailable"
+        assert "secret" not in json.dumps(result) and "not-json" not in json.dumps(
+            result
+        )
+
+
+def _diagnostic_session(session):
+    from factory.execution.models import AgentSession, PendingMessage
+    from factory.orchestration.models import SwarmNodeRun
+
+    key = "factory-node:t-diagnostic:conductor_1:1"
+    session.get(FactoryReceipt, 1050).state = "landing"
+    session.add_all(
+        [
+            AgentSession(
+                id=25161,
+                local_session_id="factory:t-diagnostic:conductor_1:1",
+                workspace="private",
+                branch="private",
+                workflow_id=key,
+                node_key="conductor_1",
+                node_attempt=1,
+                status="running",
+            ),
+            PendingMessage(
+                id=26213, session_id=25161, seq=2, message_text="private latent message"
+            ),
+            SwarmNodeRun(
+                id=9277,
+                task_id="t-diagnostic",
+                node_key="conductor_1",
+                attempt=1,
+                status="succeeded",
+                session_id=25161,
+                dispatch_key=key,
+            ),
+        ]
+    )
+    session.commit()
+
+
+@pytest.mark.parametrize("admitted", [False, True])
+def test_diagnostic_canonical_session_subgate_preserves_latent_message(
+    diagnostic_db, monkeypatch, admitted
+):
+    from factory.execution.admission_diagnostics import inspect_session_turn
+    from factory.execution.models import PendingMessage
+    from factory.orchestration import factory_improvement_fence, backlog_refill
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("diagnostic called transport")
+
+    monkeypatch.setattr(factory_improvement_fence, "transport_allowed", forbidden)
+    monkeypatch.setattr(backlog_refill, "dispatch_allowed", forbidden)
+    with Session(diagnostic_db) as session:
+        _diagnostic_session(session)
+        if admitted:
+            row = session.get(FactoryReceipt, 1050)
+            row.state, row.policy_json = "admitted", '{"task_timeout_seconds":200000}'
+            session.commit()
+        result = inspect_session_turn(25161, 2, session=session)
+        gate = result["factory_gate"]
+        assert gate["status"] == "matched" and gate["receipt_id"] == 1050
+        assert gate["run_id"] == 9277 and gate["run_status"] == "succeeded"
+        assert gate["node_key"] == "conductor_1" and gate["attempt"] == 1
+        assert gate["can_start"] == {
+            "ok": admitted,
+            "reason": None if admitted else "task_not_active",
+        }
+        assert (
+            gate["recovery_authorized"] is False and "unevaluated" in gate["coverage"]
+        )
+        assert (
+            result["pending"]["dispatch_count"] == 0
+            and not result["permits"]
+            and result["turn"] is None
+        )
+        assert session.get(PendingMessage, 26213).claimed_by_replica is None
+        assert (
+            session.get(PendingMessage, 26213).message_text == "private latent message"
+        )
+        assert "local_session_id" not in result[
+            "session"
+        ] and "private" not in json.dumps(result)
+        assert not session.new and not session.dirty and not session.deleted
+
+
+@pytest.mark.parametrize(
+    "target,field,value",
+    [
+        ("agent", "local_session_id", "factory:t-diagnostic:conductor_1:01"),
+        ("agent", "local_session_id", "factory:secret/invalid"),
+        ("agent", "node_attempt", 2),
+        ("agent", "node_key", "wrong"),
+        ("agent", "workflow_id", "wrong"),
+        ("run", "session_id", 25162),
+        ("run", "dispatch_key", "wrong"),
+        ("run", "delete", None),
+        ("receipt", "delete", None),
+    ],
+)
+def test_diagnostic_session_rejects_unmatched_identity(
+    diagnostic_db, monkeypatch, target, field, value
+):
+    from factory.execution.admission_diagnostics import inspect_session_turn
+    from factory.execution.models import AgentSession
+    from factory.orchestration.models import SwarmNodeRun
+
+    with Session(diagnostic_db) as session:
+        _diagnostic_session(session)
+        row = (
+            session.get(AgentSession, 25161)
+            if target == "agent"
+            else session.get(SwarmNodeRun, 9277)
+            if target == "run"
+            else session.get(FactoryReceipt, 1050)
+        )
+        if field == "delete":
+            session.delete(row)
+        else:
+            setattr(row, field, value)
+        session.commit()
+        monkeypatch.setattr(
+            controls,
+            "can_start",
+            lambda *a, **kw: pytest.fail("unmatched identity reached start gate"),
+        )
+        result = inspect_session_turn(25161, 2, session=session)
+        assert result["factory_gate"]["status"] == "unknown"
+        assert result["factory_gate"]["can_start"]["ok"] is None
+        assert "run_id" not in result["factory_gate"] and "secret" not in json.dumps(
+            result
+        )
+
+
+def test_diagnostic_review_hold_and_unassigned_receipt(diagnostic_db):
+    from factory.orchestration.factory_start_diagnostics import receipt_diagnostics
+
+    with Session(diagnostic_db) as session:
+        _diagnostic_event(session, "review_recovery_authorized", private="secret")
+        result = _diagnostic_read(session)
+        assert result["can_start"] == {"ok": False, "reason": "review_only_recovery"}
+        assert result["funding"]["review_recovery_held"] is True
+        row = session.get(FactoryReceipt, 1050)
+        row.task_id = None
+        session.commit()
+        result = receipt_diagnostics(session, row, {"state": "queued"})
+        assert result["can_start"] == {"ok": None, "reason": "no_task"}
+        assert result["funding"] is None and result["effective_deadline_at"] is None
+
+
+def test_diagnostic_never_flushes_pending_writes(diagnostic_db):
+    from factory.orchestration.factory_start_diagnostics import start_gate
+
+    statements = []
+
+    def capture(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    with Session(diagnostic_db) as session:
+        session.add(
+            FactoryAudit(
+                task_id="t-diagnostic", actor="test", action="private_pending_write"
+            )
+        )
+        event.listen(diagnostic_db, "before_cursor_execute", capture)
+        try:
+            start_gate(session, "t-diagnostic")
+        finally:
+            event.remove(diagnostic_db, "before_cursor_execute", capture)
+        assert len(session.new) == 1
+        assert all(s.lstrip().upper().startswith("SELECT") for s in statements)
+        session.rollback()
+
+
+def test_diagnostic_history_does_not_expand_queries(diagnostic_db):
+    from factory.orchestration.factory_start_diagnostics import _latest
+
+    def observe():
+        statements = []
+
+        def capture(_conn, _cursor, statement, *_args):
+            statements.append(statement)
+
+        event.listen(diagnostic_db, "before_cursor_execute", capture)
+        try:
+            with Session(diagnostic_db) as session:
+                _diagnostic_read(session)
+        finally:
+            event.remove(diagnostic_db, "before_cursor_execute", capture)
+        assert all(s.lstrip().upper().startswith("SELECT") for s in statements)
+        return len(statements)
+
+    with Session(diagnostic_db) as session:
+        old = _diagnostic_event(session, "funding_review_settled", request_id=1)
+    before = observe()
+    with Session(diagnostic_db) as session:
+        session.add_all(
+            [
+                FactoryAudit(
+                    task_id="t-diagnostic",
+                    actor="test",
+                    action="funding_review_settled",
+                    detail_json='{"request_id":1}',
+                )
+                for _ in range(200)
+            ]
+        )
+        session.commit()
+        assert _latest(session, "t-diagnostic", "funding_review_settled").id > old
+    assert 0 < before == observe() <= 40
+
+
 def test_planner_derived_context_marks_due_and_unknown_stale():
     from datetime import datetime, timedelta, timezone
     from factory.orchestration.conductor_context import _is_stale
@@ -1886,6 +2399,10 @@ def test_detail_pages_nodes_and_bounds_attempt_history(monkeypatch):
     )
     monkeypatch.setattr(mcp, "_queue_context", lambda *args: None)
     monkeypatch.setattr(mcp, "_watchdog_detail", lambda *args: None)
+    monkeypatch.setattr(
+        "factory.orchestration.factory_start_diagnostics.receipt_diagnostics",
+        lambda *args: {"recovery_authorized": False},
+    )
     monkeypatch.setattr(
         "factory.orchestration.factory_funding.continuation_status",
         lambda session, task: {"reason": "progress_authority_changed", "task_id": task},

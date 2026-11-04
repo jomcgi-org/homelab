@@ -1474,6 +1474,7 @@ py_library(
         "factory/orchestration/api.py",
         "factory/orchestration/factory_controls.py",
         "factory/orchestration/factory_funding_limits.py",
+        "factory/orchestration/factory_start_diagnostics.py",
         # Status needs the durable landing reader in the pruned controls closure.
         # pkg_swarm's existing glob shares this same source artifact.
         "factory/orchestration/factory_landing.py",
