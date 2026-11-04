@@ -212,8 +212,10 @@ def _consider(row_id: int, now) -> str:
         gate = None
         if len(prior) >= MAX_PER_RECEIPT:
             gate = "auto_limit"
-        elif prior and prior[-1]["blocker_key"] == key and (
-            head is None or prior[-1].get("head_sha") == head
+        elif (
+            prior
+            and prior[-1]["blocker_key"] == key
+            and (head is None or prior[-1].get("head_sha") == head)
         ):
             gate = "no_progress"
         if gate is not None:
