@@ -656,6 +656,16 @@ implementation starts (#5956).
 
 ### Execution and recovery rationale
 
+**Why.** A truncated native error cannot distinguish staged receipt preparation,
+promotion and admission-recheck failures (#7583). The transport records a bounded
+phase, SQLSTATE, promotion attempt and intent flag with numeric dispatch identity
+in private logs. Pre-intent terminal summaries retain phase and SQLSTATE within
+the existing voice limit, excluding driver text, SQL parameters and request data.
+Handled contention leaves no terminal diagnostic. Retry bounds, claim freshness,
+capacity waiting, accounting and post-intent uncertainty keep their existing
+owners. These diagnostics grant no recovery authority and do not establish the
+cause of a historical failure.
+
 **Why.** Sixteen of the thirty-one resolved cards in the newest fifty were
 dismissed because the issue body changed. Four came minutes after the card, on
 issues already carrying the factory's own gate blocks, so the hash excludes

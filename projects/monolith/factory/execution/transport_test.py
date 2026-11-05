@@ -135,6 +135,187 @@ def test_staged_receipt_promotion_does_not_retry_other_failures():
 
 
 @pytest.mark.parametrize(
+    ("failure", "phase", "promotion_attempt", "attempted"),
+    [
+        ("initial_admission", "receipt_admission", None, False),
+        ("prepare", "receipt_prepare", None, False),
+        ("prepared_admission", "prepared_admission", None, False),
+        ("exhaustion", "receipt_promotion", 5, False),
+        ("retry_admission", "promotion_admission", 1, False),
+        ("published_intent", "receipt_promotion", 1, True),
+        ("attempted_admission", "attempted_admission", None, True),
+    ],
+)
+def test_staged_database_failure_identifies_phase_without_payload(
+    monkeypatch, caplog, failure, phase, promotion_attempt, attempted
+):
+    from factory.execution import result_receipts
+
+    calls = {"admission": 0, "prepare": 0, "promote": 0, "post": 0}
+    record = {}
+    private = "private-sql-credential-prompt-body"
+
+    class LockNotAvailable(Exception):
+        sqlstate = "55P03"
+
+    error = OperationalError(private, {"private": private}, LockNotAvailable(private))
+
+    async def admission():
+        calls["admission"] += 1
+        failed_check = {
+            "initial_admission": 1,
+            "prepared_admission": 2,
+            "retry_admission": 3,
+            "attempted_admission": 3,
+        }.get(failure)
+        if calls["admission"] == failed_check:
+            raise error
+
+    def prepare(*_args, **_kwargs):
+        calls["prepare"] += 1
+        if failure == "prepare":
+            raise error
+        return {"id": "a" * 32, "token": private}
+
+    def promote(*args):
+        calls["promote"] += 1
+        if failure in {"exhaustion", "retry_admission"}:
+            raise error
+        args[-1]()  # Publish conservative intent at the real transport boundary.
+        if failure == "published_intent":
+            raise error
+        return {}
+
+    async def handler(request):
+        calls["post"] += 1
+        return _turn_response(request)
+
+    async def no_wait(_delay):
+        pass
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport, "MAX_RECEIPT_OBSERVERS", 0)
+    monkeypatch.setattr(transport.asyncio, "sleep", no_wait)
+    monkeypatch.setattr(result_receipts, "prepare_receipt", prepare)
+    monkeypatch.setattr(result_receipts, "attempt_prepared_receipt", promote)
+    with pytest.raises(
+        OperationalError if attempted else transport.EmberTurnNotInvoked
+    ) as caught:
+        asyncio.run(
+            transport.EmberVmShimTransport().deliver(
+                transport.EmberSession("guest", private, None),
+                None,
+                private,
+                agent_session_id=123,
+                turn_seq=7,
+                dispatch_count=2,
+                receipt_claim_owner="owner",
+                admission_check=admission,
+                invocation_record=record,
+                invocation_guard=threading.Lock(),
+            )
+        )
+    assert calls["post"] == 0
+    assert calls["promote"] == (promotion_attempt or int(attempted))
+    assert record["attempted"] is attempted
+    diagnostic = {"phase": phase, "sqlstate": "55P03", "attempted": attempted}
+    if promotion_attempt is not None:
+        diagnostic["promotion_attempt"] = promotion_attempt
+    assert record["database_failure"] == diagnostic
+    messages = [
+        r.message
+        for r in caplog.records
+        if r.message.startswith("delivery_database_failure ")
+    ]
+    assert len(messages) == 1
+    assert json.loads(messages[0].split(" ", 1)[1]) == {
+        "session_id": 123,
+        "turn_seq": 7,
+        "dispatch_count": 2,
+        **diagnostic,
+    }
+    assert private not in messages[0]
+    if attempted:
+        assert caught.value is error  # Preserve the original uncertainty path.
+    else:
+        assert phase in str(caught.value)[:100]
+        assert "55P03" in str(caught.value)[:100]
+        assert private not in str(caught.value)
+
+
+@pytest.mark.parametrize("outcome", ["success", "hold", "cancel", "stale"])
+def test_handled_lock_failure_does_not_label_later_outcome(monkeypatch, outcome):
+    from factory.execution import result_receipts
+
+    delivery = transport._DeliveryInvocation(handoff_guard=threading.Lock())
+    calls = []
+
+    def promote():
+        calls.append(1)
+        if len(calls) == 1:
+            raise _lock_not_available()
+        if outcome == "stale":
+            raise result_receipts.ReceiptRejected(409, "executor_ownership_changed")
+        return {}
+
+    async def check():
+        if outcome == "hold":
+            raise RuntimeError("held")
+        if outcome == "cancel":
+            raise asyncio.CancelledError()
+
+    async def no_wait(_delay):
+        pass
+
+    async def run():
+        token = transport._delivery_invocation.set(delivery)
+        try:
+            return await transport._promote_prepared_receipt(promote, delivery)
+        finally:
+            transport._delivery_invocation.reset(token)
+
+    monkeypatch.setattr(transport, "_check_delivery_admission", check)
+    monkeypatch.setattr(transport.asyncio, "sleep", no_wait)
+    if outcome == "success":
+        assert asyncio.run(run()) == {}
+    else:
+        error = {
+            "hold": RuntimeError,
+            "cancel": asyncio.CancelledError,
+            "stale": result_receipts.ReceiptRejected,
+        }[outcome]
+        with pytest.raises(error):
+            asyncio.run(run())
+    assert len(calls) == (2 if outcome in {"success", "stale"} else 1)
+    assert "database_failure" not in delivery.record()
+
+
+@pytest.mark.parametrize("staged", [False, True])
+@pytest.mark.parametrize("sqlstate", [None, "private-error-payload", "55P03"])
+def test_database_diagnostic_requires_staged_owner_and_bounded_sqlstate(
+    staged, sqlstate
+):
+    from types import SimpleNamespace
+
+    delivery = transport._DeliveryInvocation(
+        handoff_guard=threading.Lock() if staged else None
+    )
+    error = RuntimeError("private driver message")
+    error.orig = SimpleNamespace(sqlstate=sqlstate)
+    token = transport._delivery_invocation.set(delivery)
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            with transport._delivery_database_phase("receipt_prepare"):
+                raise error
+        assert caught.value is error
+        assert ("database_failure" in delivery.record()) is (
+            staged and sqlstate == "55P03"
+        )
+    finally:
+        transport._delivery_invocation.reset(token)
+
+
+@pytest.mark.parametrize(
     "override",
     [
         {"restore_from": "existing-workspace"},
