@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import runpy
 from datetime import datetime, timezone
 from unittest import mock
 
@@ -783,14 +784,32 @@ def test_setup_otel_installs_http_exporter_when_endpoint_is_present(monkeypatch)
     assert resource.attributes["service.name"] == "monolith-jobs"
 
 
-def test_shutdown_otel_flushes_and_shuts_down():
+def test_setup_otel_preserves_whitespace(monkeypatch):
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "   ")
+    with mock.patch.object(jobs_main.job_tracing, "setup") as setup:
+        assert jobs_main._setup_otel() is setup.return_value
+    setup.assert_called_once_with("   ", "monolith-jobs", jobs_main.logger)
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_main_preserves_exit_status_after_cleanup_failures(monkeypatch, exit_code):
     provider = mock.Mock()
-    provider.force_flush.return_value = True
+    provider.force_flush.side_effect = RuntimeError("flush failed")
+    provider.shutdown.side_effect = RuntimeError("shutdown failed")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "endpoint")
 
-    jobs_main._shutdown_otel(provider)
+    def exit_app(_app):
+        raise SystemExit(exit_code)
 
-    provider.force_flush.assert_called_once_with()
-    provider.shutdown.assert_called_once_with()
+    with (
+        mock.patch.object(jobs_main.job_tracing, "setup", return_value=provider),
+        mock.patch.object(typer.Typer, "__call__", exit_app),
+        pytest.raises(SystemExit) as raised,
+    ):
+        runpy.run_path(jobs_main.__file__, run_name="__main__")
+
+    assert raised.value.code == exit_code
+    assert provider.mock_calls == [mock.call.force_flush(), mock.call.shutdown()]
 
 
 def test_post_internal_retries_remote_protocol_errors(monkeypatch, caplog):

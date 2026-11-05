@@ -2,6 +2,7 @@
 
 import ast
 import json
+import os
 import re
 from pathlib import Path
 
@@ -62,6 +63,7 @@ def test_grid_job_has_an_explicit_minimal_runfiles_closure():
     assert 'srcs = ["stars/grid_gen/job.py"],  # keep' in job
     assert 'imports = ["."],  # keep' in job
     assert _list_attr(job, "deps") == {
+        ":job_tracing",
         ":stars_grid_generator",
         ":stars_grid_ingest",
         "@pip//boto3",
@@ -71,6 +73,44 @@ def test_grid_job_has_an_explicit_minimal_runfiles_closure():
         "@pip//opentelemetry_sdk",
     }
     assert ":pkg_stars" not in job
+
+
+def test_tracing_helper_has_only_otel_dependencies():
+    build = (MONOLITH / "BUILD").read_text()
+    helper = _named_target(build, "job_tracing")
+    assert 'srcs = ["core/job_tracing.py"]' in helper
+    assert _list_attr(helper, "deps") == {
+        "@pip//opentelemetry_api",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_sdk",
+    }
+    job_test = _named_target(build, "stars_grid_job_test")
+    assert ":job_tracing" in _list_attr(job_test, "deps")
+    for target in (helper, _named_target(build, "stars_grid_job"), job_test):
+        for forbidden in (":pkg_core", ":pkg_shared", ":monolith_backend", "app/"):
+            assert forbidden not in target
+
+
+def test_built_grid_runfiles_include_helper_and_existing_dependencies():
+    # The binary is test data, so Bazel builds it and merges its real runfiles.
+    root = Path(os.environ["TEST_SRCDIR"])
+    assert (MONOLITH / "core/job_tracing.py").is_file()
+    assert (MONOLITH / "core/db.py").is_file()  # Existing ingest closure.
+    assert (MONOLITH / "stars/grid_gen/job.py").is_file()
+    for relative in (
+        "opentelemetry/trace/__init__.py",
+        "opentelemetry/sdk/trace/__init__.py",
+        "opentelemetry/exporter/otlp/proto/http/trace_exporter/__init__.py",
+    ):
+        assert any(root.glob(f"**/{relative}")), relative
+    assert not (MONOLITH / "app").exists()
+    assert not (MONOLITH / "shared").exists()
+    assert not (MONOLITH / "framework").exists()
+    assert {p.name for p in (MONOLITH / "core").glob("*.py")} <= {
+        "__init__.py",
+        "db.py",
+        "job_tracing.py",
+    }
 
 
 def test_grid_runtime_image_is_amd64_only_and_non_root():
