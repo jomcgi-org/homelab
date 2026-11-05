@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta, timezone, tzinfo
+from io import BytesIO
+from struct import pack
 from zoneinfo import ZoneInfo
 
 from core.clock import (
@@ -57,7 +59,17 @@ def test_aware_preserves_supported_timezone_objects():
     for zone in (
         timezone.utc,
         timezone(timedelta(hours=-5, minutes=-30)),
-        ZoneInfo("Europe/London"),
+        # A fixed-offset TZif avoids depending on the host's timezone database.
+        ZoneInfo.from_file(
+            BytesIO(
+                b"TZif\x00"
+                + b"\x00" * 15
+                + pack(">6l", 0, 0, 0, 0, 1, 4)
+                + pack(">lbb", 3600, 0, 0)
+                + b"BST\x00"
+            ),
+            key="Test/BST",
+        ),
         FalseZone(),
     ):
         stamped = datetime(2026, 10, 25, 1, 30, tzinfo=zone, fold=1)
