@@ -16,6 +16,7 @@ the bytes host-side never unpacks them (Standing decision 3).
 import os
 
 from core.s3 import path_style_client
+from core.s3_upload import put_object
 
 
 def _bucket() -> str:
@@ -56,29 +57,13 @@ def put_archive(name: str, sha256: str, data: bytes) -> None:
     Creates the bucket once and retries on a missing bucket (mirrors
     artifact.s3.put_artifact / chat.store).
     """
-    from botocore.exceptions import ClientError
-
     client = _client()
     bucket = _bucket()
     key = _object_key(name, sha256)
 
-    def _put():
-        return client.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=data,
-            ContentType="application/zip",
-        )
-
-    try:
-        _put()
-    except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "")
-        if code in ("NoSuchBucket", "404"):
-            client.create_bucket(Bucket=bucket)
-            _put()
-        else:
-            raise
+    put_object(
+        client, bucket=bucket, key=key, body=data, content_type="application/zip"
+    )
 
 
 def delete_archive(name: str, sha256: str) -> None:

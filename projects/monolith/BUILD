@@ -452,6 +452,7 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        "@pip//botocore",
         "@pip//certifi",
         "@pip//fastapi",
         "@pip//fastmcp",
@@ -3998,6 +3999,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
+        "@pip//botocore",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -7212,6 +7214,7 @@ py_test(
     deps = [
         ":pkg_faas",
         "@pip//boto3",
+        "@pip//botocore",
         "@pip//pytest",
     ],
 )
@@ -8297,6 +8300,7 @@ py_test(
     deps = [
         ":pkg_knowledge",
         "@pip//boto3",
+        "@pip//botocore",
         "@pip//pytest",
     ],
 )
@@ -9246,8 +9250,29 @@ py_test(
     ],
 )
 
-# Hand-registered (trips is gazelle-excluded): SeaweedFS S3 image upload --
-# missing endpoint, scheme guard, head-hit skip, auto-create bucket.
+# Hand-registered storage tests for gazelle-excluded subpackages.
+py_test(
+    name = "core_s3_upload_test",
+    srcs = ["core/s3_upload_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        "@pip//botocore",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "shotter_s3_test",
+    srcs = ["shotter/s3_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shotter",
+        "@pip//botocore",
+        "@pip//pytest",
+    ],
+)
+
 py_test(
     name = "trips_s3_test",
     srcs = ["trips/s3_test.py"],
