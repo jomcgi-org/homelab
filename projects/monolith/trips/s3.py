@@ -14,6 +14,7 @@ import logging
 import os
 
 from core.s3 import path_style_client
+from core.s3_upload import put_object
 
 logger = logging.getLogger("monolith.trips.s3")
 
@@ -46,16 +47,6 @@ def put_image(image_key: str, data: bytes, content_type: str) -> None:
         if code not in ("NoSuchKey", "NoSuchBucket", "404"):
             raise
 
-    try:
-        client.put_object(
-            Bucket=bucket, Key=image_key, Body=data, ContentType=content_type
-        )
-    except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "")
-        if code in ("NoSuchBucket", "404"):
-            client.create_bucket(Bucket=bucket)
-            client.put_object(
-                Bucket=bucket, Key=image_key, Body=data, ContentType=content_type
-            )
-        else:
-            raise
+    put_object(
+        client, bucket=bucket, key=image_key, body=data, content_type=content_type
+    )

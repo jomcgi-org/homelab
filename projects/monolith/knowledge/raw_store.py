@@ -20,6 +20,7 @@ import logging
 import os
 
 from core.s3 import path_style_client
+from core.s3_upload import put_object
 
 logger = logging.getLogger("monolith.knowledge.raw_store")
 
@@ -64,19 +65,9 @@ def upload_raw(content_hash: str, content: str) -> None:
         if code not in ("404", "NoSuchKey", "NoSuchBucket", "NotFound"):
             raise
     body = content.encode("utf-8")
-    try:
-        client.put_object(
-            Bucket=RAW_BUCKET, Key=key, Body=body, ContentType="text/markdown"
-        )
-    except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "")
-        if code in ("NoSuchBucket", "404"):
-            client.create_bucket(Bucket=RAW_BUCKET)
-            client.put_object(
-                Bucket=RAW_BUCKET, Key=key, Body=body, ContentType="text/markdown"
-            )
-        else:
-            raise
+    put_object(
+        client, bucket=RAW_BUCKET, key=key, body=body, content_type="text/markdown"
+    )
 
 
 def fetch_raw(content_hash: str) -> str | None:

@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from core.s3 import path_style_client
+from core.s3_upload import put_object
 from shared.embedding import EmbeddingClient
 from chat.models import (
     Attachment,
@@ -46,8 +47,6 @@ def _blob_s3_put(sha256: str, data: bytes, content_type: str) -> bool:
     (no read path consumes them), so an upload miss is at worst an archival gap,
     never a chat-breaking error.
     """
-    from botocore.exceptions import ClientError
-
     bucket = os.environ.get("CHAT_BLOB_S3_BUCKET", "")
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "")
     if not bucket or not endpoint:
@@ -55,17 +54,7 @@ def _blob_s3_put(sha256: str, data: bytes, content_type: str) -> bool:
         return False
     client = path_style_client(endpoint)
     key = f"blobs/{sha256}"
-    try:
-        client.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
-    except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "")
-        if code in ("NoSuchBucket", "404"):
-            client.create_bucket(Bucket=bucket)
-            client.put_object(
-                Bucket=bucket, Key=key, Body=data, ContentType=content_type
-            )
-        else:
-            raise
+    put_object(client, bucket=bucket, key=key, body=data, content_type=content_type)
     return True
 
 
