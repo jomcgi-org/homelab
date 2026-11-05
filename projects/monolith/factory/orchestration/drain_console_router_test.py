@@ -12,6 +12,71 @@ from factory.orchestration import drain_console_router
 NOW = datetime.now(timezone.utc)
 
 
+@pytest.mark.parametrize("status", [200, 301, 503])
+def test_github_get_adapter(monkeypatch, status):
+    requests = []
+    real_client = httpx.Client
+    url = "https://api.github.com/repos/old-owner/repo"
+
+    def handler(request):
+        requests.append(request)
+        if status == 301 and str(request.url) == url:
+            return httpx.Response(301, headers={"Location": "/repositories/12345"})
+        return httpx.Response(503 if status == 503 else 200, json={})
+
+    monkeypatch.setenv("GITHUB_API_TOKEN", "fake-drain")
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    if status == 503:
+        with pytest.raises(httpx.HTTPStatusError):
+            drain_console_router._github_get(url)
+    else:
+        assert drain_console_router._github_get(url).status_code == 200
+    assert [str(request.url) for request in requests] == (
+        [url, "https://api.github.com/repositories/12345"] if status == 301 else [url]
+    )
+    for request in requests:
+        assert request.method == "GET"
+        assert request.extensions["timeout"] == dict.fromkeys(
+            ("connect", "read", "write", "pool"), 10.0
+        )
+        assert request.headers["User-Agent"] == "monolith-drain-console"
+        assert request.headers["Authorization"] == "Bearer fake-drain"
+        assert request.headers["X-GitHub-Api-Version"] == "2022-11-28"
+
+
+def test_enrichment_transport_cache_and_fallback(monkeypatch):
+    requests = []
+    real_client = httpx.Client
+    drain_console_router._PR_CACHE.clear()
+
+    def handler(request):
+        requests.append(request)
+        if request.url.path.endswith("/1"):
+            return httpx.Response(200, json={"title": "Cached title"})
+        return httpx.Response(503)
+
+    monkeypatch.setenv("GITHUB_API_TOKEN", "fake-drain")
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    pr = {"repo": "example/repo", "number": 1}
+    try:
+        assert drain_console_router._enrich_pr(pr)["title"] == "Cached title"
+        assert drain_console_router._enrich_pr(pr)["title"] == "Cached title"
+        assert len(requests) == 1
+        failed = {**pr, "number": 2}
+        assert drain_console_router._enrich_pr(failed) == failed
+        assert len(requests) == 2
+    finally:
+        drain_console_router._PR_CACHE.clear()
+
+
 def _client() -> TestClient:
     app = FastAPI()
     app.include_router(drain_console_router.router)

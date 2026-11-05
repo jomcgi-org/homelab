@@ -14,7 +14,7 @@ from sqlmodel import Session
 
 from core.env import flag
 from shared.invocation_outcomes import UNKNOWN_INVOCATION
-from core.github import GITHUB_API, GITHUB_REPO
+from core.github import GITHUB_API, GITHUB_REPO, github_get
 
 DOCFIX_REVIEW_TEMPLATE_VERSION = "docfix-review/luna@v1"
 DOCFIX_ALLOWED_PATH_GLOBS = ("docs/**", "**/README.md", "**/ARCHITECTURE.md")
@@ -242,14 +242,11 @@ def prune_completed_docfix_reviews(session: Session) -> int:
 
 
 def _github_get(url: str) -> httpx.Response:
-    headers = {"Accept": "application/vnd.github+json"}
-    token = os.environ.get("GITHUB_API_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    with httpx.Client(timeout=15.0, follow_redirects=True) as client:
-        response = client.get(url, headers=headers)
-        response.raise_for_status()
-        return response
+    response = github_get(
+        url, timeout=15.0, follow_redirects=True, user_agent="monolith-docfix"
+    )
+    response.raise_for_status()
+    return response
 
 
 def find_reviewable_docfix_prs(session: Session) -> list[int]:

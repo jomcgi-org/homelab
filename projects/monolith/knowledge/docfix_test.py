@@ -8,12 +8,73 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
 
+import httpx
 import pytest
 from sqlalchemy import text
 from sqlmodel import Session, create_engine
 
 from knowledge import docfix
 import factory.orchestration.drainer as drainer
+
+
+@pytest.mark.parametrize("status", [200, 301, 503])
+def test_github_get_adapter(monkeypatch, status):
+    requests = []
+    real_client = httpx.Client
+    url = "https://api.github.com/repos/old-owner/repo"
+
+    def handler(request):
+        requests.append(request)
+        if status == 301 and str(request.url) == url:
+            return httpx.Response(301, headers={"Location": "/repositories/12345"})
+        return httpx.Response(503 if status == 503 else 200, json={})
+
+    monkeypatch.setenv("GITHUB_API_TOKEN", "fake-docfix")
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    if status == 503:
+        with pytest.raises(httpx.HTTPStatusError):
+            docfix._github_get(url)
+    else:
+        assert docfix._github_get(url).status_code == 200
+    assert [str(request.url) for request in requests] == (
+        [url, "https://api.github.com/repositories/12345"] if status == 301 else [url]
+    )
+    for request in requests:
+        assert request.method == "GET"
+        assert request.extensions["timeout"] == dict.fromkeys(
+            ("connect", "read", "write", "pool"), 15.0
+        )
+        assert request.headers["User-Agent"] == "monolith-docfix"
+        assert request.headers["Authorization"] == "Bearer fake-docfix"
+        assert request.headers["X-GitHub-Api-Version"] == "2022-11-28"
+
+
+@pytest.mark.parametrize("failure", ["no-token", "status", "transport", "invalid-json"])
+def test_unavailable_docfix_sweep_returns_empty(monkeypatch, failure):
+    requests = []
+    real_client = httpx.Client
+
+    def handler(request):
+        requests.append(request)
+        if failure == "transport":
+            raise httpx.ConnectError("offline")
+        return httpx.Response(503 if failure == "status" else 200, text="invalid")
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    if failure == "no-token":
+        monkeypatch.delenv("GITHUB_API_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("GITHUB_API_TOKEN", "fake-docfix")
+    assert docfix.find_reviewable_docfix_prs(None) == []
+    assert len(requests) == (0 if failure == "no-token" else 1)
 
 
 @pytest.fixture(name="session")
