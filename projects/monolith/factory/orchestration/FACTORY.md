@@ -259,6 +259,14 @@ A planner decision applies together under one expected revision. The server owns
 
 Capacity releases only to the explicit reconciliation owner after fresh authoritative terminal proof. Uncertain permit settlement is always on.
 
+A native interactive `delivery_error` may release only its exact permit when
+fresh terminal guest evidence predates the first dispatch and the complete,
+unexpired receipt chain contains one matching attempted POST with its observer
+released. Missing, prepared, superseded or conflicting receipts, results, pending
+work, changed ownership and explicit holds refuse this proof. Factory and routine
+owners retain their existing paths. Settlement preserves the failed turn,
+unknown-outcome marker, cost, receipt and binding; it does not retry the turn.
+
 ### Guest reuse cleanup
 
 The invoke terminal path releases the exact receipt it fenced, then runs completion cleanup. A receipt inside its acceptance window with nothing committed stays fenced.
