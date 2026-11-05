@@ -18,6 +18,8 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
+from core import job_tracing
+
 logger = logging.getLogger("monolith.stars.grid_gen")
 
 
@@ -102,26 +104,13 @@ def _download(s3, bucket: str, key: str, destination: Path) -> None:
 def _setup_otel() -> tuple[object | None, object | None]:
     """Install tracing when an OTLP endpoint is configured."""
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "").strip()
-    if not endpoint:
+    provider = job_tracing.setup(endpoint, "monolith-stars-grid", logger)
+    if provider is None:
         return None, None
 
     try:
         from opentelemetry import trace
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-            OTLPSpanExporter,
-        )
-        from opentelemetry.sdk.resources import Resource
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-        provider = TracerProvider(
-            resource=Resource.create({"service.name": "monolith-stars-grid"})
-        )
-        provider.add_span_processor(
-            BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint))
-        )
-        trace.set_tracer_provider(provider)
-        logger.info("OpenTelemetry instrumentation enabled")
         return provider, trace.get_tracer("monolith.stars.grid_gen")
     except Exception:
         logger.warning("Failed to initialize OpenTelemetry", exc_info=True)
@@ -130,17 +119,7 @@ def _setup_otel() -> tuple[object | None, object | None]:
 
 def _shutdown_otel(provider: object | None) -> None:
     """Flush job spans without allowing telemetry to change the exit status."""
-    if provider is None:
-        return
-    try:
-        if not provider.force_flush():
-            logger.warning("OpenTelemetry force_flush timed out")
-    except Exception:
-        logger.warning("Failed to flush OpenTelemetry", exc_info=True)
-    try:
-        provider.shutdown()
-    except Exception:
-        logger.warning("Failed to shut down OpenTelemetry", exc_info=True)
+    job_tracing.shutdown(provider, logger)
 
 
 def _span(tracer: object | None, name: str):
