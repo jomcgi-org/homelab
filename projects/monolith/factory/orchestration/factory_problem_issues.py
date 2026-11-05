@@ -557,6 +557,7 @@ def _latest_source_id(db: Session, source: str) -> int:
         select(FactoryAudit.id)
         .where(_event_filter(source, 0))
         .order_by(FactoryAudit.id.desc())
+        .limit(1)
     ).first()
     return int(row or 0)
 
@@ -665,6 +666,134 @@ def _pending_started(db: Session):
     if not _terminal(db, fingerprint, row.task_id):
         return row, detail
     return None
+
+
+def _status_event(row):
+    if row is None:
+        return None
+    try:
+        detail = json.loads(row.detail_json or "{}")
+    except (TypeError, ValueError):
+        detail = {}
+    if not isinstance(detail, dict):
+        detail = {}
+    result = {
+        "audit_id": row.id,
+        "action": row.action,
+        "at": aware(row.created_at).isoformat(),
+        "task_id": row.task_id,
+    }
+    # Public issue text, prompts, exception messages and raw audit payloads are
+    # deliberately absent from this operator metadata projection.
+    for key in (
+        "source_audit_id",
+        "source_run_id",
+        "recovered_run_id",
+        "rollout_audit_id",
+        "issue_number",
+    ):
+        if type(detail.get(key)) is int:
+            result[key] = detail[key]
+    if detail.get("source") in PROBLEM_ISSUE_SOURCES:
+        result["source"] = detail["source"]
+    for key in ("node_key", "repair_task_id"):
+        value = detail.get(key)
+        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", value):
+            result[key] = value
+    reason = detail.get("reason")
+    if isinstance(reason, str) and re.fullmatch(r"[a-z_]{1,80}", reason):
+        result["reason"] = reason
+    return result
+
+
+def recovery_status(db: Session, control) -> dict:
+    """Read the actual repair producer ledger without observing or advancing it.
+
+    Refill checkpoints describe a different producer. Report source backlog and
+    exact recovery evidence separately; an enabled switch or a finished refill
+    must never be presented as a successful repair.
+    """
+    policy = json.loads(control.policy_json or "{}")
+    block = problem_issues_policy(policy)
+    effective = _effective(block)
+    observed = db.exec(
+        select(FactoryAudit)
+        .where(FactoryAudit.action == "problem_issue_policy_observed")
+        .order_by(FactoryAudit.id.desc())
+        .limit(1)
+    ).first()
+    detail = json.loads(observed.detail_json or "{}") if observed else {}
+    policy_observed = detail.get("effective_sources") == effective
+    sources = {}
+    for source in sorted(RECOVERY_SOURCES):
+        watermark = (detail.get("watermarks") or {}).get(source)
+        cursor = (
+            _cursor(db, source, watermark)
+            if type(watermark) is int and watermark >= 0
+            else None
+        )
+        candidate = None
+        if effective[source] and policy_observed and cursor is not None:
+            candidate = db.exec(
+                select(FactoryAudit)
+                .where(_event_filter(source, cursor))
+                .order_by(FactoryAudit.id)
+                .limit(1)
+            ).first()
+        sources[source] = {
+            "enabled": effective[source],
+            "watermark": watermark,
+            "cursor": cursor,
+            "latest_source_audit_id": _latest_source_id(db, source),
+            "next_event": _status_event(candidate),
+            "state": (
+                "disabled"
+                if not effective[source]
+                else "policy_not_observed"
+                if not policy_observed or cursor is None
+                else "pending_source_event"
+                if candidate is not None
+                else "no_new_source_events"
+            ),
+        }
+    events = db.exec(
+        select(FactoryAudit)
+        .where(FactoryAudit.action.startswith("problem_issue_"))
+        .order_by(FactoryAudit.id.desc())
+        .limit(11)
+    ).all()
+    checkpoints = {}
+    for action in (
+        "problem_issue_recovery_watch",
+        "problem_issue_created",
+        "problem_issue_recovery_observed",
+    ):
+        row = db.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action == action)
+            .order_by(FactoryAudit.id.desc())
+            .limit(1)
+        ).first()
+        checkpoints[action] = _status_event(row)
+    pending = _pending_started(db)
+    return {
+        "observed_at": _now().isoformat(),
+        "control_enabled": control.state == "enabled",
+        "delivery_enabled": _delivery_enabled(policy),
+        "policy_observed": policy_observed,
+        "policy_observation": _status_event(observed),
+        "sources": sources,
+        "pending_write": _status_event(pending[0]) if pending else None,
+        "checkpoints": checkpoints,
+        "recent_events": [_status_event(row) for row in events[:10]],
+        "events_truncated": len(events) > 10,
+        "coverage": (
+            "Persisted repair-producer metadata only. Source backlog is not "
+            "eligibility: quota, GitHub ownership and retry authority are not "
+            "evaluated. Reads do not advance watermarks, publish, resume or "
+            "authorize execution."
+        ),
+    }
 
 
 def _discover(repo: str, marker: str, block: dict) -> tuple[list[int], bool]:
