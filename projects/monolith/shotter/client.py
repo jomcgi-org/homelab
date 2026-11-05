@@ -1,6 +1,6 @@
 """Broker for the EmberVM shotter task workload (website snapshotter).
 
-Mirrors sandbox/client.py's POST-with-Idempotency-Key shape: a fresh task per
+Uses shared.embervm_submit for HTTP dispatch: a fresh task per
 call, dispatched synchronously (``?wait=true``), returning the guest's
 response verbatim. shotter.mcp reaches ``capture`` through this module
 (``client.capture(...)``), not via a name bound at import time, so a unit
@@ -16,6 +16,7 @@ import uuid
 
 import httpx
 
+from shared.embervm_submit import submit_task
 from shared.k8s_auth import auth_headers
 
 logger = logging.getLogger(__name__)
@@ -86,26 +87,19 @@ async def capture(
         "Idempotency-Key": uuid.uuid4().hex,
     }
 
-    async with httpx.AsyncClient() as client:
-        # Set after construction rather than via the AsyncClient(timeout=...)
-        # constructor kwarg: a hermetic unit test's fake transport stands in
-        # for the whole httpx.AsyncClient class with a bare, zero-argument
-        # constructor, and this reaches the same effective per-request
-        # timeout without requiring that fake to also accept a kwarg it
-        # never reads.
-        client.timeout = httpx.Timeout(
-            _READ_TIMEOUT_SECONDS, connect=_CONNECT_TIMEOUT_SECONDS
+    timeout = httpx.Timeout(_READ_TIMEOUT_SECONDS, connect=_CONNECT_TIMEOUT_SECONDS)
+    try:
+        resp = await submit_task(
+            base_url=embervm_url,
+            workload=SHOTTER_WORKLOAD,
+            timeout=timeout,
+            json=payload,
+            headers=headers,
         )
-        try:
-            resp = await client.post(
-                f"{embervm_url}/v1/workloads/{SHOTTER_WORKLOAD}/tasks?wait=true",
-                json=payload,
-                headers=headers,
-            )
-        except (TimeoutError, httpx.TimeoutException) as exc:
-            raise ToolTimeout(
-                f"shotter capture of {url!r} exceeded the client timeout budget "
-                f"of {_READ_TIMEOUT_SECONDS}s"
-            ) from exc
-        resp.raise_for_status()
-        return resp.json()
+    except (TimeoutError, httpx.TimeoutException) as exc:
+        raise ToolTimeout(
+            f"shotter capture of {url!r} exceeded the client timeout budget "
+            f"of {_READ_TIMEOUT_SECONDS}s"
+        ) from exc
+    resp.raise_for_status()
+    return resp.json()

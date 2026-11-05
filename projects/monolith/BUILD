@@ -2911,6 +2911,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_sandbox",
+        ":pkg_shared",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -3104,6 +3105,18 @@ py_test(
         ":pkg_shared",
         "@pip//opentelemetry_sdk",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "shared_embervm_submit_test",
+    srcs = ["shared/embervm_submit_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
     ],
 )
 
@@ -7232,8 +7245,10 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_faas",
+        ":pkg_shared",
         "@pip//httpx",
         "@pip//pytest",
+        "@pip//pytest_asyncio",
     ],
 )
 
@@ -8771,6 +8786,10 @@ bdd_test(
     srcs = [
         "shotter/tests/__init__.py",
         "shotter/tests/bdd_mcp_tool_test.py",
+    ],
+    deps = [
+        ":pkg_shared",
+        "@pip//httpx",
     ],
 )
 
