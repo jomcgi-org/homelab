@@ -68,6 +68,24 @@ application keeps the shared default login. Enabling it needs the
 `https://auth.jomcgi.dev/source/oauth/callback/discord/`. Discord identities
 match by account id only, never by email, and create external users under the
 `grimoire` path with no group.
+
+Disabled does not mean identical manifests: the server and worker still gain
+optional Secret environment references, and the Grimoire blueprint contains a
+splice-marker comment. No Discord source or Discord OnePasswordItem is rendered.
+Registration, credential provisioning, owner approval of enablement and disposable
+account checks remain outside this staged change, along with campaign-creation
+restrictions and invitation/platform-auth decisions in #7461.
+
+The source contract was checked against Authentik's pinned
+[`version/2026.5.6`](https://github.com/goauthentik/authentik/tree/version/2026.5.6):
+`authentik/sources/oauth/views/callback.py` supplies `info` to property mappings
+and `oauth_userinfo` to the flow policy context; `core/sources/flow_manager.py`
+carries that context into enrollment. `sources/oauth/types/discord.py` requests
+`email` and `identify`. `stages/identification/stage.py` validates the embedded
+password against the selected stage's backends. These source checks and real-Helm
+render tests do not establish a working Discord sign-in; that needs separately
+authorized disposable-account validation before enablement.
+
 authentik serves discovery per application at
 `/application/o/<slug>/.well-known/openid-configuration`. Ember's browser SSO
 remains intentionally unconfigured under ADR 032.

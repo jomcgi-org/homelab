@@ -27,16 +27,18 @@ Loader.add_constructor(
 )
 
 
-def render(enabled):
+def render(enabled, *, management=True, hub=False):
+    command = [os.environ.get("HELM_BIN", "helm"), "template", "authentik", str(CHART)]
+    if hub:
+        command += ["-f", str(CHART / "values-gke.yaml")]
+    command += [
+        "--set",
+        f"grimoireDiscordSource.enabled={str(enabled).lower()}",
+        "--set",
+        f"platformManagement.enabled={str(management).lower()}",
+    ]
     result = subprocess.run(
-        [
-            os.environ.get("HELM_BIN", "helm"),
-            "template",
-            "authentik",
-            str(CHART),
-            "--set",
-            f"grimoireDiscordSource.enabled={str(enabled).lower()}",
-        ],
+        command,
         check=False,
         capture_output=True,
         text=True,
@@ -83,9 +85,11 @@ def test_disabled_by_default_and_secret_references_are_optional():
     assert not any("oauthsource" in content for content in blueprints.values())
 
 
-def test_enabled_changes_only_grimoire_and_resolves_in_creation_order():
-    before, _ = render(False)
-    after, items = render(True)
+@pytest.mark.parametrize("management", [False, True])
+@pytest.mark.parametrize("hub", [False, True])
+def test_enabled_changes_only_grimoire_and_resolves_in_creation_order(management, hub):
+    before, _ = render(False, management=management, hub=hub)
+    after, items = render(True, management=management, hub=hub)
     assert "grimoire-discord-oauth" in items
     assert set(after) == set(before)
     assert {k for k in after if after[k] != before[k]} == {"grimoire-auth.yaml"}
@@ -100,6 +104,7 @@ def test_enabled_changes_only_grimoire_and_resolves_in_creation_order():
     provider["attrs"]["authentication_flow"] = KeyReference("discord-authentication")
     parsed = yaml.load(after["grimoire-auth.yaml"], Loader=Loader)
     assert parsed == expected
+    assert ("platform-profile" in references(provider)) is management
 
     created = set()
     for entry in parsed["entries"]:
@@ -109,6 +114,41 @@ def test_enabled_changes_only_grimoire_and_resolves_in_creation_order():
         )
         if entry.get("id"):
             created.add(entry["id"])
+
+
+def test_grimoire_login_retains_password_mfa_and_login_stages():
+    entries = fragment()
+    identification = next(e for e in entries if e.get("id") == "discord-identification")
+    attrs = identification["attrs"]
+    assert set(attrs["user_fields"]) == {"username", "email"}
+    assert attrs["password_stage"] == [
+        "authentik_stages_password.passwordstage",
+        ["name", "default-authentication-password"],
+    ]
+    assert attrs["sources"] == ["discord-source"]
+    bindings = [
+        e["identifiers"]
+        for e in entries
+        if e["model"] == "authentik_flows.flowstagebinding"
+        and e["identifiers"]["target"] == "discord-authentication"
+    ]
+    assert [(b["order"], b["stage"]) for b in bindings] == [
+        ("10", "discord-identification"),
+        (
+            "30",
+            [
+                "authentik_stages_authenticator_validate.authenticatorvalidatestage",
+                ["name", "default-authentication-mfa-validation"],
+            ],
+        ),
+        (
+            "100",
+            [
+                "authentik_stages_user_login.userloginstage",
+                ["name", "default-authentication-login"],
+            ],
+        ),
+    ]
 
 
 def test_fragment_provisions_no_access():
