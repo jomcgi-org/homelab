@@ -787,6 +787,14 @@ attempt authority; source holds and pause identity are rechecked at settlement.
 Legacy cards and uncertainty remain fenced. Public tickets carry only
 scoped code repairs and synthetic acceptance criteria.
 
+**Why.** Backlog-refill completion does not prove repair discovery or recovery.
+The operator status nests the repair producer's own persisted policy observation,
+source watermarks/cursors, next event, pending publication and recovery checkpoints
+under `refill.problem_issues.recovery`. This read never advances the producer or
+infers quota, ownership, retry permission or delivery from enabled switches.
+It exposes bounded metadata, excluding prompts and raw audit payloads, so #7583's
+operational acceptance can distinguish missing signals from unfinished repairs.
+
 **Why.** Producer-created repairs need an authorization owner at native landing
 (#7601, follow-up to #7583). An operator can enable a finite trial or explicitly
 select ongoing standing delegation through existing guarded controls. Ongoing
