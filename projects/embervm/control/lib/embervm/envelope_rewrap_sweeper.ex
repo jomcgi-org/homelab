@@ -366,7 +366,7 @@ defmodule Embervm.EnvelopeRewrapSweeper do
   defp finish_result(result) do
     complete =
       result.capped == 0 and result.conflicts == 0 and result.refused == 0 and
-        result.errors == 0
+        result.invalid == 0
 
     Map.put(result, :complete, complete)
   end
