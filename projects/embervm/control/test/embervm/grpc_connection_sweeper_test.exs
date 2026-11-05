@@ -54,8 +54,8 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     def handle_call(:which_children, _from, state), do: {:reply, state.listed, state}
   end
 
-  # These fixtures are local to the metadata tests. Monitor cleanup even when
-  # an assertion fails, including the child whose init never acknowledges.
+  # Monitor fixture cleanup even when an assertion fails, including the child
+  # whose init never acknowledges.
   defp stop_fixture_processes(pids) do
     monitors = Enum.map(pids, &{&1, Process.monitor(&1)})
     Enum.each(pids, &Process.exit(&1, :kill))
@@ -499,6 +499,86 @@ defmodule Embervm.GrpcConnectionSweeperTest do
 
     # With the fixed fail-safe, the sweep is skipped and returns [].
     assert result == []
+  end
+
+  for outage <- [:empty_map, :raise, :exit], recovery <- [:stale, :live] do
+    @tag :registry_outage_recovery
+    test "registry #{outage} outage preserves strikes before #{recovery} recovery" do
+      target = "10.42.9.99:9090"
+      supervisor = mock_supervisor() |> track_fixture()
+      child_pid = mock_child("ipv4:#{target}") |> track_fixture()
+      MockSupervisor.set_children(supervisor, [child(child_pid)])
+      {terminate_fun, calls} = terminate_child_collector()
+      track_fixture(calls)
+      {:ok, mode} = Agent.start_link(fn -> :stale end)
+      track_fixture(mode)
+
+      status_fun = fn ->
+        # Read first so raise/exit happens in the sweeper, never in the Agent.
+        registry_mode = Agent.get(mode, & &1)
+
+        case registry_mode do
+          :stale -> %{"node-0" => %{address: "10.42.3.34:9090"}}
+          :live -> %{"node-0" => %{address: target}}
+          :empty_map -> %{}
+          :raise -> raise "registry outage"
+          :exit -> exit(:noproc)
+        end
+      end
+
+      sweeper =
+        start_sweeper(
+          status_fun: status_fun,
+          supervisor: supervisor,
+          terminate_child_fun: terminate_fun,
+          strikes_required: 3,
+          sweep_interval_ms: 0
+        )
+        |> track_fixture()
+
+      for strike <- 1..2 do
+        assert GrpcConnectionSweeper.sweep_now(sweeper) == []
+        assert :sys.get_state(sweeper).strikes == %{{:target, target} => strike}
+        assert Agent.get(calls, & &1) == []
+        assert Process.alive?(child_pid)
+        assert Process.alive?(sweeper)
+      end
+
+      Agent.update(mode, fn _ -> unquote(outage) end)
+
+      for _ <- 1..2 do
+        assert GrpcConnectionSweeper.sweep_now(sweeper) == []
+        assert :sys.get_state(sweeper).strikes == %{{:target, target} => 2}
+        assert Agent.get(calls, & &1) == []
+        assert Agent.get(mode, & &1) == unquote(outage)
+        assert Process.alive?(child_pid)
+        assert Process.alive?(sweeper)
+      end
+
+      Agent.update(mode, fn _ -> unquote(recovery) end)
+
+      case unquote(recovery) do
+        :stale ->
+          assert [{^child_pid, reason}] = GrpcConnectionSweeper.sweep_now(sweeper)
+          assert reason =~ "reapable for 3 consecutive sweeps"
+          assert :sys.get_state(sweeper).strikes == %{{:target, target} => 3}
+          assert Agent.get(calls, & &1) == [child_pid]
+          # The collector records the termination request without killing it.
+          assert Process.alive?(child_pid)
+          assert Process.alive?(sweeper)
+
+        :live ->
+          for _ <- 1..3 do
+            assert GrpcConnectionSweeper.sweep_now(sweeper) == []
+            assert :sys.get_state(sweeper).strikes == %{}
+            assert Agent.get(calls, & &1) == []
+            assert Process.alive?(child_pid)
+            assert Process.alive?(sweeper)
+          end
+      end
+
+      assert :sys.get_state(child_pid).target == "ipv4:#{target}"
+    end
   end
 
   test "sweeper can be disabled with sweep_interval_ms = 0" do
