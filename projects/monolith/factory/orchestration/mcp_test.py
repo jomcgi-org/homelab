@@ -1439,6 +1439,10 @@ def test_status_payload_trims_the_board_and_stamps_coverage(db, monkeypatch):
     assert [item["issue_number"] for item in payload["needs_operator"]] == [4]
     # An empty active list must never read as an idle fleet.
     assert payload["coverage"]["cloud_sessions"] == "not_indexed"
+    recovery = payload["refill"]["problem_issues"]["recovery"]
+    assert recovery["policy_observation"] is None
+    assert recovery["checkpoints"]["problem_issue_recovery_observed"] is None
+    assert recovery["sources"]["workflow_stranded"]["state"] == "disabled"
 
 
 def test_status_payload_includes_recent_on_request(db):
