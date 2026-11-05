@@ -656,6 +656,16 @@ implementation starts (#5956).
 
 ### Execution and recovery rationale
 
+**Why.** An interactive follow-up can POST to an already evicted guest and then
+fail while restoring it (#7583). The old terminal timestamp precedes the local
+error, so the general cessation ordering guard leaves its permit uncertain.
+The permit supervisor can settle this exact capacity reservation when a fresh
+terminal view predates its first dispatch and the complete retained receipt
+chain names only that guest. Terminal guest IDs cannot relight; a replacement
+POST would require another committed receipt. The proof keeps receipt locks,
+claim ownership, retention bounds and all result/hold checks. It preserves the
+turn, unknown outcome, cost and workspace binding, and grants no retry.
+
 **Why.** A truncated native error cannot distinguish staged receipt preparation,
 promotion and admission-recheck failures (#7583). The transport records a bounded
 phase, SQLSTATE, promotion attempt and intent flag with numeric dispatch identity

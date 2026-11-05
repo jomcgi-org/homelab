@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "e9f64ef7d4",
+  "commit": "3691fb768",
   "nodes": [
     {
       "key": "console-caller",
@@ -370,6 +370,14 @@
       "layer": "enforcement",
       "maturity": "built",
       "evidence": "projects/monolith/factory/execution/result_receipts.py:97,160,230"
+    },
+    {
+      "key": "permit-supervisor",
+      "label": "Exact uncertain permit settlement owner",
+      "view": "logical",
+      "layer": "enforcement",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/permit_supervision.py:781"
     }
   ],
   "control_actions": [
@@ -822,6 +830,15 @@
       "to": "receipt-attempt",
       "maturity": "built",
       "evidence": "projects/monolith/factory/execution/mcp.py:915,954"
+    },
+    {
+      "key": "permit-supervisor.settle",
+      "label": "Settle exact interactive permit from terminal-before-dispatch evidence",
+      "view": "logical",
+      "from": "permit-supervisor",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/permit_supervision.py:108,1040"
     }
   ],
   "feedback": [
@@ -1053,6 +1070,20 @@
       "to": "agent-runner",
       "signal": "Pending or published attempt intent survives cancellation; neither proves guest receipt or cessation",
       "evidence": "projects/monolith/factory/execution/transport.py:1980,2014; projects/monolith/factory/execution/mcp.py:1483"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "permit-supervisor",
+      "signal": "Locked exact permit, last turn, absent pending claim and complete unexpired receipt chain",
+      "evidence": "projects/monolith/factory/execution/permit_supervision.py:108"
+    },
+    {
+      "view": "logical",
+      "from": "embervm",
+      "to": "permit-supervisor",
+      "signal": "Fresh exact terminal guest identity, generation and invocation timestamps",
+      "evidence": "projects/monolith/factory/execution/permit_supervision.py:781"
     }
   ]
 }
