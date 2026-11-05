@@ -1970,6 +1970,58 @@ def test_staged_promotion_lock_collision_retries_before_one_post(database, monke
     assert state["turns"][0]["terminal_reason"] == "end_turn"
 
 
+@pytest.mark.parametrize("failure", ["exhaustion", "retry_admission"])
+def test_staged_lock_failure_retains_phase_in_terminal_turn(
+    database, monkeypatch, failure
+):
+    monkeypatch.setenv("AGENT_STAGED_RECEIPTS_ENABLED", "true")
+    sid = queue(database)
+    attempts = []
+    check = transport._check_delivery_admission
+
+    class LockNotAvailable(Exception):
+        sqlstate = "55P03"
+
+    def busy(*_args):
+        attempts.append(1)
+        raise OperationalError("private statement", {}, LockNotAvailable())
+
+    async def admission():
+        if attempts and failure == "retry_admission":
+            raise OperationalError("private recheck", {}, LockNotAvailable())
+        await check()
+
+    async def no_wait(_delay):
+        pass
+
+    async def handler(_request):
+        pytest.fail("pre-intent database failure must never POST")
+
+    monkeypatch.setattr(result_receipts, "attempt_prepared_receipt", busy)
+    monkeypatch.setattr(transport, "_check_delivery_admission", admission)
+    monkeypatch.setattr(transport.asyncio, "sleep", no_wait)
+    requests = fake_http(monkeypatch, handler)
+    asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
+
+    assert len(attempts) == (5 if failure == "exhaustion" else 1)
+    assert requests == []
+    state = snapshot(database, sid)
+    assert state["pending"] == []
+    assert state["permits"][0]["state"] == "settled"
+    assert state["permits"][0]["outcome"] == "not_invoked"
+    assert state["turns"][0]["terminal_reason"] == "error"
+    assert state["turns"][0]["cost_usd"] is None
+    with Session(database) as db:
+        receipt = db.exec(select(AgentResultReceipt)).one()
+        assert receipt.attempt_phase == "prepared"
+        assert receipt.superseded_at == receipt.created_at
+        assert receipt.result_body is None
+    phase = "receipt_promotion" if failure == "exhaustion" else "promotion_admission"
+    assert phase in state["session"]["voice_summary"]
+    assert "55P03" in state["session"]["voice_summary"]
+    assert "private" not in state["session"]["voice_summary"]
+
+
 def test_old_callback_cannot_settle_the_next_attempt_or_its_first_hold(
     database, monkeypatch
 ):

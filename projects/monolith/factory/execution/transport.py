@@ -13,6 +13,7 @@ import asyncio
 import base64
 import binascii
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -70,6 +71,8 @@ class _DeliveryInvocation:
     observer_record: dict | None = None
     handoff_guard: object | None = None
     attempt_pending: bool = False
+    # Diagnostic only. Never used as execution, settlement or retry evidence.
+    database_failure: dict | None = None
 
     def publish(self) -> None:
         if self.observer_record is not None:
@@ -86,12 +89,39 @@ class _DeliveryInvocation:
         }
         if self.handoff_guard is not None:
             record["attempt_pending"] = self.attempt_pending
+        if self.database_failure is not None:
+            record["database_failure"] = self.database_failure
         return record
 
 
 _delivery_invocation: ContextVar[_DeliveryInvocation | None] = ContextVar(
     "agent_sessions.delivery_invocation", default=None
 )
+
+
+@contextmanager
+def _delivery_database_phase(phase: str, *, promotion_attempt: int | None = None):
+    """Identify staged handoff failures without copying driver error payloads."""
+    try:
+        yield
+    except Exception as exc:
+        delivery = _delivery_invocation.get()
+        original = getattr(exc, "orig", exc)
+        sqlstate = getattr(original, "sqlstate", getattr(original, "pgcode", None))
+        if (
+            delivery is not None
+            and delivery.handoff_guard is not None
+            and isinstance(sqlstate, str)
+            and re.fullmatch(r"[0-9A-Z]{5}", sqlstate)
+        ):
+            delivery.database_failure = {
+                "phase": phase,
+                "sqlstate": sqlstate,
+                "attempted": delivery.attempted,
+            }
+            if promotion_attempt is not None:
+                delivery.database_failure["promotion_attempt"] = promotion_attempt
+        raise
 
 
 class EmberTurnNotInvoked(EmberVMTransportError):
@@ -225,7 +255,10 @@ async def _promote_prepared_receipt(promote, delivery):
 
     for attempt in range(len(_RECEIPT_PROMOTION_LOCK_BACKOFF_SECONDS) + 1):
         try:
-            return await asyncio.to_thread(promote)
+            with _delivery_database_phase(
+                "receipt_promotion", promotion_attempt=attempt + 1
+            ):
+                return await asyncio.to_thread(promote)
         except Exception as exc:  # noqa: BLE001 - SQLAlchemy wraps driver errors.
             # on_attempt publishes conservative intent before commit.  Once it
             # ran, even a lock-shaped commit failure is uncertain and must not
@@ -236,9 +269,15 @@ async def _promote_prepared_receipt(promote, delivery):
                 or attempt == len(_RECEIPT_PROMOTION_LOCK_BACKOFF_SECONDS)
             ):
                 raise
+            # This refusal was handled. A later hold/cancellation/success must
+            # not inherit it as its terminal database failure.
+            delivery.database_failure = None
             # A retry is a new start decision.  Recheck the existing factory
             # admission callback so shutdown, cancellation and task holds win.
-            await _check_delivery_admission()
+            with _delivery_database_phase(
+                "promotion_admission", promotion_attempt=attempt + 1
+            ):
+                await _check_delivery_admission()
             logger.warning(
                 "staged receipt promotion lock busy; retrying %d/%d",
                 attempt + 2,
@@ -1773,7 +1812,32 @@ class EmberVmShimTransport:
                     span.set_attribute("agent.terminal_reason", turn.terminal_reason)
                 return turn, used
         except Exception as exc:
+            failure = invocation.database_failure
+            if failure is not None:
+                identity = {
+                    key: value
+                    for key, value in (
+                        ("session_id", agent_session_id),
+                        ("turn_seq", turn_seq),
+                        ("dispatch_count", dispatch_count),
+                    )
+                    if type(value) is int and value > 0
+                }
+                logger.warning(
+                    "delivery_database_failure %s",
+                    json.dumps({**identity, **failure}, sort_keys=True),
+                )
             if not invocation.attempted:
+                if failure is not None:
+                    # The native voice summary keeps only 100 characters.
+                    # Retain the phase/code there, with no SQL or bound values.
+                    message = (
+                        f"Database failure phase={failure['phase']} "
+                        f"sqlstate={failure['sqlstate']}"
+                    )
+                    if "promotion_attempt" in failure:
+                        message += f" promotion_attempt={failure['promotion_attempt']}"
+                    raise EmberTurnNotInvoked(message) from exc
                 raise EmberTurnNotInvoked(str(exc)) from exc
             # A nested delivery can fail before its own POST after this caller
             # already sent one. Its narrower evidence cannot settle this turn.
@@ -1984,7 +2048,8 @@ class EmberVmShimTransport:
                 headers["X-Ember-Residency-Operation"] = residency["operation_id"]
                 headers["X-Ember-Residency-Epoch"] = residency["residency_epoch"]
             try:
-                await _check_delivery_admission()
+                with _delivery_database_phase("receipt_admission"):
+                    await _check_delivery_admission()
                 receipt = None
                 delivery = _delivery_invocation.get()
                 staged = bool(delivery and delivery.handoff_guard is not None)
@@ -1995,15 +2060,16 @@ class EmberVmShimTransport:
 
                     # Each physical POST gets a fresh identity, including
                     # transport recovery within one pending dispatch count.
-                    receipt = await asyncio.to_thread(
-                        result_receipts.prepare_receipt,
-                        agent_session_id,
-                        receipt_claim_owner,
-                        dispatch_count,
-                        current.session_id,
-                        request_body,
-                        **({"staged": True} if staged else {}),
-                    )
+                    with _delivery_database_phase("receipt_prepare"):
+                        receipt = await asyncio.to_thread(
+                            result_receipts.prepare_receipt,
+                            agent_session_id,
+                            receipt_claim_owner,
+                            dispatch_count,
+                            current.session_id,
+                            request_body,
+                            **({"staged": True} if staged else {}),
+                        )
                     payload["result_receipt"] = receipt
                     body = json.dumps(payload)
                     # Publish the identity of this physical POST before it is
@@ -2052,7 +2118,8 @@ class EmberVmShimTransport:
                     async with httpx.AsyncClient(timeout=timeout) as client:
                         # Receipt preparation yields after the admission
                         # check above. Fence a shutdown in that window too.
-                        await _check_delivery_admission()
+                        with _delivery_database_phase("prepared_admission"):
+                            await _check_delivery_admission()
                         if staged:
                             delivery.attempt_pending = True
                             delivery.publish()
@@ -2071,7 +2138,8 @@ class EmberVmShimTransport:
                             observation_ready.set()
                             # Cancellation or shutdown after committed attempt
                             # intent remains uncertain, never not_invoked.
-                            await _check_delivery_admission()
+                            with _delivery_database_phase("attempted_admission"):
+                                await _check_delivery_admission()
                         # Mark before yielding to I/O. Even a connect/write/read
                         # failure after this point retains the conservative hold.
                         invocation = _delivery_invocation.get()
