@@ -127,11 +127,6 @@ type Dataset struct {
 	// so limits can loosen the default test and a bad hour's weather is
 	// known.
 	Complete bool
-	// fullThrough and noneFrom index CoverageOf: days up to fullThrough are
-	// full, days from noneFrom have none, and the rest are partial. A plan
-	// asks for every walk on every day, so the answer is worked out once.
-	fullThrough, noneFrom int32
-	indexed               bool
 }
 
 type doc struct {
@@ -254,7 +249,6 @@ func Parse(body []byte, version string) (*Dataset, error) {
 			ds.HourlyUntil = end
 		}
 	}
-	ds.indexCoverage()
 	return ds, nil
 }
 
@@ -270,40 +264,6 @@ const (
 func localHour(day int32, hour int) time.Time {
 	y, m, d := time.Unix(int64(day)*86400, 0).UTC().Date()
 	return time.Date(y, m, d, hour, 0, 0, 0, london)
-}
-
-// CoverageOf is how much of day's daylight lies before the hourly horizon.
-func (d *Dataset) CoverageOf(day int32) Coverage {
-	if !d.indexed {
-		return d.coverage(day)
-	}
-	switch {
-	case day <= d.fullThrough:
-		return CoverageFull
-	case day >= d.noneFrom:
-		return CoverageNone
-	}
-	return CoveragePartial
-}
-
-// indexCoverage fills the CoverageOf index. Coverage only falls as days get
-// later, so the two boundaries sit either side of the horizon's own day.
-func (d *Dataset) indexCoverage() {
-	h := LocalDay(d.HourlyUntil)
-	d.fullThrough, d.noneFrom = h-2, h+2
-	for day := h - 1; day <= h+1; day++ {
-		switch d.coverage(day) {
-		case CoverageFull:
-			d.fullThrough = day
-		case CoverageNone:
-			d.noneFrom = min(d.noneFrom, day)
-		}
-	}
-	d.indexed = true
-}
-
-func (d *Dataset) coverage(day int32) Coverage {
-	return coverageUntil(day, d.HourlyUntil)
 }
 
 // Horizon is the earlier dataset/entity horizon. Missing metadata is unknown.
