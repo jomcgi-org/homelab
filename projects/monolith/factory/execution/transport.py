@@ -212,6 +212,40 @@ _CAPACITY_JITTER = 0.25
 # sized for.
 _CREATE_RETRY_SECONDS = (2, 5, 10, 20, 30, 45, 60, 90, 90, 90)
 
+# Staged receipt promotion takes the pool and session rows under a deliberate
+# one-second PostgreSQL lock timeout.  Ordinary factory concurrency can briefly
+# hold either row, so retry only this positive pre-invoke refusal.  Five bounded
+# attempts remain within the pending claim's 30-second freshness window.
+_RECEIPT_PROMOTION_LOCK_BACKOFF_SECONDS = (0.05, 0.1, 0.2, 0.4)
+
+
+async def _promote_prepared_receipt(promote, delivery):
+    """Retry a known pre-invoke row-lock collision without losing fences."""
+    from factory.execution import result_receipts
+
+    for attempt in range(len(_RECEIPT_PROMOTION_LOCK_BACKOFF_SECONDS) + 1):
+        try:
+            return await asyncio.to_thread(promote)
+        except Exception as exc:  # noqa: BLE001 - SQLAlchemy wraps driver errors.
+            # on_attempt publishes conservative intent before commit.  Once it
+            # ran, even a lock-shaped commit failure is uncertain and must not
+            # authorize another promotion or physical POST.
+            if (
+                delivery.attempted
+                or not result_receipts.lock_not_available(exc)
+                or attempt == len(_RECEIPT_PROMOTION_LOCK_BACKOFF_SECONDS)
+            ):
+                raise
+            # A retry is a new start decision.  Recheck the existing factory
+            # admission callback so shutdown, cancellation and task holds win.
+            await _check_delivery_admission()
+            logger.warning(
+                "staged receipt promotion lock busy; retrying %d/%d",
+                attempt + 2,
+                len(_RECEIPT_PROMOTION_LOCK_BACKOFF_SECONDS) + 1,
+            )
+            await asyncio.sleep(_RECEIPT_PROMOTION_LOCK_BACKOFF_SECONDS[attempt])
+
 
 def _capacity_denial_reason(exc: httpx.HTTPStatusError) -> str | None:
     """The 429 capacity reason (one of _CAPACITY_DENIAL_REASONS), else None."""
@@ -2023,7 +2057,9 @@ class EmberVmShimTransport:
                             delivery.attempt_pending = True
                             delivery.publish()
                             try:
-                                additions = await asyncio.to_thread(promote)
+                                additions = await _promote_prepared_receipt(
+                                    promote, delivery
+                                )
                             except result_receipts.ReceiptRejected:
                                 delivery.attempt_pending = False
                                 delivery.publish()

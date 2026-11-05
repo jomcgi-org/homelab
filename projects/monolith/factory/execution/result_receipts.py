@@ -48,6 +48,18 @@ class ReceiptRejected(ValueError):
         self.status = status
 
 
+def lock_not_available(exc: BaseException) -> bool:
+    """Return whether PostgreSQL refused a row lock without waiting.
+
+    Receipt promotion deliberately uses a short transaction-local lock timeout.
+    The transport may retry that *pre-invoke* refusal while it still has exact
+    admission and ownership.  Keep the SQLSTATE test here beside the timeout so
+    callers do not classify message text or broaden retries to other failures.
+    """
+    original = getattr(exc, "orig", exc)
+    return getattr(original, "sqlstate", getattr(original, "pgcode", None)) == "55P03"
+
+
 def meter_enrolled(local_session_id: str, model: str) -> bool:
     """Only explicitly named factory tasks on Astra join the observed canary."""
     parts = local_session_id.split(":")

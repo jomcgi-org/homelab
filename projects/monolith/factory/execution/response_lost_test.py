@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from core import db as core_db
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from factory.execution import (
@@ -1927,6 +1928,42 @@ def test_pre_handoff_retry_keeps_distinct_receipts_and_completes(database, monke
     with Session(database) as db:
         assert db.get(AgentResultReceipt, attempted[0]).superseded_at is not None
         assert db.get(AgentResultReceipt, attempted[1]).superseded_at is None
+    state = snapshot(database, sid)
+    assert state["pending"] == []
+    assert state["permits"][0]["state"] == "settled"
+    assert state["turns"][0]["terminal_reason"] == "end_turn"
+
+
+def test_staged_promotion_lock_collision_retries_before_one_post(database, monkeypatch):
+    monkeypatch.setenv("AGENT_STAGED_RECEIPTS_ENABLED", "true")
+    sid = queue(database)
+    real_attempt = result_receipts.attempt_prepared_receipt
+    attempts = []
+
+    class LockNotAvailable(Exception):
+        sqlstate = "55P03"
+
+    def temporarily_busy(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise OperationalError(
+                "UPDATE agent_sessions.agent_session", {}, LockNotAvailable()
+            )
+        return real_attempt(*args, **kwargs)
+
+    async def no_wait(_delay):
+        return None
+
+    async def handler(request):
+        return httpx.Response(200, json=native_record(artifact=False), request=request)
+
+    monkeypatch.setattr(result_receipts, "attempt_prepared_receipt", temporarily_busy)
+    monkeypatch.setattr(transport.asyncio, "sleep", no_wait)
+    requests = fake_http(monkeypatch, handler)
+    asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
+
+    assert len(attempts) == 3
+    assert len(requests) == 1
     state = snapshot(database, sid)
     assert state["pending"] == []
     assert state["permits"][0]["state"] == "settled"
