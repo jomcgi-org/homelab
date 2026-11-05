@@ -150,8 +150,10 @@ def test_contenders_have_one_committed_winner(leases, stale):
                     blocked = _wait_for_lock(leases, blocker)
                 finally:
                     # Release the first transaction even if observing the wait fails.
-                    transaction.commit()
-                loser = second.result(timeout=4)
+                    try:
+                        transaction.commit()
+                    finally:
+                        loser = second.result(timeout=4)
             finally:
                 if transaction.is_active:
                     transaction.rollback()
