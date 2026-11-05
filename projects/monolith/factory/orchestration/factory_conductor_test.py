@@ -17507,6 +17507,7 @@ def test_lost_before_guest_proof_reads_the_exact_dispatch_identity(
     from factory.execution.api import read_lost_before_guest_factory_attempt
 
     s = lost_before_guest_factory
+    native = s.native_snapshot()
     with Session(s.engine) as db:
         proof = read_lost_before_guest_factory_attempt(db, s.run["pin"], s.sid)
     assert proof["session_id"] == s.sid
@@ -17518,7 +17519,7 @@ def test_lost_before_guest_proof_reads_the_exact_dispatch_identity(
     assert proof["invocation_phase"] == "lost_before_guest"
     assert proof["cost_usd"] == 0.0
     # Reading proves nothing and settles nothing.
-    assert s.native_snapshot() == s.native_snapshot()
+    assert s.native_snapshot() == native
 
 
 @pytest.mark.parametrize("historical", [False, True])
@@ -17881,38 +17882,54 @@ def test_operator_settle_lost_attempt_names_the_failed_condition(
     assert s.native_snapshot() == native
 
 
+@pytest.mark.parametrize(
+    "pin_changes,identity,expected",
+    [
+        pytest.param({"attempt": 2}, None, None, id="missing-owner"),
+        pytest.param(
+            {"model": "luna"}, "owner", "ownership conflict", id="model-conflict"
+        ),
+        pytest.param(
+            {"workflow_id": "factory-node:another:conductor_1:1"},
+            "owner",
+            "ownership conflict",
+            id="workflow-conflict",
+        ),
+        pytest.param(
+            {"repo": "owner/other"}, "owner", "ownership conflict", id="repo-conflict"
+        ),
+        pytest.param({}, "wrong", "ownership conflict", id="wrong-session"),
+        pytest.param({}, 0, "invalid factory session identity", id="zero"),
+        pytest.param({}, -1, "invalid factory session identity", id="negative"),
+        pytest.param({}, "1", "invalid factory session identity", id="string"),
+        pytest.param({}, True, "invalid factory session identity", id="boolean"),
+    ],
+)
 def test_lost_before_guest_proof_refuses_or_raises_on_ownership(
-    lost_before_guest_factory,
+    lost_before_guest_factory, pin_changes, identity, expected
 ):
     from sqlmodel import Session
     from factory.execution.api import inspect_lost_before_guest_factory_attempt
 
     s = lost_before_guest_factory
-    pin = s.run["pin"]
+    pin = {**s.run["pin"], **pin_changes}
+    if identity == "owner":
+        identity = s.sid
+    elif identity == "wrong":
+        identity = s.sid + 1
+    native = s.native_snapshot()
     with Session(s.engine) as db:
-        # No session was ever created under that identity: nothing to settle,
-        # and an absent owner is never read as proof that nothing ran.
-        missing = {**pin, "attempt": 2}
-        assert inspect_lost_before_guest_factory_attempt(db, missing, None) == (
-            None,
-            "missing_factory_owner",
-        )
-        # The identity exists but the pin describes different work. Adopting it
-        # would settle another attempt's reservation, so this raises.
-        for conflicting in (
-            {**pin, "model": "luna"},
-            {**pin, "workflow_id": "factory-node:another:conductor_1:1"},
-            {**pin, "repo": "owner/other"},
-        ):
-            with pytest.raises(ValueError, match="ownership conflict"):
-                inspect_lost_before_guest_factory_attempt(db, conflicting, s.sid)
-        # A session id that is not this attempt's owner is refused outright.
-        with pytest.raises(ValueError, match="ownership conflict"):
-            inspect_lost_before_guest_factory_attempt(db, pin, s.sid + 1)
-        for invalid in (0, -1, "1", True):
-            with pytest.raises(ValueError, match="invalid factory session identity"):
-                inspect_lost_before_guest_factory_attempt(db, pin, invalid)
-    assert s.native_snapshot() == s.native_snapshot()
+        if expected is None:
+            # An absent owner is never proof that nothing ran.
+            assert inspect_lost_before_guest_factory_attempt(db, pin, identity) == (
+                None,
+                "missing_factory_owner",
+            )
+        else:
+            # Conflicting work or an invalid owner must never be adopted.
+            with pytest.raises(ValueError, match=expected):
+                inspect_lost_before_guest_factory_attempt(db, pin, identity)
+    assert s.native_snapshot() == native
 
 
 PROVIDER_ERROR_TEXT = (
