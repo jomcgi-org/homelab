@@ -3066,6 +3066,30 @@ py_test(
 )
 
 py_test(
+    name = "shared_async_retry_test",
+    srcs = ["shared/async_retry_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "shared_async_retry_adapters_test",
+    srcs = ["shared/async_retry_adapters_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cyclegroup",
+        ":pkg_shared",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "shared_embedding_test",
     srcs = ["shared/embedding_test.py"],
     imports = ["."],
