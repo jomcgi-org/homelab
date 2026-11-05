@@ -798,6 +798,57 @@ defmodule Embervm.OpLog.SQLiteTest do
 
   # -- binary payloads (op payloads are ETF blobs, not JSON) -----------------
 
+  test "payload storage is byte-exact BLOB across journal reads, reopen and replay", %{path: path} do
+    server = start_server(path)
+    body = <<137, 0, 255, "codec">>
+    headers = %{"content-type" => "application/octet-stream", "x-codec" => "yes"}
+    request = %{method: "POST", body: body, headers: headers, absent: nil}
+    submitted = %{request: request, extra: [nil, :ready, true, false, %{drop: nil, keep: 7}]}
+    succeeded = %{status_code: 200, body: body, size_bytes: byte_size(body), headers: headers}
+
+    for {kind, payload, ts} <- [{:submitted, submitted, 100}, {:succeeded, succeeded, 101}] do
+      assert {:ok, _} = SQLite.append(server, %Op{
+        kind: kind, payload: payload, ts: ts, tenant: "t1", principal: "p1",
+        workload: "codec", task_id: "task-codec"
+      })
+    end
+
+    {:ok, conn} = Sqlite3.open(path)
+    {:ok, stmt} = Sqlite3.prepare(conn, "SELECT typeof(payload_json), payload_json FROM ops ORDER BY seq")
+    assert {:row, ["blob", stored_submitted]} = Sqlite3.step(conn, stmt)
+    assert stored_submitted == :erlang.term_to_binary(submitted)
+    assert {:row, ["blob", stored_succeeded]} = Sqlite3.step(conn, stmt)
+    assert stored_succeeded == :erlang.term_to_binary(succeeded)
+    assert :done = Sqlite3.step(conn, stmt)
+    :ok = Sqlite3.release(conn, stmt)
+    :ok = Sqlite3.close(conn)
+
+    expected_request = %{"method" => "POST", "body" => body, "headers" => headers}
+    assert {:ok, ^expected_request} = SQLite.load_request(server, "task-codec")
+    assert {:ok, %{body: ^body, headers: ^headers}} = SQLite.load_result(server, "task-codec")
+    assert {:ok, [first, last] = journal} = SQLite.read_from(server, 0)
+    assert first.payload == %{"request" => expected_request, "extra" => ["nil", "ready", true, false, %{"keep" => 7}]}
+    assert last.payload == %{"status_code" => 200, "body" => body, "size_bytes" => byte_size(body), "headers" => headers}
+    :ok = GenServer.stop(server)
+
+    reopened = start_server(path)
+    assert {:ok, ^journal} = SQLite.read_from(reopened, 0)
+    assert {:ok, ^expected_request} = SQLite.load_request(reopened, "task-codec")
+    assert {:ok, %{body: ^body, headers: ^headers}} = SQLite.load_result(reopened, "task-codec")
+
+    replay = start_server(path <> ".replay")
+    # Replay the original append envelopes; projections consume atom-keyed
+    # payloads, while journal readers receive the normalized string-keyed view.
+    for {op, payload} <- Enum.zip(journal, [submitted, succeeded]) do
+      assert {:ok, _} = SQLite.append(replay, %{op | payload: payload})
+    end
+    assert {:ok, ^journal} = SQLite.read_from(replay, 0)
+    assert {:ok, ^expected_request} = SQLite.load_request(replay, "task-codec")
+    assert {:ok, %{body: ^body, headers: ^headers}} = SQLite.load_result(replay, "task-codec")
+    :ok = GenServer.stop(replay)
+    :ok = GenServer.stop(reopened)
+  end
+
   test "a binary (non-UTF-8) result body round-trips instead of crashing the writer",
        %{path: path} do
     server = start_server(path)
