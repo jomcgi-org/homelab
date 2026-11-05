@@ -1219,6 +1219,125 @@ def audits(engine, action):
         ).all()
 
 
+def test_recovery_status_distinguishes_history_from_pending_signal_without_writes(
+    db, monkeypatch
+):
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch)
+    historical = add_event(engine, action="recurring_blocker", blocker_key="a" * 64)
+    producer._observe_policy(controls.problem_issues_policy(selected))
+    current = add_event(engine, action="recurring_blocker", blocker_key="b" * 64)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("status must not perform producer work")
+
+    monkeypatch.setattr(producer, "_observe_policy", forbidden)
+    monkeypatch.setattr(producer, "_recovery_quota", forbidden)
+    monkeypatch.setattr(producer, "github_list", forbidden)
+    monkeypatch.setattr(producer, "github_write", forbidden)
+    with Session(engine) as session:
+        before = [r.model_dump() for r in session.exec(select(FactoryAudit)).all()]
+        control = session.get(FactoryControl, "factory")
+        first = producer.recovery_status(session, control)
+        second = producer.recovery_status(session, control)
+        assert first == second
+        assert first["policy_observed"] is True
+        source = first["sources"]["recurring_blocker"]
+        assert source["watermark"] == source["cursor"] == historical
+        assert source["latest_source_audit_id"] == current
+        assert source["next_event"]["audit_id"] == current
+        assert source["state"] == "pending_source_event"
+        assert first["sources"]["workflow_stranded"]["state"] == "no_new_source_events"
+        assert first["checkpoints"]["problem_issue_recovery_observed"] is None
+        assert before == [
+            r.model_dump() for r in session.exec(select(FactoryAudit)).all()
+        ]
+        assert not session.new and not session.dirty
+
+
+def test_recovery_status_retains_pending_write_and_terminal_cursor(db, monkeypatch):
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch)
+    producer._observe_policy(controls.problem_issues_policy(selected))
+    settled = add_event(engine, action="recurring_blocker", blocker_key="a" * 64)
+    add_event(
+        engine,
+        action="problem_issue_source_refused",
+        source="recurring_blocker",
+        source_audit_id=settled,
+        fingerprint="a" * 64,
+        reason="source_owned_or_recursive_or_unavailable",
+    )
+    pending_source = add_event(engine, action="recurring_blocker", blocker_key="b" * 64)
+    write_id = add_event(
+        engine,
+        action="problem_issue_write_started",
+        source="recurring_blocker",
+        source_audit_id=pending_source,
+        fingerprint="b" * 64,
+        private_prompt="must never be returned",
+    )
+    with Session(engine) as session:
+        control = session.get(FactoryControl, "factory")
+        result = producer.recovery_status(session, control)
+        assert result["sources"]["recurring_blocker"]["cursor"] == settled
+        assert result["pending_write"]["audit_id"] == write_id
+        assert (
+            result["sources"]["recurring_blocker"]["next_event"]["audit_id"]
+            == pending_source
+        )
+        assert "must never be returned" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_recovery_status_does_not_initialize_or_refresh_policy(
+    db, monkeypatch, enabled
+):
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch)
+    selected["problem_issues"]["enabled"] = enabled
+    with Session(engine) as session:
+        control = session.get(FactoryControl, "factory")
+        control.policy_json = dumps(selected)
+        session.commit()
+        result = producer.recovery_status(session, control)
+        assert result["policy_observation"] is None
+        assert result["policy_observed"] is False
+        assert result["sources"]["recurring_blocker"]["state"] == (
+            "policy_not_observed" if enabled else "disabled"
+        )
+        assert not session.exec(select(FactoryAudit)).all()
+
+
+def test_recovery_status_bounds_events_and_keeps_old_acceptance_checkpoint(db):
+    engine, _ = db
+    observed_id = add_event(
+        engine,
+        action="problem_issue_recovery_observed",
+        source_run_id=10,
+        recovered_run_id=20,
+        rollout_audit_id=30,
+        repair_task_id="t-repair",
+    )
+    for index in range(12):
+        add_event(
+            engine, action="problem_issue_discovery_failed", error="private error"
+        )
+    with Session(engine) as session:
+        result = producer.recovery_status(
+            session, session.get(FactoryControl, "factory")
+        )
+        assert len(result["recent_events"]) == 10
+        assert result["events_truncated"] is True
+        checkpoint = result["checkpoints"]["problem_issue_recovery_observed"]
+        assert checkpoint["audit_id"] == observed_id
+        assert checkpoint["source_run_id"] == 10
+        assert checkpoint["recovered_run_id"] == 20
+        assert checkpoint["repair_task_id"] == "t-repair"
+        assert checkpoint["node_key"] == "implement"
+        assert "private error" not in json.dumps(result)
+
+
 def details(rows):
     return [json.loads(row.detail_json) for row in rows]
 
