@@ -14,6 +14,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from sqlalchemy.exc import OperationalError
 
 from factory.execution import store, transport
 from factory.execution.transport import EmberSessionGone
@@ -37,6 +38,100 @@ def _brick_events():
         for event in span.events
         if event.name == "agent_sessions.brick_gone"
     ]
+
+
+def _lock_not_available():
+    class LockNotAvailable(Exception):
+        sqlstate = "55P03"
+
+    return OperationalError(
+        "UPDATE agent_sessions.agent_session", {}, LockNotAvailable()
+    )
+
+
+def test_staged_receipt_promotion_retries_only_preinvoke_lock_collision(monkeypatch):
+    calls = []
+    sleeps = []
+    delivery = transport._DeliveryInvocation()
+
+    def promote():
+        calls.append(1)
+        if len(calls) < 3:
+            raise _lock_not_available()
+        return {"promoted": True}
+
+    async def sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(transport.asyncio, "sleep", sleep)
+    assert asyncio.run(transport._promote_prepared_receipt(promote, delivery)) == {
+        "promoted": True
+    }
+    assert len(calls) == 3
+    assert sleeps == list(transport._RECEIPT_PROMOTION_LOCK_BACKOFF_SECONDS[:2])
+
+
+def test_staged_receipt_promotion_never_retries_published_attempt(monkeypatch):
+    calls = []
+    delivery = transport._DeliveryInvocation()
+
+    def promote():
+        calls.append(1)
+        delivery.attempted = True
+        raise _lock_not_available()
+
+    with pytest.raises(OperationalError):
+        asyncio.run(transport._promote_prepared_receipt(promote, delivery))
+    assert calls == [1]
+
+
+def test_staged_receipt_promotion_exhaustion_is_bounded(monkeypatch):
+    calls = []
+    sleeps = []
+    delivery = transport._DeliveryInvocation()
+
+    def promote():
+        calls.append(1)
+        raise _lock_not_available()
+
+    async def sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(transport.asyncio, "sleep", sleep)
+    with pytest.raises(OperationalError):
+        asyncio.run(transport._promote_prepared_receipt(promote, delivery))
+    assert len(calls) == len(transport._RECEIPT_PROMOTION_LOCK_BACKOFF_SECONDS) + 1
+    assert sleeps == list(transport._RECEIPT_PROMOTION_LOCK_BACKOFF_SECONDS)
+
+
+def test_staged_receipt_promotion_rechecks_admission_before_retry(monkeypatch):
+    calls = []
+    delivery = transport._DeliveryInvocation()
+
+    def promote():
+        calls.append(1)
+        raise _lock_not_available()
+
+    async def held():
+        raise RuntimeError("task held")
+
+    monkeypatch.setattr(transport, "_check_delivery_admission", held)
+    with pytest.raises(RuntimeError, match="task held"):
+        asyncio.run(transport._promote_prepared_receipt(promote, delivery))
+    assert calls == [1]
+
+
+def test_staged_receipt_promotion_does_not_retry_other_failures():
+    calls = []
+    delivery = transport._DeliveryInvocation()
+
+    def promote():
+        calls.append(1)
+        raise RuntimeError("not a row-lock refusal")
+
+    with pytest.raises(RuntimeError, match="not a row-lock refusal"):
+        asyncio.run(transport._promote_prepared_receipt(promote, delivery))
+    assert calls == [1]
 
 
 @pytest.mark.parametrize(

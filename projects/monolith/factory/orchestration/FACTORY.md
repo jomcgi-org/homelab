@@ -233,6 +233,13 @@ active-receipt representation and remain readable by old code. Never backfill,
 revive or reinterpret a historical receipt or an existing uncertain execution as
 part of deployment or rollback.
 
+Staged promotion uses a one-second transaction-local PostgreSQL lock timeout.
+An exact `55P03` refusal before attempt intent may retry four times with bounded
+backoff, rechecking normal admission before every retry. Any published intent,
+other database error, exhausted retry window, cancellation or hold keeps the
+existing conservative failure/uncertainty path; it never authorizes another
+physical POST.
+
 The lost-before-session sweep (#6285) runs before task reconciliation and the deadline backstop, once the node's pinned `turn_timeout_seconds` has elapsed. The owning DBOS workflow must report `ERROR` or `CANCELLED`, or a lookup must prove it absent. Under the control lock shared with session creation, the proof also needs immutable run and start ownership and no bound or deterministic session, cost, outcome, permit or result receipt. Both ledgers then settle atomically as `failed` at zero cost with `no_model_post` and `never_dispatched`; anything else leaves the attempt untouched.
 
 `provider_error_before_work` settles a guest provider error with no tool activity, diff or artifact at reported spend. `FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED` (chart false) settles a drained continuation only on durable `evicted`/`node_gone` proof. Sessions 8410 and 8416 remediation and live checks stay on [#6271](https://github.com/jomcgi-org/homelab/issues/6271#issuecomment-5750415773). The node workflow carries a brick-drain relay to an owner.
