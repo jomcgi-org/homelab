@@ -344,7 +344,7 @@ async def test_chart_lag_check_error_reports_but_does_not_fault(monkeypatch):
         raise RuntimeError("freights.kargo.akuity.io is forbidden")
 
     monkeypatch.setattr(mod, "_chart_lag_fault", _boom)
-    result = await mod.cd_health()
+    result, _ = await mod.cd_health_cycle()
     assert result["ok"] is True
     assert "chart lag check unavailable" in result["detail"]
 
@@ -359,7 +359,7 @@ async def test_cd_health_reports_degraded_when_any_app_lags(monkeypatch):
         ]
 
     monkeypatch.setattr(mod, "_chart_lag_fault", _lagging)
-    result = await mod.cd_health()
+    result, _ = await mod.cd_health_cycle()
     assert result["ok"] is False
     assert "embervm" in result["detail"]
 
@@ -374,8 +374,8 @@ async def test_result_is_cached(monkeypatch):
         return True, ["monolith: prod on 0.301.1, up to date"]
 
     monkeypatch.setattr(mod, "_chart_lag_fault", _counting)
-    await mod.cd_health()
-    await mod.cd_health()
+    await mod.cd_health_cycle()
+    await mod.cd_health_cycle()
     assert len(calls) == 1
 
 

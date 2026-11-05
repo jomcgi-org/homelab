@@ -578,12 +578,6 @@ async def run_deployment_observation_cycle(poll_time: datetime) -> None:
         logger.warning("deployment observation cycle failed", exc_info=True)
 
 
-async def cd_health() -> dict:
-    """The advisory ``cd`` health component, plus the existing CI signal."""
-    result, _poll_time = await cd_health_cycle()
-    return result
-
-
 async def cd_health_cycle() -> tuple[dict, datetime | None]:
     """The cd result plus the poll time, or ``None`` on a cache hit.
 
