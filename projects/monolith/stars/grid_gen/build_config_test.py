@@ -94,19 +94,21 @@ def test_tracing_helper_has_only_otel_dependencies():
 def test_built_grid_runfiles_include_helper_and_existing_dependencies():
     # The binary is test data, so Bazel builds it and merges its real runfiles.
     root = Path(os.environ["TEST_SRCDIR"])
-    assert (MONOLITH / "core/job_tracing.py").is_file()
-    assert (MONOLITH / "core/db.py").is_file()  # Existing ingest closure.
-    assert (MONOLITH / "stars/grid_gen/job.py").is_file()
+    # Keep symlinked local runfiles inside the built closure, not the source tree.
+    monolith = root / "_main/projects/monolith"
+    assert (monolith / "core/job_tracing.py").is_file()
+    assert (monolith / "core/db.py").is_file()  # Existing ingest closure.
+    assert (monolith / "stars/grid_gen/job.py").is_file()
     for relative in (
         "opentelemetry/trace/__init__.py",
         "opentelemetry/sdk/trace/__init__.py",
         "opentelemetry/exporter/otlp/proto/http/trace_exporter/__init__.py",
     ):
         assert any(root.glob(f"**/{relative}")), relative
-    assert not (MONOLITH / "app").exists()
-    assert not (MONOLITH / "shared").exists()
-    assert not (MONOLITH / "framework").exists()
-    assert {p.name for p in (MONOLITH / "core").glob("*.py")} <= {
+    assert not (monolith / "app").exists()
+    assert not (monolith / "shared").exists()
+    assert not (monolith / "framework").exists()
+    assert {p.name for p in (monolith / "core").glob("*.py")} <= {
         "__init__.py",
         "db.py",
         "job_tracing.py",
