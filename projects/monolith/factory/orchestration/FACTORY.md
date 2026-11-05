@@ -474,6 +474,13 @@ does not re-admit them. The one-shot improvement scout and report-only learning
 pipeline keep their existing contracts. See the activation and limitations in
 [MCP.md](../MCP.md#enable-recovery-problem-issues).
 
+Operator status exposes the separate repair ledger at
+`refill.problem_issues.recovery`: observed source policy, historical watermarks,
+terminal cursors, next signals, pending publication and recovery checkpoints.
+The adjacent refill checkpoints remain backlog-refill evidence only. These reads
+do not refresh quota or GitHub ownership, consume a signal, or grant any start or
+recovery authority. A pending source is a diagnostic candidate, not permission.
+
 The Conductor pursues continuous self-improvement and delivery velocity toward Joe goals. Factory-owned budgets and workflow policies evolve through their owning interfaces; dollars stay accounting. Root `AGENTS.md` defines standing delivery authority; the [evolution contract](../../../../docs/agents/evolution.md) defines how improvements evaluate and retain.
 (see: /projects/monolith/factory/orchestration/factory_improvements.py)
 
