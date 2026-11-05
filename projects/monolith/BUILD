@@ -3569,6 +3569,11 @@ py_test(
     ],
 )
 
+bdd_test(
+    name = "leadership_postgres_test",
+    srcs = ["core/leadership_postgres_test.py"],
+)
+
 py_test(
     name = "leadership_test",
     srcs = ["core/leadership_test.py"],
