@@ -119,6 +119,8 @@ common:ci --noreuse_sandbox_directories
 build:ci --verbose_failures
 build:ci --keep_going=false  # Fail immediately in CI
 build:ci --test_output=errors
+# Keep per-target pass/cache evidence in the public workflow log.
+test:ci --test_summary=short
 build:ci --build_metadata=ROLE=CI
 
 # BuildBuddy Build Event Service (BES) - Always enabled for observability
