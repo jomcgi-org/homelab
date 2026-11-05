@@ -12,6 +12,123 @@ from core import github
 from core.github import fetch_issue_states, fetch_merged_pull_requests
 
 
+@pytest.fixture(params=[False, True], ids=["sync", "async"])
+def get_once(request, monkeypatch):
+    """Run each transport contract against both real httpx client variants."""
+    monkeypatch.setenv("GITHUB_API_TOKEN", "fake-shared-get")
+    asynchronous = request.param
+    client_name = "AsyncClient" if asynchronous else "Client"
+    real_client = getattr(httpx, client_name)
+
+    def install(handler):
+        def client(**kwargs):
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        monkeypatch.setattr(github.httpx, client_name, client)
+
+        async def get(url, *, follow_redirects=False):
+            options = dict(
+                timeout=7.5,
+                follow_redirects=follow_redirects,
+                user_agent="monolith-get-contract-test",
+            )
+            if asynchronous:
+                return await github.async_github_get(url, **options)
+            return github.github_get(url, **options)
+
+        return get
+
+    return install
+
+
+@pytest.mark.asyncio
+async def test_get_headers_timeout_and_fresh_token(get_once, monkeypatch):
+    requests = []
+    responses = []
+    url = "https://api.github.com/repos/example/repo/branches?per_page=100"
+
+    def handler(request):
+        requests.append(request)
+        response = httpx.Response(200, json={"ok": True})
+        responses.append(response)
+        return response
+
+    get = get_once(handler)
+    for token in (None, "fake-first", "fake-changed", None):
+        if token is None:
+            monkeypatch.delenv("GITHUB_API_TOKEN", raising=False)
+        else:
+            monkeypatch.setenv("GITHUB_API_TOKEN", token)
+        response = await get(url)
+        assert response is responses[-1]
+        request = requests[-1]
+        assert request.method == "GET"
+        assert str(request.url) == url
+        assert request.headers["Accept"] == "application/vnd.github+json"
+        # Deliberate normalization beyond the old local adapters' headers.
+        assert request.headers["X-GitHub-Api-Version"] == "2022-11-28"
+        assert request.headers["User-Agent"] == "monolith-get-contract-test"
+        assert request.headers.get("Authorization") == (
+            f"Bearer {token}" if token else None
+        )
+        assert request.extensions["timeout"] == {
+            key: 7.5 for key in ("connect", "read", "write", "pool")
+        }
+    assert len(requests) == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("follow_redirects", [False, True])
+async def test_get_repository_301_policy(get_once, follow_redirects):
+    requests = []
+    old_url = "https://api.github.com/repos/old-owner/repo"
+    new_url = "https://api.github.com/repositories/12345"
+
+    def handler(request):
+        requests.append(str(request.url))
+        if str(request.url) == old_url:
+            return httpx.Response(301, headers={"Location": new_url})
+        return httpx.Response(200, json={"full_name": "new-owner/repo"})
+
+    response = await get_once(handler)(old_url, follow_redirects=follow_redirects)
+    assert requests == ([old_url, new_url] if follow_redirects else [old_url])
+    assert response.status_code == (200 if follow_redirects else 301)
+    assert len(response.history) == int(follow_redirects)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 404, 429, 502, 503, 504])
+async def test_get_returns_raw_failure_without_retry_or_raising(get_once, status):
+    calls = []
+    original = httpx.Response(status, text="upstream failure")
+
+    def handler(request):
+        calls.append(request)
+        return original
+
+    response = await get_once(handler)("https://api.github.com/repos/example/repo")
+    assert response is original
+    assert response.status_code == status
+    assert response.text == "upstream failure"
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [httpx.ConnectError, httpx.ReadTimeout])
+async def test_get_propagates_original_transport_exception(get_once, error_type):
+    calls = []
+    original = error_type("synthetic transport failure")
+
+    def handler(request):
+        calls.append(request)
+        raise original
+
+    with pytest.raises(error_type) as caught:
+        await get_once(handler)("https://api.github.com/repos/example/repo")
+    assert caught.value is original
+    assert len(calls) == 1
+
+
 def _read_github_repo() -> str:
     from core import github
 

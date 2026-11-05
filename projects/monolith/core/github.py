@@ -69,6 +69,29 @@ def _github_headers() -> dict[str, str]:
     return github_headers("monolith-merged-pr-snapshot")
 
 
+def github_get(
+    url: str, *, timeout: float, follow_redirects: bool, user_agent: str
+) -> httpx.Response:
+    """One GET with fresh headers; return raw status and propagate transport errors.
+
+    Adapters normalize the API version and caller User-Agent through
+    ``github_headers``. Redirects are caller-selected; no status raising or
+    snapshot retry policy is applied here.
+    """
+    with httpx.Client(timeout=timeout, follow_redirects=follow_redirects) as client:
+        return client.get(url, headers=github_headers(user_agent))
+
+
+async def async_github_get(
+    url: str, *, timeout: float, follow_redirects: bool, user_agent: str
+) -> httpx.Response:
+    """Async equivalent of ``github_get``, with the same single-attempt policy."""
+    async with httpx.AsyncClient(
+        timeout=timeout, follow_redirects=follow_redirects
+    ) as client:
+        return await client.get(url, headers=github_headers(user_agent))
+
+
 def _parse_github_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
