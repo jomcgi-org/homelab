@@ -330,9 +330,15 @@ Identical request replay returns the recorded result; changed arguments conflict
 ### Bounded refill control
 
 `factory_status.refill` reports the effective refill/scout policy, bounded intake
-selection, producer checkpoints and the existing `factory-retro-daily` schedule.
+selection, backlog-refill checkpoints and the existing `factory-retro-daily` schedule.
 A schedule or enabled flag does not prove generation, eligibility, admission or
 execution; inspect those stages separately.
+
+`refill.problem_issues.recovery` separately reads the repair producer's policy
+observation, source watermarks and cursors, next source events, pending write,
+latest creation/watch/observed-recovery checkpoints and ten recent events.
+Missing recovery evidence stays null. This bounded metadata read does not check
+live quota or GitHub ownership, advance producer history, or authorize recovery.
 
 Standing operators use `factory_configure_refill` with `operation=preview`, the
 current control version, an offered `astra` or `opus` model, `enabled` and
