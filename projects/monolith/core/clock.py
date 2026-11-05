@@ -17,7 +17,7 @@ def iso(value: datetime | None) -> str | None:
 
 
 def aware(value: datetime) -> datetime:
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
 def aware_iso(value: datetime | None) -> str | None:

@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
+from zoneinfo import ZoneInfo
 
 from core.clock import (
     as_utc,
@@ -40,6 +41,29 @@ def test_aware_labels_naive_and_keeps_zone():
     assert aware(naive) == naive.replace(tzinfo=timezone.utc)
     stamped = datetime(2026, 10, 11, 3, 0, tzinfo=_BST)
     assert aware(stamped) is stamped
+
+
+def test_aware_preserves_supported_timezone_objects():
+    class FalseZone(tzinfo):
+        def __bool__(self):
+            return False
+
+        def utcoffset(self, dt):
+            return timedelta(hours=2)
+
+        def dst(self, dt):
+            return timedelta(0)
+
+    for zone in (
+        timezone.utc,
+        timezone(timedelta(hours=-5, minutes=-30)),
+        ZoneInfo("Europe/London"),
+        FalseZone(),
+    ):
+        stamped = datetime(2026, 10, 25, 1, 30, tzinfo=zone, fold=1)
+        assert aware(stamped) is stamped
+        assert aware_iso(stamped) == stamped.isoformat()
+        assert isoformat_or_none(stamped) == stamped.isoformat()
 
 
 def test_aware_iso_keeps_zone_and_passes_none():
