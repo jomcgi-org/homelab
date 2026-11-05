@@ -5,8 +5,7 @@ The FaaS ingestion smoke run (Task 10) and, later, the invocation router (Task
 guest's response back verbatim. This module owns that single call so the two
 callers cannot drift.
 
-Mirrors sandbox/client.py's ``_run_embervm`` shape (httpx.AsyncClient, EMBERVM_URL,
-auth_headers), with two differences: the body is forwarded to the guest VERBATIM
+Uses shared.embervm_submit for HTTP dispatch. The body is forwarded VERBATIM
 (``content=`` raw bytes, never ``json=``), and we return the raw ``httpx.Response``
 so the caller reads status/headers/body itself.
 
@@ -23,6 +22,7 @@ import os
 
 import httpx
 
+from shared.embervm_submit import submit_task
 from shared.k8s_auth import auth_headers
 
 logger = logging.getLogger(__name__)
@@ -78,10 +78,14 @@ async def submit(
         headers[f"X-Ember-Guest-{key}"] = value
 
     timeout = httpx.Timeout(read_timeout, connect=SUBMIT_CONNECT_TIMEOUT)
-    url = f"{EMBERVM_URL}/v1/workloads/{name}/tasks?wait=true"
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            return await client.post(url, content=body, headers=headers)
+        return await submit_task(
+            base_url=EMBERVM_URL,
+            workload=name,
+            timeout=timeout,
+            headers=headers,
+            content=body,
+        )
     except httpx.TimeoutException as exc:
         logger.warning("embervm submit timed out for %s: %s", name, exc)
         raise EmberVMTimeout(str(exc)) from exc
