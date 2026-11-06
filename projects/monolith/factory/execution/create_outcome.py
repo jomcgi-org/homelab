@@ -90,7 +90,7 @@ def _done(task: asyncio.Task) -> None:
 
 def record(ok: bool, detail: str) -> None:
     """Schedule one outcome write. Never raises and never blocks the caller."""
-    try:  # nosemgrep: no-broad-except-swallow - telemetry must not fail a create
+    try:  # telemetry must not fail a create
         loop = asyncio.get_running_loop()
         task = loop.create_task(asyncio.to_thread(_record_sync, ok, detail))
     except Exception as exc:  # noqa: BLE001

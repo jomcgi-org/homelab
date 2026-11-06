@@ -14,7 +14,7 @@ from datetime import date, datetime, timezone
 from sqlmodel import Field, SQLModel
 
 
-class Vacancy(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Vacancy(SQLModel, table=True):
     __tablename__ = "nhs_vacancies"
     __table_args__ = {"schema": "dr_jobs", "extend_existing": True}
 

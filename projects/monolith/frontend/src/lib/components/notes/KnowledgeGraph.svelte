@@ -872,7 +872,7 @@
     width: 100%;
     height: 100%;
     overflow: hidden;
-    background: #f1ebdc; /* nosemgrep: svelte-hardcoded-color-in-style */
+    background: #f1ebdc;
   }
   .stage::before {
     content: "";

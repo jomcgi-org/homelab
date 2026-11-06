@@ -79,9 +79,7 @@ class TestSchemeGuard:
         monkeypatch.setenv("SEAWEEDFS_S3_ENDPOINT", "seaweed:8333")
         s3 = _make_s3(head_return_value={"ETag": "abc"})
 
-        with patch(
-            "boto3.client", return_value=s3
-        ) as mock_factory:  # nosemgrep: boto3-endpoint-url-missing-scheme
+        with patch("boto3.client", return_value=s3) as mock_factory:
             put_image("img_k.jpg", b"data", "image/jpeg")
 
         _, kwargs = mock_factory.call_args
@@ -91,9 +89,7 @@ class TestSchemeGuard:
         monkeypatch.setenv("SEAWEEDFS_S3_ENDPOINT", "http://seaweed:8333")
         s3 = _make_s3(head_return_value={"ETag": "abc"})
 
-        with patch(
-            "boto3.client", return_value=s3
-        ) as mock_factory:  # nosemgrep: boto3-endpoint-url-missing-scheme
+        with patch("boto3.client", return_value=s3) as mock_factory:
             put_image("img_k.jpg", b"data", "image/jpeg")
 
         _, kwargs = mock_factory.call_args
@@ -103,9 +99,7 @@ class TestSchemeGuard:
         monkeypatch.setenv("SEAWEEDFS_S3_ENDPOINT", "https://seaweed:8333")
         s3 = _make_s3(head_return_value={"ETag": "abc"})
 
-        with patch(
-            "boto3.client", return_value=s3
-        ) as mock_factory:  # nosemgrep: boto3-endpoint-url-missing-scheme
+        with patch("boto3.client", return_value=s3) as mock_factory:
             put_image("img_k.jpg", b"data", "image/jpeg")
 
         _, kwargs = mock_factory.call_args
@@ -123,9 +117,7 @@ class TestHeadObjectHit:
         monkeypatch.setenv("SEAWEEDFS_S3_ENDPOINT", "http://seaweed:8333")
         s3 = _make_s3(head_return_value={"ETag": "existing"})
 
-        with patch(
-            "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        with patch("boto3.client", return_value=s3):
             put_image("img_existing.jpg", b"bytes", "image/jpeg")
 
         s3.put_object.assert_not_called()
@@ -141,9 +133,7 @@ class TestHeadObjectMiss:
         monkeypatch.setenv("SEAWEEDFS_S3_ENDPOINT", "http://seaweed:8333")
         s3 = _make_s3(head_side_effect=_client_error("NoSuchKey"))
 
-        with patch(
-            "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        with patch("boto3.client", return_value=s3):
             put_image("img_new.jpg", b"newbytes", "image/jpeg")
 
         s3.put_object.assert_called_once()
@@ -156,9 +146,7 @@ class TestHeadObjectMiss:
         monkeypatch.setenv("SEAWEEDFS_S3_ENDPOINT", "http://seaweed:8333")
         s3 = _make_s3(head_side_effect=_client_error("404"))
 
-        with patch(
-            "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        with patch("boto3.client", return_value=s3):
             put_image("img_new.jpg", b"data", "image/jpeg")
 
         s3.put_object.assert_called_once()
@@ -167,9 +155,7 @@ class TestHeadObjectMiss:
         monkeypatch.setenv("SEAWEEDFS_S3_ENDPOINT", "http://seaweed:8333")
         s3 = _make_s3(head_side_effect=_client_error("NoSuchBucket"))
 
-        with patch(
-            "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        with patch("boto3.client", return_value=s3):
             put_image("img_new.jpg", b"data", "image/jpeg")
 
         s3.put_object.assert_called_once()
@@ -187,9 +173,7 @@ class TestAutoCreateBucket:
         s3.head_object.side_effect = _client_error("NoSuchKey")
         s3.put_object.side_effect = [_client_error("NoSuchBucket"), None]
 
-        with patch(
-            "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        with patch("boto3.client", return_value=s3):
             put_image("img_nob.jpg", b"data", "image/jpeg")
 
         s3.create_bucket.assert_called_once()
@@ -201,9 +185,7 @@ class TestAutoCreateBucket:
         s3.head_object.side_effect = _client_error("NoSuchKey")
         s3.put_object.side_effect = [_client_error("404"), None]
 
-        with patch(
-            "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        with patch("boto3.client", return_value=s3):
             put_image("img_404b.jpg", b"data", "image/jpeg")
 
         s3.create_bucket.assert_called_once()
@@ -219,9 +201,7 @@ class TestErrorPropagation:
         monkeypatch.setenv("SEAWEEDFS_S3_ENDPOINT", "http://seaweed:8333")
         s3 = _make_s3(head_side_effect=_client_error("AccessDenied"))
 
-        with patch(
-            "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        with patch("boto3.client", return_value=s3):
             with pytest.raises(ClientError):
                 put_image("img_denied.jpg", b"data", "image/jpeg")
 
@@ -231,9 +211,7 @@ class TestErrorPropagation:
         s3.head_object.side_effect = _client_error("NoSuchKey")
         s3.put_object.side_effect = _client_error("InternalError")
 
-        with patch(
-            "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        with patch("boto3.client", return_value=s3):
             with pytest.raises(ClientError):
                 put_image("img_ierr.jpg", b"data", "image/jpeg")
 
@@ -249,9 +227,7 @@ class TestBucketNameEnvVar:
         monkeypatch.setenv("TRIPS_S3_BUCKET", "custom-bucket")
         s3 = _make_s3(head_return_value={})
 
-        with patch(
-            "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        with patch("boto3.client", return_value=s3):
             put_image("img_k.jpg", b"data", "image/jpeg")
 
         kw = s3.head_object.call_args.kwargs
@@ -262,9 +238,7 @@ class TestBucketNameEnvVar:
         monkeypatch.delenv("TRIPS_S3_BUCKET", raising=False)
         s3 = _make_s3(head_return_value={})
 
-        with patch(
-            "boto3.client", return_value=s3
-        ):  # nosemgrep: boto3-endpoint-url-missing-scheme
+        with patch("boto3.client", return_value=s3):
             put_image("img_k.jpg", b"data", "image/jpeg")
 
         kw = s3.head_object.call_args.kwargs

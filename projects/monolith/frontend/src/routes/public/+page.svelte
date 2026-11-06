@@ -341,9 +341,9 @@
     --edge-2: var(--line);
     --green: var(--ok);
     --green-ink: color-mix(in srgb, var(--ok) 80%, var(--ink));
-    --glass: #0e100e; /* nosemgrep: svelte-hardcoded-color-in-style */
-    --glass-text: #dfe3d2; /* nosemgrep: svelte-hardcoded-color-in-style */
-    --glass-dim: #8f957f; /* nosemgrep: svelte-hardcoded-color-in-style */
+    --glass: #0e100e;
+    --glass-text: #dfe3d2;
+    --glass-dim: #8f957f;
     padding: 1.6rem clamp(1rem, 4vw, 3rem) 4rem;
     font-variant-numeric: tabular-nums;
     /* The keys and the switch give their own press feedback; the browser's

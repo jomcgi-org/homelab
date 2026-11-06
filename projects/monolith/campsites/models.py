@@ -12,7 +12,7 @@ from sqlmodel import Field, SQLModel
 _SCHEMA = {"schema": "campsites", "extend_existing": True}
 
 
-class Campground(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Campground(SQLModel, table=True):
     __tablename__ = "campgrounds"
     __table_args__ = _SCHEMA
     resource_location_id: int = Field(primary_key=True)
@@ -27,9 +27,7 @@ class Campground(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-
     updated_at: datetime.datetime | None = None
 
 
-class Availability(
-    SQLModel, table=True
-):  # nosemgrep: sqlmodel-datetime-without-factory
+class Availability(SQLModel, table=True):
     __tablename__ = "availability"
     __table_args__ = _SCHEMA
     # Composite primary key: one row per (campground, date).
@@ -40,7 +38,7 @@ class Availability(
     scraped_at: datetime.datetime | None = None
 
 
-class Weather(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Weather(SQLModel, table=True):
     __tablename__ = "weather"
     __table_args__ = _SCHEMA
     # Composite primary key: one forecast row per (campground, date).

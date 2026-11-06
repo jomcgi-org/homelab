@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from sqlmodel import Field, SQLModel
 
 
-class Vessel(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Vessel(SQLModel, table=True):
     __tablename__ = "vessels"
     __table_args__ = {"schema": "ships", "extend_existing": True}
 
@@ -51,9 +51,7 @@ class Position(SQLModel, table=True):
     received_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class LatestPosition(
-    SQLModel, table=True
-):  # nosemgrep: sqlmodel-datetime-without-factory
+class LatestPosition(SQLModel, table=True):
     __tablename__ = "latest_positions"
     __table_args__ = {"schema": "ships", "extend_existing": True}
 
@@ -70,7 +68,7 @@ class LatestPosition(
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class HeatCell(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class HeatCell(SQLModel, table=True):
     __tablename__ = "heat_cells"
     __table_args__ = {"schema": "ships", "extend_existing": True}
 
@@ -83,9 +81,7 @@ class HeatCell(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fa
     computed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class HeatCellHistorical(
-    SQLModel, table=True
-):  # nosemgrep: sqlmodel-datetime-without-factory
+class HeatCellHistorical(SQLModel, table=True):
     __tablename__ = "heat_cells_historical"
     __table_args__ = {"schema": "ships", "extend_existing": True}
 

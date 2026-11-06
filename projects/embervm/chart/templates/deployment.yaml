@@ -27,9 +27,7 @@ spec:
     # The control-plane selector is immutable (this is a live Deployment; adding a
     # component label to the selector is a forbidden update), and the second
     # Deployment in this chart (noded) is already selector-disjoint via a distinct
-    # app.kubernetes.io/name, so the shared-selector cross-routing this rule guards
-    # against cannot occur here.
-    # nosemgrep: require-component-label-in-selector
+    # app.kubernetes.io/name, so shared-selector cross-routing cannot occur here.
     matchLabels:
       {{- include "embervm.selectorLabels" . | nindent 6 }}
   template:

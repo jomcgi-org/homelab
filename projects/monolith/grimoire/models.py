@@ -941,7 +941,7 @@ class CharacterSheetVersion(SQLModel, table=True):
     )
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (ended_at is intentionally NULL until the session ends)
+# ended_at is intentionally NULL until the session ends
 class CampaignMember(SQLModel, table=True):
     __tablename__ = "campaign_member"
     __table_args__ = (
@@ -987,7 +987,7 @@ class CampaignMember(SQLModel, table=True):
     )
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (revoked_at is NULL until consent is revoked)
+# revoked_at is NULL until consent is revoked
 class TranscriptConsent(SQLModel, table=True):
     __tablename__ = "transcript_consent"
     __table_args__ = (
@@ -1036,7 +1036,7 @@ class TranscriptConsent(SQLModel, table=True):
     )
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (ended_at is NULL until the session ends)
+# ended_at is NULL until the session ends
 class GameSession(SQLModel, table=True):
     __tablename__ = "game_session"
     __table_args__ = (
@@ -1081,7 +1081,7 @@ class GameSession(SQLModel, table=True):
     # create_all fixtures; enforce it in application code on the write path.
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (deleted_at is NULL until deletion)
+# deleted_at is NULL until deletion
 class InventoryItem(SQLModel, table=True):
     __tablename__ = "inventory_item"
     __table_args__ = (
@@ -1283,7 +1283,7 @@ class SessionInitiative(SQLModel, table=True):
     )
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (deleted_at is NULL until soft delete)
+# deleted_at is NULL until soft delete
 class Note(SQLModel, table=True):
     __tablename__ = "note"
     __table_args__ = (
@@ -1393,7 +1393,7 @@ class Note(SQLModel, table=True):
     )
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (retracted_at is NULL until retraction)
+# retracted_at is NULL until retraction
 class SessionEvent(SQLModel, table=True):
     """Audience-scoped log row, written only through session_events.append_event."""
 
