@@ -1,6 +1,6 @@
 ---
 name: scotland-trips
-description: Plan or check walks and stargazing in Scotland with the scotland MCP tools. Use when someone asks where to walk, whether a named walk or night is on, which day suits a hill, or where to see the stars anywhere in Scotland.
+description: Plan or check walks, stargazing and photo light in Scotland with the scotland MCP tools. Use for trip itineraries, named walks, sunrise, golden or blue light, twilight and Milky Way windows anywhere in Scotland.
 ---
 
 # Scottish walks and stargazing
@@ -9,10 +9,17 @@ The `scotland` MCP server answers with `plan`, `check` and `light`, and
 `aurora` when it is listed. `check` answers each item with a verdict (`go`,
 `marginal`, `no` or `unknown`) and a one-line `why` in UK local time; `plan`
 lists only `go` and `marginal` options, and a day's `walk_note` or
-`stargazing_note` says why it has none. Lead with the verdict and the why;
+`stargazing_note` says why it has none, except for a run beyond the hourly
+horizon. Read that reason once in `datasets.<activity>.notes`; daily notes
+may be absent or contain only moon advice. Lead with the verdict and the why;
 they are written to be repeated. `light` has no verdict: it gives sunrise,
 sunset, twilight, golden and blue light, the moon and Milky Way windows for
 photographers and stargazers.
+
+Read `datasets.walk.hourly_until` and `datasets.stargaze.hourly_until`
+independently. Quote each dataset's `notes` once for its inclusive `from`/`to`
+run beyond the hourly horizon. Preserve per-day partial coverage and moon
+advice. Treat null horizons and missing data as unknown, never forecast weather.
 
 ## plan or check
 
@@ -31,6 +38,28 @@ Dates are UK calendar dates (`YYYY-MM-DD`). A stargazing date is the evening
 the night starts. A plan covers today and the next two days unless you pass
 `from` and `to`: up to 7 days, starting up to 13 days ahead. For "this
 weekend", pass that Saturday and Sunday.
+
+## Photo light and discovery
+
+Pass `lat`, `lon` and optional `from`/`to` to `light` for up to seven
+Europe/London dates. Select windows with `kinds`, for example
+`["golden", "blue"]` for photography. Accept `golden`, `blue`, `civil`,
+`nautical`, `astronomical`, `darkness` and `milky_way`; omitted or empty arrays
+return all. Ignore order and duplicates; avoid blank or unknown entries.
+Read filter `civil` as window kind `civil_twilight`, and `darkness` as
+`astronomical_darkness`. Keep the daily sun/moon events too.
+
+Present geometry without inventing weather. Read `cloud_why` once per day;
+an omitted window `cloud` means unknown/none, zero samples and supported
+seconds. Preserve a present window's positive support. Treat `nights` as
+separate night suitability, never an interval cloud forecast. Light has no
+top-level verdict and no visibility guarantee.
+
+Use prompts `plan_trip`, `check_walk` and `photo_light` for tool-call guidance;
+inspect their string arguments with `prompts/list`. Read
+`scotland://docs/method` for method details and `scotland://docs/openapi` for
+the contract through `resources/read`. Match structured answers against each
+tool's `outputSchema`, derived from those OpenAPI components.
 
 ## Match the weather to the person
 

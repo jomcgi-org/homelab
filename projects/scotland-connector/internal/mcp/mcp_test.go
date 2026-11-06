@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,8 +19,12 @@ import (
 )
 
 func handler() *Handler {
-	return New(fixture.Service(true), meter.New(prometheus.NewRegistry()), slog.New(slog.NewTextHandler(io.Discard, nil)),
-		ServerInfo{Name: "scotland-connector", Version: "test"}, []string{"https://claude.ai"})
+	h, err := New(fixture.Service(true), meter.New(prometheus.NewRegistry()), slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ServerInfo{Name: "scotland-connector", Version: "test"}, []string{"https://claude.ai"}, "")
+	if err != nil {
+		panic(err)
+	}
+	return h
 }
 
 // auroraStore is an enabled aurora store whose snapshot has not loaded.
@@ -30,8 +35,12 @@ func (auroraStore) Current() *aurora.Snapshot { return nil }
 func auroraHandler() *Handler {
 	svc := fixture.Service(true)
 	svc.AuroraData = auroraStore{}
-	return New(svc, meter.New(prometheus.NewRegistry()), slog.New(slog.NewTextHandler(io.Discard, nil)),
-		ServerInfo{Name: "scotland-connector", Version: "test"}, []string{"https://claude.ai"})
+	h, err := New(svc, meter.New(prometheus.NewRegistry()), slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ServerInfo{Name: "scotland-connector", Version: "test"}, []string{"https://claude.ai"}, "")
+	if err != nil {
+		panic(err)
+	}
+	return h
 }
 
 // aurora is listed, and named in the instructions, only when its store is
@@ -133,7 +142,7 @@ func TestToolListAndAnnotations(t *testing.T) {
 // Messages API rejects anyOf, oneOf and allOf there.
 func TestToolSchemaCapsMatchCode(t *testing.T) {
 	type prop struct {
-		Type        string   `json:"type"`
+		Type        any      `json:"type"`
 		Minimum     *float64 `json:"minimum"`
 		Maximum     *float64 `json:"maximum"`
 		Default     any      `json:"default"`
@@ -367,6 +376,52 @@ func TestModernHeaderValidation(t *testing.T) {
 	}
 }
 
+func TestDocumentationNameHeaders(t *testing.T) {
+	h := handler()
+	for _, operation := range []struct {
+		method, name, mismatch, params string
+	}{
+		{"prompts/get", "plan_trip", "check_walk", `"name":"plan_trip","arguments":{"lat":"57.3","lon":"-3.7"}`},
+		{"resources/read", "scotland://docs/method", "scotland://docs/openapi", `"uri":"scotland://docs/method"`},
+	} {
+		t.Run(operation.method, func(t *testing.T) {
+			for _, tc := range []struct {
+				name, header string
+				valid        bool
+			}{
+				{"missing", "", false},
+				{"mismatched", operation.mismatch, false},
+				{"malformed", "=?base64?!!!?=", false},
+				{"matching", operation.name, true},
+				{"encoded", "=?base64?" + base64.StdEncoding.EncodeToString([]byte(operation.name)) + "?=", true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					body := `{"jsonrpc":"2.0","id":1,"method":"` + operation.method + `","params":{` + operation.params + `,` + modernMeta + `}}`
+					status, _, r := post(t, h, body, modern(operation.method, tc.header))
+					if tc.valid {
+						if status != http.StatusOK || r.Error != nil {
+							t.Fatalf("status %d error %+v", status, r.Error)
+						}
+					} else if status != http.StatusBadRequest || r.Error == nil || r.Error.Code != codeHeaderMismatch {
+						t.Fatalf("status %d error %+v; want 400/-32020", status, r.Error)
+					}
+					// Legacy requests do not require or validate Mcp-Name.
+					for _, version := range LegacyVersions {
+						body := `{"jsonrpc":"2.0","id":1,"method":"` + operation.method + `","params":{` + operation.params + `}}`
+						headers := map[string]string{"MCP-Protocol-Version": version}
+						if tc.header != "" {
+							headers["Mcp-Name"] = tc.header
+						}
+						if status, _, r := post(t, h, body, headers); status != http.StatusOK || r.Error != nil {
+							t.Errorf("legacy %s: status %d error %+v", version, status, r.Error)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestUnsupportedVersionAndDiscover(t *testing.T) {
 	h := handler()
 	body := `{"jsonrpc":"2.0","id":5,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2099-01-01","io.modelcontextprotocol/clientCapabilities":{}}}}`
@@ -384,7 +439,7 @@ func TestUnsupportedVersionAndDiscover(t *testing.T) {
 		t.Fatalf("discover: status %d result %v", code, r.Result)
 	}
 
-	code, _, r = post(t, h, `{"jsonrpc":"2.0","id":7,"method":"resources/list","params":{`+modernMeta+`}}`, modern("resources/list", ""))
+	code, _, r = post(t, h, `{"jsonrpc":"2.0","id":7,"method":"unknown/list","params":{`+modernMeta+`}}`, modern("unknown/list", ""))
 	if code != http.StatusNotFound || r.Error == nil || r.Error.Code != codeMethodNotFound {
 		t.Fatalf("unknown method: status %d error %+v", code, r.Error)
 	}
@@ -433,24 +488,39 @@ func TestDiscoveryInstructionsIncludeLightScope(t *testing.T) {
 		{"initialize", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}`, nil},
 		{"server/discover", `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + modernMeta + `}}`, modern("server/discover", "")},
 	} {
-		t.Run(tc.method, func(t *testing.T) {
-			code, _, r := post(t, auroraHandler(), tc.body, tc.headers)
-			if code != http.StatusOK || r.Error != nil {
-				t.Fatalf("status %d error %+v", code, r.Error)
-			}
-			instructions, ok := r.Result["instructions"].(string)
-			if !ok || instructions != Instructions {
-				t.Fatalf("instructions missing or inconsistent: %v", r.Result["instructions"])
-			}
-			for _, guidance := range []string{"Use light", "no top-level verdict", "cloud", "nearby-site hourly sample support", "nights", "interval cloud forecasts", "For plan, check and aurora", "meta.sources"} {
-				if !strings.Contains(instructions, guidance) {
-					t.Errorf("discovery instructions omit %q", guidance)
+		for _, deployment := range []struct {
+			name         string
+			handler      *Handler
+			instructions string
+		}{
+			{"aurora-enabled", auroraHandler(), Instructions},
+			{"aurora-disabled", handler(), InstructionsWithoutAurora},
+		} {
+			t.Run(tc.method+"/"+deployment.name, func(t *testing.T) {
+				code, _, r := post(t, deployment.handler, tc.body, tc.headers)
+				if code != http.StatusOK || r.Error != nil {
+					t.Fatalf("status %d error %+v", code, r.Error)
 				}
-			}
-			if strings.Contains(instructions, "Lead with each answer's verdict") {
-				t.Error("discovery requires a verdict from light")
-			}
-		})
+				instructions, ok := r.Result["instructions"].(string)
+				if !ok || instructions != deployment.instructions {
+					t.Fatalf("instructions missing or inconsistent: %v", r.Result["instructions"])
+				}
+				for _, guidance := range []string{"Use light", "no top-level verdict", "cloud_why", "omitted window cloud means unknown with zero support", "nearby-site hourly sample support", "nights", "interval cloud forecasts", "For plan", "meta.sources"} {
+					if !strings.Contains(instructions, guidance) {
+						t.Errorf("discovery instructions omit %q", guidance)
+					}
+				}
+				if strings.Contains(instructions, "Lead with each answer's verdict") {
+					t.Error("discovery requires a verdict from light")
+				}
+				caps := r.Result["capabilities"].(map[string]any)
+				for _, capability := range []string{"tools", "prompts", "resources"} {
+					if _, ok := caps[capability]; !ok {
+						t.Errorf("discovery omits %s capability", capability)
+					}
+				}
+			})
+		}
 	}
 }
 

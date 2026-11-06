@@ -145,7 +145,10 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 	if err != nil {
 		return nil, err
 	}
-	mcpHandler := mcp.New(svc, m, log, info, cfg.allowedOrigins)
+	mcpHandler, err := mcp.New(svc, m, log, info, cfg.allowedOrigins, cfg.publicBaseURL)
+	if err != nil {
+		return nil, err
+	}
 	// A plain dispatch rather than a ServeMux: the mux answers "/v1" and
 	// unclean paths with a 301 to a root-relative Location, which behind a
 	// prefix-stripping route (jomcgi.dev/scotland) sends the client out of

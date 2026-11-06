@@ -107,7 +107,10 @@ func TestEnabledProducerStoreTransportParityAndExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := mcp.New(svc, metrics, log, mcp.ServerInfo{Name: "fixture"}, nil)
+	m, err := mcp.New(svc, metrics, log, mcp.ServerInfo{Name: "fixture"}, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	assert := func(want string) {
 		t.Helper()
 		q := url.Values{"lat": {"58"}, "lon": {"-4"}, "at": {"2026-12-01T23:00:00Z"}}
