@@ -1408,7 +1408,7 @@ def repair_loop(world, monkeypatch):
         ],
     }
 
-    def start_failure(role=refill.NODE):
+    def start_run(role=refill.NODE):
         start = refill.observe(policy, eligible=0, complete=True)
         assert start["ok"], start
         task_id = admit(world, start)
@@ -1421,6 +1421,10 @@ def repair_loop(world, monkeypatch):
             native(run, collection)
             run_worker(task_id)
             run = dispatch(task_id, refill.REVIEW_NODE)
+        return start, task_id, run
+
+    def start_failure(role=refill.NODE):
+        start, task_id, run = start_run(role)
         native(
             run,
             failure={
@@ -1438,6 +1442,7 @@ def repair_loop(world, monkeypatch):
         policy=policy,
         clock=clock,
         issues=issues,
+        start_run=start_run,
         start_failure=start_failure,
         run_worker=run_worker,
         dispatch=dispatch,
@@ -1448,13 +1453,235 @@ def repair_loop(world, monkeypatch):
 
 
 @pytest.fixture
-def repaired_refill(repair_loop, request, monkeypatch):
+def available_repair_loop(repair_loop, monkeypatch):
+    """Prospective provider availability, explicitly before fresh enrollment."""
+    from factory.orchestration import funding_profile
+
+    monkeypatch.setattr(funding_profile, "PROVIDER_ROUTE_AVAILABLE", True)
+    return repair_loop
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize("role", [refill.NODE, refill.REVIEW_NODE])
+@pytest.mark.parametrize("previously_available", [False, True])
+def test_unavailable_repair_route_does_not_pause_or_block_next_refill(
+    repair_loop, monkeypatch, role, previously_available
+):
+    from factory.orchestration import backlog_refill_repair as repair
+    from factory.orchestration import backlog_refill_worker as worker
+    from factory.orchestration import factory_problem_issues as producer
+    from factory.orchestration import funding_profile
+
+    s = repair_loop
+    assert funding_profile.PROVIDER_ROUTE_AVAILABLE is False
+    if previously_available:
+        monkeypatch.setattr(funding_profile, "PROVIDER_ROUTE_AVAILABLE", True)
+    for index in range(2):
+        start, task_id, run = s.start_run(role)
+        with controls._read_session() as db:
+            event = refill.latest_event(db, "started", run_id=start["run_id"])
+            original = event.detail_json
+            assert ("repair_contract" in refill._detail(event)) == previously_available
+        # In the prospective case, retain a real prior matching failure and a
+        # second enrolled start, then lose provider availability before failure.
+        if index == 1:
+            monkeypatch.setattr(funding_profile, "PROVIDER_ROUTE_AVAILABLE", False)
+        if not previously_available:
+            # A later supported route cannot enroll a cycle already started
+            # without a repair contract.
+            monkeypatch.setattr(funding_profile, "PROVIDER_ROUTE_AVAILABLE", True)
+            assert not repair.execution_failure_eligible(f"factory:{task_id}:{role}:1")
+            monkeypatch.setattr(funding_profile, "PROVIDER_ROUTE_AVAILABLE", False)
+        if not funding_profile.PROVIDER_ROUTE_AVAILABLE:
+            assert not repair.execution_failure_eligible(f"factory:{task_id}:{role}:1")
+        s.native(
+            run,
+            failure={
+                "version": 1,
+                "phase": "receipt_prepare",
+                "sqlstate": "42703",
+                "attempted": False,
+            },
+        )
+        s.run_worker(task_id)
+        snapshot = controls.task_snapshot(task_id)
+        assert snapshot["state"] == "failed"
+        assert not snapshot["task_paused"]
+        with controls._read_session() as db:
+            assert (
+                refill.latest_event(db, "started", run_id=start["run_id"]).detail_json
+                == original
+            )
+            assert s.funding.latest(db, task_id, "repair_allocation_wait") is None
+            assert s.funding.pending(db, task_id) is None
+            assert s.funding.amendment(db, task_id) is None
+            if not funding_profile.PROVIDER_ROUTE_AVAILABLE:
+                assert (
+                    s.funding.latest(db, task_id, "refill_infrastructure_failure")
+                    is None
+                )
+        worker.tick(s.policy)
+        with controls._read_session() as db:
+            assert (
+                refill.latest_event(db, "completed", run_id=start["run_id"]) is not None
+            )
+            assert not refill._ledger(db, s.policy["repo"])[2]
+        s.clock[0] += timedelta(minutes=16)
+    producer.problem_issues_tick(s.policy)
+    assert set(s.issues) == {refill.CHARTER}
+    # The second cycle started normally. Two completed failures still open the
+    # ordinary breaker; do not reset it or leave an unfinishable repair wait.
+    assert refill.observe(s.policy, eligible=0, complete=True) == {
+        "ok": False,
+        "reason": "breaker",
+    }
+    with controls._read_session() as db:
+        assert (
+            refill._detail(refill.latest_event(db, "breaker_open"))["reason"]
+            == "failed_runs"
+        )
+        assert not db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == s.funding.BLOCKER)
+        ).all()
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize("previously_available", [False, True])
+def test_unavailable_repair_route_retains_ordinary_preinvoke_capacity_wait(
+    repair_loop, monkeypatch, previously_available
+):
+    import asyncio
+
+    from factory.execution import admission, store, transport
+    from factory.execution import mcp as executor
+    from factory.execution.models import AgentSession, AgentTurn
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import funding_profile, node_workflows
+
+    s = repair_loop
+    assert funding_profile.PROVIDER_ROUTE_AVAILABLE is False
+    s.clock[0] = datetime.now(UTC)
+    if previously_available:
+        monkeypatch.setattr(funding_profile, "PROVIDER_ROUTE_AVAILABLE", True)
+    _start, task_id, run = s.start_run()
+    monkeypatch.setattr(funding_profile, "PROVIDER_ROUTE_AVAILABLE", False)
+    monkeypatch.setenv("FACTORY_ASYNC_RESIDENCY_ENABLED", "true")
+    pin = run["pin"]
+    deadline = int((s.clock[0] + timedelta(hours=2)).timestamp() * 1000)
+    with Session(s.engine) as db:
+        agent = AgentSession(
+            **node_workflows._expected_session_identity(pin),
+            workspace="guest",
+            admission_tier="project",
+            ember_session_id="guest",
+            ember_session_token="synthetic-guest-token",
+            ember_lineage_id="synthetic-lineage",
+            ember_session_expires_at=deadline,
+        )
+        db.add(agent)
+        db.commit()
+        sid = agent.id
+        store.create_pending_message(db, sid, "synthetic refill", pin["model"])
+    assert conductor.graph.record_dispatch(task_id, pin["node_key"], 1, sid, None).ok
+    calls = []
+
+    class PreinvokeFailure(transport.EmberVmShimTransport):
+        async def get_session(self, guest, token):
+            return {
+                "session_id": guest,
+                "lineage_id": "synthetic-lineage",
+                "generation": 1,
+                "expires_at": deadline,
+            }
+
+        async def residency_request(self, guest, token, method, **kwargs):
+            calls.append(method)
+            return {
+                "id": "synthetic-residency",
+                "session_id": guest,
+                "generation": 1,
+                "state": "ready",
+                "reason": "capacity",
+                "residency_epoch": "epoch",
+            }
+
+        async def deliver(self, *_args, **kwargs):
+            await kwargs["admission_check"]()
+            calls.append("preinvoke_failure")
+            kwargs["invocation_record"].update(
+                attempted=False,
+                database_failure={
+                    "version": 1,
+                    "phase": "receipt_prepare",
+                    "sqlstate": "42703",
+                    "attempted": False,
+                },
+            )
+            raise transport.EmberTurnNotInvoked("synthetic receipt preparation failure")
+
+    monkeypatch.setattr(executor, "_transport", PreinvokeFailure())
+    asyncio.run(asyncio.wait_for(executor._execute_pending_message(sid), 10))
+    assert calls == ["POST", "preinvoke_failure", "DELETE"]
+    with Session(s.engine) as db:
+        pending = store.get_pending_message(db, sid, 1)
+        assert pending.capacity_state == "waiting_capacity"
+        assert pending.claimed_by_replica is None
+        assert pending.dispatch_count == 0
+        assert pending.capacity_started_at is None
+        assert pending.message_text == "synthetic refill"
+        permit = admission.reservation(db, db.get(AgentSession, sid).local_session_id)
+        assert permit.state == "reserved"
+        assert permit.owner is None
+        assert not db.exec(select(AgentTurn).where(AgentTurn.session_id == sid)).all()
+        assert s.funding.latest(db, task_id, "repair_allocation_wait") is None
+    assert not controls.task_snapshot(task_id)["task_paused"]
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+def test_unavailable_repair_route_preserves_existing_machine_hold(
+    available_repair_loop, monkeypatch
+):
+    from factory.orchestration import backlog_refill_repair as repair
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import funding_profile
+
+    s = available_repair_loop
+    first, _first_id = s.start_failure()
+    refill.settle(first["run_id"], success=False, new_issues=0, summary="first failure")
+    s.clock[0] += timedelta(minutes=16)
+    _second, task_id = s.start_failure()
+    before = controls.task_snapshot(task_id)
+    assert before["task_paused"]
+    with controls._read_session() as db:
+        wait = s.funding.latest(db, task_id, "repair_allocation_wait")
+        assert wait is not None
+        events = [
+            (row.id, row.detail_json) for row in db.exec(select(FactoryAudit)).all()
+        ]
+    monkeypatch.setattr(funding_profile, "PROVIDER_ROUTE_AVAILABLE", False)
+    assert not repair.failed(conductor._task(task_id), refill.NODE)
+    assert repair.reconcile(
+        conductor._task(task_id),
+        s.policy,
+        conductor.graph.node_runs(task_id),
+        controls.can_start(task_id),
+    )
+    assert controls.task_snapshot(task_id) == before
+    with controls._read_session() as db:
+        assert s.funding.latest(db, task_id, "repair_allocation_wait") == wait
+        assert [
+            (row.id, row.detail_json) for row in db.exec(select(FactoryAudit)).all()
+        ] == events
+
+
+@pytest.fixture
+def repaired_refill(available_repair_loop, request, monkeypatch):
     """Prospective provider + post-operator boundary; neither is enabled live."""
     from factory.orchestration import factory_intake as intake_owner
     from factory.orchestration import factory_landing as landing
     from factory.orchestration import factory_problem_issues as producer
 
-    s = repair_loop
+    s = available_repair_loop
     s.failed_role = getattr(request, "param", refill.NODE)
     first, first_id = s.start_failure(s.failed_role)
     assert controls.task_snapshot(first_id)["state"] == "failed"
@@ -1511,7 +1738,7 @@ def repaired_refill(repair_loop, request, monkeypatch):
     )
     from factory.orchestration import funding_profile
 
-    assert funding_profile.PROVIDER_ROUTE_AVAILABLE is False
+    monkeypatch.setattr(funding_profile, "PROVIDER_ROUTE_AVAILABLE", False)
     before = controls.task_snapshot(task_id)
     s.funding.repair_recovery_tick()
     assert controls.task_snapshot(task_id) == before
@@ -1584,12 +1811,12 @@ def test_native_repair_public_context_refuses_unknown_or_permission_failures(cha
 @pytest.mark.parametrize("world", ["inspection"], indirect=True)
 @pytest.mark.parametrize("role", [refill.NODE, refill.REVIEW_NODE])
 def test_native_repair_ticket_carries_only_authenticated_owner_context(
-    repair_loop, role
+    available_repair_loop, role
 ):
     from factory.orchestration import factory_problem_issues as producer
     from factory.orchestration import repair_landing_delegation as delegation
 
-    s = repair_loop
+    s = available_repair_loop
     first, first_id = s.start_failure(role)
     refill.settle(first["run_id"], success=False, new_issues=0, summary="Typed failure")
     s.clock[0] += timedelta(minutes=16)
@@ -1880,13 +2107,15 @@ def test_native_funding_rejects_arbitrary_profile_and_does_not_widen_read_only(
 @pytest.mark.parametrize(
     "change", ["missing_type", "attempted", "phase", "historical", "unknown", "held"]
 )
-def test_native_repair_requires_two_fresh_positive_native_failures(repair_loop, change):
+def test_native_repair_requires_two_fresh_positive_native_failures(
+    available_repair_loop, change
+):
     import json
 
     from factory.execution.models import AgentCapacityReservation, AgentTurn
     from factory.orchestration import factory_problem_issues as producer
 
-    s = repair_loop
+    s = available_repair_loop
     first, first_id = s.start_failure()
     refill.settle(first["run_id"], success=False, new_issues=0, summary="first failure")
     with Session(s.engine) as db:

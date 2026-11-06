@@ -7,6 +7,7 @@ from sqlmodel import select
 
 from factory.orchestration import backlog_refill as refill
 from factory.orchestration import factory_controls as controls
+from factory.orchestration import funding_profile
 from factory.orchestration.factory_funding_limits import ROUTINE_HELD_LABELS
 from factory.orchestration.factory_models import FactoryAudit, FactoryControl, WorkItem
 
@@ -75,6 +76,8 @@ def source(db, row):
 
 def execution_failure_eligible(local_id):
     """Only fresh fixed-role attempt one trades capacity wait for terminal proof."""
+    if not funding_profile.PROVIDER_ROUTE_AVAILABLE:
+        return False
     fields = (local_id or "").split(":")
     if (
         len(fields) != 4
@@ -134,7 +137,9 @@ def failed(task, key):
     from factory.orchestration import factory_funding as funding
     from factory.orchestration import graph
 
-    if funding.routine_labels_held(task):
+    if not funding_profile.PROVIDER_ROUTE_AVAILABLE or funding.routine_labels_held(
+        task
+    ):
         return False
     with controls._locked_session() as (db, _control):
         row = controls._receipt(db, task["id"])
