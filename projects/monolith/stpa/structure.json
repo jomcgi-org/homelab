@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "3691fb768",
+  "commit": "b6340b130",
   "nodes": [
     {
       "key": "console-caller",
@@ -833,12 +833,12 @@
     },
     {
       "key": "permit-supervisor.settle",
-      "label": "Settle exact interactive permit from terminal-before-dispatch evidence",
+      "label": "Settle exact interactive permit from complete terminal guest evidence",
       "view": "logical",
       "from": "permit-supervisor",
       "to": "postgres",
       "maturity": "built",
-      "evidence": "projects/monolith/factory/execution/permit_supervision.py:108,1040"
+      "evidence": "projects/monolith/factory/execution/permit_supervision.py:197,330,968"
     }
   ],
   "feedback": [
