@@ -666,6 +666,18 @@ POST would require another committed receipt. The proof keeps receipt locks,
 claim ownership, retention bounds and all result/hold checks. It preserves the
 turn, unknown outcome, cost and workspace binding, and grants no retry.
 
+**Why.** A drain continuation can target the same earlier invocation, then fail
+restoring after the guest is evicted. Neither the first-dispatch proof nor an
+invoke stamp inside the second dispatch covers this case (#7583). A separate
+native interactive proof enumerates the complete retained two-dispatch chain
+(at most three receipts and two guests), observes every guest positively
+terminal, and rechecks the unchanged chain under the capacity/session/receipt
+locks. Session and permit age bound completeness before the first possible
+POST. The latest receipt must be unobserved, result-free and released; earlier
+responses remain history. Missing, live, stale or contradictory evidence keeps
+uncertainty. Settlement changes only the exact capacity permit, not the failed
+turn, unknown marker, cost, receipt history, binding or continuation authority.
+
 **Why.** A truncated native error cannot distinguish staged receipt preparation,
 promotion and admission-recheck failures (#7583). The transport records a bounded
 phase, SQLSTATE, promotion attempt and intent flag with numeric dispatch identity
