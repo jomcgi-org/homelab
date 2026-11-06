@@ -546,7 +546,7 @@ defmodule Embervm.SessionBankRelightTest do
     assert recovered.vm_id == nil
     assert SessionStore.residency(ctx.store, id) == :error
     assert %{live: 0, banked: 1} = SessionStore.counts(ctx.store, "wl")
-    assert Registry.lookup(ctx.registry, id) == []
+    wait_until(fn -> Registry.lookup(ctx.registry, id) == [] end)
     assert {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
     assert [banked] = Enum.filter(ops, &(&1.kind == :session_banked))
     assert banked.payload["adopted"] == true
@@ -621,7 +621,7 @@ defmodule Embervm.SessionBankRelightTest do
     :ok = SessionManager.reconcile(ctx.mgr)
     assert {:ok, %{state: :banked, snapshot_ref: ref, snapshot_size_bytes: 2_000, vm_id: nil}} = SessionStore.get(ctx.store, id)
     assert ref == "snap-#{id}"
-    assert Registry.lookup(ctx.registry, id) == []
+    wait_until(fn -> Registry.lookup(ctx.registry, id) == [] end)
     assert SessionStore.counts(ctx.store, "wl") == %{live: 0, banked: 1}
     assert {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
     assert [%{payload: %{"adopted" => true}}] = Enum.filter(ops, &(&1.kind == :session_banked))
