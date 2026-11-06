@@ -2061,7 +2061,9 @@ class EmberVmShimTransport:
             url = f"{EMBERVM_URL}/v1/sessions/{current.session_id}/invoke"
             headers = {
                 "Authorization": f"Bearer {current.session_token}",
-                "X-Ember-Guest-Path": "/shim/funding-decision-v1" if execution_profile is not None else "/shim/turn",
+                "X-Ember-Guest-Path": "/shim/funding-decision-v1"
+                if execution_profile is not None
+                else "/shim/turn",
             }
             if dispatch_id is not None:
                 headers["X-Ember-Dispatch-Id"] = dispatch_id
