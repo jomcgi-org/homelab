@@ -15,10 +15,11 @@ Routine human review or a separate "merge" instruction is unnecessary.
 Existing approval covers the same action and scope.
 
 Routine autonomous maintenance includes model choice and IDs, and supported
-CLI/runtime version bumps. These changes require compatibility checks, dev
-conformance before production, and the review, CI, merge queue and verified
-rollout evidence below. Diagnose failed gates and repair or roll back within
-scope. A model or version change alone needs no new human decision.
+CLI/runtime version bumps. Use proportionate compatibility checks, including
+the service's dev conformance gate where applicable. Preserve the review, CI,
+merge queue and verified rollout evidence below. Diagnose failed gates and
+repair or roll back within scope. A model or version change alone needs no new
+human decision.
 
 Escalate only conflicting goals, a human-owned constraint exception, unapproved
 destructive work, or an explicit human-owned decision/hold. Name the decision
