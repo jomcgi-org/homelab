@@ -617,15 +617,13 @@ multiarch_http_file(
 # takes ONE extract_path for both arches. Adding arm64 means teaching the rule
 # per-arch extract paths, not just adding a URL.
 #
-# Pinned, not floating: the shim's adapter depends on observed behaviour
-# (thread.started/thread_id, item.completed agent_message, turn.completed
-# usage, and the `exec resume <id> <prompt>` argument order, which differs from
-# plain `exec` in that it rejects --sandbox and -C). A silent upgrade could
-# change those.
+# Pinned, not floating: the shim depends on the app-server's thread/turn IDs,
+# usage notifications, persisted resume, and subscription-auth headers. The
+# real-binary codex_compat_test checks that contract against a local backend.
 multiarch_http_file(
     name = "codex_cli",
-    amd64_sha256 = "5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a",
-    amd64_url = "https://github.com/openai/codex/releases/download/rust-v0.146.0/codex-x86_64-unknown-linux-musl.tar.gz",
+    amd64_sha256 = "9d64836106d5b374e90ee4454c7ebcde7ca7106558bd7e41a34b9f26ebda251a",
+    amd64_url = "https://github.com/openai/codex/releases/download/rust-v0.167.0/codex-x86_64-unknown-linux-musl.tar.gz",
     binary_name = "codex",
     extract_path = "codex-x86_64-unknown-linux-musl",
     package_dir = "/usr/local/bin",

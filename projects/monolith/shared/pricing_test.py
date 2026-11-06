@@ -38,7 +38,7 @@ def test_codex_transcript_cache_is_part_of_reported_input():
 
 
 @pytest.mark.parametrize(
-    ("model", "model_ref"), [("sol", "gpt-6.1-sol"), ("terra", "gpt-5.6-terra")]
+    ("model", "model_ref"), [("sol", "gpt-6.1-sol"), ("terra", "gpt-6.1-terra")]
 )
 def test_codex_aliases_resolve_to_provider_models(model, model_ref):
     priced = price_usage(model, {"input_tokens": 1_000})
@@ -46,6 +46,45 @@ def test_codex_aliases_resolve_to_provider_models(model, model_ref):
     assert priced is not None
     assert priced.cost_usd > 0
     assert priced.model_ref == model_ref
+
+
+@pytest.mark.parametrize("model", ["terra", "gpt-6.1-terra"])
+def test_terra_6_1_standard_rates_keep_codex_cache_inclusive(model):
+    priced = price_usage(
+        model,
+        {
+            "shape": "codex",
+            "input_tokens": 200_000,
+            "cache_read_tokens": 150_000,
+            "output_tokens": 10_000,
+            "reasoning_output_tokens": 5_000,
+        },
+    )
+
+    assert priced is not None
+    assert priced.model_ref == "gpt-6.1-terra"
+    assert priced.source == "list"
+    # $1 input, $0.05 cached input, $5 output per million. Reasoning is
+    # already part of output_tokens and must not be charged twice.
+    assert priced.cost_usd == pytest.approx(0.1075)
+
+
+def test_terra_turn_totals_do_not_imply_one_long_context_request():
+    priced = price_usage(
+        "terra", {"input_tokens": 1_000_000, "output_tokens": 100_000}
+    )
+
+    assert priced is not None
+    # The collector aggregates multiple requests. A turn above 272K tokens
+    # cannot establish the provider's per-request long-context surcharge.
+    assert priced.cost_usd == pytest.approx(1.50)
+
+
+def test_explicit_historical_terra_model_keeps_its_identity():
+    priced = price_usage("gpt-5.6-terra", {"input_tokens": 1_000})
+
+    assert priced is not None
+    assert priced.model_ref == "gpt-5.6-terra"
 
 
 def test_opus_adds_exclusive_claude_cache_tokens_to_input():
