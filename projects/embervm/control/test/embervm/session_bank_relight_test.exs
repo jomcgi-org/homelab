@@ -506,6 +506,71 @@ defmodule Embervm.SessionBankRelightTest do
 
   # -- adoption matrix -------------------------------------------------------
 
+  test "first bank timeout followed by late snapshot completion recovers a relightable durable session" do
+    test_pid = self()
+    bank = fn _ch, req ->
+      send(test_pid, {:bank_waiting, self(), req.session_id})
+      receive do
+        :timeout -> {:error, :timeout}
+      end
+    end
+    relight = fn _ch, req ->
+      send(test_pid, {:relighting_snapshot, req.snapshot_ref})
+      default_relight(nil, req)
+    end
+    ctx = start_stack(bank_fun: bank, relight_fun: relight)
+    put_workload(ctx, "wl")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
+    id = created.session_id
+    assert {:ok, %{snapshot_ref: nil, generation: 0}} = SessionStore.get(ctx.store, id)
+    [{pid, _}] = Registry.lookup(ctx.registry, id)
+    send(pid, :maybe_bank)
+    assert_receive {:bank_waiting, worker, ^id}
+    send(worker, :timeout)
+    wait_until(fn ->
+      match?({:ok, %{state: :running}}, SessionStore.get(ctx.store, id)) and
+        Map.get(:sys.get_state(ctx.mgr).bank_failures, id) == 1 and
+        Registry.lookup(ctx.registry, id) != []
+    end)
+
+    # The daemon completes after the callback's abort, with no live VM left.
+    NodeCapacity.put(ctx.cap_table, "node-4", node_fact("wl", session_snapshots: [snap_fact(id)]))
+    :ok = SessionManager.reconcile(ctx.mgr)
+    assert {:ok, recovered} = SessionStore.get(ctx.store, id)
+    assert recovered.state == :banked
+    assert recovered.snapshot_ref == "snap-#{id}"
+    assert recovered.snapshot_size_bytes == 2_000
+    # NodeStatus has no generation or parent-base provenance to infer.
+    assert recovered.generation == 0
+    assert recovered.base_snapshot_ref == created.base_snapshot_ref
+    assert recovered.vm_id == nil
+    assert SessionStore.residency(ctx.store, id) == :error
+    assert %{live: 0, banked: 1} = SessionStore.counts(ctx.store, "wl")
+    assert Registry.lookup(ctx.registry, id) == []
+    assert {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    assert [banked] = Enum.filter(ops, &(&1.kind == :session_banked))
+    assert banked.payload.adopted == true
+    assert banked.payload.snapshot_ref == recovered.snapshot_ref
+    assert banked.payload.size_bytes == 2_000
+    assert banked.payload.generation == 0
+
+    :ok = SessionManager.reconcile(ctx.mgr)
+    assert {:ok, ^recovered} = SessionStore.get(ctx.store, id)
+    assert {:ok, ^ops} = SQLite.read_from(ctx.op_log, 0)
+    # Rebuild a new hot store from the real durable session projection.
+    {:ok, replayed_store} = SessionStore.start_link(name: nil, op_log: ctx.op_log)
+    assert {:ok, replayed} = SessionStore.get(replayed_store, id)
+    assert Map.take(replayed, [:state, :snapshot_ref, :snapshot_size_bytes, :generation, :node_id, :vm_id]) ==
+      Map.take(recovered, [:state, :snapshot_ref, :snapshot_size_bytes, :generation, :node_id, :vm_id])
+    GenServer.stop(replayed_store)
+
+    assert {:ok, %{status_code: 200}} = SessionManager.invoke(ctx.mgr, id, %{body: "after timeout"})
+    expected_ref = recovered.snapshot_ref
+    assert_receive {:relighting_snapshot, ^expected_ref}
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, id)
+    assert %{live: 1, banked: 0} = SessionStore.counts(ctx.store, "wl")
+  end
+
   test "adoption rebinds a running session VM to a fresh process after a restart" do
     ctx = start_stack()
     put_workload(ctx, "wl")
