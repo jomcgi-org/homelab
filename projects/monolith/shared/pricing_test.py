@@ -479,6 +479,43 @@ def test_list_price_takes_claude_codes_reported_cost_as_list(model):
     assert list_price_usd(model, usage, 2.5) == pytest.approx(2.5)
 
 
+@pytest.mark.parametrize(
+    ("provider_model", "expected"),
+    [("gpt-5.6-terra", 0.014), ("gpt-6.1-terra", 0.006)],
+)
+def test_list_price_uses_the_recorded_terra_version(provider_model, expected):
+    usage = {
+        "input_tokens": 1_000,
+        "output_tokens": 1_000,
+        "provider_model": provider_model,
+    }
+
+    assert list_price_usd("terra", usage) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("provider_model", [None, "", "  ", 5, {}, []])
+def test_list_price_falls_back_when_provider_metadata_is_unavailable(provider_model):
+    usage = {
+        "input_tokens": 1_000,
+        "output_tokens": 1_000,
+        "provider_model": provider_model,
+    }
+
+    assert list_price_usd("terra", usage) == pytest.approx(0.006)
+
+
+def test_list_price_does_not_guess_rates_for_an_unknown_recorded_model():
+    usage = {"input_tokens": 1_000, "provider_model": "gpt-unknown"}
+
+    assert list_price_usd("terra", usage) is None
+
+
+def test_claude_reported_cost_is_independent_of_provider_label():
+    usage = {"input_tokens": 1_000, "provider_model": "unrecognized-cli-label"}
+
+    assert list_price_usd("opus", usage, 2.5) == pytest.approx(2.5)
+
+
 @pytest.mark.parametrize("model", [None, "", "unknown"])
 def test_reported_cost_does_not_price_an_unknown_model(model):
     assert list_price_usd(model, {"input_tokens": 1}, 2.5) is None
