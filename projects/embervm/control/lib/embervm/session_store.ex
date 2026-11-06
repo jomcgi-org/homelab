@@ -292,6 +292,19 @@ defmodule Embervm.SessionStore do
   end
 
   @doc """
+  Recover a completed bank from an owned node inventory entry. Appends the
+  recovered snapshot facts before changing ETS, counts or residency. Repeated
+  matching inventory is a no-op. Inventory cannot replace an existing snapshot
+  identity or resurrect a terminal, destroying or parked session.
+
+  NodeStatus carries no generation or parent-base provenance. Keep the durable
+  row's generation and base identity instead of inferring either from a ref.
+  """
+  def adopt_banked(store, session_id, node_id, snapshot) do
+    GenServer.call(store, {:adopt_banked, session_id, node_id, snapshot})
+  end
+
+  @doc """
   Adoption: rebind a session the node reports as a LIVE VM to `{node_id, vm_id}`,
   writing the residency fact and the ETS row's `vm_id`/`node_id` WITHOUT an FSM
   transition or an op-log append (residency is a lossy fact the node owns, not
@@ -736,6 +749,37 @@ defmodule Embervm.SessionStore do
 
       {:error, _reason} = error ->
         {:reply, error, state}
+    end
+  end
+
+  def handle_call({:adopt_banked, session_id, node_id, snapshot}, _from, state) do
+    with {:ok, session} <- fetch(state, session_id),
+         true <- session.state in [:creating, :running, :banking, :banked, :relighting],
+         true <- Map.get(snapshot, :session_id) == session_id and Map.get(snapshot, :workload) == session.workload,
+         true <- is_binary(node_id) and node_id != "" and node_id == session.node_id,
+         ref when is_binary(ref) and ref != "" <- Map.get(snapshot, :snapshot_ref),
+         true <- valid_inventory_snapshot_ref?(ref),
+         size <- Map.get(snapshot, :size_bytes),
+         true <- is_nil(size) or (is_integer(size) and size >= 0),
+         true <- session.snapshot_ref in [nil, "", ref] do
+      size = case size do
+        n when is_integer(n) and n > 0 -> n
+        _ -> session.snapshot_size_bytes
+      end
+      updates = %{snapshot_ref: ref, snapshot_size_bytes: size, node_id: node_id, vm_id: nil}
+
+      if session.state == :banked and Map.take(session, Map.keys(updates)) == updates do
+        {:reply, {:ok, session}, state}
+      else
+        payload = %{snapshot_ref: ref, size_bytes: size, generation: session.generation,
+          adopted: true}
+        case append_and_update(state, session, :session_banked, :banked, payload, updates) do
+          {:ok, updated, next} -> {:reply, {:ok, updated}, next}
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
+      end
+    else
+      _ -> {:reply, {:error, :invalid_snapshot_inventory}, state}
     end
   end
 
@@ -1247,6 +1291,13 @@ defmodule Embervm.SessionStore do
   # snapshot_ref/generation/node_id/vm_id into the row atomically with the state
   # change. Terminal transitions record the reason, drop the residency fact, and
   # (for usage-carrying payloads) fire the metering hook.
+  # Session bundles are one path segment, matching noded's session identity
+  # boundary. Blank references cannot be consumed by WakeInstance.
+  defp valid_inventory_snapshot_ref?(ref) do
+    String.trim(ref) != "" and ref not in [".", ".."] and
+      not String.contains?(ref, ["/", "\\", <<0>>])
+  end
+
   defp append_and_update(state, session, op_kind, next_state, payload, updates) do
     ts = state.clock.()
 

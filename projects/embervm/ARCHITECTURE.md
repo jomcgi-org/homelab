@@ -1202,8 +1202,15 @@ never stores or witnesses anything that scales with the fleet.
 - **Adoption**: noded reports `primed_vm_ids`, session VMs,
   checkpoint-pending VMs, and banked artifacts on every `NodeStatus`; the
   dispatcher and managers reconcile on boot and every sweep. Adoption is
-  ETS-only except the stateful bundle heal, which appends a `stateful_banked`
-  op marked `adopted: true`. The protocols are model-checked: the specs in
+  ETS-only except recovered session and stateful banks, which append
+  `session_banked` or `stateful_banked` with `adopted: true` before changing ETS.
+  A late session bank recovers the node's owned snapshot reference and size,
+  including an already-banked row missing its metadata. Inventory cannot replace
+  an existing snapshot identity. Absent size preserves the recorded size;
+  NodeStatus reports no generation or parent-base provenance, so recovery retains
+  those recorded fields. Repeated matching inventory appends nothing. Failed
+  appends leave the row and residency unchanged for the next reconcile.
+  The protocols are model-checked: the specs in
   `projects/embervm/specs/` run under TLC in the build, so a spec violation is
   a red build, and `vocabulary.exs` keeps them honest against the code's
   enums, though not against whether a modeled op kind is ever appended
