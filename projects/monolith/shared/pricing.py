@@ -313,8 +313,9 @@ def list_price_usd(
     """One turn's cost at list price, or None when it cannot be priced.
 
     A positive reported cost from a Claude Code model is taken as is.
-    Everything else prices from its token usage; a
-    reported 0.0 from a non-Claude runtime is not evidence of a free turn.
+    Everything else prices from its token usage and recorded provider model,
+    falling back to the requested model when that metadata is unavailable.
+    A reported 0.0 from a non-Claude runtime is not evidence of a free turn.
     """
     if (
         reported_cost_usd is not None
@@ -326,5 +327,11 @@ def list_price_usd(
         and reported_cost_usd > 0
     ):
         return float(reported_cost_usd)
+    # Persisted guests and historical turns can predate today's alias pin.
+    # Use their concrete model evidence for token pricing, without replacing
+    # Claude Code's complete reported accounting above.
+    provider_model = usage.get("provider_model") if isinstance(usage, Mapping) else None
+    if isinstance(provider_model, str) and provider_model.strip():
+        model = provider_model.strip()
     priced = price_usage(model, usage)
     return priced.cost_usd if priced is not None else None

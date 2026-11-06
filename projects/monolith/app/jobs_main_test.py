@@ -631,13 +631,65 @@ def test_price_turns_backfill_prices_only_eligible_rows(tmp_path):
                         usage_json=json.dumps({"input_tokens": 10}),
                         cost_usd=1.5,
                     ),
+                    AgentTurn(
+                        session_id=agent.id,
+                        seq=8,
+                        prompt="older terra guest",
+                        result_text="done",
+                        model="terra",
+                        usage_json=json.dumps(
+                            {
+                                "input_tokens": 1_000,
+                                "output_tokens": 1_000,
+                                "provider_model": "gpt-5.6-terra",
+                            }
+                        ),
+                    ),
+                    AgentTurn(
+                        session_id=agent.id,
+                        seq=9,
+                        prompt="new terra guest",
+                        result_text="done",
+                        model="terra",
+                        usage_json=json.dumps(
+                            {
+                                "input_tokens": 1_000,
+                                "output_tokens": 1_000,
+                                "provider_model": "gpt-6.1-terra",
+                            }
+                        ),
+                    ),
+                    AgentTurn(
+                        session_id=agent.id,
+                        seq=10,
+                        prompt="terra without provider metadata",
+                        result_text="done",
+                        model="terra",
+                        usage_json=json.dumps(
+                            {"input_tokens": 1_000, "output_tokens": 1_000}
+                        ),
+                    ),
+                    AgentTurn(
+                        session_id=agent.id,
+                        seq=11,
+                        prompt="provider evidence without turn model",
+                        result_text="done",
+                        model=None,
+                        usage_json=json.dumps(
+                            {
+                                "input_tokens": 1_000,
+                                "output_tokens": 1_000,
+                                "provider_model": "gpt-5.6-terra",
+                            }
+                        ),
+                    ),
                 ]
             )
             session.commit()
 
             report = jobs_main._price_turns_backfill_core(engine, chunk_size=1)
 
-            assert report == jobs_main.TurnPricingBackfillReport(4, 1, 1)
+            assert report == jobs_main.TurnPricingBackfillReport(8, 1, 1)
             rows = session.exec(select(AgentTurn).order_by(AgentTurn.seq)).all()
             assert rows[0].cost_usd is None
             assert rows[0].list_cost_usd == pytest.approx(0.10)
@@ -651,6 +703,12 @@ def test_price_turns_backfill_prices_only_eligible_rows(tmp_path):
             # Falls back to the session's model.
             assert rows[5].list_cost_usd == pytest.approx(0.10)
             assert rows[6].list_cost_usd == pytest.approx(1.5)
+            assert rows[7].list_cost_usd == pytest.approx(0.014)
+            assert rows[8].list_cost_usd == pytest.approx(0.006)
+            # Without provider metadata, the current alias remains the fallback.
+            assert rows[9].list_cost_usd == pytest.approx(0.006)
+            # Concrete evidence outranks the session's fallback Luna alias too.
+            assert rows[10].list_cost_usd == pytest.approx(0.014)
 
             rerun = jobs_main._price_turns_backfill_core(engine, chunk_size=1)
             assert rerun.priced == 0
