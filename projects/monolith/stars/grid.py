@@ -29,7 +29,7 @@ from datetime import datetime
 
 from sqlmodel import Session, delete
 
-from core.s3 import path_style_client
+from core.s3 import shared_client
 from stars.grid_ingest import replace_grid
 from stars.models import SiteMonthClimatology
 
@@ -44,7 +44,7 @@ def _s3_client():
     remain in core.s3 for legacy/test compatibility; they are not R2
     configuration.
     """
-    return path_style_client(os.environ.get("SEAWEEDFS_S3_ENDPOINT", ""))
+    return shared_client(os.environ.get("SEAWEEDFS_S3_ENDPOINT", ""))
 
 
 def _fetch_grid() -> list[dict] | None:

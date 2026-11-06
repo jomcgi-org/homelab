@@ -12,7 +12,8 @@ metadata:
 ---
 # Read-only, and only what k8s_attributes needs: pods for pod metadata and
 # labels, replicasets to resolve a pod's Deployment, jobs to resolve a
-# CronJob, namespaces for namespace metadata.
+# CronJob, namespaces for namespace metadata. nodes/stats, only with container
+# metrics on, is the kubelet summary API kubelet_stats reads.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -29,6 +30,11 @@ rules:
   - apiGroups: [batch]
     resources: [jobs]
     verbs: [get, list, watch]
+  {{- if .Values.logs.containerMetrics.enabled }}
+  - apiGroups: [""]
+    resources: [nodes/stats]
+    verbs: [get]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

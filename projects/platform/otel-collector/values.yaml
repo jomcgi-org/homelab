@@ -335,3 +335,13 @@ logs:
       memory: 64Mi
     limits:
       memory: 256Mi
+  # Container memory and CPU from each node's kubelet, shipped by the same
+  # node agent. Without it a slow memory climb is invisible until the
+  # OOMKill. Only the working set (what the OOM killer compares with the
+  # limit), RSS and CPU usage are kept, and only for the listed namespaces
+  # (exact names), to bound Honeycomb volume. Requires logs.enabled.
+  containerMetrics:
+    enabled: false
+    namespaces: []
+    dataset: k8s-metrics
+    interval: 60s

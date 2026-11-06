@@ -89,3 +89,11 @@ logs:
     - monolith
     - kargo
     - "kargo-*"
+  # monolith-public OOMKilled at its limit after 15h of light traffic with
+  # no metric to show the climb. Measure before resizing again.
+  containerMetrics:
+    enabled: true
+    namespaces:
+      - embervm
+      - monolith
+      - monolith-public
