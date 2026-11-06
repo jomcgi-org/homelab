@@ -549,6 +549,18 @@ flowchart TD
   verifies session/model at dispatch, and rejects stale or mismatched artifacts.
   Generic gate/read-only exceptions remain closed. Unsupported adapters cannot
   fall back to repository execution or explicit PR-review credentials.
+- Funding content must not reach a CLI before its capabilities are known. The
+  pinned CLI's pre-input initialize response does not declare tools, so the
+  decision profile never starts it. The existing adapter constructs a fixed
+  provider request with no client or server tools and no configurable capabilities;
+  malformed profiles fail before any prompt delivery or provider request. Tool
+  responses, redirects and errors cannot cause tool execution or a second call.
+- A repair ticket must not invent an owning scope or landing authority. Only
+  reauthenticated native evidence selects fixed role, stage, SQLSTATE and paths;
+  private identifiers and raw SQL/errors remain private. Execution admission and
+  result-receipt repairs are outside the standing landing profiles and must retain
+  `repair_landing_paths_require_operator`. Post-operator rollout fixtures cannot
+  establish autonomous native landing reachability.
 - Rollout is necessary but insufficient: the funding grant retains original
   accounting and exact repair binding, permits only attempt two, and expires.
   Useful publication requires the fixed independent reviewer. Producer recovery

@@ -25,8 +25,14 @@ class _Adapter:
 def manager(tmp_path, monkeypatch):
     # CA transport has separate coverage; hydration tests must not contact vsock.
     monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
+    # Mount behavior is covered in shim_test; these fake subprocess handlers
+    # describe Git only, even when pytest itself is running inside a guest.
+    monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
     instance = object.__new__(shim.ProcessManager)
     instance.workspace = str(tmp_path / "workspace")
+    # A mounted session volume exists before ProcessManager writes durable
+    # admission markers; hydration creates only its src checkout beneath it.
+    os.mkdir(instance.workspace)
     instance.claude = _Adapter(instance.workspace)
     instance.codex = _Adapter(instance.workspace)
     instance.pi = _Adapter(instance.workspace)

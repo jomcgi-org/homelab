@@ -2858,12 +2858,21 @@ class ClaudeProcess:
     requires_git_checkout = False
     decision_profile = None
 
-    def __init__(self, workspace=None, executable="claude"):
+    def __init__(self, workspace=None, executable="claude", decision_profile=None):
         self.workspace = workspace or os.environ.get(
             "EMBER_CLAUDE_WORKSPACE", DEFAULT_WORKSPACE
         )
         self.executable = executable
-        _probe_cli_startup(executable)
+        self.decision_profile = decision_profile
+        if decision_profile is None:
+            _probe_cli_startup(executable)
+        else:
+            _funding_profile(
+                decision_profile,
+                decision_profile.get("model")
+                if isinstance(decision_profile, dict)
+                else None,
+            )
         self.process = None
         self.init_event = None
         self.fatal_error = None
@@ -2921,12 +2930,15 @@ class ClaudeProcess:
         system_prompt=None,
         effort=None,
     ):
+        # The pinned CLI cannot attest its tool set before receiving user input.
+        # Never deliver funding content to it, even through a future call path.
+        if self.decision_profile is not None:
+            raise StartupError("decision profile cannot invoke a CLI")
         if self.fatal_error is not None:
             raise StartupError(self.fatal_error)
         if not _workspace_ready_for_spawn(self.workspace, self.requires_git_checkout):
             raise StartupError("workspace does not exist: %s" % self.workspace)
-        if self.decision_profile is None:
-            self._configure_git()
+        self._configure_git()
         spawn_workspace = self.workspace
         uses_legacy_cwd = False
         if session_id and not _transcript_exists(self.workspace, session_id):
@@ -2955,26 +2967,6 @@ class ClaudeProcess:
             permission_mode,
         ]
         command.extend(["--include-partial-messages"])
-        if self.decision_profile is not None:
-            if session_id or model not in CLAUDE_MODELS:
-                raise StartupError("decision profile cannot resume or change adapter")
-            # Real CLI capability removal, not instructions to abstain. Keep the
-            # existing OAuth/broker environment; --bare would disable that auth.
-            command[command.index("--permission-mode") + 1] = "default"
-            command.extend(
-                [
-                    "--tools",
-                    "",
-                    "--strict-mcp-config",
-                    "--mcp-config",
-                    '{"mcpServers":{}}',
-                    "--setting-sources",
-                    "",
-                    "--settings",
-                    '{"disableAllHooks":true}',
-                    "--disable-slash-commands",
-                ]
-            )
         if model is not None:
             command.extend(["--model", CLAUDE_MODELS.get(model, model)])
         if effort is not None:
@@ -2982,7 +2974,7 @@ class ClaudeProcess:
         if session_id:
             command.extend(["--resume", session_id])
             self._seed_cost_baseline(spawn_workspace, session_id)
-        agent_mcp_url = None if self.decision_profile is not None else os.environ.get(AGENT_MCP_URL_ENV)
+        agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
         agent_mcp_configured = False
         if agent_mcp_url and _agent_mcp_endpoint_alive(agent_mcp_url):
             _validate_claude_mcp_config_dir()
@@ -3006,12 +2998,8 @@ class ClaudeProcess:
             sys.stderr.flush()
         command.extend(
             [
-                "--system-prompt"
-                if self.decision_profile is not None
-                else "--append-system-prompt",
-                "Return only the requested JSON decision. You have no tools."
-                if self.decision_profile is not None
-                else compose_system_prompt(
+                "--append-system-prompt",
+                compose_system_prompt(
                     system_prompt, agent_mcp_configured=agent_mcp_configured
                 ),
             ]
@@ -3101,11 +3089,6 @@ class ClaudeProcess:
             if event is None:
                 continue
             if event.get("type") == "system" and event.get("subtype") == "init":
-                if self.decision_profile is not None and (
-                    event.get("tools") != [] or event.get("mcp_servers") != []
-                ):
-                    self._close_process(kill=True)
-                    raise StartupError("decision profile advertised capabilities")
                 if event.get("mcp_servers") is not None:
                     # Same visibility as the codex startup-status line in
                     # CodexProcess._handle_server_request.
@@ -3359,6 +3342,104 @@ class ClaudeProcess:
         _managed_child_pids.discard(process.pid)
         _reap_orphans()
 
+    def _funding_turn(self, message, session_id, model, system_prompt):
+        """One tool-free message through the existing Claude broker egress lane.
+
+        Unlike the CLI's post-input system/init event, this is a trusted
+        pre-invocation boundary: no CLI receives the prompt, no tool loop
+        exists, and neither client nor provider-side capabilities can be selected.
+        Normal dispatch, one-shot admission, result receipts and usage settlement
+        remain owned by ProcessManager and the factory executor.
+        """
+        with self.turn_lock:
+            _funding_profile(self.decision_profile, model)
+            if not isinstance(message, str) or not message:
+                raise ValueError("decision input must be plain text")
+            if session_id or self.session_id or self.process is not None:
+                raise StartupError("decision profile requires a fresh provider call")
+            if getattr(self, "_interrupt_requested", False):
+                raise StartupError("decision interrupted before provider invocation")
+            # Only this fixed request shape crosses the existing host-local
+            # forwarder. Do not accept arbitrary provider kwargs, URLs, tool
+            # definitions, MCP servers, containers, or beta features from callers.
+            body = {
+                "model": CLAUDE_MODELS[model],
+                "max_tokens": 4096,
+                "stream": False,
+                "tools": [],
+                "tool_choice": {"type": "none"},
+                "system": "Return only the requested JSON funding decision.",
+                "messages": [{"role": "user", "content": message}],
+            }
+            self.session_id = "funding-" + str(uuid.uuid4())
+            self.model = model
+            self._turn_timing_model_start = _turn_timing_now()
+            request = urllib.request.Request(
+                "http://api.anthropic.com/v1/messages",
+                data=json.dumps(body).encode("utf-8"),
+                method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "anthropic-version": "2023-06-01",
+                    "anthropic-beta": "oauth-2025-04-20",
+                    # Same noncredential opt-in as guest-init. The existing
+                    # sidecar replaces it with the existing broker grant and
+                    # originates verified TLS. No token enters the guest.
+                    "Authorization": "Bearer ember-guest-login-gate-dummy-not-a-credential",
+                },
+            )
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": egress_proxy_env()["HTTP_PROXY"]}),
+                _ResultReceiptNoRedirect(),
+            )
+            # No retry or redirect: a lost response remains unknown to the
+            # existing receipt owner, never another funding invocation.
+            with opener.open(request, timeout=120) as response:
+                raw = response.read(MAX_RESULT_RECEIPT_BYTES + 1)
+            if len(raw) > MAX_RESULT_RECEIPT_BYTES:
+                raise RuntimeError("decision provider response exceeds limit")
+            result = json.loads(raw)
+            if not isinstance(result, dict):
+                raise RuntimeError(
+                    "decision provider returned non-text or incomplete result"
+                )
+            blocks = result.get("content")
+            if (
+                result.get("type") != "message"
+                or result.get("role") != "assistant"
+                or result.get("model") != CLAUDE_MODELS[model]
+                or result.get("stop_reason") != "end_turn"
+                or not isinstance(blocks, list)
+                or not blocks
+                or any(
+                    not isinstance(block, dict)
+                    or block.get("type") != "text"
+                    or not isinstance(block.get("text"), str)
+                    for block in blocks
+                )
+                or not isinstance(result.get("usage"), dict)
+            ):
+                raise RuntimeError(
+                    "decision provider returned non-text or incomplete result"
+                )
+            text = "".join(block["text"] for block in blocks)
+            record = {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "session_id": self.session_id,
+                "model": model,
+                "provider_model": result.get("model") or CLAUDE_MODELS[model],
+                "num_turns": 1,
+                "result": text,
+                "usage": result["usage"],
+                "activities": [],
+                "voice": voice_summary(text),
+            }
+            self.current_result = record
+            _emit_elapsed("model", self._turn_timing_model_start)
+            return record
+
     def turn(
         self,
         message,
@@ -3368,6 +3449,8 @@ class ClaudeProcess:
         system_prompt=None,
         effort=None,
     ):
+        if self.decision_profile is not None:
+            return self._funding_turn(message, session_id, model, system_prompt)
         with self.turn_lock:
             cli_ready_start = _turn_timing_now()
             with self.process_lock:
@@ -3644,6 +3727,17 @@ class ClaudeProcess:
             self.interrupt(timeout=INTERRUPT_TIMEOUT)
 
     def interrupt(self, timeout=INTERRUPT_TIMEOUT):
+        if self.decision_profile is not None:
+            # There is no CLI to signal. An absent child is not cessation proof
+            # for an in-flight HTTP request. The manager still waits for its
+            # provider-done event and exact terminal receipt; never acknowledge
+            # a killed provider or fall back to another request.
+            self._interrupt_requested = True
+            return {
+                "terminal_reason": "user_interrupt",
+                "killed": False,
+                "timeout": self.current_result is None,
+            }
         with self.process_lock:
             process = self.process
         if process is None or process.poll() is not None:
@@ -7074,7 +7168,9 @@ class ProcessManager:
                     for a in (self.claude, self.codex, self.pi, self.muse)
                 )
             ):
-                raise SessionConflictError("decision profile requires an unused tool-free session")
+                raise SessionConflictError(
+                    "decision profile requires an unused tool-free session"
+                )
         total_start = _turn_timing_now()
         self._turn_started_at = total_start
         self._turn_phase_telemetry = {}
@@ -7105,9 +7201,12 @@ class ProcessManager:
                 self.claude._close_process(kill=True)
                 decision_dir = tempfile.mkdtemp(prefix="funding-decision-")
                 _ensure_cli_dir(decision_dir)
-                self.claude = ClaudeProcess(decision_dir, self.claude.executable)
+                self.claude = ClaudeProcess(
+                    decision_dir,
+                    self.claude.executable,
+                    decision_profile=execution_profile,
+                )
                 self.claude._manager = self
-                self.claude.decision_profile = execution_profile
             elif not os.path.exists(ordinary_marker):
                 with open(ordinary_marker, "x") as stream:
                     stream.write("ordinary\n")
@@ -7203,7 +7302,9 @@ class ProcessManager:
         checkout_dir = os.path.join(
             getattr(self, "workspace", DEFAULT_WORKSPACE), "src"
         )
-        turn_base = None if execution_profile is not None else _capture_turn_base(checkout_dir)
+        turn_base = (
+            None if execution_profile is not None else _capture_turn_base(checkout_dir)
+        )
         push_format_state = None
         if push_format is not None:
             import push_format as push_format_guard

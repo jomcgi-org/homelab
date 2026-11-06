@@ -203,6 +203,19 @@ def failed(task, key):
         return funding.latest(db, task["id"], "repair_allocation_wait") is not None
 
 
+def public_failure(db, task_id, run_id):
+    """Reauthenticate native evidence before exporting a closed public subset."""
+    from factory.execution.preinvoke_failure import repair_context
+    from factory.orchestration.models import SwarmNodeRun
+
+    row = controls._receipt(db, task_id)
+    if source(db, row) is None:
+        return None
+    failure = _failure(db, task_id, run_id)
+    run = db.get(SwarmNodeRun, run_id)
+    return repair_context(failure, run.node_key) if failure and run else None
+
+
 def attempt_allowed(db, row, key, attempt):
     if type(attempt) is not int:
         return False

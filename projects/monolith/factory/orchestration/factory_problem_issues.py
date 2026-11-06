@@ -850,6 +850,16 @@ def _issue(
     issue_number: int,
     marker: str,
 ):
+    public = detail.get("preinvoke_repair")
+    if public is not None:
+        from factory.orchestration.backlog_refill_repair import public_failure
+
+        with _read_session() as db:
+            verified = public_failure(db, row.task_id, detail.get("source_run_id"))
+        if verified is None or verified != public:
+            return None
+        # Only the reauthenticated, fixed-vocabulary projection is public.
+        public = verified
     source_url = f"https://github.com/{repo}/issues/{issue_number}"
     titles = {
         "node_stalled": f"factory: node stalled while delivering #{issue_number}",
@@ -885,14 +895,36 @@ def _issue(
         "node_stalled": "factory_conductor.py and node timeout supervision",
         "landing_recovery_exhausted": "factory_landing.py and exact-head recovery",
     }
+    if public:
+        titles[source] = (
+            "factory: repeated preinvoke database failure in refill " + public["role"]
+        )
+        lines.extend(
+            [
+                "",
+                "## Authenticated failure context",
+                "",
+                "- Fixed role: " + public["role"] + ".",
+                "- Pre-invocation stage: `" + public["stage"] + "`.",
+                "- SQLSTATE: `" + public["sqlstate"] + "`.",
+                "- Native evidence positively establishes no invocation; raw SQL, errors and private IDs are omitted.",
+            ]
+        )
+    scope = (
+        "Inspect only these owning paths and their existing contracts: "
+        + ", ".join("`" + path + "`" for path in public["owning_paths"])
+        + "."
+        if public
+        else "Inspect `projects/monolith/factory/orchestration/`: "
+        + paths[source]
+        + "."
+    )
     lines.extend(
         [
             "",
             "## Scoped repair",
             "",
-            "Inspect `projects/monolith/factory/orchestration/`: "
-            + paths[source]
-            + ".",
+            scope,
             "Reproduce the missing recovery transition with synthetic evidence and "
             "fix it in the existing owner. Check existing issues and PRs before "
             "implementation; reuse an existing repair rather than competing with it.",
@@ -913,6 +945,18 @@ def _issue(
             "recovery engine. Repair tickets must not recursively produce repairs.",
         ]
     )
+    if public:
+        lines.extend(
+            [
+                "",
+                "## Landing authority boundary",
+                "",
+                "These execution/admission owners are outside the existing observation and diagnostics standing repair landing profiles. "
+                "Implementation does not grant landing authority: an explicit operator-owned exact-head authorization is required. "
+                "Do not broaden a path profile or substitute a diagnostic-only change for the repair. "
+                "Automatic landing reachability is not established for this failure class.",
+            ]
+        )
     lines.extend(
         [
             "",
@@ -1303,8 +1347,25 @@ def problem_issues_tick(policy: dict) -> None:
         issue = {key: issue[key] for key in ("title", "body")}
     else:
         issue = _issue(source, row, source_detail, repo, issue_number, marker)
+        if issue is None:
+            _record(
+                "problem_issue_source_refused",
+                row,
+                source,
+                fingerprint,
+                reason="native_preinvoke_evidence_changed",
+            )
+            return
 
     with _locked_session() as (db, _control):
+        if source_detail.get("preinvoke_repair") is not None:
+            from factory.orchestration.backlog_refill_repair import public_failure
+
+            if (
+                public_failure(db, row.task_id, source_detail.get("source_run_id"))
+                != source_detail["preinvoke_repair"]
+            ):
+                return
         if recovery_owner is not None:
             if (
                 _control.state != "enabled"
