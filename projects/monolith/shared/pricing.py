@@ -22,12 +22,12 @@ class PricedUsage:
 
 
 _MODEL_ALIASES = {
-    # GPT-6 Luna, Sol and Astra and Claude Opus and Sonnet 5.5 have no
-    # genai-prices 0.1.6 entry, so they settle through the fixed table. GPT-6
-    # has no Terra. These targets match the guest's CLAUDE_MODELS pins
+    # These current OpenAI and Claude models have no genai-prices 0.1.6
+    # entry, so they settle through the fixed table. Alias targets match
+    # the guest's model pins
     # (projects/embervm/runtimes/claude/shim.py).
     "luna": ("gpt-6-luna", "fixed"),
-    "terra": ("gpt-5.6-terra", "openai"),
+    "terra": ("gpt-6.1-terra", "fixed"),
     "sol": ("gpt-6.1-sol", "fixed"),
     "astra": ("gpt-6-astra", "fixed"),
     "opus": ("claude-opus-5-5", "fixed"),
@@ -59,6 +59,18 @@ FIXED_PRICES = {
         "cache_read_per_million": 0.20,
         "output_per_million": 10.00,
         "note": "OpenAI list price, 2026-09-22; cache read assumed at 10% of input",
+    },
+    "gpt-6.1-terra": {
+        "input_per_million": 1.00,
+        "cache_read_per_million": 0.05,
+        "output_per_million": 5.00,
+        "note": (
+            "OpenAI standard list price, 2026-10-26; "
+            "https://developers.openai.com/api/docs/models/gpt-6.1-terra. "
+            "Turn totals do not identify per-request context length, cache "
+            "write retention, or service tier, so no long-context, cache "
+            "write, fast-mode, batch, flex, or regional adjustment is inferred."
+        ),
     },
     "gpt-6.1-sol": {
         "input_per_million": 2.00,

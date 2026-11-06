@@ -116,10 +116,25 @@ Two cautions when consuming it:
 
 ### Codex app-server acceptance map
 
-Issue #4361 was verified against the Codex app-server pinned in `MODULE.bazel`:
-release `rust-v0.146.0`, amd64 archive SHA256
+The current `MODULE.bazel` pin is [Codex 0.167.0](https://github.com/openai/codex/releases/tag/rust-v0.167.0),
+with amd64 archive SHA256
+`9d64836106d5b374e90ee4454c7ebcde7ca7106558bd7e41a34b9f26ebda251a`.
+It supports Terra 6.1; the `terra` alias resolves to `gpt-6.1-terra` and keeps
+`high` as the general default. A caller can select `xhigh` for each review turn.
+
+Current Codex custom providers default to unauthenticated. The `ember-openai`
+provider explicitly sets `requires_openai_auth = true` so discovery and Responses
+requests carry the existing inert JWT from guest `auth.json`. The egress sidecar
+replaces it with the broker credential under the existing host and account-claim
+checks. This resolves the missing-header problem behind the 0.158 rollback in
+#6498 without adding credential-injection paths. The child environment removes
+both `OPENAI_API_KEY` and `CODEX_API_KEY`; the removed `enable_codex_api_key_env`
+setting is no longer recognized by this client.
+
+The original app-server producer-ordering investigation in #4361 used
+`rust-v0.146.0`, amd64 archive SHA256
 `5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a`, and
-tag commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`.
+tag commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`. Its adapter contracts remain:
 
 - **Turn accounting:** the pinned protocol puts `threadId` and `turnId` on
   `thread/tokenUsage/updated`, and puts `threadId` plus `turn.id` on both
@@ -155,11 +170,20 @@ tag commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`.
   talking session selected at session creation. Codex retains its directory-only
   startup check for that supported use, with no new compatibility mechanism.
 
-Validation is repository-local: focused hermetic pytest exercises the adapter
-and the existing Linux `//projects/embervm/runtimes/claude:shim_test` target is
-the delivery gate. No deployment, credential operation, or production session
-was needed to establish the pinned producer ordering or the supported caller
-paths.
+Validation uses two repository-local targets:
+
+- `//projects/embervm/runtimes/claude:shim_test` checks event ordering,
+  mismatched thread/turn rejection, hydration, configuration and effort routing
+  with a fake app-server.
+- `//projects/embervm/runtimes/claude:codex_compat_test` runs the exact pinned
+  binary against a loopback-only backend using inert credentials. It requires
+  authentication on model discovery and Responses, exercises a Terra `xhigh`
+  turn, restarts the app-server, and verifies persisted resume and per-turn usage.
+  The backend rejects external proxy requests and uses no provider quota.
+
+Runtime rollout still requires a fresh `claude-runtime` session to establish that
+new guests have the updated image and subscription routing. A passing local
+contract test alone does not establish deployment or a live provider result.
 
 ## Preemption
 

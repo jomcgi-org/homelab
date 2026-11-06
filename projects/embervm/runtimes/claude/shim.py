@@ -658,10 +658,9 @@ SUPPORTED_PREWARM_CLIS = ("claude", "codex", "pi")
 # three families, runtimes/pi only pi). EMBER_PREWARM_CLIS stays as an explicit
 # override for tests and one-off boots.
 PREWARM_CLIS_FILE = "/usr/share/ember-shim/prewarm-clis"
-# GPT-6 has no Terra, so terra stays on GPT-5.6.
 CODEX_MODELS = {
     "luna": ("gpt-6-luna", "medium"),
-    "terra": ("gpt-5.6-terra", "high"),
+    "terra": ("gpt-6.1-terra", "high"),
     # GPT-6.1 Sol (2026-09-29): same list price as GPT-6 Sol, scores within a
     # point of GPT-6 Astra on the Artificial Analysis index at about a fifth of
     # its token price.
@@ -3692,6 +3691,7 @@ class CodexProcess:
         # key is not part of ChatGPT subscription mode and must not confuse
         # the CLI or the egress sidecar.
         child_env.pop("OPENAI_API_KEY", None)
+        child_env.pop("CODEX_API_KEY", None)
         child_env.update(egress_proxy_env())
         child_env["CODEX_HOME"] = codex_home
         return child_env
@@ -3765,13 +3765,13 @@ class CodexProcess:
         # trailing slash and concatenating, or an RFC 3986 Url::join with a
         # relative segment, land on the same /codex/responses path.
         #
-        # The CLI stays on rust-v0.146.0 (#6498). rust-v0.158.0 omitted
-        # Authorization on most chatgpt.com requests, and the egress swap only
-        # injects when the guest presents it (or the path is in
-        # injectAlwaysPaths), so every turn died with "claim injection failed;
-        # request denied". A re-land needs those paths opted in first.
+        # Custom providers default to unauthenticated in current Codex. Opt in
+        # explicitly so model discovery and Responses carry the inert JWT from
+        # auth.json. The sidecar can then replace its Authorization/account
+        # headers under the existing host and claim checks. This addresses the
+        # missing-header regression behind the 0.158 rollback (#6498) without
+        # adding credential-injection paths or putting real tokens in guests.
         config = """model_provider = "ember-openai"
-enable_codex_api_key_env = false
 chatgpt_base_url = %s
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
@@ -3788,6 +3788,7 @@ web_search = true
 name = "ember-openai"
 base_url = %s
 wire_api = "responses"
+requires_openai_auth = true
 """ % (
             json.dumps(base_url),
             json.dumps(self.workspace),

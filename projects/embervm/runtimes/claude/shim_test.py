@@ -32,8 +32,12 @@ import pytest
 import shim
 
 
-def test_astra_codex_route_uses_native_model_and_effort():
-    assert shim.CODEX_MODELS["astra"] == ("gpt-6-astra", "high")
+@pytest.mark.parametrize(
+    ("alias", "provider_model"),
+    [("astra", "gpt-6-astra"), ("terra", "gpt-6.1-terra")],
+)
+def test_codex_route_uses_native_model_and_effort(alias, provider_model):
+    assert shim.CODEX_MODELS[alias] == (provider_model, "high")
 
 
 @pytest.fixture
@@ -314,6 +318,7 @@ if args_path:
 assert os.environ.get("CODEX_HOME", "") == os.path.join(os.getcwd(), ".codex")
 assert os.path.isdir(os.environ["CODEX_HOME"])
 assert "OPENAI_API_KEY" not in os.environ
+assert "CODEX_API_KEY" not in os.environ
 auth_path = os.path.join(os.environ["CODEX_HOME"], "auth.json")
 assert os.path.isfile(auth_path)
 auth = json.load(open(auth_path))
@@ -329,7 +334,7 @@ config = open(config_path).read()
 assert 'model_provider = "ember-openai"' in config
 assert 'base_url = "http://chatgpt.com/backend-api/codex/"' in config
 assert 'chatgpt_base_url = "http://chatgpt.com/backend-api/"' in config
-assert "enable_codex_api_key_env = false" in config
+assert "requires_openai_auth = true" in config
 assert 'wire_api = "responses"' in config
 assert sys.argv[1] == "app-server"
 
@@ -2901,6 +2906,8 @@ def test_codex_config_uses_subscription_endpoint_override(tmp_path, monkeypatch)
     assert config["projects"][str(tmp_path / "workspace")]["trust_level"] == ("trusted")
     assert config["tools"]["web_search"] is True
     assert config["model_providers"]["ember-openai"]["wire_api"] == "responses"
+    assert config["model_providers"]["ember-openai"]["requires_openai_auth"] is True
+    assert "enable_codex_api_key_env" not in config
 
 
 def test_codex_config_includes_only_configured_agent_mcp(tmp_path, monkeypatch):
@@ -2959,10 +2966,13 @@ def test_codex_config_appends_codex_to_no_slash_endpoint(tmp_path, monkeypatch):
     assert config["tools"]["web_search"] is True
 
 
-def test_codex_child_env_drops_openai_api_key(tmp_path, monkeypatch):
+def test_codex_child_env_drops_api_keys(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-codex")
+    monkeypatch.setenv("CODEX_API_KEY", "must-not-reach-codex")
     manager = _codex_manager(tmp_path, monkeypatch)
-    assert "OPENAI_API_KEY" not in manager._child_env()
+    child_env = manager._child_env()
+    assert "OPENAI_API_KEY" not in child_env
+    assert "CODEX_API_KEY" not in child_env
 
 
 def test_codex_resume_uses_positional_session_and_no_sandbox(tmp_path, monkeypatch):
@@ -6918,11 +6928,17 @@ def test_manager_passes_effort_to_claude_and_codex_adapters(model, monkeypatch):
     assert seen == {"effort": "xhigh"}
 
 
-def test_codex_effort_override_reaches_each_turn_and_usage(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("model", "provider_model"),
+    [("astra", "gpt-6-astra"), ("terra", "gpt-6.1-terra")],
+)
+def test_codex_effort_override_reaches_each_turn_and_usage(
+    tmp_path, monkeypatch, model, provider_model
+):
     manager = _codex_manager(tmp_path, monkeypatch)
     for effort in ("medium", "xhigh", None):
-        record = manager.turn("hello", model="astra", effort=effort)
-        assert record["provider_model"] == "gpt-6-astra"
+        record = manager.turn("hello", model=model, effort=effort)
+        assert record["provider_model"] == provider_model
         assert record["effort"] == (effort or "high")
     requests = [
         json.loads(line)
@@ -6930,7 +6946,7 @@ def test_codex_effort_override_reaches_each_turn_and_usage(tmp_path, monkeypatch
     ]
     starts = [r["params"] for r in requests if r["method"] == "turn/start"]
     assert [r["effort"] for r in starts] == ["medium", "xhigh", "high"]
-    assert {r["model"] for r in starts} == {"gpt-6-astra"}
+    assert {r["model"] for r in starts} == {provider_model}
     assert {r["threadId"] for r in starts} == {"codex-thread"}
     manager._close_process()
 
