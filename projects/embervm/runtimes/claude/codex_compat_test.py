@@ -38,9 +38,7 @@ class BackendHandler(http.server.BaseHTTPRequestHandler):
         return request
 
     def send(self, status, data, content_type="application/json"):
-        payload = (
-            data.encode() if isinstance(data, str) else json.dumps(data).encode()
-        )
+        payload = data.encode() if isinstance(data, str) else json.dumps(data).encode()
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))

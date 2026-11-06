@@ -70,9 +70,7 @@ def test_terra_6_1_standard_rates_keep_codex_cache_inclusive(model):
 
 
 def test_terra_turn_totals_do_not_imply_one_long_context_request():
-    priced = price_usage(
-        "terra", {"input_tokens": 1_000_000, "output_tokens": 100_000}
-    )
+    priced = price_usage("terra", {"input_tokens": 1_000_000, "output_tokens": 100_000})
 
     assert priced is not None
     # The collector aggregates multiple requests. A turn above 272K tokens
