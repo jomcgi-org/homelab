@@ -1330,7 +1330,11 @@ async def _execute_pending_message(session_id: int) -> None:
             repair_failure = failure is not None and await asyncio.to_thread(
                 execution_failure_eligible, session_row.local_session_id
             )
-            if not repair_failure and row.capacity_intent_json and row.capacity_state != "legacy_unsupported":
+            if (
+                not repair_failure
+                and row.capacity_intent_json
+                and row.capacity_state != "legacy_unsupported"
+            ):
                 claim_released = await capacity_wait.return_before_post(
                     session_id,
                     claimed_seq,

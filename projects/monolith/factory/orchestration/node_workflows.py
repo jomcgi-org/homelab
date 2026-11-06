@@ -906,7 +906,11 @@ def _read_turn_artifact(
             and json.loads(turn.usage_json or "{}").get("execution_profile")
             != expected_profile
         ):
-            return {"status": "invalid", "value": None, "errors": ["funding execution profile mismatch"]}
+            return {
+                "status": "invalid",
+                "value": None,
+                "errors": ["funding execution profile mismatch"],
+            }
         stored_path = turn.artifact_path
         artifact_blob = (
             bytes(turn.artifact_blob) if turn.artifact_blob is not None else None
