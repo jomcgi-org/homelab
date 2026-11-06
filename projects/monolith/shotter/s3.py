@@ -24,6 +24,7 @@ import logging
 import os
 
 from core.s3 import path_style_client
+from core.s3_upload import put_object
 
 logger = logging.getLogger("monolith.shotter.s3")
 
@@ -81,8 +82,6 @@ def put_screenshot(png_bytes: bytes) -> tuple[str, bool]:
     unchanged render dedupes for free. Creates the bucket once and retries on
     a missing bucket (mirrors artifact.s3.put_artifact / chat.store).
     """
-    from botocore.exceptions import ClientError
-
     sha256 = hashlib.sha256(png_bytes).hexdigest()
     bucket = _bucket()
     key = _object_key(sha256)
@@ -91,23 +90,9 @@ def put_screenshot(png_bytes: bytes) -> tuple[str, bool]:
     try:
         client = _client()
 
-        def _put():
-            return client.put_object(
-                Bucket=bucket,
-                Key=key,
-                Body=png_bytes,
-                ContentType="image/png",
-            )
-
-        try:
-            _put()
-        except ClientError as exc:
-            code = exc.response.get("Error", {}).get("Code", "")
-            if code in ("NoSuchBucket", "404"):
-                client.create_bucket(Bucket=bucket)
-                _put()
-            else:
-                raise
+        put_object(
+            client, bucket=bucket, key=key, body=png_bytes, content_type="image/png"
+        )
     except Exception:  # noqa: BLE001 - upload is best-effort, see module docstring
         logger.exception("shotter screenshot S3 upload failed for %s", key)
         # Best-effort, but never silent. The URL is derived from the content
