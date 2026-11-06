@@ -549,10 +549,10 @@ defmodule Embervm.SessionBankRelightTest do
     assert Registry.lookup(ctx.registry, id) == []
     assert {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
     assert [banked] = Enum.filter(ops, &(&1.kind == :session_banked))
-    assert banked.payload.adopted == true
-    assert banked.payload.snapshot_ref == recovered.snapshot_ref
-    assert banked.payload.size_bytes == 2_000
-    assert banked.payload.generation == 0
+    assert banked.payload["adopted"] == true
+    assert banked.payload["snapshot_ref"] == recovered.snapshot_ref
+    assert banked.payload["size_bytes"] == 2_000
+    assert banked.payload["generation"] == 0
 
     :ok = SessionManager.reconcile(ctx.mgr)
     assert {:ok, ^recovered} = SessionStore.get(ctx.store, id)
@@ -624,7 +624,7 @@ defmodule Embervm.SessionBankRelightTest do
     assert Registry.lookup(ctx.registry, id) == []
     assert SessionStore.counts(ctx.store, "wl") == %{live: 0, banked: 1}
     assert {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
-    assert [%{payload: %{adopted: true}}] = Enum.filter(ops, &(&1.kind == :session_banked))
+    assert [%{payload: %{"adopted" => true}}] = Enum.filter(ops, &(&1.kind == :session_banked))
   end
 
   test "reconciliation rejects mismatched or ambiguous snapshot inventory" do
@@ -670,7 +670,7 @@ defmodule Embervm.SessionBankRelightTest do
     wait_state(ctx, id, :banked)
     assert {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
     assert [normal_bank] = Enum.filter(ops, &(&1.kind == :session_banked))
-    refute Map.get(normal_bank.payload, :adopted, false)
+    refute Map.get(normal_bank.payload, "adopted", false)
   end
 
   test "snapshot inventory cannot override an in-flight relight owner" do
