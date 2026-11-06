@@ -31,6 +31,7 @@ from factory.orchestration.factory_models import (
 )
 
 from factory.orchestration.factory_funding_limits import (
+    ROUTINE_HELD_LABELS,
     amendment,
     effective_policy,
     enabled,
@@ -54,10 +55,6 @@ BLOCKER = "recurring_blocker"
 # A factory-generated repair issue carries this marker; its own stall never
 # produces another repair issue.
 REPAIR_MARKER = "factory-problem:"
-# Labels that keep a question with a person whatever the pause says.
-ROUTINE_HELD_LABELS = frozenset(
-    {"human", "needs-human", "needs-thought", "security-finding", "security"}
-)
 # Defence in depth beside factory_gates.HUMAN_GATE_BACKSTOP. Neither is
 # authority: the routine path also needs no typed gate, an agent-ready first
 # option, no shared hold, an enabled lane and the judge's own decision.
@@ -655,7 +652,14 @@ def request(
             or watchdog.delivered_since(runs, watch["run_watermark"])
         ):
             return False
-        if issue["state"] != "open":
+        from factory.orchestration import backlog_refill
+        from factory.orchestration import backlog_refill_repair as refill_repair
+
+        if row.actor == backlog_refill.ACTOR and (
+            repair is None or refill_repair.source(db, row) is None
+        ):
+            return False
+        if not refill_repair.objective_open(task, issue, session=db):
             controls.finish_task(
                 task["id"],
                 "failed",
@@ -765,6 +769,11 @@ def request(
                 "run_watermark": max((r["id"] for r in runs), default=0),
             },
         }
+        if row.actor == backlog_refill.ACTOR:
+            from factory.orchestration.funding_profile import MODELS
+
+            if judge not in MODELS:
+                raise ValueError("unsupported_funding_profile_adapter")
         if isinstance(deficit, dict):
             audit_detail["deficit"] = deficit
         if retry:
@@ -798,6 +807,9 @@ def request(
                 "(server-read, untrusted):\n"
                 + json.dumps(merit["evidence"], default=str)
             )
+        prompt = c._boundary(task, review=True) + prompt
+        if row.actor == backlog_refill.ACTOR:
+            audit_detail["prompt_sha256"] = controls.digest(prompt)
         record_audit(
             db,
             ACTOR,
@@ -816,7 +828,7 @@ def request(
             expected_version=revision,
             node_key=node_key,
             kind="gate",
-            prompt=c._boundary(task, review=True) + prompt,
+            prompt=prompt,
             model=judge,
             deps=[],
             max_cost_usd=REVIEW_COST_USD,
@@ -924,7 +936,9 @@ def routine_labels_held(task):
         (item.get("name", "") if isinstance(item, dict) else str(item)).lower()
         for item in issue.get("labels") or []
     }
-    if issue.get("state") != "open":
+    from factory.orchestration.backlog_refill_repair import objective_open
+
+    if not objective_open(task, issue):
         return "issue_not_open"
     if issue.get("assignees"):
         return "issue_owned"
@@ -1171,6 +1185,18 @@ def settle(task, run, request):
                 deadline = controls._now() + timedelta(
                     minutes=decision["lease_minutes"]
                 )
+                from factory.orchestration import backlog_refill
+
+                # The fixed refill graph cannot ask a generic planner for a
+                # second lease after collecting: its independent review must
+                # fit in this one finite, judge-approved repair allocation.
+                work_deadline = (
+                    deadline
+                    if row.actor == backlog_refill.ACTOR
+                    and request.get("repair_recovery")
+                    else controls._now()
+                    + timedelta(seconds=policy["turn_timeout_seconds"])
+                )
                 overlay = {
                     "task_budget_usd": ceiling,
                     "max_task_turns_hard": turns,
@@ -1182,9 +1208,7 @@ def settle(task, run, request):
                         policy["task_timeout_seconds"],
                         math.ceil(
                             (
-                                controls._now()
-                                + timedelta(seconds=policy["turn_timeout_seconds"])
-                                - aware(task["created_at"])
+                                work_deadline - aware(task["created_at"])
                             ).total_seconds()
                         ),
                     ),
@@ -1853,6 +1877,14 @@ def _latest_pause(db, task_id):
 def _repair_review_valid(db, task_id, proof):
     """Continue an already prepared repair review, not its consumed resume."""
     row = controls._receipt(db, task_id)
+    from factory.orchestration import backlog_refill, backlog_refill_repair
+
+    if (
+        row
+        and row.actor == backlog_refill.ACTOR
+        and backlog_refill_repair.source(db, row) is None
+    ):
+        return False
     wait = latest(db, task_id, "repair_allocation_wait")
     pause = _latest_pause(db, task_id)
     resume = latest(db, task_id, "resume_task")
@@ -1921,6 +1953,14 @@ def repair_pause_evidence(db, task_id):
     from factory.orchestration import factory_problem_issues as producer
 
     row = controls._receipt(db, task_id)
+    from factory.orchestration import backlog_refill, backlog_refill_repair
+
+    if (
+        row
+        and row.actor == backlog_refill.ACTOR
+        and backlog_refill_repair.source(db, row) is None
+    ):
+        return None
     wait = latest(db, task_id, "repair_allocation_wait")
     control = db.get(FactoryControl, "factory")
     live = json.loads(control.policy_json or "{}") if control else {}

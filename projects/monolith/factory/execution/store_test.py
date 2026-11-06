@@ -1631,6 +1631,40 @@ def test_observation_without_pending_identity_is_unavailable():
     assert observation["requested_model"] is None
 
 
+@pytest.mark.parametrize(
+    "change", [None, "not_positive", "attempted", "sqlstate", "phase", "version"]
+)
+def test_typed_preinvoke_metadata_requires_positive_closed_vocabulary(
+    uncertain_lane, change
+):
+    engine, sid = uncertain_lane
+    failure = {
+        "version": 1,
+        "phase": "receipt_prepare",
+        "sqlstate": "42703",
+        "attempted": False,
+    }
+    if change in {"attempted", "sqlstate", "phase", "version"}:
+        failure[change] = {
+            "attempted": True,
+            "sqlstate": "42501",
+            "phase": "response_wait",
+            "version": 2,
+        }[change]
+    store.mark_turn_error_sync(
+        sid,
+        1,
+        "text is not authority",
+        "owner-1",
+        dispatch_count=1,
+        invocation_not_attempted=change != "not_positive",
+        preinvoke_database_failure=failure,
+    )
+    with Session(engine) as db:
+        recovery = json.loads(store.get_turn(db, sid, 1).usage_json).get("recovery", {})
+        assert ("database_failure" in recovery) is (change is None)
+
+
 @pytest.mark.parametrize("model", ["opus", "luna", "spark"])
 @pytest.mark.parametrize("tokens", [{}, {"input_tokens": 100, "output_tokens": 50}])
 def test_observation_does_not_change_top_level_pricing(model, tokens):

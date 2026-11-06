@@ -135,7 +135,7 @@ def _allowed(db, control, item):
     task = db.get(SwarmTask, owner.task_id) if owner.task_id else None
     if task is None:
         return False
-    pinned = json.loads(owner.policy_json or "{}")
+    pinned = controls._effective_policy(db, owner)
     deadline = controls._recovery_deadline(db, owner.task_id) or (
         aware(task.created_at) + timedelta(seconds=pinned["task_timeout_seconds"])
     )
@@ -293,6 +293,7 @@ def publish(output, *, allow_new=True):
 def _role_run(db, start, node_key, run_id):
     """Authenticate one completed role against both ledgers and its session."""
     from factory.orchestration.node_workflows import resolve_node_session_id
+    from factory.orchestration.backlog_refill_repair import attempt_allowed
 
     owner = db.get(FactoryReceipt, start["receipt_id"])
     run = db.get(SwarmNodeRun, run_id) if type(run_id) is int else None
@@ -302,7 +303,7 @@ def _role_run(db, start, node_key, run_id):
         or run is None
         or run.task_id != owner.task_id
         or run.node_key != node_key
-        or run.attempt != 1
+        or not attempt_allowed(db, owner, node_key, run.attempt)
         or run.status != "succeeded"
         or run.model != expected["model"]
         or type(run.session_id) is not int
@@ -315,7 +316,7 @@ def _role_run(db, start, node_key, run_id):
         or pin.get("effort") != expected["effort"]
         or pin.get("task_id") != owner.task_id
         or pin.get("node_key") != node_key
-        or pin.get("attempt") != 1
+        or pin.get("attempt") != run.attempt
         or pin.get("read_only") is not True
         or pin.get("artifact_schema") != refill.role_schema(start, node_key, session=db)
         or pin.get("workflow_id") != run.dispatch_key

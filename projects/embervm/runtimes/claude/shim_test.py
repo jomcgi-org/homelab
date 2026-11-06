@@ -14,6 +14,7 @@ import signal
 import socket
 import sys
 import threading
+import tempfile
 import time
 import subprocess
 import runpy
@@ -108,7 +109,7 @@ for line in sys.stdin:
     if not initialized:
         print(json.dumps({"type": "system", "subtype": "init", "session_id": "init-sid",
                           "model": "fake", "apiKeySource": api_key,
-                          "mcp_servers": []}), flush=True)
+                          "mcp_servers": [], "tools": json.loads(os.environ.get("FAKE_TOOLS", "[]"))}), flush=True)
         initialized = True
     if text == "block":
         while True:
@@ -117,7 +118,7 @@ for line in sys.stdin:
     if text == "fallback":
         result = "First sentence. Second sentence."
     else:
-        result = "Done <voice>Changed the files and need review.</voice>"
+        result = os.environ.get("FAKE_RESULT", "Done <voice>Changed the files and need review.</voice>")
     if os.environ.get("FAKE_MALFORMED"):
         malformed = [
             {"type": "assistant", "message": None},
@@ -3604,6 +3605,8 @@ def _manager(tmp_path, monkeypatch, api_key="none"):
 
 def _new_process_manager():
     manager = object.__new__(shim.ProcessManager)
+    manager._test_workspace = tempfile.TemporaryDirectory(prefix="shim-manager-test-")
+    manager.workspace = manager._test_workspace.name
     manager._prewarm_clis = ()
     manager._mount_lock = threading.Lock()
     manager._thread_factory = threading.Thread
@@ -3997,6 +4000,7 @@ def test_process_manager_diff_capture_failure_does_not_fail_turn(
 ):
     manager = _new_process_manager()
     manager.workspace = str(tmp_path / "workspace")
+    os.makedirs(manager.workspace)
     manager._hydration_error = None
     manager._hydration_status = None
 
@@ -7758,6 +7762,202 @@ def test_permission_mode_can_be_overridden(tmp_path, monkeypatch):
     args = json.loads(args_path.read_text())
     assert args[args.index("--permission-mode") + 1] == "default"
     manager._close_process(kill=True)
+
+
+def _funding_profile():
+    return {
+        "name": "factory-funding-v1",
+        "model": "opus",
+        "request_id": 9,
+        "request_sha256": "a" * 64,
+        "schema_sha256": "b" * 64,
+    }
+
+
+def test_funding_profile_removes_cli_capabilities_and_returns_native_artifact(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(shim, "GIT_PROXY_PATH", str(tmp_path / "git-proxy"))
+    monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_DIR", str(tmp_path / "mcp"))
+    claude = _manager(tmp_path, monkeypatch)
+    manager = shim.ProcessManager(claude.workspace, claude.executable)
+    args_path = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+    monkeypatch.setenv("FAKE_RESULT", '{"action":"continue"}')
+    monkeypatch.setenv(
+        shim.AGENT_MCP_URL_ENV, "https://must-not-be-bootstrapped.invalid"
+    )
+
+    def forbidden(*_a, **_kw):
+        pytest.fail(
+            "decision profile must not hydrate, configure git, or capture repository output"
+        )
+
+    monkeypatch.setattr(manager, "_hydrate_workspace", forbidden)
+    monkeypatch.setattr(shim.ClaudeProcess, "_configure_git", forbidden)
+    try:
+        result = manager.turn(
+            "Decide the supplied funding request",
+            model="opus",
+            artifact_path=".factory/t/funding.json",
+            dispatch_id="exact-1",
+            turn_seq=1,
+            execution_profile=_funding_profile(),
+        )
+        args = json.loads(args_path.read_text())
+        assert args[args.index("--tools") + 1] == ""
+        assert "--strict-mcp-config" in args
+        assert json.loads(args[args.index("--mcp-config") + 1]) == {"mcpServers": {}}
+        assert args[args.index("--setting-sources") + 1] == ""
+        assert json.loads(args[args.index("--settings") + 1]) == {
+            "disableAllHooks": True
+        }
+        assert args[args.index("--permission-mode") + 1] == "default"
+        assert "--disable-slash-commands" in args
+        assert "--append-system-prompt" not in args and "--resume" not in args
+        assert manager.claude.workspace != manager.workspace
+        assert result["usage"]["execution_profile"] == _funding_profile()
+        assert json.loads(base64.b64decode(result["artifact"]["content_b64"])) == {
+            "action": "continue"
+        }
+        for kwargs in ({}, {"execution_profile": _funding_profile()}):
+            with pytest.raises(shim.SessionConflictError):
+                manager.turn("another turn", model="opus", **kwargs)
+    finally:
+        manager._close_process(kill=True)
+    restored = shim.ProcessManager(claude.workspace, claude.executable)
+    with pytest.raises(shim.SessionConflictError):
+        restored.turn("ordinary fallback", model="opus")
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["model", "resume", "repo", "handoff", "dispatch", "turn", "schema", "extra"],
+)
+def test_funding_profile_refuses_unsupported_or_ambiguous_execution(
+    tmp_path, monkeypatch, change
+):
+    monkeypatch.setattr(shim, "GIT_PROXY_PATH", str(tmp_path / "git-proxy"))
+    monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_DIR", str(tmp_path / "mcp"))
+    claude = _manager(tmp_path, monkeypatch)
+    manager = shim.ProcessManager(claude.workspace, claude.executable)
+    kwargs = {
+        "model": "opus",
+        "artifact_path": ".factory/t/funding.json",
+        "dispatch_id": "exact-1",
+        "turn_seq": 1,
+        "execution_profile": _funding_profile(),
+    }
+    if change == "model":
+        kwargs["model"] = kwargs["execution_profile"]["model"] = "astra"
+    elif change == "resume":
+        kwargs["session_id"] = "old"
+    elif change == "repo":
+        kwargs["repo"] = "owner/repo"
+    elif change == "handoff":
+        kwargs["workspace_handoff"] = {"x": 1}
+    elif change == "dispatch":
+        kwargs["dispatch_id"] = None
+    elif change == "turn":
+        kwargs["turn_seq"] = 2
+    elif change == "schema":
+        kwargs["execution_profile"]["schema_sha256"] = "bad"
+    else:
+        kwargs["execution_profile"]["tools"] = ["Bash"]
+    with pytest.raises((ValueError, shim.SessionConflictError)):
+        manager.turn("decision", **kwargs)
+    assert manager.claude.process is None
+
+
+def test_funding_profile_rejects_cli_advertising_tools(tmp_path, monkeypatch):
+    claude = _manager(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_TOOLS", '["Bash"]')
+    claude.decision_profile = _funding_profile()
+    with pytest.raises(shim.StartupError, match="advertised capabilities"):
+        claude.turn("decision", model="opus")
+    assert claude.process is None
+
+
+@pytest.mark.parametrize("decision_first", [False, True])
+def test_funding_profile_and_ordinary_turn_race_is_fenced(
+    tmp_path, monkeypatch, decision_first
+):
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(shim, "GIT_PROXY_PATH", str(tmp_path / "git-proxy"))
+    monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_DIR", str(tmp_path / "mcp"))
+    claude = _manager(tmp_path, monkeypatch)
+    manager = shim.ProcessManager(claude.workspace, claude.executable)
+    first_entered, second_waiting, release = (threading.Event() for _ in range(3))
+    calls = []
+
+    class OrderedMountLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.arrivals = 0
+
+        def __enter__(self):
+            self.arrivals += 1
+            if self.arrivals == 2:
+                second_waiting.set()
+            self.lock.acquire()
+
+        def __exit__(self, *_args):
+            self.lock.release()
+
+    def mounted():
+        first_entered.set()
+        assert release.wait(5)
+
+    def turn(adapter, *_args, **_kwargs):
+        calls.append(adapter.decision_profile)
+        return {"result": '{"action":"stop"}'}
+
+    monkeypatch.setattr(manager, "_mount_lock", OrderedMountLock())
+    monkeypatch.setattr(shim, "ensure_workspace_volume", mounted)
+    monkeypatch.setattr(shim.ClaudeProcess, "turn", turn)
+    monkeypatch.setattr(shim, "_sync_session_volume", lambda: None)
+    options = {
+        "model": "opus",
+        "artifact_path": ".factory/t/funding.json",
+        "dispatch_id": "exact-1",
+        "turn_seq": 1,
+        "execution_profile": _funding_profile(),
+    }
+    first, second = (options, {}) if decision_first else ({}, options)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        winner = pool.submit(manager.turn, "decision", **first)
+        assert first_entered.wait(5)
+        loser = pool.submit(manager.turn, "decision", **second)
+        try:
+            assert second_waiting.wait(5)
+        finally:
+            release.set()
+        assert winner.result(timeout=5)["result"]
+        with pytest.raises(shim.SessionConflictError):
+            loser.result(timeout=5)
+    assert calls == [_funding_profile() if decision_first else None]
+
+
+@pytest.mark.parametrize(
+    "path,profile", [(shim.TURN_PATH, True), (shim.FUNDING_PATH, False)]
+)
+def test_funding_profile_requires_matching_versioned_endpoint(path, profile):
+    payload = {"message": "decide", "model": "opus"}
+    if profile:
+        payload["execution_profile"] = _funding_profile()
+    raw = json.dumps(payload).encode()
+    handler = object.__new__(shim.RequestHandler)
+    handler.path = path
+    handler.headers = {"Content-Length": str(len(raw))}
+    handler.rfile = io.BytesIO(raw)
+    responses = []
+    handler._send = lambda status, value: responses.append((status, value))
+    handler.manager = None  # A mismatched endpoint must never reach any adapter.
+    handler.do_POST()
+    assert responses == [
+        (400, {"error": "execution profile requires its versioned endpoint"})
+    ]
 
 
 def test_spawn_sets_egress_proxy_environment(tmp_path, monkeypatch):

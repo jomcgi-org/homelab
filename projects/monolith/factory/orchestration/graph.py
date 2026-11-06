@@ -1565,6 +1565,12 @@ def admit_dispatch(
             "turn_timeout_seconds": node.turn_timeout_seconds,
             **stepped,
         }
+        from factory.orchestration import funding_profile
+
+        if funding_profile.KEY in (
+            pin.get("artifact_schema") or {}
+        ) and not funding_profile.allowed(db, task_id, node_key, attempt, pin=pin):
+            return refuse("invalid_funding_profile")
         db.add(
             SwarmNodeRun(
                 task_id=task_id,

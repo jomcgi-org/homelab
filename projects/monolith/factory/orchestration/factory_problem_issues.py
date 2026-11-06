@@ -163,6 +163,7 @@ def _recovery_owner(db, row):
 
 def _recovery_context(policy, row):
     from factory.orchestration.factory_conductor import github_get
+    from factory.orchestration.backlog_refill_repair import objective_open
 
     with _read_session() as db:
         owner = _recovery_owner(db, row)
@@ -172,9 +173,9 @@ def _recovery_context(policy, row):
     labels = {x["name"].lower() for x in issue.get("labels", [])}
     if (
         issue.get("number") != owner["issue_number"]
-        or issue.get("state") != "open"
+        or not objective_open({**owner, "id": row.task_id}, issue)
         or issue.get("assignees")
-        or labels & {"human", "security-finding", "security"}
+        or labels & {"human", "needs-human", "security-finding", "security"}
         or f"{MARKER_PREFIX}:" in (issue.get("body") or "")
     ):
         return None
@@ -322,7 +323,9 @@ def _observe_recoveries():
                     .order_by(SwarmNodeRun.id)
                     .limit(1)
                 ).first()
-                if recovered is not None:
+                from factory.orchestration.backlog_refill_repair import useful_delivery
+
+                if recovered is not None and useful_delivery(db, source):
                     _audit(
                         db,
                         ACTOR,

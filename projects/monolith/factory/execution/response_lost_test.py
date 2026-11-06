@@ -1970,6 +1970,41 @@ def test_staged_promotion_lock_collision_retries_before_one_post(database, monke
     assert state["turns"][0]["terminal_reason"] == "end_turn"
 
 
+def test_staged_positive_database_failure_survives_executor_and_native_writer(
+    database, monkeypatch
+):
+    monkeypatch.setenv("AGENT_STAGED_RECEIPTS_ENABLED", "true")
+    sid = queue(database)
+
+    class UndefinedColumn(Exception):
+        sqlstate = "42703"
+
+    def fail_prepare(*_a, **_kw):
+        raise OperationalError(
+            "private statement", {"secret": "private"}, UndefinedColumn()
+        )
+
+    async def unexpected(_request):
+        pytest.fail("preinvoke failure must not post")
+
+    monkeypatch.setattr(result_receipts, "prepare_receipt", fail_prepare)
+    requests = fake_http(monkeypatch, unexpected)
+    asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
+    assert requests == []
+    state = snapshot(database, sid)
+    assert state["pending"] == []
+    assert state["permits"][0]["outcome"] == "not_invoked"
+    recovery = json.loads(state["turns"][0]["usage_json"])["recovery"]
+    assert recovery["database_failure"] == {
+        "version": 1,
+        "phase": "receipt_prepare",
+        "sqlstate": "42703",
+        "attempted": False,
+    }
+    assert "private" not in json.dumps(recovery)
+    assert state["turns"][0]["terminal_reason"] == "error"
+
+
 @pytest.mark.parametrize("failure", ["exhaustion", "retry_admission"])
 def test_staged_lock_failure_retains_phase_in_terminal_turn(
     database, monkeypatch, failure

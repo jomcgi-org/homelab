@@ -737,6 +737,21 @@ contracts still own roles, scope, tool limits and sequencing. The shim does not
 copy instructions into `CLAUDE.md` or inject a second copy into the prompt.
 (see: /projects/embervm/runtimes/claude/shim.py, /AGENTS.md)
 
+**Why.** Funding decisions use the same native session, broker and receipt owners
+but a separate versioned `/shim/funding-decision-v1` profile (#7583). Before model
+execution the Claude adapter sets an empty tools list, strict empty MCP config,
+empty settings sources, disabled hooks/skills and a fixed system prompt in an
+isolated directory. It rejects capability-bearing init events, unsupported
+adapters, repository hydration, resume and mixed profiles. Durable guest markers
+serialize profile selection and prevent an ordinary turn or a second decision
+after a one-shot request, including cold restore. JSON response text becomes the
+ordinary declared artifact; no file-writing tool or new provider credential is
+needed. Older runtimes reject the versioned path rather than treating a profile
+as an ignored argument. This is model capability removal, not a new OS sandbox
+or an expansion of the workload's network/credential authority. Independent
+security-aware review and compatible runtime rollout are required before relying
+on the profile in production.
+
 **Why.** The Claude runtime ships a stdlib `ci-log` helper (#6442) so factory
 workers share commit-status lookup, bounded log traversal and redaction.
 It uses existing GitHub access and the credential-free BuildBuddy log RPC;

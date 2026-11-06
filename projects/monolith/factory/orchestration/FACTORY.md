@@ -132,6 +132,28 @@ The optional `backlog_refill` block ships omitted; omission and `enabled: false`
 
 ### Exact-event problem issues
 
+Fresh native refill starts also pin `repair_contract` version 1 and a control
+epoch. Two matching, distinct-task attempt-one failures within 24 hours may enter
+the existing repair loop only with native positive `not_invoked` proof and typed
+preinvoke database metadata. The second original task remains machine-paused;
+historical failures, breakers and uncertain execution remain unchanged. The
+source can be closed charter #7366 only while its exact recurring contract,
+unassigned GitHub identity, synchronized mirror and current ownership allow it.
+
+Exact accepted repair rollout permits the funding owner to request a
+`factory-funding-v1` decision through the existing native execution path. Request,
+prompt, schema, model and session are bound; the versioned runtime endpoint
+removes tools and never falls through to a coding session. Only the supported
+Claude adapter can execute it, using its existing broker grant. Fixed collector
+and reviewer roles retain their physical read-only fence. Funding settlement may
+renew the exhausted original node from one to two attempts, with all prior
+charges/history retained, inside the judge's finite lease. No second repair
+cycle is created for that task. Successful retry alone is not recovery: the
+producer also requires independently reviewed useful publication. Unsupported
+adapter, stale evidence, policy transitions, new holds or changed rollout refuse
+authority. No producer switch, breaker, credential or landing whitelist changes
+as part of deployment.
+
 Optional `problem_issues` creates GitHub issues from `node_stalled`, `workflow_stranded`, `recurring_blocker` and terminal `landing_recovery_exhausted`. It neither creates receipts nor admits tasks. The master switch defaults false; `recurring_blocker` defaults true behind it. Each tick scans at most 50 source audits, creating at most one issue within a rolling 24-hour cap of 3. `factory_configure_problem_issues` lets a standing operator preview/apply the master, recurring-blocker and stranded-workflow switches without changing generation, existing receipts or any other settings. Newly enabled sources are watermarked on the next producer tick. The existing producer owns deduplication and recursion prevention; ordinary intake/refinement owns future work. [MCP activation](../MCP.md#enable-recovery-problem-issues) records the exact arguments.
 
 ### Bounded repair landing delegation

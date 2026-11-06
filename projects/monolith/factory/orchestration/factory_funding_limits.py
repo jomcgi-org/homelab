@@ -15,6 +15,10 @@ from factory.orchestration.factory_models import (
 
 OBJECTIVE_CEILING_USD = 200.0
 REVIEW_COST_USD = 1.0
+# Ownership exclusions are shared with the physical native-refill fence.
+ROUTINE_HELD_LABELS = frozenset(
+    {"human", "needs-human", "needs-thought", "security-finding", "security"}
+)
 # Funding requests recorded before the judge model was recorded ran on Astra.
 LEGACY_REVIEW_MODEL = "astra"
 

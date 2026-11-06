@@ -979,13 +979,8 @@ def test_worker_graph_uses_one_pinned_read_only_node(world, monkeypatch):
 
 @pytest.mark.parametrize("world", ["inspection"], indirect=True)
 @pytest.mark.parametrize("source_state", ["open", "closed"])
-def test_native_refill_funding_transport_contract_gap(world, monkeypatch, source_state):
-    """Characterize #7583's missing owner API, not successful repair execution.
-
-    OPEN is a counterfactual fixture, not permission to reopen the native charter.
-    It isolates the transport fence from the earlier CLOSED-objective refusal.
-    No judge result is injected: admission alone must never prove reachability.
-    """
+def test_native_refill_refuses_generic_funding(world, monkeypatch, source_state):
+    """Neither an open charter nor ordinary gate admission grants this profile."""
     from factory.orchestration import (
         factory_conductor as conductor,
     )
@@ -1027,60 +1022,788 @@ def test_native_refill_funding_transport_contract_gap(world, monkeypatch, source
     with controls._read_session() as db:
         assert producer._recovery_owner(db, source)["issue_number"] == 7366
     context = producer._recovery_context(policy, source)
-    assert (context is not None) is (source_state == "open")
+    assert context is None  # No synchronized, exact charter mirror.
 
-    assert funding.request(task, "Assess a bounded infrastructure repair retry")
+    assert not funding.request(task, "Assess a bounded infrastructure repair retry")
     with controls._read_session() as db:
         request = funding.pending(db, task_id)
-    if source_state == "closed":
         assert request is None
-        assert controls.task_snapshot(task_id)["state"] == "failed"
-        assert not conductor.graph.load_graph(task_id)
-        return
-
-    assert request is not None
-    [node] = conductor.graph.load_graph(task_id)
-    assert node["node_key"] == request["node_key"]
-    assert node["kind"] == "gate" and node["side_effects"] is False
-    execution_context = {
-        "repo": task["repo"],
-        "branch": conductor.delivery_branch(task),
-        "workflow_id": request["start_key"],
-        "artifact_path": f".factory/{task_id}/funding.json",
-        "artifact_schema": funding.SCHEMA,
-    }
-    # The fixed read-only exception must not be widened for this generic gate.
-    refused = conductor.graph.admit_dispatch(
-        task_id,
-        node["node_key"],
-        execution_context={**execution_context, "read_only": True},
-    )
-    assert refused.refusal_code == "invalid_execution_context"
-    admitted = conductor.reserve_node(
-        task_id, node["node_key"], request["start_key"], execution_context
-    )
-    assert admitted, admitted.refusal_code
-    [run] = conductor.graph.node_runs(task_id)
-    pin = node_workflows._validate_pin(run["pin"])
-    assert not pin.get("read_only")
-    assert controls.can_start(task_id, start_key=request["start_key"])["ok"]
-    assert not factory_session_allowed(f"factory:{task_id}:{node['node_key']}:1")
-    assert not refill.dispatch_allowed(task_id, node["node_key"], physical=True)
-
-    # decision-only is prompt prose. The ordinary node owner still supplies a
-    # repository and contradictory commit instructions, not a tool-free API.
-    prompt = node_workflows._node_prompt(
-        pin["prompt"],
-        pin["artifact_path"],
-        pin["artifact_schema"],
-        branch=pin["branch"],
-    )
-    assert "You are a decision-only reviewer" in prompt
-    assert "Commit and push source changes" in prompt
-    assert pin["repo"] == policy["repo"] and pin["branch"]
-    with controls._read_session() as db:
         assert funding.amendment(db, task_id) is None
+    assert controls.task_snapshot(task_id)["state"] == "admitted"
+    assert not conductor.graph.load_graph(task_id)
+    assert not factory_session_allowed(f"factory:{task_id}:conductor_funding_1:1")
     assert not refill.dispatch_allowed(task_id, refill.NODE, 2)
+
+
+@pytest.fixture
+def repair_loop(world, monkeypatch):
+    """Real owners and native ledgers; only GitHub, DBOS and guest I/O are fake."""
+    import json
+    from types import SimpleNamespace
+
+    import core.db
+
+    from factory.execution import admission, result_receipts, store, transport
+    from factory.execution import mcp as executor
+    from factory.execution.models import (
+        AgentCapacityPool,
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from factory.orchestration import backlog_refill_worker as worker
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration import factory_problem_issues as producer
+    from factory.orchestration import node_workflows
+
+    engine, policy, clock = world
+    engine.update_execution_options(
+        schema_translate_map={"swarm": None, "agent_sessions": None}
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            m.__table__
+            for m in (
+                AgentSession,
+                AgentTurn,
+                AgentCapacityPool,
+                AgentCapacityReservation,
+                AgentResultReceipt,
+                PendingMessage,
+            )
+        ],
+    )
+    for module in (
+        core.db,
+        admission,
+        result_receipts,
+        store,
+        conductor,
+        conductor.graph,
+        executor,
+    ):
+        monkeypatch.setattr(module, "get_engine", lambda: engine)
+    monkeypatch.setattr(executor, "_schedule_next_message", lambda _: None)
+
+    async def notify(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr(executor, "_notify_terminal", notify)
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 3)
+    monkeypatch.setattr(producer, "_recovery_quota", lambda: True)
+    update(
+        world,
+        problem_issues={"enabled": True, "sources": {"recurring_blocker": True}},
+        intake={"enabled": True, "refine_enabled": True, "labels": ["agent-ready"]},
+        backlog_refill={"enabled": True, "model": "opus", "max_findings": 5},
+    )
+    issues = {
+        7366: {
+            "number": 7366,
+            "state": "closed",
+            "title": "Native refill charter",
+            "body": "Recurring inventory",
+            "labels": [],
+            "assignees": [],
+        }
+    }
+
+    def get(_repo, path):
+        if path.startswith("issues/"):
+            return issues[int(path.split("/")[1])]
+        return {"sha": "a" * 40, "object": {"sha": "a" * 40}}
+
+    def create(_repo, payload):
+        number = 8000 + len(issues)
+        issue = {**payload, "number": number, "state": "open", "assignees": []}
+        issues[number] = issue
+        return issue
+
+    monkeypatch.setattr(conductor, "github_get", get)
+    monkeypatch.setattr(conductor, "github_list", lambda *_: [])
+    monkeypatch.setattr(producer, "github_list", lambda *_: [])
+    monkeypatch.setattr(producer, "github_write", create)
+    monkeypatch.setattr(
+        producer,
+        "_discover",
+        lambda _r, marker, _b: (
+            [n for n, issue in issues.items() if marker in issue.get("body", "")],
+            False,
+        ),
+    )
+    monkeypatch.setattr(
+        node_workflows, "_read_reconciliation_head", lambda *_: "a" * 40
+    )
+    producer.problem_issues_tick(
+        policy
+    )  # Fresh activation watermark precedes failures.
+    with Session(engine) as db:
+        item = WorkItem(
+            title="Native refill charter",
+            body="Recurring inventory",
+            state="closed",
+            close_reason="completed",
+            source_kind="github",
+            trust="trusted",
+            authority="github",
+            github_repo=policy["repo"],
+            github_issue_number=7366,
+        )
+        db.add(item)
+        db.commit()
+        item_id = item.id
+
+    def run_worker(task_id):
+        worker.reconcile(
+            conductor._task(task_id),
+            policy,
+            conductor.graph.load_graph(task_id),
+            conductor.graph.node_runs(task_id),
+            conductor.graph.current_version(task_id),
+        )
+
+    def dispatch(task_id, key):
+        existing = conductor.graph.node_runs(task_id, key)
+        if (
+            existing
+            and existing[-1]["status"] not in conductor.graph.TERMINAL_RUN_STATUSES
+        ):
+            return existing[-1]
+        if key.startswith(funding.PREFIX):
+            from factory.orchestration import backlog_refill_repair
+
+            assert backlog_refill_repair.reconcile(
+                conductor._task(task_id),
+                policy,
+                conductor.graph.node_runs(task_id),
+                controls.can_start(task_id),
+            )
+        else:
+            assert conductor._dispatch_ready(
+                conductor._task(task_id),
+                conductor.graph.load_graph(task_id),
+                conductor.graph.node_runs(task_id),
+                1,
+                fan_out=False,
+                parallel=1,
+                policy=policy,
+            )
+        return conductor.graph.node_runs(task_id, key)[-1]
+
+    def native(run, value=None, failure=None, profile_change=None):
+        import base64
+        import hashlib
+
+        pin = run["pin"]
+        prompt = node_workflows._node_prompt(
+            pin["prompt"],
+            pin["artifact_path"],
+            pin["artifact_schema"],
+            pin["retry_context"],
+            pin["branch"],
+        )
+        with Session(engine) as db:
+            agent = AgentSession(
+                **node_workflows._expected_session_identity(pin),
+                workspace="guest",
+                admission_tier="project",
+                ember_session_id=f"guest-{run['id']}",
+                ember_session_token="synthetic-guest-token",
+            )
+            db.add(agent)
+            db.flush()
+            sid = agent.id
+            db.add(
+                PendingMessage(
+                    session_id=sid, seq=1, message_text=prompt, model=pin["model"]
+                )
+            )
+            db.commit()
+        owner = f"executor-{sid}"
+        assert conductor.graph.record_dispatch(
+            pin["task_id"], pin["node_key"], pin["attempt"], sid, None
+        ).ok
+        profile = pin["artifact_schema"].get("x-factory-funding-decision")
+        if profile is None:
+            assert store.claim_pending_message_for_session_sync(sid, owner) == 1
+            assert admission.recheck(sid, 1, owner, "claude-runtime")
+        if failure is not None:
+            store.mark_turn_error_sync(
+                sid,
+                1,
+                "Typed fixture infrastructure failure",
+                owner,
+                invocation_not_attempted=True,
+                dispatch_count=1,
+                preinvoke_database_failure=failure,
+            )
+            result = {
+                "status": "uncertain",
+                "session_id": sid,
+                "cost_usd": None,
+                "reason": "terminal error requires native proof",
+            }
+        else:
+            raw = {
+                "result": dumps(value),
+                "terminal_reason": "completed",
+                "is_error": False,
+                "total_cost_usd": 0.1,
+                "num_turns": 1,
+                "usage": {},
+                "artifact": {
+                    "path": pin["artifact_path"],
+                    "outcome": "ok",
+                    "content_b64": base64.b64encode(dumps(value).encode()).decode(),
+                },
+            }
+            if profile:
+                raw["usage"]["execution_profile"] = profile
+                if profile_change == "missing":
+                    raw["usage"].pop("execution_profile")
+                elif profile_change == "mismatch":
+                    raw["usage"]["execution_profile"] = {
+                        **profile,
+                        "request_sha256": "f" * 64,
+                    }
+            guest = f"guest-{run['id']}"
+            if profile:
+                import asyncio
+
+                requests = []
+
+                class Client:
+                    def __init__(self, **_kwargs):
+                        pass
+
+                    async def __aenter__(self):
+                        return self
+
+                    async def __aexit__(self, *_args):
+                        pass
+
+                    async def post(self, url, **kwargs):
+                        request = httpx.Request("POST", url, **kwargs)
+                        requests.append(request)
+                        body = json.loads(request.content)
+                        assert (
+                            request.headers["X-Ember-Guest-Path"]
+                            == "/shim/funding-decision-v1"
+                        )
+                        assert (
+                            body["execution_profile"] == profile
+                            and body["turn_seq"] == 1
+                        )
+                        assert not any(
+                            k in body
+                            for k in ("repo", "branch", "system_prompt", "push_format")
+                        )
+                        credential = body["result_receipt"]
+                        result_receipts.capture_result(
+                            credential["id"], credential["token"], dumps(raw).encode()
+                        )
+                        return httpx.Response(200, json=raw, request=request)
+
+                with monkeypatch.context() as patch:
+                    patch.setattr(transport.httpx, "AsyncClient", Client)
+                    patch.setattr(
+                        transport, "EMBERVM_URL", "https://synthetic-guest.invalid"
+                    )
+                    patch.setattr(
+                        executor, "_transport", transport.EmberVmShimTransport()
+                    )
+                    asyncio.run(
+                        asyncio.wait_for(executor._execute_pending_message(sid), 10)
+                    )
+                with Session(engine) as db:
+                    assert len(requests) == 1, (
+                        [
+                            t.result_text
+                            for t in db.exec(
+                                select(AgentTurn).where(AgentTurn.session_id == sid)
+                            )
+                        ],
+                        [
+                            p.model_dump()
+                            for p in db.exec(
+                                select(PendingMessage).where(
+                                    PendingMessage.session_id == sid
+                                )
+                            )
+                        ],
+                    )
+            else:
+                body = dumps({"message": prompt}).encode()
+                envelope = result_receipts.prepare_receipt(sid, owner, 1, guest, body)
+                result_receipts.capture_result(
+                    envelope["id"], envelope["token"], dumps(raw).encode()
+                )
+                captured = result_receipts.read_active_result(
+                    envelope["id"],
+                    sid,
+                    owner,
+                    1,
+                    guest,
+                    hashlib.sha256(body).hexdigest(),
+                )
+                parsed = transport.parse_native_turn(
+                    json.loads(captured["result_body"]),
+                    guest,
+                    artifact_path=pin["artifact_path"],
+                )._replace(
+                    native_receipt={
+                        **captured["provenance"],
+                        "cli_session_id": None,
+                        "artifact_path": pin["artifact_path"],
+                    }
+                )
+                store.persist_turn_from_pending_sync(
+                    sid,
+                    1,
+                    prompt,
+                    parsed,
+                    "done",
+                    "completed",
+                    None,
+                    pin["model"],
+                    owner,
+                    1,
+                )
+                assert result_receipts.mark_response_observed(
+                    envelope["id"], sid, owner, 1, guest
+                )
+            result = node_workflows.reconcile_completed_node(pin, sid)
+            if profile_change:
+                assert result is None
+                artifact = node_workflows._read_turn_artifact(
+                    sid, 1, pin["artifact_path"], pin["artifact_schema"]
+                )
+                assert artifact["status"] == "invalid"
+                assert artifact["errors"] == ["funding execution profile mismatch"]
+                return sid
+            assert result is not None, raw
+            assert result["status"] == "succeeded", result
+        dbos = SimpleNamespace(
+            get_workflow_status=lambda _: SimpleNamespace(status="SUCCESS"),
+            retrieve_workflow=lambda _: SimpleNamespace(get_result=lambda: result),
+        )
+        conductor.reconcile_task(pin["task_id"], policy, dbos)
+        if failure is None:
+            conductor.reconcile_task(pin["task_id"], policy, dbos)
+        return sid
+
+    collection = {
+        "status": "completed",
+        "source_sha": "a" * 40,
+        "summary": "Verified inventory",
+        "findings": [
+            {
+                "key": "ready",
+                "title": "factory: add missing regression",
+                "body": "A focused test is missing at graph admission.",
+            }
+        ],
+    }
+
+    def start_failure(role=refill.NODE):
+        start = refill.observe(policy, eligible=0, complete=True)
+        assert start["ok"], start
+        task_id = admit(world, start)
+        with Session(engine) as db:
+            db.get(FactoryReceipt, start["receipt_id"]).work_item_id = item_id
+            db.commit()
+        run_worker(task_id)
+        run = dispatch(task_id, refill.NODE)
+        if role == refill.REVIEW_NODE:
+            native(run, collection)
+            run_worker(task_id)
+            run = dispatch(task_id, refill.REVIEW_NODE)
+        native(
+            run,
+            failure={
+                "version": 1,
+                "phase": "receipt_prepare",
+                "sqlstate": "42703",
+                "attempted": False,
+            },
+        )
+        run_worker(task_id)
+        return start, task_id
+
+    return SimpleNamespace(
+        engine=engine,
+        policy=policy,
+        clock=clock,
+        issues=issues,
+        start_failure=start_failure,
+        run_worker=run_worker,
+        dispatch=dispatch,
+        native=native,
+        funding=funding,
+        collection=collection,
+    )
+
+
+@pytest.fixture
+def repaired_refill(repair_loop, request):
+    from factory.orchestration import factory_intake as intake_owner
+    from factory.orchestration import factory_landing as landing
+    from factory.orchestration import factory_problem_issues as producer
+
+    s = repair_loop
+    s.failed_role = getattr(request, "param", refill.NODE)
+    first, first_id = s.start_failure(s.failed_role)
+    assert controls.task_snapshot(first_id)["state"] == "failed"
+    refill.settle(
+        first["run_id"], success=False, new_issues=0, summary="Typed preinvoke failure"
+    )
+    s.clock[0] += timedelta(minutes=16)
+    second, task_id = s.start_failure(s.failed_role)
+    assert controls.task_snapshot(task_id)["task_paused"]
+    with controls._read_session() as db:
+        wait = s.funding.repair_pause_evidence(db, task_id)
+        assert wait is not None
+        assert wait["grant_id"] is None
+    producer.problem_issues_tick(s.policy)
+    assert len(s.issues) == 2, s.issues
+    repair_issue = next(issue for n, issue in s.issues.items() if n != 7366)
+    assert "needs-human" not in repair_issue["labels"]
+    intake_owner.receive_issue(
+        s.policy["repo"],
+        repair_issue["number"],
+        repair_issue["title"],
+        repair_issue["body"],
+        "https://github.com/jomcgi-org/homelab/issues/8001",
+        intake_owner.INTAKE_ACTOR,
+        task_class="bug-fix",
+        issue=repair_issue,
+    )
+    admitted = intake_owner.admit_next("scheduler")
+    assert admitted["ok"], admitted
+    repair_id = admitted["task_id"]
+    s.clock[0] += timedelta(
+        hours=2
+    )  # Real repair may outlive the original task's soft lease.
+    # Existing landing owner is the external merge/rollout boundary, not the judge.
+    landing._record(repair_id, "merged", pr_number=8002, merge_commit_sha="a" * 40)
+    s.funding.repair_recovery_tick()
+    with controls._read_session() as db:
+        assert s.funding.pending(db, task_id) is None
+    landing._record(
+        repair_id,
+        "rollout_verified",
+        pr_number=8002,
+        merge_commit_sha="a" * 40,
+        approved_head_sha="b" * 40,
+        verified=True,
+    )
+    controls.finish_task(
+        repair_id,
+        "succeeded",
+        "factory:landing",
+        evidence={"state": "rollout_verified"},
+    )
+    s.funding.repair_recovery_tick()
+    with controls._read_session() as db:
+        request = s.funding.pending(db, task_id)
+        assert request is not None
+    s.task_id, s.start, s.request, s.repair_id = task_id, second, request, repair_id
+    return s
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize(
+    "repaired_refill", [refill.NODE, refill.REVIEW_NODE], indirect=True
+)
+def test_native_refill_real_failure_repair_funding_retry_and_useful_delivery(
+    repaired_refill,
+):
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import factory_problem_issues as producer
+    from factory.orchestration import funding_profile
+    from factory.orchestration.api import factory_session_allowed
+
+    s = repaired_refill
+    task_id, second, request = s.task_id, s.start, s.request
+    judge = s.dispatch(task_id, request["node_key"])
+    identity = f"factory:{task_id}:{request['node_key']}:1"
+    assert factory_session_allowed(identity)
+    assert (
+        funding_profile.session_profile(identity)
+        == judge["pin"]["artifact_schema"][funding_profile.KEY]
+    )
+    assert not judge["pin"].get("read_only")
+    assert not refill.dispatch_allowed(task_id, request["node_key"], physical=True)
+    decision = {
+        "action": "continue",
+        "reason": "The exact repair rolled out.",
+        "next_plan": "Retry the failed inspection, then independently review findings.",
+        "task_budget_usd": 20.0,
+        "additional_work_turns": 4,
+        "lease_minutes": 30,
+        "assessment": {
+            "progress": "Repair verified",
+            "proximity": "Inspection remains",
+            "value": "Resume useful backlog work",
+        },
+    }
+    s.native(judge, decision)
+    with controls._read_session() as db:
+        grant = s.funding.amendment(db, task_id)
+        assert grant and grant["node_retry"]["after"] == 2, s.funding.latest(
+            db, task_id, "funding_review_settled"
+        )
+    assert not factory_session_allowed(identity)
+    with controls._read_session() as db:
+        before_replay = s.funding.amendment(db, task_id)
+    completed_judge = conductor.graph.node_runs(task_id, request["node_key"])[-1]
+    s.funding.settle(conductor._task(task_id), completed_judge, request)
+    with controls._read_session() as db:
+        assert s.funding.amendment(db, task_id) == before_replay
+    s.clock[0] += timedelta(minutes=3)  # More than a single role's turn timeout.
+    s.run_worker(task_id)
+    retry = s.dispatch(task_id, s.failed_role)
+    assert retry["attempt"] == 2
+    assert retry["pin"]["read_only"] is True
+    collection = s.collection
+    if s.failed_role == refill.NODE:
+        s.native(retry, collection)
+    producer.problem_issues_tick(s.policy)
+    with controls._read_session() as db:
+        assert not s.funding.latest(db, task_id, "problem_issue_recovery_observed")
+    s.run_worker(task_id)
+    reviewer = s.dispatch(task_id, refill.REVIEW_NODE)
+    assert reviewer["pin"]["read_only"] is True
+    verdict = {
+        "status": "completed",
+        "source_sha": "a" * 40,
+        "collection_digest": refill.digest(collection),
+        "summary": "Independently verified",
+        "decisions": [
+            {
+                "key": "ready",
+                "approved": True,
+                "evidence": "Confirmed missing test",
+                "plan": "Add a focused graph regression and run its suite.",
+                "acceptance": "The regression fails before the fix and passes after.",
+            }
+        ],
+    }
+    s.native(reviewer, verdict)
+    s.run_worker(task_id)
+    assert controls.task_snapshot(task_id)["state"] == "succeeded"
+    producer.problem_issues_tick(s.policy)
+    with controls._read_session() as db:
+        assert s.funding.latest(db, task_id, "problem_issue_recovery_observed")
+        done = refill._detail(
+            refill.latest_event(db, "completed", run_id=second["run_id"])
+        )
+        assert done["new_issues"] == 1
+    assert not refill.dispatch_allowed(task_id, s.failed_role, 3)
+    assert len(conductor.graph.node_runs(task_id, s.failed_role)) == 2
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize("profile_change", ["missing", "mismatch"])
+def test_native_funding_ingestion_requires_exact_runtime_profile(
+    repaired_refill, profile_change
+):
+    s = repaired_refill
+    judge = s.dispatch(s.task_id, s.request["node_key"])
+    s.native(judge, {"action": "continue"}, profile_change=profile_change)
+    with controls._read_session() as db:
+        assert s.funding.amendment(db, s.task_id) is None
+    assert not refill.dispatch_allowed(s.task_id, s.failed_role, 2)
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize(
+    "change",
+    [
+        "human",
+        "security",
+        "needs-human",
+        "pause",
+        "unknown",
+        "policy",
+        "restore",
+        "historical",
+        "rollout",
+        "request",
+        "schema",
+        "model",
+        "prompt",
+        "expired",
+    ],
+)
+def test_native_funding_physical_fence_rechecks_live_authority(repaired_refill, change):
+    import json
+
+    from factory.orchestration import funding_profile
+    from factory.orchestration.api import factory_session_allowed
+
+    s = repaired_refill
+    run = s.dispatch(s.task_id, s.request["node_key"])
+    identity = f"factory:{s.task_id}:{s.request['node_key']}:1"
+    assert factory_session_allowed(identity)
+    with Session(s.engine) as db:
+        row = controls._receipt(db, s.task_id)
+        if change in {"human", "security", "needs-human"}:
+            db.get(WorkItem, row.work_item_id).labels = [change]
+        elif change == "pause":
+            row.task_paused = True
+        elif change == "unknown":
+            row.state = "uncertain"
+        elif change == "policy":
+            live = db.get(FactoryControl, "factory")
+            policy = json.loads(live.policy_json)
+            policy["backlog_refill"]["enabled"] = False
+            live.policy_json = dumps(policy)
+        elif change == "restore":
+            # Effective settings unchanged; a disable/re-enable audit still invalidates authority.
+            controls._audit(
+                db, "operator", "problem_issues_control_applied", enabled=False
+            )
+            controls._audit(
+                db, "operator", "problem_issues_control_applied", enabled=True
+            )
+        elif change == "historical":
+            started = refill.latest_event(db, "started", run_id=s.start["run_id"])
+            detail = refill._detail(started)
+            detail.pop("repair_contract")
+            started.detail_json = dumps(detail)
+        elif change == "rollout":
+            proof = s.request["repair_recovery"]
+            rollout = db.get(FactoryAudit, proof["rollout_audit_id"])
+            detail = json.loads(rollout.detail_json)
+            detail["merge_commit_sha"] = "c" * 40
+            rollout.detail_json = dumps(detail)
+        elif change == "request":
+            requested = db.get(FactoryAudit, s.request["audit_id"])
+            detail = json.loads(requested.detail_json)
+            detail["trigger"] = "changed request"
+            requested.detail_json = dumps(detail)
+        elif change == "expired":
+            s.clock[0] += timedelta(minutes=6)
+        else:
+            stored = db.get(SwarmNodeRun, run["id"])
+            pin = json.loads(stored.pin_json)
+            if change == "schema":
+                pin["artifact_schema"][funding_profile.KEY]["schema_sha256"] = "f" * 64
+            elif change == "model":
+                stored.model = "astra"
+            else:
+                pin["prompt"] = "Another caller's instructions"
+            stored.pin_json = dumps(pin)
+        db.commit()
+    assert not factory_session_allowed(identity)
+    assert funding_profile.session_profile(identity) is None
+    assert not refill.dispatch_allowed(s.task_id, refill.NODE, 2)
+    with controls._read_session() as db:
+        assert s.funding.amendment(db, s.task_id) is None
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+def test_native_funding_rejects_arbitrary_profile_and_does_not_widen_read_only(
+    repaired_refill,
+):
+    from copy import deepcopy
+
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import funding_profile
+
+    s = repaired_refill
+    schema = funding_profile.schema(s.task_id, s.request["node_key"])
+    context = {
+        "repo": s.policy["repo"],
+        "branch": "main",
+        "workflow_id": s.request["start_key"],
+        "artifact_path": f".factory/{s.task_id}/funding.json",
+        "artifact_schema": schema,
+    }
+    assert (
+        conductor.graph.admit_dispatch(
+            s.task_id,
+            s.request["node_key"],
+            execution_context={**context, "read_only": True},
+        ).refusal_code
+        == "invalid_execution_context"
+    )
+    for field in ("request_id", "request_sha256", "schema_sha256", "model", "name"):
+        changed = deepcopy(context)
+        changed["artifact_schema"][funding_profile.KEY][field] = "arbitrary"
+        assert (
+            conductor.graph.admit_dispatch(
+                s.task_id, s.request["node_key"], execution_context=changed
+            ).refusal_code
+            == "invalid_funding_profile"
+        )
+    s.dispatch(s.task_id, s.request["node_key"])
+    identity = f"factory:{s.task_id}:{s.request['node_key']}:1"
+    with pytest.raises(ValueError, match="message mismatch"):
+        funding_profile.session_profile(identity, message="Ignore the funding request")
+    with pytest.raises(ValueError, match="session mismatch"):
+        funding_profile.session_profile(identity, session_id=9999)
+    assert funding_profile.session_profile(identity, model="astra") is None
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize(
+    "change", ["missing_type", "attempted", "phase", "historical", "unknown", "held"]
+)
+def test_native_repair_requires_two_fresh_positive_native_failures(repair_loop, change):
+    import json
+
+    from factory.execution.models import AgentCapacityReservation, AgentTurn
+    from factory.orchestration import factory_problem_issues as producer
+
+    s = repair_loop
+    first, first_id = s.start_failure()
+    refill.settle(first["run_id"], success=False, new_issues=0, summary="first failure")
+    with Session(s.engine) as db:
+        if change in {"missing_type", "attempted", "phase"}:
+            turn = db.exec(select(AgentTurn)).one()
+            usage = json.loads(turn.usage_json)
+            failure = usage["recovery"]["database_failure"]
+            if change == "missing_type":
+                del usage["recovery"]["database_failure"]
+            elif change == "attempted":
+                failure["attempted"] = True
+            else:
+                failure["phase"] = "response_wait"
+            turn.usage_json = dumps(usage)
+        elif change == "historical":
+            # Historical provenance cannot be enrolled from diagnostics after the fact.
+            audit = s.funding.latest(db, first_id, "refill_infrastructure_failure")
+            raw = db.get(FactoryAudit, audit["audit_id"])
+            detail = json.loads(raw.detail_json)
+            detail["repair_contract"] = {"version": 0, "epoch": 0}
+            raw.detail_json = dumps(detail)
+        elif change == "unknown":
+            permit = db.exec(select(AgentCapacityReservation)).one()
+            permit.state, permit.outcome = "uncertain", "response_lost"
+        else:
+            row = controls._receipt(db, first_id)
+            db.get(WorkItem, row.work_item_id).labels = ["human"]
+        db.commit()
+    s.clock[0] += timedelta(minutes=16)
+    if change == "held":
+        assert refill.observe(s.policy, eligible=0, complete=True) == {
+            "ok": False,
+            "reason": "charter_human_owned",
+        }
+        return
+    _second, task_id = s.start_failure()
+    with controls._read_session() as db:
+        assert s.funding.latest(db, task_id, "repair_allocation_wait") is None
+        assert s.funding.amendment(db, task_id) is None
+    producer.problem_issues_tick(s.policy)
+    assert not any("factory-problem" in issue.get("body", "") for issue in s.issues.values())
 
 
 @pytest.mark.parametrize("legacy", [False, True])
