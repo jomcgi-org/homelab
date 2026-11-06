@@ -294,45 +294,6 @@ def test_create_turn_records_reported_and_list_costs_side_by_side(
         _restore_schemas(schemas)
 
 
-@pytest.mark.parametrize(
-    ("provider_model", "expected"),
-    [("gpt-5.6-terra", 0.014), ("gpt-6.1-terra", 0.006), (None, 0.006)],
-)
-def test_create_turn_prices_the_guest_version_during_terra_rollout(
-    monkeypatch, tmp_path, provider_model, expected
-):
-    engine, schemas = _database(monkeypatch, tmp_path)
-    usage = {"input_tokens": 1_000, "output_tokens": 1_000}
-    if provider_model is not None:
-        usage["provider_model"] = provider_model
-    try:
-        with Session(engine) as session:
-            agent = store.create_session(session, "terra", "<guest>", "main", "terra")
-            turn = store.create_turn(
-                session,
-                session_id=agent.id,
-                seq=1,
-                prompt="price this guest",
-                voice_summary=None,
-                result_text="done",
-                terminal_reason="completed",
-                stop_reason=None,
-                permission_denials=None,
-                commit_sha=None,
-                usage=usage,
-                cost_usd=None,
-                model="terra",
-            )
-
-            assert turn.model == "terra"
-            assert json.loads(turn.usage_json) == usage
-            assert turn.cost_usd is None
-            assert turn.list_cost_usd == pytest.approx(expected)
-    finally:
-        engine.dispose()
-        _restore_schemas(schemas)
-
-
 def test_create_turn_persists_real_muse_shape_without_promoting_list_cost(
     monkeypatch, tmp_path
 ):

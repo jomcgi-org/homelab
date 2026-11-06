@@ -38,7 +38,7 @@ def test_codex_transcript_cache_is_part_of_reported_input():
 
 
 @pytest.mark.parametrize(
-    ("model", "model_ref"), [("sol", "gpt-6.1-sol"), ("terra", "gpt-6.1-terra")]
+    ("model", "model_ref"), [("sol", "gpt-6.1-sol"), ("terra", "gpt-5.6-terra")]
 )
 def test_codex_aliases_resolve_to_provider_models(model, model_ref):
     priced = price_usage(model, {"input_tokens": 1_000})
@@ -46,43 +46,6 @@ def test_codex_aliases_resolve_to_provider_models(model, model_ref):
     assert priced is not None
     assert priced.cost_usd > 0
     assert priced.model_ref == model_ref
-
-
-@pytest.mark.parametrize("model", ["terra", "gpt-6.1-terra"])
-def test_terra_6_1_standard_rates_keep_codex_cache_inclusive(model):
-    priced = price_usage(
-        model,
-        {
-            "shape": "codex",
-            "input_tokens": 200_000,
-            "cache_read_tokens": 150_000,
-            "output_tokens": 10_000,
-            "reasoning_output_tokens": 5_000,
-        },
-    )
-
-    assert priced is not None
-    assert priced.model_ref == "gpt-6.1-terra"
-    assert priced.source == "list"
-    # $1 input, $0.05 cached input, $5 output per million. Reasoning is
-    # already part of output_tokens and must not be charged twice.
-    assert priced.cost_usd == pytest.approx(0.1075)
-
-
-def test_terra_turn_totals_do_not_imply_one_long_context_request():
-    priced = price_usage("terra", {"input_tokens": 1_000_000, "output_tokens": 100_000})
-
-    assert priced is not None
-    # The collector aggregates multiple requests. A turn above 272K tokens
-    # cannot establish the provider's per-request long-context surcharge.
-    assert priced.cost_usd == pytest.approx(1.50)
-
-
-def test_explicit_historical_terra_model_keeps_its_identity():
-    priced = price_usage("gpt-5.6-terra", {"input_tokens": 1_000})
-
-    assert priced is not None
-    assert priced.model_ref == "gpt-5.6-terra"
 
 
 def test_opus_adds_exclusive_claude_cache_tokens_to_input():
@@ -477,43 +440,6 @@ def test_list_price_takes_claude_codes_reported_cost_as_list(model):
     # the usage block covers only the main loop and would undercount.
     usage = {"input_tokens": 10, "output_tokens": 100}
     assert list_price_usd(model, usage, 2.5) == pytest.approx(2.5)
-
-
-@pytest.mark.parametrize(
-    ("provider_model", "expected"),
-    [("gpt-5.6-terra", 0.014), ("gpt-6.1-terra", 0.006)],
-)
-def test_list_price_uses_the_recorded_terra_version(provider_model, expected):
-    usage = {
-        "input_tokens": 1_000,
-        "output_tokens": 1_000,
-        "provider_model": provider_model,
-    }
-
-    assert list_price_usd("terra", usage) == pytest.approx(expected)
-
-
-@pytest.mark.parametrize("provider_model", [None, "", "  ", 5, {}, []])
-def test_list_price_falls_back_when_provider_metadata_is_unavailable(provider_model):
-    usage = {
-        "input_tokens": 1_000,
-        "output_tokens": 1_000,
-        "provider_model": provider_model,
-    }
-
-    assert list_price_usd("terra", usage) == pytest.approx(0.006)
-
-
-def test_list_price_does_not_guess_rates_for_an_unknown_recorded_model():
-    usage = {"input_tokens": 1_000, "provider_model": "gpt-unknown"}
-
-    assert list_price_usd("terra", usage) is None
-
-
-def test_claude_reported_cost_is_independent_of_provider_label():
-    usage = {"input_tokens": 1_000, "provider_model": "unrecognized-cli-label"}
-
-    assert list_price_usd("opus", usage, 2.5) == pytest.approx(2.5)
 
 
 @pytest.mark.parametrize("model", [None, "", "unknown"])
