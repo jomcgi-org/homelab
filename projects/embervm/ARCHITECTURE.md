@@ -737,27 +737,21 @@ contracts still own roles, scope, tool limits and sequencing. The shim does not
 copy instructions into `CLAUDE.md` or inject a second copy into the prompt.
 (see: /projects/embervm/runtimes/claude/shim.py, /AGENTS.md)
 
-**Why.** Funding decisions use the same native session, broker and receipt owners
-but a separate versioned `/shim/funding-decision-v1` profile (#7583). Before model
-execution the Claude adapter constructs one fixed Messages request with an empty
-tools list and `tool_choice: none`. It never starts the CLI, sends it the prompt,
-loads hooks/skills/MCP, or exposes provider kwargs. The pinned CLI 2.1.284's
-`--await-initialize` control response has no tools declaration before input;
-its later `system/init` event cannot be a pre-prompt security check. The fixed
-request uses the existing host-local forwarder and OAuth broker grant, not a
-guest credential or a new endpoint. Redirects, retries and CLI fallback are
-forbidden; non-text/tool-bearing responses cannot be serviced. Unsupported
-adapters, repository hydration, resume and mixed profiles are rejected. Durable guest markers
-serialize profile selection and prevent an ordinary turn or a second decision
-after a one-shot request, including cold restore. JSON response text becomes the
-ordinary declared artifact; no file-writing tool or new provider credential is
-needed. Older runtimes reject the versioned path rather than treating a profile
-as an ignored argument. This is model capability removal, not a new OS sandbox
-or an expansion of the workload's network/credential authority. Independent
-security-aware review, compatible runtime rollout and provider acceptance are
-required before relying on the profile in production. Credential-free loopback
-tests cover the request shape and refusal boundary, not live OAuth acceptance;
-a provider rejection must remain visible without credential or policy fallback.
+**Why.** The staged `/shim/funding-decision-v1` profile (#7583) is disabled.
+Deployment injects subscription OAuth from `CLAUDE_AUTH_TOKEN`; that credential
+does not authorize a bespoke Messages client. The adapter refuses with
+`funding_provider_route_unavailable` before constructing an HTTP client or
+starting a CLI, regardless of ambient credentials. No enable switch exists.
+The pinned CLI 2.1.284's pre-input initialize response does not declare tools;
+its later `system/init` event cannot establish a pre-content fence. Safe mode
+with empty tools produces a tool-free synthetic request, but does not supply
+that missing pre-input evidence. No live subscription probe is authorized.
+Durable one-shot markers still exclude replay, restore and mixed profiles.
+An absent CLI process remains insufficient evidence of cessation for historical
+direct-client attempts. No historical receipt, cost or lineage is reclassified.
+The [dedicated API-key proposal](../monolith/ARCHITECTURE.md#funding-stays-disabled)
+requires independent review and explicit provisioning approval before a separate
+activation change. Existing ordinary Claude Code use is unchanged.
 
 **Why.** The Claude runtime ships a stdlib `ci-log` helper (#6442) so factory
 workers share commit-status lookup, bounded log traversal and redaction.

@@ -1448,8 +1448,8 @@ def repair_loop(world, monkeypatch):
 
 
 @pytest.fixture
-def repaired_refill(repair_loop, request):
-    """Post-operator repair boundary, not proof of autonomous native landing."""
+def repaired_refill(repair_loop, request, monkeypatch):
+    """Prospective provider + post-operator boundary; neither is enabled live."""
     from factory.orchestration import factory_intake as intake_owner
     from factory.orchestration import factory_landing as landing
     from factory.orchestration import factory_problem_issues as producer
@@ -1509,12 +1509,49 @@ def repaired_refill(repair_loop, request):
         "factory:landing",
         evidence={"state": "rollout_verified"},
     )
+    from factory.orchestration import funding_profile
+
+    assert funding_profile.PROVIDER_ROUTE_AVAILABLE is False
+    before = controls.task_snapshot(task_id)
+    s.funding.repair_recovery_tick()
+    assert controls.task_snapshot(task_id) == before
+    with controls._read_session() as db:
+        assert s.funding.pending(db, task_id) is None
+    # Exercise staged downstream contracts with a hypothetical supported route.
+    # The production default and independent guest refusal stay closed.
+    monkeypatch.setattr(funding_profile, "PROVIDER_ROUTE_AVAILABLE", True)
     s.funding.repair_recovery_tick()
     with controls._read_session() as db:
         request = s.funding.pending(db, task_id)
         assert request is not None
     s.task_id, s.start, s.request, s.repair_id = task_id, second, request, repair_id
     return s
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+def test_native_funding_disabled_fences_preexisting_request(
+    repaired_refill, monkeypatch
+):
+    from factory.orchestration import funding_profile
+
+    s = repaired_refill
+    judge = s.dispatch(s.task_id, s.request["node_key"])
+    identity = f"factory:{s.task_id}:{s.request['node_key']}:1"
+    assert funding_profile.session_profile(identity) is not None
+    monkeypatch.setattr(funding_profile, "PROVIDER_ROUTE_AVAILABLE", False)
+    with controls._read_session() as db:
+        assert not funding_profile.allowed(
+            db, s.task_id, s.request["node_key"], 1, pin=judge["pin"]
+        )
+        assert not s.funding._repair_review_valid(
+            db, s.task_id, s.request["repair_recovery"]
+        )
+    assert funding_profile.session_profile(identity) is None
+    before = controls.task_snapshot(s.task_id)
+    assert not s.funding.request(
+        {"id": s.task_id}, "disabled route", retry_request=s.request
+    )
+    assert controls.task_snapshot(s.task_id) == before
 
 
 @pytest.mark.parametrize(

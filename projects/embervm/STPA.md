@@ -260,13 +260,13 @@ flowchart TD
 
 ### Decision-only guest profile (#7583)
 
-- Unsafe action: a funding decision runs with coding tools or resumes a prior
-  coding session. The versioned endpoint rejects repository/resume/handoff input
-  and unsupported adapters. Before invocation, Claude receives an empty tools
-  list, strict empty MCP, disabled hooks/skills and isolated working directory;
-  advertised tools are a failure, not a reason to fall back. Existing broker
-  authentication is unchanged. This removes model-selected capabilities, not
-  the workload's network reach or the CLI's trusted provider implementation.
+- Unsafe action: a bespoke funding client reuses subscription OAuth, or sends
+  content to a CLI before establishing its capabilities. The versioned endpoint
+  refuses all valid funding profiles before HTTP construction or CLI startup.
+  Ambient API keys cannot enable it. The pinned pre-input handshake does not
+  attest tools, and a later empty-tools init event cannot authorize delivery.
+  Any future dedicated API route must validate native dispatch authority and
+  the closed no-tool request before credential injection or upstream content.
 - Unsafe race/replay: an ordinary request races profile selection or restores a
   spent decision guest. Profile selection is checked under the mount lock and
   persisted before invocation; a decision guest cannot execute another turn.

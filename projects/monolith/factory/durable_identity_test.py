@@ -53,8 +53,11 @@ def test_funding_profile_intentionally_versions_node_workflow():
     # #7583 intentionally changes _read_turn_artifact's durable result contract:
     # funding artifacts now require exact runtime profile metadata. Keep a new
     # version, never replay that check as the historical checkpoint body.
+    # Derived after final formatting, which changed the unformatted
+    # 0485521be38f2d12fcee143bf6d370f2 fingerprint. Do not normalize whitespace
+    # or alter durable_source to make new code impersonate either prior version.
     source_hash = hashlib.md5("".join(sources).encode())
-    assert source_hash.hexdigest() == "0485521be38f2d12fcee143bf6d370f2"
+    assert source_hash.hexdigest() == "5e16dc2336c4950bcff0cad36bc39286"
     source_hash.update(GlobalParams.dbos_version.encode())
     assert node_workflow_version() == source_hash.hexdigest()
 

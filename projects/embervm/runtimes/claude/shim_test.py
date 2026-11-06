@@ -7776,8 +7776,9 @@ def _funding_profile():
 
 @pytest.fixture
 def funding_provider(monkeypatch):
-    """Exercise real HTTP serialization against a credential-free local proxy."""
+    """Detect any provider request, using a credential-free local HTTP proxy."""
     monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
+    monkeypatch.setenv(shim.PREWARM_CLIS_ENV, ",")
     calls = []
     reply = {
         "type": "message",
@@ -7825,7 +7826,7 @@ def funding_provider(monkeypatch):
         thread.join(timeout=2)
 
 
-def test_funding_profile_removes_cli_capabilities_and_returns_native_artifact(
+def test_disabled_funding_profile_sends_no_content_and_preserves_one_shot_fence(
     tmp_path, monkeypatch, funding_provider
 ):
     monkeypatch.setattr(shim, "GIT_PROXY_PATH", str(tmp_path / "git-proxy"))
@@ -7848,41 +7849,23 @@ def test_funding_profile_removes_cli_capabilities_and_returns_native_artifact(
     monkeypatch.setattr(manager, "_hydrate_workspace", forbidden)
     monkeypatch.setattr(shim.ClaudeProcess, "_configure_git", forbidden)
     try:
-        result = manager.turn(
-            "Decide the supplied funding request",
-            model="opus",
-            artifact_path=".factory/t/funding.json",
-            dispatch_id="exact-1",
-            turn_seq=1,
-            execution_profile=_funding_profile(),
-        )
+        with pytest.raises(
+            shim.StartupError, match="funding_provider_route_unavailable"
+        ):
+            manager.turn(
+                "Decide the supplied funding request",
+                model="opus",
+                artifact_path=".factory/t/funding.json",
+                dispatch_id="exact-1",
+                turn_seq=1,
+                execution_profile=_funding_profile(),
+            )
         assert not args_path.exists(), "funding must not launch or probe the CLI"
         calls, _reply = funding_provider
-        assert len(calls) == 1
-        assert calls[0]["path"] == "http://api.anthropic.com/v1/messages"
-        body = calls[0]["body"]
-        assert set(body) == {
-            "model",
-            "max_tokens",
-            "stream",
-            "tools",
-            "tool_choice",
-            "system",
-            "messages",
-        }
-        assert body["tools"] == []
-        assert body["tool_choice"] == {"type": "none"}
-        assert body["messages"] == [
-            {"role": "user", "content": "Decide the supplied funding request"}
-        ]
-        assert calls[0]["headers"]["anthropic-beta"] == "oauth-2025-04-20"
-        assert result["usage"]["input_tokens"] == 30
-        assert result["usage"]["output_tokens"] == 7
+        assert calls == []
         assert manager.claude.workspace != manager.workspace
-        assert result["usage"]["execution_profile"] == _funding_profile()
-        assert json.loads(base64.b64decode(result["artifact"]["content_b64"])) == {
-            "action": "continue"
-        }
+        assert manager.claude.current_result is None
+        assert manager.claude.session_id is None
         for kwargs in ({}, {"execution_profile": _funding_profile()}):
             with pytest.raises(shim.SessionConflictError):
                 manager.turn("another turn", model="opus", **kwargs)
@@ -7976,29 +7959,15 @@ def test_funding_absent_cli_does_not_prove_provider_cessation(
 ):
     claude = _manager(tmp_path, monkeypatch)
     claude.decision_profile = _funding_profile()
-    real_build = shim.urllib.request.build_opener
-    seen = []
-
-    def build(*handlers):
-        opener = real_build(*handlers)
-        real_open = opener.open
-
-        def opening(*args, **kwargs):
-            assert claude.session_id and claude.process is None
-            seen.append(claude.interrupt(timeout=0))
-            return real_open(*args, **kwargs)
-
-        opener.open = opening
-        return opener
-
-    monkeypatch.setattr(shim.urllib.request, "build_opener", build)
-    claude.turn("decision", model="opus")
-    assert seen == [
-        {"terminal_reason": "user_interrupt", "killed": False, "timeout": True}
-    ]
-    assert len(funding_provider[0]) == 1
-    with pytest.raises(shim.StartupError, match="fresh provider call"):
-        claude.turn("retry", model="opus")
+    # A restored historical direct-client attempt must not be reclassified as
+    # ceased merely because the replacement code cannot make new calls.
+    claude.session_id = "funding-historical-unknown"
+    assert claude.interrupt(timeout=0) == {
+        "terminal_reason": "user_interrupt",
+        "killed": False,
+        "timeout": True,
+    }
+    assert funding_provider[0] == []
 
 
 @pytest.mark.parametrize("message", [None, "", {"tools": [{"type": "web_search"}]}])
@@ -8016,61 +7985,35 @@ def test_funding_rejects_nontext_before_any_prompt_delivery(
     assert claude.session_id is None
 
 
+@pytest.mark.parametrize("model", ["opus", "sonnet", "fable"])
 @pytest.mark.parametrize(
-    "field,value",
-    [
-        ("model", "wrong-model"),
-        ("stop_reason", "max_tokens"),
-        ("usage", None),
-        ("content", []),
-        ("role", "user"),
-    ],
+    "credential_env",
+    ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "EMBER_ANTHROPIC_OAUTH_TOKEN"],
 )
-def test_funding_rejects_incomplete_provider_result_without_reinvoke(
-    tmp_path, monkeypatch, funding_provider, field, value
+def test_disabled_funding_cannot_be_enabled_by_ambient_credentials(
+    tmp_path, monkeypatch, funding_provider, model, credential_env
 ):
     claude = _manager(tmp_path, monkeypatch)
-    claude.decision_profile = _funding_profile()
-    calls, reply = funding_provider
-    reply[field] = value
-    with pytest.raises(RuntimeError, match="non-text or incomplete"):
-        claude.turn("decision", model="opus")
-    with pytest.raises(shim.StartupError, match="fresh provider call"):
-        claude.turn("retry", model="opus")
-    assert len(calls) == 1
+    claude.decision_profile = {**_funding_profile(), "model": model}
+    monkeypatch.setenv(credential_env, "synthetic-not-a-credential")
+    args_path = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+
+    # Refusal must precede even HTTP client construction. The listening fake
+    # provider is an independent check that no serialized content reaches it.
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("disabled funding constructed an HTTP client")
+
+    monkeypatch.setattr(shim.urllib.request, "build_opener", forbidden)
+    for _ in range(2):
+        with pytest.raises(
+            shim.StartupError, match="funding_provider_route_unavailable"
+        ):
+            claude.turn("private decision", model=model)
+    assert funding_provider[0] == []
     assert claude.process is None
-
-
-@pytest.mark.parametrize("block_type", ["tool_use", "server_tool_use", "mcp_tool_use"])
-def test_funding_profile_never_services_provider_tools(
-    tmp_path, monkeypatch, funding_provider, block_type
-):
-    claude = _manager(tmp_path, monkeypatch)
-    claude.decision_profile = _funding_profile()
-    calls, reply = funding_provider
-    reply["content"] = [
-        {"type": block_type, "name": "Bash", "input": {"command": "false"}}
-    ]
-    with pytest.raises(RuntimeError, match="non-text or incomplete"):
-        claude.turn("decision", model="opus")
-    assert len(calls) == 1
-
-
-@pytest.mark.parametrize("status", [302, 401, 403, 429, 503])
-def test_funding_provider_failure_never_retries_or_falls_back(
-    tmp_path, monkeypatch, funding_provider, status
-):
-    claude = _manager(tmp_path, monkeypatch)
-    claude.decision_profile = _funding_profile()
-    calls, reply = funding_provider
-    reply["_status"] = status
-    with pytest.raises(shim.urllib.error.HTTPError):
-        claude.turn("decision", model="opus")
-    assert len(calls) == 1
-    assert claude.process is None
-    with pytest.raises(shim.StartupError, match="fresh provider call"):
-        claude.turn("retry", model="opus")
-    assert len(calls) == 1
+    assert claude.session_id is None
+    assert not args_path.exists()
 
 
 @pytest.mark.parametrize("decision_first", [False, True])

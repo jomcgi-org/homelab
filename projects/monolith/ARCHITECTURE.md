@@ -833,36 +833,162 @@ GitHub mirror, with no human/security ownership. Historical starts and breakers
 are not enrolled. Policy disable/restore invalidates the epoch even if no refill
 tick observed the disabled interval.
 
-**Why funding decisions use a separate execution profile.** Only funding
-can select `factory-funding-v1`, bound to the exact request, prompt, schema and
-model in the graph pin. The native executor revalidates the request and session;
-the existing Claude adapter constructs one fixed tool-free provider request without
-starting a CLI or loading MCP, skills or hooks, and captures JSON text through the
-normal artifact/receipt/accounting path. Post-input CLI init checks are not a trusted
-boundary; the pinned CLI does not attest tools during pre-input initialization.
-The request retains the existing broker lane, with no redirects, retries or fallback.
-Its versioned guest endpoint fails closed on older runtimes. A durable
-one-shot marker prevents continuation or ordinary execution in that guest. Only
-supported Claude aliases are eligible; unsupported judge adapters wait without
-fallback. No new credential, explicit PR-review credential, execution framework
-or generic `read_only` exception is introduced. Collector and reviewer remain
-fixed read-only roles. Publication uses the accepted funding lease, and recovery
-is observed only after independently reviewed useful issues are actually written.
-The exact-head security review, compatible runtime/backend rollout, existing
-producer/landing policy authority and naturally occurring recovery remain live
-acceptance requirements for #7583; synthetic tests do not establish completion.
+### Funding stays disabled
 
-**Current landing authority limit.** Sanitized native failure tickets name the
-fixed role, bounded stage and SQLSTATE, and code-selected execution admission or
-result-receipt owning paths. The producer reauthenticates the native proof before
-publication and never exports raw errors, SQL or private run/session identifiers.
-Those owners are outside both standing repair landing profiles. Their candidate
-checks refuse with `repair_landing_paths_require_operator`; no profile expansion
-or diagnostic-only substitute is authorized. Eligible observation-owner repairs
-exercise existing standing candidate/queue checks, while native downstream tests
-explicitly assume an operator-authorized repair has landed and rolled out. Live
-provider acceptance of the fixed request also remains to be verified without
-credential fallback. These are concrete limits, not claims of automatic recovery.
+The `factory-funding-v1` protocol remains staged. `PROVIDER_ROUTE_AVAILABLE` is
+false, with no environment or policy toggle. The funding owner refuses new native
+reviews before changing the machine pause or preparing a paid start. Physical
+dispatch refuses pre-existing requests. The guest independently returns
+`funding_provider_route_unavailable` before constructing an HTTP client or starting
+a CLI. One-shot markers and historical uncertainty remain intact. Ordinary funding
+and ordinary Claude Code sessions retain their existing paths.
+
+The deployment injects `EMBER_ANTHROPIC_OAUTH_TOKEN` from `CLAUDE_AUTH_TOKEN` at
+`api.anthropic.com`. It is subscription OAuth. Anthropic's
+[authentication rules](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use)
+distinguish unmodified native Claude Code use from custom API clients; the
+[API overview](https://platform.claude.com/docs/en/api/overview) describes API-key
+authentication. The removed direct Messages client cannot reuse that grant.
+No subscription token, PR-review credential or alternate framework is a fallback.
+
+On November 6, 2026 a credential-free loopback probe used the installed unmodified
+Claude Code 2.1.284, the version pinned by `MODULE.bazel` (package SHA256
+`642690c3afaa22029c17341e520d8c35ca85857fce6dcc9ecd90ef5e3c7f1027`). It used a fresh
+configuration directory, an allowlisted process environment, synthetic OAuth text,
+a localhost API origin and rejecting localhost HTTP/HTTPS proxies. No provider
+request was forwarded. The relevant arguments were:
+
+```text
+--safe-mode --tools "" --disallowedTools '*' --disable-slash-commands
+--strict-mcp-config --mcp-config '{"mcpServers":{}}' --setting-sources ""
+--permission-mode dontAsk --no-session-persistence --max-turns 1
+--input-format stream-json --output-format stream-json --await-initialize
+```
+
+Before input, the initialize control response contained no tools declaration and
+the local provider saw zero requests. After synthetic input, `system/init` declared
+empty tools/MCP and one `/v1/messages?beta=true` request had `tools: []`; the fake
+provider rejected it with 403. This establishes the observed request shape only.
+The CLI did not supply a pre-input capability attestation. Its `--bare` help also
+states that OAuth is not read in that mode. A future CLI solution would need a
+trusted pre-forward request gate and pre-tool execution enforcement, including
+startup customizations and responses. This patch establishes neither for that pin
+and does not restore post-input checking. The fallback below remains a proposal.
+
+#### Proposed dedicated API authority
+
+Joe must approve provisioning a dedicated Claude Console workspace API key, its
+billing owner and trial limits. A new reviewed broker capability is required;
+the current host-only egress secret catalog cannot enforce this scope. Keep the
+native executor, result receipts and cumulative accounting. Add no model worker,
+generic API proxy or independent execution framework.
+
+- Proposed grant: `claude-factory-funding-v1`, stored through the 1Password
+  Operator in a dedicated `embervm-factory-funding-api` Secret. No key enters
+  a guest, prompt, environment of a CLI, or public projection. No OAuth refresh,
+  subscription quota or PR-review grant is reused. The key has its own workspace
+  rate/spend controls and revocation. Workload identity is a separate alternative
+  only after a supported provider endpoint and billing principal are reviewed.
+- Proposed broker route: `POST /grants/claude-factory-funding-v1/messages` on the
+  existing SPIFFE mTLS listener. Plaintext and `/token` access for this grant deny.
+  The authenticated native execution owner supplies an expiring, one-use binding
+  for receipt, task, run, session, dispatch, control epoch and request/prompt/schema
+  hashes. A guest-supplied role/profile is insufficient. The broker verifies that
+  binding against current owner authority and holds before forwarding content.
+  No other session, ordinary coding role or standing landing grant may select it.
+- Upstream is exactly `POST https://api.anthropic.com/v1/messages`, no query,
+  redirects or caller-selected host/path. The broker constructs the closed body:
+  `claude-opus-5-5`, `stream: false`, `max_tokens: 4096`, `tools: []`,
+  `tool_choice: {type: none}`, one plain-text user message and a fixed system
+  instruction. It injects `x-api-key` and `anthropic-version: 2023-06-01` only
+  after validation. No `Authorization`, OAuth beta, custom headers, containers,
+  MCP, skills, server tools or arbitrary provider kwargs cross this boundary.
+- Proposed initial limits: one in-flight call, three calls per rolling 24 hours
+  for the entire dedicated grant, one call per admitted dispatch, 64 KiB UTF-8
+  input, 4096 output tokens and 120 seconds total. Oversize evidence refuses,
+  without silent truncation. Reserve the conservative input/output price ceiling
+  under existing admission before transmission; settle reported usage once under
+  the same dispatch, including refusal responses with usage. Missing usage, timeout
+  or response loss stays charged/unknown with no automatic retry. Fresh API-key
+  quota/rate evidence must be independent of subscription quota. These proposed
+  trial limits do not change existing factory policy or its accounting rules.
+- Return only a bounded, complete text result with the exact model and valid
+  usage. Reject tool-bearing, partial, malformed or oversized responses before
+  artifact acceptance. No tool loop exists. Disabling the route or revoking the
+  grant increments its authorization epoch and denies queued/new calls. In-flight
+  calls retain their receipt and uncertainty; revocation never proves cessation
+  or refunds a reservation. Disable admission first, revoke/rotate the workspace
+  key, then reconcile outstanding results through the existing receipt owner.
+
+Before activation, fake-provider tests must cover exact body/header bytes, wrong
+identity/profile/epoch, replay, concurrent admission, every quota bound, changed
+holds, revocation, redirects, tool responses and lost-response accounting. Deploy
+broker and runtime with the route disabled, verify every serving replica and
+rendered credential isolation, and obtain independent exact-head security review.
+A separate operator-approved key-scoped canary may verify provider acceptance and
+usage accounting. Only a later reviewed activation can enable new native starts.
+Rollback disables the capability and revokes its dedicated grant, retaining history.
+No provisioning, policy change, canary or rollout occurs in this patch.
+
+### Native repair landing authority
+
+Typed `receipt_admission`, `prepared_admission` and `promotion_admission` failures
+map to `projects/monolith/factory/execution/admission.py` and `admission_test.py`.
+`receipt_prepare` and `receipt_promotion` map to `result_receipts.py` and
+`result_receipts_test.py` in that directory. The producer reauthenticates positive
+native `not_invoked` proof before publishing the bounded role/stage/SQLSTATE/path
+projection. Raw errors, SQL and private identities stay private. All four paths
+are outside both standing repair profiles and the owner-PR diagnostics profile.
+`repair_landing_paths_require_operator` remains binding.
+
+An existing per-repair route is implemented by `factory_release_landing_hold` in
+`factory/orchestration/mcp.py` and `factory_landing_release.py`. It requires a
+standing human operator. For a genuinely private, internal, reversible repair
+that changes no security boundary or authority, the operator can:
+
+1. Read the exact repair receipt and owned PR. Require an unpaused, unheld
+   `succeeded` or `landing` receipt, an open non-draft PR and no unsettled execution,
+   competing branch owner, review-recovery hold or decision in flight. Record the
+   immutable base, current head, exact modified paths and independently reviewed
+   diff. A typed database stage alone never proves the change qualifies.
+2. Call `factory_release_landing_hold` with `operation: preview`, exact
+   `receipt_id`, `pr_number`, 40-character `head_sha`, and `reason`. Supply `scope`
+   with exactly `classification: private_internal_reversible` and `evidence`
+   (1–4000 characters). Evidence should name the base/head, exact owner paths,
+   bounded change, tests and independent review, and the operator's assessment
+   that public, credential, security and destructive effects are absent.
+3. Inspect an `authorize` preview. Apply identical target/reason/scope with
+   `operation: apply`, its `preview_sha256` as `expected_preview_sha256`, and a new
+   `request_key`. Retry a lost response only with that same request and key.
+   State or evidence drift requires a fresh preview. Read back authoritative state;
+   a replay acknowledgement alone is not current authority.
+4. The existing landing owner checks the audited exact-head grant, native
+   independent exact-head review, required CI, current holds and enabled merge
+   policy before the protected queue. Head changes require renewed authorization
+   and review. No direct merge, resume or acceptance is granted by this call.
+
+This explicit scope is human-attested and head-bound; it has no machine-verified
+private-path allowlist. It cannot release a private landing hold. The separate
+`public_docs` exception covers only two documentation files and cannot authorize
+these repairs. Changes to admission authority, credential boundaries or destructive
+semantics do not qualify as `private_internal_reversible`. There is no generic
+typed execution-owner/security exception in the existing scoped API.
+
+If a real repair needs that exception, propose a separate single-repair operator
+decision with typed native proof, source event/epoch, canonical repair receipt/PR,
+immutable base/head, exact code-selected owner source/test paths (one pair, at most
+two existing regular UTF-8 files), explicit risk classification and rollback plan.
+Require a fresh independent security review of that same diff and required CI.
+Bind one protected-queue admission to those bytes with a finite expiry and audited
+revocation; any head/path/owner/hold change invalidates it. Exclude deployment,
+schema, grants and credentials unless separately approved. This is a proposal,
+not a new standing grant or an implemented exception. Do not broaden either
+standing profile or describe a diagnostic-only diff as the repair.
+
+Breaker 1155 and historical 1131, 1136, 1050 and 7640 remain untouched. No hold,
+historical lineage, workspace or volume is adopted, cleared or rewritten. Fixture
+rollouts and prospective provider availability exercise downstream contracts only;
+#7583 still requires natural useful work after a supported, authorized repair.
 
 **Why.** Backlog-refill completion does not prove repair discovery or recovery.
 The operator status nests the repair producer's own persisted policy observation,

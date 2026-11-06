@@ -140,11 +140,13 @@ historical failures, breakers and uncertain execution remain unchanged. The
 source can be closed charter #7366 only while its exact recurring contract,
 unassigned GitHub identity, synchronized mirror and current ownership allow it.
 
-Exact accepted repair rollout permits the funding owner to request a
-`factory-funding-v1` decision through the existing native execution path. Request,
-prompt, schema, model and session are bound; the versioned runtime endpoint
-removes tools and never falls through to a coding session. Only the supported
-Claude adapter can execute it, using its existing broker grant. Fixed collector
+The staged `factory-funding-v1` contract binds request, prompt, schema, model
+and session after exact accepted repair rollout. Its provider route is disabled:
+the funding owner prepares no native review or pause release, physical dispatch
+refuses existing requests, and the guest refuses before any provider I/O.
+Subscription OAuth cannot be reused for direct Messages. See the
+[supported-authentication proposal](../../ARCHITECTURE.md#funding-stays-disabled).
+Fixed collector
 and reviewer roles retain their physical read-only fence. Funding settlement may
 renew the exhausted original node from one to two attempts, with all prior
 charges/history retained, inside the judge's finite lease. No second repair
@@ -417,12 +419,14 @@ Linux orchestrator CI and a real bounded operating trial stay the delivery gates
 
 Funding lives in `factory_funding.py`: `request` records one judge node, `settle` verifies its authority, `decide` resolves a validated artifact to `continue`, `steer` or `stop`. A continue or steer grants at most 20 work turns and a 30-minute review horizon. Reservations and unknown outcomes stay charged; a factory start reserves a ceiling and settles at the reported cost, falling back to the token-usage list price. A judge proposing a larger budget pauses the receipt for operator approval. Continuation contracts remain: the legacy pair below and an operator `progress_continuation` two-hour lease for one paused recovered task.
 
-Native refill repair uses a server-authored `factory-funding-v1` decision profile
-(#7583), bound to the exact funding request, schema and model. Its versioned runtime
-endpoint makes a fixed tool-free request inside the existing Claude adapter and
-broker lane; no CLI receives the prompt and no tool loop exists. It retains native
-admission, receipts and accounting, not a generic funding-node exception to the
-physical fence. Collector and independent reviewer stay fixed read-only roles.
+Native refill repair has a staged server-authored `factory-funding-v1` decision
+profile (#7583), bound to the exact funding request, schema and model. Its
+`PROVIDER_ROUTE_AVAILABLE` constant is false, with no policy/environment toggle.
+New native funding reviews and physical starts are refused; the versioned guest
+endpoint independently refuses all funding calls before content leaves. The
+subscription OAuth direct-client implementation was removed. Enabling requires
+a separately reviewed supported-authentication route. Ordinary funding is unchanged.
+Collector and independent reviewer stay fixed read-only roles.
 `review_recovery.Reviewer` remains an explicit operator PR-review API, not funding.
 Only fresh typed positive not-invoked evidence on the exact recurring charter
 #7366 contract can produce a bounded repair pause. Closed-charter authority never
@@ -435,10 +439,13 @@ separately. Historical failures and breakers are not enrolled.
 The currently classified database stages belong to execution admission or result
 receipts, outside both standing landing path profiles. Their repairs need explicit
 operator-owned exact-head landing authorization; this implementation does not
-expand those profiles. Eligible observation repairs exercise the real candidate
+expand those profiles. The exact existing route and its limits are recorded in
+[the per-repair runbook](../../ARCHITECTURE.md#native-repair-landing-authority).
+Eligible observation repairs exercise the real candidate
 and queue owners in regression tests. Injected external rollout evidence tests
-only post-operator recovery, not autonomous native repair landing. Runtime/provider
-compatibility and naturally occurring useful-delivery acceptance remain unproven;
+only prospective post-operator recovery with the unavailable provider mocked;
+they do not prove autonomous native repair landing. Supported authentication,
+runtime compatibility and naturally occurring useful-delivery acceptance remain unproven;
 neither a passing fixture nor this PR completes #7583.
 
 Eligible funding reviews include progress, proximity-to-landing and issue-value criteria and server-read evidence from `factory_judge.py`. Explicit doubt steers to an operator card, and the turn ceiling is the original allowance plus `factoryMeritJudgeMaxExtensionMultiple` times it. Missing pinned policy and historical requests without merit metadata retain their legacy handling.

@@ -7,6 +7,10 @@ from factory.orchestration import factory_controls as controls
 KEY = "x-factory-funding-decision"
 NAME = "factory-funding-v1"
 MODELS = frozenset({"opus", "sonnet", "fable"})
+# Staged protocol only. Enabling requires a reviewed provider-supported route,
+# dedicated broker authority and pre-content enforcement. This is deliberately
+# not an environment/policy toggle; the guest independently refuses the route.
+PROVIDER_ROUTE_AVAILABLE = False
 
 
 def profile(request):
@@ -41,6 +45,8 @@ def schema(task_id, node_key, *, session=None):
 
 
 def allowed(db, task_id, node_key, attempt, *, pin=None):
+    if not PROVIDER_ROUTE_AVAILABLE:
+        return False
     from factory.orchestration import backlog_refill_repair as repair
     from factory.orchestration import factory_funding as funding
     from factory.orchestration.factory_funding_limits import review_authority
