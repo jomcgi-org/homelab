@@ -709,7 +709,6 @@ def test_active_paused_body_rewrite_replaces_card_without_answer(
     before = controls.task_snapshot(task_id)
     old_id = controls.decision_identity(before)
     if pinned_generation:
-        monkeypatch.setenv("FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED", "true")
         with controls._locked_session() as (session, control):
             current = json.loads(control.policy_json)
             control.policy_json = json.dumps(
@@ -755,7 +754,7 @@ def test_active_paused_body_rewrite_replaces_card_without_answer(
         "replacement",
     ],
 )
-def test_revalidation_cannot_overwrite_concurrent_pause_owner(
+def test_revalidation_rechecks_pause_ownership_after_github_read(
     db, monkeypatch, transition
 ):
     from concurrent.futures import ThreadPoolExecutor
@@ -809,8 +808,23 @@ def test_revalidation_cannot_overwrite_concurrent_pause_owner(
         finally:
             release.set()
         pending.result(timeout=5)
-    assert receipt_of(db, receipt_id=before["id"]).model_dump() == expected
-    assert audits(db, "paused_card_superseded") == []
+    if transition == "generation":
+        # A policy generation advance leaves this active task's pause owner
+        # intact, so refresh may replace the old body and exact decision ID.
+        after = controls.task_snapshot(task_id)
+        assert after["task_paused"] and after["state"] == "admitted"
+        assert after["generation"] == before["generation"]
+        assert after["escalation"]["resolved"] is None
+        assert after["body"] == "Changed scope"
+        assert controls.decision_identity(after) != decision_id
+        assert len(audits(db, "paused_card_superseded")) == 1
+        with pytest.raises(decisions.DecisionError, match="brief changed"):
+            decisions.apply_decision(
+                before["id"], "stop", "operator", expected_decision_id=decision_id
+            )
+    else:
+        assert receipt_of(db, receipt_id=before["id"]).model_dump() == expected
+        assert audits(db, "paused_card_superseded") == []
 
 
 @pytest.mark.parametrize(

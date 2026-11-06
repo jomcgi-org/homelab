@@ -589,17 +589,20 @@ def _bump_generation():
     assert controls.status()["policy"]["generation"] == 1
 
 
+@pytest.mark.parametrize("state", ["admitted", "uncertain"])
 def test_a_card_on_an_active_old_generation_task_is_decidable(
-    db, github, notices, model, monkeypatch
+    db, github, notices, model, state
 ):
     # 2026-10-01: receipts 700 and 703 were still admitted on generation 13
     # when the policy moved to 14, and factory_decide refused their watchdog
     # cards as stale, so the only way out was resume_task by hand.
-    monkeypatch.setenv("FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED", "true")
     task_id, policy = looped(db, github, notices)
+    with controls._locked_session() as (session, _control):
+        controls._receipt(session, task_id).state = state
     _bump_generation()
     row = receipt(db, task_id)
-    assert row.generation == 0 and row.state == "admitted"
+    assert row.generation == 0 and row.state == state
+    assert decisions._pinned_and_active(row)
 
     result = decisions.request_decision(
         row.id,
@@ -613,32 +616,34 @@ def test_a_card_on_an_active_old_generation_task_is_decidable(
     assert not receipt(db, task_id).task_paused
 
 
-def test_without_the_flag_an_active_old_generation_card_is_refused(
-    db, github, notices, model, monkeypatch
+def test_a_landing_old_generation_card_is_pinned_but_not_decidable(
+    db, github, notices, model
 ):
-    monkeypatch.delenv("FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED", raising=False)
     task_id, _policy = looped(db, github, notices)
+    with controls._locked_session() as (session, _control):
+        controls._receipt(session, task_id).state = "landing"
     _bump_generation()
     row = receipt(db, task_id)
+    assert decisions._pinned_and_active(row)
+    assert not watchdog.decidable(row, decisions.escalation_of(row))
     with pytest.raises(decisions.DecisionError) as raised:
         decisions.apply_decision(row.id, "resume", "operator")
-    assert "receipt generation 0" in raised.value.reason
+    assert "receipt generation 0" not in raised.value.reason
 
 
-def test_a_settled_old_generation_card_is_still_refused_with_the_flag(
-    db, github, notices, model, monkeypatch
-):
-    monkeypatch.setenv("FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED", "true")
+@pytest.mark.parametrize("state", ["escalated", "succeeded", "cancelled"])
+def test_a_stale_nonrunning_card_is_still_refused(db, github, notices, model, state):
     task_id, _policy = looped(db, github, notices)
     with Session(db) as session:
         stored = session.exec(
             select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)
         ).one()
-        stored.state = "escalated"
+        stored.state = state
         session.add(stored)
         session.commit()
     _bump_generation()
     row = receipt(db, task_id)
+    assert not decisions._pinned_and_active(row)
     with pytest.raises(decisions.DecisionError) as raised:
         decisions.apply_decision(row.id, "resume", "operator")
     assert "receipt generation 0" in raised.value.reason
