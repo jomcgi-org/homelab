@@ -305,6 +305,7 @@ def observe(
         )
         db.add(row)
         db.flush()
+        from factory.orchestration import funding_profile
         from factory.orchestration.backlog_refill_repair import epoch
 
         record(
@@ -317,10 +318,14 @@ def observe(
             policy=block,
             review_contract=contract,
             inspection_contract=1,
-            repair_contract={"version": 1, "epoch": epoch(db)},
             routine=routine,
             eligible=eligible,
             policy_digest=digest(policy),
+            **(
+                {"repair_contract": {"version": 1, "epoch": epoch(db)}}
+                if funding_profile.PROVIDER_ROUTE_AVAILABLE
+                else {}
+            ),
         )
         return {"ok": True, "run_id": run_id, "receipt_id": row.id}
 

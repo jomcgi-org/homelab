@@ -820,12 +820,13 @@ attempt authority; source holds and pause identity are rechecked at settlement.
 Legacy cards and uncertainty remain fenced. Public tickets carry only
 scoped code repairs and synthetic acceptance criteria.
 
-**Why native refill repair has its own narrow adapter.** Fresh starts pin a
-versioned repair contract and the control-policy epoch. Two distinct fixed-role
-attempt-one failures within 24 hours must carry matching, positively proven
-native `not_invoked` receipts and a closed vocabulary of staged database failure
-metadata. Diagnostics or exception text alone grant nothing. The existing problem
-producer owns the recurring-blocker issue, daily bounds and nonrecursion. The
+**Why native refill repair has its own narrow adapter.** With a supported provider
+route available, fresh starts pin a versioned repair contract and the
+control-policy epoch. Two distinct fixed-role attempt-one failures within 24 hours
+must carry matching, positively proven native `not_invoked` receipts and a closed
+vocabulary of staged database failure metadata. Diagnostics or exception text
+alone grant nothing. The existing problem producer owns the recurring-blocker
+issue, daily bounds and nonrecursion. The
 funding owner owns its machine pause, exact accepted repair rollout, finite
 decision and single retry of the original exhausted node. Source #7366 may remain
 closed only under that exact admitted recurring contract and its synchronized
@@ -836,8 +837,13 @@ tick observed the disabled interval.
 ### Funding stays disabled
 
 The `factory-funding-v1` protocol remains staged. `PROVIDER_ROUTE_AVAILABLE` is
-false, with no environment or policy toggle. The funding owner refuses new native
-reviews before changing the machine pause or preparing a paid start. Physical
+false, with no environment or policy toggle. Fresh refill starts omit the repair
+contract. Preinvoke diversion is disabled, preserving the existing capacity-wait
+or terminal-settlement path. Repeated terminal failures cannot create repair
+machine pauses. Refill pacing and the two-failure breaker still apply. Existing
+contracts, repair waits and explicit holds remain unchanged; later availability
+cannot enroll a start that omitted the contract. The funding owner refuses new
+native reviews before changing an existing machine pause or preparing a paid start. Physical
 dispatch refuses pre-existing requests. The guest independently returns
 `funding_provider_route_unavailable` before constructing an HTTP client or starting
 a CLI. One-shot markers and historical uncertainty remain intact. Ordinary funding
