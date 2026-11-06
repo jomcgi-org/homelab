@@ -155,6 +155,7 @@ def _recorded_cessation(db, permit_id):
         "terminal_dispatch",
         "invoke_failure",
         "terminal_before_dispatch",
+        "terminal_receipt_chain",
     }:
         row["cessation_evidence"] = None
     return row

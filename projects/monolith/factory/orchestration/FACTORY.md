@@ -320,6 +320,17 @@ The deadline-release implementation stays hard-staged off, and agent workloads h
 
 ### Supervised cessation
 
+Native interactive delivery errors after a drain redispatch may settle capacity
+from a complete retained two-dispatch receipt chain. This separate proof accepts
+at most three attempted receipts and two guests, including a first-dispatch
+restore. Every guest needs fresh positive eviction/destruction evidence; absent
+or live records refuse. The supervisor locks and revalidates all same-turn
+receipts, current ownership and quiescence after observation. Retention must
+cover both session and permit creation, every observer must have finished, and
+the latest exact receipt must have no result. Earlier interrupted responses,
+failed turns, costs, unknown markers and workspace bindings remain unchanged.
+This releases only capacity and grants no retry, task recovery or hold override.
+
 `factory_reconcile` kind `settled_retry` is an explicit standing-operator recovery for
 one missing first-dispatch response followed by a proven uninvoked second
 dispatch. Preview binds the receipt, session, permit, released observer, terminal
