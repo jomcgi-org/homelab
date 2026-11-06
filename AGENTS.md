@@ -14,6 +14,12 @@ maintenance policy authorizes implementation, review, merge and rollout.
 Routine human review or a separate "merge" instruction is unnecessary.
 Existing approval covers the same action and scope.
 
+Routine autonomous maintenance includes model choice and IDs, and supported
+CLI/runtime version bumps. These changes require compatibility checks, dev
+conformance before production, and the review, CI, merge queue and verified
+rollout evidence below. Diagnose failed gates and repair or roll back within
+scope. A model or version change alone needs no new human decision.
+
 Escalate only conflicting goals, a human-owned constraint exception, unapproved
 destructive work, or an explicit human-owned decision/hold. Name the decision
 and the rule requiring it. Keep independent work moving. If Joe may be away,
