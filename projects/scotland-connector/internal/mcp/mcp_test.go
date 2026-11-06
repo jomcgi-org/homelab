@@ -48,12 +48,17 @@ func TestAuroraListedOnlyWhenEnabled(t *testing.T) {
 		return out, r.Result["instructions"].(string)
 	}
 	off, offText := names(handler())
-	if strings.Join(off, ",") != "light,plan,check" || strings.Contains(offText, "aurora") {
+	if strings.Join(off, ",") != "outlook,light,plan,check" || offText != InstructionsWithoutAurora || strings.Contains(offText, "aurora") {
 		t.Errorf("disabled: tools %v, instructions %q", off, offText)
 	}
 	on, onText := names(auroraHandler())
-	if strings.Join(on, ",") != "light,aurora,plan,check" || onText != Instructions {
+	if strings.Join(on, ",") != "outlook,light,aurora,plan,check" || onText != Instructions {
 		t.Errorf("enabled: tools %v, instructions %q", on, onText)
+	}
+	for _, text := range []string{offText, onText} {
+		if !strings.Contains(text, "Use outlook beyond the forecast") {
+			t.Errorf("outlook missing from instructions: %q", text)
+		}
 	}
 	code, _, r := post(t, handler(), `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"aurora","arguments":{"lat":58.44,"lon":-3.09,"at":"2026-06-15T22:00:00Z"}}}`, map[string]string{"MCP-Protocol-Version": "2025-06-18"})
 	if code != http.StatusOK || r.Result["isError"] != false {
@@ -124,7 +129,7 @@ func TestToolListAndAnnotations(t *testing.T) {
 			t.Errorf("%s: inputSchema %v", tool["name"], schema)
 		}
 	}
-	if strings.Join(names, ",") != "light,aurora,plan,check" {
+	if strings.Join(names, ",") != "outlook,light,aurora,plan,check" {
 		t.Fatalf("tools = %v", names)
 	}
 }
@@ -180,6 +185,24 @@ func TestToolSchemaCapsMatchCode(t *testing.T) {
 	}
 	c := connector.Coverage
 	activities := connector.ActivityWalk + "," + connector.ActivityStargaze
+	outlook := schemas["outlook"]
+	if strings.Join(outlook.Required, ",") != "lat,lon" {
+		t.Errorf("outlook required = %v", outlook.Required)
+	}
+	bounds("outlook.lat", outlook.Properties["lat"], c.MinLat, c.MaxLat)
+	bounds("outlook.lon", outlook.Properties["lon"], c.MinLon, c.MaxLon)
+	bounds("outlook.radius_km", outlook.Properties["radius_km"], 1, connector.MaxRadiusKm)
+	defaults("outlook.radius_km", outlook.Properties["radius_km"], connector.DefaultRadiusKm)
+	for _, name := range []string{"from", "to"} {
+		if p := outlook.Properties[name]; p.MaxLength == nil || *p.MaxLength != 10 {
+			t.Errorf("outlook.%s date length = %v", name, p.MaxLength)
+		}
+	}
+	for _, number := range []int{connector.OutlookDailyCap, connector.OutlookRateFloor} {
+		if !strings.Contains(outlook.Properties["to"].Description, fmt.Sprint(number)) {
+			t.Errorf("outlook schema missing cap %d", number)
+		}
+	}
 
 	plan := schemas["plan"]
 	if strings.Join(plan.Required, ",") != "lat,lon" {
@@ -315,6 +338,42 @@ func TestLightToolCall(t *testing.T) {
 		r := callTool(t, handler(), "light", args)
 		if r.Result["isError"] != true {
 			t.Fatal(args, r)
+		}
+	}
+}
+
+func TestOutlookTool(t *testing.T) {
+	args := `{"lat":57.3,"lon":-3.7,"from":"2027-01-01","to":"2027-01-02"}`
+	r := callTool(t, handler(), "outlook", args)
+	if r.Result["isError"] == true {
+		t.Fatal(r)
+	}
+	want, err := call(fixture.Service(true), "outlook", json.RawMessage(args))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(want)
+	var decoded any
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, _ := json.Marshal(decoded)
+	gotJSON, _ := json.Marshal(r.Result["structuredContent"])
+	if string(wantJSON) != string(gotJSON) {
+		t.Fatal("outlook MCP differs from service")
+	}
+	for _, args := range []string{
+		`{"lat":57.3,"lon":-3.7,"from":"2027-01-01","to":"2028-01-01"}`,
+		`{"lat":57.3,"lon":-3.7,"radius_km":101}`,
+		`{"lat":57.3,"lon":-3.7,"extra":1}`,
+	} {
+		if r := callTool(t, handler(), "outlook", args); r.Result["isError"] != true {
+			t.Fatal(args, r)
+		}
+	}
+	for _, text := range []string{"Use outlook", "300 historical dark hours", "92 inclusive dates", "Weather is always unknown", "separate climatology rate and absolute-hours rankings"} {
+		if !strings.Contains(Instructions, text) {
+			t.Error("missing outlook discovery guidance", text)
 		}
 	}
 }
