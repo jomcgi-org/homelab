@@ -317,6 +317,28 @@ py_venv_binary(
     ],  # keep
 )
 
+# Shared one-shot tracing, without the core package's serving or DB closure.
+py_library(
+    name = "job_tracing",
+    srcs = ["core/job_tracing.py"],
+    imports = ["."],
+    deps = [
+        "@pip//opentelemetry_api",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_sdk",
+    ],
+)
+
+py_test(
+    name = "job_tracing_test",
+    srcs = ["core/job_tracing_test.py"],
+    imports = ["."],
+    deps = [
+        ":job_tracing",
+        "@pip//pytest",
+    ],
+)
+
 # Dedicated heavy geospatial computation. None of these sources or dependencies
 # enter :monolith_backend, :main, or :jobs: grid_gen is excluded from their
 # source globs above, and only this binary depends on the GIS wheels.
@@ -357,6 +379,7 @@ py_venv_binary(
     main = "stars/grid_gen/job.py",
     visibility = ["//:__subpackages__"],
     deps = [
+        ":job_tracing",
         ":stars_grid_generator",
         ":stars_grid_ingest",
         "@pip//boto3",
@@ -7893,6 +7916,7 @@ py_test(
     ],
     imports = ["."],
     deps = [
+        ":job_tracing",
         ":stars_grid_generator",
         ":stars_grid_ingest",
         "@pip//opentelemetry_api",
@@ -7909,6 +7933,7 @@ py_test(
         "BUILD",
         "stars/grid_gen/apko.lock.json",
         "stars/grid_gen/apko.yaml",
+        ":stars_grid_job",
         "//bazel/tools/oci:py3_image",
     ],
     imports = ["stars/grid_gen"],
