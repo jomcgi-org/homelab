@@ -21074,8 +21074,9 @@ def native_repair_landing_case(
     )
 
 
+@pytest.mark.parametrize("owner", ["factory_feedback", "factory_problem_issues"])
 def test_delegated_repair_lands_through_native_scope_and_queue(
-    feedback_db, monkeypatch
+    feedback_db, monkeypatch, owner
 ):
     from factory.orchestration import (
         factory_controls as controls,
@@ -21087,7 +21088,9 @@ def test_delegated_repair_lands_through_native_scope_and_queue(
     )
     from factory.orchestration.factory_models import FactoryAudit
 
-    case = native_repair_landing_case(monkeypatch)
+    case = native_repair_landing_case(
+        monkeypatch, path="projects/monolith/factory/orchestration/" + owner + ".py"
+    )
     landing._arm(case.repair["repo"], case.item)
     assert case.mutations == [
         (
@@ -21115,6 +21118,34 @@ def test_delegated_repair_lands_through_native_scope_and_queue(
         assert proof["review"]["review_run_id"] == case.review["id"]
         assert proof["provenance"]["source_task_id"] == case.source["id"]
         assert controls._receipt(db, case.source["id"]).task_paused
+
+
+@pytest.mark.parametrize(
+    "stage", ["receipt_admission", "receipt_prepare", "receipt_promotion"]
+)
+@pytest.mark.parametrize("profile", ["observation", "diagnostics"])
+def test_native_preinvoke_owning_paths_require_operator_landing(
+    feedback_db, monkeypatch, stage, profile
+):
+    from factory.execution.preinvoke_failure import repair_context
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    context = repair_context(
+        {"phase": stage, "sqlstate": "42703", "attempted": False},
+        "backlog_refill_collect_1",
+    )
+    case = native_repair_landing_case(
+        monkeypatch, path=context["owning_paths"][0], path_profile=profile
+    )
+    # Use the actual standing authority, producer provenance, immutable file
+    # evidence, independent review and candidate checks. No merged/rollout audit
+    # or synthesized grant can make an excluded owner eligible.
+    with controls._locked_session() as (db, _):
+        row = controls._receipt(db, case.repair["id"])
+        with pytest.raises(ValueError, match="repair_landing_paths_require_operator"):
+            delegation._candidate(db, row, 72, case.pull["head"]["sha"])
+    assert case.mutations == []
 
 
 def test_delegated_repair_main_progress_keeps_reviewed_diff_authority(

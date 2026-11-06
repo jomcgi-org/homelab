@@ -437,7 +437,7 @@ See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-check
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| Repair newly proven native refill infrastructure failures and observe useful same-node recovery | #7583 implementation contract | #7583 | blocked on a tool-free funding execution contract; native charter eligibility, repair rollout binding, bounded retry and live useful-delivery acceptance remain incomplete |
+| Repair newly proven native refill infrastructure failures and observe useful same-node recovery | #7583 implementation contract | #7583 | narrow funding profile and downstream retry implemented; classified execution-owner repairs remain outside standing landing authority; provider compatibility, rollout and live useful-delivery acceptance remain unproven |
 | Retire the merit runtime switch while preserving old-chart enabled behavior | section 4; proposed staged Conductor rescope | #7585, #7596 | repository correction; verified rollout remains on #7585; compatibility-key removal stays on #7596 until old charts leave rollback support |
 | Escalation cards survive the factory's own gate writes, declined landing recovery is named, and optimizer verdicts are final once the window ends and its attempts settle | section 4; evidence on the issue | #7495 | repository delivery; 72-hour before and after counts remain on the issue |
 | Per-sweep intake decisions, private backlog age and digest evidence | section 4; repository-only Conductor rescope | #7459 | staged repository delivery; rollout, first-sweep distribution and credential-backed follow-up remain on the issue |
@@ -836,9 +836,12 @@ tick observed the disabled interval.
 **Why funding decisions use a separate execution profile.** Only funding
 can select `factory-funding-v1`, bound to the exact request, prompt, schema and
 model in the graph pin. The native executor revalidates the request and session;
-the existing Claude adapter removes tools, MCP, skills and hooks, uses an isolated
-directory, and captures JSON text through the normal artifact/receipt/accounting
-path. Its versioned guest endpoint fails closed on older runtimes. A durable
+the existing Claude adapter constructs one fixed tool-free provider request without
+starting a CLI or loading MCP, skills or hooks, and captures JSON text through the
+normal artifact/receipt/accounting path. Post-input CLI init checks are not a trusted
+boundary; the pinned CLI does not attest tools during pre-input initialization.
+The request retains the existing broker lane, with no redirects, retries or fallback.
+Its versioned guest endpoint fails closed on older runtimes. A durable
 one-shot marker prevents continuation or ordinary execution in that guest. Only
 supported Claude aliases are eligible; unsupported judge adapters wait without
 fallback. No new credential, explicit PR-review credential, execution framework
@@ -848,6 +851,18 @@ is observed only after independently reviewed useful issues are actually written
 The exact-head security review, compatible runtime/backend rollout, existing
 producer/landing policy authority and naturally occurring recovery remain live
 acceptance requirements for #7583; synthetic tests do not establish completion.
+
+**Current landing authority limit.** Sanitized native failure tickets name the
+fixed role, bounded stage and SQLSTATE, and code-selected execution admission or
+result-receipt owning paths. The producer reauthenticates the native proof before
+publication and never exports raw errors, SQL or private run/session identifiers.
+Those owners are outside both standing repair landing profiles. Their candidate
+checks refuse with `repair_landing_paths_require_operator`; no profile expansion
+or diagnostic-only substitute is authorized. Eligible observation-owner repairs
+exercise existing standing candidate/queue checks, while native downstream tests
+explicitly assume an operator-authorized repair has landed and rolled out. Live
+provider acceptance of the fixed request also remains to be verified without
+credential fallback. These are concrete limits, not claims of automatic recovery.
 
 **Why.** Backlog-refill completion does not prove repair discovery or recovery.
 The operator status nests the repair producer's own persisted policy observation,

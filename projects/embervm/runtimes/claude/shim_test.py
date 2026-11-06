@@ -26,7 +26,7 @@ try:
 except ModuleNotFoundError:
     import tomli as tomllib
 from http.client import HTTPConnection
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -7774,8 +7774,59 @@ def _funding_profile():
     }
 
 
+@pytest.fixture
+def funding_provider(monkeypatch):
+    """Exercise real HTTP serialization against a credential-free local proxy."""
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
+    calls = []
+    reply = {
+        "type": "message",
+        "role": "assistant",
+        "stop_reason": "end_turn",
+        "model": shim.CLAUDE_MODELS["opus"],
+        "content": [{"type": "text", "text": '{"action":"continue"}'}],
+        "usage": {"input_tokens": 30, "output_tokens": 7},
+    }
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            calls.append(
+                {
+                    "path": self.path,
+                    "body": body,
+                    "headers": {k.lower(): v for k, v in self.headers.items()},
+                }
+            )
+            self.send_response(reply.get("_status", 200))
+            if reply.get("_status") == 302:
+                self.send_header("Location", "http://api.anthropic.com/redirected")
+            self.end_headers()
+            self.wfile.write(json.dumps(reply).encode())
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(
+        shim,
+        "egress_proxy_env",
+        lambda: {
+            "HTTP_PROXY": "http://127.0.0.1:%s" % server.server_port,
+        },
+    )
+    try:
+        yield calls, reply
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_funding_profile_removes_cli_capabilities_and_returns_native_artifact(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, funding_provider
 ):
     monkeypatch.setattr(shim, "GIT_PROXY_PATH", str(tmp_path / "git-proxy"))
     monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_DIR", str(tmp_path / "mcp"))
@@ -7783,7 +7834,8 @@ def test_funding_profile_removes_cli_capabilities_and_returns_native_artifact(
     manager = shim.ProcessManager(claude.workspace, claude.executable)
     args_path = tmp_path / "args.json"
     monkeypatch.setenv("FAKE_ARGS", str(args_path))
-    monkeypatch.setenv("FAKE_RESULT", '{"action":"continue"}')
+    # Even a CLI advertising Bash must never receive funding input or run.
+    monkeypatch.setenv("FAKE_TOOLS", '["Bash"]')
     monkeypatch.setenv(
         shim.AGENT_MCP_URL_ENV, "https://must-not-be-bootstrapped.invalid"
     )
@@ -7804,17 +7856,28 @@ def test_funding_profile_removes_cli_capabilities_and_returns_native_artifact(
             turn_seq=1,
             execution_profile=_funding_profile(),
         )
-        args = json.loads(args_path.read_text())
-        assert args[args.index("--tools") + 1] == ""
-        assert "--strict-mcp-config" in args
-        assert json.loads(args[args.index("--mcp-config") + 1]) == {"mcpServers": {}}
-        assert args[args.index("--setting-sources") + 1] == ""
-        assert json.loads(args[args.index("--settings") + 1]) == {
-            "disableAllHooks": True
+        assert not args_path.exists(), "funding must not launch or probe the CLI"
+        calls, _reply = funding_provider
+        assert len(calls) == 1
+        assert calls[0]["path"] == "http://api.anthropic.com/v1/messages"
+        body = calls[0]["body"]
+        assert set(body) == {
+            "model",
+            "max_tokens",
+            "stream",
+            "tools",
+            "tool_choice",
+            "system",
+            "messages",
         }
-        assert args[args.index("--permission-mode") + 1] == "default"
-        assert "--disable-slash-commands" in args
-        assert "--append-system-prompt" not in args and "--resume" not in args
+        assert body["tools"] == []
+        assert body["tool_choice"] == {"type": "none"}
+        assert body["messages"] == [
+            {"role": "user", "content": "Decide the supplied funding request"}
+        ]
+        assert calls[0]["headers"]["anthropic-beta"] == "oauth-2025-04-20"
+        assert result["usage"]["input_tokens"] == 30
+        assert result["usage"]["output_tokens"] == 7
         assert manager.claude.workspace != manager.workspace
         assert result["usage"]["execution_profile"] == _funding_profile()
         assert json.loads(base64.b64decode(result["artifact"]["content_b64"])) == {
@@ -7869,13 +7932,145 @@ def test_funding_profile_refuses_unsupported_or_ambiguous_execution(
     assert manager.claude.process is None
 
 
-def test_funding_profile_rejects_cli_advertising_tools(tmp_path, monkeypatch):
+@pytest.mark.parametrize("capability", ["tools", "mcp_servers", "betas", "container"])
+def test_funding_profile_refuses_capabilities_before_prompt_or_provider(
+    tmp_path, monkeypatch, funding_provider, capability
+):
     claude = _manager(tmp_path, monkeypatch)
+    args_path = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
     monkeypatch.setenv("FAKE_TOOLS", '["Bash"]')
-    claude.decision_profile = _funding_profile()
-    with pytest.raises(shim.StartupError, match="advertised capabilities"):
-        claude.turn("decision", model="opus")
+    claude.decision_profile = {**_funding_profile(), capability: ["web_search"]}
+    with pytest.raises(ValueError, match="invalid funding execution profile"):
+        claude.turn("private decision must not be delivered", model="opus")
+    assert funding_provider[0] == []
+    assert not args_path.exists()
     assert claude.process is None
+
+
+def test_funding_profile_cannot_fall_through_to_cli(
+    tmp_path, monkeypatch, funding_provider
+):
+    claude = _manager(tmp_path, monkeypatch)
+    claude.decision_profile = _funding_profile()
+    with pytest.raises(shim.StartupError, match="cannot invoke a CLI"):
+        claude._spawn(first_message="private decision", model="opus")
+    assert funding_provider[0] == []
+    assert claude.process is None
+
+
+def test_funding_interrupt_before_invocation_delivers_no_prompt(
+    tmp_path, monkeypatch, funding_provider
+):
+    claude = _manager(tmp_path, monkeypatch)
+    claude.decision_profile = _funding_profile()
+    outcome = claude.interrupt(timeout=0)
+    assert outcome["timeout"] and not outcome["killed"]
+    with pytest.raises(shim.StartupError, match="before provider invocation"):
+        claude.turn("private decision", model="opus")
+    assert funding_provider[0] == []
+
+
+def test_funding_absent_cli_does_not_prove_provider_cessation(
+    tmp_path, monkeypatch, funding_provider
+):
+    claude = _manager(tmp_path, monkeypatch)
+    claude.decision_profile = _funding_profile()
+    real_build = shim.urllib.request.build_opener
+    seen = []
+
+    def build(*handlers):
+        opener = real_build(*handlers)
+        real_open = opener.open
+
+        def opening(*args, **kwargs):
+            assert claude.session_id and claude.process is None
+            seen.append(claude.interrupt(timeout=0))
+            return real_open(*args, **kwargs)
+
+        opener.open = opening
+        return opener
+
+    monkeypatch.setattr(shim.urllib.request, "build_opener", build)
+    claude.turn("decision", model="opus")
+    assert seen == [
+        {"terminal_reason": "user_interrupt", "killed": False, "timeout": True}
+    ]
+    assert len(funding_provider[0]) == 1
+    with pytest.raises(shim.StartupError, match="fresh provider call"):
+        claude.turn("retry", model="opus")
+
+
+@pytest.mark.parametrize("message", [None, "", {"tools": [{"type": "web_search"}]}])
+def test_funding_rejects_nontext_before_any_prompt_delivery(
+    tmp_path, monkeypatch, funding_provider, message
+):
+    claude = _manager(tmp_path, monkeypatch)
+    claude.decision_profile = _funding_profile()
+    args_path = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+    with pytest.raises(ValueError, match="plain text"):
+        claude.turn(message, model="opus")
+    assert funding_provider[0] == []
+    assert not args_path.exists()
+    assert claude.session_id is None
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("model", "wrong-model"),
+        ("stop_reason", "max_tokens"),
+        ("usage", None),
+        ("content", []),
+        ("role", "user"),
+    ],
+)
+def test_funding_rejects_incomplete_provider_result_without_reinvoke(
+    tmp_path, monkeypatch, funding_provider, field, value
+):
+    claude = _manager(tmp_path, monkeypatch)
+    claude.decision_profile = _funding_profile()
+    calls, reply = funding_provider
+    reply[field] = value
+    with pytest.raises(RuntimeError, match="non-text or incomplete"):
+        claude.turn("decision", model="opus")
+    with pytest.raises(shim.StartupError, match="fresh provider call"):
+        claude.turn("retry", model="opus")
+    assert len(calls) == 1
+    assert claude.process is None
+
+
+@pytest.mark.parametrize("block_type", ["tool_use", "server_tool_use", "mcp_tool_use"])
+def test_funding_profile_never_services_provider_tools(
+    tmp_path, monkeypatch, funding_provider, block_type
+):
+    claude = _manager(tmp_path, monkeypatch)
+    claude.decision_profile = _funding_profile()
+    calls, reply = funding_provider
+    reply["content"] = [
+        {"type": block_type, "name": "Bash", "input": {"command": "false"}}
+    ]
+    with pytest.raises(RuntimeError, match="non-text or incomplete"):
+        claude.turn("decision", model="opus")
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("status", [302, 401, 403, 429, 503])
+def test_funding_provider_failure_never_retries_or_falls_back(
+    tmp_path, monkeypatch, funding_provider, status
+):
+    claude = _manager(tmp_path, monkeypatch)
+    claude.decision_profile = _funding_profile()
+    calls, reply = funding_provider
+    reply["_status"] = status
+    with pytest.raises(shim.urllib.error.HTTPError):
+        claude.turn("decision", model="opus")
+    assert len(calls) == 1
+    assert claude.process is None
+    with pytest.raises(shim.StartupError, match="fresh provider call"):
+        claude.turn("retry", model="opus")
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("decision_first", [False, True])

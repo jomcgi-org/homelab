@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
@@ -990,9 +991,6 @@ def test_native_refill_refuses_generic_funding(world, monkeypatch, source_state)
     from factory.orchestration import (
         factory_problem_issues as producer,
     )
-    from factory.orchestration import (
-        node_workflows,
-    )
     from factory.orchestration.api import factory_session_allowed
 
     engine, policy, _clock = world
@@ -1451,6 +1449,7 @@ def repair_loop(world, monkeypatch):
 
 @pytest.fixture
 def repaired_refill(repair_loop, request):
+    """Post-operator repair boundary, not proof of autonomous native landing."""
     from factory.orchestration import factory_intake as intake_owner
     from factory.orchestration import factory_landing as landing
     from factory.orchestration import factory_problem_issues as producer
@@ -1489,7 +1488,9 @@ def repaired_refill(repair_loop, request):
     s.clock[0] += timedelta(
         hours=2
     )  # Real repair may outlive the original task's soft lease.
-    # Existing landing owner is the external merge/rollout boundary, not the judge.
+    # These execution owners are outside standing landing authority. This fixture
+    # models an explicitly authorized repair's existing merge/rollout observations;
+    # it tests downstream funding/retry only, not automatic landing eligibility.
     landing._record(repair_id, "merged", pr_number=8002, merge_commit_sha="a" * 40)
     s.funding.repair_recovery_tick()
     with controls._read_session() as db:
@@ -1516,11 +1517,97 @@ def repaired_refill(repair_loop, request):
     return s
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"phase": "after_invoke"},
+        {"phase": []},
+        {"sqlstate": "42501"},
+        {"sqlstate": {}},
+        {"attempted": True},
+        {"attempted": None},
+        {"version": True},
+    ],
+)
+def test_native_repair_public_context_refuses_unknown_or_permission_failures(change):
+    from factory.execution.preinvoke_failure import repair_context
+
+    failure = {"phase": "receipt_prepare", "sqlstate": "42703", "attempted": False}
+    assert repair_context(failure | change, refill.NODE) is None
+    assert repair_context(failure, "funding_judge") is None
+    assert repair_context(failure, []) is None
+    context = repair_context(
+        failure | {"sql": "private", "exception": "private", "session_id": 123},
+        refill.NODE,
+    )
+    assert set(context) == {"role", "stage", "sqlstate", "owning_paths"}
+    assert "private" not in json.dumps(context)
+
+
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize("role", [refill.NODE, refill.REVIEW_NODE])
+def test_native_repair_ticket_carries_only_authenticated_owner_context(
+    repair_loop, role
+):
+    from factory.orchestration import factory_problem_issues as producer
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    s = repair_loop
+    first, first_id = s.start_failure(role)
+    refill.settle(first["run_id"], success=False, new_issues=0, summary="Typed failure")
+    s.clock[0] += timedelta(minutes=16)
+    second, task_id = s.start_failure(role)
+    producer.problem_issues_tick(s.policy)
+    issue = next(issue for n, issue in s.issues.items() if n != 7366)
+    body = issue["body"]
+    with controls._read_session() as db:
+        signal = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == s.funding.BLOCKER,
+            )
+        ).one()
+        detail = json.loads(signal.detail_json)
+        context = detail["preinvoke_repair"]
+        assert context == {
+            "role": "collector" if role == refill.NODE else "independent reviewer",
+            "stage": "receipt_prepare",
+            "sqlstate": "42703",
+            "owning_paths": [
+                "projects/monolith/factory/execution/result_receipts.py",
+                "projects/monolith/factory/execution/result_receipts_test.py",
+            ],
+        }
+        for field in (
+            context["role"],
+            context["stage"],
+            context["sqlstate"],
+            *context["owning_paths"],
+        ):
+            assert field in body
+        for private in (task_id, first_id, second["run_id"], first["run_id"]):
+            assert private not in body
+        assert "factory_funding.py and factory_progress_watchdog.py" not in body
+        assert "explicit operator-owned exact-head authorization is required" in body
+        assert all(
+            not set(context["owning_paths"]) & paths
+            for paths in delegation.PATH_PROFILES.values()
+        )
+        # A forged public projection cannot be used as a public source of truth.
+        detail["preinvoke_repair"]["owning_paths"] = ["private/sql/secret"]
+        assert (
+            producer._issue(
+                "recurring_blocker", signal, detail, s.policy["repo"], 7366, "marker"
+            )
+            is None
+        )
+
+
 @pytest.mark.parametrize("world", ["inspection"], indirect=True)
 @pytest.mark.parametrize(
     "repaired_refill", [refill.NODE, refill.REVIEW_NODE], indirect=True
 )
-def test_native_refill_real_failure_repair_funding_retry_and_useful_delivery(
+def test_native_refill_after_operator_repair_funding_retry_and_useful_delivery(
     repaired_refill,
 ):
     from factory.orchestration import factory_conductor as conductor
@@ -1803,7 +1890,9 @@ def test_native_repair_requires_two_fresh_positive_native_failures(repair_loop, 
         assert s.funding.latest(db, task_id, "repair_allocation_wait") is None
         assert s.funding.amendment(db, task_id) is None
     producer.problem_issues_tick(s.policy)
-    assert not any("factory-problem" in issue.get("body", "") for issue in s.issues.values())
+    assert not any(
+        "factory-problem" in issue.get("body", "") for issue in s.issues.values()
+    )
 
 
 @pytest.mark.parametrize("legacy", [False, True])

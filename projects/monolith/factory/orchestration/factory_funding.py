@@ -1023,6 +1023,9 @@ def _record_blocker(db, row, task_id, blocker, *, retry=None):
     ).first()
     if prior is not None:
         return
+    from factory.orchestration.backlog_refill_repair import public_failure
+
+    public = public_failure(db, task_id, retry["source_run_id"]) if retry else None
     record_audit(
         db,
         ACTOR,
@@ -1033,6 +1036,7 @@ def _record_blocker(db, row, task_id, blocker, *, retry=None):
         grant_id=blocker.get("grant_id"),
         node_key=retry.get("node_key") if retry else None,
         source_run_id=retry.get("source_run_id") if retry else None,
+        **({"preinvoke_repair": public} if public else {}),
     )
 
 
@@ -1207,9 +1211,7 @@ def settle(task, run, request):
                     "task_timeout_seconds": max(
                         policy["task_timeout_seconds"],
                         math.ceil(
-                            (
-                                work_deadline - aware(task["created_at"])
-                            ).total_seconds()
+                            (work_deadline - aware(task["created_at"])).total_seconds()
                         ),
                     ),
                 }

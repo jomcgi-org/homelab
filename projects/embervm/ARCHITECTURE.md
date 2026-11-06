@@ -739,18 +739,25 @@ copy instructions into `CLAUDE.md` or inject a second copy into the prompt.
 
 **Why.** Funding decisions use the same native session, broker and receipt owners
 but a separate versioned `/shim/funding-decision-v1` profile (#7583). Before model
-execution the Claude adapter sets an empty tools list, strict empty MCP config,
-empty settings sources, disabled hooks/skills and a fixed system prompt in an
-isolated directory. It rejects capability-bearing init events, unsupported
-adapters, repository hydration, resume and mixed profiles. Durable guest markers
+execution the Claude adapter constructs one fixed Messages request with an empty
+tools list and `tool_choice: none`. It never starts the CLI, sends it the prompt,
+loads hooks/skills/MCP, or exposes provider kwargs. The pinned CLI 2.1.284's
+`--await-initialize` control response has no tools declaration before input;
+its later `system/init` event cannot be a pre-prompt security check. The fixed
+request uses the existing host-local forwarder and OAuth broker grant, not a
+guest credential or a new endpoint. Redirects, retries and CLI fallback are
+forbidden; non-text/tool-bearing responses cannot be serviced. Unsupported
+adapters, repository hydration, resume and mixed profiles are rejected. Durable guest markers
 serialize profile selection and prevent an ordinary turn or a second decision
 after a one-shot request, including cold restore. JSON response text becomes the
 ordinary declared artifact; no file-writing tool or new provider credential is
 needed. Older runtimes reject the versioned path rather than treating a profile
 as an ignored argument. This is model capability removal, not a new OS sandbox
 or an expansion of the workload's network/credential authority. Independent
-security-aware review and compatible runtime rollout are required before relying
-on the profile in production.
+security-aware review, compatible runtime rollout and provider acceptance are
+required before relying on the profile in production. Credential-free loopback
+tests cover the request shape and refusal boundary, not live OAuth acceptance;
+a provider rejection must remain visible without credential or policy fallback.
 
 **Why.** The Claude runtime ships a stdlib `ci-log` helper (#6442) so factory
 workers share commit-status lookup, bounded log traversal and redaction.
