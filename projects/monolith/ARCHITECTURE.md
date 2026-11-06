@@ -437,6 +437,7 @@ See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-check
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Repair newly proven native refill infrastructure failures and observe useful same-node recovery | #7583 implementation contract | #7583 | blocked on a tool-free funding execution contract; native charter eligibility, repair rollout binding, bounded retry and live useful-delivery acceptance remain incomplete |
 | Retire the merit runtime switch while preserving old-chart enabled behavior | section 4; proposed staged Conductor rescope | #7585, #7596 | repository correction; verified rollout remains on #7585; compatibility-key removal stays on #7596 until old charts leave rollback support |
 | Escalation cards survive the factory's own gate writes, declined landing recovery is named, and optimizer verdicts are final once the window ends and its attempts settle | section 4; evidence on the issue | #7495 | repository delivery; 72-hour before and after counts remain on the issue |
 | Per-sweep intake decisions, private backlog age and digest evidence | section 4; repository-only Conductor rescope | #7459 | staged repository delivery; rollout, first-sweep distribution and credential-backed follow-up remain on the issue |
@@ -818,6 +819,28 @@ same-node review through native capacity release. The judge retains bounded
 attempt authority; source holds and pause identity are rechecked at settlement.
 Legacy cards and uncertainty remain fenced. Public tickets carry only
 scoped code repairs and synthetic acceptance criteria.
+
+**Why native refill recovery remains incomplete.** The generic repair machinery
+does not establish a reachable refill repair loop (#7583). Native charter #7366
+can be closed while recurring refill remains authorized. The producer's
+`_recovery_context` rejects that source, and `factory_funding.request` treats a
+closed objective as terminal. The regression
+`test_native_refill_funding_transport_contract_gap` uses a real native receipt
+and compares CLOSED with a counterfactual OPEN source without reopening anything.
+It also proves a later, independent obstruction: an actual funding request can
+admit a gate and reserve its start, but `api.factory_session_allowed` rejects
+that gate under the fixed refill-role fence.
+
+**Why the transport fence stays closed.** Funding's decision-only prompt does
+not provide a tool-free invocation contract. `node_workflows` routes the gate
+through the ordinary repository-capable session and appends commit instructions.
+Adding `read_only` is rejected by graph admission, whose exception belongs only
+to the fixed refill roles. The separate `review_recovery.Reviewer` has a fixed
+PR-review schema, dedicated credentials and explicit operator-authorized episodes;
+it is not an automatic funding API. A tool-free funding/execution contract must
+be resolved before wiring automatic pauses to this gate. Injected judge outcomes
+in a test would skip the missing owner boundary. No activation, historical
+receipt recovery, breaker reset or live acceptance follows from these regressions.
 
 **Why.** Backlog-refill completion does not prove repair discovery or recovery.
 The operator status nests the repair producer's own persisted policy observation,

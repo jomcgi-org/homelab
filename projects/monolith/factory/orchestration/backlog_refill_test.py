@@ -977,6 +977,112 @@ def test_worker_graph_uses_one_pinned_read_only_node(world, monkeypatch):
     assert not factory_session_allowed(identity)
 
 
+@pytest.mark.parametrize("world", ["inspection"], indirect=True)
+@pytest.mark.parametrize("source_state", ["open", "closed"])
+def test_native_refill_funding_transport_contract_gap(world, monkeypatch, source_state):
+    """Characterize #7583's missing owner API, not successful repair execution.
+
+    OPEN is a counterfactual fixture, not permission to reopen the native charter.
+    It isolates the transport fence from the earlier CLOSED-objective refusal.
+    No judge result is injected: admission alone must never prove reachability.
+    """
+    from factory.orchestration import (
+        factory_conductor as conductor,
+    )
+    from factory.orchestration import (
+        factory_funding as funding,
+    )
+    from factory.orchestration import (
+        factory_problem_issues as producer,
+    )
+    from factory.orchestration import (
+        node_workflows,
+    )
+    from factory.orchestration.api import factory_session_allowed
+
+    engine, policy, _clock = world
+    for module in (conductor, conductor.graph):
+        monkeypatch.setattr(module, "get_engine", lambda: engine)
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    start = refill.observe(policy, eligible=0, complete=True)
+    task_id = admit(world, start)
+    task = conductor._task(task_id)
+    assert task["issue_number"] == 7366
+    issue = {
+        "number": 7366,
+        "state": source_state,
+        "title": "Native recurring refill charter",
+        "body": "Inspect the backlog under the fixed refill contract.",
+        "labels": [],
+        "assignees": [],
+    }
+    monkeypatch.setattr(conductor, "github_get", lambda *_args: issue)
+    monkeypatch.setattr(conductor, "github_list", lambda *_args: [])
+
+    # Real native ownership is sufficient locally; the producer still rejects
+    # the closed charter at its fresh GitHub boundary before publishing repair.
+    source = FactoryAudit(
+        actor=funding.ACTOR, action="recurring_blocker", task_id=task_id
+    )
+    with controls._read_session() as db:
+        assert producer._recovery_owner(db, source)["issue_number"] == 7366
+    context = producer._recovery_context(policy, source)
+    assert (context is not None) is (source_state == "open")
+
+    assert funding.request(task, "Assess a bounded infrastructure repair retry")
+    with controls._read_session() as db:
+        request = funding.pending(db, task_id)
+    if source_state == "closed":
+        assert request is None
+        assert controls.task_snapshot(task_id)["state"] == "failed"
+        assert not conductor.graph.load_graph(task_id)
+        return
+
+    assert request is not None
+    [node] = conductor.graph.load_graph(task_id)
+    assert node["node_key"] == request["node_key"]
+    assert node["kind"] == "gate" and node["side_effects"] is False
+    execution_context = {
+        "repo": task["repo"],
+        "branch": conductor.delivery_branch(task),
+        "workflow_id": request["start_key"],
+        "artifact_path": f".factory/{task_id}/funding.json",
+        "artifact_schema": funding.SCHEMA,
+    }
+    # The fixed read-only exception must not be widened for this generic gate.
+    refused = conductor.graph.admit_dispatch(
+        task_id,
+        node["node_key"],
+        execution_context={**execution_context, "read_only": True},
+    )
+    assert refused.refusal_code == "invalid_execution_context"
+    admitted = conductor.reserve_node(
+        task_id, node["node_key"], request["start_key"], execution_context
+    )
+    assert admitted, admitted.refusal_code
+    [run] = conductor.graph.node_runs(task_id)
+    pin = node_workflows._validate_pin(run["pin"])
+    assert not pin.get("read_only")
+    assert controls.can_start(task_id, start_key=request["start_key"])["ok"]
+    assert not factory_session_allowed(f"factory:{task_id}:{node['node_key']}:1")
+    assert not refill.dispatch_allowed(task_id, node["node_key"], physical=True)
+
+    # decision-only is prompt prose. The ordinary node owner still supplies a
+    # repository and contradictory commit instructions, not a tool-free API.
+    prompt = node_workflows._node_prompt(
+        pin["prompt"],
+        pin["artifact_path"],
+        pin["artifact_schema"],
+        branch=pin["branch"],
+    )
+    assert "You are a decision-only reviewer" in prompt
+    assert "Commit and push source changes" in prompt
+    assert pin["repo"] == policy["repo"] and pin["branch"]
+    with controls._read_session() as db:
+        assert funding.amendment(db, task_id) is None
+    assert not refill.dispatch_allowed(task_id, refill.NODE, 2)
+
+
 @pytest.mark.parametrize("legacy", [False, True])
 def test_refill_real_reservation_preserves_read_only_pin(world, monkeypatch, legacy):
     from factory.orchestration import backlog_refill_worker as worker

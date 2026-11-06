@@ -395,6 +395,17 @@ Linux orchestrator CI and a real bounded operating trial stay the delivery gates
 
 Funding lives in `factory_funding.py`: `request` records one judge node, `settle` verifies its authority, `decide` resolves a validated artifact to `continue`, `steer` or `stop`. A continue or steer grants at most 20 work turns and a 30-minute review horizon. Reservations and unknown outcomes stay charged; a factory start reserves a ceiling and settles at the reported cost, falling back to the token-usage list price. A judge proposing a larger budget pauses the receipt for operator approval. Continuation contracts remain: the legacy pair below and an operator `progress_continuation` two-hour lease for one paused recovered task.
 
+Native refill repair is not connected to a tool-free funding executor (#7583).
+The current judge is a decision-only graph gate using the ordinary node session;
+its prompt does not remove repository tools. Refill's physical session fence
+rejects this gate even when graph admission and start reservation succeed.
+Preserve that fence and the collector/reviewer's fixed read-only contracts.
+`review_recovery.Reviewer` is a separate explicit operator PR-review API, not a
+fallback for automatic funding. The owning funding/execution contract remains
+an implementation dependency, alongside narrow closed-charter authority and
+fresh typed failure/rollout bindings. Tests that supply a judge result directly
+do not establish end-to-end reachability or useful-delivery acceptance.
+
 Eligible funding reviews include progress, proximity-to-landing and issue-value criteria and server-read evidence from `factory_judge.py`. Explicit doubt steers to an operator card, and the turn ceiling is the original allowance plus `factoryMeritJudgeMaxExtensionMultiple` times it. Missing pinned policy and historical requests without merit metadata retain their legacy handling.
 
 The GKE overlay retains `factoryMeritJudgeEnabled: true` solely for pre-retirement charts. HEAD values can reach an older chart before promotion or during pin-lowering rollback; the compatibility key preserves its enabled behavior. The current chart and image ignore it. The staged #7585 scope allows this single config reference; #7596 tracks removal after those charts are no longer supported revert targets. Operational acceptance for #7585 is a verified rollout of the delivered chart revision, separate from #7502's checks and #7596's removal prerequisite.
