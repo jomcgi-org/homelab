@@ -2,6 +2,7 @@
   import rough from "roughjs";
   import { marked } from "marked";
   import { createGraphState } from "./graph-layout.js";
+  import { consumeSseStream } from "$lib/sse-stream.js";
 
   /** Strip YAML frontmatter and the auto-generated LINKS section from note markdown. */
   function cleanNoteContent(md) {
@@ -83,40 +84,24 @@
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          try {
-            const event = JSON.parse(line.slice(6));
-
-            if (event.type === "text_chunk") {
-              messages[messages.length - 1].content += event.data.text;
-              scrollToBottom();
-            } else if (event.type === "error") {
-              messages[messages.length - 1].content +=
-                `\n[Error: ${event.data.message}]`;
-            } else if (event.type === "done") {
-              // Stream complete
-            } else {
-              // Graph events: node_discovered, node_discarded, edge_traversed
-              enqueueGraphEvent(event);
-            }
-          } catch {
-            // Skip malformed events
+      await consumeSseStream(res.body, (event) => {
+        try {
+          if (event.type === "text_chunk") {
+            messages[messages.length - 1].content += event.data.text;
+            scrollToBottom();
+          } else if (event.type === "error") {
+            messages[messages.length - 1].content +=
+              `\n[Error: ${event.data.message}]`;
+          } else if (event.type === "done") {
+            // Stream complete
+          } else {
+            // Graph events: node_discovered, node_discarded, edge_traversed
+            enqueueGraphEvent(event);
           }
+        } catch {
+          // Preserve per-event dispatch failure handling.
         }
-      }
+      });
     } catch (err) {
       messages[messages.length - 1].content +=
         `\n[Connection error: ${err.message}]`;

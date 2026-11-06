@@ -33,7 +33,8 @@ export function createSseParser() {
       // upstream framed with \n\n (our backend) or \r\n\r\n (a proxy that
       // rewrites line endings). JSON-encoded token text never carries raw
       // newlines, so this only ever touches SSE framing.
-      buffer += chunk.replace(/\r\n/g, "\n");
+      // Include the retained suffix: a CR and its LF can arrive separately.
+      buffer = (buffer + chunk).replace(/\r\n/g, "\n");
       const frames = [];
       let idx;
       while ((idx = buffer.indexOf("\n\n")) !== -1) {
