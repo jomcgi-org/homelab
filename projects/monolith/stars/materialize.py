@@ -12,6 +12,7 @@ from fastapi import Response
 from sqlmodel import Session
 
 from core.db import get_engine
+from shared.camping import membership
 from stars.grid import _s3_client
 from stars.router import _DISPLAY_HOURS, _build_sites_from_db, get_history
 
@@ -49,6 +50,8 @@ def _materialize_sync() -> int:
         history_payload = get_history(request, response, session)
     if not isinstance(payload, dict):
         raise RuntimeError("stars site builder returned a conditional response")
+    for site in payload["sites"]:
+        site["camping_membership"] = membership(site["lat"], site["lon"])
     connector_error = None
     if connector_key:
         # Serialize and release the uncapped bytes before constructing public

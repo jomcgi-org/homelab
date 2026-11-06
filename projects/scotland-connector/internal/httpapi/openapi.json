@@ -604,11 +604,43 @@
           }
         }
       },
+      "Camping": {
+        "type": "object",
+        "description": "Camping guidance for the identified walk start or matched stars site and requested UK civil date only. Unknown legacy membership requires checking the official map. National Park membership is independent of camping-management zones.",
+        "required": ["location", "date", "status", "text", "url", "membership"],
+        "properties": {
+          "location": { "type": "string" },
+          "date": { "type": "string", "format": "date" },
+          "status": { "enum": ["byelaws", "access_code", "unknown"] },
+          "text": { "type": "string" },
+          "url": { "type": "string", "format": "uri" },
+          "boundary_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Official camping map and permit guidance when point membership is unknown."
+          },
+          "membership": {
+            "type": ["object", "null"],
+            "properties": {
+              "zones": {
+                "type": ["array", "null"],
+                "items": { "type": "string" }
+              },
+              "parks": {
+                "type": ["array", "null"],
+                "items": { "type": "string" }
+              }
+            },
+            "description": "Null or absent lists mean unknown. Empty lists mean verified outside. Contains no geometry."
+          }
+        }
+      },
       "Walk": {
         "type": "object",
         "description": "One Walkhighlands walk on one day.",
         "required": [
           "walk_id",
+          "camping",
           "name",
           "url",
           "start_lat",
@@ -623,6 +655,7 @@
           "slot"
         ],
         "properties": {
+          "camping": { "$ref": "#/components/schemas/Camping" },
           "walk_id": {
             "type": "string",
             "description": "Pass to check as walk_id."
@@ -669,6 +702,7 @@
         "description": "One road-accessible dark-sky site on one night.",
         "required": [
           "site_id",
+          "camping",
           "lat",
           "lon",
           "light_pollution_zone",
@@ -682,6 +716,7 @@
           "moonless_clear_dark_hours"
         ],
         "properties": {
+          "camping": { "$ref": "#/components/schemas/Camping" },
           "site_id": { "type": "string" },
           "lat": { "type": "number" },
           "lon": { "type": "number" },

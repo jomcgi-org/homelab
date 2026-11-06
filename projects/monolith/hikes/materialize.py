@@ -22,6 +22,7 @@ import os
 from datetime import datetime, timezone
 
 from core.clock import as_utc, iso
+from shared.camping import membership
 from shared.forecast_freshness import top_of_hour
 from sqlmodel import Session, func, select
 
@@ -94,6 +95,7 @@ def build_payload(
                 "url": w.url,
                 "lat": w.latitude,
                 "lon": w.longitude,
+                "camping_membership": membership(w.latitude, w.longitude),
                 "distance_km": w.distance_km,
                 "ascent_m": w.ascent_m,
                 "duration_h": w.duration_h,
