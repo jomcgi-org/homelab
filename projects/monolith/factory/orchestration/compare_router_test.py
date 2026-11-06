@@ -3,6 +3,7 @@ import zlib
 
 import httpx
 import pytest
+from fastapi import HTTPException
 
 from factory.orchestration import compare_router as mod
 
@@ -35,17 +36,20 @@ class Response:
 
 
 @pytest.mark.asyncio
-async def test_github_get_follows_repository_redirect(monkeypatch):
+@pytest.mark.parametrize("status", [200, 301, 503])
+async def test_github_get_follows_repository_redirect(monkeypatch, status):
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.path == "/repos/jomcgi/homelab":
+        if status == 301 and request.url.path == "/repos/jomcgi/homelab":
             return httpx.Response(
                 301,
                 headers={"Location": f"{mod.GITHUB_API}/repositories/12345"},
             )
-        return httpx.Response(200, json={"full_name": "jomcgi-org/homelab"})
+        return httpx.Response(
+            503 if status == 503 else 200, json={"full_name": "jomcgi-org/homelab"}
+        )
 
     real_async_client = httpx.AsyncClient
 
@@ -54,15 +58,49 @@ async def test_github_get_follows_repository_redirect(monkeypatch):
         return real_async_client(*args, **kwargs)
 
     monkeypatch.setattr(mod.httpx, "AsyncClient", mock_async_client)
+    monkeypatch.setenv("GITHUB_API_TOKEN", "fake-compare")
 
     response = await mod._github_get(f"{mod.GITHUB_API}/repos/jomcgi/homelab")
 
-    assert response.status_code == 200
+    assert response.status_code == (503 if status == 503 else 200)
     assert response.json()["full_name"] == "jomcgi-org/homelab"
-    assert [request.url.path for request in requests] == [
-        "/repos/jomcgi/homelab",
-        "/repositories/12345",
-    ]
+    assert [request.url.path for request in requests] == (
+        ["/repos/jomcgi/homelab", "/repositories/12345"]
+        if status == 301
+        else ["/repos/jomcgi/homelab"]
+    )
+    for request in requests:
+        assert request.method == "GET"
+        assert request.extensions["timeout"] == dict.fromkeys(
+            ("connect", "read", "write", "pool"), 15.0
+        )
+        assert request.headers["User-Agent"] == "monolith-compare"
+        assert request.headers["Authorization"] == "Bearer fake-compare"
+        assert request.headers["X-GitHub-Api-Version"] == "2022-11-28"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 429, 503])
+async def test_compare_upstream_status_maps_to_502(monkeypatch, status):
+    requests = []
+    real_client = httpx.AsyncClient
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(status)
+
+    monkeypatch.setenv("GITHUB_API_TOKEN", "fake-compare")
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    with pytest.raises(HTTPException) as caught:
+        await mod._compare(
+            "example/repo", "base", "head", "failure-contract", include_patches=True
+        )
+    assert caught.value.status_code == 502
+    assert len(requests) == 1
 
 
 def _compare_payload(truncated=False):

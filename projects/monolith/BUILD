@@ -2591,6 +2591,7 @@ py_test(
         ":pkg_core",
         "@pip//httpx",
         "@pip//pytest",
+        "@pip//pytest_asyncio",
     ],
 )
 
@@ -5675,6 +5676,7 @@ py_test(
     deps = [
         ":pkg_knowledge",
         ":pkg_swarm",
+        "@pip//httpx",
         "@pip//opentelemetry_sdk",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -5756,8 +5758,10 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_swarm",
+        "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
+        "@pip//pytest_asyncio",
     ],
 )
 

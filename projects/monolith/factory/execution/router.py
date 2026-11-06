@@ -50,6 +50,7 @@ from factory.execution.mcp import (
 )
 from core.clock import as_utc, iso
 from core.db import get_session
+from core.github import async_github_get
 from core.identity import verified_email
 from faas.embervm_client import EmberVMTransportError
 from factory.execution.transport import EmberInterruptFailure
@@ -1246,14 +1247,11 @@ async def _start_session(
 
 
 async def _github_get(url: str) -> httpx.Response:
-    headers = {"Accept": "application/vnd.github+json"}
-    token = os.environ.get("GITHUB_API_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(url, headers=headers)
-        response.raise_for_status()
-        return response
+    response = await async_github_get(
+        url, timeout=10.0, follow_redirects=False, user_agent="monolith-execution"
+    )
+    response.raise_for_status()
+    return response
 
 
 @router.get("/repos")

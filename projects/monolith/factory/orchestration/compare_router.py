@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 import zlib
 from urllib.parse import quote
@@ -10,7 +9,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 
 from factory.execution.rationale import parse_rationale
-from core.github import GITHUB_API, GITHUB_REPO
+from core.github import GITHUB_API, GITHUB_REPO, async_github_get
 from factory.orchestration.unified_diff import parse_unified_diff
 from core.jsonio import loads_or
 
@@ -104,13 +103,9 @@ def _cache_put(key: str, value: dict) -> None:
 
 
 async def _github_get(url: str) -> httpx.Response:
-    headers = {"Accept": "application/vnd.github+json"}
-    token = os.environ.get("GITHUB_API_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        response = await client.get(url, headers=headers)
-    return response
+    return await async_github_get(
+        url, timeout=15.0, follow_redirects=True, user_agent="monolith-compare"
+    )
 
 
 async def _compare(

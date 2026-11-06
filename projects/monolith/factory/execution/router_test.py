@@ -1313,6 +1313,70 @@ def test_start_session_rejects_unknown_repo(client):
     assert body["error"].startswith("unknown repo bad/repo; catalog:")
 
 
+@pytest.mark.parametrize("status", [200, 301, 503])
+def test_github_get_adapter(monkeypatch, status):
+    requests = []
+    real_client = httpx.AsyncClient
+    url = "https://api.github.com/repos/old-owner/repo"
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            status, headers={"Location": "/repositories/12345"}, json={}
+        )
+
+    monkeypatch.setenv("GITHUB_API_TOKEN", "fake-execution")
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    if status != 200:
+        with pytest.raises(httpx.HTTPStatusError):
+            asyncio.run(agent_router._github_get(url))
+    else:
+        assert asyncio.run(agent_router._github_get(url)).status_code == 200
+    assert len(requests) == 1  # Execution must never follow a repository 301.
+    request = requests[0]
+    assert request.method == "GET"
+    assert str(request.url) == url
+    assert request.extensions["timeout"] == dict.fromkeys(
+        ("connect", "read", "write", "pool"), 10.0
+    )
+    assert request.headers["User-Agent"] == "monolith-execution"
+    assert request.headers["Authorization"] == "Bearer fake-execution"
+    assert request.headers["X-GitHub-Api-Version"] == "2022-11-28"
+
+
+def test_list_repos_transport_failure_cache(client, monkeypatch):
+    requests = []
+    real_client = httpx.AsyncClient
+    now = 1000.0
+    monkeypatch.setattr(agent_router, "_DEFAULT_BRANCH_CACHE", {})
+    monkeypatch.setattr(agent_router.time, "monotonic", lambda: now)
+    monkeypatch.setenv("GITHUB_API_TOKEN", "fake-execution")
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(503)
+
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    first = client.get("/api/agents/repos")
+    assert first.status_code == 200
+    assert all(repo["default_branch"] is None for repo in first.json()["repos"])
+    count = len(agent_router.REPO_CATALOG)
+    assert len(requests) == count
+    assert client.get("/api/agents/repos").json() == first.json()
+    assert len(requests) == count
+    now += agent_router._REPO_CACHE_FAILURE_TTL + 1
+    assert client.get("/api/agents/repos").status_code == 200
+    assert len(requests) == count * 2
+
+
 def test_list_repos_degrades_when_github_is_down(client, monkeypatch):
     async def github_down(url):
         raise RuntimeError("offline")
