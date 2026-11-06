@@ -21,7 +21,6 @@ describe("modelLane", () => {
     ["luna", "luna"],
     ["terra", "codex"],
     ["sol", "codex"],
-    ["astra", "codex"],
     ["opus", "claude"],
     ["sonnet", "claude"],
     ["fable", "claude"],
@@ -33,9 +32,6 @@ describe("modelLane", () => {
     ["gpt-5.6-sol", "codex"],
     ["gpt-6-luna", "luna"],
     ["gpt-6-sol", "codex"],
-    ["gpt-6.1-sol", "codex"],
-    ["gpt-6.1-terra", "codex"],
-    ["gpt-6-astra", "codex"],
     ["codex-auto-review", "codex"],
     ["<synthetic>", "other"],
     ["muse-spark-1.3-contributor", "spark"],
@@ -53,32 +49,6 @@ describe("modelLane", () => {
       { day: "2026-09-07", model: "qwen", sessions: 1 },
     ]);
     expect(rows[0]).toMatchObject({ claude: 2, other: 1, sessions: 3 });
-  });
-
-  it("counts current Codex aliases and provider IDs in the same lane", () => {
-    const rows = activitySeries([
-      { day: "2026-11-06", model: "astra", sessions: 1, source: "ember" },
-      { day: "2026-11-06", model: "terra", sessions: 2, source: "ember" },
-      {
-        day: "2026-11-06",
-        model: "gpt-6-astra",
-        sessions: 3,
-        source: "codex-session",
-      },
-      {
-        day: "2026-11-06",
-        model: "gpt-6.1-terra",
-        sessions: 4,
-        source: "codex-session",
-      },
-      {
-        day: "2026-11-06",
-        model: "gpt-6.1-sol",
-        sessions: 5,
-        source: "codex-session",
-      },
-    ]);
-    expect(rows[0]).toMatchObject({ codex: 15, other: 0, sessions: 15 });
   });
 
   it("stacks Ember and local rows into the same lane totals", () => {

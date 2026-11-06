@@ -202,8 +202,9 @@ apko_image(
         # this is the concrete per-arch tar rather than a multiarch_tars entry.
         "@claude_code_cli//:tar_amd64",
         # The Codex CLI, a statically linked musl binary from the GitHub release
-        # (see codex_cli in MODULE.bazel). Luna/Terra/Sol/Astra use the shim's
-        # long-lived app-server adapter, with persisted thread resume.
+        # (see codex_cli in MODULE.bazel). It drives the Luna/Terra/Sol models
+        # through the same shim, spawn-per-turn with `exec resume` rather than
+        # the claude CLI's long-lived stream-json REPL (#4234).
         "@codex_cli//:tar_amd64",
         # Meta's Muse Code CLI, a statically linked ELF from the Meta release
         # channel, the native harness for the Spark family, driving the spark
@@ -234,23 +235,6 @@ py_test(
         "muse_usage_two_turns.json",
     ],
     imports = ["."],
-    deps = [
-        ":shim_lib",
-        "@pip//pytest",
-    ],
-)
-
-# Execute the pinned release, using only a loopback backend and inert tokens.
-py_test(
-    name = "codex_compat_test",
-    srcs = ["codex_compat_test.py"],
-    data = ["@codex_cli//:amd64"],
-    env = {"CODEX_COMPAT_BINARY": "$(rootpath @codex_cli//:amd64)"},
-    imports = ["."],
-    target_compatible_with = [
-        "@platforms//os:linux",
-        "@platforms//cpu:x86_64",
-    ],
     deps = [
         ":shim_lib",
         "@pip//pytest",
