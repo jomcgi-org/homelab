@@ -1758,6 +1758,7 @@ class EmberVmShimTransport:
         workspace_handoff: dict | None = None,
         push_format: dict | None = None,
         capture_evidence_ttl_seconds: int | None = None,
+        execution_profile: dict | None = None,
     ) -> tuple[Turn, EmberSession]:
         # Set None explicitly for unrelated deliveries, including a nested
         # delivery started in a factory callback. Always restore the caller's
@@ -1807,6 +1808,7 @@ class EmberVmShimTransport:
                     workspace_handoff=workspace_handoff,
                     push_format=push_format,
                     capture_evidence_ttl_seconds=capture_evidence_ttl_seconds,
+                    execution_profile=execution_profile,
                 )
                 if turn.terminal_reason is not None:
                     span.set_attribute("agent.terminal_reason", turn.terminal_reason)
@@ -1878,6 +1880,7 @@ class EmberVmShimTransport:
         workspace_handoff: dict | None = None,
         push_format: dict | None = None,
         capture_evidence_ttl_seconds: int | None = None,
+        execution_profile: dict | None = None,
     ) -> tuple[Turn, EmberSession]:
         """Execute one turn on the guest session and return the result.
 
@@ -2036,11 +2039,29 @@ class EmberVmShimTransport:
                 payload["artifact_path"] = artifact_path
             if push_format is not None:
                 payload["push_format"] = push_format
+            if execution_profile is not None:
+                if (
+                    repo
+                    or branch
+                    or cli_session_id
+                    or restore_from
+                    or workspace_handoff
+                    or push_format
+                    or system_prompt
+                    or not artifact_path
+                    or not dispatch_id
+                    or turn_seq != 1
+                    or dispatch_count != 1
+                    or model not in {"opus", "sonnet", "fable"}
+                ):
+                    raise EmberTurnNotInvoked("unsupported funding execution profile")
+                payload["execution_profile"] = execution_profile
+                payload["turn_seq"] = turn_seq
             body = json.dumps(payload)
             url = f"{EMBERVM_URL}/v1/sessions/{current.session_id}/invoke"
             headers = {
                 "Authorization": f"Bearer {current.session_token}",
-                "X-Ember-Guest-Path": "/shim/turn",
+                "X-Ember-Guest-Path": "/shim/funding-decision-v1" if execution_profile is not None else "/shim/turn",
             }
             if dispatch_id is not None:
                 headers["X-Ember-Dispatch-Id"] = dispatch_id

@@ -224,6 +224,17 @@ def _node_prompt(
     retry_context: str = "",
     branch: str = "",
 ) -> str:
+    if "x-factory-funding-decision" in schema:
+        return (
+            "Return only a JSON object matching this schema. Do not write an artifact file. "
+            "The runtime captures your response. No tools are available.\n"
+            + json.dumps(
+                {k: v for k, v in schema.items() if k != "x-factory-funding-decision"},
+                sort_keys=True,
+            )
+            + "\n"
+            + prompt
+        )
     schema_json = json.dumps(schema, sort_keys=True)
     # Server-authored dependency, scout and capture contracts select inspection
     # without changing execute_node's deployed durable body or steps.
@@ -889,6 +900,13 @@ def _read_turn_artifact(
                 "value": None,
                 "errors": [f"no turn recorded for session {session_id} seq {turn_seq}"],
             }
+        expected_profile = schema.get("x-factory-funding-decision")
+        if (
+            expected_profile is not None
+            and json.loads(turn.usage_json or "{}").get("execution_profile")
+            != expected_profile
+        ):
+            return {"status": "invalid", "value": None, "errors": ["funding execution profile mismatch"]}
         stored_path = turn.artifact_path
         artifact_blob = (
             bytes(turn.artifact_blob) if turn.artifact_blob is not None else None
@@ -1515,6 +1533,13 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
         cost, basis = _settlement_cost(turn.cost_usd, turn.list_cost_usd)
         provider_model = turn.model
         evidence = _turn_provider_evidence(turn.usage_json)
+        expected_profile = pin["artifact_schema"].get("x-factory-funding-decision")
+        if (
+            expected_profile is not None
+            and json.loads(turn.usage_json or "{}").get("execution_profile")
+            != expected_profile
+        ):
+            return None
         artifact = _evaluate_stored_artifact(
             turn.artifact_path,
             turn.artifact_blob,

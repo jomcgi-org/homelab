@@ -667,6 +667,7 @@ def _mark_turn_error_sync(
     cessation_confirmed: bool = False,
     invocation_not_attempted: bool = False,
     dispatch_count: int | None = None,
+    preinvoke_database_failure: dict | None = None,
 ) -> None:
     store.mark_turn_error_sync(
         session_id,
@@ -676,6 +677,7 @@ def _mark_turn_error_sync(
         cessation_confirmed=cessation_confirmed,
         invocation_not_attempted=invocation_not_attempted,
         dispatch_count=dispatch_count,
+        preinvoke_database_failure=preinvoke_database_failure,
     )
 
 
@@ -1188,6 +1190,30 @@ async def _execute_pending_message(session_id: int) -> None:
             )
             if artifact_path is not None:
                 deliver_kwargs["artifact_path"] = artifact_path
+            from factory.orchestration.funding_profile import session_profile
+
+            try:
+                execution_profile = await asyncio.to_thread(
+                    session_profile,
+                    session_row.local_session_id,
+                    model=effective_model,
+                    message=row.message_text,
+                    session_id=session_id,
+                )
+            except ValueError as exc:
+                raise EmberTurnNotInvoked("funding profile identity mismatch") from exc
+            if execution_profile is not None:
+                if claimed_seq != 1 or row.dispatch_count != 1 or cli_session_id:
+                    raise EmberTurnNotInvoked("funding profile is one-shot")
+                deliver_kwargs["execution_profile"] = execution_profile
+                for key in (
+                    "repo",
+                    "branch",
+                    "system_prompt",
+                    "push_format",
+                    "workspace_handoff",
+                ):
+                    deliver_kwargs.pop(key, None)
             if not await asyncio.to_thread(
                 factory_session_allowed,
                 getattr(session_row, "local_session_id", None),
@@ -1295,7 +1321,16 @@ async def _execute_pending_message(session_id: int) -> None:
         except EmberTurnNotInvoked as exc:
             if await _abort_stolen_executor_confirmed("not-invoked delivery error"):
                 return
-            if row.capacity_intent_json and row.capacity_state != "legacy_unsupported":
+            from factory.execution.preinvoke_failure import database_failure
+            from factory.orchestration.backlog_refill_repair import (
+                execution_failure_eligible,
+            )
+
+            failure = database_failure(invocation_record.get("database_failure"))
+            repair_failure = failure is not None and await asyncio.to_thread(
+                execution_failure_eligible, session_row.local_session_id
+            )
+            if not repair_failure and row.capacity_intent_json and row.capacity_state != "legacy_unsupported":
                 claim_released = await capacity_wait.return_before_post(
                     session_id,
                     claimed_seq,
@@ -1316,6 +1351,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 claim_owner,
                 invocation_not_attempted=True,
                 dispatch_count=row.dispatch_count,
+                preinvoke_database_failure=failure,
             )
             _clear_negative_oracle_verdict(session_id)
             return

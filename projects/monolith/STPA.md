@@ -532,3 +532,26 @@ flowchart TD
 - When will the staged native default-deny egress NetworkPolicy (#5277 / #3897) be validated and activated for the private pod's open-ended cluster and internet reach?
 - Will the public tier's cluster-reach policy (#5276) be scoped to only the four intended destinations (Postgres, vLLM, embeddings, SeaweedFS)?
 - structure gap: k8s.mutate is labelled ArgoCD sync only, and there is no control action for kargo_promote (private-binary to a Kargo Promotion) or node for the GroupPolicyMiddleware operators gate; this lens folds kargo_promote into k8s.mutate.providing until the logic lens models them.
+
+### Native refill repair boundary (#7583)
+
+- A diagnostic error, historical breaker or unknown invocation must not grant a
+  repair retry. Only two fresh distinct-task, exact native not-invoked proofs with
+  allowlisted staged database metadata can produce the existing machine pause.
+  The start's version and control epoch exclude historical work and policy
+  disable/restore; permission/authentication failures are not repairable inputs.
+- A closed issue must not become generic execution authority. Only native charter
+  #7366's exact recurring receipt and synchronized mirror may remain closed, with
+  current ownership/hold checks at producer, funding, physical dispatch and
+  settlement. Repair issues retain their ordinary open-source requirement.
+- A model must not choose a funding execution profile or mutate its request. The
+  funding owner hashes request, prompt and schema into its admitted identity,
+  verifies session/model at dispatch, and rejects stale or mismatched artifacts.
+  Generic gate/read-only exceptions remain closed. Unsupported adapters cannot
+  fall back to repository execution or explicit PR-review credentials.
+- Rollout is necessary but insufficient: the funding grant retains original
+  accounting and exact repair binding, permits only attempt two, and expires.
+  Useful publication requires the fixed independent reviewer. Producer recovery
+  observation waits for that publication, not merely a successful node or grant.
+  Regression evidence is synthetic; independent security-aware exact-head review
+  and real operational acceptance remain pending.

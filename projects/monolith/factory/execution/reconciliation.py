@@ -562,7 +562,20 @@ def read_interrupted_retry_not_invoked_factory_attempt(db, pin, session_id):
 
 def read_not_invoked_factory_attempt(db, pin, session_id):
     """The existing first-dispatch proof, with no earlier model invocation."""
-    return _read_not_invoked_factory_attempt(db, pin, session_id)
+    proof = _read_not_invoked_factory_attempt(db, pin, session_id)
+    if proof is not None:
+        from factory.execution.models import AgentTurn
+        from factory.execution.preinvoke_failure import database_failure
+
+        turn = db.get(AgentTurn, proof["turn_id"])
+        failure = database_failure(
+            json.loads(turn.usage_json or "{}")
+            .get("recovery", {})
+            .get("database_failure")
+        )
+        if failure is not None:
+            proof["database_failure"] = failure
+    return proof
 
 
 def read_unknown_retry_factory_attempt(db, pin, session_id):

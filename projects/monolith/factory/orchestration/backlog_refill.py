@@ -305,6 +305,8 @@ def observe(
         )
         db.add(row)
         db.flush()
+        from factory.orchestration.backlog_refill_repair import epoch
+
         record(
             db,
             "started",
@@ -315,6 +317,7 @@ def observe(
             policy=block,
             review_contract=contract,
             inspection_contract=1,
+            repair_contract={"version": 1, "epoch": epoch(db)},
             routine=routine,
             eligible=eligible,
             policy_digest=digest(policy),
@@ -760,6 +763,7 @@ def dispatch_allowed(task_id, node_key=NODE, attempt=1, *, physical=False):
 
 def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
     from factory.orchestration.backlog_refill_policy import normalize
+    from factory.orchestration.backlog_refill_repair import attempt_allowed
 
     with controls._read_session() as db:
         receipt = db.exec(
@@ -786,7 +790,7 @@ def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
             or receipt.cancellation_requested
             or node_key not in NODES
             or type(attempt) is not int
-            or attempt != 1
+            or not attempt_allowed(db, receipt, node_key, attempt)
             or receipt.generation != policy.get("generation")
             or receipt.repo not in controls.enabled_repos(policy)
             or not normalize(policy)["enabled"]
@@ -805,7 +809,7 @@ def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
         from factory.orchestration.models import SwarmTask
 
         task = db.get(SwarmTask, task_id)
-        pinned = json.loads(receipt.policy_json or "{}")
+        pinned = controls._effective_policy(db, receipt)
         if task is None or controls._now() >= (
             controls._recovery_deadline(db, task_id)
             or aware(task.created_at)
@@ -819,7 +823,7 @@ def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
                 select(SwarmNodeRun).where(
                     SwarmNodeRun.task_id == task_id,
                     SwarmNodeRun.node_key == node_key,
-                    SwarmNodeRun.attempt == 1,
+                    SwarmNodeRun.attempt == attempt,
                 )
             ).first()
             if run is None or run.status not in {"admitted", "dispatched", "uncertain"}:
@@ -831,7 +835,7 @@ def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
                 or pin.get("task_id") != task_id
                 or pin.get("node_key") != node_key
                 or type(pin.get("attempt")) is not int
-                or pin["attempt"] != 1
+                or pin["attempt"] != attempt
                 or (
                     detail.get("review_contract") is not None
                     and (

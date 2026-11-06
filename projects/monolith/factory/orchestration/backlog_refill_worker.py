@@ -98,6 +98,16 @@ def reconcile(task, policy, nodes, runs, expected_version):
             and run["status"] in conductor.graph.TERMINAL_RUN_STATUSES
             for run in runs
         ):
+            node = next((n for n in nodes if n["node_key"] == key), None)
+            if (
+                node
+                and conductor.graph.attempts_spent(runs, key) < node["max_attempts"]
+            ):
+                return
+            from factory.orchestration.backlog_refill_repair import failed
+
+            if failed(task, key):
+                return
             controls.finish_task(
                 task["id"],
                 "failed",

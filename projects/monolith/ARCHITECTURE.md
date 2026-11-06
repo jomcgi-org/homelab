@@ -820,27 +820,34 @@ attempt authority; source holds and pause identity are rechecked at settlement.
 Legacy cards and uncertainty remain fenced. Public tickets carry only
 scoped code repairs and synthetic acceptance criteria.
 
-**Why native refill recovery remains incomplete.** The generic repair machinery
-does not establish a reachable refill repair loop (#7583). Native charter #7366
-can be closed while recurring refill remains authorized. The producer's
-`_recovery_context` rejects that source, and `factory_funding.request` treats a
-closed objective as terminal. The regression
-`test_native_refill_funding_transport_contract_gap` uses a real native receipt
-and compares CLOSED with a counterfactual OPEN source without reopening anything.
-It also proves a later, independent obstruction: an actual funding request can
-admit a gate and reserve its start, but `api.factory_session_allowed` rejects
-that gate under the fixed refill-role fence.
+**Why native refill repair has its own narrow adapter.** Fresh starts pin a
+versioned repair contract and the control-policy epoch. Two distinct fixed-role
+attempt-one failures within 24 hours must carry matching, positively proven
+native `not_invoked` receipts and a closed vocabulary of staged database failure
+metadata. Diagnostics or exception text alone grant nothing. The existing problem
+producer owns the recurring-blocker issue, daily bounds and nonrecursion. The
+funding owner owns its machine pause, exact accepted repair rollout, finite
+decision and single retry of the original exhausted node. Source #7366 may remain
+closed only under that exact admitted recurring contract and its synchronized
+GitHub mirror, with no human/security ownership. Historical starts and breakers
+are not enrolled. Policy disable/restore invalidates the epoch even if no refill
+tick observed the disabled interval.
 
-**Why the transport fence stays closed.** Funding's decision-only prompt does
-not provide a tool-free invocation contract. `node_workflows` routes the gate
-through the ordinary repository-capable session and appends commit instructions.
-Adding `read_only` is rejected by graph admission, whose exception belongs only
-to the fixed refill roles. The separate `review_recovery.Reviewer` has a fixed
-PR-review schema, dedicated credentials and explicit operator-authorized episodes;
-it is not an automatic funding API. A tool-free funding/execution contract must
-be resolved before wiring automatic pauses to this gate. Injected judge outcomes
-in a test would skip the missing owner boundary. No activation, historical
-receipt recovery, breaker reset or live acceptance follows from these regressions.
+**Why funding decisions use a separate execution profile.** Only funding
+can select `factory-funding-v1`, bound to the exact request, prompt, schema and
+model in the graph pin. The native executor revalidates the request and session;
+the existing Claude adapter removes tools, MCP, skills and hooks, uses an isolated
+directory, and captures JSON text through the normal artifact/receipt/accounting
+path. Its versioned guest endpoint fails closed on older runtimes. A durable
+one-shot marker prevents continuation or ordinary execution in that guest. Only
+supported Claude aliases are eligible; unsupported judge adapters wait without
+fallback. No new credential, explicit PR-review credential, execution framework
+or generic `read_only` exception is introduced. Collector and reviewer remain
+fixed read-only roles. Publication uses the accepted funding lease, and recovery
+is observed only after independently reviewed useful issues are actually written.
+The exact-head security review, compatible runtime/backend rollout, existing
+producer/landing policy authority and naturally occurring recovery remain live
+acceptance requirements for #7583; synthetic tests do not establish completion.
 
 **Why.** Backlog-refill completion does not prove repair discovery or recovery.
 The operator status nests the repair producer's own persisted policy observation,

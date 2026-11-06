@@ -1102,6 +1102,11 @@ def _schema(node_key: str, task_id: str | None = None) -> dict:
     if node_key.startswith("conductor_funding_"):
         from factory.orchestration.factory_funding import SCHEMA
 
+        if task_id:
+            from factory.orchestration.funding_profile import schema
+
+            return schema(task_id, node_key)
+
         return SCHEMA
     if node_key.startswith("conductor_"):
         return DECISION_SCHEMA
@@ -6939,6 +6944,10 @@ def reconcile_task(
         # Outcome/issue reconciliation remains reachable while admissions are
         # paused or refill is disabled. Physical dispatch has its own fence.
         permission = can_start(task_id)
+        from factory.orchestration import backlog_refill_repair
+
+        if backlog_refill_repair.reconcile(task, policy, runs, permission):
+            return
         paused = not permission["ok"] and permission["reason"] == "task_paused"
         if paused:
             from factory.orchestration.factory_controls import (
@@ -7779,11 +7788,12 @@ def _dispatch_ready(
         if dispatched >= limit:
             break
         node_key = node["node_key"]
+        attempt = sum(r["node_key"] == node_key for r in runs) + 1
         refilling = node_key in {"backlog_refill_collect_1", "backlog_refill_review_1"}
         if refilling:
             from factory.orchestration.backlog_refill import dispatch_allowed
 
-            if not dispatch_allowed(task_id, node_key):
+            if not dispatch_allowed(task_id, node_key, attempt):
                 continue
         scouting = node_key in {"scout_collect_1", "scout_review_1"}
         if scouting:
@@ -7819,7 +7829,13 @@ def _dispatch_ready(
         )
         attempt = sum(r["node_key"] == node_key for r in runs) + 1
         key = f"factory-node:{task_id}:{node_key}:{attempt}"
-        artifact_schema = _schema(node_key, task_id) if refilling else _schema(node_key)
+        artifact_schema = (
+            _schema(node_key, task_id)
+            if refilling or node_key.startswith("conductor_funding_")
+            else _schema(node_key)
+        )
+        if "x-factory-funding-decision" in artifact_schema:
+            branch = task["base_branch"]
         from factory.orchestration import evidence_continuation
 
         try:

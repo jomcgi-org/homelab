@@ -1380,6 +1380,7 @@ py_library(
         "factory/execution/constants.py",
         "factory/execution/factory_stop.py",
         "factory/execution/models.py",
+        "factory/execution/preinvoke_failure.py",
         "factory/execution/reconciliation.py",
         "factory/execution/review_leases.py",
     ],
@@ -1418,6 +1419,7 @@ py_library(
             "factory/execution/constants.py",
             "factory/execution/factory_stop.py",
             "factory/execution/models.py",
+            "factory/execution/preinvoke_failure.py",
             "factory/execution/reconciliation.py",
             "factory/execution/review_leases.py",
         ],
@@ -1465,6 +1467,7 @@ py_library(
     srcs = [
         "factory/orchestration/backlog_refill.py",
         "factory/orchestration/backlog_refill_policy.py",
+        "factory/orchestration/backlog_refill_repair.py",
         "factory/execution/__init__.py",
         "factory/execution/broker_client.py",
         "factory/execution/provider_quota.py",
@@ -1474,6 +1477,7 @@ py_library(
         "factory/orchestration/api.py",
         "factory/orchestration/factory_controls.py",
         "factory/orchestration/factory_funding_limits.py",
+        "factory/orchestration/funding_profile.py",
         "factory/orchestration/factory_start_diagnostics.py",
         # Status needs the durable landing reader in the pruned controls closure.
         # pkg_swarm's existing glob shares this same source artifact.
