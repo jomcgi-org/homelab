@@ -551,10 +551,12 @@ flowchart TD
   fall back to repository execution or explicit PR-review credentials.
 - Funding content must not reach a CLI before its capabilities are known. The
   pinned CLI's pre-input initialize response does not declare tools, so the
-  decision profile never starts it. The existing adapter constructs a fixed
-  provider request with no client or server tools and no configurable capabilities;
-  malformed profiles fail before any prompt delivery or provider request. Tool
-  responses, redirects and errors cannot cause tool execution or a second call.
+  decision profile never starts it. Subscription OAuth must not authenticate a
+  bespoke Messages client. Native funding scheduling and physical starts are
+  disabled, and the guest independently refuses before HTTP construction. No
+  policy or ambient credential enables the route. Future dedicated API-key
+  authority must bind the exact profile, request and dispatch before content is
+  forwarded. Tests that mock that future route confer no production authority.
 - A repair ticket must not invent an owning scope or landing authority. Only
   reauthenticated native evidence selects fixed role, stage, SQLSTATE and paths;
   private identifiers and raw SQL/errors remain private. Execution admission and

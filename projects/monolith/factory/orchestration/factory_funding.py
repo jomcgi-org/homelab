@@ -540,6 +540,16 @@ def request(
 
     from factory.orchestration import factory_improvement_scout as scout
 
+    from factory.orchestration import backlog_refill, funding_profile
+
+    # No paid judge, release of the machine pause, or funding audit is prepared
+    # for a route that cannot run. Ordinary funding retains its existing path.
+    if not funding_profile.PROVIDER_ROUTE_AVAILABLE:
+        with controls._read_session() as db:
+            row = controls._receipt(db, task["id"])
+            if row is not None and row.actor == backlog_refill.ACTOR:
+                return False
+
     if scout.owns_task(task["id"]):
         scout._finish(task["id"], "scout_nonrenewable")
         return False
@@ -656,7 +666,9 @@ def request(
         from factory.orchestration import backlog_refill_repair as refill_repair
 
         if row.actor == backlog_refill.ACTOR and (
-            repair is None or refill_repair.source(db, row) is None
+            not funding_profile.PROVIDER_ROUTE_AVAILABLE
+            or repair is None
+            or refill_repair.source(db, row) is None
         ):
             return False
         if not refill_repair.objective_open(task, issue, session=db):
@@ -1879,12 +1891,19 @@ def _latest_pause(db, task_id):
 def _repair_review_valid(db, task_id, proof):
     """Continue an already prepared repair review, not its consumed resume."""
     row = controls._receipt(db, task_id)
-    from factory.orchestration import backlog_refill, backlog_refill_repair
+    from factory.orchestration import (
+        backlog_refill,
+        backlog_refill_repair,
+        funding_profile,
+    )
 
     if (
         row
         and row.actor == backlog_refill.ACTOR
-        and backlog_refill_repair.source(db, row) is None
+        and (
+            not funding_profile.PROVIDER_ROUTE_AVAILABLE
+            or backlog_refill_repair.source(db, row) is None
+        )
     ):
         return False
     wait = latest(db, task_id, "repair_allocation_wait")

@@ -3343,13 +3343,13 @@ class ClaudeProcess:
         _reap_orphans()
 
     def _funding_turn(self, message, session_id, model, system_prompt):
-        """One tool-free message through the existing Claude broker egress lane.
+        """Refuse the staged profile until a supported provider route exists.
 
-        Unlike the CLI's post-input system/init event, this is a trusted
-        pre-invocation boundary: no CLI receives the prompt, no tool loop
-        exists, and neither client nor provider-side capabilities can be selected.
-        Normal dispatch, one-shot admission, result receipts and usage settlement
-        remain owned by ProcessManager and the factory executor.
+        The existing egress grant is subscription OAuth for Claude Code, not
+        authentication for a bespoke Messages client. The pinned CLI cannot
+        attest tools before input. Neither route may receive funding content.
+        Keep the versioned endpoint and one-shot fences for historical guests;
+        no environment variable or caller field can enable this path.
         """
         with self.turn_lock:
             _funding_profile(self.decision_profile, model)
@@ -3359,86 +3359,7 @@ class ClaudeProcess:
                 raise StartupError("decision profile requires a fresh provider call")
             if getattr(self, "_interrupt_requested", False):
                 raise StartupError("decision interrupted before provider invocation")
-            # Only this fixed request shape crosses the existing host-local
-            # forwarder. Do not accept arbitrary provider kwargs, URLs, tool
-            # definitions, MCP servers, containers, or beta features from callers.
-            body = {
-                "model": CLAUDE_MODELS[model],
-                "max_tokens": 4096,
-                "stream": False,
-                "tools": [],
-                "tool_choice": {"type": "none"},
-                "system": "Return only the requested JSON funding decision.",
-                "messages": [{"role": "user", "content": message}],
-            }
-            self.session_id = "funding-" + str(uuid.uuid4())
-            self.model = model
-            self._turn_timing_model_start = _turn_timing_now()
-            request = urllib.request.Request(
-                "http://api.anthropic.com/v1/messages",
-                data=json.dumps(body).encode("utf-8"),
-                method="POST",
-                headers={
-                    "Content-Type": "application/json",
-                    "anthropic-version": "2023-06-01",
-                    "anthropic-beta": "oauth-2025-04-20",
-                    # Same noncredential opt-in as guest-init. The existing
-                    # sidecar replaces it with the existing broker grant and
-                    # originates verified TLS. No token enters the guest.
-                    "Authorization": "Bearer ember-guest-login-gate-dummy-not-a-credential",
-                },
-            )
-            opener = urllib.request.build_opener(
-                urllib.request.ProxyHandler({"http": egress_proxy_env()["HTTP_PROXY"]}),
-                _ResultReceiptNoRedirect(),
-            )
-            # No retry or redirect: a lost response remains unknown to the
-            # existing receipt owner, never another funding invocation.
-            with opener.open(request, timeout=120) as response:
-                raw = response.read(MAX_RESULT_RECEIPT_BYTES + 1)
-            if len(raw) > MAX_RESULT_RECEIPT_BYTES:
-                raise RuntimeError("decision provider response exceeds limit")
-            result = json.loads(raw)
-            if not isinstance(result, dict):
-                raise RuntimeError(
-                    "decision provider returned non-text or incomplete result"
-                )
-            blocks = result.get("content")
-            if (
-                result.get("type") != "message"
-                or result.get("role") != "assistant"
-                or result.get("model") != CLAUDE_MODELS[model]
-                or result.get("stop_reason") != "end_turn"
-                or not isinstance(blocks, list)
-                or not blocks
-                or any(
-                    not isinstance(block, dict)
-                    or block.get("type") != "text"
-                    or not isinstance(block.get("text"), str)
-                    for block in blocks
-                )
-                or not isinstance(result.get("usage"), dict)
-            ):
-                raise RuntimeError(
-                    "decision provider returned non-text or incomplete result"
-                )
-            text = "".join(block["text"] for block in blocks)
-            record = {
-                "type": "result",
-                "subtype": "success",
-                "is_error": False,
-                "session_id": self.session_id,
-                "model": model,
-                "provider_model": result.get("model") or CLAUDE_MODELS[model],
-                "num_turns": 1,
-                "result": text,
-                "usage": result["usage"],
-                "activities": [],
-                "voice": voice_summary(text),
-            }
-            self.current_result = record
-            _emit_elapsed("model", self._turn_timing_model_start)
-            return record
+            raise StartupError("funding_provider_route_unavailable")
 
     def turn(
         self,
