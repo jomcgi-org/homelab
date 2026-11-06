@@ -1244,6 +1244,7 @@ py_library(
         ":pkg_framework",
         ":pkg_grimoire",
         ":pkg_knowledge",
+        ":pkg_shared",
         "@pip//certifi",
         "@pip//fastapi",
         "@pip//httpx",
@@ -3117,6 +3118,31 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_shared",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "shared_text_stream_test",
+    srcs = ["shared/text_stream_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        ":text_stream_test_support",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_library(
+    name = "text_stream_test_support",
+    testonly = True,
+    srcs = ["shared/testing/text_stream.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        "@pip//httpx",
         "@pip//pytest",
     ],
 )
@@ -7168,6 +7194,19 @@ py_test(
 )
 
 py_test(
+    name = "moving_stream_test",
+    srcs = ["moving/tests/stream_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_moving",
+        ":text_stream_test_support",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "moving_chat_test",
     srcs = [
         "moving/tests/__init__.py",
@@ -7536,6 +7575,19 @@ py_test(
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "grimoire_chat_inference_test",
+    srcs = ["grimoire_chat/inference_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire_chat",
+        ":text_stream_test_support",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
     ],
 )
 
