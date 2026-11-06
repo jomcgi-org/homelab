@@ -12,7 +12,52 @@ define the tool's contract before implementation:
 
 from __future__ import annotations
 
+import json
+
+import httpx
 import pytest
+
+
+def _mock_transport(monkeypatch, handler):
+    real_init = httpx.AsyncClient.__init__
+
+    def init(self, *args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", init)
+
+
+@pytest.mark.asyncio
+async def test_capture_requires_url(monkeypatch):
+    from shotter.client import capture
+
+    monkeypatch.delenv("EMBERVM_URL", raising=False)
+    with pytest.raises(RuntimeError, match="EMBERVM_URL is not configured"):
+        await capture("https://jomcgi.dev/", 1024, 768, 100)
+
+
+@pytest.mark.asyncio
+async def test_capture_preserves_http_and_transport_errors(monkeypatch):
+    from shotter.client import capture
+
+    monkeypatch.setenv("EMBERVM_URL", "http://ev")
+    responses = iter(
+        [httpx.Response(503, text="guest failure"), httpx.ConnectError("refused")]
+    )
+
+    def handler(request):
+        result = next(responses)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    _mock_transport(monkeypatch, handler)
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        await capture("https://jomcgi.dev/", 1024, 768, 100)
+    assert caught.value.response.text == "guest failure"
+    with pytest.raises(httpx.ConnectError, match="refused"):
+        await capture("https://jomcgi.dev/", 1024, 768, 100)
 
 
 class TestShotterToolDiscoverability:
@@ -276,48 +321,46 @@ class TestViewportValidation:
 class TestEmberVMDispatch:
     """The tool dispatches to the EmberVM shotter workload and mocks integration."""
 
-    @pytest.fixture(autouse=True)
+    @pytest.fixture
     def _mock_embervm(self, monkeypatch):
         """Mock the EmberVM HTTP client for hermetic testing."""
 
-        class _FakeResponse:
-            status_code = 200
-            text = ""
-
-            def raise_for_status(self):
-                pass
-
-            def json(self):
-                # Return the correct shotter guest response shape per issue #4994 T3:
-                # {png_b64, width, height, final_url, status, duration_ms}
-                return {
+        def handler(request):
+            assert request.url.path == "/v1/workloads/shotter/tasks"
+            assert request.url.query == b"wait=true"
+            assert request.extensions["timeout"] == {
+                "connect": 5,
+                "read": 55,
+                "write": 55,
+                "pool": 55,
+            }
+            assert json.loads(request.content) == {
+                "url": "https://jomcgi.dev/",
+                "width": 1024,
+                "height": 768,
+                "full_page": False,
+                "wait_until": "load",
+                "timeout_ms": 30000,
+            }
+            # Return the correct shotter guest response shape per issue #4994 T3:
+            # {png_b64, width, height, final_url, status, duration_ms}
+            return httpx.Response(
+                200,
+                json={
                     "png_b64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
                     "width": 1024,
                     "height": 768,
                     "final_url": "https://jomcgi.dev/",
                     "status": 200,
                     "duration_ms": 2500,
-                }
+                },
+            )
 
-        class _FakeClient:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *args):
-                pass
-
-            async def post(self, url, json=None, headers=None):
-                # Verify the request is going to the shotter workload
-                assert "shotter" in url, f"expected shotter in URL, got {url}"
-                return _FakeResponse()
-
-        import httpx
-
-        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+        _mock_transport(monkeypatch, handler)
         monkeypatch.setenv("EMBERVM_URL", "http://mock-embervm")
 
     @pytest.mark.asyncio
-    async def test_dispatches_to_shotter_workload(self):
+    async def test_dispatches_to_shotter_workload(self, _mock_embervm):
         """The tool dispatches to the EmberVM shotter task workload.
 
         A fresh task is created per screenshot request, ensuring isolation.
@@ -342,57 +385,35 @@ class TestEmberVMDispatch:
         assert result["duration_ms"] > 0
 
     @pytest.mark.asyncio
-    async def test_includes_idempotency_key_header(self, monkeypatch):
-        """The EmberVM request includes an Idempotency-Key header.
-
-        Idempotent requests ensure safe retry semantics.
-        """
+    async def test_separate_captures_have_distinct_keys_and_fresh_auth(
+        self, monkeypatch, tmp_path
+    ):
+        """Each capture rereads the URL and token and creates a separate task key."""
         from shotter import client as shotter_client
 
-        captured_headers = {}
+        requests = []
 
-        class _FakeClient:
-            async def __aenter__(self):
-                return self
+        def handler(request):
+            requests.append(request)
+            return httpx.Response(200, json={"png_b64": "test"})
 
-            async def __aexit__(self, *args):
-                pass
-
-            async def post(self, url, json=None, headers=None):
-                captured_headers.update(headers or {})
-
-                class Resp:
-                    status_code = 200
-                    text = ""
-
-                    def raise_for_status(self):
-                        pass
-
-                    def json(self):
-                        return {
-                            "png_b64": "test",
-                            "width": 1024,
-                            "height": 768,
-                            "final_url": "https://jomcgi.dev/",
-                            "status": 200,
-                            "duration_ms": 1000,
-                        }
-
-                return Resp()
-
-        import httpx
-
-        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
-        monkeypatch.setenv("EMBERVM_URL", "http://mock-embervm")
-
-        await shotter_client.capture(
-            url="https://jomcgi.dev/",
-            width=1024,
-            height=768,
-            timeout_ms=30000,
-        )
-
-        assert "Idempotency-Key" in captured_headers
+        _mock_transport(monkeypatch, handler)
+        token = tmp_path / "token"
+        monkeypatch.setenv("K8S_AUTH_TOKEN_FILE", str(token))
+        for index, value in enumerate(("first", "rotated", None)):
+            if value is None:
+                token.unlink()
+            else:
+                token.write_text(value)
+            monkeypatch.setenv("EMBERVM_URL", f"http://ev-{index}")
+            await shotter_client.capture("https://jomcgi.dev/", 1024, 768, 30000)
+        assert len({r.headers["Idempotency-Key"] for r in requests}) == 3
+        assert [r.headers.get("Authorization") for r in requests] == [
+            "Bearer first",
+            "Bearer rotated",
+            None,
+        ]
+        assert [r.url.host for r in requests] == ["ev-0", "ev-1", "ev-2"]
 
 
 class TestMCPReturnShape:
@@ -472,7 +493,10 @@ class TestMCPReturnShape:
         assert result.meta["height"] == 768
 
     @pytest.mark.asyncio
-    async def test_timeout_surfaces_as_real_error(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "error", [TimeoutError("Read timed out"), httpx.ReadTimeout("Read timed out")]
+    )
+    async def test_timeout_surfaces_as_real_error(self, monkeypatch, error):
         """A slow page that exceeds timeout surfaces as a real tool error.
 
         Timeout nesting ensures the tool error is not a severed connection
@@ -486,22 +510,10 @@ class TestMCPReturnShape:
         from shotter.client import capture, ToolTimeout
 
         # Mock a transport that times out immediately
-        class _TimeoutClient:
-            async def __aenter__(self):
-                return self
+        def handler(request):
+            raise error
 
-            async def __aexit__(self, *args):
-                pass
-
-            async def post(self, url, json=None, headers=None, timeout=None):
-                # Simulate a timeout by raising asyncio.TimeoutError
-                import asyncio
-
-                raise asyncio.TimeoutError("Read timed out")
-
-        import httpx
-
-        monkeypatch.setattr(httpx, "AsyncClient", _TimeoutClient)
+        _mock_transport(monkeypatch, handler)
         monkeypatch.setenv("EMBERVM_URL", "http://mock-embervm")
 
         # The client must convert the transport timeout into a ToolTimeout

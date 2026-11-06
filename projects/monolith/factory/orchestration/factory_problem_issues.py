@@ -42,6 +42,7 @@ MARKER_PREFIX = "factory-problem"
 RECOVERY_SOURCES = frozenset({"recurring_blocker", "workflow_stranded"})
 RECOVERY_ACTIVATION = "problem_issue_recovery_loop_activated"
 RECOVERY_REPO = "jomcgi-org/homelab"
+RECOVERY_SHORT_WINDOW_MINUTES = 300
 _TERMINAL_ACTIONS = (
     "problem_issue_created",
     "problem_issue_reconciled",
@@ -79,24 +80,60 @@ def _delivery_enabled(policy: dict) -> bool:
     )
 
 
-def _spare_quota() -> bool:
-    """Reuse improvement's fresh per-grant surplus evidence, not a headline.
+def _recovery_quota() -> bool:
+    """Require ordinary permitted quota, independently of surplus scouting.
 
-    This authorizes issue discovery only. Normal admission and provider routing
-    still own every paid start; no scout subscription or execution fence changes.
+    Preview's ``not_due`` passes evidence, pacing and relative short-window
+    checks without meeting optional surplus/horizon/remaining targets. A
+    five-hour or shorter window also keeps its reserve when reported alone.
+    Ordinary per-account availability still applies. This never authorizes a
+    paid start or selects a model/account; admission and provider routing own those.
     """
-    from factory.execution.provider_quota import fetch_provider_quota_sync
+    from factory.execution.provider_quota import (
+        fetch_provider_quota_sync,
+        summarise_grants,
+    )
     from factory.orchestration.factory_improvement_preview import (
         PreviewPolicy,
         quota_decisions,
     )
+    from factory.orchestration.model_pool import _confirmed_view_availability
 
-    return any(
-        row["eligible"]
-        for row in quota_decisions(
-            fetch_provider_quota_sync(force=True), now=_now(), policy=PreviewPolicy()
-        )
-    )
+    payload = fetch_provider_quota_sync(force=True)
+    if not isinstance(payload, dict) or payload.get("grants_valid") is not True:
+        return False
+    grants = payload.get("grants")
+    if (
+        not isinstance(grants, dict)
+        or not 1 <= len(grants) <= 64
+        or any(not isinstance(k, str) for k in grants)
+    ):
+        return False
+    views, validity = summarise_grants(grants)
+    now = _now()
+    preview_policy = PreviewPolicy()
+    for row in quota_decisions(payload, now=now, policy=preview_policy):
+        if row["reason"] not in {"underused", "not_due"}:
+            continue
+        # Preview validated every raw window, but only applies its short-window
+        # reserve relative to a longer companion. Duration keeps a lone session
+        # window from escaping that reserve, regardless of its provider label.
+        if any(
+            window["window_minutes"] <= RECOVERY_SHORT_WINDOW_MINUTES
+            and 100 - window["used_percent"]
+            < preview_policy.minimum_short_remaining_percent
+            for window in grants[row["grant"]]["windows"]
+        ):
+            continue
+        provider = row["provider"]
+        if (
+            validity.get(provider)
+            and _confirmed_view_availability(
+                views[row["grant"]], provider=provider, role=None, now=now
+            )[0]
+        ):
+            return True
+    return False
 
 
 def _recovery_owner(db, row):
@@ -520,6 +557,7 @@ def _latest_source_id(db: Session, source: str) -> int:
         select(FactoryAudit.id)
         .where(_event_filter(source, 0))
         .order_by(FactoryAudit.id.desc())
+        .limit(1)
     ).first()
     return int(row or 0)
 
@@ -628,6 +666,134 @@ def _pending_started(db: Session):
     if not _terminal(db, fingerprint, row.task_id):
         return row, detail
     return None
+
+
+def _status_event(row):
+    if row is None:
+        return None
+    try:
+        detail = json.loads(row.detail_json or "{}")
+    except (TypeError, ValueError):
+        detail = {}
+    if not isinstance(detail, dict):
+        detail = {}
+    result = {
+        "audit_id": row.id,
+        "action": row.action,
+        "at": aware(row.created_at).isoformat(),
+        "task_id": row.task_id,
+    }
+    # Public issue text, prompts, exception messages and raw audit payloads are
+    # deliberately absent from this operator metadata projection.
+    for key in (
+        "source_audit_id",
+        "source_run_id",
+        "recovered_run_id",
+        "rollout_audit_id",
+        "issue_number",
+    ):
+        if type(detail.get(key)) is int:
+            result[key] = detail[key]
+    if detail.get("source") in PROBLEM_ISSUE_SOURCES:
+        result["source"] = detail["source"]
+    for key in ("node_key", "repair_task_id"):
+        value = detail.get(key)
+        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", value):
+            result[key] = value
+    reason = detail.get("reason")
+    if isinstance(reason, str) and re.fullmatch(r"[a-z_]{1,80}", reason):
+        result["reason"] = reason
+    return result
+
+
+def recovery_status(db: Session, control) -> dict:
+    """Read the actual repair producer ledger without observing or advancing it.
+
+    Refill checkpoints describe a different producer. Report source backlog and
+    exact recovery evidence separately; an enabled switch or a finished refill
+    must never be presented as a successful repair.
+    """
+    policy = json.loads(control.policy_json or "{}")
+    block = problem_issues_policy(policy)
+    effective = _effective(block)
+    observed = db.exec(
+        select(FactoryAudit)
+        .where(FactoryAudit.action == "problem_issue_policy_observed")
+        .order_by(FactoryAudit.id.desc())
+        .limit(1)
+    ).first()
+    detail = json.loads(observed.detail_json or "{}") if observed else {}
+    policy_observed = detail.get("effective_sources") == effective
+    sources = {}
+    for source in sorted(RECOVERY_SOURCES):
+        watermark = (detail.get("watermarks") or {}).get(source)
+        cursor = (
+            _cursor(db, source, watermark)
+            if type(watermark) is int and watermark >= 0
+            else None
+        )
+        candidate = None
+        if effective[source] and policy_observed and cursor is not None:
+            candidate = db.exec(
+                select(FactoryAudit)
+                .where(_event_filter(source, cursor))
+                .order_by(FactoryAudit.id)
+                .limit(1)
+            ).first()
+        sources[source] = {
+            "enabled": effective[source],
+            "watermark": watermark,
+            "cursor": cursor,
+            "latest_source_audit_id": _latest_source_id(db, source),
+            "next_event": _status_event(candidate),
+            "state": (
+                "disabled"
+                if not effective[source]
+                else "policy_not_observed"
+                if not policy_observed or cursor is None
+                else "pending_source_event"
+                if candidate is not None
+                else "no_new_source_events"
+            ),
+        }
+    events = db.exec(
+        select(FactoryAudit)
+        .where(FactoryAudit.action.startswith("problem_issue_"))
+        .order_by(FactoryAudit.id.desc())
+        .limit(11)
+    ).all()
+    checkpoints = {}
+    for action in (
+        "problem_issue_recovery_watch",
+        "problem_issue_created",
+        "problem_issue_recovery_observed",
+    ):
+        row = db.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action == action)
+            .order_by(FactoryAudit.id.desc())
+            .limit(1)
+        ).first()
+        checkpoints[action] = _status_event(row)
+    pending = _pending_started(db)
+    return {
+        "observed_at": _now().isoformat(),
+        "control_enabled": control.state == "enabled",
+        "delivery_enabled": _delivery_enabled(policy),
+        "policy_observed": policy_observed,
+        "policy_observation": _status_event(observed),
+        "sources": sources,
+        "pending_write": _status_event(pending[0]) if pending else None,
+        "checkpoints": checkpoints,
+        "recent_events": [_status_event(row) for row in events[:10]],
+        "events_truncated": len(events) > 10,
+        "coverage": (
+            "Persisted repair-producer metadata only. Source backlog is not "
+            "eligibility: quota, GitHub ownership and retry authority are not "
+            "evaluated. Reads do not advance watermarks, publish, resume or "
+            "authorize execution."
+        ),
+    }
 
 
 def _discover(repo: str, marker: str, block: dict) -> tuple[list[int], bool]:
@@ -956,7 +1122,7 @@ def problem_issues_tick(policy: dict) -> None:
         observed["effective_sources"].get(source) for source in RECOVERY_SOURCES
     ):
         try:
-            recovery_ready = _delivery_enabled(policy) and _spare_quota()
+            recovery_ready = _delivery_enabled(policy) and _recovery_quota()
         except Exception:  # Unavailable recovery evidence must not block other sources.
             logger.exception("factory recovery discovery evidence unavailable")
             recovery_ready = False

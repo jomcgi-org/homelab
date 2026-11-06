@@ -151,7 +151,12 @@ def _recorded_cessation(db, permit_id):
             row[key] = None
     if row["terminal_state"] not in {"evicted", "destroyed", "failed"}:
         row["terminal_state"] = None
-    if row["cessation_evidence"] not in {"terminal_dispatch", "invoke_failure"}:
+    if row["cessation_evidence"] not in {
+        "terminal_dispatch",
+        "invoke_failure",
+        "terminal_before_dispatch",
+        "terminal_receipt_chain",
+    }:
         row["cessation_evidence"] = None
     return row
 
@@ -365,6 +370,7 @@ def inspect_session_turn(session_id, seq, *, session=None):
         db,
         """
         SELECT id, status, admission_tier, workflow_id, ember_session_id,
+               local_session_id, node_key, node_attempt,
                created_at, last_turn_at,
                result_receipt_fence_id IS NOT NULL AS result_receipt_fenced,
                guest_cleanup_id IS NOT NULL AS cleanup_pending
@@ -400,6 +406,12 @@ def inspect_session_turn(session_id, seq, *, session=None):
     )
     ids = [row["id"] for row in permits[:20]]
     details = inspect_permits(ids, session=db) if ids else {"items": []}
+    from factory.orchestration.factory_start_diagnostics import session_gate
+
+    factory_gate = session_gate(db, next(iter(agents), None))
+    for agent in agents:
+        for field in ("local_session_id", "node_key", "node_attempt"):
+            agent.pop(field, None)
     return _safe(
         {
             "observed_at": datetime.now(timezone.utc),
@@ -411,6 +423,7 @@ def inspect_session_turn(session_id, seq, *, session=None):
             "turn": next(iter(turns), None),
             "permits": details["items"],
             "permits_truncated": len(permits) > 20,
+            "factory_gate": factory_gate,
             "coverage": "Persisted metadata only. Reads can race with dispatch. Missing records do not prove non-dispatch or cessation. No guest contacted.",
             "recovery_authorized": False,
         }

@@ -134,6 +134,48 @@ The optional `backlog_refill` block ships omitted; omission and `enabled: false`
 
 Optional `problem_issues` creates GitHub issues from `node_stalled`, `workflow_stranded`, `recurring_blocker` and terminal `landing_recovery_exhausted`. It neither creates receipts nor admits tasks. The master switch defaults false; `recurring_blocker` defaults true behind it. Each tick scans at most 50 source audits, creating at most one issue within a rolling 24-hour cap of 3. `factory_configure_problem_issues` lets a standing operator preview/apply the master, recurring-blocker and stranded-workflow switches without changing generation, existing receipts or any other settings. Newly enabled sources are watermarked on the next producer tick. The existing producer owns deduplication and recursion prevention; ordinary intake/refinement owns future work. [MCP activation](../MCP.md#enable-recovery-problem-issues) records the exact arguments.
 
+### Bounded repair landing delegation
+
+Repair delivery still needs native scoped landing authority. The default-off
+`repair_landing_delegation` owner derives it only after a standing human's
+guarded `factory_configure_refill` preview/apply with `target: repair_landing`.
+It records the standing decision and a separate `factory:repair-landing` audit
+in the existing factory journal. It never writes a human per-head grant or
+delegates identity credentials. Explicit per-head operator grants stay separate.
+
+The initial boundary permits modifications of existing regular UTF-8 files in
+the problem producer, intake loop, progress watchdog and feedback modules,
+including their tests. Only fresh node-bound recurring-blocker repairs created
+after activation qualify. Native independent exact-head review must attest the
+complete diff's private, internal, reversible scope; public, security, authority,
+credential and destructive changes require a separate operator decision. Missing
+or ambiguous review scope refuses. The eight-file cap is delegation eligibility,
+not a constraint on ordinary or legacy review artifacts.
+
+Existing and default authorizations are finite trials: at most 24 hours and ten
+exact derivations, with no automatic renewal. Explicit `delegation_mode: ongoing`
+instead permits 1–10 derivations per rolling 24 hours until revoked or policy
+drift, bounded by three cumulative derivations per repair task and source task
+across authorizations. Exact unchanged replay spends nothing. Rate exhaustion
+waits for the existing landing tick; it does not permanently refuse the repair
+or invalidate already granted queue entries. Indexed task lookup and exact
+producer-marker lookup avoid lifetime journal-scan cutoffs. No new scheduler,
+ledger, migration or implicit authority renewal is introduced.
+
+The optional `diagnostics` path profile adds only existing rationale and unified
+diff parsers and their tests. It requires an explicit previewed choice. Mixed
+executor/control/build modules that also enforce native gates remain excluded,
+even when a proposed change is routine. See the concrete expansion boundary in
+[MCP.md](../MCP.md#enable-bounded-repair-landing).
+
+Landing rechecks source machine-pause provenance, both issues' ownership, holds,
+unknown execution, review, immutable file evidence and CI before arming through
+the existing protected queue. Revocation fences new arming and the native queue
+observer disarms/dequeues outstanding grants on its next tick. It cannot undo
+an external action that already completed. Policy replacement or drift invalidates
+the authorization. Rollout and same-node recovery remain their existing owners.
+See [activation and limitations](../MCP.md#enable-bounded-repair-landing).
+
 ### Escalation decisions
 
 A `needs-human` verdict arrives as two to four options, recommendation first; `effect` is one of `agent-ready`, `close`, `split`, `defer`, `hold`, `supersede`. Every unresolved escalation also carries the fixed escape group, of which only the dismiss is non-final. Deciding uses `POST /api/swarm/factory/decisions/{receipt_id}` with an exact `decision_id` and a stable `request_key`. `FACTORY_OPERATOR_EMAILS` is empty by default. The derived allowance is `max_attempts` over live unsucceeded nodes plus spent turns plus engine-insertable rounds; an edit exceeding the envelope refuses with `envelope_exceeded`, never for dollars.
@@ -156,6 +198,48 @@ The reconciler expands only active receipts from a fresh control row. Source nod
 
 Gate every checkpoint-sequence change to `drain_cycle`, `implement_then_review` and `start_session_workflow` with `DBOS.patch`; steps, `DBOS.sleep`, send/recv, events, child workflows and patch markers consume function ids. Add with `if DBOS.patch("<name>")`, remove with `if not DBOS.patch("<name>")`, make reorder or rename a remove plus add, and never wrap an unchanged call. Retire with `DBOS.deprecate_patch` only once no pre-patch workflow can be PENDING. Unpatched edits strand in-flight nodes: the reconciler audits `workflow_stranded` and settles the attempt as uncertain for bounded retry. A stale-checkpoint PENDING workflow settles the same way, audited `node_stalled` once. A replica lost mid-invoke holds the turn as `response_lost`.
 
+Receipt preparation and attempt intent are separate when
+`agentSessions.stagedReceiptsEnabled` (`AGENT_STAGED_RECEIPTS_ENABLED`) is enabled.
+The default is false. One flag snapshot per executor supplies the handoff guard
+that selects both staged preparation and promotion. Preparation preserves the
+last attempted receipt; the existing pool/session locks plus the bounded local
+handoff guard serialize promotion against the first response-loss hold. A hold
+that wins cannot be superseded by a late preparation or promotion. Intent is
+conservative evidence of a possible invoke, not proof a POST reached the guest.
+Cancellation or an uncertain promotion commit cannot become `not_invoked` or
+authorize another attempt. Callback credentials, exact ownership, accounting,
+first-hold bounds and normal retry admission remain with their existing owners.
+
+Roll out this protocol in three reviewed GitOps changes. First land schema
+prerequisite [#7620](https://github.com/jomcgi-org/homelab/pull/7620) and verify
+Atlas applied `20261104180000_agent_receipt_attempt_phase.sql` with its exact
+reviewed SQL and checksum. Its metadata postcondition proves the column shape.
+Only then land runtime [#7619](https://github.com/jomcgi-org/homelab/pull/7619)
+with the flag false and verify the complete compatible backend and progress-ingest
+rollout on every replica. In a separate reviewed activation change, set
+`agentSessions.stagedReceiptsEnabled: true` in the private deployment overlay,
+verify the rollout and rendered environment, and observe a naturally occurring
+handoff retaining the exact attempted receipt followed by normal result adoption
+and useful delivery. A merged default-off implementation or synthetic tests do
+not meet [#7583](https://github.com/jomcgi-org/homelab/issues/7583) acceptance.
+
+Rollback sets the flag false for future executors; already running executors
+retain their snapshot. Keep the additive nullable column. Legacy NULL rows keep
+their prior protocol. A prepared row also carries `superseded_at`, so old readers
+and lease recovery exclude it even after binary rollback. An old callback writer
+may capture its authenticated body, but cannot make that row active, and the new
+promotion path refuses any nonempty preparation. Attempted rows use the existing
+active-receipt representation and remain readable by old code. Never backfill,
+revive or reinterpret a historical receipt or an existing uncertain execution as
+part of deployment or rollback.
+
+Staged promotion uses a one-second transaction-local PostgreSQL lock timeout.
+An exact `55P03` refusal before attempt intent may retry four times with bounded
+backoff, rechecking normal admission before every retry. Any published intent,
+other database error, exhausted retry window, cancellation or hold keeps the
+existing conservative failure/uncertainty path; it never authorizes another
+physical POST.
+
 The lost-before-session sweep (#6285) runs before task reconciliation and the deadline backstop, once the node's pinned `turn_timeout_seconds` has elapsed. The owning DBOS workflow must report `ERROR` or `CANCELLED`, or a lookup must prove it absent. Under the control lock shared with session creation, the proof also needs immutable run and start ownership and no bound or deterministic session, cost, outcome, permit or result receipt. Both ledgers then settle atomically as `failed` at zero cost with `no_model_post` and `never_dispatched`; anything else leaves the attempt untouched.
 
 `provider_error_before_work` settles a guest provider error with no tool activity, diff or artifact at reported spend. `FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED` (chart false) settles a drained continuation only on durable `evicted`/`node_gone` proof. Sessions 8410 and 8416 remediation and live checks stay on [#6271](https://github.com/jomcgi-org/homelab/issues/6271#issuecomment-5750415773). The node workflow carries a brick-drain relay to an owner.
@@ -174,6 +258,14 @@ A planner decision applies together under one expected revision. The server owns
 ### Permit supervision boundaries
 
 Capacity releases only to the explicit reconciliation owner after fresh authoritative terminal proof. Uncertain permit settlement is always on.
+
+A native interactive `delivery_error` may release only its exact permit when
+fresh terminal guest evidence predates the first dispatch and the complete,
+unexpired receipt chain contains one matching attempted POST with its observer
+released. Missing, prepared, superseded or conflicting receipts, results, pending
+work, changed ownership and explicit holds refuse this proof. Factory and routine
+owners retain their existing paths. Settlement preserves the failed turn,
+unknown-outcome marker, cost, receipt and binding; it does not retry the turn.
 
 ### Guest reuse cleanup
 
@@ -227,6 +319,17 @@ Automatic safety pauses keep their active receipt and reservations. The pause an
 The deadline-release implementation stays hard-staged off, and agent workloads have a twelve-hour runtime backstop. An uncertain attempt keeps its capacity until exact control-plane evidence proves its guest ceased. Settled cessation proof extends to the at-most-once 502 and the never-invoked guest. Attempt stops lock factory control, capacity pool, then session; Ember owns physical cessation.
 
 ### Supervised cessation
+
+Native interactive delivery errors after a drain redispatch may settle capacity
+from a complete retained two-dispatch receipt chain. This separate proof accepts
+at most three attempted receipts and two guests, including a first-dispatch
+restore. Every guest needs fresh positive eviction/destruction evidence; absent
+or live records refuse. The supervisor locks and revalidates all same-turn
+receipts, current ownership and quiescence after observation. Retention must
+cover both session and permit creation, every observer must have finished, and
+the latest exact receipt must have no result. Earlier interrupted responses,
+failed turns, costs, unknown markers and workspace bindings remain unchanged.
+This releases only capacity and grants no retry, task recovery or hold override.
 
 `factory_reconcile` kind `settled_retry` is an explicit standing-operator recovery for
 one missing first-dispatch response followed by a proven uninvoked second
@@ -366,9 +469,18 @@ Operational handoff makes "repository work delivered, only live checks remain" a
 
 The existing problem producer owns the automatic loop for stranded workflows
 and recurring blockers after guarded operator activation. Deployment never
-changes policy switches. Fresh surplus quota gates discovery using
-the improvement preview's existing per-grant rules. Enabled refinement or
+changes policy switches. Required recovery discovery accepts fresh, complete
+per-grant ordinary permitted quota, including on-pace accounts without surplus
+due for scouting. It retains preview's evidence, pacing and short-window guards
+and the ordinary per-account availability check. A reported window of five hours
+or less retains at least 10 percent headroom even when it is the only window;
+window names do not decide this reserve. Opportunistic scouting keeps
+its separate surplus, remaining-quota and reset-horizon thresholds. Discovery
+grants no paid-start authority. Enabled refinement or
 matching direct labels permit bug intake; exclusions, pauses and batches bind.
+Required recovery repairs blocked work; optional scouting spends surplus finding
+new work. The scout's due threshold must not suppress otherwise permitted repair
+discovery.
 Waiting recovery sources do not block unrelated sources. Ordinary intake,
 exact-head review, CI, merge queue and managed
 rollout retain authority over the separate repair issue.
@@ -387,6 +499,13 @@ starts absent. Missing bindings or historical cards remain unverified; this
 does not re-admit them. The one-shot improvement scout and report-only learning
 pipeline keep their existing contracts. See the activation and limitations in
 [MCP.md](../MCP.md#enable-recovery-problem-issues).
+
+Operator status exposes the separate repair ledger at
+`refill.problem_issues.recovery`: observed source policy, historical watermarks,
+terminal cursors, next signals, pending publication and recovery checkpoints.
+The adjacent refill checkpoints remain backlog-refill evidence only. These reads
+do not refresh quota or GitHub ownership, consume a signal, or grant any start or
+recovery authority. A pending source is a diagnostic candidate, not permission.
 
 The Conductor pursues continuous self-improvement and delivery velocity toward Joe goals. Factory-owned budgets and workflow policies evolve through their owning interfaces; dollars stay accounting. Root `AGENTS.md` defines standing delivery authority; the [evolution contract](../../../../docs/agents/evolution.md) defines how improvements evaluate and retain.
 (see: /projects/monolith/factory/orchestration/factory_improvements.py)
@@ -410,9 +529,39 @@ The feed prefers finishing PRs over fresh implementation candidates. It never
 imports prior approval: independent review and required CI must cover the current
 head, followed by the existing merge queue and rollout owner.
 
+`owner_pr_landing_delegation` is a separate, default-off standing landing
+decision, configured through `factory_configure_refill` with
+`target: owner_pr_landing`. Preview binds the configured login and numeric owner
+ID, repository/base, intake policy and latest relevant configuration event.
+Disable/change/restore cannot revive an earlier grant. It explicitly permits
+pre-existing PRs and already adopted receipts with genuine `receive_owner_pr`
+provenance, canonical work-item ownership, and either an accepted issue or a
+server-settled direct PR refinement. Legacy cards supply no authority.
+
+The frozen `private_diagnostics_v1` profile contains the twelve Python source/test
+paths listed by preview, with at most eight existing regular UTF-8 files modified.
+An independent typed review must approve that exact immutable merge base, head
+and path set with all public/security/credential/destructive flags false. Other
+paths require separate operator scope. The existing landing owner derives at
+most three grants per rolling 24 hours across authorizations, and three per
+canonical repository/PR across receipts and generations. Exact replay is free.
+An explicit per-head human grant always takes precedence, including malformed or
+revoked grants. Owner delegation refusal never falls through to repair authority.
+
+Fresh PR and canonical/referenced issue discussions, local ownership, history and
+unsettled or claimed execution fence both arming and existing queue entries.
+The same checks run under the existing control/task lock before queue mutation.
+No producer, scheduler, merge owner or independent ledger is added. This narrow
+capability does not establish that any current backlog PR fits its profile.
+
 Fresh PR/discussion holds fence dispatch and verification. The private
 `intake.owner_pr_backlog` projection reports the latest sweep's states, age,
 receipt owners and blockers, alongside merged and verified delivery counts.
+The shared text check recognizes only two exact, unqualified absence-of-hold
+sentences seen in accepted briefs; it does not infer scope or release authority.
+Other hold matches, quoted or qualified wording, labels and durable holds still
+veto work. Existing discussion-refusal cache entries keep their normal expiry
+and fresh observation path; this classification never clears them.
 Superseded or closed PRs keep their history; advisory refinement cannot close a
 PR. External merges retain the existing merged-delivery verification owner and
 its review/operational fences. #7428 owns that owner's remaining external-review

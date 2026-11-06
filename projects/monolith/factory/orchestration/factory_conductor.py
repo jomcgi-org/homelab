@@ -11,6 +11,7 @@ from __future__ import annotations
 from core.env import flag
 from factory.orchestration.runtime import running_app_version
 from factory.orchestration import dependency_prs
+from factory.orchestration.repair_landing_delegation import SCOPE_SCHEMA
 
 import asyncio
 from contextlib import nullcontext
@@ -190,6 +191,7 @@ REVIEW_SCHEMA = {
         "summary": {"type": "string", "maxLength": 8000},
         "pr_number": {"type": "integer", "minimum": 1},
         "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "landing_scope": SCOPE_SCHEMA,
     },
 }
 IMPLEMENTATION_EXCEPTION_SCHEMA = {
@@ -1440,6 +1442,13 @@ def _boundary(
         + (
             "You are an independent reviewer. Inspect the exact pushed PR head, "
             "report its SHA and verdict, and do not modify source. "
+            "Also report landing_scope with the PR's exact merge-base commit as base_sha "
+            "and complete changed paths, "
+            "classification private_internal_reversible or requires_operator, boolean "
+            "public_facing, security_sensitive, authentication_or_credentials and destructive, "
+            "and evidence explaining the scope. Authority, permission, credential, safety-gate "
+            "or public exposure changes require an operator; ambiguity is requires_operator. "
+            "This assessment never authorizes landing by itself. "
             if review
             else ""
         )

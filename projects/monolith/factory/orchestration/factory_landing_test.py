@@ -79,7 +79,7 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setattr(landing, "_notify_stuck", lambda *_args: None)
     from factory import review_publisher
 
-    def reviewed(task_id):
+    def reviewed(task_id, *, session=None):
         with Session(engine) as session:
             number, head = landing._delivery_prs(session, [task_id])[task_id]
         return review_publisher.ReviewEvidence(
@@ -608,7 +608,7 @@ def test_missing_publisher_token_refuses_to_arm_when_enabled(db, monkeypatch):
     monkeypatch.setattr(
         review_publisher,
         "collect",
-        lambda _task_id: review_publisher.ReviewEvidence(
+        lambda _task_id, **_: review_publisher.ReviewEvidence(
             task_id="t-1",
             repo="owner/repo",
             pr_number=3,
@@ -653,7 +653,7 @@ def test_review_canary_publishes_while_merge_remains_disabled(db, monkeypatch):
         policy_version=1,
         details_url="https://private.jomcgi.dev/agents/session/11",
     )
-    monkeypatch.setattr(review_publisher, "collect", lambda _task_id: evidence)
+    monkeypatch.setattr(review_publisher, "collect", lambda _task_id, **_: evidence)
     monkeypatch.setattr(
         review_publisher,
         "publish",
@@ -1553,9 +1553,11 @@ def test_a_terminal_delivery_leaves_the_batch(db, monkeypatch):
     # The landed delivery is not read again; only the one still working is.
     assert [suffix for suffix in calls["get"][reads:]] == [
         "pulls/4",
+        "pulls/4",  # Fresh queue authority under the control lock.
         "issues/12",
         "pulls/4",
         "pulls/4",
+        "pulls/4",  # The holder observation rechecks the same fence.
     ]
 
 
@@ -3198,7 +3200,7 @@ def test_scoped_grant_never_substitutes_for_independent_review(
     monkeypatch.setattr(
         review_publisher,
         "collect",
-        lambda task: review_publisher.Refusal(task, "review_not_independent"),
+        lambda task, **_: review_publisher.Refusal(task, "review_not_independent"),
     )
     landing.landing_tick(POLICY)
     assert not audits(db, "merge_armed")
@@ -3409,6 +3411,95 @@ def owner_delivery(db, *, direct=False):
         direction = json.loads(row.direction_json)
         direction["owner_pr"] = {"author_id": 42, "direct": direct}
         row.direction_json = json.dumps(direction)
+
+
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize(
+    "absence",
+    [
+        "No explicit human, security or leave-unmerged hold was found in the PR labels, discussion or reviews.",
+        "Current discussion contains no explicit leave-unmerged hold.",
+    ],
+)
+def test_owner_pr_absence_feedback_keeps_native_landing_gates(
+    db, monkeypatch, queued, absence
+):
+    owner_delivery(db)
+    pulls = {
+        3: {
+            **pull(3, armed=queued),
+            "user": {"id": 42},
+            "queue_entry": {"id": "MQ_3"} if queued else None,
+        }
+    }
+    calls = github(monkeypatch, pulls=pulls)
+    listing = landing.github_list
+    comments = [{"body": absence}]
+    monkeypatch.setattr(
+        landing,
+        "github_list",
+        lambda repo, path: comments if "/comments?" in path else listing(repo, path),
+    )
+    landing.landing_tick(POLICY)
+    assert not audits(db, "landing_authorization_wait")
+    assert pulls[3]["auto_merge"]
+    assert bool(calls["arm_heads"]) is not queued
+
+    # A positive hold elsewhere in that same comment wins on the next native
+    # observation, including for a previously queued exact-head delivery.
+    comments[0]["body"] += " Do not merge; explicit human hold."
+    landing.landing_tick(POLICY)
+    assert pulls[3]["auto_merge"] is None
+    assert not pulls[3].get("queue_entry")
+    assert audits(db, "landing_authorization_wait")
+
+
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize(
+    "absence",
+    [
+        "No explicit human, security or leave-unmerged hold was found in the PR labels, discussion or reviews.",
+        "Current discussion contains no explicit leave-unmerged hold.",
+    ],
+)
+@pytest.mark.parametrize(
+    "retraction",
+    [
+        "- That is wrong.",
+        "* Disregard the previous statement.",
+        "- Unless told otherwise.",
+        "- False.",
+    ],
+)
+def test_owner_pr_list_retraction_fences_native_landing(
+    db, monkeypatch, queued, absence, retraction
+):
+    owner_delivery(db)
+    pulls = {
+        3: {
+            **pull(3, armed=queued),
+            "user": {"id": 42},
+            "queue_entry": {"id": "MQ_3"} if queued else None,
+        }
+    }
+    calls = github(monkeypatch, pulls=pulls)
+    listing = landing.github_list
+    monkeypatch.setattr(
+        landing,
+        "github_list",
+        lambda repo, path: (
+            [{"body": f"{absence}\n\n{retraction}"}]
+            if "/comments?" in path
+            else listing(repo, path)
+        ),
+    )
+    landing.landing_tick(POLICY)
+    assert not audits(db, "merge_armed")
+    assert not calls["arm_heads"]
+    assert pulls[3]["auto_merge"] is None
+    assert not pulls[3].get("queue_entry")
+    assert audits(db, "landing_authorization_wait")
+    assert receipt_state(db, "t-1") == "succeeded"
 
 
 @pytest.mark.parametrize("direct", [False, True])

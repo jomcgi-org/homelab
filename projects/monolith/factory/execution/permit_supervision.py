@@ -5,7 +5,8 @@ parked or banked guest whose Kubernetes node is known to be gone. Factory-owned
 sessions have their own settlement path, and a permit whose routine job row is
 still parked on this attempt is left to the operator reconciliation path that
 re-arms that job. A terminal record must follow the failed turn or match its
-exact durable dispatch, so historical guest state cannot release a current permit.
+exact durable dispatch. A complete receipt chain can also prove that a native
+interactive dispatch targeted a guest that was already permanently terminal.
 """
 
 from __future__ import annotations
@@ -102,6 +103,281 @@ def _never_invoked_live_guest(db, permit, agent, turn, observed, guest_id):
         .limit(1)
     ).first()
     return receipt is None
+
+
+def _terminal_before_dispatch(db, permit, agent, turn, observed, recovery):
+    """Prove the only POST targeted a guest terminal before this dispatch.
+
+    Ember's evicted/destroyed IDs cannot relight; a restore creates a new ID.
+    Every physical POST commits a receipt first, under the same pool/session
+    locks as this observer. With the pending claim gone, no new receipt can be
+    minted. Counting the complete retained chain therefore excludes a POST to
+    a replacement even if transport tried to restore after a 410 response.
+    This settles this permit's capacity only, never a turn or a retry grant.
+    """
+    from factory.execution import result_receipts
+
+    if (
+        permit.tier != "interactive"
+        or permit.outcome != "delivery_error"
+        or permit.routine_job_name is not None
+        or agent.workflow_id is not None
+        or agent.status not in {"warn", "failed"}
+        or agent.result_receipt_fence_id is not None
+        or turn.stop_reason not in {None, UNKNOWN_INVOCATION}
+        or observed.get("state") not in {"evicted", "destroyed"}
+        or not isinstance(recovery, dict)
+        or not permit.owner
+        or recovery.get("claim_owner") != permit.owner
+        or type(recovery.get("dispatch_count")) is not int
+        or recovery["dispatch_count"] != 1
+        or recovery.get("partial_text")
+        or recovery.get("partial_activities")
+    ):
+        return False
+    try:
+        dispatched = datetime.fromisoformat(
+            recovery["last_dispatch_at"].replace("Z", "+00:00")
+        )
+        now = _now()
+        if dispatched.tzinfo is None or not timedelta(0) <= now - dispatched < (
+            timedelta(days=result_receipts.RETAIN_DAYS)
+        ):
+            return False
+        started, last, terminal = (
+            observed.get(name)
+            for name in ("invoke_started_at", "last_invoke_at", "updated_at")
+        )
+        if any(type(value) is not int for value in (started, last, terminal)):
+            return False
+        if not 0 < started <= last <= terminal < int(dispatched.timestamp() * 1000):
+            return False
+    except (KeyError, AttributeError, TypeError, ValueError):
+        return False
+
+    # Include contradictory identities, staged and superseded receipts. Within
+    # RETAIN_DAYS of the first dispatch, pruning cannot have hidden an attempt.
+    receipts = db.exec(
+        select(AgentResultReceipt)
+        .where(
+            or_(
+                AgentResultReceipt.session_id == agent.id,
+                AgentResultReceipt.local_session_id == agent.local_session_id,
+            ),
+            AgentResultReceipt.seq == permit.pending_seq,
+        )
+        .limit(2)
+        .with_for_update()
+    ).all()
+    if len(receipts) != 1:
+        return False
+    receipt = receipts[0]
+    return (
+        receipt.session_id == agent.id
+        and receipt.local_session_id == agent.local_session_id
+        and receipt.guest_id == agent.ember_session_id
+        and receipt.claim_owner == permit.owner
+        and receipt.dispatch_count == 1
+        and receipt.attempt_phase in {None, "attempted"}
+        and receipt.superseded_at is None
+        and receipt.received_at is None
+        and receipt.result_sha256 is None
+        and receipt.result_body is None
+        and receipt.response_observed_at is None
+        and receipt.response_observer_released_at is not None
+        and aware(receipt.retain_until) > now
+        and aware(permit.created_at) <= aware(receipt.created_at)
+        and dispatched
+        <= aware(receipt.created_at)
+        <= aware(receipt.response_observer_released_at)
+        <= aware(turn.created_at)
+    )
+
+
+def _redispatch_chain(db, permit, agent, turn):
+    """Snapshot a complete retained native two-dispatch receipt chain.
+
+    This is read preparation, not cessation proof. A first dispatch may have
+    restored once; every guest in its receipts must subsequently be observed
+    terminal. A staged, live-observer, truncated or contradictory chain refuses.
+    """
+    from factory.execution import result_receipts
+
+    try:
+        recovery = json.loads(turn.usage_json or "{}").get("recovery")
+        if (
+            permit.tier != "interactive"
+            or permit.outcome != "delivery_error"
+            or permit.routine_job_name is not None
+            or agent.workflow_id is not None
+            or agent.status not in {"warn", "failed"}
+            or agent.result_receipt_fence_id is not None
+            or turn.stop_reason not in {None, UNKNOWN_INVOCATION}
+            or not isinstance(recovery, dict)
+            or not permit.owner
+            or recovery.get("claim_owner") != permit.owner
+            or type(recovery.get("dispatch_count")) is not int
+            or recovery["dispatch_count"] != 2
+        ):
+            return None
+        dispatched = datetime.fromisoformat(
+            recovery["last_dispatch_at"].replace("Z", "+00:00")
+        )
+        now, failed = _now(), aware(turn.created_at)
+        reserved = aware(permit.created_at)
+        if (
+            dispatched.tzinfo is None
+            or not timedelta(0)
+            <= now - aware(agent.created_at)
+            < timedelta(days=result_receipts.RETAIN_DAYS)
+            or aware(agent.created_at) > reserved
+            or not timedelta(0)
+            <= now - reserved
+            < timedelta(days=result_receipts.RETAIN_DAYS)
+            or not reserved <= dispatched <= failed <= now
+        ):
+            return None
+        rows = db.exec(
+            select(AgentResultReceipt)
+            .where(
+                or_(
+                    AgentResultReceipt.session_id == agent.id,
+                    AgentResultReceipt.local_session_id == agent.local_session_id,
+                ),
+                AgentResultReceipt.seq == permit.pending_seq,
+            )
+            .order_by(AgentResultReceipt.created_at, AgentResultReceipt.id)
+            .limit(4)
+            .with_for_update()
+        ).all()
+        if len(rows) not in {2, 3} or [r.dispatch_count for r in rows] != [1] * (
+            len(rows) - 1
+        ) + [2]:
+            return None
+        for row in rows:
+            observer_ended = (
+                row.response_observed_at or row.response_observer_released_at
+            )
+            if (
+                row.session_id != agent.id
+                or row.local_session_id != agent.local_session_id
+                or not row.guest_id
+                or not row.claim_owner
+                or row.attempt_phase not in {None, "attempted"}
+                or observer_ended is None
+                or not reserved
+                <= aware(row.created_at)
+                <= aware(observer_ended)
+                <= failed
+                or aware(row.retain_until) <= now
+            ):
+                return None
+        for previous, successor in zip(rows, rows[1:]):
+            if (
+                previous.superseded_at is None
+                or not aware(previous.created_at)
+                < aware(successor.created_at)
+                <= aware(previous.superseded_at)
+                <= failed
+                or aware(
+                    previous.response_observed_at
+                    or previous.response_observer_released_at
+                )
+                > aware(previous.superseded_at)
+            ):
+                return None
+        last = rows[-1]
+        if (
+            last.claim_owner != permit.owner
+            or last.guest_id != agent.ember_session_id
+            or last.superseded_at is not None
+            or last.received_at is not None
+            or last.result_sha256 is not None
+            or last.result_body is not None
+            or last.response_observed_at is not None
+            or last.response_observer_released_at is None
+            or aware(last.created_at) < dispatched
+            or rows[-2].guest_id != last.guest_id
+            or any(r.claim_owner != rows[0].claim_owner for r in rows[:-1])
+            or any(aware(r.created_at) >= dispatched for r in rows[:-1])
+        ):
+            return None
+        # A historical guest must not have acquired another local owner. The
+        # current binding is checked by _identity under the same pool lock.
+        guests = sorted({r.guest_id for r in rows})
+        if (
+            db.exec(
+                select(AgentSession.id)
+                .where(
+                    AgentSession.ember_session_id.in_(guests),
+                    AgentSession.id != agent.id,
+                )
+                .limit(1)
+            ).first()
+            is not None
+        ):
+            return None
+        return {
+            "sha256": digest([r.model_dump() for r in rows]),
+            "guests": guests,
+            "created_at": aware(last.created_at),
+            "released_at": aware(last.response_observer_released_at),
+        }
+    except (KeyError, AttributeError, TypeError, ValueError):
+        return None
+
+
+def _redispatch_chain_ceased(db, permit, agent, turn, candidate, observations):
+    """Fresh positive cessation for every possible POST, revalidated atomically."""
+    chain = _redispatch_chain(db, permit, agent, turn)
+    if chain is None or chain != candidate.get("redispatch_chain") or not observations:
+        return None
+    if set(observations) != set(chain["guests"]):
+        return None
+    proofs = []
+    for guest in chain["guests"]:
+        observed, at = observations[guest]
+        if (
+            not 0 <= (_now() - at).total_seconds() <= MAX_PROOF_AGE_SECONDS
+            or not isinstance(observed, dict)
+            or observed.get("session_id") != guest
+            or observed.get("state") not in {"evicted", "destroyed"}
+            or type(observed.get("generation")) is not int
+            or observed["generation"] < 0
+            or type(observed.get("updated_at")) is not int
+            or not 0 < observed["updated_at"] <= int(at.timestamp() * 1000)
+        ):
+            return None
+        started, last = (
+            observed.get("invoke_started_at"),
+            observed.get("last_invoke_at"),
+        )
+        if (started is None) != (last is None) or (
+            started is not None
+            and (
+                type(started) is not int
+                or type(last) is not int
+                or not 0 < started <= last <= observed["updated_at"]
+            )
+        ):
+            return None
+        if guest == agent.ember_session_id and not (
+            int(chain["created_at"].timestamp() * 1000)
+            <= observed["updated_at"]
+            <= int(chain["released_at"].timestamp() * 1000)
+        ):
+            return None
+        proofs.append(
+            {
+                "session_id": guest,
+                "terminal_state": observed["state"],
+                "generation": observed["generation"],
+                "updated_at": observed["updated_at"],
+                "observed_at": at.isoformat(),
+                "response_sha256": digest(observed),
+            }
+        )
+    return {"receipt_chain_sha256": chain["sha256"], "guests": proofs}
 
 
 def _stale_unbound_tier(permit):
@@ -581,7 +857,7 @@ def _prepare(permit_id):
             _reason(audit, "permit_missing")
             return None
         try:
-            agent, _, identity = _identity(db, permit, allow_stale_unbound=True)
+            agent, turn, identity = _identity(db, permit, allow_stale_unbound=True)
         except ValueError as exc:
             _reason(audit, str(exc))
             return None
@@ -594,6 +870,7 @@ def _prepare(permit_id):
             "permit_id": permit_id,
             "identity": identity,
             "guest_id": audit.guest_id,
+            "redispatch_chain": _redispatch_chain(db, permit, agent, turn),
         }
 
 
@@ -688,7 +965,7 @@ def _record_stale_unbound(candidate):
         db.add(audit)
 
 
-def _record(candidate, observed, observed_at, node_names=None):
+def _record(candidate, observed, observed_at, node_names=None, chain_observations=None):
     """Commit proof and exact permit settlement together, or retain the hold."""
     with Session(get_engine()) as db, db.begin():
         admission.lock_pool(db)
@@ -904,6 +1181,12 @@ def _record(candidate, observed, observed_at, node_names=None):
             recovered_redispatch = _recovered_review_redispatch_ceased(
                 db, permit, agent, turn, observed, recovery
             )
+            terminal_before_dispatch = _terminal_before_dispatch(
+                db, permit, agent, turn, observed, recovery
+            )
+            terminal_chain = _redispatch_chain_ceased(
+                db, permit, agent, turn, candidate, chain_observations
+            )
             exact_dispatch = exact_dispatch or recovered_redispatch
             if recovered_redispatch:
                 evidence["recovered_review_redispatch"] = True
@@ -917,6 +1200,13 @@ def _record(candidate, observed, observed_at, node_names=None):
                         terminal_reason="failed",
                         interrupted_turn=None,
                     )
+                audit.evidence_json = json.dumps(evidence, sort_keys=True)
+            if terminal_before_dispatch:
+                evidence["cessation_evidence"] = "terminal_before_dispatch"
+                audit.evidence_json = json.dumps(evidence, sort_keys=True)
+            if terminal_chain:
+                evidence["cessation_evidence"] = "terminal_receipt_chain"
+                evidence["terminal_receipt_chain"] = terminal_chain
                 audit.evidence_json = json.dumps(evidence, sort_keys=True)
             if not never_invoked and stop_completion is None and not exact_dispatch:
                 last_invoke = observed.get("last_invoke_at")
@@ -933,6 +1223,8 @@ def _record(candidate, observed, observed_at, node_names=None):
             if (
                 not exact_dispatch
                 and not never_invoked_live
+                and not terminal_before_dispatch
+                and not terminal_chain
                 and updated <= int(aware(turn.created_at).timestamp() * 1000)
             ):
                 raise ValueError("cessation_precedes_turn")
@@ -940,7 +1232,15 @@ def _record(candidate, observed, observed_at, node_names=None):
             _reason(audit, str(exc))
             db.add(audit)
             return False
-        if permit.routine_job_name is not None and (
+        if terminal_before_dispatch or terminal_chain:
+            admission.settle(
+                db,
+                agent,
+                permit.pending_seq,
+                outcome="guest_cessation_confirmed",
+                cessation_confirmed=True,
+            )
+        elif permit.routine_job_name is not None and (
             _routine_job_held(db, permit) or permit.outcome == "reservation_review_stop"
         ):
             try:
@@ -1061,6 +1361,25 @@ async def sweep_once(transport):
                 )
             except Exception:  # A missing or unavailable guest is not cessation.
                 observed = None
+            observed_at = _now()
+            chain_observations = None
+            chain = candidate.get("redispatch_chain")
+            if (
+                chain
+                and isinstance(observed, dict)
+                and observed.get("state") in {"evicted", "destroyed"}
+            ):
+                chain_observations = {candidate["guest_id"]: (observed, observed_at)}
+                for guest in chain["guests"]:
+                    if guest == candidate["guest_id"]:
+                        continue
+                    try:
+                        historical = await asyncio.wait_for(
+                            transport.get_session(guest), GET_TIMEOUT_SECONDS
+                        )
+                    except Exception:
+                        historical = None
+                    chain_observations[guest] = (historical, _now())
             node_names = None
             if isinstance(observed, dict) and observed.get("state") in {
                 "parked",
@@ -1070,7 +1389,12 @@ async def sweep_once(transport):
 
                 node_names = await cluster_node_names()
             destroy_precondition = await asyncio.to_thread(
-                _record, candidate, observed, _now(), node_names
+                _record,
+                candidate,
+                observed,
+                observed_at,
+                node_names,
+                chain_observations,
             )
             if destroy_precondition:
                 try:

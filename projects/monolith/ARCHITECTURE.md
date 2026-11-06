@@ -537,6 +537,10 @@ receipt, branch and landing owners preserve holds and history. Verified numeric
 author identity discovers work; an accepted objective or server-verified brief
 establishes scope, and fresh independent review still gates the current head.
 See [owner PR backlog](factory/orchestration/FACTORY.md#owner-authored-pr-backlog).
+Its optional standing landing delegation has a separate audit family and fixed
+private diagnostic boundary. The existing landing owner derives exact-head
+authority only after canonical provenance, fresh holds, independent review and
+CI pass, with rolling and lifetime per-PR caps shared across reauthorization.
 Activation and operational acceptance remain on #7597.
 
 **Why.** Security risk and human ownership are different labels. Excluding every
@@ -651,6 +655,38 @@ review, one line per task, cost per accepted PR, and shared planner and
 implementation starts (#5956).
 
 ### Execution and recovery rationale
+
+**Why.** An interactive follow-up can POST to an already evicted guest and then
+fail while restoring it (#7583). The old terminal timestamp precedes the local
+error, so the general cessation ordering guard leaves its permit uncertain.
+The permit supervisor can settle this exact capacity reservation when a fresh
+terminal view predates its first dispatch and the complete retained receipt
+chain names only that guest. Terminal guest IDs cannot relight; a replacement
+POST would require another committed receipt. The proof keeps receipt locks,
+claim ownership, retention bounds and all result/hold checks. It preserves the
+turn, unknown outcome, cost and workspace binding, and grants no retry.
+
+**Why.** A drain continuation can target the same earlier invocation, then fail
+restoring after the guest is evicted. Neither the first-dispatch proof nor an
+invoke stamp inside the second dispatch covers this case (#7583). A separate
+native interactive proof enumerates the complete retained two-dispatch chain
+(at most three receipts and two guests), observes every guest positively
+terminal, and rechecks the unchanged chain under the capacity/session/receipt
+locks. Session and permit age bound completeness before the first possible
+POST. The latest receipt must be unobserved, result-free and released; earlier
+responses remain history. Missing, live, stale or contradictory evidence keeps
+uncertainty. Settlement changes only the exact capacity permit, not the failed
+turn, unknown marker, cost, receipt history, binding or continuation authority.
+
+**Why.** A truncated native error cannot distinguish staged receipt preparation,
+promotion and admission-recheck failures (#7583). The transport records a bounded
+phase, SQLSTATE, promotion attempt and intent flag with numeric dispatch identity
+in private logs. Pre-intent terminal summaries retain phase and SQLSTATE within
+the existing voice limit, excluding driver text, SQL parameters and request data.
+Handled contention leaves no terminal diagnostic. Retry bounds, claim freshness,
+capacity waiting, accounting and post-intent uncertainty keep their existing
+owners. These diagnostics grant no recovery authority and do not establish the
+cause of a historical failure.
 
 **Why.** Sixteen of the thirty-one resolved cards in the newest fifty were
 dismissed because the issue body changed. Four came minutes after the card, on
@@ -782,6 +818,35 @@ same-node review through native capacity release. The judge retains bounded
 attempt authority; source holds and pause identity are rechecked at settlement.
 Legacy cards and uncertainty remain fenced. Public tickets carry only
 scoped code repairs and synthetic acceptance criteria.
+
+**Why.** Backlog-refill completion does not prove repair discovery or recovery.
+The operator status nests the repair producer's own persisted policy observation,
+source watermarks/cursors, next event, pending publication and recovery checkpoints
+under `refill.problem_issues.recovery`. This read never advances the producer or
+infers quota, ownership, retry permission or delivery from enabled switches.
+It exposes bounded metadata, excluding prompts and raw audit payloads, so #7583's
+operational acceptance can distinguish missing signals from unfinished repairs.
+
+**Why.** Producer-created repairs need an authorization owner at native landing
+(#7601, follow-up to #7583). An operator can enable a finite trial or explicitly
+select ongoing standing delegation through existing guarded controls. Ongoing
+authority uses a rolling 24-hour rate cap and cumulative per-repair/source-task
+bounds instead of silently renewing a trial. Existing grants retain their mode,
+paths and expiry. Exact marker/task lookups keep unrelated historical repairs
+from stranding a current one. The landing owner derives
+a separate machine audit from that decision, fresh machine-pause provenance,
+the repair's exact PR/head and independent typed scope review. Human per-head
+grants and their audit remain separate. No identity token, credential, scheduler
+or ledger is added. The first fixed path boundary covers existing private
+observation/discovery modules and their tests. An explicitly selected diagnostics
+profile adds only private rationale/diff parsers. Mixed executor, build and control
+files remain outside this file-bound authorization, not because every bug in them
+is a security change, but because the same files enforce native gates. Extracting
+pure helpers through reviewed delivery is the narrow expansion route. Public,
+security and authority changes remain operator exceptions. Native queue fences enforce revocation, policy drift,
+holds and uncertainty. Synthetic native landing tests establish code reachability;
+operational acceptance still requires an activated producer repair to land, roll
+out and resume its original node without a per-PR manual grant.
 
 ## 5. Chat
 
@@ -2228,6 +2293,37 @@ replacement was coming online. Serving through endpoint propagation addresses
 the race; retries cover a transient connection failure without re-executing a
 request that reached the application.
 
+
+**Why receipt schema precedes runtime rollout.** The nullable `attempt_phase`
+column is added before the staged-receipt runtime in
+[PR #7619](https://github.com/jomcgi-org/homelab/pull/7619). Atlas migration and
+Deployment resources can apply concurrently, and flag-off binaries still name
+the column. This schema-only prerequisite is inert to existing code and does not
+rewrite receipts. A metadata-only postcondition requires exactly one live,
+nullable scalar pg_catalog.text column with no default, identity or generated
+expression; a mismatch raises a fixed error without repairing data or schema.
+An Applied result therefore establishes this shape even when ADD skipped an
+existing column. Verify Atlas application before landing the runtime, keep its
+flag off until every compatible backend and progress-ingest replica is deployed,
+and enable only through a separate reviewed GitOps change. Keep the additive
+column on rollback; live recovery acceptance remains on
+[#7583](https://github.com/jomcgi-org/homelab/issues/7583).
+
+**Why receipt preparation does not retire an attempt.** Receipt preparation runs
+in a worker thread that can outlive cancellation. Retiring the previous receipt
+there let a rollout record a first response-loss hold whose exact receipt was
+subsequently superseded by an unposted retry. The staged protocol adds nullable
+`attempt_phase` without rewriting legacy rows. Prepared rows remain excluded by
+the existing `superseded_at` reader fence; promotion under the original ownership
+locks and a bounded executor handoff guard alone records conservative attempt
+intent and retires the predecessor. An indeterminate commit retains uncertainty;
+it never supplies cessation or zero-execution proof. The callback boundary still
+requires its exact credential, and only a fresh empty preparation can promote.
+This additive representation keeps prepared rows inert to old binaries during
+rollback. The chart defaults off until migration and complete receiver/executor
+rollout are verified; the activation and live acceptance sequence is in
+[FACTORY.md](factory/orchestration/FACTORY.md#execution-and-evidence), tracked by
+[#7583](https://github.com/jomcgi-org/homelab/issues/7583).
 
 **Why bounded permit diagnostics.** Unknown execution retains admission capacity
 until exact cessation evidence is reconciled. The operator-only

@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "631c56c59",
+  "commit": "b6340b130",
   "nodes": [
     {
       "key": "console-caller",
@@ -282,6 +282,102 @@
       "layer": "store",
       "maturity": "built",
       "evidence": "projects/monolith/factory/orchestration/backlog_refill_producer.py:150"
+    },
+    {
+      "key": "factory-start-diagnostics",
+      "label": "Read-only factory start and funding diagnostics",
+      "view": "logical",
+      "layer": "serving",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/factory_start_diagnostics.py:176,233"
+    },
+    {
+      "key": "factory-start-diagnostics-operator",
+      "label": "Standing human operator inspecting factory diagnostics",
+      "view": "logical",
+      "layer": "actor",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/mcp.py:1336,2174"
+    },
+    {
+      "key": "standing-landing-operator",
+      "label": "Standing human landing operator",
+      "view": "logical",
+      "layer": "actor",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:119; projects/monolith/factory/orchestration/repair_landing_delegation.py:120"
+    },
+    {
+      "key": "owner-pr-delegation",
+      "label": "Bounded owner PR landing delegation (default-off)",
+      "view": "logical",
+      "layer": "enforcement",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:541"
+    },
+    {
+      "key": "repair-delegation",
+      "label": "Bounded repair landing delegation (default-off)",
+      "view": "logical",
+      "layer": "enforcement",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/repair_landing_delegation.py:391"
+    },
+    {
+      "key": "factory-landing",
+      "label": "Factory landing and queue observer",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:691"
+    },
+    {
+      "key": "github-pulls",
+      "label": "GitHub pull requests and protected merge queue",
+      "view": "logical",
+      "layer": "store",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:606"
+    },
+    {
+      "key": "factory-owner-hold-text",
+      "label": "Existing owner PR text-hold check",
+      "view": "logical",
+      "layer": "enforcement",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/owner_prs.py:57,209,589,711"
+    },
+    {
+      "key": "factory-required-recovery",
+      "label": "Required recovery issue producer",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/factory_problem_issues.py:964"
+    },
+    {
+      "key": "factory-required-recovery-quota",
+      "label": "Token broker per-account quota evidence",
+      "view": "logical",
+      "layer": "feedback_source",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/provider_quota.py: fetch_provider_quota_sync; projects/embervm/tokenbroker/internal/quota/quota.go:438"
+    },
+    {
+      "key": "receipt-attempt",
+      "label": "Exact receipt preparation and attempt-intent owner",
+      "view": "logical",
+      "layer": "enforcement",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/result_receipts.py:97,160,230"
+    },
+    {
+      "key": "permit-supervisor",
+      "label": "Exact uncertain permit settlement owner",
+      "view": "logical",
+      "layer": "enforcement",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/permit_supervision.py:781"
     }
   ],
   "control_actions": [
@@ -644,6 +740,105 @@
       "to": "agent-runner",
       "maturity": "built",
       "evidence": "projects/monolith/factory/settled_retry_reconciliation.py"
+    },
+    {
+      "key": "standing-landing-operator.configure-owner",
+      "label": "Preview/apply or revoke bounded ongoing owner landing authority",
+      "view": "logical",
+      "from": "standing-landing-operator",
+      "to": "owner-pr-delegation",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:104"
+    },
+    {
+      "key": "standing-landing-operator.configure-repair",
+      "label": "Preview/apply or revoke bounded trial or ongoing repair landing authority",
+      "view": "logical",
+      "from": "standing-landing-operator",
+      "to": "repair-delegation",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/repair_landing_delegation.py:107"
+    },
+    {
+      "key": "owner-pr-delegation.derive-grant",
+      "label": "Record separate exact-head owner grant within rolling and canonical PR limits",
+      "view": "logical",
+      "from": "owner-pr-delegation",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:705"
+    },
+    {
+      "key": "repair-delegation.derive-grant",
+      "label": "Record separate exact-head repair grant within trial or rolling and task/source limits",
+      "view": "logical",
+      "from": "repair-delegation",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/repair_landing_delegation.py:555"
+    },
+    {
+      "key": "factory-landing.arm",
+      "label": "Arm the reviewed head through the protected queue after locked authority revalidation",
+      "view": "logical",
+      "from": "factory-landing",
+      "to": "github-pulls",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:691"
+    },
+    {
+      "key": "factory-landing.dequeue",
+      "label": "Disarm and dequeue a known delivery whose authority no longer validates",
+      "view": "logical",
+      "from": "factory-landing",
+      "to": "github-pulls",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:902"
+    },
+    {
+      "key": "factory-required-recovery.publish",
+      "label": "Record one bounded repair issue for an enabled recovery source",
+      "view": "logical",
+      "from": "factory-required-recovery",
+      "to": "github-issues",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/factory_problem_issues.py:964,1265"
+    },
+    {
+      "key": "receipt-attempt.prepare",
+      "label": "Stage a receipt without retiring the last attempted receipt",
+      "view": "logical",
+      "from": "agent-runner",
+      "to": "receipt-attempt",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/result_receipts.py:160"
+    },
+    {
+      "key": "receipt-attempt.promote",
+      "label": "Promote the exact empty preparation under ownership locks and the handoff guard",
+      "view": "logical",
+      "from": "agent-runner",
+      "to": "receipt-attempt",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/result_receipts.py:230; projects/monolith/factory/execution/transport.py:1980"
+    },
+    {
+      "key": "receipt-attempt.hold",
+      "label": "Persist the first exact response-loss hold before cancellation",
+      "view": "logical",
+      "from": "agent-runner",
+      "to": "receipt-attempt",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/mcp.py:915,954"
+    },
+    {
+      "key": "permit-supervisor.settle",
+      "label": "Settle exact interactive permit from complete terminal guest evidence",
+      "view": "logical",
+      "from": "permit-supervisor",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/permit_supervision.py:197,330,968"
     }
   ],
   "feedback": [
@@ -766,6 +961,129 @@
       "from": "embervm",
       "to": "factory-refill",
       "signal": "Fresh bounded terminal history and complete successor/restore exclusion for exact historical dispatch"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "factory-start-diagnostics",
+      "signal": "Exact receipt and canonical attempt identity, current control subgate and latest linked funding audit identities",
+      "evidence": "projects/monolith/factory/orchestration/factory_start_diagnostics.py:91,107,176,233"
+    },
+    {
+      "view": "logical",
+      "from": "factory-start-diagnostics",
+      "to": "factory-start-diagnostics-operator",
+      "signal": "Finite or unknown can_start observation and historical funding linkage; racy read, no dispatch or recovery authority",
+      "evidence": "projects/monolith/factory/orchestration/factory_start_diagnostics.py:53,176,233; projects/monolith/factory/MCP.md:65"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "owner-pr-delegation",
+      "signal": "Standing decision, durable policy-transition identity, authentic intake/refinement and canonical grant history"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "repair-delegation",
+      "signal": "Standing decision, durable policy-transition identity, exact producer/watch/machine-pause provenance and grant history"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "factory-landing",
+      "signal": "Scoped grants, receipt holds, task/start quiescence and claimed PendingMessage ownership"
+    },
+    {
+      "view": "logical",
+      "from": "agent-runner",
+      "to": "owner-pr-delegation",
+      "signal": "Server-validated independent exact-head typed review and private reversible path scope"
+    },
+    {
+      "view": "logical",
+      "from": "agent-runner",
+      "to": "repair-delegation",
+      "signal": "Server-validated independent exact-head typed review and private reversible path scope"
+    },
+    {
+      "view": "logical",
+      "from": "github-issues",
+      "to": "owner-pr-delegation",
+      "signal": "Fresh canonical/referenced objective scope, labels and discussion holds"
+    },
+    {
+      "view": "logical",
+      "from": "github-issues",
+      "to": "repair-delegation",
+      "signal": "Fresh repair/source objective ownership, labels and producer identity"
+    },
+    {
+      "view": "logical",
+      "from": "github-pulls",
+      "to": "factory-landing",
+      "signal": "Current PR head and identity, immutable diff evidence, required CI, auto-merge and queue state"
+    },
+    {
+      "view": "logical",
+      "from": "owner-pr-delegation",
+      "to": "factory-landing",
+      "signal": "Exact candidate matches durable owner grant, or explicit refusal"
+    },
+    {
+      "view": "logical",
+      "from": "repair-delegation",
+      "to": "factory-landing",
+      "signal": "Exact candidate matches durable repair grant, or explicit refusal"
+    },
+    {
+      "view": "logical",
+      "from": "github-issues",
+      "to": "factory-owner-hold-text",
+      "signal": "Fresh PR and referenced-objective bodies and discussion text; veto evidence only",
+      "evidence": "projects/monolith/factory/orchestration/owner_prs.py:556,691"
+    },
+    {
+      "view": "logical",
+      "from": "factory-required-recovery-quota",
+      "to": "factory-required-recovery",
+      "signal": "Fresh complete per-account permission, duration, usage, reset and pacing evidence",
+      "evidence": "projects/monolith/factory/orchestration/factory_problem_issues.py:83"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "factory-required-recovery",
+      "signal": "Retained recovery source events, policy watermarks, ownership and publication history",
+      "evidence": "projects/monolith/factory/orchestration/factory_problem_issues.py:564,938,964"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "receipt-attempt",
+      "signal": "Legacy NULL, inert prepared or conservative attempted phase with exact owner, superseded fence and first-hold identity",
+      "evidence": "projects/monolith/factory/execution/result_receipts.py:230,435,962"
+    },
+    {
+      "view": "logical",
+      "from": "receipt-attempt",
+      "to": "agent-runner",
+      "signal": "Pending or published attempt intent survives cancellation; neither proves guest receipt or cessation",
+      "evidence": "projects/monolith/factory/execution/transport.py:1980,2014; projects/monolith/factory/execution/mcp.py:1483"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "permit-supervisor",
+      "signal": "Locked exact permit, last turn, absent pending claim and complete unexpired receipt chain",
+      "evidence": "projects/monolith/factory/execution/permit_supervision.py:108"
+    },
+    {
+      "view": "logical",
+      "from": "embervm",
+      "to": "permit-supervisor",
+      "signal": "Fresh exact terminal guest identity, generation and invocation timestamps",
+      "evidence": "projects/monolith/factory/execution/permit_supervision.py:781"
     }
   ]
 }

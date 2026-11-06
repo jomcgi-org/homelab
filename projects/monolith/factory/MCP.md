@@ -62,6 +62,13 @@ unless another owner supplies evidence. Work-item context includes current open
 blockers, the GitHub source timestamp and bounded correction history, without
 turning those records into mutation authority.
 
+Task detail's `start_diagnostics` reports the current `can_start` control gate,
+effective deadline, and latest funding request, settlement and grant identities.
+The funding projection retains pending-request relationships, cooldown and
+operator/recovery fences while excluding private plans and refusal prose.
+These are current observations, with no evidence that a reconciliation tick ran.
+Malformed evidence produces unknown diagnostics.
+
 `factory_diagnostics(kind="session_dispatch", session_id=..., seq=...)` reads
 exact turn queue, permit and fence metadata. The compatibility name
 `factory_session_dispatch_diagnostics(session_id=..., seq=...)` reaches that
@@ -69,6 +76,13 @@ same owner for connected callers whose tool catalog predates consolidation.
 Both require a standing human operator and strict positive integer identities.
 Neither contacts a guest, changes execution or authorizes recovery; recorded
 cessation metadata is not independent fresh cessation proof.
+
+Session dispatch also reports `factory_gate` after matching the session's
+canonical task, node, attempt and workflow against its durable run. A missing
+or conflicting identity remains unknown. This is the same `can_start` subgate
+the executor checks before claiming a pending message. Transport, quota and
+physical capacity gates remain unevaluated. A positive subgate grants no
+dispatch or recovery authority. These reads never claim or alter queued turns.
 
 If a cached caller still cannot invoke that restored name, the established
 `factory_status(target="session_dispatch", session_id=..., seq=...)` reaches
@@ -316,9 +330,15 @@ Identical request replay returns the recorded result; changed arguments conflict
 ### Bounded refill control
 
 `factory_status.refill` reports the effective refill/scout policy, bounded intake
-selection, producer checkpoints and the existing `factory-retro-daily` schedule.
+selection, backlog-refill checkpoints and the existing `factory-retro-daily` schedule.
 A schedule or enabled flag does not prove generation, eligibility, admission or
 execution; inspect those stages separately.
+
+`refill.problem_issues.recovery` separately reads the repair producer's policy
+observation, source watermarks and cursors, next source events, pending write,
+latest creation/watch/observed-recovery checkpoints and ten recent events.
+Missing recovery evidence stays null. This bounded metadata read does not check
+live quota or GitHub ownership, advance producer history, or authorize recovery.
 
 Standing operators use `factory_configure_refill` with `operation=preview`, the
 current control version, an offered `astra` or `opus` model, `enabled` and
@@ -385,9 +405,13 @@ an old default. Enabling the master through this narrow control refuses when
 an unrelated stored source is true; resolve that separate policy choice through
 its owner first. The control never silently enables or edits those sources.
 
-Fresh per-account spare-quota evidence uses the existing improvement preview
-rules. A waiting source is retried on the next ordinary cadence, without a
-manual trigger. It creates at most one deduplicated `bug` issue per tick within
+Required recovery discovery uses fresh per-account ordinary permitted quota.
+The existing evidence, pacing and short-window guards still apply. A reported
+window of five hours or less needs at least 10 percent headroom even when no
+longer companion window is present. Optional scouting's surplus, remaining-quota
+and reset-horizon targets do not apply. Discovery does not authorize a paid start.
+A waiting source is retried on the next ordinary cadence, without a manual
+trigger. It creates at most one deduplicated `bug` issue per tick within
 the existing daily cap. Discovery accepts either enabled refinement of bugs or
 matching direct intake labels, with repository exclusions, pauses and refinement
 batches preserved. Closed gates and quota waits leave unrelated sources eligible.
@@ -460,6 +484,111 @@ new tool name in a cached caller registry. If the caller also rejects its new
 arguments, supported schema discovery must still be refreshed; server catalog
 evidence alone cannot change a client's schema. Legacy `configure` is not a substitute.
 
+### Enable bounded repair landing
+
+Default-off standing delegation closes the producer-to-landing handoff for a
+limited class of new repairs (#7601). It does not enable intake, producer sources,
+global auto-merge or funding. Set those through their existing owners first;
+any later policy change invalidates this delegation. No rollout migration
+activates it.
+
+After independent review and verified rollout, a standing human operator uses
+the existing callable `factory_configure_refill`:
+
+1. Read `factory_status.version` and confirm `control_catalog` advertises target
+   `repair_landing`, `duration_minutes`, `max_repairs`, `delegation_mode` and
+   `path_profile`, with `arguments_complete: true`. Caller schemas that
+   reject these arguments must be refreshed; a new tool name is unnecessary.
+2. Preview with `operation: "preview"`, `target: "repair_landing"`,
+   `enabled: true`, `model: "astra"`, `hourly: false`, `duration_minutes: 1440`,
+   `max_repairs: 3`, the current `expected_version`, and a trial `reason`.
+   This selects the finite trial (the default `delegation_mode`). For ongoing
+   operation explicitly set `delegation_mode: "ongoing"`, omit
+   `duration_minutes`, and use `max_repairs: 3` per rolling 24 hours.
+   The model/hourly arguments are unchanged compatibility placeholders.
+   Omit producer switches, `reset_breaker` and `min_new_issues`. Inspect the
+   returned fixed `allowed_paths`, policy digest, mode and bounds. The default
+   `path_profile: "observation"` retains the original file boundary. Explicit
+   `path_profile: "diagnostics"` adds only the four parser paths described below.
+3. Apply with identical arguments except `operation: "apply"`; add a fresh
+   `request_key` and the exact `expected_preview_sha256` from preview. Reuse
+   the same key and arguments after an uncertain response. This writes only
+   standing authorization to the existing audit journal and increments control
+   version. Policy, generation, receipts and ownership stay unchanged.
+4. Re-read `factory_status.repair_landing`. A successful replay reports the
+   original command's outcome, so replaying an old enable after revocation
+   cannot establish current authority. Fresh source and producer events must
+   occur after this authorization. There is no historical adoption.
+
+Trial duration is 1–1440 minutes; the limit is 1–10 lifetime exact machine
+derivations. Existing authorizations remain trials, including their original
+expiry and replay identity. No deployment or replay upgrades them.
+
+Ongoing mode has no expiry or lifetime global count. It requires explicit
+preview/apply and enforces 1–10 derivations per rolling 24 hours, plus at most
+three cumulative derivations per repair task and per source task. Counts span
+standing authorizations: revoke/re-enable or a new rate window cannot reset
+either task's cumulative bound. Each changed head, review or source proof needs
+another slot; unchanged exact replay spends none, even after unrelated repairs.
+The existing landing tick retries a rate-limited repair when the window permits;
+this writes a scope wait, not a permanent refusal. Already granted queue entries
+are not invalidated merely because the rolling allowance is full. Task/source
+exhaustion remains an explicit exception. No scheduler or automatic renewal is
+added. Status reports mode, expiry, rate-window usage and cumulative limits.
+
+A derivation does not guarantee queue entry and is not refunded after refusal.
+To revoke,
+preview/apply `enabled: false` with the current version, the same target and
+explicit mode/count (duration only for trials). New arming stops immediately under the control lock;
+the existing observer disarms/dequeues outstanding grants on its next tick.
+Already completed external actions cannot be undone by revocation.
+
+Only new node-bound `recurring_blocker` repairs from a fresh recoverable machine
+pause qualify. The initial fixed paths are `.py` and `_test.py` files for
+`factory_problem_issues`, `factory_intake_loop`, `factory_progress_watchdog` and
+`factory_feedback` under `projects/monolith/factory/orchestration/`. Changes must
+modify existing regular non-executable UTF-8 files. A separate independent
+exact-head review must provide `landing_scope`, including the PR's exact merge-base commit
+and complete path list, and positively classify the change as private, internal
+and reversible. Its public/security/credential/destructive flags must all be
+false. Authority or safety-gate changes and ambiguous scope require an operator.
+Required CI, protected merge queue and source/repair holds remain binding.
+Unrelated main-tip movement preserves that reviewed diff. A changed merge base,
+head or file evidence refuses and needs fresh independent scope review.
+The eight-file ceiling applies only to machine delegation eligibility. Ordinary
+and legacy reviews, including `requires_operator` reviews with more files,
+remain valid artifacts.
+
+The opt-in `diagnostics` profile additionally permits existing `.py` and
+`_test.py` files for `factory/execution/rationale` and
+`factory/orchestration/unified_diff`, under `projects/monolith/`. These parse
+private execution rationale and diff presentation; they do not grant execution,
+funding, landing or credential authority. Selecting the profile is a separately
+digested operator choice, never an automatic expansion of an older grant.
+
+Routine faults in mixed-owner files are not inherently security exceptions, but
+this file-bound mechanism cannot authorize only their non-authority functions.
+For example, `factory/execution/push_format.py` also verifies admitted dispatch
+and push-branch identity; `factory/orchestration/runtime.py` dispatches recorded
+nodes; `factory_controls.py` implements standing operator decisions; and
+`bazel/tools/ci/` owns required checks. Those complete files remain excluded.
+A concrete safe expansion is to extract a pure parsing/presentation helper into
+a named private module through independently reviewed delivery, then explicitly
+add that module to a previewed profile. Granting whole mixed-owner files instead
+needs a separately reviewed authorization design that preserves those guards.
+Root `AGENTS.md` requires preservation of admission, ownership, limits, CI and
+queue gates; `FACTORY.md` reserves control transitions to a standing human.
+This patch changes neither rule and cannot authorize repairs to its own guards.
+
+Unsupported automatic scope includes arbitrary stranded workflows without
+node-bound machine-pause proof, historical cards, authority-owner repairs
+(funding, graph, controls, landing or MCP), public files, new/deleted/renamed
+files, security or credential changes. This follow-up itself therefore cannot
+use the delegation it adds. It requires the assigned independent delivery owner.
+Native integration tests exercise real producer, intake, independent review,
+scope derivation and queue arming. They do not establish live acceptance; keep
+#7583 and #7601 open until the full proof below is recorded privately.
+
 ### Verify fresh same-node recovery
 
 Keep the recovery tracking issue open until live evidence proves both repair
@@ -468,7 +597,10 @@ are intermediate outcomes. Keep receipt, run, quota and audit evidence private.
 
 1. After verified rollout, confirm effective producer sources and an enabled
    ordinary bug-intake lane. Observe a new producer-created repair issue from
-   a genuine recurring blocker or stranded workflow. Source watermarks exclude
+   a genuine recurring blocker. For unattended landing, activate the bounded
+   delegation before the fresh source signal and use its supported file scope.
+   Stranded workflows outside that scope still need their own landing authority.
+   Source watermarks exclude
    historical signals. Follow its ordinary implementation, exact-head review,
    CI, merge queue and verified rollout. Do not submit a duplicate tracking task.
 2. Select an existing fresh **admitted** task through private status and task
@@ -680,3 +812,20 @@ reports the target and argument names independently of client visibility.
 Read `intake.owner_pr_backlog` for the latest observed backlog and separate
 merged/verified delivery counts. An activated producer or queued receipt is not
 operational acceptance; #7597 retains the real autonomous delivery demonstration.
+
+### Owner PR standing landing decision
+
+`factory_configure_refill` also accepts `target=owner_pr_landing`. This distinct
+decision is default off. Use `model=astra`, `hourly=false`, the current version,
+`enabled`, and a reason. Omit owner identity and all refill/problem/repair
+options: preview binds the already configured numeric owner identity and lists
+the exact frozen private paths. Apply with its digest and a stable request key.
+It preserves policy, producer settings and history, and dispatches no work.
+
+The preview explicitly permits pre-existing adopted PRs and fixes the bounds at
+three new exact-head derivations per rolling 24 hours across authorizations and
+three per canonical PR across receipts/generations. Required CI, independent
+typed review and the existing queue remain mandatory. Status is reported under
+`factory_status.owner_pr_landing`. Disable fences existing queued grants on the
+next landing observation. Changing and restoring intake policy cannot revive an
+earlier authorization. Activation alone is not autonomous backlog acceptance.

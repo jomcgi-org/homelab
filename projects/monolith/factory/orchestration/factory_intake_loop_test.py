@@ -151,7 +151,7 @@ def test_activated_repair_producer_reaches_ordinary_bug_intake(db, monkeypatch, 
     )
     with Session(db) as session:
         configured = json.loads(session.get(FactoryControl, "factory").policy_json)
-    monkeypatch.setattr(producer, "_spare_quota", lambda: True)
+    monkeypatch.setattr(producer, "_recovery_quota", lambda: True)
     monkeypatch.setattr(producer, "_now", lambda: NOW)
     monkeypatch.setattr(
         factory_conductor, "github_get", lambda *args: issue(1, ["bug"])
@@ -4254,3 +4254,153 @@ def test_intake_observations_keep_latest_history_with_bounded_status_reads(db):
     assert len(reads) <= 2, (
         "owner backlog visibility must not increase status read work"
     )
+
+
+# Exact native briefs accepted by receipts 1107/1108; these assertions previously
+# became discussion holds. Keep complete comments to exercise surrounding prose.
+OWNER_ABSENCE_BRIEFS = (
+    # https://github.com/jomcgi-org/homelab/pull/7442
+    "## Agent brief\n\n### Outcome\n\nagent-ready. Adopt PR #7442 as the existing six-commit simplification batch. The current head is non-draft and mergeable with successful pr-checks; independent current-head review remains outstanding. No explicit human, security or leave-unmerged hold was found in the PR labels, discussion or reviews.\n\n### Acceptance\n\nProposed conductor default: retain the existing PR and branch claude/project-thread-tcefg1, and deliver the six behaviour-preserving refactors as one batch. Do not add further nightly changes to this scope. This brief proposes the next delivery work; it executes none of it.\n\n- Preserve naive-as-UTC coercion, existing timezone offsets and None handling. Keep isoformat_or_none distinct from helpers that add or normalize timezone information.\n- Preserve canonical-JSON digest bytes, SQL parameters and plain-dict row results. Keep the admission diagnostics helper that adapts schema prefixes for SQLite.\n- Preserve SSE frame bytes and the chat_public.api re-export consumed by moving.chat. Keep the explicit pkg_shared dependency and shared_sse_test target.\n- Validate clock/db/SSE helpers and affected reconciliation, refill, refinement, learning/retro, knowledge and chat consumers. Confirm tests execute, and investigate any baseline differences rather than inheriting the PR body’s test claims.\n- Obtain independent review of the final head and successful required CI, repair in-scope findings, then use the existing landing owner and merge queue. A changed head needs fresh review and checks. No new issue or replacement PR is needed.\n\n### Files\n\nAll changes are under projects/monolith: core/clock.py and core/db.py with tests; shared/sse.py and shared/sse_test.py; BUILD; datetime consumers in agent, chat, knowledge, grimoire and factory/execution; digest and SQL consumers in factory/orchestration with updated tests; chat_public/api.py and grimoire_chat/router.py, replacing their duplicate SSE modules.\n\n### Evidence\n\n- git: AGENTS.md, Merge authority and Evolution, provide standing maintenance authority for reversible simplification while preserving required CI, independent review and the merge queue. Author identity alone is not the authority.\n- git: projects/monolith/ARCHITECTURE.md sections 4 and 10, and factory/orchestration/FACTORY.md, separate repository delivery from operational acceptance and require independent exact-head review. No policy or authentication change is in this diff.\n- git: 3cd50f36683d67183c1bccbd0b4db909ccdd1310, PR #7442 current head and local checkout. The diff consolidates clock helpers, controls.digest, query_rows and format_sse; helper tests and the new Bazel SSE test target are present.\n- GitHub: fresh PR #7442 read shows OPEN, isDraft=false, MERGEABLE/CLEAN, no labels or milestone, no submitted reviews and no inline comments. pr-checks is SUCCESS on this head; Polylane is NEUTRAL. The manifest-diff comment reports no changes across 16 applications, but is older than the current head and is not rollout evidence.\n- GitHub: #7597 records Joe’s direction to complete existing owner PRs under existing authority and gates. The prior batch #7205 is merged. Related #7591 concerns frontend SSE parsing; it does not replace this backend formatter consolidation. The inspected title search and timeline yielded no superseding batch.\n- KG: Paused refill tasks can remain in flight past their deadline without settlement (unverified). The focused search returned no direct #7442 decision. That adjacent failure claim is not used as evidence that this refactor fixes recovery; current code and PR state establish this verdict.\n\n### Risks\n\nShared helpers affect many consumers. Review datetime boundary cases, digest compatibility, SQL result mappings, retained SQLite adaptation and SSE import/re-export compatibility. The PR body’s broad tzinfo truthiness claim should not replace tests of supported values.\n\nOutstanding live checklist for the delivery owner after landing: verify the resulting monolith and monolith-public rollouts; check representative factory timestamp/digest/row-loading paths and moving/grimoire SSE streams for regressions. This brief does not query or operate the cluster and makes no deployed-health claim. Existing unrelated operational acceptance and holds remain unchanged.",
+    # https://github.com/jomcgi-org/homelab/pull/7462
+    "## Agent brief\n\n### Outcome\n\nagent-ready. Adopt existing PR #7462 on `claude/funny-feynman-u3dqoz` for default-off repository delivery under Joe's November 2 decision on #7461. Independent review remains required. Discord provisioning, credential operations and enablement remain outside this scope and reserved for Joe.\n\n### Acceptance\n\n- Proposed conductor default: finish the existing PR, preserving `grimoireDiscordSource.enabled=false`. Repair in-scope test or review findings on its existing branch; do not create a replacement PR. The PR is already non-draft.\n- Preserve identifier-only Discord matching, verified-email and existing-email rejection, stable `discord-<id>` usernames, external users under `grimoire`, and no group or permission grants. Only Grimoire's provider selects the optional flow; shared login and other applications retain their behavior.\n- Validate the real Helm rendering and fixture policy tests through the declared Bazel target, including disabled/enabled output and `!KeyOf` creation order. Default-off means no active Discord source or OnePasswordItem, not byte-identical manifests: optional environment references and a blueprint comment are present with the flag off. Describe that distinction accurately.\n- Obtain independent review of the current head and preserve required CI and merge-queue gates. Keep campaign-creation restriction and owner-controlled activation tracked under #7461; neither blocks landing the disabled source. Record any changed architectural decision in the domain ARCHITECTURE.md with a **Why.** paragraph and a Direction row for remaining work.\n\n### Files\n\n- `projects/platform/authentik/`: `BUILD`, `values.yaml`, `README.md`, `grimoire_discord_source_test.py`, `blueprints/grimoire-auth.yaml`, `optional/grimoire-discord-source.yaml`, `templates/blueprints-configmap.yaml`, `templates/grimoire-discord-secret.yaml`.\n- Existing PR architecture note: `projects/monolith/grimoire/architecture.md`; domain decision context: `projects/monolith/ARCHITECTURE.md` and `projects/platform/ARCHITECTURE.md`.\n\n### Evidence\n\n- Accepted scope: #7461, Joe's November 2 decision, https://github.com/jomcgi-org/homelab/issues/7461#issuecomment-6571097129 explicitly says to land #7462 default-off after independent review. It reserves Discord registration, 1Password credentials, enablement approval and disposable-account testing for Joe. This later decision narrows the older issue-body hold on Authentik changes.\n- Fresh GitHub PR state: open, non-draft, MERGEABLE/CLEAN, head `5eab0acc9db9add35865b5589491d78764f40ff2`; `pr-checks` SUCCESS, Polylane NEUTRAL, no submitted reviews or inline review comments, no labels or milestone. Current discussion contains no explicit leave-unmerged hold. Related-PR search found no superseding Discord sign-in implementation.\n- git: `5eab0acc9db9add35865b5589491d78764f40ff2`, `AGENTS.md` authorizes accepted repository work while requiring independent review, CI, merge queue and preserved authentication boundaries. The local checkout matches the PR head.\n- git: `projects/platform/authentik/values.yaml`, `templates/blueprints-configmap.yaml`, `templates/grimoire-discord-secret.yaml`, `optional/grimoire-discord-source.yaml` confirm the disabled default, conditional source/secret rendering, Grimoire-only splice and enrollment safeguards. `BUILD` wires the test to the real Helm binary; the test runs Helm for both flag states. This briefing did not rerun tests or establish live behavior.\n- git: `projects/monolith/grimoire/architecture.md` separates identity enrollment from campaign membership and identifies campaign-creation gating before enablement. `projects/platform/ARCHITECTURE.md` records declarative Authentik blueprints and 1Password-managed credentials.\n- KG: Grimoire requires a verified standing human principal and treats X-Auth-Email only as a consistency check (verified). Confirmed against git: `projects/monolith/grimoire/access.py`; the identity boundary is not permission to grant campaign-creation or operator access.\n\n### Risks\n\nOutstanding activation checklist, outside this PR's default-off delivery: Joe registers the Discord callback and stores credentials; campaign creation is restricted; Joe approves a separate enablement GitOps PR; disposable-account testing checks actual `oauth_userinfo` context, verified and unverified emails, duplicate existing emails, repeat login, lack of group/privileged access, campaign admission and unaffected non-Grimoire sign-in. Existing invitation users cannot automatically link Discord by email. Verify the pinned Authentik behavior before activation. Optional environment references still change pod specifications with the flag off; do not claim there is no deployment-level diff. No live rollout or security acceptance is claimed here. These proposed defaults do not authorize provisioning, credential use or activation.\n",
+)
+
+
+@pytest.mark.parametrize("brief", OWNER_ABSENCE_BRIEFS, ids=["7442", "7462"])
+@pytest.mark.parametrize(
+    "later_hold",
+    [
+        " Do not merge; explicit human hold.",
+        "\n\n- That is wrong.",
+        "\n\n* Disregard the previous statement.",
+        "\n\n- Unless told otherwise.",
+        "\n\n- False.",
+    ],
+)
+def test_owner_pr_absence_brief_reaches_receive_and_late_hold_check(
+    db, monkeypatch, brief, later_hold
+):
+    from factory.orchestration import owner_prs
+
+    value, pull, objective = owner_policy(), owner_pull(), issue(1, ["agent-ready"])
+    enable_owner_policy(db, value)
+    comments = [{"body": brief}]
+    owner_reads(monkeypatch, pull, objective, comments)
+    assert owner_prs.HOLD.search(brief)  # Reproduces the former raw match.
+    assert owner_prs._hold({"body": brief}, set()) is None
+    chosen = {**value, "owner_pr_issue_number": 1}
+    received = owner_prs.receive("owner/repo", 100, chosen, generation=1)
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, received["receipt"]["id"])
+        direction = json.loads(row.direction_json)
+        assert row.state == "queued"
+        assert "landing_authorization" not in direction
+    task = {"repo": "owner/repo", **direction}
+    assert owner_prs.assert_unheld(task, pull) is None
+
+    # A later positive hold or list-separated retraction cannot be erased by
+    # the earlier absence assertion or rewrite canonical ownership.
+    if later_hold.startswith(" Do not merge"):
+        comments.append({"body": later_hold})
+    else:
+        comments[0]["body"] += later_hold
+    with pytest.raises(owner_prs.OwnerPRHold):
+        owner_prs.assert_unheld(task, pull)
+    with pytest.raises(owner_prs.OwnerPRHold):
+        owner_prs.receive("owner/repo", 100, chosen, generation=1)
+    with Session(db) as session:
+        rows = session.exec(select(FactoryReceipt)).all()
+        assert len(rows) == 1 and rows[0].direction_json == json.dumps(direction)
+        assert rows[0].state == "queued"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Leave unmerged.",
+        "Keep this PR draft.",
+        "Do not merge.",
+        "Don't merge.",
+        "Outside the merge queue.",
+        "Landing hold.",
+        "Deployment requires separate authorization.",
+        "No leave-unmerged hold was found.",
+        "Current discussion may contain no explicit leave-unmerged hold.",
+        "Current discussion contains no explicit leave-unmerged hold until review.",
+        "If approved, Current discussion contains no explicit leave-unmerged hold.",
+        "Current discussion contains no explicit leave-unmerged hold. Unless told otherwise.",
+        "Current discussion contains no explicit leave-unmerged hold. This is false.",
+        "Current discussion contains no explicit leave-unmerged hold. That is wrong.",
+        "Current discussion contains no explicit leave-unmerged hold. Disregard the previous statement.",
+        "Current discussion contains no explicit leave-unmerged hold.\n\nDisregard the previous statement.",
+        "Current discussion contains no explicit leave-unmerged hold.\n\n- That is wrong.",
+        "Current discussion contains no explicit leave-unmerged hold.\n\n* Disregard the previous statement.",
+        "- That is wrong.\n\nCurrent discussion contains no explicit leave-unmerged hold.",
+        "* Disregard the previous statement.\n\nCurrent discussion contains no explicit leave-unmerged hold.",
+        "Current discussion contains no explicit leave-unmerged hold.\n\n- Unless told otherwise.",
+        "Current discussion contains no explicit leave-unmerged hold.\n\n- False.",
+        "Current discussion contains no explicit leave-unmerged hold. That assessment is withdrawn.",
+        "Current discussion contains no explicit leave-unmerged hold. The observation is not current.",
+        "Current discussion contains no explicit leave-unmerged hold. The observation is not authoritative.",
+        "Current discussion contains no explicit leave-unmerged hold. That was a mistake.",
+        "Ignore this. Current discussion contains no explicit leave-unmerged hold.",
+        "Example: Current discussion contains no explicit leave-unmerged hold.",
+        "Example:\n\nCurrent discussion contains no explicit leave-unmerged hold.",
+        "If ready:\n\nCurrent discussion contains no explicit leave-unmerged hold.",
+        "The quote is:\n\nCurrent discussion contains no explicit leave-unmerged hold.",
+        "Current discussion contains no explicit leave-unmerged hold.\n\nThis statement is false.",
+        'Joe said: "Current discussion contains no explicit leave-unmerged hold."',
+        '"Current discussion contains no explicit leave-unmerged hold."',
+        "‘Current discussion contains no explicit leave-unmerged hold.’",
+        "> Current discussion contains no explicit leave-unmerged hold.",
+        "`Current discussion contains no explicit leave-unmerged hold.`",
+        "```\n\nCurrent discussion contains no explicit leave-unmerged hold.\n```",
+        "<blockquote>\n\nCurrent discussion contains no explicit leave-unmerged hold.</blockquote>",
+        "    Current discussion contains no explicit leave-unmerged hold.",
+        "Current discussion contains no explicit leave-unmerged hold. Do not merge.",
+        "Do not merge. Current discussion contains no explicit leave-unmerged hold.",
+        "Current discussion contains no explicit leave-unmerged hold.\n\nLeave unmerged.",
+        "No explicit human, security or leave-unmerged hold was found in the PR labels, discussion or reviews; keep this draft.",
+        "Current discussion contains no explicit leave-unmerged hold. " + "x" * 4096,
+    ],
+)
+def test_owner_pr_positive_or_ambiguous_hold_remains_a_veto(text):
+    from factory.orchestration import owner_prs
+
+    assert owner_prs.HOLD.search(text)
+    assert owner_prs.has_hold(text)
+
+
+def test_owner_pr_absence_does_not_clear_cached_discussion_hold(db):
+    from factory.orchestration import owner_prs
+
+    pull = owner_pull(
+        body="Closes #1.\n\nCurrent discussion contains no explicit leave-unmerged hold.",
+        updated_at="unchanged",
+    )
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(
+                actor=controls.INTAKE_ACTOR,
+                action="owner_pr_discussion_held",
+                created_at=NOW,
+                detail_json=json.dumps(
+                    {
+                        "repo": "owner/repo",
+                        "pr_number": 100,
+                        "pr_updated_at": "unchanged",
+                    }
+                ),
+            )
+        )
+        session.commit()
+    # Existing cached refusals expire/reobserve through their normal owner.
+    assert (
+        owner_prs.candidates(
+            "owner/repo", [pull], [issue(1, ["agent-ready"])], owner_policy()
+        )
+        == []
+    )
+    assert audits(db, "owner_pr_discussion_held")
+    observation = json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"][0]
+    assert observation["blocker"] == "explicit_discussion_hold"

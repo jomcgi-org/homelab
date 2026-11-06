@@ -740,9 +740,17 @@ def _arm(repo: str, item: dict) -> None:
         )
 
         with _read_session() as db:
+            owner = releases.delegation_owner(_receipt(db, item["task_id"]))
             refusal = releases.scoped_refusal(
                 db, _receipt(db, item["task_id"]), number, head
             )
+        if owner is not None and (
+            refusal == "scoped_landing_authorization_missing"
+            or (
+                refusal and refusal.startswith(("repair_landing_", "owner_pr_landing_"))
+            )
+        ):
+            refusal = owner.prepare(item["task_id"], number, head)
         if refusal:
             _scope_wait(item, refusal)
             return
@@ -908,27 +916,37 @@ def _fence_ungranted_queue_entry(repo: str, item: dict, pr: dict | None = None) 
         queued = node_id in _queued_ids([node_id])
         if pr.get("auto_merge") is None and not queued:
             return False
-        head = (pr.get("head") or {}).get("sha")
-        with _read_session() as db:
+        # A preview from before a concurrent control change cannot dequeue a
+        # newly authorized head. Re-observe under the same lock as grant apply.
+        with _locked_session() as (db, _control):
+            pr = github_get(repo, f"pulls/{item['pr_number']}")
+            if pr.get("merged") or pr.get("state") != "open":
+                return False
+            if pr.get("node_id") != node_id:
+                raise ValueError("ungranted holder identity changed")
+            queued = node_id in _queued_ids([node_id])
+            if pr.get("auto_merge") is None and not queued:
+                return False
+            head = (pr.get("head") or {}).get("sha")
             refusal = releases.scoped_refusal(
                 db, _receipt(db, item["task_id"]), item["pr_number"], head
             )
-        if not refusal:
-            evidence = review_publisher.collect(item["task_id"])
-            if not isinstance(evidence, review_publisher.ReviewEvidence) or (
-                evidence.repo,
-                evidence.pr_number,
-                evidence.head_sha,
-            ) != (repo, item["pr_number"], head):
-                refusal = "current_independent_review_missing"
-        if not refusal:
-            return False
-        if pr.get("auto_merge") is not None and not _disarm(repo, pr):
-            return True
-        if queued:
-            github_graphql(_DEQUEUE_PULL_REQUEST, {"pullRequestId": node_id})
-            if node_id in _queued_ids([node_id]):
-                raise ValueError("ungranted delivery remains queued")
+            if not refusal:
+                evidence = review_publisher.collect(item["task_id"], session=db)
+                if not isinstance(evidence, review_publisher.ReviewEvidence) or (
+                    evidence.repo,
+                    evidence.pr_number,
+                    evidence.head_sha,
+                ) != (repo, item["pr_number"], head):
+                    refusal = "current_independent_review_missing"
+            if not refusal:
+                return False
+            if pr.get("auto_merge") is not None and not _disarm(repo, pr):
+                return True
+            if queued:
+                github_graphql(_DEQUEUE_PULL_REQUEST, {"pullRequestId": node_id})
+                if node_id in _queued_ids([node_id]):
+                    raise ValueError("ungranted delivery remains queued")
         if holding(item) and head != item["head_sha"]:
             _refuse(item, "head_moved", armed_head_sha=item["head_sha"], head_sha=head)
         else:
@@ -1622,8 +1640,8 @@ def landing_tick(policy: dict) -> None:
             item
             for item in _deliveries(policy, include_refused=True, rotate=True)
             if not _enforce_landing_hold(policy["repo"], item)
-            and not _enforce_owner_pr_hold(policy["repo"], item)
             and not _fence_ungranted_queue_entry(policy["repo"], item)
+            and not _enforce_owner_pr_hold(policy["repo"], item)
             and not operator_target(item["task_id"])
             and (not item.get("paused") or item.get("owned_merge_observed"))
         ]

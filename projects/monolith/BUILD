@@ -1474,6 +1474,7 @@ py_library(
         "factory/orchestration/api.py",
         "factory/orchestration/factory_controls.py",
         "factory/orchestration/factory_funding_limits.py",
+        "factory/orchestration/factory_start_diagnostics.py",
         # Status needs the durable landing reader in the pruned controls closure.
         # pkg_swarm's existing glob shares this same source artifact.
         "factory/orchestration/factory_landing.py",
@@ -2910,6 +2911,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_sandbox",
+        ":pkg_shared",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -3064,6 +3066,30 @@ py_test(
 )
 
 py_test(
+    name = "shared_async_retry_test",
+    srcs = ["shared/async_retry_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "shared_async_retry_adapters_test",
+    srcs = ["shared/async_retry_adapters_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cyclegroup",
+        ":pkg_shared",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "shared_embedding_test",
     srcs = ["shared/embedding_test.py"],
     imports = ["."],
@@ -3103,6 +3129,18 @@ py_test(
         ":pkg_shared",
         "@pip//opentelemetry_sdk",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "shared_embervm_submit_test",
+    srcs = ["shared/embervm_submit_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
     ],
 )
 
@@ -5188,6 +5226,26 @@ py_test(
 )
 
 py_test(
+    name = "swarm_owner_pr_landing_delegation_test",
+    srcs = ["factory/orchestration/owner_pr_landing_delegation_test.py"],
+    # Reuse the established native repair fixture without copying its producer.
+    data = ["factory/orchestration/factory_conductor_test.py"],
+    # Import the fixture without collecting its full, separately tested suite.
+    env = {"PYTEST_ADDOPTS": "--ignore=projects/monolith/factory/orchestration/factory_conductor_test.py"},
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//httpx",
+        "@pip//jsonschema",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_factory_rollout_test",
     srcs = ["factory/orchestration/factory_rollout_test.py"],
     imports = ["."],
@@ -7211,8 +7269,10 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_faas",
+        ":pkg_shared",
         "@pip//httpx",
         "@pip//pytest",
+        "@pip//pytest_asyncio",
     ],
 )
 
@@ -8750,6 +8810,10 @@ bdd_test(
     srcs = [
         "shotter/tests/__init__.py",
         "shotter/tests/bdd_mcp_tool_test.py",
+    ],
+    deps = [
+        ":pkg_shared",
+        "@pip//httpx",
     ],
 )
 

@@ -370,6 +370,8 @@ def _status_payload(
         "lanes": view.get("lanes"),
         "review_routing": view.get("review_routing"),
         "refill": view.get("refill"),
+        "repair_landing": view.get("repair_landing"),
+        "owner_pr_landing": view.get("owner_pr_landing"),
         "active": active,
         "queued": queued,
         "needs_operator": needs_operator,
@@ -768,7 +770,11 @@ def _operator_view(
         ]
         decisions = _decision_page(db, False, offset, limit)
         generated = _now()
-        from factory.orchestration import refill_control
+        from factory.orchestration import (
+            owner_pr_landing_delegation,
+            refill_control,
+            repair_landing_delegation,
+        )
 
         refill_status = refill_control.status(db, control)
         return {
@@ -784,6 +790,8 @@ def _operator_view(
             "admitted_count": control.admitted_count,
             "generated_at": generated,
             "refill": refill_status,
+            "repair_landing": repair_landing_delegation.status(db),
+            "owner_pr_landing": owner_pr_landing_delegation.status(db),
             "intake": controls.intake_state(policy, session=db),
             "lanes": controls.lane_usage(
                 policy,
@@ -824,11 +832,12 @@ async def _control_catalog() -> dict:
             "description_sha256": hashlib.sha256(
                 (tool.description or "").encode()
             ).hexdigest(),
-            "arguments": list(properties)[:16],
+            "arguments": list(properties)[:24],
+            "arguments_complete": len(properties) <= 24,
             "operations": properties.get("operation", {}).get("enum", [])[:4],
         }
         if "target" in properties:
-            tools[name]["targets"] = properties["target"].get("enum", [])[:4]
+            tools[name]["targets"] = properties["target"].get("enum", [])[:8]
         if "model" in properties:
             tools[name]["models"] = properties["model"].get("enum", [])[:8]
     return {
@@ -1273,7 +1282,7 @@ def _detail_payload(
     receipt_id: int, node_offset: int, limit: int, history_limit: int = 10
 ) -> dict:
     from factory.orchestration import factory_controls as controls
-    from factory.orchestration import factory_funding, graph
+    from factory.orchestration import factory_funding, factory_start_diagnostics, graph
     from factory.orchestration.factory_models import FactoryReceipt
     from factory.private_view import shape_node
 
@@ -1315,6 +1324,9 @@ def _detail_payload(
             "progress_continuation": factory_funding.continuation_status(
                 db, row.task_id
             ),
+            "start_diagnostics": factory_start_diagnostics.receipt_diagnostics(
+                db, row, snapshot
+            ),
             "source_timestamps": {
                 "receipt_created_at": iso_or_str(getattr(row, "created_at", None)),
                 "receipt_updated_at": iso_or_str(getattr(row, "updated_at", None)),
@@ -1343,6 +1355,8 @@ async def factory_task_detail(
     Follow next_node_offset for more nodes. Node success alone is not evidence
     of accepted delivery or deployment. This read requires a human operator.
     history_limit bounds work-item edges and correction history independently.
+    start_diagnostics observes the control subgate and sanitized funding history.
+    Transport and capacity gates remain unevaluated and no recovery is authorized.
     """
     refusal = _refuse(current_principal())
     if refusal is not None:
@@ -2643,11 +2657,17 @@ async def factory_configure_refill(
     expected_preview_sha256: str | None = None,
     reset_breaker: bool = False,
     min_new_issues: Annotated[MCPInteger, Field(ge=0, le=100)] | None = None,
-    target: Literal["refill", "problem_issues", "owner_prs"] = "refill",
+    target: Literal[
+        "refill", "problem_issues", "owner_prs", "repair_landing", "owner_pr_landing"
+    ] = "refill",
     recurring_blocker: bool | None = None,
     workflow_stranded: bool | None = None,
     owner_login: str | None = None,
     owner_id: Annotated[MCPInteger, Field(ge=1)] | None = None,
+    duration_minutes: Annotated[MCPInteger | None, Field(ge=1, le=1440)] = None,
+    max_repairs: Annotated[MCPInteger | None, Field(ge=1, le=10)] = None,
+    delegation_mode: Literal["trial", "ongoing"] | None = None,
+    path_profile: Literal["observation", "diagnostics"] | None = None,
 ) -> dict:
     """Preview or apply bounded refill and existing learning cadence as an operator.
 
@@ -2669,14 +2689,109 @@ async def factory_configure_refill(
     delegates to the same guarded preview/apply as factory_configure_problem_issues.
     For target owner_prs, enabled true requires verified owner_login and owner_id.
     Enabled false requires both omitted. Use model astra and hourly false.
-    All refill/problem-issue options must be omitted/default. This delegates to
+    All refill/problem-issue/delegation options must be omitted/default. This delegates to
     factory_configure_owner_prs, preserving every unrelated producer setting.
     Native factory_status.control_catalog advertises targets and argument names.
+    Target repair_landing configures only a default-off standing delegation:
+    use model astra and hourly false. Trial mode requires duration_minutes and
+    max_repairs (recommended 1440 and 3). Explicit delegation_mode ongoing omits
+    duration_minutes and caps max_repairs per rolling 24 hours plus three lifetime
+    derivations per repair task and source task. It remains effective until
+    revoked or policy drift. No trial upgrades automatically. Optional path_profile
+    diagnostics adds only private output parsers to the observation boundary.
+    Omit owner identity, producer switches and other refill options. Preview lists
+    exact paths and bounds. Disabling revokes future arming.
+    The native landing observer fences queued grants on its next tick. This
+    does not undo completed external actions or activate producer/intake.
+
+    Target owner_pr_landing configures a separate default-off standing decision.
+    Use model astra and hourly false, omitting all target-specific options.
+    Preview binds the configured numeric owner identity, intake policy and
+    configuration history. It explicitly covers pre-existing adopted PRs within
+    a frozen private diagnostics profile. Bounds are three new derivations per
+    rolling 24 hours and three per canonical PR across receipts and generations.
+    Independent exact-head review, CI, holds and the existing merge queue apply.
+    Disable revokes queued and future authority on the next landing observation.
     """
     principal = current_principal()
     refusal = _refuse(principal)
     if refusal is not None:
         return refusal
+    if target == "owner_pr_landing":
+        if (
+            model != "astra"
+            or hourly is not False
+            or reset_breaker
+            or any(
+                value is not None
+                for value in (
+                    min_new_issues,
+                    recurring_blocker,
+                    workflow_stranded,
+                    owner_login,
+                    owner_id,
+                    duration_minutes,
+                    max_repairs,
+                    delegation_mode,
+                    path_profile,
+                )
+            )
+        ):
+            return {"ok": False, "reason": "owner_pr_landing_target_arguments_invalid"}
+        from factory.orchestration import owner_pr_landing_delegation
+
+        try:
+            return await asyncio.to_thread(
+                owner_pr_landing_delegation.configure,
+                principal,
+                operation,
+                enabled,
+                expected_version,
+                reason,
+                request_key=request_key,
+                expected_preview_sha256=expected_preview_sha256,
+            )
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+    if target == "repair_landing":
+        if (
+            owner_login is not None
+            or owner_id is not None
+            or model != "astra"
+            or hourly is not False
+            or reset_breaker
+            or min_new_issues is not None
+            or recurring_blocker is not None
+            or workflow_stranded is not None
+            or (delegation_mode != "ongoing" and duration_minutes is None)
+            or (delegation_mode == "ongoing" and duration_minutes is not None)
+            or max_repairs is None
+        ):
+            return {"ok": False, "reason": "repair_landing_target_arguments_invalid"}
+        from factory.orchestration import repair_landing_delegation
+
+        try:
+            return await asyncio.to_thread(
+                repair_landing_delegation.configure,
+                principal,
+                operation,
+                enabled,
+                expected_version,
+                reason,
+                duration_minutes=duration_minutes,
+                max_repairs=max_repairs,
+                mode=delegation_mode or "trial",
+                path_profile=path_profile or "observation",
+                request_key=request_key,
+                expected_preview_sha256=expected_preview_sha256,
+            )
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+    if any(
+        value is not None
+        for value in (duration_minutes, max_repairs, delegation_mode, path_profile)
+    ):
+        return {"ok": False, "reason": "refill_target_arguments_invalid"}
     if target == "owner_prs":
         if (
             model != "astra"

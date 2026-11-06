@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
 
@@ -101,7 +102,7 @@ def policy(**overrides):
     return {"repo": "owner/repo", "problem_issues": block}
 
 
-def autonomous_policy(db, monkeypatch):
+def autonomous_policy(db, monkeypatch, *, mock_quota=True):
     from factory.orchestration import factory_conductor
 
     engine, _clock = db
@@ -123,7 +124,8 @@ def autonomous_policy(db, monkeypatch):
         source = session.exec(select(FactoryReceipt)).one()
         source.repo, source.state = producer.RECOVERY_REPO, "admitted"
         session.commit()
-    monkeypatch.setattr(producer, "_spare_quota", lambda: True)
+    if mock_quota:
+        monkeypatch.setattr(producer, "_recovery_quota", lambda: True)
     monkeypatch.setattr(
         factory_conductor,
         "github_get",
@@ -256,13 +258,13 @@ def test_recovery_wait_does_not_block_unrelated_source(db, monkeypatch, gate):
     add_event(engine, action="recurring_blocker", blocker_key="d" * 64)
     add_event(engine, action="node_stalled")
     if gate == "quota":
-        monkeypatch.setattr(producer, "_spare_quota", lambda: False)
+        monkeypatch.setattr(producer, "_recovery_quota", lambda: False)
     if gate == "quota_error":
 
         def unavailable():
             raise RuntimeError("quota unavailable")
 
-        monkeypatch.setattr(producer, "_spare_quota", unavailable)
+        monkeypatch.setattr(producer, "_recovery_quota", unavailable)
     producer.problem_issues_tick(selected)
     assert len(state["writes"]) == 1
     assert (
@@ -275,9 +277,7 @@ def test_recovery_wait_does_not_block_unrelated_source(db, monkeypatch, gate):
 @pytest.mark.parametrize(
     "condition", ["spare", "stale", "exhausted", "incomplete", "conserve"]
 )
-def test_repair_quota_uses_existing_fresh_per_grant_surplus_rules(
-    db, monkeypatch, condition
-):
+def test_repair_quota_preserves_fresh_per_grant_refusals(db, monkeypatch, condition):
     from factory.execution import provider_quota
 
     grant = {
@@ -285,10 +285,12 @@ def test_repair_quota_uses_existing_fresh_per_grant_surplus_rules(
         "provider": "codex",
         "observed": True,
         "observed_at": START.isoformat(),
+        "age_seconds": 0,
         "status": "allowed",
         "exhausted": False,
         "windows": [
             {
+                "name": "weekly",
                 "used_percent": 0,
                 "window_minutes": 10080,
                 "resets_at": (START + timedelta(days=2)).isoformat(),
@@ -299,6 +301,7 @@ def test_repair_quota_uses_existing_fresh_per_grant_surplus_rules(
     quota = {
         "available": True,
         "grants_complete": True,
+        "grants_valid": True,
         "fetched_at": START.isoformat(),
         "grants": {"synthetic": grant},
     }
@@ -311,7 +314,341 @@ def test_repair_quota_uses_existing_fresh_per_grant_surplus_rules(
     if condition == "conserve":
         grant["pacing"] = {"state": "conserve"}
     monkeypatch.setattr(provider_quota, "fetch_provider_quota_sync", lambda **kw: quota)
-    assert producer._spare_quota() is (condition == "spare")
+    assert producer._recovery_quota() is (condition == "spare")
+
+
+@pytest.fixture
+def recovery_quota(monkeypatch):
+    """Synthetic on-pace evidence below the optional scout's surplus target."""
+    from factory.execution import provider_quota
+
+    grant = {
+        "grant": "account-a",
+        "provider": "codex",
+        "observed": True,
+        "observed_at": (START - timedelta(seconds=327)).isoformat(),
+        "age_seconds": 327,
+        "status": "allowed",
+        "exhausted": False,
+        "pacing": {"state": "on_pace"},
+        "windows": [
+            {
+                "name": "secondary",
+                "used_percent": 47,
+                "window_minutes": 10080,
+                "resets_at": (START + timedelta(days=3, hours=10)).isoformat(),
+                "expired": False,
+            },
+            {
+                "name": "primary",
+                "used_percent": 10,
+                "window_minutes": 300,
+                "resets_at": (START + timedelta(hours=2)).isoformat(),
+                "expired": False,
+            },
+        ],
+    }
+    conserving = deepcopy(grant)
+    conserving.update(grant="account-b", pacing={"state": "conserve"})
+    payload = {
+        "available": True,
+        "grants_complete": True,
+        "grants_valid": True,
+        "fetched_at": START.isoformat(),
+        "grants": {"account-a": grant, "account-b": conserving},
+        # A headline is deliberately unusable. Only exact grant evidence counts.
+        "providers": {"codex": {"observed": False}},
+    }
+
+    def fetch(*, force=False):
+        assert force is True
+        return payload
+
+    monkeypatch.setattr(provider_quota, "fetch_provider_quota_sync", fetch)
+    return payload
+
+
+@pytest.mark.parametrize("boundary", ["on_pace", "below_half", "beyond_horizon"])
+def test_required_recovery_does_not_require_opportunistic_surplus(
+    db, recovery_quota, boundary
+):
+    from factory.orchestration.factory_improvement_preview import (
+        PreviewPolicy,
+        quota_decisions,
+    )
+
+    window = recovery_quota["grants"]["account-a"]["windows"][0]
+    if boundary == "below_half":
+        window.update(
+            used_percent=60, resets_at=(START + timedelta(days=2)).isoformat()
+        )
+    if boundary == "beyond_horizon":
+        window.update(used_percent=5, resets_at=(START + timedelta(days=5)).isoformat())
+    decisions = quota_decisions(recovery_quota, now=START, policy=PreviewPolicy())
+    assert decisions[0]["reason"] == "not_due"
+    assert not any(row["eligible"] for row in decisions)
+    assert producer._recovery_quota() is True
+
+
+QUOTA_REFUSALS = [
+    ("inventory", "available", False),
+    ("inventory", "grants_complete", False),
+    ("inventory", "grants_valid", False),
+    ("inventory", "fetched_at", (START - timedelta(seconds=901)).isoformat()),
+    ("inventory", "fetched_at", (START + timedelta(seconds=1)).isoformat()),
+    ("grant", "observed", False),
+    ("grant", "observed_at", (START - timedelta(seconds=901)).isoformat()),
+    ("grant", "observed_at", "unknown"),
+    ("grant", "observed_at", (START + timedelta(seconds=1)).isoformat()),
+    ("grant", "age_seconds", 901),
+    ("grant", "age_seconds", None),
+    ("grant", "age_seconds", float("nan")),
+    ("grant", "status", "blocked"),
+    ("grant", "exhausted", True),
+    ("grant", "grant", "different-account"),
+    ("grant", "provider", "unknown"),
+    ("grant", "pacing", {"state": "conserve"}),
+    ("grant", "pacing", {"state": "unknown"}),
+    ("grant", "pacing", "invalid"),
+    ("grant", "windows", []),
+    ("long", "used_percent", 97),
+    ("long", "used_percent", 100),
+    ("long", "used_percent", True),
+    ("long", "used_percent", float("nan")),
+    ("long", "resets_at", START.isoformat()),
+    ("long", "resets_at", (START + timedelta(days=8)).isoformat()),
+    ("long", "reset_source", "estimate"),
+    ("long", "expired", True),
+    ("long", "name", None),
+    ("short", "used_percent", 91),
+    ("short", "used_percent", 66),  # More than five points ahead of pacing.
+    ("short", "resets_at", "unknown"),
+    ("short", "window_minutes", 10080),  # Conflicting window durations.
+]
+
+
+def change_quota(payload, scope, field, value):
+    grant = payload["grants"]["account-a"]
+    target = {
+        "inventory": payload,
+        "grant": grant,
+        "long": grant["windows"][0],
+        "short": grant["windows"][1],
+    }[scope]
+    target[field] = value
+
+
+@pytest.mark.parametrize("scope,field,value", QUOTA_REFUSALS)
+def test_required_recovery_quota_refuses_unsafe_evidence(
+    db, recovery_quota, scope, field, value
+):
+    change_quota(recovery_quota, scope, field, value)
+    assert producer._recovery_quota() is False
+
+
+def test_required_recovery_never_combines_accounts(db, recovery_quota):
+    a, b = recovery_quota["grants"].values()
+    a["windows"][1]["used_percent"] = 100
+    b["pacing"] = {"state": "on_pace"}
+    b["windows"][0]["used_percent"] = 100
+    assert producer._recovery_quota() is False
+
+
+@pytest.mark.parametrize(
+    "unusable", ["stale", "exhausted", "conserve", "short_reserve"]
+)
+def test_required_recovery_uses_one_whole_permitting_account(
+    db, recovery_quota, unusable
+):
+    a, b = recovery_quota["grants"].values()
+    if unusable == "stale":
+        a["observed_at"] = (START - timedelta(hours=1)).isoformat()
+    elif unusable == "exhausted":
+        a["exhausted"] = True
+    elif unusable == "short_reserve":
+        a["windows"] = [a["windows"][1]]
+        a["windows"][0].update(
+            used_percent=95, resets_at=(START + timedelta(minutes=10)).isoformat()
+        )
+    else:
+        a["pacing"] = {"state": "conserve"}
+    b["pacing"] = {"state": "on_pace"}
+    assert producer._recovery_quota() is True
+
+
+@pytest.mark.parametrize("age", [900, 900.001])
+def test_required_recovery_uses_existing_observation_age_boundary(
+    db, recovery_quota, age
+):
+    grant = recovery_quota["grants"]["account-a"]
+    grant.update(
+        age_seconds=age, observed_at=(START - timedelta(seconds=age)).isoformat()
+    )
+    assert producer._recovery_quota() is (age == 900)
+
+
+@pytest.mark.parametrize("used,allowed", [(90, True), (90.001, False), (95, False)])
+@pytest.mark.parametrize("single", [False, True])
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+def test_required_recovery_keeps_short_window_headroom_boundary(
+    db, recovery_quota, used, allowed, single, provider
+):
+    grant = recovery_quota["grants"]["account-a"]
+    grant["provider"] = provider
+    grant["windows"][1].update(
+        name="arbitrary",
+        used_percent=used,
+        resets_at=(START + timedelta(minutes=10)).isoformat(),
+    )
+    if single:
+        grant["windows"] = [grant["windows"][1]]
+    assert producer._recovery_quota() is allowed
+
+
+@pytest.mark.parametrize(
+    "minutes,allowed",
+    [(1, False), (299, False), (300, False), (301, True), (10080, True)],
+)
+def test_required_recovery_intrinsic_reserve_uses_duration(
+    db, recovery_quota, minutes, allowed
+):
+    grant = recovery_quota["grants"]["account-a"]
+    grant.update(observed_at=START.isoformat(), age_seconds=0)
+    grant["windows"] = [
+        {
+            "name": "arbitrary",
+            "used_percent": 95,
+            "window_minutes": minutes,
+            "resets_at": (
+                START + timedelta(minutes=min(10, minutes * 0.02))
+            ).isoformat(),
+            "expired": False,
+        }
+    ]
+    assert producer._recovery_quota() is allowed
+
+
+def test_required_recovery_keeps_ordinary_availability_configuration(
+    db, monkeypatch, recovery_quota
+):
+    monkeypatch.setenv("SWARM_MODEL_POOL_EXHAUSTED_PERCENT", "45")
+    assert producer._recovery_quota() is False
+    monkeypatch.setenv("SWARM_MODEL_POOL_EXHAUSTED_PERCENT", "97")
+    monkeypatch.setenv("SWARM_MODEL_POOL_QUOTA_MAX_AGE_SECONDS", "300")
+    assert producer._recovery_quota() is False
+
+
+@pytest.mark.parametrize("invalid", [None, [], {1: {}}, {"unknown-account": None}])
+def test_required_recovery_refuses_malformed_inventory(db, recovery_quota, invalid):
+    recovery_quota["grants"] = invalid
+    assert producer._recovery_quota() is False
+
+
+def test_required_recovery_retains_bounded_inventory(db, recovery_quota):
+    grant = recovery_quota["grants"]["account-a"]
+    recovery_quota["grants"] = {
+        f"account-{i}": {**grant, "grant": f"account-{i}"} for i in range(65)
+    }
+    assert producer._recovery_quota() is False
+
+
+@pytest.mark.parametrize("source", sorted(producer.RECOVERY_SOURCES))
+def test_native_required_discovery_uses_ordinary_quota_with_existing_bounds(
+    db, monkeypatch, recovery_quota, source
+):
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch, mock_quota=False)
+    state = github(monkeypatch)
+    # Existing history is watermarked, never adopted by a quota-policy change.
+    add_event(engine, action=source, blocker_key="a" * 64)
+    producer.problem_issues_tick(selected)
+    assert not state["writes"]
+    for key in ("b", "c", "d"):
+        add_event(engine, action=source, workflow=f"wf-{key}", blocker_key=key * 64)
+    producer.problem_issues_tick(selected)
+    assert len(state["writes"]) == 1  # Per-tick bound.
+    producer.problem_issues_tick(selected)
+    assert len(state["writes"]) == 2
+    producer.problem_issues_tick(selected)
+    assert len(state["writes"]) == 2  # Rolling bound, no duplicate writes.
+    assert all(write["labels"] == ["bug"] for write in state["writes"])
+    assert stored_policy(engine) == selected
+    with Session(engine) as session:
+        assert len(session.exec(select(FactoryReceipt)).all()) == 1
+        assert not session.exec(select(FactoryStart)).all()
+        assert not session.exec(select(SwarmNodeRun)).all()
+
+
+@pytest.mark.parametrize("source", sorted(producer.RECOVERY_SOURCES))
+@pytest.mark.parametrize("scope,field,value", QUOTA_REFUSALS)
+def test_native_required_discovery_waits_without_consuming_or_resetting_event(
+    db, monkeypatch, recovery_quota, source, scope, field, value
+):
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch, mock_quota=False)
+    state = github(monkeypatch)
+    producer.problem_issues_tick(selected)
+    source_id = add_event(engine, action=source, blocker_key="b" * 64)
+    permitted = deepcopy(recovery_quota)
+    change_quota(recovery_quota, scope, field, value)
+    producer.problem_issues_tick(selected)
+    assert not state["writes"]
+    assert not audits(engine, "problem_issue_write_started")
+    assert not audits(engine, "problem_issue_source_refused")
+    recovery_quota.clear()
+    recovery_quota.update(permitted)
+    producer.problem_issues_tick(selected)
+    assert len(state["writes"]) == 1
+    created = details(audits(engine, "problem_issue_created"))
+    assert created[0]["source_audit_id"] == source_id
+    producer.problem_issues_tick(selected)
+    assert len(state["writes"]) == 1
+    assert stored_policy(engine) == selected
+
+
+@pytest.mark.parametrize("source", sorted(producer.RECOVERY_SOURCES))
+@pytest.mark.parametrize("used", [90.001, 95])
+def test_native_required_discovery_waits_for_single_window_reserve(
+    db, monkeypatch, recovery_quota, source, used
+):
+    engine, clock = db
+    selected = autonomous_policy(db, monkeypatch, mock_quota=False)
+    state = github(monkeypatch)
+    grant = recovery_quota["grants"]["account-a"]
+    short = grant["windows"][1]
+    short.update(
+        name="arbitrary",
+        used_percent=used,
+        resets_at=(START + timedelta(minutes=10)).isoformat(),
+    )
+    grant["windows"] = [short]
+    producer.problem_issues_tick(selected)
+    source_id = add_event(engine, action=source, blocker_key="b" * 64)
+    watermark = details(audits(engine, "problem_issue_policy_observed"))
+    assert watermark and source in watermark[-1]["watermarks"]
+    producer.problem_issues_tick(selected)
+    assert not state["writes"]
+    assert not audits(engine, "problem_issue_write_started")
+    assert not audits(engine, "problem_issue_source_refused")
+
+    # A later provider observation restores headroom in the same window. No
+    # source reset, replacement event, policy edit or receipt resume is needed.
+    clock["now"] += timedelta(seconds=30)
+    recovery_quota["fetched_at"] = clock["now"].isoformat()
+    grant.update(observed_at=clock["now"].isoformat(), age_seconds=0)
+    short["used_percent"] = 90
+    producer.problem_issues_tick(selected)
+    assert len(state["writes"]) == 1
+    created = details(audits(engine, "problem_issue_created"))
+    assert created[0]["source_audit_id"] == source_id
+    assert details(audits(engine, "problem_issue_policy_observed")) == watermark
+    producer.problem_issues_tick(selected)
+    assert len(state["writes"]) == 1
+    assert stored_policy(engine) == selected
+    with Session(engine) as session:
+        assert len(session.exec(select(FactoryReceipt)).all()) == 1
+        assert not session.exec(select(FactoryStart)).all()
+        assert not session.exec(select(SwarmNodeRun)).all()
 
 
 @pytest.mark.parametrize(
@@ -562,18 +899,18 @@ def test_concurrent_ticks_never_enable_disabled_producer(db, monkeypatch):
     assert not audits(engine, producer.RECOVERY_ACTIVATION)
 
 
-def test_spare_quota_unlocks_existing_event_without_manual_reset(db, monkeypatch):
+def test_permitted_quota_unlocks_existing_event_without_manual_reset(db, monkeypatch):
     engine, _ = db
     selected = autonomous_policy(db, monkeypatch)
     state = github(monkeypatch)
     producer.problem_issues_tick(selected)
     selected = stored_policy(engine)
     add_event(engine, action="recurring_blocker", blocker_key="f" * 64)
-    monkeypatch.setattr(producer, "_spare_quota", lambda: False)
+    monkeypatch.setattr(producer, "_recovery_quota", lambda: False)
     producer.problem_issues_tick(selected)
     assert not state["writes"]
     assert not audits(engine, "problem_issue_source_refused")
-    monkeypatch.setattr(producer, "_spare_quota", lambda: True)
+    monkeypatch.setattr(producer, "_recovery_quota", lambda: True)
     producer.problem_issues_tick(selected)
     assert len(state["writes"]) == 1
 
@@ -880,6 +1217,125 @@ def audits(engine, action):
             .where(FactoryAudit.action == action)
             .order_by(FactoryAudit.id)
         ).all()
+
+
+def test_recovery_status_distinguishes_history_from_pending_signal_without_writes(
+    db, monkeypatch
+):
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch)
+    historical = add_event(engine, action="recurring_blocker", blocker_key="a" * 64)
+    producer._observe_policy(controls.problem_issues_policy(selected))
+    current = add_event(engine, action="recurring_blocker", blocker_key="b" * 64)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("status must not perform producer work")
+
+    monkeypatch.setattr(producer, "_observe_policy", forbidden)
+    monkeypatch.setattr(producer, "_recovery_quota", forbidden)
+    monkeypatch.setattr(producer, "github_list", forbidden)
+    monkeypatch.setattr(producer, "github_write", forbidden)
+    with Session(engine) as session:
+        before = [r.model_dump() for r in session.exec(select(FactoryAudit)).all()]
+        control = session.get(FactoryControl, "factory")
+        first = producer.recovery_status(session, control)
+        second = producer.recovery_status(session, control)
+        assert first == second
+        assert first["policy_observed"] is True
+        source = first["sources"]["recurring_blocker"]
+        assert source["watermark"] == source["cursor"] == historical
+        assert source["latest_source_audit_id"] == current
+        assert source["next_event"]["audit_id"] == current
+        assert source["state"] == "pending_source_event"
+        assert first["sources"]["workflow_stranded"]["state"] == "no_new_source_events"
+        assert first["checkpoints"]["problem_issue_recovery_observed"] is None
+        assert before == [
+            r.model_dump() for r in session.exec(select(FactoryAudit)).all()
+        ]
+        assert not session.new and not session.dirty
+
+
+def test_recovery_status_retains_pending_write_and_terminal_cursor(db, monkeypatch):
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch)
+    producer._observe_policy(controls.problem_issues_policy(selected))
+    settled = add_event(engine, action="recurring_blocker", blocker_key="a" * 64)
+    add_event(
+        engine,
+        action="problem_issue_source_refused",
+        source="recurring_blocker",
+        source_audit_id=settled,
+        fingerprint="a" * 64,
+        reason="source_owned_or_recursive_or_unavailable",
+    )
+    pending_source = add_event(engine, action="recurring_blocker", blocker_key="b" * 64)
+    write_id = add_event(
+        engine,
+        action="problem_issue_write_started",
+        source="recurring_blocker",
+        source_audit_id=pending_source,
+        fingerprint="b" * 64,
+        private_prompt="must never be returned",
+    )
+    with Session(engine) as session:
+        control = session.get(FactoryControl, "factory")
+        result = producer.recovery_status(session, control)
+        assert result["sources"]["recurring_blocker"]["cursor"] == settled
+        assert result["pending_write"]["audit_id"] == write_id
+        assert (
+            result["sources"]["recurring_blocker"]["next_event"]["audit_id"]
+            == pending_source
+        )
+        assert "must never be returned" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_recovery_status_does_not_initialize_or_refresh_policy(
+    db, monkeypatch, enabled
+):
+    engine, _ = db
+    selected = autonomous_policy(db, monkeypatch)
+    selected["problem_issues"]["enabled"] = enabled
+    with Session(engine) as session:
+        control = session.get(FactoryControl, "factory")
+        control.policy_json = dumps(selected)
+        session.commit()
+        result = producer.recovery_status(session, control)
+        assert result["policy_observation"] is None
+        assert result["policy_observed"] is False
+        assert result["sources"]["recurring_blocker"]["state"] == (
+            "policy_not_observed" if enabled else "disabled"
+        )
+        assert not session.exec(select(FactoryAudit)).all()
+
+
+def test_recovery_status_bounds_events_and_keeps_old_acceptance_checkpoint(db):
+    engine, _ = db
+    observed_id = add_event(
+        engine,
+        action="problem_issue_recovery_observed",
+        source_run_id=10,
+        recovered_run_id=20,
+        rollout_audit_id=30,
+        repair_task_id="t-repair",
+    )
+    for index in range(12):
+        add_event(
+            engine, action="problem_issue_discovery_failed", error="private error"
+        )
+    with Session(engine) as session:
+        result = producer.recovery_status(
+            session, session.get(FactoryControl, "factory")
+        )
+        assert len(result["recent_events"]) == 10
+        assert result["events_truncated"] is True
+        checkpoint = result["checkpoints"]["problem_issue_recovery_observed"]
+        assert checkpoint["audit_id"] == observed_id
+        assert checkpoint["source_run_id"] == 10
+        assert checkpoint["recovered_run_id"] == 20
+        assert checkpoint["repair_task_id"] == "t-repair"
+        assert checkpoint["node_key"] == "implement"
+        assert "private error" not in json.dumps(result)
 
 
 def details(rows):
