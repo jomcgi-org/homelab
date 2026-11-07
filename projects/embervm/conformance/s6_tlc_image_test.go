@@ -124,13 +124,14 @@ func TestS6TLCImageLayer(t *testing.T) {
 
 	// Fixed paths and their intended modes.
 	for name, want := range map[string]int64{
-		s6TLCImageJava:                            0o755,
-		"opt/tla/jre/lib/jspawnhelper":            0o755,
-		"opt/tla/jre/lib/server/libjvm.so":        0o644,
-		"opt/tla/jre/lib/libjli.so":               0o644,
-		"opt/tla/jre/lib/modules":                 0o644,
-		s6TLCImageJar:                             0o644,
-		s6TLCImageSpecDir + "/adoption_trace.tla": 0o644,
+		s6TLCImageJava:                              0o755,
+		"opt/tla/jre/lib/jspawnhelper":              0o755,
+		"opt/tla/jre/lib/server/libjvm.so":          0o644,
+		"opt/tla/jre/lib/libjli.so":                 0o644,
+		"opt/tla/jre/lib/modules":                   0o644,
+		s6TLCImageJar:                               0o644,
+		s6TLCImageSpecDir + "/adoption_trace.tla":   0o644,
+		s6TLCImageSpecDir + "/destroy_contract.tla": 0o644,
 	} {
 		hdr, ok := headers[name]
 		if !ok {
