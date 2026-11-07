@@ -1207,7 +1207,10 @@ genrule(
 # file so the test can address it with $(rlocationpath ...); the filegroup
 # below cannot serve that (rlocationpath needs a single file).
 exports_files(
-    ["adoption_trace.tla", "destroy_contract.tla"],
+    [
+        "adoption_trace.tla",
+        "destroy_contract.tla",
+    ],
     visibility = ["//projects/embervm:__subpackages__"],
 )
 
