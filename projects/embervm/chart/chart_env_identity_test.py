@@ -2910,7 +2910,7 @@ def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
     which exist on the hub. Each one renders cleanly and then fails at runtime:
     a node floor that never schedules, a PVC that never binds, a store that
     never answers, a CRD ArgoCD cannot apply. The overlay must remove all four,
-    keep one bootstrap brick with one demand-opened canary, and keep the
+    keep the two conformance bricks with one demand-opened canary, and keep the
     conformance runner the Kargo dev gate polls.
     """
     application = yaml.safe_load(Path(os.environ["DEV_GKE_APPLICATION"]).read_text())
@@ -2923,6 +2923,15 @@ def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
     release = helm["releaseName"]
     assert release == application["metadata"]["name"] == "embervm-dev"
     assert application["spec"]["destination"]["namespace"] == "embervm-dev"
+    assert (
+        "RespectIgnoreDifferences=true"
+        in application["spec"]["syncPolicy"]["syncOptions"]
+    )
+    assert {
+        "kind": "ConfigMap",
+        "name": "embervm-dev-embervm-tokenbroker-quota",
+        "jsonPointers": ["/data"],
+    } in application["spec"]["ignoreDifferences"]
     assert (
         application["metadata"]["annotations"]["kargo.akuity.io/authorized-stage"]
         == "kargo-embervm:dev"
@@ -2956,7 +2965,8 @@ def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
         if d["kind"] == "Deployment" and "-noded-brick-" in d["metadata"]["name"]
     }
     assert {name: n for name, n in bricks.items() if n} == {
-        "embervm-dev-embervm-noded-brick-2gi": 1
+        "embervm-dev-embervm-noded-brick-2gi": 1,
+        "embervm-dev-embervm-noded-brick-8gi": 1,
     }
 
     # What the BrickController will actually run: its static target per class
@@ -2974,15 +2984,16 @@ def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
     ]
     classes = json.loads(classes_env)
     targets = {c["name"]: max(c["desired"], c["min"]) for c in classes}
-    assert {name: n for name, n in targets.items() if n} == {"2gi": 1}
+    assert {name: n for name, n in targets.items() if n} == {"2gi": 1, "8gi": 1}
     assert all(c["max"] <= 1 for c in classes)
     assert {
         c["name"]: c["ceiling_bound"] for c in classes if c["ceiling_bound"] > 0
     } == {"4gi": 1}
     by_name = {c["name"]: c for c in classes}
     assert by_name["2gi"]["min"] == by_name["2gi"]["max"] == 1
+    assert by_name["8gi"]["min"] == by_name["8gi"]["max"] == 1
     assert by_name["4gi"]["max"] == 0
-    assert all(by_name[name]["max"] == 0 for name in ("1gi", "8gi", "16gi"))
+    assert all(by_name[name]["max"] == 0 for name in ("1gi", "16gi"))
     env = {entry["name"]: entry.get("value") for entry in control["env"]}
     assert env["EMBERVM_BRICK_AUTOSCALE_MODE"] == "full"
     assert env["EMBERVM_BRICK_CEILING_IDLE_MS"] == "3600000"
@@ -3012,8 +3023,13 @@ def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
     assert cluster_resources == {"nodes", "tokenreviews"}
 
     workloads = sorted(d["metadata"]["name"] for d in docs if d["kind"] == "Workload")
-    # The conformance suite's three workloads: S1, S2/S3 and S5.
-    assert workloads == ["pi-runtime", "sandbox-elixir", "sandbox-python"]
+    # The conformance suite's workloads: S1, S2/S3, S5 and S9.
+    assert workloads == [
+        "claude-runtime",
+        "pi-runtime",
+        "sandbox-elixir",
+        "sandbox-python",
+    ]
 
     runner = [
         d

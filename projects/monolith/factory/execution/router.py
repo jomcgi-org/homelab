@@ -657,13 +657,20 @@ def list_offered_models() -> dict:
 
 
 @router.get("/codex-login/status")
-async def codex_login_status(grant: str = Query(default="codex-cluster")):
+async def codex_login_status(
+    grant: str = Query(default="codex-cluster"),
+    environment: str = Query(default="prod"),
+):
     try:
         grant = mcp._grant_or_raise(grant)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid grant name") from exc
     try:
-        return await mcp._broker_request("GET", f"/grants/{grant}/login/status")
+        mcp._login_environment_or_raise(environment, grant)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        return await mcp._broker_login_request("GET", grant, environment=environment)
     except Exception:
         return JSONResponse(
             status_code=502,
@@ -672,13 +679,20 @@ async def codex_login_status(grant: str = Query(default="codex-cluster")):
 
 
 @router.post("/codex-login/start")
-async def codex_login_start(grant: str = Query(default="codex-cluster")):
+async def codex_login_start(
+    grant: str = Query(default="codex-cluster"),
+    environment: str = Query(default="prod"),
+):
     try:
         grant = mcp._grant_or_raise(grant)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid grant name") from exc
     try:
-        data = await mcp._broker_request("POST", f"/grants/{grant}/login/start")
+        mcp._login_environment_or_raise(environment, grant)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        data = await mcp._broker_login_request("POST", grant, environment=environment)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 409:
             try:
@@ -711,6 +725,8 @@ async def codex_login_start(grant: str = Query(default="codex-cluster")):
             status_code=502,
             content={"error": "Codex login broker unavailable"},
         )
+    if environment == "dev":
+        return data
     return {
         "verification_url": data.get("verification_url"),
         "user_code": data.get("user_code"),

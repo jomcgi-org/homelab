@@ -1256,6 +1256,10 @@ jobs:
 # code surfaced in the tool response. Empty disables the tools.
 tokenBroker:
   url: "http://embervm-embervm-tokenbroker.embervm.svc.cluster.local:8080"
+  # Private-tier dev login bridge only; no token, refresh or quota proxy.
+  # Requires the existing SPIFFE helper. Empty leaves the dev bridge disabled.
+  devLoginUrl: ""
+  devLoginServerId: ""
   spiffe:
     # Staged plaintext-retirement client. Keep false until the broker listener
     # and its exact monolith allowlist are live and verified separately.
