@@ -54,6 +54,8 @@ def test_spiffe_flag_off_omits_listener_port_and_csi_volume() -> None:
 
     assert "BROKER_TLS_LISTEN_ADDR" not in deployment
     assert "BROKER_SPIFFE_CLIENT_IDS" not in deployment
+    assert "BROKER_LOGIN_AUTH_REQUIRED" not in deployment
+    assert "BROKER_LOGIN_SPIFFE_CLIENT_IDS" not in deployment
     assert "name: https" not in deployment
     assert "spiffe-workload-api" not in deployment
     assert "name: https" not in service
@@ -106,6 +108,66 @@ def test_spiffe_client_ids_render_as_comma_separated_env_value() -> None:
     assert '- { name: BROKER_SPIFFE_CLIENT_IDS, value: "a,b" }' in deployment
 
 
+def test_strict_login_keeps_login_and_token_identities_separate() -> None:
+    login_id = "spiffe://embervm.jomcgi.dev/ns/monolith/sa/monolith"
+    rendered = _render(
+        "embervm-dev",
+        [
+            "tokenBroker.spiffe.enabled=true",
+            "tokenBroker.loginAuth.required=true",
+            f"tokenBroker.loginAuth.clientSpiffeIds[0]={login_id}",
+            "tokenBroker.plaintext.retireProtectedRoutes=true",
+        ],
+    )
+    deployment = yaml.safe_load(
+        _source_document(rendered, "tokenbroker-deployment.yaml")
+    )
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    env = {entry["name"]: entry.get("value") for entry in container["env"]}
+
+    assert env["BROKER_LOGIN_AUTH_REQUIRED"] == "true"
+    assert env["BROKER_LOGIN_SPIFFE_CLIENT_IDS"] == login_id
+    assert env["BROKER_SPIFFE_CLIENT_IDS"] == (
+        "spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-noded"
+    )
+    assert env["BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES"] == "true"
+    assert env["BROKER_TLS_LISTEN_ADDR"] == ":8443"
+
+
+def test_strict_login_rejects_missing_transport_or_identities() -> None:
+    for settings, expected in [
+        (
+            ["tokenBroker.loginAuth.required=true"],
+            "loginAuth.required requires tokenBroker.spiffe.enabled",
+        ),
+        (
+            [
+                "tokenBroker.spiffe.enabled=true",
+                "tokenBroker.loginAuth.required=true",
+            ],
+            "loginAuth.clientSpiffeIds must be nonempty",
+        ),
+        (
+            [
+                "tokenBroker.spiffe.enabled=true",
+                "tokenBroker.loginAuth.required=true",
+                "tokenBroker.loginAuth.clientSpiffeIds[0]= ",
+            ],
+            "loginAuth.clientSpiffeIds entries must be nonempty",
+        ),
+        (
+            ["tokenBroker.loginAuth.required=yes"],
+            "loginAuth.required must be a boolean",
+        ),
+    ]:
+        try:
+            _render("invalid-login-auth", settings)
+        except RuntimeError as error:
+            assert expected in str(error)
+        else:
+            raise AssertionError(f"accepted invalid strict login config: {settings}")
+
+
 def test_plaintext_retirement_is_explicit_and_requires_mtls() -> None:
     rendered = _render(
         "retirement-on",
@@ -140,6 +202,7 @@ def test_production_overlay_enables_stage_one_but_keeps_plaintext_retirement_off
 
     assert defaults["tokenBroker"]["spiffe"]["enabled"] is False
     assert defaults["tokenBroker"]["plaintext"]["retireProtectedRoutes"] is False
+    assert defaults["tokenBroker"]["loginAuth"]["required"] is False
     assert defaults["egress"]["tokenBroker"]["spiffe"]["enabled"] is False
     assert gke["tokenBroker"]["spiffe"]["enabled"] is True
     # The listener makes plaintext /token answer 403, so the egress-proxy
@@ -181,6 +244,8 @@ def test_home_values_preserve_default_off_broker_and_client() -> None:
 
     assert "BROKER_TLS_LISTEN_ADDR" not in deployment
     assert "BROKER_SPIFFE_CLIENT_IDS" not in deployment
+    assert "BROKER_LOGIN_AUTH_REQUIRED" not in deployment
+    assert "BROKER_LOGIN_SPIFFE_CLIENT_IDS" not in deployment
     assert "name: https" not in deployment
     assert "spiffe-workload-api" not in deployment
     assert "name: https" not in service
@@ -197,6 +262,8 @@ def test_hub_values_render_listener_and_egress_client_together() -> None:
     service = _source_document(rendered, "tokenbroker-service.yaml")
 
     assert '- { name: BROKER_TLS_LISTEN_ADDR, value: ":8443" }' in deployment
+    assert "BROKER_LOGIN_AUTH_REQUIRED" not in deployment
+    assert "BROKER_LOGIN_SPIFFE_CLIENT_IDS" not in deployment
     assert (
         "- { name: BROKER_SPIFFE_CLIENT_IDS, value: "
         '"spiffe://embervm.jomcgi.dev/ns/embervm/sa/embervm-embervm-noded,'

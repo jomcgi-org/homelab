@@ -2505,6 +2505,46 @@ and architecture acceptance matrix for restore-time vsock overrides is a
 separate manual readiness gate in
 [`docs/drills/vsock-override-acceptance.md`](docs/drills/vsock-override-acceptance.md).
 
+Hub dev also requires S9 before promotion. It creates one bounded native
+`claude-runtime` session and runs Codex at `xhigh`, then waits for that session
+to park and resumes the same CLI thread. Each turn must produce positive input
+and output usage and execute a shell command that writes a fresh, unpredictable
+proof artifact. The runner checks both artifacts through the shim separately
+from model output. The artifacts include the actual Codex binary version and
+the guest image digest stamped inside the root filesystem; the expected values
+are not supplied in the model prompt. A matching workload declaration or a
+successful text-only response is insufficient. S9 destroys its session and
+confirms removal, including after failure, with an independent cleanup deadline.
+It retains a successful result for the current runner and chart, and stops
+after two failed attempts so an unavailable provider cannot consume quota on
+every scheduled suite. A runner restart resets that bounded attempt count.
+
+The digest stamp is an explicit dev opt-in. `stampImageDigest: true` derives
+the effective `b3` rootfs cache identity while the generic format remains `b2`.
+An older chart therefore continues to use its unstamped `b2` cache even when
+it receives the newer values. The `b3` builder has a separate ConfigMap name,
+exports the resolved immutable image digest, and writes a read-only stamp
+before constructing the filesystem. All builder modes and attached rootfs
+paths use that same identity. Existing banked sessions and production caches
+keep their original format.
+
+The dev broker owns a separate OAuth grant. Its strict login mode permits only
+the private Monolith identity to start or inspect login over SPIFFE mTLS; the
+dev noded identity separately owns token, refresh and quota routes. Plaintext
+protected routes are retired using the existing chart option so old-chart
+rollouts and rollbacks also keep login closed. Private Monolith exposes only
+the fixed dev broker login/status paths and pins the exact dev server identity;
+it shares its rotating client SVID with the production broker client without
+changing the production server pin. No production grant is copied into dev.
+
+Kargo requires an explicit passing S9 entry as well as the aggregate verdict
+and exact candidate chart version. A legacy S1-S8-only verdict cannot promote
+the candidate. The 90-minute dev deadline accommodates workload readiness,
+two complete suites and their retry interval; the production five-minute soak
+remains in place. Bootstrap first proves the currently published CLI and Sol
+model. The subsequent runtime change moves S9 to Terra and the new CLI; factory
+review policy changes only after that runtime has passed the live gate.
+
 **Known walls and provisional numbers** (each states what would move it):
 
 | Item | Value | Status | Confidence |

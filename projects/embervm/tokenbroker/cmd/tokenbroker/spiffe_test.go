@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -72,6 +73,57 @@ func TestConfiguredListenersRejectsInvalidPlaintextRetirement(t *testing.T) {
 	_, err := configuredListeners()
 	if err == nil || !strings.Contains(err.Error(), "must be true or false") {
 		t.Fatalf("configuredListeners() error = %v, want boolean validation", err)
+	}
+}
+
+func TestConfiguredListenersStrictLoginFailsClosed(t *testing.T) {
+	const tokenID = "spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-noded"
+	const loginID = "spiffe://embervm.jomcgi.dev/ns/monolith/sa/monolith"
+	for _, test := range []struct {
+		name, required, tlsAddress, loginIDs, wantError string
+	}{
+		{"no TLS", "true", "", loginID, "requires BROKER_TLS_LISTEN_ADDR"},
+		{"no login identities", "true", ":8443", "", "BROKER_LOGIN_SPIFFE_CLIENT_IDS is required"},
+		{"invalid identity", "true", ":8443", "monolith", "invalid BROKER_LOGIN_SPIFFE_CLIENT_IDS entry"},
+		{"blank identity", "true", ":8443", loginID + ",", "invalid BROKER_LOGIN_SPIFFE_CLIENT_IDS entry"},
+		{"invalid boolean", "yes", ":8443", loginID, "BROKER_LOGIN_AUTH_REQUIRED must be true or false"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES", "false")
+			t.Setenv("BROKER_TLS_LISTEN_ADDR", test.tlsAddress)
+			t.Setenv("BROKER_SPIFFE_CLIENT_IDS", tokenID)
+			t.Setenv("BROKER_LOGIN_AUTH_REQUIRED", test.required)
+			t.Setenv("BROKER_LOGIN_SPIFFE_CLIENT_IDS", test.loginIDs)
+			_, err := configuredListeners()
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("configuredListeners() error = %v, want %q", err, test.wantError)
+			}
+		})
+	}
+
+	t.Setenv("BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES", "false")
+	t.Setenv("BROKER_TLS_LISTEN_ADDR", ":8443")
+	t.Setenv("BROKER_SPIFFE_CLIENT_IDS", tokenID)
+	t.Setenv("BROKER_LOGIN_AUTH_REQUIRED", "true")
+	t.Setenv("BROKER_LOGIN_SPIFFE_CLIENT_IDS", " "+loginID+" ")
+	listeners, err := configuredListeners()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !listeners.loginAuthRequired || len(listeners.spiffeClientIDs) != 1 || len(listeners.loginSpiffeClientIDs) != 1 {
+		t.Fatalf("strict listeners did not retain separate client scopes: %+v", listeners)
+	}
+	if ids := listeners.mtlsClientIDs(); len(ids) != 2 || ids[0].String() != tokenID || ids[1].String() != loginID {
+		t.Fatalf("TLS handshake identities = %v, want token and login identities", ids)
+	}
+
+	t.Setenv("BROKER_LOGIN_AUTH_REQUIRED", "false")
+	listeners, err = configuredListeners()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listeners.loginAuthRequired || len(listeners.loginSpiffeClientIDs) != 0 || len(listeners.mtlsClientIDs()) != 1 {
+		t.Fatalf("disabled login auth changed legacy identity scope: %+v", listeners)
 	}
 }
 
@@ -194,7 +246,9 @@ func TestMTLSHandlerAuthorizesConfiguredClient(t *testing.T) {
 	allowedSource := &staticX509Source{svid: newTestSVID(t, caCertificate, caKey, allowedID, 3), bundle: bundle}
 	disallowedSource := &staticX509Source{svid: newTestSVID(t, caCertificate, caKey, disallowedID, 4), bundle: bundle}
 
-	testServer := httptest.NewUnstartedServer(newServerWithStoredGrant(t).mtlsMux())
+	testServer := httptest.NewUnstartedServer(newServerWithStoredGrant(t).mtlsMux(listenerConfig{
+		spiffeClientIDs: []spiffeid.ID{allowedID},
+	}))
 	testServer.TLS = tlsconfig.MTLSServerConfig(serverSource, serverSource, tlsconfig.AuthorizeOneOf(allowedID))
 	testServer.TLS.Certificates = []tls.Certificate{{
 		Certificate: [][]byte{serverSource.svid.Certificates[0].Raw},
@@ -216,6 +270,14 @@ func TestMTLSHandlerAuthorizesConfiguredClient(t *testing.T) {
 	defer allowedResponse.Body.Close()
 	if allowedResponse.StatusCode != http.StatusOK {
 		t.Fatalf("allowed client status = %d, want %d", allowedResponse.StatusCode, http.StatusOK)
+	}
+	legacyLogin, err := allowedClient.Get(testServer.URL + "/grants/codex-cluster/login/status")
+	if err != nil {
+		t.Fatalf("legacy login status failed: %v", err)
+	}
+	legacyLogin.Body.Close()
+	if legacyLogin.StatusCode != http.StatusOK {
+		t.Fatalf("legacy login status = %d, want 200 with strict login auth disabled", legacyLogin.StatusCode)
 	}
 	for _, method := range []string{http.MethodGet, http.MethodPost} {
 		for _, path := range []string{"/github/grants/", "/github/grants/bosun/token"} {
@@ -260,6 +322,127 @@ func TestMTLSHandlerAuthorizesConfiguredClient(t *testing.T) {
 	_, err = missingClient.Get(testServer.URL + "/grants/codex-cluster/token")
 	if err == nil {
 		t.Fatal("client without an SVID succeeded, want TLS handshake error")
+	}
+}
+
+func TestStrictLoginMTLSSeparatesLoginAndTokenIdentities(t *testing.T) {
+	trustDomain := spiffeid.RequireTrustDomainFromString("embervm.jomcgi.dev")
+	caCertificate, caKey := newTestCA(t)
+	bundle := x509bundle.FromX509Authorities(trustDomain, []*x509.Certificate{caCertificate})
+	serverID := spiffeid.RequireFromString("spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-tokenbroker")
+	tokenID := spiffeid.RequireFromString("spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-noded")
+	loginID := spiffeid.RequireFromString("spiffe://embervm.jomcgi.dev/ns/monolith/sa/monolith")
+	foreignID := spiffeid.RequireFromString("spiffe://embervm.jomcgi.dev/ns/foreign/sa/monolith")
+	source := func(id spiffeid.ID, serial int64) *staticX509Source {
+		return &staticX509Source{svid: newTestSVID(t, caCertificate, caKey, id, serial), bundle: bundle}
+	}
+	serverSource := source(serverID, 2)
+	listeners := listenerConfig{
+		tlsListenAddr:        ":8443",
+		spiffeClientIDs:      []spiffeid.ID{tokenID},
+		loginAuthRequired:    true,
+		loginSpiffeClientIDs: []spiffeid.ID{loginID},
+	}
+	pollWait := make(chan struct{})
+	defer close(pollWait)
+	s := newServerWithStoredGrantAndAdapter(t, &fakeAdapter{
+		deviceCode: provider.DeviceCodeResponse{
+			VerificationURL: "https://auth.example/device",
+			UserCode:        "ABCD-EFGH",
+			ExpiresIn:       900,
+		},
+		pollWait: pollWait,
+	})
+	testServer := httptest.NewUnstartedServer(s.mtlsMux(listeners))
+	testServer.TLS = tlsconfig.MTLSServerConfig(serverSource, serverSource, tlsconfig.AuthorizeOneOf(listeners.mtlsClientIDs()...))
+	testServer.TLS.Certificates = []tls.Certificate{{
+		Certificate: [][]byte{serverSource.svid.Certificates[0].Raw},
+		PrivateKey:  serverSource.svid.PrivateKey,
+		Leaf:        serverSource.svid.Certificates[0],
+	}}
+	testServer.StartTLS()
+	defer testServer.Close()
+	client := func(id spiffeid.ID, serial int64) *http.Client {
+		clientSource := source(id, serial)
+		transport := &http.Transport{TLSClientConfig: tlsconfig.MTLSClientConfig(clientSource, clientSource, tlsconfig.AuthorizeOneOf(serverID))}
+		t.Cleanup(transport.CloseIdleConnections)
+		return &http.Client{Transport: transport}
+	}
+	tokenClient, loginClient := client(tokenID, 3), client(loginID, 4)
+	request := func(client *http.Client, method, path string, status int) string {
+		t.Helper()
+		req, err := http.NewRequest(method, testServer.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Identity-like headers must not elevate a token-only client.
+		req.Header.Set("X-SPIFFE-ID", loginID.String())
+		req.Header.Set("X-Forwarded-Client-Cert", "URI="+loginID.String())
+		response, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s failed: %v", method, path, err)
+		}
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != status {
+			t.Fatalf("%s %s = %d %s, want %d", method, path, response.StatusCode, body, status)
+		}
+		return string(body)
+	}
+	loginPaths := []struct{ method, path string }{
+		{http.MethodPost, "/grants/codex-cluster/login/start"},
+		{http.MethodGet, "/grants/codex-cluster/login/status"},
+	}
+	assertLoginDenied := func() {
+		t.Helper()
+		for _, route := range loginPaths {
+			body := request(tokenClient, route.method, route.path, http.StatusForbidden)
+			if strings.Contains(body, "ABCD-EFGH") || !strings.Contains(body, "spiffe_forbidden") {
+				t.Fatalf("token identity received login data: %s", body)
+			}
+			req := httptest.NewRequest(route.method, route.path, nil)
+			req.Header.Set("X-SPIFFE-ID", loginID.String())
+			response := httptest.NewRecorder()
+			s.plaintextMux(listeners).ServeHTTP(response, req)
+			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "login_requires_mtls") {
+				t.Fatalf("strict plaintext %s = %d %s", route.path, response.Code, response.Body.String())
+			}
+		}
+	}
+	assertLoginDenied()
+	request(loginClient, http.MethodGet, "/grants/codex-cluster/login/status", http.StatusOK)
+	if body := request(loginClient, http.MethodPost, "/grants/codex-cluster/login/start", http.StatusOK); !strings.Contains(body, "ABCD-EFGH") {
+		t.Fatalf("login identity did not receive the device code: %s", body)
+	}
+	request(loginClient, http.MethodPost, "/grants/codex-cluster/login/start", http.StatusConflict)
+	request(loginClient, http.MethodGet, "/grants/codex-cluster/login/status", http.StatusOK)
+	assertLoginDenied() // An active pending flow must not expose codes to other callers.
+	for _, route := range []struct{ method, path string }{
+		{http.MethodGet, "/grants/codex-cluster/token"},
+		{http.MethodPost, "/grants/codex-cluster/refresh"},
+		{http.MethodGet, "/quota"},
+	} {
+		request(loginClient, route.method, route.path, http.StatusForbidden)
+		request(tokenClient, route.method, route.path, http.StatusOK)
+	}
+	request(loginClient, http.MethodPost, "/quota/codex", http.StatusForbidden)
+
+	noCertTransport := &http.Transport{TLSClientConfig: tlsconfig.TLSClientConfig(serverSource, tlsconfig.AuthorizeOneOf(serverID))}
+	t.Cleanup(noCertTransport.CloseIdleConnections)
+	for name, rejected := range map[string]*http.Client{
+		"foreign":        client(foreignID, 5),
+		"no certificate": {Transport: noCertTransport},
+	} {
+		for _, path := range []string{"/grants/codex-cluster/login/status", "/grants/codex-cluster/token"} {
+			response, err := rejected.Get(testServer.URL + path)
+			if err == nil {
+				response.Body.Close()
+				t.Errorf("%s request %s passed TLS, want handshake refusal", name, path)
+			}
+		}
 	}
 }
 
