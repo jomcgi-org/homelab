@@ -31,14 +31,11 @@
 (*   every record in order, hidden actions impose no ordering constraint, and *)
 (*   the bound is the window itself (Len(Trace)), so TLC always terminates.  *)
 (*                                                                           *)
-(* COMPOSITION NOTE. tlc.sh stages exactly one spec plus one cfg, so this    *)
-(* module is self-contained and does NOT extend adoption.tla. The two        *)
-(* ordering predicates below mirror Tier A checker predicates over the same  *)
-(* record vocabulary (checker.ex check_no_destroy_before_confirm and         *)
-(* check_no_double_assign): a window TLC accepts here is a path the hand     *)
-(* checker also accepts, and a window TLC rejects names the violated         *)
-(* invariant for the S6 fail verdict. Full composition with adoption.tla's   *)
-(* Next remains future work once the dev lane produces live windows.         *)
+(* COMPOSITION. Session destruction replays the shared destroy_contract.     *)
+(* adoption_destroy checks that same contract against adoption's actual Next. *)
+(* Other actions retain the two legacy ordering checks below. Full adoption  *)
+(* trace conformance, hidden actions and cross-run replay remain #6415.       *)
+(* The runner withholds pass for partial or unsupported destruction windows. *)
 (*                                                                           *)
 (* WINDOW PLACEMENT. The fixture windows live HERE, in the module, selected  *)
 (* by the scalar Fixture constant, because TLC configuration files accept    *)
@@ -107,13 +104,39 @@ Trace ==
            [] Fixture = "destroy_before_confirm" -> DestroyBeforeConfirmWindow
            [] OTHER -> DoubleDispatchWindow
 
-VARIABLES cursor
+VARIABLES cursor, pending, completed, transitionsValid
+DC == INSTANCE destroy_contract
+DestroyKey(r) == <<r.session, r.vm>>
+IsBegin(r) == r.action = "begin_destroy" /\ r.gate /\ r.vm # ""
+IsCompletion(r) == r.action = "confirm_destroy" /\ r.gate /\ r.had_vm
+Evidence(r) == r.node_confirmed /\ r.confirmed_by \in {"teardown", "absence"}
 
-ReplayInit == cursor = 1
+ReplayInit ==
+    /\ cursor = 1
+    /\ DC!Initial(pending, completed)
+    /\ transitionsValid = TRUE
 
-ReplayNext == cursor <= Len(Trace) /\ cursor' = cursor + 1
+ReplayNext ==
+    /\ cursor <= Len(Trace)
+    /\ cursor' = cursor + 1
+    /\ LET r == Trace[cursor]
+           key == DestroyKey(r)
+       IN IF IsBegin(r) THEN
+            /\ pending' = pending \cup {key}
+            /\ completed' = completed
+            /\ transitionsValid' = (transitionsValid /\
+                 DC!Begin(pending, completed, pending', completed', key))
+          ELSE IF IsCompletion(r) THEN
+            /\ pending' = pending \ {key}
+            /\ completed' = completed \cup {key}
+            /\ transitionsValid' = (transitionsValid /\
+                 DC!Confirm(pending, completed, pending', completed', key, Evidence(r)))
+          ELSE UNCHANGED <<pending, completed, transitionsValid>>
 
-Spec == ReplayInit /\ [][ReplayNext]_cursor
+\* Invalid actions still consume the record and latch a violation. Guarding
+\* ReplayNext with the contract would silently deadlock with deadlock checks off.
+Spec == ReplayInit /\ [][ReplayNext]_<<cursor, pending, completed, transitionsValid>>
+DestroyTransitionsConform == transitionsValid
 
 \* Every action the control plane can emit into a window, plus the hidden
 \* steps that are unobservable in principle but legal between observations.

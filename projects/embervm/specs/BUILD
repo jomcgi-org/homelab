@@ -1152,6 +1152,7 @@ genrule(
     name = "tlc_adoption_trace_pass",
     srcs = _JRE_SRCS + [
         "adoption_trace.tla",
+        "destroy_contract.tla",
         "adoption_trace_pass.cfg",
     ],
     outs = ["adoption_trace_pass.tlc.out"],
@@ -1160,7 +1161,7 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location adoption_trace.tla)\" " +
           "\"$(location adoption_trace_pass.cfg)\" " +
-          "\"$@\" pass",
+          "\"$@\" pass \"\" $(location destroy_contract.tla)",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
@@ -1169,6 +1170,7 @@ genrule(
     name = "tlc_adoption_trace_destroy_before_confirm",
     srcs = _JRE_SRCS + [
         "adoption_trace.tla",
+        "destroy_contract.tla",
         "adoption_trace_destroy_before_confirm.cfg",
     ],
     outs = ["adoption_trace_destroy_before_confirm.tlc.out"],
@@ -1177,7 +1179,7 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location adoption_trace.tla)\" " +
           "\"$(location adoption_trace_destroy_before_confirm.cfg)\" " +
-          "\"$@\" fail NoDestroyBeforeConfirm",
+          "\"$@\" fail NoDestroyBeforeConfirm $(location destroy_contract.tla)",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
@@ -1186,6 +1188,7 @@ genrule(
     name = "tlc_adoption_trace_double_dispatch",
     srcs = _JRE_SRCS + [
         "adoption_trace.tla",
+        "destroy_contract.tla",
         "adoption_trace_double_dispatch.cfg",
     ],
     outs = ["adoption_trace_double_dispatch.tlc.out"],
@@ -1194,7 +1197,7 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location adoption_trace.tla)\" " +
           "\"$(location adoption_trace_double_dispatch.cfg)\" " +
-          "\"$@\" fail NoDoubleAssign",
+          "\"$@\" fail NoDoubleAssign $(location destroy_contract.tla)",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
@@ -1204,7 +1207,7 @@ genrule(
 # file so the test can address it with $(rlocationpath ...); the filegroup
 # below cannot serve that (rlocationpath needs a single file).
 exports_files(
-    ["adoption_trace.tla"],
+    ["adoption_trace.tla", "destroy_contract.tla"],
     visibility = ["//projects/embervm:__subpackages__"],
 )
 
@@ -1236,4 +1239,61 @@ filegroup(
         exclude = ["**/node_modules/**"],
     ),
     visibility = ["//projects/monolith:__pkg__"],
+)
+
+genrule(
+    name = "tlc_adoption_destroy",
+    srcs = _JRE_SRCS + [
+        "adoption_destroy.tla",
+        "adoption.tla",
+        "destroy_contract.tla",
+        "adoption_destroy.cfg",
+    ],
+    outs = ["adoption_destroy.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "$(location adoption_destroy.tla) " +
+          "$(location adoption_destroy.cfg) \"$@\" pass \"\" " +
+          "$(location adoption.tla) $(location destroy_contract.tla)",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_adoption_destroy_unowned",
+    srcs = _JRE_SRCS + [
+        "adoption_destroy.tla",
+        "adoption.tla",
+        "destroy_contract.tla",
+        "adoption_destroy_unowned.cfg",
+    ],
+    outs = ["adoption_destroy_unowned.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "$(location adoption_destroy.tla) " +
+          "$(location adoption_destroy_unowned.cfg) \"$@\" fail \"\" " +
+          "$(location adoption.tla) $(location destroy_contract.tla)",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_adoption_destroy_completion",
+    srcs = _JRE_SRCS + [
+        "adoption_destroy.tla",
+        "adoption.tla",
+        "destroy_contract.tla",
+        "adoption_destroy_completion.cfg",
+    ],
+    outs = ["adoption_destroy_completion.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "$(location adoption_destroy.tla) " +
+          "$(location adoption_destroy_completion.cfg) \"$@\" fail NeverCompletes " +
+          "$(location adoption.tla) $(location destroy_contract.tla)",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
 )

@@ -62,6 +62,7 @@ go_test(
     ],
     data = [
         "//projects/embervm/specs:adoption_trace.tla",
+        "//projects/embervm/specs:destroy_contract.tla",
         "@temurin21_jre_linux_amd64//:bin/java",
         "@temurin21_jre_linux_amd64//:jre",
         "@tla2tools//file",
@@ -105,6 +106,7 @@ genrule(
     name = "tla_mtree",
     srcs = [
         "//projects/embervm/specs:adoption_trace.tla",
+        "//projects/embervm/specs:destroy_contract.tla",
         "@temurin21_jre_linux_amd64//:bin/java",
         "@temurin21_jre_linux_amd64//:jre",
         "@tla2tools//file",
@@ -114,6 +116,7 @@ genrule(
           "$(execpath @temurin21_jre_linux_amd64//:bin/java) " +
           "$(execpath @tla2tools//file) " +
           "$(execpath //projects/embervm/specs:adoption_trace.tla) " +
+          "$(execpath //projects/embervm/specs:destroy_contract.tla) " +
           "$(execpaths @temurin21_jre_linux_amd64//:jre) > $@",
     tools = ["tla_layer_mtree.sh"],
 )
@@ -122,6 +125,7 @@ tar(
     name = "tla_tar_amd64",
     srcs = [
         "//projects/embervm/specs:adoption_trace.tla",
+        "//projects/embervm/specs:destroy_contract.tla",
         "@temurin21_jre_linux_amd64//:jre",
         "@tla2tools//file",
     ],
