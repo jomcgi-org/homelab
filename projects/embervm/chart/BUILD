@@ -509,3 +509,34 @@ py_test(
         "@pip//pyyaml",
     ],
 )
+
+py_test(
+    name = "chart_conformance_codex_test",
+    srcs = ["chart_conformance_codex_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/embervm/deploy:deploy_values",
+        "//projects/embervm/deploy:gke_values",
+        "//projects/embervm/dev/deploy:deploy_values",
+        "//projects/embervm/dev/deploy:gke_values",
+        "//projects/embervm/dev/deploy:recovery_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "files/**/*",
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "DEV_GKE_VALUES": "$(rootpath //projects/embervm/dev/deploy:gke_values)",
+        "DEV_VALUES": "$(rootpath //projects/embervm/dev/deploy:deploy_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "PROD_GKE_VALUES": "$(rootpath //projects/embervm/deploy:gke_values)",
+        "PROD_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
+        "RECOVERY_VALUES": "$(rootpath //projects/embervm/dev/deploy:recovery_values)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)

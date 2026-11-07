@@ -16,6 +16,9 @@ frontend:
   qwenApiBase: "http://inference-bridge-freetoken.tailscale.svc.cluster.local:8090"
 
 tokenBroker:
+  # Reuse this private tier's rotating SVID for dev device login only.
+  devLoginUrl: "https://embervm-dev-embervm-tokenbroker.embervm-dev.svc:8443"
+  devLoginServerId: "spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-tokenbroker"
   spiffe:
     # Stage 1 of #5791: login/start, login/status, refresh and quota go to the
     # broker's SPIFFE mTLS port (8443) through the spiffe-helper sidecar. The

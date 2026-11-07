@@ -54,7 +54,15 @@ type config struct {
 	// default-off: with both false the suite is exactly S1..S6.
 	requireJailer bool
 	egressProbe   bool
-	budgets       map[string]time.Duration
+	// S9 is an authenticated Codex shell and native resume check. It is
+	// disabled until a dev broker grant and a stamped candidate image exist.
+	codexProbe         bool
+	codexWorkload      string
+	codexModel         string
+	codexProviderModel string
+	codexGuestDigest   string
+	codexCLIVersion    string
+	budgets            map[string]time.Duration
 }
 
 type controlPlaneClient struct {
@@ -199,7 +207,7 @@ func unreadyWorkloads(view nodesView, workloads []string) []string {
 	return unready
 }
 
-func runScenarios(ctx context.Context, cfg config, client *controlPlaneClient, started time.Time) []scenarioVerdict {
+func runScenarios(ctx context.Context, cfg config, client *controlPlaneClient, started time.Time, codexGate *codexProbeGate) []scenarioVerdict {
 	// Before S1, so S7 compares launch counters across everything the suite boots.
 	baseline := readJailerBaseline(ctx, cfg, client)
 
@@ -242,6 +250,11 @@ func runScenarios(ctx context.Context, cfg config, client *controlPlaneClient, s
 		})
 		logScenario(s6)
 		scenarios = append(scenarios, s6)
+	}
+	if cfg.codexProbe {
+		s9 := codexGate.run(ctx, cfg, client)
+		logScenario(s9)
+		scenarios = append(scenarios, s9)
 	}
 	return append(scenarios, runJailerScenarios(ctx, cfg, client, started, baseline)...)
 }

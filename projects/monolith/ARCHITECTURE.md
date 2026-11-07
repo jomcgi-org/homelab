@@ -74,6 +74,27 @@ Broker failure leaves quota unavailable while the rest of the board publishes.
 The cron job respects the broker's SPIFFE mode; missing workload credentials in
 that mode fail closed without an HTTP fallback.
 
+The existing private Codex login MCP tools and HTTP routes accept `environment`
+as `prod` (default) or `dev`. The dev bridge permits only `codex-cluster`
+`POST /login/start` and `GET /login/status` under `/grants/codex-cluster`.
+Its URL and exact server SPIFFE ID come from the private deployment values;
+callers cannot select either. The hub targets
+`https://embervm-dev-embervm-tokenbroker.embervm-dev.svc:8443` and pins
+`spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-tokenbroker`.
+It reuses the private Monolith's rotating
+`spiffe://embervm.jomcgi.dev/ns/monolith/sa/monolith` SVID with a request-local
+server pin, leaving the production broker target and pin unchanged. Missing
+configuration or SVIDs fail closed. Requests do not follow redirects, have a
+30-second deadline and read at most 1 MiB. Dev responses expose validated device
+approval fields or a fixed login-state description; provider error detail and
+token fields are omitted. No dev token, refresh or quota proxy is exposed.
+The dev broker separately authorizes this client for login only; its noded
+identity owns token delivery. The chart configures the bridge only on the private
+hub backend. This is source configuration, not evidence of a dev grant, deployed
+authorization or a completed live conformance turn (Refs #6471).
+(see: /projects/monolith/factory/execution/broker_client.py)
+(see: /projects/monolith/deploy/values-gke.yaml)
+
 Routine-job reconciliation uses the narrow existing contracts in `factory.api`.
 The domain boundary test checks factory internals
 and requires its dependencies on other domains to pass through their APIs.

@@ -60,6 +60,49 @@ describe("Codex login proxies", () => {
   });
 
   test.each([
+    ["status", GET, "GET"],
+    ["start", POST, "POST"],
+  ])(
+    "%s forwards dev selection to the fixed backend",
+    async (name, handler, method) => {
+      globalThis.fetch = vi.fn(
+        async () =>
+          new Response(JSON.stringify({ environment: "dev" }), { status: 200 }),
+      );
+      const response = await handler({
+        url: new URL(
+          `http://frontend/private/factory/execution/codex-login/${name}?grant=codex-cluster&environment=dev&url=https://other.example/token&serverId=arbitrary`,
+        ),
+      });
+
+      expect(await response.json()).toEqual({ environment: "dev" });
+      const [upstream, options] = globalThis.fetch.mock.calls[0];
+      expect(upstream.href).toBe(
+        `http://backend/api/agents/codex-login/${name}?grant=codex-cluster&environment=dev`,
+      );
+      expect(options.method || "GET").toBe(method);
+    },
+  );
+
+  test.each([
+    ["status", GET],
+    ["start", POST],
+  ])(
+    "%s leaves an omitted environment to the backend's production default",
+    async (name, handler) => {
+      globalThis.fetch = vi.fn(async () => new Response("{}", { status: 200 }));
+      await handler({
+        url: new URL(
+          `http://frontend/private/factory/execution/codex-login/${name}`,
+        ),
+      });
+      expect(globalThis.fetch.mock.calls[0][0].href).toBe(
+        `http://backend/api/agents/codex-login/${name}`,
+      );
+    },
+  );
+
+  test.each([
     ["status", GET],
     ["start", POST],
   ])("%s returns a JSON 502 when the backend throws", async (name, handler) => {

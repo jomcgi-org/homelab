@@ -213,7 +213,7 @@ initContainers:
       - name: ROOTFS_SIZE
         value: {{ $ctx.Values.rootfsBuilder.rootfsSize | quote }}
       - name: ROOTFS_BAKE_FORMAT
-        value: {{ $ctx.Values.rootfsBuilder.bakeFormatVersion | quote }}
+        value: {{ include "embervm.rootfs.bakeFormatVersion" $ctx.Values.rootfsBuilder | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_ENABLED
         value: {{ $ctx.Values.rootfsReclaim.enabled | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_SNAPSHOTS_ROOT
@@ -288,7 +288,7 @@ initContainers:
       - name: ROOTFS_SIZE
         value: {{ $ctx.Values.rootfsBuilder.rootfsSize | quote }}
       - name: ROOTFS_BAKE_FORMAT
-        value: {{ $ctx.Values.rootfsBuilder.bakeFormatVersion | quote }}
+        value: {{ include "embervm.rootfs.bakeFormatVersion" $ctx.Values.rootfsBuilder | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_ENABLED
         value: {{ $ctx.Values.rootfsReclaim.enabled | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_SNAPSHOTS_ROOT
@@ -361,7 +361,7 @@ containers:
       - name: ROOTFS_SIZE
         value: {{ $ctx.Values.rootfsBuilder.rootfsSize | quote }}
       - name: ROOTFS_BAKE_FORMAT
-        value: {{ $ctx.Values.rootfsBuilder.bakeFormatVersion | quote }}
+        value: {{ include "embervm.rootfs.bakeFormatVersion" $ctx.Values.rootfsBuilder | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_ENABLED
         value: {{ $ctx.Values.rootfsReclaim.enabled | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_SNAPSHOTS_ROOT
@@ -990,7 +990,7 @@ volumes:
   {{- if $ctx.Values.workloads }}
   - name: rootfs-builder-script
     configMap:
-      name: {{ include "embervm.noded.fullname" $ctx }}-rootfs-builder
+      name: {{ include "embervm.rootfs.builderConfigMap" $ctx }}
       defaultMode: 0755
   - name: rootfs-builder-work
     emptyDir: {}
