@@ -21,13 +21,15 @@
 #   $1   the JRE's bin/java (its dir's parent is the JRE root)
 #   $2   tla2tools.jar
 #   $3   adoption_trace.tla
-#   $4.. every file of the JRE filegroup
+#   $4   destroy_contract.tla
+#   $5.. every file of the JRE filegroup
 set -euo pipefail
 
 java_anchor="$1"
 jar="$2"
 spec="$3"
-shift 3
+contract="$4"
+shift 4
 
 jre_root="${java_anchor%/bin/java}"
 if [ "$jre_root" = "$java_anchor" ]; then
@@ -64,6 +66,8 @@ done
 
 files+=("./opt/tla/tla2tools.jar type=file mode=0644 $attrs content=$jar")
 files+=("./opt/tla/specs/adoption_trace.tla type=file mode=0644 $attrs content=$spec")
+
+files+=("./opt/tla/specs/destroy_contract.tla type=file mode=0644 $attrs content=$contract")
 
 echo "#mtree"
 # A parent sorts before its children, so every directory entry precedes what

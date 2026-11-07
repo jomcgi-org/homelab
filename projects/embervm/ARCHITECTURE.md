@@ -1260,6 +1260,14 @@ never stores or witnesses anything that scales with the fleet.
   can still read red at a single checkpoint: a primed VM mid-teardown, a
   session VM between reservation and commit, a finished task VM the node has
   not yet dropped, and task VMs orphaned by a control-plane restart.
+  **Why.** Ordering predicates can accept an illegal lifecycle transition.
+  The destruction pilot (#7677) shares `destroy_contract.tla` between a bounded
+  check of adoption's actual `Next` relation and S6 session trace replay.
+  Duplicate completion and beginning after completion violate the contract.
+  Runtime replay checks recorded teardown/absence evidence; it cannot establish
+  physical node cessation. Partial, visibly lossy, cross-incarnation and
+  unsupported windows withhold pass. This covers observed session destruction;
+  full adoption trace conformance and live acceptance remain on #6415.
   **Staged**: the TLC tier, trace validation of `adoption.tla` against dev
   SpecTrace windows (#6415), ships default-off behind `conformance.s6.enabled`
   (adoption_trace.tla plus the S6 runner feeding `/verdict`, provable in CI on

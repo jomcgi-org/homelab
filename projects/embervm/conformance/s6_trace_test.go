@@ -175,3 +175,23 @@ func TestS6TraceRecordConstantNeutralDefaults(t *testing.T) {
 		}
 	}
 }
+
+func TestS6ObservedWindowOrderingAndGaps(t *testing.T) {
+	view := traceWindowView{RunIDs: []string{"run"}, RecordCount: 3, Records: []traceRecord{
+		{RunID: "run", Seq: 12, Spec: "adoption", Action: "checkpoint"},
+		{RunID: "run", Seq: 10, Spec: "adoption", Action: "checkpoint"},
+		{RunID: "run", Seq: 11, Spec: "other", Action: "checkpoint"},
+	}}
+	records, reason := s6ObservedWindow(view)
+	if reason != "" || len(records) != 2 || records[0].Seq != 10 || records[1].Seq != 12 {
+		t.Fatalf("did not order and filter global window: %v %q", records, reason)
+	}
+	view.Records[2].Seq = 13
+	if _, reason := s6ObservedWindow(view); !strings.Contains(reason, "sequence gap") {
+		t.Fatalf("gap accepted: %q", reason)
+	}
+	view.RecordCount = 4
+	if _, reason := s6ObservedWindow(view); !strings.Contains(reason, "count mismatch") {
+		t.Fatalf("count mismatch accepted: %q", reason)
+	}
+}
