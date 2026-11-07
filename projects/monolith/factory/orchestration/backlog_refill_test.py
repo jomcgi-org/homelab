@@ -1933,7 +1933,7 @@ def test_native_refill_after_operator_repair_funding_retry_and_useful_delivery(
     verdict = {
         "status": "completed",
         "source_sha": "a" * 40,
-        "collection_digest": refill.digest(collection),
+        "collection_digest": controls.digest(collection),
         "summary": "Independently verified",
         "decisions": [
             {
@@ -2389,7 +2389,7 @@ def reviewed_run(world, github, monkeypatch, request):
     assert reviewer["pin"]["model"] == "astra" and reviewer["pin"]["effort"] == "xhigh"
     assert conductor.graph.load_graph(task_id)[-1]["deps"] == [refill.NODE]
     verdict = {
-        "collection_digest": refill.digest(collection),
+        "collection_digest": controls.digest(collection),
         "summary": "Verified the failure; rejected the existing issue.",
         "decisions": [
             {
@@ -2462,7 +2462,7 @@ def test_independent_refill_review_precedes_every_new_issue(reviewed_run):
             refill.latest_event(db, "reviewed", run_id=state.start["run_id"])
         )
         assert evidence["collector_session_id"] != evidence["reviewer_session_id"]
-        assert evidence["collection_digest"] == refill.digest(state.collection)
+        assert evidence["collection_digest"] == controls.digest(state.collection)
         completed = refill._detail(
             refill.latest_event(db, "completed", run_id=state.start["run_id"])
         )

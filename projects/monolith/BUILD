@@ -1244,6 +1244,7 @@ py_library(
         ":pkg_framework",
         ":pkg_grimoire",
         ":pkg_knowledge",
+        ":pkg_shared",
         "@pip//certifi",
         "@pip//fastapi",
         "@pip//httpx",
@@ -4436,6 +4437,16 @@ py_test(
 py_test(
     name = "shared_env_test",
     srcs = ["shared/env_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "shared_sse_test",
+    srcs = ["shared/sse_test.py"],
     imports = ["."],
     deps = [
         ":pkg_shared",

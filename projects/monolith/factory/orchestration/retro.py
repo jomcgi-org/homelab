@@ -22,6 +22,8 @@ import re
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
+from core.db import query_rows
+
 logger = logging.getLogger(__name__)
 
 RETRO_DIGEST = "factory-retro"
@@ -835,7 +837,7 @@ def _load_optimizer(session, now) -> dict:
     if app not in {"monolith", "embervm"} or not isinstance(revision, str):
         return {**context, "error": "invalid deployment identity"}
     context["rollout"] = _verify_optimizer_rollout(app, revision)
-    boundaries = _rows(
+    boundaries = query_rows(
         session,
         _OPTIMIZER_BOUNDARY,
         {
@@ -851,7 +853,7 @@ def _load_optimizer(session, now) -> dict:
     boundary = boundaries[0]
     deployed = _utc_time(boundary["observed_at"])
     end = min(now, deployed + timedelta(hours=72))
-    observations = _rows(
+    observations = query_rows(
         session,
         _OPTIMIZER_OBSERVATIONS,
         {
@@ -891,8 +893,8 @@ def _load_optimizer(session, now) -> dict:
         ("post", deployed, min(now, deployed + timedelta(hours=72))),
     ):
         params = {"start": start, "end": end, "as_of": now}
-        counts = _rows(session, _OPTIMIZER_COUNTS, params)[0]
-        costs = _rows(session, _OPTIMIZER_COSTS, params)[0]
+        counts = query_rows(session, _OPTIMIZER_COUNTS, params)[0]
+        costs = query_rows(session, _OPTIMIZER_COSTS, params)[0]
         context[name] = {
             "start": start.isoformat(),
             "end": end.isoformat(),
@@ -1179,12 +1181,6 @@ FROM observability.merged_prs WHERE number = ANY(:numbers)
 """
 
 
-def _rows(session, sql: str, params: dict) -> list[dict]:
-    from sqlmodel import text
-
-    return [dict(row._mapping) for row in session.execute(text(sql), params).all()]
-
-
 def _github_issues(now: datetime) -> dict:
     """Open area issues, recent closures and earlier retro filings."""
     import httpx
@@ -1256,11 +1252,11 @@ def load_retro_data(session, now: datetime | None = None) -> dict:
         intake_backlog = {"available": False, "issues": [], "coverage": {}}
     since = now - timedelta(hours=WINDOW_HOURS)
     params = {"since": since}
-    runs = _rows(session, _RUNS, params)
-    receipts = _rows(session, _RECEIPTS, params)
-    turns = _rows(session, _TURNS, params)
+    runs = query_rows(session, _RUNS, params)
+    receipts = query_rows(session, _RECEIPTS, params)
+    turns = query_rows(session, _TURNS, params)
     task_prs: dict[str, int] = {}
-    for row in _rows(session, _DELIVERIES, params):
+    for row in query_rows(session, _DELIVERIES, params):
         match = _PR_URL.search(str(row.get("detail_json") or ""))
         if match and row.get("task_id"):
             task_prs[row["task_id"]] = int(match.group(1))
@@ -1268,14 +1264,14 @@ def load_retro_data(session, now: datetime | None = None) -> dict:
     if task_prs:
         pr_sizes = {
             int(row["number"]): int(row["changed"] or 0)
-            for row in _rows(
+            for row in query_rows(
                 session, _PR_SIZES, {"numbers": sorted(set(task_prs.values()))}
             )
         }
     try:
         published = {
             row["session_key"]: row["issue_number"]
-            for row in _rows(session, _PUBLISHED, {})
+            for row in query_rows(session, _PUBLISHED, {})
         }
     except Exception:  # noqa: BLE001 - links are optional
         logger.warning("factory retro could not read published sessions", exc_info=True)
@@ -1294,12 +1290,12 @@ def load_retro_data(session, now: datetime | None = None) -> dict:
         "window_hours": WINDOW_HOURS,
         "runs": runs,
         "receipts": receipts,
-        "refusals": _rows(session, _REFUSALS, params),
-        "verdicts": _rows(session, _VERDICTS, params),
+        "refusals": query_rows(session, _REFUSALS, params),
+        "verdicts": query_rows(session, _VERDICTS, params),
         "turns": turns,
         "task_costs": {
             row["task_id"]: _f(row["cost"])
-            for row in _rows(session, _TASK_COSTS, params)
+            for row in query_rows(session, _TASK_COSTS, params)
         },
         "task_prs": task_prs,
         "pr_sizes": pr_sizes,
