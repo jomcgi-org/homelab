@@ -306,6 +306,9 @@ def observe(
         db.add(row)
         db.flush()
         from factory.orchestration import funding_profile
+        from factory.orchestration.backlog_refill_repair import (
+            CONTRACT_VERSION as repair_version,
+        )
         from factory.orchestration.backlog_refill_repair import epoch
 
         record(
@@ -322,8 +325,8 @@ def observe(
             eligible=eligible,
             policy_digest=digest(policy),
             **(
-                {"repair_contract": {"version": 1, "epoch": epoch(db)}}
-                if funding_profile.PROVIDER_ROUTE_AVAILABLE
+                {"repair_contract": {"version": repair_version, "epoch": epoch(db)}}
+                if repair_version == 2 or funding_profile.PROVIDER_ROUTE_AVAILABLE
                 else {}
             ),
         )
@@ -859,6 +862,25 @@ def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
                     or pin.get("hydration_branch") != "commit:" + source["sha"]
                 ):
                     return False
+        from factory.orchestration import factory_funding_limits as funding
+        from factory.orchestration.backlog_refill_repair import (
+            REMAINING_GRANT,
+            native_repair_grant_valid,
+            remaining_allowance,
+        )
+
+        grant = funding.amendment(db, task_id)
+        if (
+            grant
+            and grant.get("grant_kind") == REMAINING_GRANT
+            and (
+                not native_repair_grant_valid(db, receipt, grant)
+                or not remaining_allowance(
+                    db, receipt, own_start=run.dispatch_key if physical else None
+                )
+            )
+        ):
+            return False
     # No broker I/O under a database/control lock. Recheck the durable gates
     # after a slow quota fetch before crossing physical transport.
     if observed is not None:

@@ -60,24 +60,9 @@ _EVENT_ACTIONS = {
 
 
 def _delivery_enabled(policy: dict) -> bool:
-    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_funding_limits import recovery_delivery_enabled
 
-    if policy.get("repo") != RECOVERY_REPO:
-        return False
-    intake = controls.intake_policy(policy)
-    if not intake["enabled"] or intake["refinement_batch"]:
-        return False
-    entry = controls.repo_entry(policy, RECOVERY_REPO)
-    labels = {label.lower() for label in problem_issues_policy(policy)["labels"]}
-    return bool(
-        entry["enabled"]
-        and not entry["paused"]
-        and (
-            intake["refine_enabled"]
-            or labels.intersection(label.lower() for label in entry["labels"])
-        )
-        and not labels.intersection(label.lower() for label in entry["exclude_labels"])
-    )
+    return recovery_delivery_enabled(policy)
 
 
 def _recovery_quota() -> bool:
