@@ -32,6 +32,7 @@ from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryReceipt,
 )
+from factory.orchestration.factory_funding_limits import RECOVERY_REPO
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,6 @@ RESPONSE_LIMIT_BYTES = 1_000_000
 MARKER_PREFIX = "factory-problem"
 RECOVERY_SOURCES = frozenset({"recurring_blocker", "workflow_stranded"})
 RECOVERY_ACTIVATION = "problem_issue_recovery_loop_activated"
-RECOVERY_REPO = "jomcgi-org/homelab"
 RECOVERY_SHORT_WINDOW_MINUTES = 300
 _TERMINAL_ACTIONS = (
     "problem_issue_created",

@@ -15,6 +15,7 @@ from factory.orchestration.factory_models import (
 
 OBJECTIVE_CEILING_USD = 200.0
 REVIEW_COST_USD = 1.0
+RECOVERY_REPO = "jomcgi-org/homelab"
 # Ownership exclusions are shared with the physical native-refill fence.
 ROUTINE_HELD_LABELS = frozenset(
     {"human", "needs-human", "needs-thought", "security-finding", "security"}
@@ -298,12 +299,12 @@ def _repair_rollout_valid(db, proof):
 def recovery_delivery_enabled(policy: dict) -> bool:
     from factory.orchestration import factory_controls as controls
 
-    if policy.get("repo") != "jomcgi-org/homelab":
+    if policy.get("repo") != RECOVERY_REPO:
         return False
     intake = controls.intake_policy(policy)
     if not intake["enabled"] or intake["refinement_batch"]:
         return False
-    entry = controls.repo_entry(policy, "jomcgi-org/homelab")
+    entry = controls.repo_entry(policy, RECOVERY_REPO)
     labels = {
         label.lower() for label in controls.problem_issues_policy(policy)["labels"]
     }

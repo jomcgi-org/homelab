@@ -20273,6 +20273,7 @@ def producer_repair_after_real_blocker(
     from factory.orchestration import (
         factory_controls as controls,
         factory_funding as funding,
+        factory_funding_limits as funding_limits,
         factory_problem_issues as producer,
         factory_intake as intake,
         factory_landing as landing,
@@ -20280,6 +20281,7 @@ def producer_repair_after_real_blocker(
 
     task, policy = retry_exhausted_task(monkeypatch)
     monkeypatch.setattr(producer, "RECOVERY_REPO", task["repo"])
+    monkeypatch.setattr(funding_limits, "RECOVERY_REPO", task["repo"])
     monkeypatch.setattr(producer, "_recovery_quota", lambda: True)
     monkeypatch.setattr(producer, "github_list", lambda *_: [])
     issues = {
