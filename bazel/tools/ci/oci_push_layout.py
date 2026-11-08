@@ -14,6 +14,9 @@ def check_layout(layout):
         (item, True)
         for item in json.loads((layout / "index.json").read_text())["manifests"]
     ]
+    if not pending:
+        raise ValueError("OCI index has no manifests")
+    print("OCI roots: " + ", ".join(item[0]["digest"] for item in pending))
     seen = set()
     failures = []
     while pending:
@@ -31,6 +34,7 @@ def check_layout(layout):
                 content = stream.read() if manifest else stream.read(1)
             if blob.stat().st_size != descriptor["size"]:
                 raise ValueError(f"size {blob.stat().st_size} != {descriptor['size']}")
+            print(f"Readable OCI blob {digest} size={descriptor['size']}")
             if manifest:
                 document = json.loads(content)
                 if "manifests" in document:
@@ -51,7 +55,17 @@ def check_layout(layout):
 def main(args):
     # Bazel appends the push executable and its arguments. Never execute them.
     try:
-        check_layout(args[0])
+        if args[0] == "--push-script":
+            # rules_oci emits a literal path to the actual image tree. A Go or
+            # Python push label may alias a differently named image output.
+            script = Path(args[1]).read_text()
+            match = re.search(r'^readonly IMAGE_DIR="([^"\n]+)"$', script, re.M)
+            if match is None or "$" in match[1] or "`" in match[1]:
+                raise ValueError("push script does not declare a literal IMAGE_DIR")
+            layout = match[1]
+        else:
+            layout = args[0]
+        check_layout(layout)
     except (OSError, ValueError, KeyError, IndexError) as exc:
         print(f"OCI push layout check failed: {exc}", file=sys.stderr)
         return 1

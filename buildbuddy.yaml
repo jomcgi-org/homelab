@@ -191,10 +191,10 @@ actions:
 
             # Check the real push runfiles without invoking crane. Remote tests
             # alone do not exercise the runner's minimal-download layout.
-            if git diff --name-only "$base_ref" HEAD -- bazel/tools/oci/ projects/embervm/runtimes/claude/ | grep -q .; then
+            if git diff --name-only "$base_ref" HEAD -- bazel/tools/oci/ bazel/tools/ci/oci_push_layout.py bazel/images/push/ projects/embervm/runtimes/claude/ | grep -q .; then
               bazel run //projects/embervm/runtimes/claude:image.push --config=ci --stamp \
                 --build_runfile_links \
-                --run_under="python3 $PWD/bazel/tools/oci/check_push_layout.py projects/embervm/runtimes/claude/image"
+                --run_under="python3 $PWD/bazel/tools/ci/oci_push_layout.py --push-script"
             fi
 
             # Reject newly duplicated container environment names.
