@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -18,10 +19,12 @@ const (
 	codexGuestDigestPath = "/embervm-image-digest"
 )
 
-// Limit provider traffic within this runner process and chart version. Success
-// is retained; two failed attempts retain a fail-closed verdict. A process
-// restart clears this cache and permits fresh attempts, including on the same
-// chart version. The ordinary lifecycle scenarios keep running either way.
+// Bound provider traffic and unresolved session side effects within this runner
+// process and chart version. Charge before the first invoke, or when creation
+// or cleanup leaves an unknown outcome. Only a proven no-allocation denial or
+// confirmed pre-invoke cleanup leaves the budget untouched. Success is retained;
+// two charged failures retain a fail-closed verdict. A process restart clears
+// this cache. Ordinary lifecycle scenarios keep running either way.
 type codexProbeGate struct {
 	chartVersion string
 	attempts     int
@@ -37,9 +40,10 @@ func (g *codexProbeGate) run(ctx context.Context, cfg config, client *controlPla
 		result.Detail += "; retained for this runner's chart version; no new provider call"
 		return result
 	}
-	g.attempts++
 	result := runBudgeted(ctx, "S9", cfg.budgets["S9"], func(scenarioCtx context.Context) scenarioVerdict {
-		return runS9(scenarioCtx, cfg, client)
+		// runBudgeted and runS9 are synchronous: invocation or unresolved
+		// side effects are charged before this gate returns, never by a worker.
+		return runS9(scenarioCtx, cfg, client, func() { g.attempts++ })
 	})
 	g.last = &result
 	return result
@@ -73,7 +77,16 @@ type codexProbeTurn struct {
 // agent sessions. The runner never obtains a provider credential. The shim's
 // independent artifact capture must prove shell execution; model prose alone
 // is not evidence that the command ran.
-func runS9(ctx context.Context, cfg config, client *controlPlaneClient) (result scenarioVerdict) {
+func runS9(ctx context.Context, cfg config, client *controlPlaneClient, onCharge func()) (result scenarioVerdict) {
+	charged := false
+	chargeAttempt := func() {
+		if !charged {
+			charged = true
+			if onCharge != nil {
+				onCharge()
+			}
+		}
+	}
 	var nonceBytes [16]byte
 	if _, err := rand.Read(nonceBytes[:]); err != nil {
 		return scenarioVerdict{Verdict: verdictFail, Detail: "create Codex shell challenge: " + err.Error()}
@@ -85,6 +98,12 @@ func runS9(ctx context.Context, cfg config, client *controlPlaneClient) (result 
 	probeCfg.sessionWorkload = cfg.codexWorkload
 	session, initialState, err := createSession(ctx, probeCfg, client)
 	if err != nil {
+		var denial *sessionCreateDeniedError
+		if !errors.As(err, &denial) {
+			// A lost or malformed create response can hide an allocated session
+			// whose identity is unavailable for cleanup. Keep it bounded.
+			chargeAttempt()
+		}
 		return scenarioVerdict{Verdict: verdictFail, Detail: "create Codex session: " + err.Error()}
 	}
 	cleanupNeeded := true
@@ -97,6 +116,9 @@ func runS9(ctx context.Context, cfg config, client *controlPlaneClient) (result 
 				err = waitForSessionGone(cleanupCtx, client, session)
 			}
 			if err != nil {
+				// A pre-invoke failure is free only after confirmed cleanup.
+				// An already charged invoke and its cleanup share one attempt.
+				chargeAttempt()
 				result.Verdict = verdictFail
 				result.Detail += "; session cleanup failed: " + err.Error()
 			}
@@ -109,7 +131,7 @@ func runS9(ctx context.Context, cfg config, client *controlPlaneClient) (result 
 	}
 
 	command := fmt.Sprintf("printf '%%s\\n' '%s' > '%s' && ", nonce, noncePath) + codexProofCommand(noncePath, artifactPath)
-	first, err := invokeCodexProbe(ctx, cfg, client, session, "", artifactPath, command)
+	first, err := invokeCodexProbe(ctx, cfg, client, session, "", artifactPath, command, chargeAttempt)
 	if err == nil {
 		err = validateCodexProbeTurn(first, cfg, "", artifactPath, nonce, "printf")
 	}
@@ -126,7 +148,7 @@ func runS9(ctx context.Context, cfg config, client *controlPlaneClient) (result 
 	// a stale base selected when the parked session is restored.
 	artifactPath = nonce + ".resume.proof"
 	command = codexProofCommand(noncePath, artifactPath)
-	second, err := invokeCodexProbe(ctx, cfg, client, session, first.SessionID, artifactPath, command)
+	second, err := invokeCodexProbe(ctx, cfg, client, session, first.SessionID, artifactPath, command, nil)
 	if err == nil {
 		err = validateCodexProbeTurn(second, cfg, first.SessionID, artifactPath, nonce, "cat")
 	}
@@ -160,7 +182,7 @@ func validCodexGuestDigest(digest string) bool {
 	return ok && err == nil && len(decoded) == 32 && encoded == strings.ToLower(encoded)
 }
 
-func invokeCodexProbe(ctx context.Context, cfg config, client *controlPlaneClient, session sessionIdentity, cliSessionID, artifactPath, command string) (codexProbeTurn, error) {
+func invokeCodexProbe(ctx context.Context, cfg config, client *controlPlaneClient, session sessionIdentity, cliSessionID, artifactPath, command string, beforeInvoke func()) (codexProbeTurn, error) {
 	message := "Use only the shell tool to execute this exact harmless command in the current directory:\n" + command +
 		"\nReturn only its complete output. Do not use other tools or change any other file."
 	request := map[string]any{
@@ -186,6 +208,14 @@ func invokeCodexProbe(ctx context.Context, cfg config, client *controlPlaneClien
 	httpClient := *client.http
 	httpClient.Timeout = 0
 	invokeClient.http = &httpClient
+	if err := ctx.Err(); err != nil {
+		return codexProbeTurn{}, fmt.Errorf("invoke: %w", err)
+	}
+	if beforeInvoke != nil {
+		// Once this boundary is crossed, even an unknown request outcome must
+		// consume the attempt. The resumed turn belongs to the same attempt.
+		beforeInvoke()
+	}
 	response, err := invokeClient.request(ctx, http.MethodPost, path, body, session.Token, map[string]string{"X-Ember-Guest-Path": "/shim/turn"})
 	if err != nil {
 		return codexProbeTurn{}, fmt.Errorf("invoke: %w", err)

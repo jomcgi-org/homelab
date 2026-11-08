@@ -429,6 +429,32 @@ func runS5(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 	return scenarioVerdict{Verdict: verdictPass, Detail: fmt.Sprintf("guest exited 0 with exact untruncated stdout %q and empty stderr and guest error; VM reap observed in %s", elixirUnicodeStdout, reapDelay.Round(time.Millisecond))}
 }
 
+// This error is emitted only for the control plane's structured no-allocation
+// response. Transport errors and arbitrary response prose prove no such thing.
+type sessionCreateDeniedError struct{ detail string }
+
+func (e *sessionCreateDeniedError) Error() string { return e.detail }
+
+func sessionCreateDeniedWithoutAllocation(response apiResponse, workload string) bool {
+	if response.status != http.StatusTooManyRequests {
+		return false
+	}
+	var denial struct {
+		Error     string `json:"error"`
+		Reason    string `json:"reason"`
+		Workload  string `json:"workload"`
+		Retryable bool   `json:"retryable"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(response.body))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&denial) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return false
+	}
+	// Keep the exemption narrow: this is the authoritative warm-up denial
+	// observed from create_denial/3, not every retryable creation failure.
+	return denial.Error == "session create denied" && denial.Reason == "no_capacity" && denial.Workload == workload && denial.Retryable
+}
+
 func createSession(ctx context.Context, cfg config, client *controlPlaneClient) (sessionIdentity, string, error) {
 	path := "/v1/workloads/" + url.PathEscape(cfg.sessionWorkload) + "/sessions"
 	response, err := client.request(ctx, http.MethodPost, path, []byte(`{}`), "", nil)
@@ -436,7 +462,11 @@ func createSession(ctx context.Context, cfg config, client *controlPlaneClient) 
 		return sessionIdentity{}, "", fmt.Errorf("POST %s: %w", path, err)
 	}
 	if response.status != http.StatusCreated {
-		return sessionIdentity{}, "", fmt.Errorf("%s", httpErrorDetail(http.MethodPost, path, response))
+		detail := httpErrorDetail(http.MethodPost, path, response)
+		if sessionCreateDeniedWithoutAllocation(response, cfg.sessionWorkload) {
+			return sessionIdentity{}, "", &sessionCreateDeniedError{detail: detail}
+		}
+		return sessionIdentity{}, "", fmt.Errorf("%s", detail)
 	}
 	var created struct {
 		SessionID    string `json:"session_id"`
