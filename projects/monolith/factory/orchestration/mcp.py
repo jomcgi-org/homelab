@@ -1919,12 +1919,12 @@ async def factory_release_landing_hold(
     bounded text-file diff, and binds the review, current successful CI, policy,
     ownership and execution state. The preview digest also binds your identity.
     Apply grants one factory arming attempt, not standing authority. Expiry or
-    evidence drift requires a fresh preview and approval; this mode never
+    evidence drift requires a fresh preview and approval. This mode never
     releases any hold, changes acceptance, or bypasses the protected queue.
     Revoke with operation="revoke", the returned authorization_audit_id,
     identical target, reason and a new request_key. Revocation records a durable
     tombstone and cannot affect a later replacement grant. It does not require
-    GitHub availability. The asynchronous queue observer disarms stale grants;
+    GitHub availability. The asynchronous queue observer disarms stale grants.
     it cannot make revocation atomic with an external GitHub merge.
     """
     principal = current_principal()
