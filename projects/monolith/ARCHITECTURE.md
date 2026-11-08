@@ -986,19 +986,8 @@ This explicit scope is human-attested and head-bound; it has no machine-verified
 private-path allowlist. It cannot release a private landing hold. The separate
 `public_docs` exception covers only two documentation files and cannot authorize
 these repairs. Changes to admission authority, credential boundaries or destructive
-semantics do not qualify as `private_internal_reversible`. There is no generic
-typed execution-owner/security exception in the existing scoped API.
-
-If a real repair needs that exception, propose a separate single-repair operator
-decision with typed native proof, source event/epoch, canonical repair receipt/PR,
-immutable base/head, exact code-selected owner source/test paths (one pair, at most
-two existing regular UTF-8 files), explicit risk classification and rollback plan.
-Require a fresh independent security review of that same diff and required CI.
-Bind one protected-queue admission to those bytes with a finite expiry and audited
-revocation; any head/path/owner/hold change invalidates it. Exclude deployment,
-schema, grants and credentials unless separately approved. This is a proposal,
-not a new standing grant or an implemented exception. Do not broaden either
-standing profile or describe a diagnostic-only diff as the repair.
+semantics use the separate explicit operator approval below. Both standing
+delegation profiles retain their existing path and effect limits.
 
 Breaker 1155 and historical 1131, 1136, 1050 and 7640 remain untouched. No hold,
 historical lineage, workspace or volume is adopted, cleared or rewritten. Fixture
@@ -1012,6 +1001,64 @@ under `refill.problem_issues.recovery`. This read never advances the producer or
 infers quota, ownership, retry permission or delivery from enabled switches.
 It exposes bounded metadata, excluding prompts and raw audit payloads, so #7583's
 operational acceptance can distinguish missing signals from unfinished repairs.
+
+#### Explicit operator landing approval
+
+`factory_release_landing_hold` accepts `classification: requires_operator` for
+an already settled, unheld delivery. A standing human in `operators` supplies
+the exact receipt, PR and head. The server binds preview and apply to the
+authenticated subject. Service and delegated identities cannot record this
+approval. Existing holds, paused tasks, uncertain or claimed execution, competing
+owners and pending decisions retain their refusal paths.
+
+The scope has exactly five fields: `classification`, `evidence`,
+`acknowledged_effects`, `rollback_plan` and `expires_at`. The effects object has
+four explicit booleans: `public_facing`, `security_sensitive`,
+`authentication_or_credentials` and `destructive`. Every true effect in the
+native review must be acknowledged. The expiry is an absolute UTC time, in the
+future and at most 24 hours away when previewed and applied. Reason, evidence and
+rollback describe this delivery. They cannot supply a reviewer identity or a
+client-created file manifest.
+
+The server reads the actual base branch tip and records it separately from the
+immutable merge base and PR head. Complete GitHub comparison and tree evidence
+binds each path, change status, file mode, blob identity and content hash. The
+supported diff contains at most 64 added or modified regular UTF-8 files with
+mode `100644` or `100755`, each at most 512 KiB. Unsupported file kinds,
+renames, deletions, binary content and incomplete evidence refuse approval.
+Total decoded content is capped at 8 MiB, with bounded path traversal and GitHub
+reads. Audit records retain metadata and hashes, without source contents.
+
+Native independent review must approve this exact head and provide a typed
+`landing_scope` matching the immutable merge base and complete path set. The
+grant binds its run, session and artifact digest together with successful head
+CI. An older untyped review needs a real typed review before this scope can be
+authorized. A typed review requiring operator approval cannot be downgraded to
+the legacy private scope.
+
+Apply requires the preview digest and an idempotent request key. It records a
+schema-2 grant and returns its `authorization_audit_id`. Changed identity,
+policy, graph, base, head, review or CI evidence requires a fresh preview.
+The factory commits one arming intent before contacting GitHub. An unknown
+response or queue ejection cannot trigger another factory attempt under that
+grant. The observer binds the first queue entry it sees and refuses a replacement.
+The landing owner revalidates approval before arming and while observing queued
+work. Revocation targets the exact authorization audit, retains a tombstone and
+cannot fall through to standing machine delegation. Expiry and revocation do
+not renew approval or release a hold. Required CI, the protected queue and
+verified rollout remain separate delivery gates.
+
+The queue observer runs asynchronously. A revoked or expired entry is disarmed
+and dequeued on the next successful observation; GitHub can complete a merge
+before that observation. This path does not provide atomic revocation across
+the database and GitHub, or prove that an external caller never requeued between
+observations. Approval of source changes also does not establish that this
+capability is installed or authorize it to deploy itself.
+
+**Why.** Security-affecting deliveries need an explicit approval record that the
+landing owner can verify. The existing private and two-file documentation scopes
+cannot express that decision. This separate scope binds a standing operator's
+decision to independently reviewed source and preserves routine delivery policy.
 
 **Why.** Producer-created repairs need an authorization owner at native landing
 (#7601, follow-up to #7583). An operator can enable a finite trial or explicitly

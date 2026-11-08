@@ -1852,7 +1852,7 @@ async def factory_recover_expired_task(
 
 @mcp.tool
 async def factory_release_landing_hold(
-    operation: Literal["preview", "apply"],
+    operation: Literal["preview", "apply", "revoke"],
     receipt_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
     pr_number: Annotated[MCPInteger, Field(gt=0)],
     head_sha: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")],
@@ -1862,6 +1862,9 @@ async def factory_release_landing_hold(
         str | None, Field(pattern=r"^[0-9a-f]{64}$")
     ] = None,
     scope: dict | None = None,
+    authorization_audit_id: Annotated[
+        MCPInteger | None, Field(gt=0, le=2**63 - 1)
+    ] = None,
 ) -> dict:
     """Preview a hold release or head refresh as a standing human operator.
 
@@ -1905,6 +1908,24 @@ async def factory_release_landing_hold(
     changed heads, renewed holds or unknown execution. No other receipt qualifies.
     Independent exact-head review, required CI and the global merge switch still
     apply. Scope is an operator attestation, not an automatic code classifier.
+
+    For an unheld settled delivery whose typed native review requires an
+    operator, use classification="requires_operator", evidence, rollback_plan,
+    an absolute UTC expires_at no more than 24 hours ahead, and
+    acknowledged_effects containing strict booleans for public_facing,
+    security_sensitive, authentication_or_credentials and destructive. Every
+    effect reported by the native independent review must be acknowledged.
+    The server proves the exact base branch tip, merge base, head and complete
+    bounded text-file diff, and binds the review, current successful CI, policy,
+    ownership and execution state. The preview digest also binds your identity.
+    Apply grants one factory arming attempt, not standing authority. Expiry or
+    evidence drift requires a fresh preview and approval; this mode never
+    releases any hold, changes acceptance, or bypasses the protected queue.
+    Revoke with operation="revoke", the returned authorization_audit_id,
+    identical target, reason and a new request_key. Revocation records a durable
+    tombstone and cannot affect a later replacement grant. It does not require
+    GitHub availability. The asynchronous queue observer disarms stale grants;
+    it cannot make revocation atomic with an external GitHub merge.
     """
     principal = current_principal()
     refusal = _refuse(principal)
@@ -1916,9 +1937,41 @@ async def factory_release_landing_hold(
 
         try:
             scoped = {"scope": scope} if scope is not None else {}
+            if operation == "revoke":
+                from factory.orchestration import operator_landing_authorization
+
+                if (
+                    not request_key
+                    or authorization_audit_id is None
+                    or scope is not None
+                    or expected_preview_sha256 is not None
+                ):
+                    return {
+                        "ok": False,
+                        "reason": "landing_revoke_requires_exact_authorization_and_request_key",
+                    }
+                return operator_landing_authorization.revoke(
+                    receipt_id,
+                    pr_number,
+                    head_sha,
+                    reason,
+                    actor=principal.subject,
+                    request_key=request_key,
+                    authorization_audit_id=authorization_audit_id,
+                )
+            if authorization_audit_id is not None:
+                return {
+                    "ok": False,
+                    "reason": "landing_authorization_id_only_for_revoke",
+                }
             if operation == "preview":
                 return releases.preview(
-                    receipt_id, pr_number, head_sha, reason, **scoped
+                    receipt_id,
+                    pr_number,
+                    head_sha,
+                    reason,
+                    actor=principal.subject,
+                    **scoped,
                 )
             if not request_key or not expected_preview_sha256:
                 return {

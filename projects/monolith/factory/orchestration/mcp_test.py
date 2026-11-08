@@ -2794,6 +2794,18 @@ def test_permit_diagnostics_wire_schema_rejects_invalid_ids(monkeypatch):
             "evidence": "Inspected exact diff",
         },
         {"classification": "public_docs", "evidence": "Operator approved these docs"},
+        {
+            "classification": "requires_operator",
+            "evidence": "Exact security assessment",
+            "acknowledged_effects": {
+                "public_facing": False,
+                "security_sensitive": True,
+                "authentication_or_credentials": True,
+                "destructive": False,
+            },
+            "rollback_plan": "Reviewed revert",
+            "expires_at": "2026-11-08T16:00:00+00:00",
+        },
     ],
 )
 def test_landing_release_requires_human_operator_and_reviewed_preview(
@@ -2845,6 +2857,88 @@ def test_landing_release_requires_human_operator_and_reviewed_preview(
         "landing_release_requires_preview_and_request_key"
     )
     assert calls == []
+
+
+def test_operator_landing_preview_binds_authenticated_actor_and_revocation_is_human_only(
+    monkeypatch,
+):
+    import threading
+    from factory.orchestration import factory_landing_release as releases
+    from factory.orchestration import operator_landing_authorization as authorization
+
+    calls = []
+    caller = threading.get_ident()
+
+    def record(*args, **kwargs):
+        assert threading.get_ident() != caller
+        calls.append((args, kwargs))
+        return {"ok": True, "actor": kwargs["actor"]}
+
+    monkeypatch.setattr(releases, "preview", record)
+    monkeypatch.setattr(authorization, "revoke", record)
+
+    async def invoke(operation):
+        return await mcp.factory_release_landing_hold(
+            operation=operation,
+            receipt_id=17,
+            pr_number=7,
+            head_sha="a" * 40,
+            reason="Explicit operator decision",
+            request_key="revoke-1" if operation == "revoke" else None,
+            authorization_audit_id=42 if operation == "revoke" else None,
+        )
+
+    for operation in ("preview", "revoke"):
+        assert _as(_principal(), lambda: invoke(operation)) == {
+            "ok": True,
+            "actor": "joe",
+        }
+        for principal in (
+            _principal(groups=()),
+            _principal(authority=Authority.DELEGATED),
+            _principal(kind=PrincipalKind.WORKLOAD),
+        ):
+            assert not _as(principal, lambda: invoke(operation))["ok"]
+    assert len(calls) == 2
+    assert calls[1][1]["authorization_audit_id"] == 42
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"request_key": "revoke"},
+        {"authorization_audit_id": 42},
+        {"request_key": "revoke", "authorization_audit_id": 42, "scope": {}},
+        {
+            "request_key": "revoke",
+            "authorization_audit_id": 42,
+            "expected_preview_sha256": "a" * 64,
+        },
+    ],
+)
+def test_operator_landing_revoke_requires_exact_audit_target(monkeypatch, arguments):
+    from factory.orchestration import operator_landing_authorization as authorization
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("invalid request cannot reach the control")
+
+    monkeypatch.setattr(authorization, "revoke", forbidden)
+
+    async def invoke():
+        return await mcp.factory_release_landing_hold(
+            operation="revoke",
+            receipt_id=17,
+            pr_number=7,
+            head_sha="a" * 40,
+            reason="Revoke this grant",
+            **arguments,
+        )
+
+    assert _as(_principal(), invoke) == {
+        "ok": False,
+        "reason": "landing_revoke_requires_exact_authorization_and_request_key",
+    }
 
 
 def test_expired_task_recovery_requires_human_and_reviewed_preview(monkeypatch):
