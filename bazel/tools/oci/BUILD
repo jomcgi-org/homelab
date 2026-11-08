@@ -1,4 +1,14 @@
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+load("//bazel/tools/pytest:defs.bzl", "py_test")
+
+py_test(
+    name = "check_push_layout_test",
+    srcs = [
+        "check_push_layout.py",
+        "check_push_layout_test.py",
+    ],
+    deps = ["@pip//pytest"],
+)
 
 # Export push template for apko_push rule
 exports_files(
