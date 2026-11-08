@@ -95,6 +95,11 @@ authorization or a completed live conformance turn (Refs #6471).
 (see: /projects/monolith/factory/execution/broker_client.py)
 (see: /projects/monolith/deploy/values-gke.yaml)
 
+The private page at `/factory/execution/codex-login` defaults to production;
+`?environment=dev` selects dev conformance. A button starts device approval,
+and **Check connection** reads its status. The execution console retains its
+production default.
+
 Routine-job reconciliation uses the narrow existing contracts in `factory.api`.
 The domain boundary test checks factory internals
 and requires its dependencies on other domains to pass through their APIs.
