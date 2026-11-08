@@ -727,6 +727,63 @@ def test_the_implement_pool_defaults_to_the_worker_pool():
     assert model_pool.pool_for("implement", policy()) == ["sol", "sonnet"]
 
 
+@pytest.mark.parametrize("reviewer", ["terra", "opus", "astra", "sol"])
+def test_implicit_reviewer_pool_starts_with_the_configured_model(reviewer):
+    configured = policy(
+        allowed_models=["terra", "opus", "astra", "sol"], reviewer_model=reviewer
+    )
+    assert model_pool.pool_for("reviewer", configured) == [
+        reviewer,
+        *(model for model in ("terra", "opus", "astra") if model != reviewer),
+    ]
+
+
+def test_explicit_reviewer_pool_keeps_its_operator_order():
+    configured = policy(
+        allowed_models=["terra", "opus", "astra", "sol"],
+        reviewer_model="terra",
+        model_pools={"reviewer": ["opus", "sol", "terra"]},
+    )
+    assert model_pool.pool_for("reviewer", configured) == ["opus", "sol", "terra"]
+
+
+def test_terra_review_falls_back_to_opus_when_codex_is_exhausted():
+    configured = policy(
+        allowed_models=["terra", "opus", "astra"], reviewer_model="terra"
+    )
+    choice = model_pool.select_reviewer(
+        configured, window_high=False, quota={"codex": {"exhausted": True}}
+    )
+    assert choice["model"] == "opus"
+    assert choice["fallback_from"] == "terra"
+    assert choice["skipped"] == [{"model": "terra", "reason": "exhausted"}]
+
+
+def test_terra_ordinary_review_keeps_judgment_and_funding_on_opus():
+    configured = policy(
+        allowed_models=["terra", "opus", "astra", "fable"], reviewer_model="terra"
+    )
+    assert (
+        model_pool.select_reviewer(configured, window_high=False, quota={})["model"]
+        == "terra"
+    )
+    assert (
+        model_pool.select_reviewer(
+            configured, window_high=False, judgment=True, quota={}
+        )["model"]
+        == "opus"
+    )
+    assert (
+        model_pool.select_reviewer(
+            configured, window_high=True, judgment=True, quota={}
+        )["model"]
+        is None
+    )
+    assert model_pool.JUDGMENT_MODELS == ("opus", "fable")
+    assert model_pool.pool_for("judge", configured) == ["opus"]
+    assert model_pool.effort_for("review_delivery", configured) == "xhigh"
+
+
 def test_an_explicit_implement_pool_leaves_the_worker_pool_alone():
     configured = policy(
         model_pools={

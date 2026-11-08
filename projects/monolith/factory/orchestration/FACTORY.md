@@ -63,9 +63,9 @@ Running tasks retain pinned policy; future admissions need a newer generation wh
 
 Class determines lane. Delivery produces pull requests: `bug-fix`, `mechanical-refactor`, `docs`, `judgment-analysis`. Advisory produces comments: `refine`, `advisory-diagnosis`, `advisory-triage`. `max_tasks` bounds each lane independently; an integer means delivery, leaving advisory at 0. `swarm.factoryBackgroundReserve` (default 2) is the background slots the factory leaves free. `swarm.factoryMaxConcurrentTasks` bounds the sum and must be at least delivery plus advisory.
 
-### Reviewer fallback while the Claude window is spent
+### Reviewer fallback
 
-Optional `quota_guard` sets integer pause/resume percentages (defaults 85/75), resume strictly below pause. At/above pause, reviews use the next `model_pools.reviewer` member with provider quota. Judgment work waits for Opus, and an empty pool waits rather than skipping review. Unknown/hour-old readings cannot start or end fallback.
+Ordinary reviews default to Terra at `xhigh`. Provider quota selects the first available member of `model_pools.reviewer`. Optional `quota_guard` sets Claude pause/resume percentages (defaults 85/75), resume strictly below pause. At/above pause, Claude members wait. Judgment work retains the Opus/Fable floor, and an empty pool waits rather than skipping review. Unknown/hour-old Claude readings cannot start or end its window guard.
 
 ### Model pools
 
@@ -75,14 +75,18 @@ Optional `quota_guard` sets integer pause/resume percentages (defaults 85/75), r
 - `worker`: every other planner-added role; default the `worker_model` alone.
 - `implement`: implement nodes, engine corrections, engine fan-in; default the `worker` pool.
 - `refine`: the advisory briefing node; default `["spark", "sol"]`, narrowed to allowed models.
-- `reviewer`: every review node; default `["opus", "astra"]`, narrowed, led by `reviewer_model`.
+- `reviewer`: every review node; default `["terra", "opus", "astra"]`, narrowed to allowed models and led by `reviewer_model`. Explicit pools preserve their order.
 - `judge`: funding decisions and reservation-lease reviews; default `["opus"]` when allowed, else the `reviewer` pool.
 
 Every pool member requires `allowed_models` membership.
 
 ### Reasoning effort by role and node
 
-Dispatch pins effort by role: Planner and review nodes `xhigh`; funding judges, implement, integrate and correct nodes `high`; investigate and refine nodes `medium`. `role_effort` overrides any role. A Claude planner node reserves 1.5x `turn_budget_usd`, and the Opus review floor is $10. The judgment floor searches the `implement` pool, then the conductor pool, then the conductor model. Under the Astra coding policy (#6992) new workers and implementers prefer Astra, with `implement` at `medium` and `planner`, `reviewer`, `integrate` and `correct` at `xhigh`; Opus stays the independent reviewer. A plan edit may set `effort` to raise a role floor. A failed attempt escalates to the next pool member after the model that did the work, but a failed Astra attempt stays on Astra at least at `xhigh`, never downgrading to Sol. Capacity denials, proven no-model starts and judgment classes never escalate. Every `swarm.swarm_node_run` row records the dispatched model.
+Dispatch pins effort by role: Planner and review nodes `xhigh`; funding judges, implement, integrate and correct nodes `high`; investigate and refine nodes `medium`. `role_effort` overrides any role. A Claude planner node reserves 1.5x `turn_budget_usd`, and the Opus review floor is $10. The judgment floor searches the `implement` pool, then the conductor pool, then the conductor model. The coding policy (#6992) keeps `implement` at `medium` and `planner`, `reviewer`, `integrate` and `correct` at `xhigh`. Ordinary reviews now prefer Terra; judgment work and the default funding judge retain Opus. A plan edit may set `effort` to raise a role floor. A failed attempt escalates to the next pool member after the model that did the work, but a failed Astra attempt stays on Astra at least at `xhigh`, never downgrading to Sol. Capacity denials, proven no-model starts and judgment classes never escalate. Every `swarm.swarm_node_run` row records the dispatched model.
+
+A substituted reviewer reserves its selected model's price for the granted or latest delivered PR size, computed before the control and task locks. If a known PR's size is unavailable or malformed, substitution waits without reserving an attempt or requesting funding. The attempt reserves at least the planned node ceiling in both the graph and factory start ledgers. Replay retains the original model and reservation. Legacy swarm Terra reviews explicitly pass `xhigh`; other legacy roles and model overrides retain their effort defaults.
+
+The guarded `20261106090000_factory_terra_reviews` migration changes only the observed generation-14 Astra/Astra/Opus review policy for future admissions. It appends Terra to allowed models, sets the reviewer pool to `["terra", "opus", "astra", "sol"]` and retains `xhigh`, with one version increment and audit. Generation, admission state, receipts, holds, budgets and refill history remain unchanged. Land it after CLI 0.167.0 and Terra pass the live dev conformance gate. A guard miss is a no-op; verify the actual control policy after rollout. Comparative competency assessment is deferred while ordinary turns record selected model, effort, usage and review outcomes.
 
 ### Execution capacity and release intent
 

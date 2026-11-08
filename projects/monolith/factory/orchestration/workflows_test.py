@@ -410,7 +410,7 @@ def test_pinned_attempt_bound_survives_config_change(monkeypatch):
                     "max_attempts": 2,
                     "max_review_cycles": 2,
                     "implementer_model": "luna",
-                    "reviewer_model": "opus",
+                    "reviewer_model": "terra",
                     "turn_timeout_seconds": 1800,
                     "decision_timeout_seconds": 0,
                     "budget_usd": None,

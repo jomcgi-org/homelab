@@ -1562,6 +1562,10 @@ def _add(
     )
 
 
+class _ReviewSizingUnavailable(ValueError):
+    """A known PR could not be sized for a new reviewer substitution."""
+
+
 def _review_reservation_usd(
     task: dict,
     policy: dict,
@@ -1569,20 +1573,27 @@ def _review_reservation_usd(
     *,
     pr_number: int | None = None,
     pull: dict | None = None,
+    require_pr_size: bool = False,
 ) -> float:
-    """Use the latest delivered PR size when insertion has that evidence."""
-    number = pr_number or _latest_pr(graph.node_runs(task["id"]))
-    lines = 0
+    """Use the granted or latest delivered PR size when it is available."""
+    number = (
+        pr_number or delivery_pr_number(task) or _latest_pr(graph.node_runs(task["id"]))
+    )
+    lines = None
     if pull is None and number is not None:
         try:
             pull = github_get(task["repo"], f"pulls/{number}")
         except (httpx.HTTPError, ValueError):
             logger.info("Review sizing unavailable for PR %s", number)
-    if pull is not None:
+    if isinstance(pull, dict):
         additions, deletions = pull.get("additions"), pull.get("deletions")
         if all(type(value) is int and value >= 0 for value in (additions, deletions)):
             lines = additions + deletions
-    return review_reservation_usd(model, lines, policy["turn_budget_usd"])
+    if require_pr_size and number is not None and lines is None:
+        raise _ReviewSizingUnavailable("review_sizing_unavailable")
+    return review_reservation_usd(
+        model, lines if lines is not None else 0, policy["turn_budget_usd"]
+    )
 
 
 def _bounded_planner_text(value: str, limit: int, marker: str = "") -> str:
@@ -8041,6 +8052,11 @@ def _dispatch_ready(
             if reservation.refusal_code == "capacity_waiting":
                 # Keep the node ready for capacity without pausing or funding it.
                 break
+            if reservation.refusal_code == "review_sizing_unavailable":
+                # A known PR without size evidence cannot fund a substituted
+                # reviewer. Leave it ready for a later read, with no new start
+                # or funding request; independent ready work may still run.
+                continue
         if dispatched == 0:
             from factory.orchestration import factory_funding
             from factory.orchestration.evidence_continuation import recovery_grant
@@ -8096,17 +8112,58 @@ def reserve_node(
     """Atomically reserve graph attempt and factory turn under the control lock.
 
     ``model`` substitutes the model for this attempt, which is how a review
-    runs on a cheaper reviewer while the Claude window is nearly spent, and
+    runs on another provider when its preferred provider is unavailable, and
     how an implementation attempt escalates up its pool. The turn is
     authorized against the pin, so the substitution is what gets charged and
     what evidence later reads. ``escalation`` records why it moved.
     """
-    from factory.orchestration.factory_controls import _locked_session, authorize_start
+    from factory.orchestration.factory_controls import (
+        _locked_session,
+        authorize_start,
+        granted_delivery_surface,
+        task_snapshot,
+    )
+
+    reservation_usd = None
+    if model is not None and node_key.startswith("review_"):
+        # GitHub sizing must finish before taking the control or task lock.
+        # An adopted owner/dependency PR may have no earlier graph artifact;
+        # its receipt direction is the authoritative delivery surface.
+        snapshot = None
+        with Session(get_engine()) as db:
+            existing = any(
+                run["dispatch_key"] == key
+                for run in graph.node_runs(task_id, session=db)
+            )
+            if not existing:
+                node = next(
+                    (
+                        node
+                        for node in graph.load_graph(task_id, session=db)
+                        if node["node_key"] == node_key
+                    ),
+                    None,
+                )
+                if node is not None and model != node["model"]:
+                    snapshot = task_snapshot(task_id, session=db)
+        if snapshot is not None and snapshot["ok"]:
+            _, granted_pr = granted_delivery_surface(snapshot.get("direction"))
+            try:
+                reservation_usd = _review_reservation_usd(
+                    {
+                        "id": task_id,
+                        "repo": snapshot["repo"],
+                        "delivery_pr_number": granted_pr,
+                    },
+                    snapshot["policy"],
+                    model,
+                    require_pr_size=True,
+                )
+            except _ReviewSizingUnavailable:
+                return ReservationResult(False, "review_sizing_unavailable")
 
     with Session(get_engine()) as db:
         with _locked_session(db):
-            from factory.orchestration.factory_controls import task_snapshot
-
             # This immutable context is derived from the receipt under its lock.
             existing = next(
                 (
@@ -8148,6 +8205,7 @@ def reserve_node(
                 dispatch_key=key,
                 execution_context=context,
                 model=model,
+                reservation_usd=reservation_usd,
                 escalation=escalation,
                 session=db,
             )

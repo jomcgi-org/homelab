@@ -258,10 +258,9 @@ grimoire:
 # ever dispatched. Enabling dev's run lane is a separate design fork about the
 # nightly refresh importing production's queue tables, tracked separately.
 #
-# reviewerModel moves here too, which production must NEVER do: ADR 038
-# decision 5 floors review at Opus because a review is assessable only by
-# reading. Dev is not gating a real merge, so the floor buys nothing and a
-# subscription-billed reviewer on a throwaway run buys less.
+# This explicit Luna reviewer stays local to the inert dev lane. Ordinary
+# production reviews use Terra at xhigh; judgment work keeps its Opus/Fable
+# floor. Dev does not gate a real merge.
 swarm:
   factoryPlannerHoldRefusalEnabled: false
   implementerModel: "luna"

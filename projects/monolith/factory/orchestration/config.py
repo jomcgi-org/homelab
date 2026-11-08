@@ -14,7 +14,7 @@ def implementer_model() -> str:
 
 
 def reviewer_model() -> str:
-    return os.environ.get("SWARM_REVIEWER_MODEL", "opus")
+    return os.environ.get("SWARM_REVIEWER_MODEL", "terra")
 
 
 def max_attempts() -> int:

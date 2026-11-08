@@ -23394,6 +23394,311 @@ def test_review_node_pricing(feedback_db, monkeypatch, lines, expected):
     assert _node(task["id"], "review_delivery")["max_cost_usd"] == expected
 
 
+@pytest.mark.parametrize("source", ["artifact", "owner", "dependency"])
+@pytest.mark.parametrize("planned_ceiling", [12.40, 100.0])
+def test_substituted_review_prices_the_actual_pr_before_locks_and_pins_both_ledgers(
+    feedback_db, monkeypatch, source, planned_ceiling
+):
+    from contextlib import contextmanager
+
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    task, policy = feedback_task(
+        allowed_models=["luna", "opus", "terra"],
+        reviewer_model="terra",
+        model_pools={"reviewer": ["terra", "opus"]},
+    )
+    # The selected runtime's Terra 6.1 estimate cannot fund an Opus fallback
+    # for this PR. Both ledgers must reserve the larger model-specific amount.
+    assert controls.review_reservation_usd("terra", 100_000, 2.0) == 12.40
+    assert controls.review_reservation_usd("opus", 100_000, 2.0) == 49.60
+    if source == "artifact":
+        complete_feedback_node(task, policy, "implement_fix", {"pr_number": 21})
+    else:
+        with Session(feedback_db) as db, db.begin():
+            receipt = controls._receipt(db, task["id"])
+            receipt.direction_json = json.dumps(
+                {
+                    "delivery_adoption": True,
+                    "delivery_pr_number": 21,
+                    "delivery_branch": "owner/existing"
+                    if source == "owner"
+                    else "renovate/existing",
+                    "owner_pr" if source == "owner" else "dependency_review": True,
+                }
+            )
+        assert conductor.graph.node_runs(task["id"]) == []
+        assert (
+            controls.task_snapshot(task["id"])["direction"]["delivery_pr_number"] == 21
+        )
+    assert conductor._add(
+        task,
+        policy,
+        "review_delivery",
+        "review",
+        [],
+        "terra",
+        "review",
+        "review",
+        review=True,
+        max_cost_usd=planned_ceiling,
+    ).ok
+    locked = False
+    actual_locked_session = controls._locked_session
+
+    @contextmanager
+    def observed_lock(*args, **kwargs):
+        nonlocal locked
+        with actual_locked_session(*args, **kwargs) as value:
+            locked = True
+            try:
+                yield value
+            finally:
+                locked = False
+
+    reads = []
+
+    def pull(repo, path):
+        assert not locked, "review sizing must not hold the factory control lock"
+        assert repo == task["repo"]
+        reads.append(path)
+        return {"additions": 80_000, "deletions": 20_000}
+
+    monkeypatch.setattr(controls, "_locked_session", observed_lock)
+    monkeypatch.setattr(conductor, "github_get", pull)
+    workflow = f"factory-node:{task['id']}:review_delivery:1"
+    context = {
+        "repo": task["repo"],
+        "branch": f"factory/{task['id']}",
+        "workflow_id": workflow,
+    }
+    expected = max(
+        planned_ceiling,
+        controls.review_reservation_usd("opus", 100_000, policy["turn_budget_usd"]),
+    )
+    assert expected > 12.40
+    assert conductor.reserve_node(
+        task["id"], "review_delivery", workflow, context, model="opus"
+    )
+    assert reads == ["pulls/21"]
+    original = conductor.graph.node_runs(task["id"], "review_delivery")[0]["pin"]
+    assert (original["model"], original["max_cost_usd"]) == ("opus", expected)
+    with Session(feedback_db) as db:
+        run = db.exec(
+            select(SwarmNodeRun).where(SwarmNodeRun.dispatch_key == workflow)
+        ).one()
+        start = db.exec(
+            select(FactoryStart).where(FactoryStart.start_key == workflow)
+        ).one()
+        assert run.reserved_cost_usd == start.max_cost_usd == expected
+        assert run.model == start.model == "opus"
+    assert _node(task["id"], "review_delivery")["model"] == "terra"
+    assert _node(task["id"], "review_delivery")["max_cost_usd"] == planned_ceiling
+    assert conductor.reserve_node(
+        task["id"], "review_delivery", workflow, context, model="terra"
+    )
+    assert reads == ["pulls/21"]
+    assert (
+        conductor.graph.node_runs(task["id"], "review_delivery")[0]["pin"] == original
+    )
+    starts = controls.task_snapshot(task["id"])["starts"]
+    assert len([start for start in starts if start["start_key"] == workflow]) == 1
+
+
+def test_review_sizing_prefers_the_granted_pr_to_an_older_artifact(
+    feedback_db, monkeypatch
+):
+    task, policy = feedback_task()
+    complete_feedback_node(task, policy, "implement_fix", {"pr_number": 19})
+    reads = []
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda repo, path: (
+            reads.append(path) or {"additions": 80_000, "deletions": 20_000}
+        ),
+    )
+    assert conductor._review_reservation_usd(
+        {**task, "delivery_pr_number": 21}, policy, "opus"
+    ) == conductor.review_reservation_usd("opus", 100_000, policy["turn_budget_usd"])
+    assert reads == ["pulls/21"]
+
+
+@pytest.mark.parametrize(
+    "unavailable",
+    [
+        "timeout",
+        "http_error",
+        None,
+        {},
+        {"additions": 80_000},
+        {"additions": "80000", "deletions": 20_000},
+        {"additions": 80_000, "deletions": -1},
+        {"additions": 80_000, "deletions": True},
+        [],
+    ],
+)
+def test_substituted_review_waits_for_known_pr_size_before_reservation(
+    feedback_db, monkeypatch, unavailable
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_funding, model_pool
+    from factory.orchestration.factory_models import FactoryAudit, FactoryStart
+
+    task, policy = feedback_task(
+        allowed_models=["luna", "opus", "terra"],
+        reviewer_model="terra",
+        model_pools={"reviewer": ["terra", "opus"]},
+    )
+    complete_feedback_node(task, policy, "implement_fix", {"pr_number": 21})
+    assert conductor._add(
+        task,
+        policy,
+        "review_delivery",
+        "review",
+        [],
+        "terra",
+        "review",
+        "review",
+        review=True,
+        max_cost_usd=12.40,
+    ).ok
+    monkeypatch.setattr(conductor, "hydration_branch", lambda _task: "main")
+    monkeypatch.setattr(
+        model_pool, "quota_summary", lambda: {"codex": {"exhausted": True}}
+    )
+    monkeypatch.setattr(
+        factory_funding,
+        "request",
+        lambda *_a, **_k: pytest.fail(
+            "unavailable review sizing must not request funding"
+        ),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "_pause_refusal",
+        lambda *_a, **_k: pytest.fail(
+            "unavailable review sizing must leave the node ready"
+        ),
+    )
+    size_available = False
+    reads = []
+
+    def pull(repo, path):
+        assert repo == task["repo"] and path == "pulls/21"
+        reads.append(path)
+        if size_available:
+            return {"additions": 80_000, "deletions": 20_000}
+        if unavailable == "timeout":
+            raise conductor.httpx.ReadTimeout("PR sizing timed out")
+        if unavailable == "http_error":
+            request = conductor.httpx.Request("GET", "https://api.github.com/pulls/21")
+            response = conductor.httpx.Response(503, request=request)
+            response.raise_for_status()
+        return unavailable
+
+    monkeypatch.setattr(conductor, "github_get", pull)
+    reserve = conductor.reserve_node
+    reservations = []
+    contexts = []
+
+    def observed_reserve(*args, **kwargs):
+        # Exercise the real reservation owner. On a sizing refusal it must
+        # return before either lock; the dispatch loop may then audit the wait.
+        with monkeypatch.context() as guarded:
+            if not size_available:
+                guarded.setattr(
+                    controls,
+                    "_locked_session",
+                    lambda *_a, **_k: pytest.fail(
+                        "sizing refusal took the control lock"
+                    ),
+                )
+                guarded.setattr(
+                    conductor.graph,
+                    "_lock_task",
+                    lambda *_a, **_k: pytest.fail("sizing refusal took the task lock"),
+                )
+            result = reserve(*args, **kwargs)
+        reservations.append(result)
+        contexts.append(dict(args[3]))
+        return result
+
+    monkeypatch.setattr(conductor, "reserve_node", observed_reserve)
+    before = controls.task_snapshot(task["id"])
+    nodes, runs = (
+        conductor.graph.load_graph(task["id"]),
+        conductor.graph.node_runs(task["id"]),
+    )
+    for _ in range(2):
+        assert not conductor._dispatch_ready(
+            task, nodes, runs, 1, fan_out=False, parallel=1, policy=policy
+        )
+        assert reservations[-1].refusal_code == "review_sizing_unavailable"
+        assert conductor.graph.node_runs(task["id"]) == runs
+        assert conductor.graph.load_graph(task["id"]) == nodes
+        after = controls.task_snapshot(task["id"])
+        assert after["starts"] == before["starts"]
+        assert after["turns_used"] == before["turns_used"]
+        assert after["committed_cost_usd"] == before["committed_cost_usd"]
+        assert after["state"] == "admitted" and not after["task_paused"]
+    with Session(feedback_db) as db:
+        audits = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "dispatch_refused")
+        ).all()
+        assert len(audits) == 1
+        assert (
+            json.loads(audits[0].detail_json)["refusal_code"]
+            == "review_sizing_unavailable"
+        )
+
+    size_available = True
+    assert conductor._dispatch_ready(
+        task, nodes, runs, 1, fan_out=False, parallel=1, policy=policy
+    )
+    admitted = conductor.graph.node_runs(task["id"], "review_delivery")[0]
+    assert admitted["attempt"] == 1
+    assert (admitted["pin"]["model"], admitted["pin"]["max_cost_usd"]) == (
+        "opus",
+        49.60,
+    )
+    with Session(feedback_db) as db:
+        start = db.exec(
+            select(FactoryStart).where(
+                FactoryStart.start_key == admitted["dispatch_key"]
+            )
+        ).one()
+        assert (start.model, start.max_cost_usd) == ("opus", 49.60)
+    assert reads == ["pulls/21"] * 3
+
+    # Existing pins remain replayable even if PR sizing is unavailable again.
+    size_available = False
+    assert reserve(
+        task["id"],
+        "review_delivery",
+        admitted["dispatch_key"],
+        contexts[-1],
+        model="terra",
+    )
+    assert (
+        conductor.graph.node_runs(task["id"], "review_delivery")[0]["pin"]
+        == admitted["pin"]
+    )
+    assert reads == ["pulls/21"] * 3
+
+
+def test_ordinary_plan_sizing_retains_its_estimate_without_pr_metadata(
+    feedback_db, monkeypatch
+):
+    task, policy = feedback_task()
+    monkeypatch.setattr(conductor, "github_get", lambda *_: {})
+    assert conductor._review_reservation_usd(
+        {**task, "delivery_pr_number": 21}, policy, "opus"
+    ) == conductor.review_reservation_usd("opus", 0, policy["turn_budget_usd"])
+
+
 @pytest.mark.parametrize("cost", [1.0, 7.02])
 def test_over_ceiling_review_settled_succeeded(feedback_db, cost):
     from sqlmodel import Session, select
