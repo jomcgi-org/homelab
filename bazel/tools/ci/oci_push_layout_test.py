@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from check_push_layout import check_layout, main
+from oci_push_layout import check_layout, main
 
 
 def image(tmp_path):
@@ -65,3 +65,26 @@ def test_missing_layout_refuses_without_running_push(tmp_path):
     marker = tmp_path / "pushed"
     assert main([str(tmp_path / "absent"), "touch", str(marker)]) == 1
     assert not marker.exists()
+
+
+def test_push_script_metadata_resolves_actual_image_without_execution(tmp_path):
+    layout, _ = image(tmp_path)
+    marker = tmp_path / "pushed"
+    push = tmp_path / "push_alias.sh"
+    push.write_text(f'readonly IMAGE_DIR="{layout}"\ntouch "{marker}"\n')
+    assert main(["--push-script", str(push)]) == 0
+    assert not marker.exists()
+
+
+def test_dynamic_push_script_metadata_is_not_evaluated(tmp_path):
+    marker = tmp_path / "pushed"
+    push = tmp_path / "push.sh"
+    push.write_text(f'readonly IMAGE_DIR="$(touch {marker})"\n')
+    assert main(["--push-script", str(push)]) == 1
+    assert not marker.exists()
+
+
+def test_empty_index_is_rejected(tmp_path):
+    (tmp_path / "index.json").write_text('{"manifests": []}')
+    with pytest.raises(ValueError, match="no manifests"):
+        check_layout(tmp_path)

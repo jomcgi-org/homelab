@@ -69,8 +69,15 @@ BUILD
 	cat >"$WORK/bin/bazel" <<'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = "run" ]; then
+	if [[ "$*" == *"--run_under="* ]]; then
+		echo "$2" >>"$STUB_PREFLIGHT_LOG"
+		echo "check $2" >>"$STUB_ORDER_LOG"
+		[ "$2" != "${STUB_PREFLIGHT_FAIL:-}" ] || exit 1
+		exit 0
+	fi
 	echo "$2" >>"$STUB_RUN_LOG"
 	echo "$*" >>"$STUB_ARGV_LOG"
+	echo "push $2" >>"$STUB_ORDER_LOG"
 fi
 exit 0
 STUB
@@ -116,12 +123,16 @@ STUB
 	chmod +x "$WORK/bin/bazel" "$WORK/bin/crane" "$WORK/bin/verifier"
 	export STUB_RUN_LOG="$WORK/run.log"
 	export STUB_ARGV_LOG="$WORK/argv.log"
+	export STUB_PREFLIGHT_LOG="$WORK/preflight.log"
+	export STUB_ORDER_LOG="$WORK/order.log"
 	export STUB_VERIFY_ARGV="$WORK/verifier-argv.log"
 	export STUB_VERIFY_RESULTS="$WORK/verifier-results.log"
 	export STUB_TAG_LOG="$WORK/tag.log"
 	: >"$STUB_TAG_LOG"
 	: >"$STUB_RUN_LOG"
 	: >"$STUB_ARGV_LOG"
+	: >"$STUB_PREFLIGHT_LOG"
+	: >"$STUB_ORDER_LOG"
 	: >"$STUB_VERIFY_ARGV"
 	: >"$STUB_VERIFY_RESULTS"
 }
@@ -391,6 +402,36 @@ if grep -qE 'beta|gamma' "$STUB_TAG_LOG"; then
 else
 	pass "only the tools image is retagged"
 fi
+teardown
+
+# 17. Check only selected image runfiles, and finish all checks before the first
+#     image or chart push. Registry-proven images retain the cheap skip path.
+setup "$MANIFEST_3" "ghcr.io/jomcgi/homelab/alpha@sha256:aaa"
+OUT=$(run_script)
+EXPECTED=$(printf '%s\n' \
+	"check //projects/beta:image.push" \
+	"check //projects/gamma:image.push" \
+	"push //projects/beta:image.push" \
+	"push //projects/gamma:image.push" \
+	"push //bazel/images:push_charts")
+if [ "$(cat "$STUB_ORDER_LOG")" = "$EXPECTED" ]; then
+	pass "all selected layouts are checked before any push"
+else
+	fail "all selected layouts are checked before any push" "$(cat "$STUB_ORDER_LOG")"
+fi
+teardown
+
+# 18. An unreadable later image cannot leave earlier images or charts published.
+setup "$MANIFEST_3" ""
+export STUB_PREFLIGHT_FAIL="//projects/beta:image.push"
+if OUT=$(run_script); then
+	fail "unreadable layout stops publication" "$OUT"
+elif [ -s "$STUB_RUN_LOG" ] || [ -s "$STUB_VERIFY_RESULTS" ] || [ -s "$STUB_TAG_LOG" ]; then
+	fail "unreadable layout stops publication" "$(cat "$STUB_ORDER_LOG")"
+else
+	pass "unreadable layout stops publication before registry writes"
+fi
+unset STUB_PREFLIGHT_FAIL
 teardown
 
 echo ""
