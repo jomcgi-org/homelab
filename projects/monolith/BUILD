@@ -5062,6 +5062,12 @@ bdd_test(
     srcs = ["factory/orchestration/factory_implement_sol_first_postgres_test.py"],
 )
 
+# Guarded Terra review routing preserves pinned receipts and unrelated policy.
+bdd_test(
+    name = "swarm_factory_terra_reviews_postgres_test",
+    srcs = ["factory/orchestration/factory_terra_reviews_postgres_test.py"],
+)
+
 # Hand-registered real-PostgreSQL coverage for the no-new-notes pending
 # provenance write: the atom_raw_provenance_pending partial unique index
 # only exists in Postgres, so a SQLite test cannot prove the retry is

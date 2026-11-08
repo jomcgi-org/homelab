@@ -2,9 +2,8 @@
 
 A factory policy names one preferred model per role. An optional
 ``model_pools`` map extends each role to an ordered pool, and the conductor
-picks the first pool member whose provider still has quota. The reviewer is
-never selected here: review stays on its configured model so a walled provider
-holds review rather than downgrading it.
+picks the first pool member whose provider still has quota. Reviews also honor
+the Claude window guard and the separate Opus/Fable judgment floor.
 
 Provider quota comes from the token broker's headline window. A provider with
 no quota feed (Muse, pi) is always eligible. A provider whose quota is
@@ -37,12 +36,10 @@ _ROLE_KEY = {
 # Codex implementer behind it; a policy that allows neither falls back to the
 # conductor pool, which is where refine ran before.
 DEFAULT_REFINE_POOL = ("spark", "sol")
-# Reviewers in preference order. Opus is the review the gate is designed
-# around; Astra is the rung below it that does not draw on the same
-# subscription. There is deliberately no third rung: Astra and Sol share one
-# Codex grant, so a Sol rung could never be reachable when Astra is walled,
-# and offering it would only make the fallback look deeper than it is.
-DEFAULT_REVIEWER_POOL = ("opus", "astra")
+# Ordinary reviews prefer Terra. Opus supplies a separate provider fallback;
+# Astra remains available to older policies that do not allow Terra. Explicit
+# pools retain their order, and judgment work keeps its separate floor below.
+DEFAULT_REVIEWER_POOL = ("terra", "opus", "astra")
 # The judge decides funding extensions and reservation-lease continuations.
 # It names no policy field: ``model_pools.judge`` configures it, and without
 # one it runs on Opus when policy allows Opus, else on the reviewer pool. Astra
@@ -205,9 +202,9 @@ def pool_for(role: str, policy: dict) -> list[str]:
         configured = policy.get("reviewer_model") or policy.get("conductor_model")
         # The configured reviewer always leads, so a policy that names one and
         # no pool keeps exactly the reviewer it asked for.
-        if configured and configured not in default:
-            return [configured, *default]
-        return default or ([configured] if configured else [])
+        if configured:
+            return [configured, *(model for model in default if model != configured)]
+        return default
     if role == "judge":
         if DEFAULT_JUDGE_MODEL in (policy.get("allowed_models") or []):
             return [DEFAULT_JUDGE_MODEL]

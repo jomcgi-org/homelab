@@ -15,7 +15,7 @@ def test_defaults(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     assert config.enabled() is False
     assert config.implementer_model() == "luna"
-    assert config.reviewer_model() == "opus"
+    assert config.reviewer_model() == "terra"
     assert config.max_attempts() == 2
     assert config.max_review_cycles() == 2
     assert config.turn_timeout_seconds() == 1800

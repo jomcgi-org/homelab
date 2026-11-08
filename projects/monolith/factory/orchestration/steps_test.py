@@ -404,6 +404,44 @@ def test_start_agent_session_forwards_workflow_fields(monkeypatch, tier):
     ]
 
 
+@pytest.mark.parametrize(
+    "model,node_key,expected_effort",
+    [
+        ("terra", "review", "xhigh"),
+        ("terra", "implement", None),
+        ("terra", None, None),
+        ("luna", "review", None),
+        ("opus", "review", None),
+    ],
+)
+def test_legacy_terra_review_passes_xhigh_without_changing_other_defaults(
+    monkeypatch, model, node_key, expected_effort
+):
+    from factory.execution import api
+
+    observed = []
+    monkeypatch.setattr(
+        api,
+        "start_session_for_swarm",
+        lambda *args, **kwargs: observed.append(kwargs) or 101,
+    )
+    assert (
+        steps.start_agent_session.__wrapped__(
+            "review-key",
+            "prompt",
+            model,
+            "jomcgi-org/homelab",
+            "main",
+            "wf",
+            node_key=node_key,
+        )
+        == 101
+    )
+    assert observed[0].get("effort") == expected_effort
+    if expected_effort is None:
+        assert "effort" not in observed[0]
+
+
 @pytest.mark.parametrize("stop_reason", ["end_turn", "invocation_outcome_unknown"])
 def test_poll_turn_includes_rationale_and_stop_reason(monkeypatch, stop_reason):
     import sqlmodel

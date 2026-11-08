@@ -1398,6 +1398,7 @@ def admit_dispatch(
     dispatch_key: str | None = None,
     execution_context: dict | None = None,
     model: str | None = None,
+    reservation_usd: float | None = None,
     escalation: dict | None = None,
     session: Session | None = None,
 ) -> GraphOp:
@@ -1408,12 +1409,16 @@ def admit_dispatch(
     workflow checkpoint. A new command cannot bypass an active reservation.
 
     ``model`` substitutes the model for THIS attempt, which is how a review
-    falls back to a cheaper reviewer without rewriting the plan. The node keeps
+    falls back to another provider without rewriting the plan. The node keeps
     the model the plan asked for and the pin records what actually ran, so
     evidence reads the pin. It is a dispatch parameter rather than part of the
     execution context on purpose: the context is what the guest receives and
     what replay identity is compared on, and a replay must return its original
     pin whatever the dispatcher would choose now.
+
+    ``reservation_usd`` carries the selected model's review estimate. It may
+    raise the node's ceiling for this attempt, never lower it. Replays keep
+    their original model and reservation.
 
     ``escalation`` names the model an implementation attempt stepped up from
     and why (``escalated_from``, ``escalation_reason``). It is recorded on the
@@ -1426,6 +1431,7 @@ def admit_dispatch(
         "dispatch_key": dispatch_key,
         "execution_context": context,
         "model": model,
+        "reservation_usd": reservation_usd,
     }
     stepped = {
         field: escalation[field]
@@ -1513,6 +1519,8 @@ def admit_dispatch(
         error = _bounds_error(node)
         if error:
             return refuse(error)
+        if reservation_usd is not None and not _valid_cost(reservation_usd):
+            return refuse("invalid_reservation")
         if not _valid_cost(task.budget_usd):
             return refuse("invalid_task_budget")
         runs = [run for run in all_runs if run.node_key == node_key]
@@ -1542,8 +1550,9 @@ def admit_dispatch(
             ):
                 return refuse("dependency_not_succeeded", dependency)
         # Dollars never refuse an attempt (#7161). Each attempt reserves the
-        # node's own ceiling for accounting, whatever earlier attempts cost.
-        reservation = node.max_cost_usd
+        # node's ceiling or the selected model's larger review estimate,
+        # whatever earlier attempts cost.
+        reservation = max(node.max_cost_usd, reservation_usd or 0.0)
         attempt = max((run.attempt for run in runs), default=0) + 1
         # Attempt numbers count every row, excused denials included, so the
         # bound the pin carries has to as well. node_workflows._validate_pin

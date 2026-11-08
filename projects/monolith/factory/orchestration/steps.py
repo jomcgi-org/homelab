@@ -257,6 +257,12 @@ def start_agent_session(
             node_attempt=node_attempt,
             reasoning=reasoning,
             admission_tier=admission_tier,
+            # Legacy review nodes use the literal "review" key and have no
+            # role-effort pin. Keep their Terra default aligned with factory
+            # reviews while other models and implementation roles keep theirs.
+            **(
+                {"effort": "xhigh"} if model == "terra" and node_key == "review" else {}
+            ),
         )
         set_attributes(span, {"swarm.session_id": session_id})
         return session_id

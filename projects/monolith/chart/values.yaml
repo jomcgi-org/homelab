@@ -1801,11 +1801,10 @@ swarm:
   # without the buttons.
   factoryOperatorEmailsSecretKey: FACTORY_OPERATOR_EMAILS
   enabled: false
-  # The cheap implementer lane and the reviewer that gates it. The reviewer is
-  # never below Opus: ADR 038 decision 5 floors anything assessable only by
-  # reading, and a review is exactly that.
+  # Ordinary reviews use Terra at xhigh. Judgment work retains its separate
+  # Opus/Fable floor in the factory policy.
   implementerModel: "luna"
-  reviewerModel: "opus"
+  reviewerModel: "terra"
   # Hard bound on retry. The adjudicator (a later slice) may choose WITHIN this
   # budget but can never extend it, which is what keeps "retry N times" a
   # budget rather than a suggestion.

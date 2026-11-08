@@ -1702,6 +1702,45 @@ def test_a_replay_keeps_its_original_pinned_model(db):
     assert len(node_runs(task_id)) == 1
 
 
+@pytest.mark.parametrize("estimate,expected", [(0.5, 1.0), (10.0, 10.0)])
+def test_selected_model_reservation_can_only_raise_the_planned_ceiling(
+    db, estimate, expected
+):
+    task_id = make_task(db)
+    assert add_work(task_id, "review_delivery", 0, model="terra").ok
+    admitted = admit_dispatch(
+        task_id,
+        "review_delivery",
+        dispatch_key="review-1",
+        model="opus",
+        reservation_usd=estimate,
+    )
+    assert admitted.ok
+    assert (admitted.pin["model"], admitted.pin["max_cost_usd"]) == ("opus", expected)
+    assert load_graph(task_id)[0]["max_cost_usd"] == 1.0
+    with Session(db) as session:
+        run = session.exec(select(SwarmNodeRun)).one()
+        assert run.reserved_cost_usd == expected
+    replay = admit_dispatch(
+        task_id,
+        "review_delivery",
+        dispatch_key="review-1",
+        model="terra",
+        reservation_usd=200.0,
+    )
+    assert replay.ok and replay.pin == admitted.pin
+    assert len(node_runs(task_id)) == 1
+
+
+@pytest.mark.parametrize("estimate", [0, -1, True, "10", float("nan"), float("inf")])
+def test_invalid_reservation_does_not_admit_an_attempt(db, estimate):
+    task_id = make_task(db)
+    assert add_work(task_id, "review_delivery", 0).ok
+    result = admit_dispatch(task_id, "review_delivery", reservation_usd=estimate)
+    assert not result.ok and result.refusal_code == "invalid_reservation"
+    assert node_runs(task_id) == []
+
+
 def test_caller_transaction_can_rollback_an_entire_applied_plan(db):
     from sqlalchemy import text
 
