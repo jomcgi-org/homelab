@@ -36,7 +36,7 @@ A paused task’s pending decision presents exact receipt/decision identities fo
 
 ### Operating rules
 
-1. No frozen packets, hash pinning or timed approval windows: a PR needs required CI plus one independent exact-head review.
+1. Routine delivery needs required CI plus one independent exact-head review. The explicit `requires_operator` exception below binds an operator's decision to exact evidence and a finite expiry; ordinary delivery has no timed approval window.
 2. One line per task: outcome, blocker, next action, starts and USD used.
 3. Record cost per accepted PR on landing.
 4. Planner turns share the task start budget; past half the starts, stop and respec by hand.
@@ -299,6 +299,20 @@ The invoke terminal path releases the exact receipt it fenced, then runs complet
 (see: /projects/monolith/factory/execution/result_receipts.py)
 
 ### Landing
+
+For an unheld, settled delivery requiring an explicit operator decision,
+`factory_release_landing_hold` accepts `requires_operator` scope with evidence,
+four acknowledged effect flags, a rollback plan and an absolute UTC expiry of
+at most 24 hours. Preview binds the authenticated standing human, owned receipt
+and PR, current base tip, immutable merge base, head, complete bounded file
+manifest, native typed independent review and successful CI. Apply requires the
+same actor and preview digest. The schema-2 grant is revalidated by the existing
+landing and queue owners. Revocation retains an audit-specific tombstone;
+expired, revoked or invalid explicit grants cannot fall through to delegation.
+See the [operator approval contract](../../ARCHITECTURE.md#explicit-operator-landing-approval)
+for supported files, review evidence and the asynchronous revocation limit.
+This scope preserves all holds and task state. Routine model and runtime
+maintenance retains the root delivery authority.
 
 `factory_release_landing_hold` supports explicitly approved `public_docs` publication only for modifications to `projects/monolith/ARCHITECTURE.md` and `projects/monolith/factory/orchestration/FACTORY.md`. The server verifies exact-head paths, regular non-executable files and bounded UTF-8 text. Apply atomically records an audited grant and removes only the landing hold, preserving acceptance history, accounting and other holds. Replay acknowledges only; changed heads need fresh authorization. Except for the handoff below, native independent exact-head review remains mandatory. CI and protected queue gates always apply. The grant neither resumes execution nor refreshes accepted delivery.
 

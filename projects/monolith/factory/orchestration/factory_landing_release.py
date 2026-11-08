@@ -74,6 +74,10 @@ PUBLIC_DOCS = frozenset(
 
 def _scope(value):
     """An operator's explicit assessment, never an automatic classifier."""
+    if isinstance(value, dict) and value.get("classification") == "requires_operator":
+        from factory.orchestration import operator_landing_authorization
+
+        return operator_landing_authorization.scope(value)
     if (
         not isinstance(value, dict)
         or set(value)
@@ -323,6 +327,10 @@ def _handoff_ci(repo, head):
 
 def _observe(receipt_id, pr_number, head_sha, scope):
     pull = _pull(receipt_id, pr_number, head_sha)
+    if scope and _scope(scope)["classification"] == "requires_operator":
+        from factory.orchestration import operator_landing_evidence
+
+        return pull, operator_landing_evidence.evidence(pull)
     evidence = (
         _public_docs(pull)
         if scope and _scope(scope)["classification"] == "public_docs"
@@ -373,9 +381,15 @@ def scoped_refusal(db, row, pr_number, head_sha):
         if (
             not isinstance(grant, dict)
             or type(grant.get("schema_version")) is not int
-            or grant.get("schema_version") != 1
+            or grant.get("schema_version") not in (1, 2)
         ):
             return "scoped_landing_authorization_missing"
+        if grant["schema_version"] == 2:
+            from factory.orchestration import operator_landing_authorization
+
+            return operator_landing_authorization.refusal(
+                db, row, pr_number, head_sha, grant
+            )
         if any(
             grant.get(key) != value
             for key, value in {
@@ -389,6 +403,14 @@ def scoped_refusal(db, row, pr_number, head_sha):
             return "scoped_landing_authorization_identity_changed"
         if _scope(grant.get("scope")) != grant["scope"]:
             return "scoped_landing_authorization_scope_changed"
+        if grant["scope"]["classification"] == "requires_operator":
+            return "scoped_landing_authorization_invalid"
+        if grant["scope"]["classification"] == "private_internal_reversible":
+            from factory.orchestration import operator_landing_authorization
+
+            operator_landing_authorization.refuse_private_downgrade(
+                db, row.task_id, head_sha
+            )
         if grant["scope"]["classification"] == "public_docs":
             proof = grant.get("public_docs", {})
             files = proof.get("files", [])
@@ -490,6 +512,9 @@ def _preview(
     pull,
     scope=None,
     public_docs_evidence=None,
+    *,
+    actor=None,
+    operator_git_evidence=None,
 ):
     from factory.orchestration import factory_conductor as conductor
     from factory.orchestration.factory_decisions import decision_in_flight
@@ -585,6 +610,21 @@ def _preview(
     }
     if scope is not None:
         result["scope"] = scope
+        if scope["classification"] == "private_internal_reversible":
+            from factory.orchestration import operator_landing_authorization
+
+            operator_landing_authorization.refuse_private_downgrade(
+                db, row.task_id, head_sha
+            )
+        if scope["classification"] == "requires_operator":
+            from factory.orchestration import operator_landing_authorization
+
+            result["actor"] = controls._text(actor, "actor")
+            result["operator_evidence"] = (
+                operator_landing_authorization.preview_evidence(
+                    db, control, row, pull, scope, operator_git_evidence, actor
+                )
+            )
     if public_docs:
         result["public_docs"] = public_docs_evidence
         # Only this new scope may release and authorize atomically. Existing
@@ -604,11 +644,22 @@ def _preview(
     return result
 
 
-def preview(receipt_id, pr_number, head_sha, reason, *, scope=None):
+def preview(receipt_id, pr_number, head_sha, reason, *, scope=None, actor=None):
     pull, docs = _observe(receipt_id, pr_number, head_sha, scope)
+    requires_operator = (scope or {}).get("classification") == "requires_operator"
     with controls._locked_session() as (db, control):
         return _preview(
-            db, control, receipt_id, pr_number, head_sha, reason, pull, scope, docs
+            db,
+            control,
+            receipt_id,
+            pr_number,
+            head_sha,
+            reason,
+            pull,
+            scope,
+            None if requires_operator else docs,
+            actor=actor,
+            operator_git_evidence=docs if requires_operator else None,
         )
 
 
@@ -673,12 +724,23 @@ def apply(
         if replay is not None:
             return replay
     pull, docs = _observe(receipt_id, pr_number, head_sha, scope)
+    requires_operator = (scope or {}).get("classification") == "requires_operator"
     with controls._locked_session() as (db, control):
         replay = _replay(db, actor, request)
         if replay is not None:
             return replay
         proposal = _preview(
-            db, control, receipt_id, pr_number, head_sha, reason, pull, scope, docs
+            db,
+            control,
+            receipt_id,
+            pr_number,
+            head_sha,
+            reason,
+            pull,
+            scope,
+            None if requires_operator else docs,
+            actor=actor,
+            operator_git_evidence=docs if requires_operator else None,
         )
         if proposal["preview_sha256"] != expected_preview_sha256:
             raise ValueError("landing_release_preview_changed")
@@ -728,6 +790,26 @@ def apply(
         control.version += 1
         control.actor = actor
         control.updated_at = controls._now()
+        operator_audit = None
+        if requires_operator:
+            from factory.orchestration import operator_landing_authorization
+
+            # Allocate the audit identity inside this transaction. The complete
+            # grant and result are written below before the transaction commits.
+            operator_audit = FactoryAudit(
+                actor=actor, action=SCOPE_ACTION, task_id=row.task_id
+            )
+            db.add(operator_audit)
+            db.flush()
+            direction["landing_authorization"].update(
+                schema_version=2,
+                authorization_audit_id=operator_audit.id,
+                operator_evidence={
+                    **proposal["operator_evidence"],
+                    "binding": operator_landing_authorization.binding(db, control, row),
+                },
+            )
+            row.direction_json = dumps(direction)
         result = {
             **release,
             "operation": proposal["operation"],
@@ -742,16 +824,23 @@ def apply(
             result["landing_owner"] = "operator"
         if scope is not None:
             result["landing_authorization"] = direction["landing_authorization"]
-        controls._audit(
-            db,
-            actor,
-            SCOPE_ACTION if scope is not None else ACTION,
-            task_id=row.task_id,
+        detail = dict(
             request=request,
             result=result,
             prior_hold=prior_hold,
             prior_authorization=prior_authorization,
         )
+        if operator_audit is not None:
+            result["authorization_audit_id"] = operator_audit.id
+            operator_audit.detail_json = dumps(detail)
+        else:
+            controls._audit(
+                db,
+                actor,
+                SCOPE_ACTION if scope is not None else ACTION,
+                task_id=row.task_id,
+                **detail,
+            )
         return result
 
 

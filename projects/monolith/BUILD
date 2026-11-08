@@ -5232,6 +5232,34 @@ py_test(
 )
 
 py_test(
+    name = "swarm_operator_landing_evidence_test",
+    srcs = ["factory/orchestration/operator_landing_evidence_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "swarm_operator_landing_authorization_test",
+    srcs = ["factory/orchestration/operator_landing_authorization_test.py"],
+    # Reuse real Git-object fixtures without recollecting their separate suite.
+    data = ["factory/orchestration/operator_landing_evidence_test.py"],
+    env = {"PYTEST_ADDOPTS": "--ignore=projects/monolith/factory/orchestration/operator_landing_evidence_test.py"},
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_owner_pr_landing_delegation_test",
     srcs = ["factory/orchestration/owner_pr_landing_delegation_test.py"],
     # Reuse the established native repair fixture without copying its producer.

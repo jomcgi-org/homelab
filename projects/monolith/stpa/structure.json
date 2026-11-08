@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "f5e07400e",
+  "commit": "cbe0525ff",
   "nodes": [
     {
       "key": "console-caller",
@@ -297,7 +297,7 @@
       "view": "logical",
       "layer": "actor",
       "maturity": "built",
-      "evidence": "projects/monolith/factory/orchestration/mcp.py:1336,2174"
+      "evidence": "projects/monolith/factory/orchestration/mcp.py:1336,2227"
     },
     {
       "key": "standing-landing-operator",
@@ -801,7 +801,7 @@
       "from": "factory-landing",
       "to": "github-pulls",
       "maturity": "built",
-      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:902"
+      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:926"
     },
     {
       "key": "factory-required-recovery.publish",
@@ -856,6 +856,33 @@
       "to": "postgres",
       "maturity": "built",
       "evidence": "projects/monolith/factory/orchestration/factory_funding.py:2036"
+    },
+    {
+      "key": "standing-landing-operator.authorize-delivery",
+      "label": "Record explicit finite approval for one independently reviewed delivery",
+      "view": "logical",
+      "from": "standing-landing-operator",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/mcp.py:1854; projects/monolith/factory/orchestration/operator_landing_authorization.py:283"
+    },
+    {
+      "key": "standing-landing-operator.revoke-delivery",
+      "label": "Retain a revocation tombstone for one exact operator authorization audit",
+      "view": "logical",
+      "from": "standing-landing-operator",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/operator_landing_authorization.py:448"
+    },
+    {
+      "key": "factory-landing.reserve-operator-arm",
+      "label": "Commit one operator-authorized arming attempt before the external queue request",
+      "view": "logical",
+      "from": "factory-landing",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/operator_landing_authorization.py:560"
     }
   ],
   "feedback": [
