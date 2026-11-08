@@ -11,6 +11,50 @@ from factory.orchestration import funding_profile
 from factory.orchestration.factory_funding_limits import ROUTINE_HELD_LABELS
 from factory.orchestration.factory_models import FactoryAudit, FactoryControl, WorkItem
 
+CONTRACT_VERSION = 2
+REMAINING_GRANT = "native_repair_remaining_allowance"
+
+
+def repair_available(start):
+    version = (start or {}).get("repair_contract", {}).get("version")
+    return version == 2 or (version == 1 and funding_profile.PROVIDER_ROUTE_AVAILABLE)
+
+
+def remaining_allowance(db, row, *, own_start=None):
+    """Reserve room for every unfinished fixed role in the original allocation."""
+    from factory.orchestration.models import SwarmNodeRun
+
+    pinned = json.loads(row.policy_json)
+    done = set(
+        db.exec(
+            select(SwarmNodeRun.node_key).where(
+                SwarmNodeRun.task_id == row.task_id,
+                SwarmNodeRun.status == "succeeded",
+            )
+        ).all()
+    )
+    remaining = [key for key in refill.NODES if key not in done]
+    starts = controls._starts(db, row.task_id)
+    # At physical admission our exact reservation is already charged. Count it
+    # with the remaining roles once, retaining every other uncertain start.
+    if own_start is not None:
+        owned = [s for s in starts if s.start_key == own_start]
+        if (
+            len(owned) != 1
+            or owned[0].status != "reserved"
+            or owned[0].max_cost_usd > pinned["turn_budget_usd"]
+        ):
+            return False
+        starts = [s for s in starts if s.start_key != own_start]
+    spent = controls._accounting(starts)
+    return bool(
+        not spent["unresolved_starts"]
+        and spent["turns_used"] + len(remaining)
+        <= min(pinned["max_task_turns_hard"], pinned["max_turns_per_task"])
+        and spent["committed_cost_usd"] + len(remaining) * pinned["turn_budget_usd"]
+        <= pinned["task_budget_usd"]
+    )
+
 
 def epoch(db):
     # Include disable/restore even when no refill tick observed the intermediate
@@ -49,7 +93,8 @@ def source(db, row):
     if (
         type(contract) is not dict
         or type(contract.get("version")) is not int
-        or contract != {"version": 1, "epoch": epoch(db)}
+        or contract.get("version") not in {1, 2}
+        or contract != {"version": contract["version"], "epoch": epoch(db)}
         or control is None
         or control.state != "enabled"
         or row.state != "admitted"
@@ -76,8 +121,6 @@ def source(db, row):
 
 def execution_failure_eligible(local_id):
     """Only fresh fixed-role attempt one trades capacity wait for terminal proof."""
-    if not funding_profile.PROVIDER_ROUTE_AVAILABLE:
-        return False
     fields = (local_id or "").split(":")
     if (
         len(fields) != 4
@@ -87,7 +130,7 @@ def execution_failure_eligible(local_id):
     ):
         return False
     with controls._read_session() as db:
-        return source(db, controls._receipt(db, fields[1])) is not None
+        return repair_available(source(db, controls._receipt(db, fields[1])))
 
 
 def objective_open(task, issue, *, session=None):
@@ -137,15 +180,17 @@ def failed(task, key):
     from factory.orchestration import factory_funding as funding
     from factory.orchestration import graph
 
-    if not funding_profile.PROVIDER_ROUTE_AVAILABLE or funding.routine_labels_held(
-        task
-    ):
+    if not funding.enabled() or funding.routine_labels_held(task):
         return False
     with controls._locked_session() as (db, _control):
         row = controls._receipt(db, task["id"])
         start = source(db, row)
         if (
-            start is None
+            not repair_available(start)
+            or (
+                start["repair_contract"]["version"] == 2
+                and not remaining_allowance(db, row)
+            )
             or row.escalation_json
             or funding.routine_hold(db, row, task["id"])
             or funding._recovery_held(db, task["id"])
@@ -228,9 +273,17 @@ def attempt_allowed(db, row, key, attempt):
         return True
     if attempt != 2 or key not in refill.NODES or source(db, row) is None:
         return False
-    from factory.orchestration import factory_funding as funding
+    from factory.orchestration import factory_funding_limits as funding
 
     grant = funding.amendment(db, row.task_id)
+    if grant and grant.get("grant_kind") == REMAINING_GRANT:
+        return grant["node_retry"]["node_key"] == key and native_repair_grant_valid(
+            db, row, grant
+        )
+    if not funding_profile.PROVIDER_ROUTE_AVAILABLE:
+        return False
+    from factory.orchestration import factory_funding as funding
+
     request = funding.latest(db, row.task_id, "funding_review_requested")
     retry = (grant or {}).get("node_retry") or {}
     return bool(
@@ -255,6 +308,8 @@ def reconcile(task, policy, runs, permission):
         grant = funding.amendment(db, task["id"])
     if not wait:
         return False
+    if grant and grant.get("grant_kind") == REMAINING_GRANT:
+        return False  # Existing dispatch/deadline owners enforce this finite lease.
     if task.get("task_paused") or not request or not request.get("repair_recovery"):
         return True
     if not grant or grant.get("request_id") != request["audit_id"]:
@@ -274,4 +329,67 @@ def useful_delivery(db, row):
         and done
         and refill._detail(done).get("success") is True
         and refill._detail(done).get("new_issues", 0) > 0
+    )
+
+
+def native_repair_grant_valid(db, row, grant):
+    """Bind deterministic authority to its original pause, repair and renewal."""
+    from factory.orchestration import factory_funding_limits as limits
+    from factory.orchestration.models import SwarmPlanVersion
+
+    start = source(db, row)
+    if (
+        (start or {}).get("repair_contract", {}).get("version") != 2
+        or limits.routine_hold(db, row, row.task_id)
+        or limits._recovery_held(db, row.task_id)
+        or controls.decision_in_flight(db, row.id)
+    ):
+        return False
+    authorization = limits.latest(db, row.task_id, "native_repair_resume_authorized")
+    wait = limits.latest(db, row.task_id, "repair_allocation_wait")
+    pause = limits._latest_pause(db, row.task_id)
+    resume = limits.latest(db, row.task_id, "resume_task")
+    proof = grant.get("repair_recovery") or {}
+    if (
+        not authorization
+        or not wait
+        or not pause
+        or not resume
+        or grant.get("grant_kind") != REMAINING_GRANT
+        or grant.get("authorization_id") != authorization["audit_id"]
+        or db.get(FactoryAudit, authorization["audit_id"]).actor != "factory:funding"
+        or db.get(FactoryAudit, grant["audit_id"]).actor != "factory:funding"
+        or authorization["original_policy_sha256"]
+        != controls.digest(json.loads(row.policy_json))
+        or grant.get("policy_overlay") != authorization["policy_overlay"]
+        or grant.get("deadline_at") != authorization["deadline_at"]
+        or grant.get("review_due_at") != authorization["deadline_at"]
+        or proof != authorization["repair_recovery"]
+        or authorization["retry"] != wait["retry"]
+        or wait["audit_id"] != proof.get("wait_id")
+        or pause.id != proof.get("pause_id")
+        or resume["audit_id"] != proof.get("resume_id")
+        or json.loads(row.escalation_json or "null")
+        != {**wait["card"], "resolved": {"kind": REMAINING_GRANT, **proof}}
+        or not limits._repair_rollout_valid(db, proof)
+        or not _failure(db, row.task_id, authorization["retry"]["source_run_id"])
+    ):
+        return False
+    changes = db.exec(
+        select(SwarmPlanVersion).where(
+            SwarmPlanVersion.task_id == row.task_id,
+            SwarmPlanVersion.op == "renew_node_attempt",
+        )
+    ).all()
+    return bool(
+        len(changes) == 1
+        and changes[0].author == "factory:funding"
+        and changes[0].author_kind == "engine"
+        and json.loads(changes[0].change_json) == grant.get("node_retry")
+        and grant["node_retry"].get("request_id") == authorization["audit_id"]
+        and grant["node_retry"].get("node_key") == authorization["retry"]["node_key"]
+        and grant["node_retry"].get("source_run_id")
+        == authorization["retry"]["source_run_id"]
+        and grant["node_retry"].get("before") == 1
+        and grant["node_retry"].get("after") == 2
     )

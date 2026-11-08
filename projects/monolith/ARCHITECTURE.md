@@ -437,7 +437,7 @@ See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-check
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| Repair newly proven native refill infrastructure failures and observe useful same-node recovery | #7583 implementation contract | #7583 | narrow funding profile and downstream retry implemented; classified execution-owner repairs remain outside standing landing authority; provider compatibility, rollout and live useful-delivery acceptance remain unproven |
+| Repair newly proven native refill infrastructure failures and observe useful same-node recovery | #7583 implementation contract | #7583 | original-allocation retry implemented without a paid judge; classified execution-owner repairs remain outside standing landing authority; rollout and live useful-delivery acceptance remain unproven |
 | Retire the merit runtime switch while preserving old-chart enabled behavior | section 4; proposed staged Conductor rescope | #7585, #7596 | repository correction; verified rollout remains on #7585; compatibility-key removal stays on #7596 until old charts leave rollback support |
 | Escalation cards survive the factory's own gate writes, declined landing recovery is named, and optimizer verdicts are final once the window ends and its attempts settle | section 4; evidence on the issue | #7495 | repository delivery; 72-hour before and after counts remain on the issue |
 | Per-sweep intake decisions, private backlog age and digest evidence | section 4; repository-only Conductor rescope | #7459 | staged repository delivery; rollout, first-sweep distribution and credential-backed follow-up remain on the issue |
@@ -820,8 +820,8 @@ attempt authority; source holds and pause identity are rechecked at settlement.
 Legacy cards and uncertainty remain fenced. Public tickets carry only
 scoped code repairs and synthetic acceptance criteria.
 
-**Why native refill repair has its own narrow adapter.** With a supported provider
-route available, fresh starts pin a versioned repair contract and the
+**Why native refill repair has its own narrow adapter.** Fresh starts pin a
+version-2 repair contract and the
 control-policy epoch. Two distinct fixed-role attempt-one failures within 24 hours
 must carry matching, positively proven native `not_invoked` receipts and a closed
 vocabulary of staged database failure metadata. Diagnostics or exception text
@@ -836,18 +836,27 @@ tick observed the disabled interval.
 
 ### Funding stays disabled
 
-The `factory-funding-v1` protocol remains staged. `PROVIDER_ROUTE_AVAILABLE` is
-false, with no environment or policy toggle. Fresh refill starts omit the repair
-contract. Preinvoke diversion is disabled, preserving the existing capacity-wait
-or terminal-settlement path. Repeated terminal failures cannot create repair
-machine pauses. Refill pacing and the two-failure breaker still apply. Existing
-contracts, repair waits and explicit holds remain unchanged; later availability
-cannot enroll a start that omitted the contract. The funding owner refuses new
-native reviews before changing an existing machine pause or preparing a paid start. Physical
-dispatch refuses pre-existing requests. The guest independently returns
+The paid `factory-funding-v1` protocol remains staged. `PROVIDER_ROUTE_AVAILABLE`
+is false, with no environment or policy toggle. The funding owner refuses native
+paid reviews before changing a machine pause or preparing a paid start. Physical
+dispatch refuses pre-existing paid requests. The guest independently returns
 `funding_provider_route_unavailable` before constructing an HTTP client or starting
-a CLI. One-shot markers and historical uncertainty remain intact. Ordinary funding
-and ordinary Claude Code sessions retain their existing paths.
+a CLI. Ordinary funding and Claude Code sessions retain their existing paths.
+
+**Why deterministic recovery uses the original allocation.** A verified exact
+repair already establishes the machine's reason to retry its fixed read-only role.
+Version 2 therefore needs no additional model call or credential. The funding
+owner atomically resumes its exact machine pause, records a distinct authorization
+and renews only the failed node from one attempt to two. Every unfinished role
+must fit inside the original unused turns and reservation-cost budget, including
+independent review. Physical admission counts its already-reserved start exactly
+once and refuses other unknown starts, changed holds or stale proof. The task
+receives one finite 30-minute lease, with no dollar or turn increase. Expiry or a
+second failure ends this continuation; there is no grant renewal. Useful reviewed
+publication is still required for observed recovery. Version-1 waits, starts
+without a repair contract, historical breakers and standing landing scope are
+unchanged. The following API proposal remains separate and is not a prerequisite
+for version-2 recovery.
 
 The deployment injects `EMBER_ANTHROPIC_OAUTH_TOKEN` from `CLAUDE_AUTH_TOKEN` at
 `api.anthropic.com`. It is subscription OAuth. Anthropic's
@@ -993,7 +1002,7 @@ standing profile or describe a diagnostic-only diff as the repair.
 
 Breaker 1155 and historical 1131, 1136, 1050 and 7640 remain untouched. No hold,
 historical lineage, workspace or volume is adopted, cleared or rewritten. Fixture
-rollouts and prospective provider availability exercise downstream contracts only;
+rollouts exercise downstream contracts with the paid provider disabled;
 #7583 still requires natural useful work after a supported, authorized repair.
 
 **Why.** Backlog-refill completion does not prove repair discovery or recovery.

@@ -32,6 +32,10 @@ from factory.orchestration.factory_models import (
 
 from factory.orchestration.factory_funding_limits import (
     ROUTINE_HELD_LABELS,
+    _recovery_held,
+    routine_hold,
+    _latest_pause,
+    _repair_rollout_valid,
     amendment,
     effective_policy,
     enabled,
@@ -42,6 +46,8 @@ from factory.orchestration.factory_funding_limits import (
     review_model,
     REVIEW_COST_USD,
 )
+
+from factory.orchestration.backlog_refill_repair import native_repair_grant_valid
 
 ACTOR = "factory:funding"
 PREFIX = "conductor_funding_"
@@ -150,16 +156,6 @@ def _refusal_wait(settled, *, progress=False):
             progress or controls._now() < datetime.fromisoformat(settled["retry_after"])
         )
     )
-
-
-def _recovery_held(db, task_id):
-    from factory.orchestration.evidence_continuation import recovery_grant
-
-    if recovery_grant(db, task_id) is not None:
-        return True
-    return controls.review_recovery_held(
-        task_id, session=db
-    ) or controls._landing_recovery_expired(db, task_id)
 
 
 def decide(
@@ -896,43 +892,6 @@ def _routed_pause(task_id):
         routed = json.loads(raw).get("routine_pause")
         if isinstance(routed, dict):
             return routed
-    return None
-
-
-def routine_hold(db, row, task_id, *, machine_pause=False):
-    """The shared human or operator restriction that keeps a pause with a
-    person, or None. Read under the caller's session; request and settle call
-    it again under the control lock, so a hold set meanwhile still wins."""
-    direction = json.loads(row.direction_json or "{}") if row is not None else {}
-    if row is None:
-        return "receipt_missing"
-    if (row.task_paused and not machine_pause) or row.cancellation_requested:
-        return "task_held"
-    if controls.nonrenewable_recovery(row):
-        return "nonrenewable_recovery"
-    if "landing_hold" in direction:
-        return "landing_hold"
-    if controls.review_recovery_held(task_id, session=db):
-        return "review_recovery_held"
-    # The webhook- and sweep-synchronized work-item labels, read in the
-    # caller's (locked) session: the mirror the human-handoff fence trusts.
-    # It is current to webhook latency, not to GitHub itself; a receipt with
-    # no mirror cannot be revalidated under the lock and is never routine.
-    item = db.get(WorkItem, row.work_item_id) if row.work_item_id else None
-    if item is None:
-        return "no_label_mirror"
-    if {str(label).lower() for label in item.labels or []} & ROUTINE_HELD_LABELS:
-        return "held_label"
-    if (
-        db.exec(
-            select(FactoryAudit.id).where(
-                FactoryAudit.task_id == task_id,
-                FactoryAudit.action == "human_handoff",
-            )
-        ).first()
-        is not None
-    ):
-        return "human_handoff"
     return None
 
 
@@ -1879,15 +1838,6 @@ def pause_allocation(db, task_id, blocker, *, retry=None):
             )
 
 
-def _latest_pause(db, task_id):
-    rows = db.exec(
-        select(FactoryAudit)
-        .where(FactoryAudit.task_id == task_id, FactoryAudit.action == "pause_task")
-        .order_by(FactoryAudit.id.desc())
-    )
-    return next((row for row in rows if json.loads(row.detail_json).get("ok")), None)
-
-
 def _repair_review_valid(db, task_id, proof):
     """Continue an already prepared repair review, not its consumed resume."""
     row = controls._receipt(db, task_id)
@@ -1923,49 +1873,6 @@ def _repair_review_valid(db, task_id, proof):
     card = {**wait["card"], "resolved": {"kind": "verified_repair_review", **proof}}
     return json.loads(row.escalation_json or "null") == card and _repair_rollout_valid(
         db, proof
-    )
-
-
-def _repair_rollout_valid(db, proof):
-    """Revalidate exact factory-accepted delivery and its verified rollout."""
-    from factory.orchestration import factory_problem_issues as producer
-
-    control = db.get(FactoryControl, "factory")
-    live = json.loads(control.policy_json or "{}") if control else {}
-    block = controls.problem_issues_policy(live)
-    if (
-        control is None
-        or control.state != "enabled"
-        or not block["enabled"]
-        or not block["sources"]["recurring_blocker"]
-        or not producer._delivery_enabled(live)
-    ):
-        return False
-    repair = controls._receipt(db, proof["repair_task_id"])
-    rollout = db.get(FactoryAudit, proof["rollout_audit_id"])
-    if (
-        repair is None
-        or repair.state != "succeeded"
-        or repair.task_class != "bug-fix"
-        or repair.repo != proof["repo"]
-        or repair.issue_number != proof["repair_issue"]
-        or rollout is None
-        or rollout.task_id != repair.task_id
-        or rollout.action != "rollout_verified"
-        or rollout.actor != "factory:landing"
-    ):
-        return False
-    detail = json.loads(rollout.detail_json)
-    merged = latest(db, repair.task_id, "merged")
-    return bool(
-        detail.get("verified") is True
-        and merged
-        and db.get(FactoryAudit, merged["audit_id"]).actor == "factory:landing"
-        and re.fullmatch(r"[0-9a-f]{40}", detail.get("approved_head_sha") or "")
-        and re.fullmatch(r"[0-9a-f]{40}", detail.get("merge_commit_sha") or "")
-        and detail.get("merge_commit_sha") == merged.get("merge_commit_sha")
-        and detail.get("pr_number") == merged.get("pr_number")
-        and controls.digest(detail) == proof["rollout_sha256"]
     )
 
 
@@ -2106,6 +2013,13 @@ def repair_recovery_tick():
             proof = _repair_evidence(db, task_id)
         if proof is not None:
             try:
+                with controls._read_session() as db:
+                    from factory.orchestration import backlog_refill_repair as native
+
+                    start = native.source(db, controls._receipt(db, task_id))
+                if (start or {}).get("repair_contract", {}).get("version") == 2:
+                    resume_native_repair(c._task(task_id), proof)
+                    continue
                 request(
                     c._task(task_id),
                     "Verified producer repair needs exact-node review",
@@ -2117,6 +2031,98 @@ def repair_recovery_tick():
                 # A capacity race or unavailable evidence must not stop the
                 # producer from examining unrelated problem sources.
                 c.logger.exception("factory repair review preparation refused")
+
+
+def resume_native_repair(task, proof):
+    """One verified repair retry, spending only the original unused allocation."""
+    from factory.orchestration import backlog_refill_repair as native
+
+    if not enabled() or routine_labels_held(task):
+        return False
+    with controls._locked_session() as (db, _control):
+        row = controls._receipt(db, task["id"])
+        graph._lock_task(db, task["id"])
+        start = native.source(db, row)
+        if (
+            (start or {}).get("repair_contract", {}).get("version") != 2
+            or _repair_evidence(db, task["id"]) != proof
+            or amendment(db, task["id"])
+            or latest(db, task["id"], "funding_review_requested")
+            or not native.remaining_allowance(db, row)
+        ):
+            return False
+        wait = repair_pause_evidence(db, task["id"])
+        retry = wait["retry"]
+        if retry["node"]["max_attempts"] != 1 or not native._failure(
+            db, row.task_id, retry["source_run_id"]
+        ):
+            return False
+        pinned = json.loads(row.policy_json)
+        deadline = controls._now() + timedelta(minutes=30)
+        overlay = {
+            "task_budget_usd": pinned["task_budget_usd"],
+            "task_timeout_seconds": math.ceil(
+                (deadline - aware(task["created_at"])).total_seconds()
+            ),
+        }
+        resumed = controls.set_control(
+            "resume_task", ACTOR, task_id=row.task_id, session=db
+        )
+        if not resumed["ok"] or resumed.get("pending"):
+            raise ValueError("native_repair_capacity_changed")
+        proof = {
+            **proof,
+            "resume_id": latest(db, row.task_id, "resume_task")["audit_id"],
+        }
+        card = json.loads(row.escalation_json)
+        card["resolved"] = {"kind": native.REMAINING_GRANT, **proof}
+        row.escalation_json = dumps(card)
+        record_audit(
+            db,
+            ACTOR,
+            "native_repair_resume_authorized",
+            task_id=row.task_id,
+            repair_recovery=proof,
+            retry=retry,
+            original_policy_sha256=controls.digest(pinned),
+            policy_overlay=overlay,
+            deadline_at=deadline.isoformat(),
+        )
+        authorization = latest(db, row.task_id, "native_repair_resume_authorized")
+        renewed = graph.renew_funded_attempt(
+            db,
+            row.task_id,
+            retry,
+            expected_version=wait["revision"],
+            request_id=authorization["audit_id"],
+        )
+        record_audit(
+            db, ACTOR, "repair_funding_requested", task_id=row.task_id, **proof
+        )
+        record_audit(
+            db,
+            ACTOR,
+            "funding_granted",
+            task_id=row.task_id,
+            grant_kind=native.REMAINING_GRANT,
+            authorization_id=authorization["audit_id"],
+            policy_overlay=overlay,
+            node_retry=renewed,
+            repair_recovery=proof,
+            reason="The exact repair rolled out and the original allocation covers all remaining roles",
+            next_plan="Retry the original read-only role once, then complete its independent review within the existing allocation.",
+            deadline_at=deadline.isoformat(),
+            review_due_at=deadline.isoformat(),
+        )
+        db.flush()
+        controls.record_allowance(
+            row.task_id,
+            {**pinned, **overlay},
+            ACTOR,
+            review_rounds_remaining=1,
+            session=db,
+        )
+        return True
 
 
 CONTINUATION_AUTHORIZED = "progress_continuation_authorized"

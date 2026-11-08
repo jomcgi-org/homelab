@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "b6340b130",
+  "commit": "f5e07400e",
   "nodes": [
     {
       "key": "console-caller",
@@ -378,6 +378,14 @@
       "layer": "enforcement",
       "maturity": "built",
       "evidence": "projects/monolith/factory/execution/permit_supervision.py:781"
+    },
+    {
+      "key": "factory-funding",
+      "label": "Factory allocation owner",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/factory_funding.py:2036"
     }
   ],
   "control_actions": [
@@ -839,6 +847,15 @@
       "to": "postgres",
       "maturity": "built",
       "evidence": "projects/monolith/factory/execution/permit_supervision.py:197,330,968"
+    },
+    {
+      "key": "factory-funding.resume-native-repair",
+      "label": "Renew one repaired fixed role within original remaining allocation",
+      "view": "logical",
+      "from": "factory-funding",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/factory_funding.py:2036"
     }
   ],
   "feedback": [

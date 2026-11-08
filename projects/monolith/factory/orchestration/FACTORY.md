@@ -132,7 +132,7 @@ The optional `backlog_refill` block ships omitted; omission and `enabled: false`
 
 ### Exact-event problem issues
 
-Fresh native refill starts also pin `repair_contract` version 1 and a control
+Fresh native refill starts pin `repair_contract` version 2 and a control
 epoch. Two matching, distinct-task attempt-one failures within 24 hours may enter
 the existing repair loop only with native positive `not_invoked` proof and typed
 preinvoke database metadata. The second original task remains machine-paused;
@@ -140,21 +140,23 @@ historical failures, breakers and uncertain execution remain unchanged. The
 source can be closed charter #7366 only while its exact recurring contract,
 unassigned GitHub identity, synchronized mirror and current ownership allow it.
 
-The staged `factory-funding-v1` contract binds request, prompt, schema, model
-and session after exact accepted repair rollout. Its provider route is disabled:
-the funding owner prepares no native review or pause release, physical dispatch
-refuses existing requests, and the guest refuses before any provider I/O.
-Subscription OAuth cannot be reused for direct Messages. See the
-[supported-authentication proposal](../../ARCHITECTURE.md#funding-stays-disabled).
-Fixed collector
-and reviewer roles retain their physical read-only fence. Funding settlement may
-renew the exhausted original node from one to two attempts, with all prior
-charges/history retained, inside the judge's finite lease. No second repair
-cycle is created for that task. Successful retry alone is not recovery: the
-producer also requires independently reviewed useful publication. Unsupported
-adapter, stale evidence, policy transitions, new holds or changed rollout refuse
-authority. No producer switch, breaker, credential or landing whitelist changes
-as part of deployment.
+After exact accepted repair rollout, the funding owner may renew the exhausted
+original node from one to two attempts using only the original unused turns and
+budget. It reserves room for every unfinished fixed role, including independent
+review, and grants a finite 30-minute lease. The atomic authorization binds the
+original pause, source run, rollout, policy and graph renewal; physical admission
+rechecks that proof, holds, current accounting and exact reservation. There is no
+paid judge, model verdict or budget increase. Unknown starts refuse. Collector
+and reviewer retain their original model, source commit and read-only contracts.
+No second repair cycle is created for that task. Successful retry alone is not
+recovery: the producer also requires independently reviewed useful publication.
+Historical starts and breakers are not adopted, and landing profiles stay fixed.
+
+The earlier `factory-funding-v1` paid-decision protocol remains staged with
+`PROVIDER_ROUTE_AVAILABLE` false. Its guest endpoint refuses before provider I/O;
+subscription OAuth cannot be reused for direct Messages. Existing v1 waits do not
+acquire v2 authority. See the [supported-authentication proposal](../../ARCHITECTURE.md#funding-stays-disabled)
+for that separate future route.
 
 Optional `problem_issues` creates GitHub issues from `node_stalled`, `workflow_stranded`, `recurring_blocker` and terminal `landing_recovery_exhausted`. It neither creates receipts nor admits tasks. The master switch defaults false; `recurring_blocker` defaults true behind it. Each tick scans at most 50 source audits, creating at most one issue within a rolling 24-hour cap of 3. `factory_configure_problem_issues` lets a standing operator preview/apply the master, recurring-blocker and stranded-workflow switches without changing generation, existing receipts or any other settings. Newly enabled sources are watermarked on the next producer tick. The existing producer owns deduplication and recursion prevention; ordinary intake/refinement owns future work. [MCP activation](../MCP.md#enable-recovery-problem-issues) records the exact arguments.
 
@@ -419,22 +421,19 @@ Linux orchestrator CI and a real bounded operating trial stay the delivery gates
 
 Funding lives in `factory_funding.py`: `request` records one judge node, `settle` verifies its authority, `decide` resolves a validated artifact to `continue`, `steer` or `stop`. A continue or steer grants at most 20 work turns and a 30-minute review horizon. Reservations and unknown outcomes stay charged; a factory start reserves a ceiling and settles at the reported cost, falling back to the token-usage list price. A judge proposing a larger budget pauses the receipt for operator approval. Continuation contracts remain: the legacy pair below and an operator `progress_continuation` two-hour lease for one paused recovered task.
 
-Native refill repair has a staged server-authored `factory-funding-v1` decision
-profile (#7583), bound to the exact funding request, schema and model. Its
-`PROVIDER_ROUTE_AVAILABLE` constant is false, with no policy/environment toggle.
-New native funding reviews and physical starts are refused; the versioned guest
-endpoint independently refuses all funding calls before content leaves. The
-subscription OAuth direct-client implementation was removed. Enabling requires
-a separately reviewed supported-authentication route. Ordinary funding is unchanged.
-Collector and independent reviewer stay fixed read-only roles.
-`review_recovery.Reviewer` remains an explicit operator PR-review API, not funding.
+Native refill repair uses the deterministic version-2 remaining-allocation grant
+above (#7583). It records `native_repair_resume_authorized` and an explicitly typed
+`funding_granted`, with no funding-review request, settlement or model verdict.
+The original task budget and turn ceilings do not change. A 30-minute deadline
+covers the retry, independent review and publication; grants cannot renew it.
 Only fresh typed positive not-invoked evidence on the exact recurring charter
 #7366 contract can produce a bounded repair pause. Closed-charter authority never
 overrides current human/security holds. The repair ticket exports only fixed role,
 allowlisted stage/SQLSTATE and code-selected owning paths, reauthenticated before
-publication. Exact verified repair rollout precedes funding settlement and a
-bounded retry of the original node; useful reviewed publication is observed
-separately. Historical failures and breakers are not enrolled.
+publication. Exact verified repair rollout precedes the original-node retry;
+useful reviewed publication is observed separately. Historical failures and
+breakers are not enrolled. The paid `factory-funding-v1` profile and its guest
+endpoint remain disabled; ordinary funding is unchanged.
 
 The currently classified database stages belong to execution admission or result
 receipts, outside both standing landing path profiles. Their repairs need explicit
@@ -443,9 +442,9 @@ expand those profiles. The exact existing route and its limits are recorded in
 [the per-repair runbook](../../ARCHITECTURE.md#native-repair-landing-authority).
 Eligible observation repairs exercise the real candidate
 and queue owners in regression tests. Injected external rollout evidence tests
-only prospective post-operator recovery with the unavailable provider mocked;
-they do not prove autonomous native repair landing. Supported authentication,
-runtime compatibility and naturally occurring useful-delivery acceptance remain unproven;
+post-operator recovery with the paid provider disabled;
+they do not prove autonomous native repair landing. Naturally occurring
+useful-delivery acceptance remains unproven;
 neither a passing fixture nor this PR completes #7583.
 
 Eligible funding reviews include progress, proximity-to-landing and issue-value criteria and server-read evidence from `factory_judge.py`. Explicit doubt steers to an operator card, and the turn ceiling is the original allowance plus `factoryMeritJudgeMaxExtensionMultiple` times it. Missing pinned policy and historical requests without merit metadata retain their legacy handling.
@@ -542,7 +541,8 @@ Repair descriptions expose code paths and synthetic acceptance only; the
 private ledger retains exact source identity. Recursive repair issues refuse.
 For a fresh exhausted-node allocation pause, funding records exact machine
 provenance before any repair. Verified rollout of the bound producer repair
-permits one funding review using native capacity release, with no manual resume.
+permits one funding review for ordinary tasks, or the deterministic original-allocation
+retry for native version-2 refill tasks, using native capacity release with no manual resume.
 The review and settlement preserve cumulative caps, prior attempts, ownership,
 uncertainty and explicit holds. Legacy cards are never adopted; operator
 reassertion or concurrent evidence changes refuse this authority.

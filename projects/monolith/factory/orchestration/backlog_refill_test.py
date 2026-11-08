@@ -76,7 +76,11 @@ def world(tmp_path, monkeypatch, request):
     )
     # Existing fixtures exercise the deployed v1 contract and its replay.
     # New source-contract cases explicitly request the inspection fixture.
-    if getattr(request, "param", None) != "inspection":
+    from factory.orchestration import backlog_refill_repair
+
+    if getattr(request, "param", None) != "remaining":
+        monkeypatch.setattr(backlog_refill_repair, "CONTRACT_VERSION", 1)
+    if getattr(request, "param", None) not in {"inspection", "remaining"}:
         observe = refill.observe
 
         def historical_observe(*args, **kwargs):
@@ -1459,6 +1463,284 @@ def available_repair_loop(repair_loop, monkeypatch):
 
     monkeypatch.setattr(funding_profile, "PROVIDER_ROUTE_AVAILABLE", True)
     return repair_loop
+
+
+@pytest.fixture
+def remaining_repair(repair_loop, request):
+    from factory.orchestration import factory_intake as intake_owner
+    from factory.orchestration import factory_landing as landing
+    from factory.orchestration import factory_problem_issues as producer
+    from factory.orchestration import funding_profile
+
+    assert funding_profile.PROVIDER_ROUTE_AVAILABLE is False
+    s = repair_loop
+    s.failed_role = getattr(request, "param", refill.NODE)
+    first, first_id = s.start_failure(s.failed_role)
+    assert controls.task_snapshot(first_id)["state"] == "failed"
+    refill.settle(first["run_id"], success=False, new_issues=0, summary="Typed failure")
+    s.clock[0] += timedelta(minutes=16)
+    s.start, s.task_id = s.start_failure(s.failed_role)
+    assert controls.task_snapshot(s.task_id)["task_paused"]
+    producer.problem_issues_tick(s.policy)
+    issue = next(issue for n, issue in s.issues.items() if n != 7366)
+    intake_owner.receive_issue(
+        s.policy["repo"],
+        issue["number"],
+        issue["title"],
+        issue["body"],
+        "https://github.com/jomcgi-org/homelab/issues/8001",
+        intake_owner.INTAKE_ACTOR,
+        task_class="bug-fix",
+        issue=issue,
+    )
+    repair = intake_owner.admit_next("scheduler")
+    assert repair["ok"], repair
+    s.clock[0] += timedelta(hours=2)
+    # Existing authorized landing is an external boundary, not implied by this
+    # deterministic execution grant. No standing landing profile is expanded.
+    landing._record(
+        repair["task_id"], "merged", pr_number=8002, merge_commit_sha="a" * 40
+    )
+    landing._record(
+        repair["task_id"],
+        "rollout_verified",
+        pr_number=8002,
+        merge_commit_sha="a" * 40,
+        approved_head_sha="b" * 40,
+        verified=True,
+    )
+    controls.finish_task(
+        repair["task_id"],
+        "succeeded",
+        "factory:landing",
+        evidence={"state": "rollout_verified"},
+    )
+    with controls._read_session() as db:
+        s.proof = s.funding._repair_evidence(db, s.task_id)
+        assert s.proof
+    return s
+
+
+@pytest.mark.parametrize("world", ["remaining"], indirect=True)
+@pytest.mark.parametrize(
+    "remaining_repair", [refill.NODE, refill.REVIEW_NODE], indirect=True
+)
+def test_remaining_allocation_recovers_without_paid_judge(
+    remaining_repair, monkeypatch
+):
+    import builtins
+
+    from factory.orchestration.api import factory_session_allowed
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import factory_problem_issues as producer
+    from factory.orchestration import funding_profile
+
+    s = remaining_repair
+    original_import = builtins.__import__
+
+    def physical_allowed(identity):
+        def pruned_import(name, globals=None, locals=None, fromlist=(), level=0):
+            names = {name, *(f"{name}.{item}" for item in fromlist or ())}
+            writers = {
+                f"factory.orchestration.{module}"
+                for module in (
+                    "factory_funding",
+                    "factory_conductor",
+                    "graph",
+                    "factory_problem_issues",
+                )
+            }
+            if names & writers:
+                raise ImportError("writer module absent from executor image")
+            return original_import(name, globals, locals, fromlist, level)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(builtins, "__import__", pruned_import)
+            return factory_session_allowed(identity)
+
+    task = conductor._task(s.task_id)
+    assert s.funding.resume_native_repair(task, s.proof)
+    assert not s.funding.resume_native_repair(task, s.proof)
+    with controls._read_session() as db:
+        grant = s.funding.amendment(db, s.task_id)
+        row = controls._receipt(db, s.task_id)
+        assert s.funding.native_repair_grant_valid(db, row, grant)
+        assert s.funding.latest(db, s.task_id, "funding_review_requested") is None
+        assert s.funding.latest(db, s.task_id, "funding_review_settled") is None
+        pinned = json.loads(row.policy_json)
+        effective = controls._effective_policy(db, row)
+        assert {k: v for k, v in effective.items() if k != "task_timeout_seconds"} == {
+            k: v for k, v in pinned.items() if k != "task_timeout_seconds"
+        }
+    s.clock[0] += timedelta(minutes=3)
+    s.run_worker(s.task_id)
+    retry = s.dispatch(s.task_id, s.failed_role)
+    assert retry["attempt"] == 2 and retry["pin"]["read_only"]
+    assert physical_allowed(f"factory:{s.task_id}:{s.failed_role}:2")
+    assert "Verified repair retry" in retry["pin"]["prompt"]
+    assert "Funding judge direction" not in retry["pin"]["prompt"]
+    if s.failed_role == refill.NODE:
+        s.native(retry, s.collection)
+    s.run_worker(s.task_id)
+    reviewer = s.dispatch(s.task_id, refill.REVIEW_NODE)
+    assert physical_allowed(
+        f"factory:{s.task_id}:{refill.REVIEW_NODE}:{reviewer['attempt']}"
+    )
+    s.native(
+        reviewer,
+        {
+            "status": "completed",
+            "source_sha": "a" * 40,
+            "collection_digest": refill.digest(s.collection),
+            "summary": "Independent review",
+            "decisions": [
+                {
+                    "key": "ready",
+                    "approved": True,
+                    "evidence": "Confirmed missing test",
+                    "plan": "Add the missing regression",
+                    "acceptance": "Test fails before and passes after",
+                }
+            ],
+        },
+    )
+    s.run_worker(s.task_id)
+    producer.problem_issues_tick(s.policy)
+    assert controls.task_snapshot(s.task_id)["state"] == "succeeded"
+    assert funding_profile.PROVIDER_ROUTE_AVAILABLE is False
+    with controls._read_session() as db:
+        assert s.funding.latest(db, s.task_id, "problem_issue_recovery_observed")
+    assert not refill.dispatch_allowed(s.task_id, s.failed_role, 3)
+
+
+@pytest.mark.parametrize("world", ["remaining"], indirect=True)
+@pytest.mark.parametrize(
+    "fence", ["budget", "turns", "unknown", "human", "landing", "rollout", "epoch"]
+)
+def test_remaining_allocation_refuses_changed_authority(remaining_repair, fence):
+    from factory.orchestration import backlog_refill_repair as native
+    from factory.orchestration import factory_conductor as conductor
+
+    s = remaining_repair
+    with Session(s.engine) as db:
+        row = controls._receipt(db, s.task_id)
+        if fence in {"budget", "turns", "unknown"}:
+            db.add(
+                FactoryStart(
+                    task_id=s.task_id,
+                    start_key="concurrent-start",
+                    actor="factory:conductor",
+                    model="opus",
+                    max_cost_usd=5,
+                    status="uncertain" if fence == "unknown" else "succeeded",
+                    cost_usd=5 if fence == "budget" else 0,
+                )
+            )
+            db.flush()
+            assert not native.remaining_allowance(db, row)
+        elif fence == "human":
+            db.get(WorkItem, row.work_item_id).labels = ["human"]
+        elif fence == "landing":
+            row.direction_json = dumps({"landing_hold": "exact owner required"})
+        elif fence == "rollout":
+            rollout = db.get(FactoryAudit, s.proof["rollout_audit_id"])
+            rollout.detail_json = dumps(
+                {**json.loads(rollout.detail_json), "verified": False}
+            )
+        else:
+            control = db.get(FactoryControl, "factory")
+            policy = json.loads(control.policy_json)
+            policy["generation"] += 1
+            control.policy_json = dumps(policy)
+        db.commit()
+    assert not s.funding.resume_native_repair(conductor._task(s.task_id), s.proof)
+    assert controls.task_snapshot(s.task_id)["task_paused"]
+    with controls._read_session() as db:
+        assert s.funding.amendment(db, s.task_id) is None
+
+
+@pytest.mark.parametrize("world", ["remaining"], indirect=True)
+def test_remaining_allocation_insufficient_at_failure_does_not_pause(
+    repair_loop, world
+):
+    s = repair_loop
+    update(world, max_turns_per_task=2, max_task_turns_hard=2)
+    first, _ = s.start_failure()
+    refill.settle(first["run_id"], success=False, new_issues=0, summary="Typed failure")
+    s.clock[0] += timedelta(minutes=16)
+    _, task_id = s.start_failure()
+    assert controls.task_snapshot(task_id)["state"] == "failed"
+    assert not controls.task_snapshot(task_id)["task_paused"]
+    with controls._read_session() as db:
+        assert s.funding.latest(db, task_id, "repair_allocation_wait") is None
+
+
+@pytest.mark.parametrize("world", ["remaining"], indirect=True)
+@pytest.mark.parametrize(
+    "fence",
+    ["budget", "unknown", "human", "landing", "rollout", "authorization", "expiry"],
+)
+def test_remaining_allocation_rechecks_physical_admission(remaining_repair, fence):
+    from factory.orchestration import factory_conductor as conductor
+
+    s = remaining_repair
+    # Drive the production tick, including its v2 selection with provider off.
+    s.funding.repair_recovery_tick()
+    s.run_worker(s.task_id)
+    retry = s.dispatch(s.task_id, s.failed_role)
+    assert refill.dispatch_allowed(s.task_id, s.failed_role, 2, physical=True)
+    with Session(s.engine) as db:
+        row = controls._receipt(db, s.task_id)
+        if fence in {"budget", "unknown"}:
+            db.add(
+                FactoryStart(
+                    task_id=s.task_id,
+                    start_key="late-start",
+                    actor="factory:conductor",
+                    model="opus",
+                    max_cost_usd=5,
+                    status="uncertain" if fence == "unknown" else "succeeded",
+                    cost_usd=5,
+                )
+            )
+        elif fence == "human":
+            db.get(WorkItem, row.work_item_id).labels = ["human"]
+        elif fence == "landing":
+            row.direction_json = dumps({"landing_hold": "exact owner required"})
+        elif fence == "rollout":
+            rollout = db.get(FactoryAudit, s.proof["rollout_audit_id"])
+            rollout.detail_json = dumps(
+                {**json.loads(rollout.detail_json), "verified": False}
+            )
+        elif fence == "authorization":
+            auth = s.funding.latest(db, s.task_id, "native_repair_resume_authorized")
+            db.get(FactoryAudit, auth["audit_id"]).actor = "untrusted"
+        else:
+            s.clock[0] += timedelta(minutes=31)
+        db.commit()
+    assert not refill.dispatch_allowed(s.task_id, s.failed_role, 2, physical=True)
+    assert retry["attempt"] == 2
+    assert len(conductor.graph.node_runs(s.task_id, s.failed_role)) == 2
+
+
+@pytest.mark.parametrize("world", ["remaining"], indirect=True)
+def test_remaining_allocation_second_failure_is_terminal(remaining_repair):
+    s = remaining_repair
+    s.funding.repair_recovery_tick()
+    s.run_worker(s.task_id)
+    retry = s.dispatch(s.task_id, s.failed_role)
+    s.native(
+        retry,
+        failure={
+            "version": 1,
+            "phase": "receipt_prepare",
+            "sqlstate": "42703",
+            "attempted": False,
+        },
+    )
+    s.run_worker(s.task_id)
+    assert controls.task_snapshot(s.task_id)["state"] == "failed"
+    assert not refill.dispatch_allowed(s.task_id, s.failed_role, 3)
 
 
 @pytest.mark.parametrize("world", ["inspection"], indirect=True)
