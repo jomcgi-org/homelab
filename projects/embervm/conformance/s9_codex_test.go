@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -177,11 +179,24 @@ func (f *codexTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.creates.Add(1)
+		switch f.mode {
+		case "no_capacity":
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"session create denied","reason":"no_capacity","workload":"claude-runtime","retryable":true}`))
+			return
+		case "create_error":
+			http.Error(w, "session creation unavailable", http.StatusInternalServerError)
+			return
+		}
 		f.sessionInvokes.Store(0)
 		f.deleted.Store(false)
 		f.event("create")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"session_id":"probe-session","session_token":"session-capability","state":"live"}`))
+		state := "live"
+		if strings.HasPrefix(f.mode, "readiness_") {
+			state = "starting"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"session_id": "probe-session", "session_token": "session-capability", "state": state})
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/sessions/probe-session/invoke":
 		if !f.authorize(w, r, "session-capability") {
 			return
@@ -283,13 +298,21 @@ func (f *codexTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			f.goneReads.Add(1)
 			f.event("gone")
+			if f.mode == "readiness_gone_unconfirmed" {
+				http.Error(w, "session removal unconfirmed", http.StatusServiceUnavailable)
+				return
+			}
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		if !f.authorize(w, r, "session-capability") {
 			return
 		}
-		if f.mode == "never_park" {
+		if f.mode == "readiness_timeout" {
+			_, _ = w.Write([]byte(`{"state":"starting"}`))
+		} else if strings.HasPrefix(f.mode, "readiness_") {
+			_, _ = w.Write([]byte(`{"state":"failed"}`))
+		} else if f.mode == "never_park" {
 			f.event("banked")
 			_, _ = w.Write([]byte(`{"state":"banked"}`))
 		} else {
@@ -305,7 +328,7 @@ func (f *codexTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.deletes.Add(1)
 		f.event("destroy")
-		if f.mode == "delete_failure" {
+		if f.mode == "delete_failure" || f.mode == "readiness_delete_failure" {
 			http.Error(w, "delete unavailable", http.StatusServiceUnavailable)
 			return
 		}
@@ -320,7 +343,7 @@ func (f *codexTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 func TestS9RequiresNativeParkResumeAndIndependentProof(t *testing.T) {
 	cfg := codexTestConfig()
 	fake, client := newCodexTestServer(t, cfg, "")
-	result := runS9(context.Background(), cfg, client)
+	result := runS9(context.Background(), cfg, client, nil)
 	if result.Verdict != verdictPass || !strings.Contains(result.Detail, cfg.codexGuestDigest) || !strings.Contains(result.Detail, "Codex 0.146.0") {
 		t.Fatalf("S9 = %#v", result)
 	}
@@ -371,7 +394,7 @@ func TestS9FailureStillDestroysAndConfirmsItsSession(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			cfg := codexTestConfig()
 			fake, client := newCodexTestServer(t, cfg, mode)
-			result := runS9(context.Background(), cfg, client)
+			result := runS9(context.Background(), cfg, client, nil)
 			if result.Verdict != verdictFail {
 				t.Fatalf("S9 = %#v, want fail", result)
 			}
@@ -392,7 +415,7 @@ func TestS9CleanupSurvivesCancelledProbeContext(t *testing.T) {
 			fake, client := newCodexTestServer(t, cfg, mode)
 			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 			defer cancel()
-			result := runS9(ctx, cfg, client)
+			result := runS9(ctx, cfg, client, nil)
 			if result.Verdict != verdictFail || fake.invokes.Load() != 1 {
 				t.Fatalf("S9 = %#v, invokes=%d; must not resume without native park", result, fake.invokes.Load())
 			}
@@ -406,7 +429,7 @@ func TestS9CleanupSurvivesCancelledProbeContext(t *testing.T) {
 func TestS9CannotPassWithUnconfirmedCleanup(t *testing.T) {
 	cfg := codexTestConfig()
 	fake, client := newCodexTestServer(t, cfg, "delete_failure")
-	result := runS9(context.Background(), cfg, client)
+	result := runS9(context.Background(), cfg, client, nil)
 	if result.Verdict != verdictFail || !strings.Contains(result.Detail, "cleanup failed") {
 		t.Fatalf("S9 = %#v", result)
 	}
@@ -424,7 +447,7 @@ func TestS9RetainsSuccessUntilChartOrRunnerChanges(t *testing.T) {
 			t.Fatalf("S9 = %#v", got)
 		}
 	}
-	if fake.creates.Load() != 1 || fake.invokes.Load() != 2 {
+	if gate.attempts != 1 || fake.creates.Load() != 1 || fake.invokes.Load() != 2 {
 		t.Fatalf("retained success made fresh calls: creates=%d invokes=%d", fake.creates.Load(), fake.invokes.Load())
 	}
 	cfg.chartVersion = "1.2.4"
@@ -457,13 +480,283 @@ func TestS9StopsProviderTrafficAfterTwoFailedAttempts(t *testing.T) {
 			t.Fatalf("failure was not retained: %#v", got)
 		}
 	}
-	if fake.creates.Load() != 2 || fake.invokes.Load() != 2 {
+	if gate.attempts != 2 || fake.creates.Load() != 2 || fake.invokes.Load() != 2 {
 		t.Fatalf("attempt limit = %d creates, %d invokes", fake.creates.Load(), fake.invokes.Load())
 	}
 	cfg.chartVersion = "1.2.4"
 	_ = gate.run(context.Background(), cfg, client)
 	if fake.creates.Load() != 3 {
 		t.Fatal("new chart did not reset the attempt limit")
+	}
+}
+
+func TestS9SafePreInvokeFailuresRemainRedWithoutSpendingAttempts(t *testing.T) {
+	for _, mode := range []string{"no_capacity", "readiness_failed", "readiness_timeout"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := codexTestConfig()
+			if mode == "readiness_timeout" {
+				cfg.budgets["S9"] = 30 * time.Millisecond
+			}
+			fake, client := newCodexTestServer(t, cfg, mode)
+			gate := &codexProbeGate{}
+			for range 4 {
+				got := gate.run(context.Background(), cfg, client)
+				if got.Verdict != verdictFail || got.ID != "S9" || strings.Contains(got.Detail, "retained") {
+					t.Fatalf("pre-invoke failure = %#v", got)
+				}
+				if gate.attempts != 0 || fake.invokes.Load() != 0 {
+					t.Fatalf("pre-invoke failure spent provider budget: attempts=%d invokes=%d", gate.attempts, fake.invokes.Load())
+				}
+			}
+			if fake.creates.Load() != 4 {
+				t.Fatalf("pre-invoke failures suppressed later readiness checks: creates=%d", fake.creates.Load())
+			}
+			if strings.HasPrefix(mode, "readiness_") && (fake.deletes.Load() != 4 || fake.goneReads.Load() != 4) {
+				t.Fatalf("readiness cleanup = %d deletes, %d terminal observations", fake.deletes.Load(), fake.goneReads.Load())
+			}
+		})
+	}
+}
+
+func TestS9PreInvokeFailuresPreserveEarlierCharges(t *testing.T) {
+	cfg := codexTestConfig()
+	provider, providerClient := newCodexTestServer(t, cfg, "provider_error")
+	capacity, capacityClient := newCodexTestServer(t, cfg, "no_capacity")
+	gate := &codexProbeGate{}
+	if got := gate.run(context.Background(), cfg, providerClient); got.Verdict != verdictFail || gate.attempts != 1 {
+		t.Fatalf("first provider failure = %#v, attempts=%d", got, gate.attempts)
+	}
+	for range 4 {
+		if got := gate.run(context.Background(), cfg, capacityClient); got.Verdict != verdictFail || gate.attempts != 1 {
+			t.Fatalf("capacity failure changed the existing charge: %#v, attempts=%d", got, gate.attempts)
+		}
+	}
+	if got := gate.run(context.Background(), cfg, providerClient); got.Verdict != verdictFail || gate.attempts != 2 {
+		t.Fatalf("second provider failure = %#v, attempts=%d", got, gate.attempts)
+	}
+	for range 2 {
+		if got := gate.run(context.Background(), cfg, capacityClient); got.Verdict != verdictFail || !strings.Contains(got.Detail, "retained") {
+			t.Fatalf("exhausted budget = %#v", got)
+		}
+	}
+	if gate.attempts != 2 || provider.invokes.Load() != 2 || capacity.creates.Load() != 4 {
+		t.Fatalf("preserved limit: attempts=%d invokes=%d capacity checks=%d", gate.attempts, provider.invokes.Load(), capacity.creates.Load())
+	}
+}
+
+type codexRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f codexRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestS9UnknownCreateOutcomesConsumeAttempts(t *testing.T) {
+	for _, mode := range []string{"create_error", "lost_create_response", "create_timeout"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := codexTestConfig()
+			if mode == "create_timeout" {
+				cfg.budgets["S9"] = 30 * time.Millisecond
+			}
+			fake, client := newCodexTestServer(t, cfg, mode)
+			if mode != "create_error" {
+				transport := client.http.Transport
+				client.http.Transport = codexRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+					response, err := transport.RoundTrip(r)
+					if err != nil {
+						return response, err
+					}
+					_, _ = io.Copy(io.Discard, response.Body)
+					_ = response.Body.Close()
+					// The server allocated a session, but the caller never receives
+					// its identity and therefore cannot confirm cleanup.
+					if mode == "create_timeout" {
+						<-r.Context().Done()
+						return nil, r.Context().Err()
+					}
+					return nil, errors.New("create response lost after allocation")
+				})
+			}
+			gate := &codexProbeGate{}
+			for i := range 4 {
+				got := gate.run(context.Background(), cfg, client)
+				if got.Verdict != verdictFail || gate.attempts != min(i+1, 2) {
+					t.Fatalf("unknown create = %#v, attempts=%d", got, gate.attempts)
+				}
+				if i >= 2 && !strings.Contains(got.Detail, "retained") {
+					t.Fatalf("unknown create was not fenced: %#v", got)
+				}
+			}
+			if fake.creates.Load() != 2 || fake.invokes.Load() != 0 || fake.deletes.Load() != 0 {
+				t.Fatalf("unknown create bound: creates=%d invokes=%d deletes=%d", fake.creates.Load(), fake.invokes.Load(), fake.deletes.Load())
+			}
+		})
+	}
+}
+
+func TestS9OnlyStructuredNoAllocationDenialsAvoidCharges(t *testing.T) {
+	const denied = `{"error":"session create denied","reason":"no_capacity","workload":"claude-runtime","retryable":true}`
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		safe   bool
+	}{
+		{"authoritative denial", http.StatusTooManyRequests, denied, true},
+		{"wrong status", http.StatusInternalServerError, denied, false},
+		{"arbitrary prose", http.StatusTooManyRequests, "no_capacity retryable=true", false},
+		{"wrong workload", http.StatusTooManyRequests, strings.Replace(denied, "claude-runtime", "other-workload", 1), false},
+		{"unknown reason", http.StatusTooManyRequests, strings.Replace(denied, "no_capacity", "prime_failed", 1), false},
+		{"not retryable", http.StatusTooManyRequests, strings.Replace(denied, "true", "false", 1), false},
+		{"conflicting identity", http.StatusTooManyRequests, strings.TrimSuffix(denied, "}") + `,"session_id":"possibly-created"}`, false},
+		{"trailing data", http.StatusTooManyRequests, denied + ` {}`, false},
+		{"malformed body", http.StatusTooManyRequests, `{`, false},
+		{"missing created identity", http.StatusCreated, `{"state":"live"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := codexTestConfig()
+			_, client := newCodexTestServer(t, cfg, "")
+			requests := 0
+			client.http.Transport = codexRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/sessions") {
+					t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				requests++
+				return &http.Response{StatusCode: tc.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(tc.body)), Request: r}, nil
+			})
+			gate := &codexProbeGate{}
+			for range 4 {
+				if got := gate.run(context.Background(), cfg, client); got.Verdict != verdictFail {
+					t.Fatalf("create denial = %#v", got)
+				}
+			}
+			wantAttempts, wantRequests := 2, 2
+			if tc.safe {
+				wantAttempts, wantRequests = 0, 4
+			}
+			if gate.attempts != wantAttempts || requests != wantRequests {
+				t.Fatalf("denial classification: attempts=%d requests=%d, want %d/%d", gate.attempts, requests, wantAttempts, wantRequests)
+			}
+		})
+	}
+}
+
+func TestS9UnconfirmedCleanupConsumesOneAttemptPerRun(t *testing.T) {
+	for _, tc := range []struct {
+		mode                   string
+		invokes, deletes, gone int32
+	}{
+		{"readiness_delete_failure", 0, 1, 0},
+		{"readiness_gone_unconfirmed", 0, 1, 1},
+		{"delete_failure", 2, 2, 0},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			cfg := codexTestConfig()
+			fake, client := newCodexTestServer(t, cfg, tc.mode)
+			gate := &codexProbeGate{}
+			for i := range 4 {
+				got := gate.run(context.Background(), cfg, client)
+				if got.Verdict != verdictFail || !strings.Contains(got.Detail, "cleanup failed") || gate.attempts != min(i+1, 2) {
+					t.Fatalf("cleanup failure = %#v, attempts=%d", got, gate.attempts)
+				}
+			}
+			if fake.creates.Load() != 2 || fake.invokes.Load() != 2*tc.invokes || fake.deletes.Load() != 2*tc.deletes || fake.goneReads.Load() != 2*tc.gone {
+				t.Fatalf("cleanup failure bound: creates=%d invokes=%d deletes=%d gone=%d", fake.creates.Load(), fake.invokes.Load(), fake.deletes.Load(), fake.goneReads.Load())
+			}
+		})
+	}
+}
+
+func TestS9ChargesBeforeInvokeAndRetainsUnknownOutcomes(t *testing.T) {
+	cfg := codexTestConfig()
+	fake, client := newCodexTestServer(t, cfg, "")
+	gate := &codexProbeGate{}
+	transport := client.http.Transport
+	requests := 0
+	client.http.Transport = codexRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/invoke") {
+			requests++
+			// RoundTrip runs on the gate's calling goroutine, before an unknown
+			// transport outcome can be mistaken for an unused attempt.
+			if gate.attempts != requests {
+				t.Fatalf("invoke left before accounting: attempts=%d requests=%d", gate.attempts, requests)
+			}
+			return nil, errors.New("unknown invoke outcome")
+		}
+		return transport.RoundTrip(r)
+	})
+	for range 4 {
+		if got := gate.run(context.Background(), cfg, client); got.Verdict != verdictFail {
+			t.Fatalf("unknown outcome = %#v", got)
+		}
+	}
+	if gate.attempts != 2 || requests != 2 || fake.creates.Load() != 2 || fake.deletes.Load() != 2 || fake.goneReads.Load() != 2 {
+		t.Fatalf("unknown outcomes: attempts=%d requests=%d creates=%d deletes=%d gone=%d", gate.attempts, requests, fake.creates.Load(), fake.deletes.Load(), fake.goneReads.Load())
+	}
+}
+
+func TestS9InvokeTimeoutConsumesAnAttempt(t *testing.T) {
+	cfg := codexTestConfig()
+	cfg.budgets["S9"] = 30 * time.Millisecond
+	fake, client := newCodexTestServer(t, cfg, "cancel_invoke")
+	gate := &codexProbeGate{}
+	for range 4 {
+		if got := gate.run(context.Background(), cfg, client); got.Verdict != verdictFail {
+			t.Fatalf("timed out invoke = %#v", got)
+		}
+	}
+	if gate.attempts != 2 || fake.invokes.Load() != 2 || fake.deletes.Load() != 2 || fake.goneReads.Load() != 2 {
+		t.Fatalf("timed out invokes: attempts=%d invokes=%d deletes=%d gone=%d", gate.attempts, fake.invokes.Load(), fake.deletes.Load(), fake.goneReads.Load())
+	}
+}
+
+func TestS9BudgetCannotReturnBeforePendingAccountingFinishes(t *testing.T) {
+	cfg := codexTestConfig()
+	cfg.budgets["S9"] = 30 * time.Millisecond
+	fake, client := newCodexTestServer(t, cfg, "")
+	gate := &codexProbeGate{}
+	transport := client.http.Transport
+	expired, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	client.http.Transport = codexRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		response, err := transport.RoundTrip(r)
+		if err == nil && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sessions") {
+			body, readErr := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			if readErr != nil {
+				return nil, readErr
+			}
+			// Model a transport that finishes creation but delays delivering its
+			// response beyond cancellation. No accounting may escape the gate.
+			<-r.Context().Done()
+			close(expired)
+			<-release
+			response.Body = io.NopCloser(strings.NewReader(string(body)))
+		}
+		return response, err
+	})
+	finished := make(chan scenarioVerdict, 1)
+	go func() { finished <- gate.run(context.Background(), cfg, client) }()
+	select {
+	case <-expired:
+	case <-time.After(time.Second):
+		t.Fatal("creation did not reach its scenario deadline")
+	}
+	select {
+	case got := <-finished:
+		t.Fatalf("gate returned while its scenario could still charge an attempt: %#v", got)
+	case <-time.After(20 * time.Millisecond):
+	}
+	unblock()
+	select {
+	case got := <-finished:
+		if got.Verdict != verdictFail || !strings.Contains(got.Detail, "context deadline exceeded") {
+			t.Fatalf("expired creation = %#v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("gate did not finish after its scenario and cleanup")
+	}
+	if gate.attempts != 0 || fake.invokes.Load() != 0 || fake.deletes.Load() != 1 || fake.goneReads.Load() != 1 {
+		t.Fatalf("expired pre-invoke work: attempts=%d invokes=%d deletes=%d gone=%d", gate.attempts, fake.invokes.Load(), fake.deletes.Load(), fake.goneReads.Load())
 	}
 }
 
