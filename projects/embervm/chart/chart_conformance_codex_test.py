@@ -127,10 +127,10 @@ def test_hub_dev_uses_its_published_guest_and_bounded_native_workload() -> None:
     assert {key: value for key, value in env.items() if key.startswith("S9_")} == {
         "S9_CODEX_PROBE": "true",
         "S9_CODEX_WORKLOAD": "claude-runtime",
-        "S9_CODEX_MODEL": "sol",
-        "S9_CODEX_PROVIDER_MODEL": "gpt-6.1-sol",
+        "S9_CODEX_MODEL": "terra",
+        "S9_CODEX_PROVIDER_MODEL": "gpt-6.1-terra",
         "S9_CODEX_GUEST_DIGEST": _CANDIDATE,
-        "S9_CODEX_CLI_VERSION": "0.146.0",
+        "S9_CODEX_CLI_VERSION": "0.167.0",
         "S9_BUDGET": "5m",
     }
     assert pod["serviceAccountName"] == _RUNNER
@@ -202,17 +202,17 @@ def test_hub_dev_keeps_login_and_token_roles_private_and_egress_narrow() -> None
 
 
 def test_runtime_upgrade_needs_only_three_probe_expectation_values() -> None:
-    before = _pod(_render(), _RUNNER)
-    after = _pod(
+    before = _pod(
         _render(
             settings=[
-                "conformance.codex.model=terra",
-                "conformance.codex.providerModel=gpt-6.1-terra",
-                "conformance.codex.cliVersion=0.167.0",
+                "conformance.codex.model=sol",
+                "conformance.codex.providerModel=gpt-6.1-sol",
+                "conformance.codex.cliVersion=0.146.0",
             ]
         ),
         _RUNNER,
     )
+    after = _pod(_render(), _RUNNER)
     expected = copy.deepcopy(before)
     replacements = {
         "S9_CODEX_MODEL": "terra",

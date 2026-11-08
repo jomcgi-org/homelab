@@ -192,14 +192,14 @@ claudeRuntimeWorkload:
   invocation:
     timeoutSeconds: 180
 
-# Bootstrap against the currently published guest. A later runtime promotion
-# moves these expectations to Terra and CLI 0.167.0 after this gate is healthy.
+# The runtime candidate must execute Terra at xhigh and resume its CLI thread
+# before Kargo promotes it. The review policy changes after that live gate.
 conformance:
   codex:
     enabled: true
-    model: sol
-    providerModel: gpt-6.1-sol
-    cliVersion: "0.146.0"
+    model: terra
+    providerModel: gpt-6.1-terra
+    cliVersion: "0.167.0"
 
 # This broker owns a dev-only grant. No production grant is copied. The older
 # chart already understands plaintext retirement, so applying this HEAD overlay

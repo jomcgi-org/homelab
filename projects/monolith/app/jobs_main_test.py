@@ -660,6 +660,69 @@ def test_price_turns_backfill_prices_only_eligible_rows(tmp_path):
                 table.schema = original_schemas[table.name]
 
 
+def test_price_turns_backfill_uses_selected_ids_without_rewriting_history(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'selected-model-pricing.db'}")
+    original_schemas = {}
+    for table in SQLModel.metadata.tables.values():
+        if table.schema is not None:
+            original_schemas[table.name] = table.schema
+            table.schema = None
+    try:
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as session:
+            agent = AgentSession(
+                local_session_id="selected-model-pricing",
+                workspace="<guest>",
+                branch="main",
+                model="terra",
+            )
+            session.add(agent)
+            session.commit()
+            session.refresh(agent)
+            cases = [
+                ("gpt-5.6-terra", None, 4.0),
+                ("gpt-6.1-terra", None, 1.0),
+                ("gpt-unknown", None, None),
+                ("gpt-6.1-terra", 8.75, 8.75),
+            ]
+            session.add_all(
+                AgentTurn(
+                    session_id=agent.id,
+                    seq=index,
+                    prompt="historical turn",
+                    result_text="done",
+                    model="terra",
+                    usage_json=json.dumps(
+                        {"provider_model": selected, "input_tokens": 1_000_000}
+                    ),
+                    list_cost_usd=existing,
+                )
+                for index, (selected, existing, _) in enumerate(cases, 1)
+            )
+            session.commit()
+
+            report = jobs_main._price_turns_backfill_core(engine, chunk_size=1)
+
+            assert report == jobs_main.TurnPricingBackfillReport(2, 1, 0)
+            rows = session.exec(select(AgentTurn).order_by(AgentTurn.seq)).all()
+            for row, (selected, _, expected) in zip(rows, cases, strict=True):
+                assert row.model == "terra"
+                assert json.loads(row.usage_json)["provider_model"] == selected
+                assert row.cost_usd is None
+                if expected is None:
+                    assert row.list_cost_usd is None
+                else:
+                    assert row.list_cost_usd == pytest.approx(expected)
+            assert (
+                jobs_main._price_turns_backfill_core(engine, chunk_size=1).priced == 0
+            )
+    finally:
+        engine.dispose()
+        for table in SQLModel.metadata.tables.values():
+            if table.name in original_schemas:
+                table.schema = original_schemas[table.name]
+
+
 def test_price_raws_backfill_merges_costs_in_chunks_and_is_idempotent(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'raw-pricing.db'}")
     original_schemas = {}
