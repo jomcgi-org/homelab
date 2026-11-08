@@ -75,9 +75,11 @@ def _price_turns_backfill_core(
 
     A provider-reported cost does not exempt a turn: the public pages show list
     price for every model, so Claude turns get one too (shared/pricing.py
-    list_price_usd says why that is their reported figure). The turn's own
-    model wins; rows written before turns carried one, or with an empty one,
-    fall back to their session's model. Turns with no tokens and no reported
+    list_price_usd says why that is their reported figure). A recorded
+    usage.provider_model selects its exact price. Without it, the turn's own
+    requested model wins; rows written before turns carried one, or with an
+    empty one, fall back to their session's model. Existing prices and model
+    labels stay unchanged. Turns with no tokens and no reported
     cost stay NULL (see create_turn). Only the columns pricing needs are read,
     never the diff or artifact blobs.
     """
