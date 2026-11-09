@@ -1527,9 +1527,10 @@ first (`host_cgroup_oom`), observed VMM liveness plus a SIGKILL outcome for
 `guest_kernel_panic`, otherwise `unclassified`. Guest feedback is
 **Shipped-but-suspended** behind default-off
 `EMBERVM_NODED_GUEST_MEMORY_FEEDBACK_ENABLED` and
-`noded.guestMemoryFeedback.enabled`. After a rootfs rebake, k3s guests serve the
-additive `memory_status` command with available memory, supported PSI and OOM
-evidence; other runtimes report unsupported. The host handle owns each
+`noded.guestMemoryFeedback.enabled`. The retained guestagent library implements
+the additive `memory_status` command with available memory, supported PSI and
+OOM evidence. Its former k3s image integration retired in #6917; surviving
+runtimes report unsupported. The host handle owns each
 activation and every request carries a fresh host nonce. A bank cancels and
 joins its in-flight request before pausing. Restore starts pending with a new
 counter baseline and discards pre-restore observations. Only a positive
@@ -2201,6 +2202,19 @@ argv, zero egress and a disposable clone per query. Its exhibit retired in
 
 **Why.** No deployed stack or caller used the Bazel demo after the exhibit was
 removed. Building and publishing its runtime no longer served a workload.
+
+**k3s image retirement** (#6917, operator decision 2026-11-09): retire the
+`runtimes/k3s` images, their locks and download pins, and the exclusive archive
+helper. Shared runtime/build infrastructure, stateful and composite classes,
+and the [stateful generation quarantine runbook](../../docs/runbooks/embervm-stateful-generation-quarantine.md)
+remain supported.
+
+**Why.** The revised decision covers repository-only k3s cleanup. Tokenbroker's
+`internal/quota` stores provider-quota observations consumed by factory model
+selection and the quota guard. The original audit's unused-daily-gate premise
+does not describe this package. Its APIs, polling, persistence and metrics,
+all factory quota consumers, and control-plane daily metering remain in place.
+Retaining quota support needs no operational acceptance check.
 
 **Guest identity**: a guest never holds a cluster credential (**Built**, by
 construction: no NIC, no mounted ServiceAccount); the
