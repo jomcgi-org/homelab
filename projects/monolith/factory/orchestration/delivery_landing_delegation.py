@@ -184,6 +184,7 @@ def configure(
         prior = _latest(db, CONTROL)
         proposal = dict(
             enabled=enabled,
+            standing_actor=principal.subject,
             version=control.version,
             policy_sha256=controls.digest(policy),
             repo=REPO,
@@ -192,6 +193,7 @@ def configure(
             deny_rules=DENY_RULES,
             max_files=MAX_FILES,
             max_landings=max_landings,
+            max_landings_limit=MAX_LANDINGS,
             rolling_window_hours=24,
             max_task_derivations=MAX_TASK_DERIVATIONS,
             reason=request["reason"],
@@ -231,6 +233,7 @@ def _authority(db):
         and proposal.get("max_files") == MAX_FILES
         and proposal.get("rolling_window_hours") == 24
         and proposal.get("max_task_derivations") == MAX_TASK_DERIVATIONS
+        and proposal.get("max_landings_limit") == MAX_LANDINGS
         and type(proposal.get("max_landings")) is int
         and 1 <= proposal["max_landings"] <= MAX_LANDINGS,
         "bounds_changed",
@@ -320,9 +323,9 @@ def _file_evidence(pull, base_sha, head):
     """Complete, immutable diff listing inside the deny-list boundary.
 
     The merge base and head commits already fix every byte. This proves the
-    listing is complete, that no path is excluded, and that every surviving
-    file is a regular non-executable blob. Symlinks, submodules and executable
-    files need an operator.
+    listing is complete, that no path is excluded, and that both old and new
+    files are regular non-executable blobs. Symlinks, submodules and executable
+    files need an operator, including when removed or replaced.
     """
     from factory.orchestration.factory_landing import github_get
 
@@ -344,19 +347,22 @@ def _file_evidence(pull, base_sha, head):
             "paths_require_operator",
         )
     cache = {}
-    root = github_get(repo, f"git/commits/{head}")["tree"]["sha"]
-    evidence = []
-    for f in sorted(files, key=lambda f: f["filename"]):
-        if f["status"] == "removed":
-            evidence.append({"path": f["filename"], "head_blob_sha": None})
-            continue
-        tree_sha, parts = root, f["filename"].split("/")
+    roots = {
+        commit: github_get(repo, f"git/commits/{commit}")["tree"]["sha"]
+        for commit in (base_sha, head)
+    }
+
+    def blob(commit, path, *, present):
+        """Walk non-recursive immutable trees; require absence when appropriate."""
+        tree_sha, parts = roots[commit], path.split("/")
         for index, part in enumerate(parts):
             if tree_sha not in cache:
                 tree = github_get(repo, f"git/trees/{tree_sha}")
                 _require(tree.get("truncated") is False, "files_incomplete")
                 cache[tree_sha] = tree["tree"]
             matches = [e for e in cache[tree_sha] if e["path"] == part]
+            if not matches and not present:
+                return None
             _require(len(matches) == 1, "files_incomplete")
             entry = matches[0]
             if index < len(parts) - 1:
@@ -367,12 +373,33 @@ def _file_evidence(pull, base_sha, head):
                 tree_sha = entry["sha"]
             else:
                 _require(
-                    entry["type"] == "blob"
-                    and entry["mode"] == "100644"
-                    and entry["sha"] == f["sha"],
+                    entry["type"] == "blob" and entry["mode"] == "100644",
                     "file_type_requires_operator",
                 )
-        evidence.append({"path": f["filename"], "head_blob_sha": f["sha"]})
+                _require(present, "files_incomplete")
+                return entry["sha"]
+
+    evidence = []
+    for f in sorted(files, key=lambda f: f["filename"]):
+        path = f["filename"]
+        old_path = f.get("previous_filename", path)
+        old = blob(base_sha, old_path, present=f["status"] != "added")
+        new = blob(head, path, present=f["status"] != "removed")
+        _require(
+            (old if f["status"] == "removed" else new) == f["sha"],
+            "file_type_requires_operator",
+        )
+        if f["status"] == "renamed":
+            blob(base_sha, path, present=False)
+            blob(head, old_path, present=False)
+        evidence.append(
+            {
+                "path": path,
+                "previous_path": old_path if f["status"] == "renamed" else None,
+                "base_blob_sha": old,
+                "head_blob_sha": new,
+            }
+        )
     return {"base_sha": base_sha, "head_sha": head, "files": evidence}
 
 

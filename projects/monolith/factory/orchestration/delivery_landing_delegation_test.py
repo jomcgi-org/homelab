@@ -134,29 +134,43 @@ def native_case(db, monkeypatch, *, enable=True, body="Tidy private summaries"):
     }
     changed = {"filename": PATH, "status": "modified", "sha": "c" * 40}
     comparison = {"files": [changed], "merge_base_commit": {"sha": BASE}}
-    modes = {}
+    modes, base_modes = {}, {}
     checks = {"sha": HEAD, "statuses": [{"context": "pr-checks", "state": "success"}]}
 
     def tree(sha):
         """Synthesize one directory level per changed path on demand."""
         entries = {}
-        for f in comparison["files"]:
-            parts = f["filename"].split("/")
-            for index, part in enumerate(parts):
-                parent = "root" if index == 0 else "/".join(parts[:index])
-                if hashlib.sha1(parent.encode()).hexdigest() != sha:
+        for commit, file_modes in ((BASE, base_modes), (HEAD, modes)):
+            for f in comparison["files"]:
+                if f["status"] == ("added" if commit == BASE else "removed"):
                     continue
-                leaf = index == len(parts) - 1
-                entries[part] = {
-                    "path": part,
-                    "type": "blob" if leaf else "tree",
-                    "mode": modes.get(f["filename"], "100644") if leaf else "040000",
-                    "sha": f["sha"]
-                    if leaf
-                    else hashlib.sha1(
-                        "/".join(parts[: index + 1]).encode()
-                    ).hexdigest(),
-                }
+                path = (
+                    f.get("previous_filename", f["filename"])
+                    if commit == BASE
+                    else f["filename"]
+                )
+                parts = path.split("/")
+                for index, part in enumerate(parts):
+                    parent = "root" if index == 0 else "/".join(parts[:index])
+                    if hashlib.sha1((commit + parent).encode()).hexdigest() != sha:
+                        continue
+                    leaf = index == len(parts) - 1
+                    entries[part] = {
+                        "path": part,
+                        "type": (
+                            "commit" if file_modes.get(path) == "160000" else "blob"
+                        )
+                        if leaf
+                        else "tree",
+                        "mode": file_modes.get(path, "100644") if leaf else "040000",
+                        "sha": f["sha"]
+                        if leaf and (commit == HEAD or f["status"] == "removed")
+                        else "d" * 40
+                        if leaf
+                        else hashlib.sha1(
+                            (commit + "/".join(parts[: index + 1])).encode()
+                        ).hexdigest(),
+                    }
         return {"truncated": False, "tree": list(entries.values())}
 
     def github(repo, suffix):
@@ -168,7 +182,10 @@ def native_case(db, monkeypatch, *, enable=True, body="Tidy private summaries"):
         if suffix.startswith("compare/"):
             return comparison
         if suffix.startswith("git/commits/"):
-            return {"tree": {"sha": hashlib.sha1(b"root").hexdigest()}}
+            commit = suffix.split("/")[-1]
+            return {
+                "tree": {"sha": hashlib.sha1((commit + "root").encode()).hexdigest()}
+            }
         if suffix.startswith("git/trees/"):
             return tree(suffix.split("/")[-1])
         if suffix == f"commits/{HEAD}/status":
@@ -269,6 +286,7 @@ def native_case(db, monkeypatch, *, enable=True, body="Tidy private summaries"):
         comparison=comparison,
         changed=changed,
         modes=modes,
+        base_modes=base_modes,
         checks=checks,
         review=review,
         scope=scope,
@@ -418,6 +436,29 @@ def test_configuration_requires_a_standing_operator_and_current_preview(db):
         )
 
 
+def test_preview_cannot_be_applied_by_another_standing_operator(db):
+    from dataclasses import replace
+
+    with Session(db) as session:
+        version = session.get(FactoryControl, "factory").version
+    preview = delegation.configure(
+        principal(), "preview", True, version, REASON, max_landings=5
+    )
+    with pytest.raises(ValueError, match="delivery_landing_preview_changed"):
+        delegation.configure(
+            replace(principal(), subject="another-operator"),
+            "apply",
+            True,
+            version,
+            REASON,
+            max_landings=5,
+            request_key="borrowed-preview",
+            expected_preview_sha256=preview["preview_sha256"],
+        )
+    with Session(db) as session:
+        assert delegation.status(session)["enabled"] is False
+
+
 def test_native_delivery_lands_without_per_head_grant(db, monkeypatch):
     from factory.orchestration import factory_landing as landing
 
@@ -435,7 +476,14 @@ def test_native_delivery_lands_without_per_head_grant(db, monkeypatch):
     assert events[0].actor == delegation.ACTOR
     detail = json.loads(events[0].detail_json)
     assert detail["scope"] == case.scope
-    assert detail["files"]["files"] == [{"path": PATH, "head_blob_sha": "c" * 40}]
+    assert detail["files"]["files"] == [
+        {
+            "path": PATH,
+            "previous_path": None,
+            "base_blob_sha": "d" * 40,
+            "head_blob_sha": "c" * 40,
+        }
+    ]
     with Session(db) as session:
         row = controls._receipt(session, case.task["id"])
         assert "landing_authorization" not in json.loads(row.direction_json or "{}")
@@ -483,6 +531,61 @@ def test_native_delivery_lands_added_removed_and_renamed_files(db, monkeypatch):
         None,
         "4" * 40,
     ]
+    assert [f["base_blob_sha"] for f in detail["files"]["files"]] == [
+        "d" * 40,
+        None,
+        "3" * 40,
+        "d" * 40,
+    ]
+    assert (
+        detail["files"]["files"][-1]["previous_path"] == files[-1]["previous_filename"]
+    )
+
+
+@pytest.mark.parametrize("status", ["modified", "removed", "renamed"])
+@pytest.mark.parametrize("mode", ["100755", "120000", "160000"])
+def test_old_tree_unsafe_modes_never_receive_a_grant(db, monkeypatch, status, mode):
+    from factory.orchestration import factory_landing as landing
+
+    case = native_case(db, monkeypatch)
+    case.changed["status"] = status
+    old_path = PATH
+    if status == "renamed":
+        old_path = "projects/monolith/chat/previous.py"
+        case.changed["previous_filename"] = old_path
+    case.base_modes[old_path] = mode
+    landing.landing_tick(case.live)
+    assert not case.queue
+    assert not case.mutations
+    assert not grants(db)
+    assert waits(db)[-1] == "delivery_landing_file_type_requires_operator"
+
+
+@pytest.mark.parametrize("commit", [BASE, HEAD])
+@pytest.mark.parametrize("failure", ["missing", "truncated"])
+def test_incomplete_tree_evidence_fails_closed(db, monkeypatch, commit, failure):
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import factory_landing as landing
+
+    case = native_case(db, monkeypatch)
+    read = conductor.github_get
+    root = hashlib.sha1((commit + "root").encode()).hexdigest()
+
+    def incomplete(repo, suffix):
+        result = read(repo, suffix)
+        if suffix == f"git/trees/{root}":
+            if failure == "missing":
+                result["tree"] = []
+            else:
+                result["truncated"] = True
+        return result
+
+    monkeypatch.setattr(conductor, "github_get", incomplete)
+    landing.landing_tick(case.live)
+    assert not case.queue
+    assert not case.mutations
+    assert not grants(db)
+    assert waits(db)[-1] == "delivery_landing_files_incomplete"
 
 
 @pytest.mark.parametrize(
@@ -492,6 +595,7 @@ def test_native_delivery_lands_added_removed_and_renamed_files(db, monkeypatch):
         ("revoke", "delivery_landing_disabled"),
         ("landing_off_on", "delivery_landing_policy_replaced"),
         ("rules", "delivery_landing_bounds_changed"),
+        ("upper_bound", "delivery_landing_bounds_changed"),
         ("path", "delivery_landing_paths_require_operator"),
         ("factory_path", "delivery_landing_paths_require_operator"),
         ("renamed_from_denied", "delivery_landing_paths_require_operator"),
@@ -537,6 +641,8 @@ def test_native_landing_waits_outside_the_standing_boundary(
             "DENY_RULES",
             {**delegation.DENY_RULES, "suffixes": [".bzl", ".sh"]},
         )
+    elif change == "upper_bound":
+        monkeypatch.setattr(delegation, "MAX_LANDINGS", 49)
     elif change == "path":
         case.changed["filename"] = "projects/monolith/auth/api.py"
         rewrite_scope(db, case, paths=["projects/monolith/auth/api.py"])
