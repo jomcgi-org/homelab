@@ -747,7 +747,10 @@ def _arm(repo: str, item: dict) -> None:
         if owner is not None and (
             refusal == "scoped_landing_authorization_missing"
             or (
-                refusal and refusal.startswith(("repair_landing_", "owner_pr_landing_"))
+                refusal
+                and refusal.startswith(
+                    ("repair_landing_", "owner_pr_landing_", "delivery_landing_")
+                )
             )
         ):
             refusal = owner.prepare(item["task_id"], number, head)

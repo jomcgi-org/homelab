@@ -4675,6 +4675,97 @@ def test_owner_pr_landing_wire_binds_identity_and_preserves_unrelated_policy(db)
         assert not _as(actor, lambda: mcp.factory_configure_refill(**args)).get("ok")
 
 
+def test_delivery_landing_wire_is_bounded_replay_safe_and_operator_only(db):
+    from fastmcp import Client
+    from core.mcp_app import mcp as shared
+    from factory.orchestration import delivery_landing_delegation as delegation
+
+    original = {
+        "repo": delegation.REPO,
+        "base_branch": "main",
+        "generation": 9,
+        "auto_merge": True,
+        "intake": {"enabled": True},
+    }
+    with Session(db) as session, session.begin():
+        control = session.get(FactoryControl, "factory")
+        control.state = "enabled"
+        control.policy_json = json.dumps(original)
+        version = control.version
+    tool = "factory_configure_delivery_landing"
+    args = dict(
+        operation="preview",
+        enabled=True,
+        expected_version=version,
+        reason="Land reviewed private deliveries",
+        max_landings=20,
+    )
+
+    async def exercise():
+        async with Client(shared) as client:
+            preview = (await client.call_tool(tool, args)).data
+            assert preview["deny_rules"] == delegation.DENY_RULES
+            assert (preview["max_landings"], preview["max_files"]) == (20, 40)
+            unbounded = (
+                await client.call_tool(tool, {**args, "max_landings": None})
+            ).data
+            assert unbounded["reason"] == "delivery_landing_limit_invalid"
+            apply = {
+                **args,
+                "operation": "apply",
+                "request_key": "delivery-landing",
+                "expected_preview_sha256": preview["preview_sha256"],
+            }
+            widened = (await client.call_tool(tool, {**apply, "max_landings": 50})).data
+            assert widened["reason"] == "delivery_landing_preview_changed"
+            applied = (await client.call_tool(tool, apply)).data
+            assert applied["ok"] and applied["enabled"]
+            assert not applied["dispatched"]
+            assert (await client.call_tool(tool, apply)).data == applied
+            stale = (
+                await client.call_tool(tool, {**apply, "request_key": "other"})
+            ).data
+            assert stale["reason"] == "delivery_landing_version_changed"
+            with Session(db) as session:
+                live = delegation.status(session)
+            assert live["enabled"] is True
+            assert live["derivations_remaining"] == 20
+            revoke = {
+                "operation": "preview",
+                "enabled": False,
+                "expected_version": applied["version"],
+                "reason": "Stop standing delivery landing",
+            }
+            preview = (await client.call_tool(tool, revoke)).data
+            result = (
+                await client.call_tool(
+                    tool,
+                    {
+                        **revoke,
+                        "operation": "apply",
+                        "request_key": "revoke-delivery-landing",
+                        "expected_preview_sha256": preview["preview_sha256"],
+                    },
+                )
+            ).data
+            assert result["ok"] and not result["enabled"]
+
+    _as(_principal(), exercise)
+    with Session(db) as session:
+        assert (
+            json.loads(session.get(FactoryControl, "factory").policy_json) == original
+        )
+        assert not delegation.status(session)["enabled"]
+        assert session.exec(select(FactoryReceipt)).all() == []
+    for actor in (
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        assert not _as(
+            actor, lambda: mcp.factory_configure_delivery_landing(**args)
+        ).get("ok")
+
+
 def test_owner_pr_adapter_binds_actor_and_requires_preview(monkeypatch):
     from factory.orchestration import owner_pr_control
 

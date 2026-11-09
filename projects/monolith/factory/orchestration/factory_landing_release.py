@@ -353,6 +353,11 @@ def delegation_owner(row):
             from factory.orchestration import owner_pr_landing_delegation
 
             return owner_pr_landing_delegation
+        from factory.orchestration import delivery_landing_delegation
+
+        # Only the problem producer's marked repairs belong to the repair owner.
+        if delivery_landing_delegation.REPAIR_MARKER not in (row.body or ""):
+            return delivery_landing_delegation
         from factory.orchestration import repair_landing_delegation
 
         return repair_landing_delegation

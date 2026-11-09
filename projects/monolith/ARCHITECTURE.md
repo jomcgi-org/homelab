@@ -982,6 +982,16 @@ projection. Raw errors, SQL and private identities stay private. All four paths
 are outside both standing repair profiles and the owner-PR diagnostics profile.
 `repair_landing_paths_require_operator` remains binding.
 
+**Why a standing delivery owner:** on 2026-11-09, 23 intake-admitted deliveries
+sat in `landing` with independent exact-head approval and passing CI, most for
+four days. Per-head grants were the only authority for ordinary work, so every
+merge waited for a person and intake found no candidates behind the open PRs.
+`delivery_landing_delegation` lets a standing operator delegate that decision
+once, inside a previewed deny-list and rolling cap. The factory's own code stays
+outside it, so the factory cannot widen its own authority unattended. This is
+invalid if the typed review's scope classification proves unreliable; revoke
+and return to per-head grants.
+
 An existing per-repair route is implemented by `factory_release_landing_hold` in
 `factory/orchestration/mcp.py` and `factory_landing_release.py`. It requires a
 standing human operator. For a genuinely private, internal, reversible repair

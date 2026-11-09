@@ -5280,6 +5280,29 @@ py_test(
 )
 
 py_test(
+    name = "swarm_delivery_landing_delegation_test",
+    srcs = ["factory/orchestration/delivery_landing_delegation_test.py"],
+    # Reuse the owner-PR suite's native fixtures without copying them.
+    data = [
+        "factory/orchestration/factory_conductor_test.py",
+        "factory/orchestration/owner_pr_landing_delegation_test.py",
+    ],
+    # Import the fixtures without collecting their separately tested suites.
+    env = {"PYTEST_ADDOPTS": "--ignore=projects/monolith/factory/orchestration/factory_conductor_test.py --ignore=projects/monolith/factory/orchestration/owner_pr_landing_delegation_test.py"},
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//httpx",
+        "@pip//jsonschema",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_factory_rollout_test",
     srcs = ["factory/orchestration/factory_rollout_test.py"],
     imports = ["."],

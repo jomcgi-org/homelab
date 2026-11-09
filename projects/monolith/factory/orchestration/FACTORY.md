@@ -202,6 +202,38 @@ an external action that already completed. Policy replacement or drift invalidat
 the authorization. Rollout and same-node recovery remain their existing owners.
 See [activation and limitations](../MCP.md#enable-bounded-repair-landing).
 
+### Standing delivery landing delegation
+
+An ordinary intake-admitted delivery has no repair provenance and no owner-PR
+adoption, so before this owner it waited for a per-head operator grant even
+after independent approval and passing CI. `delivery_landing_delegation` is a
+third default-off standing decision, configured through
+`factory_configure_delivery_landing`. It records the standing decision and a
+separate `factory:delivery-landing` audit per exact head. It never writes a
+human grant, and explicit per-head operator grants stay separate.
+
+Each receipt has one authority owner: an explicit grant, the owner-PR
+delegation, the repair delegation for producer-marked repairs, or this owner
+for everything else. None falls through to another.
+
+The boundary is a deny-list, shown in full by preview. Only paths under
+`projects/` qualify. The factory's own code, deployment and chart directories,
+migrations, CRDs, cluster and platform projects, public surfaces, credential
+and authentication paths, agent instructions and Bazel macros need an operator.
+At most forty files may change, as regular non-executable blobs. The typed
+independent review must attest the complete diff at its exact merge base and
+head as private, internal and reversible, with every public, security,
+credential and destructive flag false. The deny-list is a second check on that
+attestation, not a replacement for it.
+
+Only the task's own `factory/<task-id>` branch qualifies, on an open, unassigned
+issue with no held label. Receipt holds, unknown execution, recovery limits,
+required CI and the protected queue apply as for the other owners. The operator
+sets 1 to 50 new derivations per rolling 24 hours across authorizations; each
+task gets at most three. Rate exhaustion waits for the next landing tick.
+Disable, policy replacement, or a rollout that changes the deny rules or bounds
+invalidates the authorization, and the queue observer fences outstanding grants.
+
 ### Escalation decisions
 
 A `needs-human` verdict arrives as two to four options, recommendation first; `effect` is one of `agent-ready`, `close`, `split`, `defer`, `hold`, `supersede`. Every unresolved escalation also carries the fixed escape group, of which only the dismiss is non-final. Deciding uses `POST /api/swarm/factory/decisions/{receipt_id}` with an exact `decision_id` and a stable `request_key`. `FACTORY_OPERATOR_EMAILS` is empty by default. The derived allowance is `max_attempts` over live unsucceeded nodes plus spent turns plus engine-insertable rounds; an edit exceeding the envelope refuses with `envelope_exceeded`, never for dollars.

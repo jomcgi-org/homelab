@@ -372,6 +372,7 @@ def _status_payload(
         "refill": view.get("refill"),
         "repair_landing": view.get("repair_landing"),
         "owner_pr_landing": view.get("owner_pr_landing"),
+        "delivery_landing": view.get("delivery_landing"),
         "active": active,
         "queued": queued,
         "needs_operator": needs_operator,
@@ -771,6 +772,7 @@ def _operator_view(
         decisions = _decision_page(db, False, offset, limit)
         generated = _now()
         from factory.orchestration import (
+            delivery_landing_delegation,
             owner_pr_landing_delegation,
             refill_control,
             repair_landing_delegation,
@@ -792,6 +794,7 @@ def _operator_view(
             "refill": refill_status,
             "repair_landing": repair_landing_delegation.status(db),
             "owner_pr_landing": owner_pr_landing_delegation.status(db),
+            "delivery_landing": delivery_landing_delegation.status(db),
             "intake": controls.intake_state(policy, session=db),
             "lanes": controls.lane_usage(
                 policy,
@@ -2693,6 +2696,64 @@ async def factory_configure_owner_prs(
             reason,
             request_key,
             expected_preview_sha256,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
+async def factory_configure_delivery_landing(
+    operation: Literal["preview", "apply"],
+    enabled: bool,
+    expected_version: Annotated[MCPInteger, Field(ge=0)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    max_landings: Annotated[MCPInteger | None, Field(ge=1, le=50)] = None,
+    request_key: str | None = None,
+    expected_preview_sha256: str | None = None,
+) -> dict:
+    """Preview or apply standing landing authority for ordinary deliveries.
+
+    Standing operators only. Default off. Read factory_status for version,
+    preview, review the deny rules and bounds, then apply identical arguments
+    with the preview digest and a new request_key. Replay the same key after a
+    lost response. Enabling requires max_landings from 1 to 50, the cap on new
+    derivations per rolling 24 hours. Disabling requires it omitted.
+
+    While enabled, the landing owner may derive exact-head authority for an
+    intake-admitted delivery on its own factory task branch. The independent
+    typed review must classify the complete diff as private, internal and
+    reversible with every public, security, credential and destructive flag
+    false. Every changed path must fall outside the previewed deny rules, with
+    at most forty regular files. The issue must be open, unassigned and unheld.
+    Required CI, receipt holds, unknown-execution fences and the protected merge
+    queue all still apply. Each task gets at most three derivations.
+
+    Repair tasks, owner PRs and explicit per-head operator grants keep their own
+    owners and never fall through to this one. Excluded paths, including the
+    factory's own code, deployment, migrations, credential and public surfaces,
+    still need a per-head operator grant. Policy replacement or a deny-rule
+    change invalidates the authorization. Disabling revokes future arming and
+    the landing observer fences queued grants on its next tick. Nothing is
+    dispatched, merged or resumed by this operation. Re-read
+    factory_status.delivery_landing afterwards.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from factory.orchestration import delivery_landing_delegation
+
+    try:
+        return await asyncio.to_thread(
+            delivery_landing_delegation.configure,
+            principal,
+            operation,
+            enabled,
+            expected_version,
+            reason,
+            max_landings=max_landings,
+            request_key=request_key,
+            expected_preview_sha256=expected_preview_sha256,
         )
     except ValueError as exc:
         return {"ok": False, "reason": str(exc)}
