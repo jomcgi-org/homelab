@@ -838,9 +838,12 @@ for ordinary intake-admitted deliveries. See
 the boundary.
 
 1. Read `factory_status.version` and confirm automatic landing is enabled.
+   Refresh the client's tool catalog if `factory_configure_delivery_landing`
+   is absent. It is published automatically by the gateway; it has no
+   `factory_configure_refill` target or `factory_status.control_catalog` entry.
 2. Preview with `operation: "preview"`, `enabled: true`, `expected_version`,
    a reason and `max_landings` from 1 to 50. Review `deny_rules`, `max_files`
-   and the bounds.
+   and the bounds, plus `path_limitations` for the eligible monolith BUILD file.
 3. Apply identical arguments with `expected_preview_sha256` and a new
    `request_key`. Replay the same key after a lost response.
 4. Re-read `factory_status.delivery_landing` for `derivations_used` and

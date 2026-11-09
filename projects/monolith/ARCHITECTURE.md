@@ -461,6 +461,12 @@ section 11 unchanged, including their owners, holds and unresolved live checks.
 The linked issues own current acceptance; a closed repository issue alone proves no rollout.
 See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-checks).
 
+Standing delivery landing remains default-off. Its
+[outstanding acceptance checklist](factory/orchestration/FACTORY.md#standing-delivery-landing-delegation)
+requires verified rollout, separately authorized operator preview/apply, one
+ordinary landing without a per-head grant, queued-grant revocation evidence,
+and the documented 72-hour measure and stop-condition verdict.
+
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
 | Repair newly proven native refill infrastructure failures and observe useful same-node recovery | #7583 implementation contract | #7583 | original-allocation retry implemented without a paid judge; classified execution-owner repairs remain outside standing landing authority; rollout and live useful-delivery acceptance remain unproven |
@@ -987,10 +993,12 @@ sat in `landing` with independent exact-head approval and passing CI, most for
 four days. Per-head grants were the only authority for ordinary work, so every
 merge waited for a person and intake found no candidates behind the open PRs.
 `delivery_landing_delegation` lets a standing operator delegate that decision
-once, inside a previewed deny-list and rolling cap. The factory's own code stays
-outside it, so the factory cannot widen its own authority unattended. This is
-invalid if the typed review's scope classification proves unreliable; revoke
-and return to per-head grants.
+once, inside a previewed deny-list and rolling cap. The factory's own code and
+its monolith `core/`, `agent/`, `agent_sessions/` and `swarm/` dependencies stay
+outside it. `projects/monolith/BUILD` remains eligible; preview discloses that
+independent review and required CI must preserve its factory and guard test
+declarations. Revoke the delegation and return to per-head grants if the typed
+review's scope classification proves unreliable.
 
 Measure, over the 72 hours before and after the operator's activation: receipts
 in `landing` older than 24 hours (`factory_status`), and agent-authored merges
