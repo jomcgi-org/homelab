@@ -226,6 +226,12 @@ head as private, internal and reversible, with every public, security,
 credential and destructive flag false. The deny-list is a second check on that
 attestation, not a replacement for it.
 
+Preview and apply bind the standing operator's subject as well as the policy,
+version and bounds. File evidence records base and head blob identities, with
+both names for renames. Removed files must be safe at the merge base; modified
+and renamed files must be safe in both trees. Missing or truncated tree evidence
+refuses derivation.
+
 Only the task's own `factory/<task-id>` branch qualifies, on an open, unassigned
 issue with no held label. Receipt holds, unknown execution, recovery limits,
 required CI and the protected queue apply as for the other owners. The operator
@@ -233,6 +239,15 @@ sets 1 to 50 new derivations per rolling 24 hours across authorizations; each
 task gets at most three. Rate exhaustion waits for the next landing tick.
 Disable, policy replacement, or a rollout that changes the deny rules or bounds
 invalidates the authorization, and the queue observer fences outstanding grants.
+
+Repository delivery remains default-off. Operational acceptance is outstanding:
+
+- [ ] Verify the deployed revision containing this delivery.
+- [ ] Obtain separately authorized standing-operator preview/apply evidence.
+- [ ] Observe one eligible ordinary delivery landing without a per-head grant.
+- [ ] Confirm revocation fences an outstanding queued derived grant.
+- [ ] Record the delivery measure, regression checks and stop-condition verdict
+      documented in [ARCHITECTURE.md](../../ARCHITECTURE.md#4-agents).
 
 ### Escalation decisions
 
