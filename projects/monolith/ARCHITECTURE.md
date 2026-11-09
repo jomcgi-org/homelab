@@ -992,6 +992,14 @@ outside it, so the factory cannot widen its own authority unattended. This is
 invalid if the typed review's scope classification proves unreliable; revoke
 and return to per-head grants.
 
+Measure, over the 72 hours before and after the operator's activation: receipts
+in `landing` older than 24 hours (`factory_status`), and agent-authored merges
+(the public merges feed). Baseline on 2026-11-09: 23 in `landing`, 7
+agent-authored merges in seven days. Expected: the first falls and the second
+rises. Stop condition: disable the delegation on the first derived grant whose
+diff proves public-facing, security-sensitive, credential-bearing or
+destructive, or if neither number moves.
+
 An existing per-repair route is implemented by `factory_release_landing_hold` in
 `factory/orchestration/mcp.py` and `factory_landing_release.py`. It requires a
 standing human operator. For a genuinely private, internal, reversible repair
