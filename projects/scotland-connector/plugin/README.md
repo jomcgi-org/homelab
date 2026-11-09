@@ -10,6 +10,10 @@ The plugin is the MCP server's URL plus a skill that tells the assistant
 when to use `plan` and when to use `check`, and how to turn "no rain at
 all" into a weather limit. There is no account or key.
 
+The [repository readiness audit](READINESS.md) records client validation,
+source evidence and outstanding publication gaps. It makes no live-service
+or directory-acceptance claim.
+
 ## Install
 
 Claude Code, from your shell (or the same commands as `/plugin ...` in a
