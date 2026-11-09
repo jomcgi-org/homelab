@@ -829,3 +829,25 @@ typed review and the existing queue remain mandatory. Status is reported under
 `factory_status.owner_pr_landing`. Disable fences existing queued grants on the
 next landing observation. Changing and restoring intake policy cannot revive an
 earlier authorization. Activation alone is not autonomous backlog acceptance.
+
+### Standing delivery landing decision
+
+`factory_configure_delivery_landing` configures the default-off standing owner
+for ordinary intake-admitted deliveries. See
+[FACTORY.md](orchestration/FACTORY.md#standing-delivery-landing-delegation) for
+the boundary.
+
+1. Read `factory_status.version` and confirm automatic landing is enabled.
+2. Preview with `operation: "preview"`, `enabled: true`, `expected_version`,
+   a reason and `max_landings` from 1 to 50. Review `deny_rules`, `max_files`
+   and the bounds.
+3. Apply identical arguments with `expected_preview_sha256` and a new
+   `request_key`. Replay the same key after a lost response.
+4. Re-read `factory_status.delivery_landing` for `derivations_used` and
+   `derivations_remaining`.
+
+To revoke, preview and apply `enabled: false` with `max_landings` omitted. A
+delivery outside the boundary records a `landing_authorization_wait` whose
+reason starts `delivery_landing_`, and still needs
+`factory_release_landing_hold`. Activation dispatches nothing and is not
+evidence that any delivery landed.
