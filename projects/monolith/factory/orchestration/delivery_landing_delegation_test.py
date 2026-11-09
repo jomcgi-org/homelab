@@ -591,7 +591,7 @@ def test_incomplete_tree_evidence_fails_closed(db, monkeypatch, commit, failure)
 @pytest.mark.parametrize(
     ("change", "reason"),
     [
-        ("disabled", "delivery_landing_disabled"),
+        ("disabled", "scoped_landing_authorization_missing"),
         ("revoke", "delivery_landing_disabled"),
         ("landing_off_on", "delivery_landing_policy_replaced"),
         ("rules", "delivery_landing_bounds_changed"),

@@ -531,6 +531,8 @@ def prepare(task_id, number, head):
     """Landing only: derive once under the same lock as revocation and arming."""
     try:
         with controls._locked_session() as (db, _):
+            if _latest(db, CONTROL) is None:
+                return "scoped_landing_authorization_missing"
             candidate = _candidate(db, controls._receipt(db, task_id), number, head)
             grants = _grants(db, task_id=task_id)
             if candidate in grants:
