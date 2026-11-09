@@ -25,6 +25,14 @@ from factory.orchestration.owner_pr_landing_delegation_test import (  # noqa: F4
 BASE = "b" * 40
 PATH = "projects/monolith/chat/summaries.py"
 REASON = "Land reviewed private deliveries"
+AUTHORITY_PATHS = (
+    "projects/monolith/core/github.py",
+    "projects/monolith/core/identity.py",
+    "projects/monolith/core/mcp_policy.py",
+    "projects/monolith/agent/api.py",
+    "projects/monolith/agent_sessions/store.py",
+    "projects/monolith/swarm/factory_landing.py",
+)
 
 
 def configure(engine, enabled=True, *, max_landings=5, key=None):
@@ -309,6 +317,7 @@ def rewrite_scope(engine, case, **changes):
     "path",
     [
         "projects/monolith/chat/summaries.py",
+        "projects/monolith/BUILD",
         "projects/embervm/runtimes/ping/main.go",
         "projects/embervm/runtimes/ping/BUILD",
         "projects/scotland-connector/internal/forecast/window_test.go",
@@ -330,6 +339,7 @@ def test_private_project_paths_are_inside_the_boundary(path):
         "projects/monolith/AGENTS.md",
         "projects/monolith/factory/orchestration/factory_landing.py",
         "projects/monolith/factory/review_publisher.py",
+        *AUTHORITY_PATHS,
         "projects/monolith/chart/migrations/20261109000000_add.sql",
         "projects/monolith/chart/values.yaml",
         "projects/embervm/deploy/values-gke.yaml",
@@ -364,6 +374,12 @@ def test_standing_preview_apply_is_default_off_bounded_and_replay_safe(db):
         before = session.get(FactoryControl, "factory").policy_json
     preview, applied, args = configure(db)
     assert preview["deny_rules"] == delegation.DENY_RULES
+    assert preview["path_limitations"] == [
+        "projects/monolith/BUILD remains eligible and declares the "
+        "gazelle-excluded factory and guard tests. The deny-list cannot "
+        "detect their removal; independent review and required CI must "
+        "preserve those test declarations."
+    ]
     assert (preview["max_landings"], preview["max_files"]) == (5, 40)
     assert applied == {
         "ok": True,
@@ -404,6 +420,35 @@ def test_configuration_refuses_unbounded_requests(db, enabled, limit, reason):
     with pytest.raises(ValueError, match="delivery_landing_" + reason):
         delegation.configure(
             principal(), "preview", enabled, 0, REASON, max_landings=limit
+        )
+
+
+@pytest.mark.parametrize("length", [257, 4000])
+def test_configuration_accepts_mcp_reason_limit(db, length):
+    with Session(db) as session:
+        version = session.get(FactoryControl, "factory").version
+    reason = "r" * length
+    preview = delegation.configure(
+        principal(), "preview", True, version, reason, max_landings=5
+    )
+    assert preview["reason"] == reason
+    result = delegation.configure(
+        principal(),
+        "apply",
+        True,
+        version,
+        reason,
+        max_landings=5,
+        request_key="long-reason",
+        expected_preview_sha256=preview["preview_sha256"],
+    )
+    assert result["ok"] is True
+
+
+def test_configuration_refuses_reason_beyond_mcp_limit(db):
+    with pytest.raises(ValueError, match="invalid reason"):
+        delegation.configure(
+            principal(), "preview", True, 0, "r" * 4001, max_landings=5
         )
 
 
@@ -715,6 +760,27 @@ def test_native_landing_waits_outside_the_standing_boundary(
     assert not case.mutations
     assert not grants(db)
     assert (waits(db) or [None])[-1] == reason
+
+
+@pytest.mark.parametrize("path", AUTHORITY_PATHS)
+@pytest.mark.parametrize("renamed", [False, True])
+def test_factory_dependencies_refuse_even_when_review_scope_is_safe(
+    db, monkeypatch, path, renamed
+):
+    from factory.orchestration import factory_landing as landing
+
+    case = native_case(db, monkeypatch)
+    if renamed:
+        case.changed.update(status="renamed", previous_filename=path)
+    else:
+        case.changed["filename"] = path
+        rewrite_scope(db, case, paths=[path])
+    landing.landing_tick(case.live)
+    assert not case.queue
+    assert case.pull["auto_merge"] is None
+    assert not case.mutations
+    assert not grants(db)
+    assert waits(db)[-1] == "delivery_landing_paths_require_operator"
 
 
 def test_rolling_and_task_limits_wait_without_granting(db, monkeypatch):

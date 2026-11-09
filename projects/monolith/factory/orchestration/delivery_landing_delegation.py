@@ -48,7 +48,11 @@ DENY_RULES = {
         "projects/gke-apps/",
         "projects/gke-cluster/",
         "projects/monolith-public/",
+        "projects/monolith/agent/",
+        "projects/monolith/agent_sessions/",
+        "projects/monolith/core/",
         "projects/monolith/factory/",
+        "projects/monolith/swarm/",
         "projects/operators/",
         "projects/platform-gke/",
         "projects/platform/",
@@ -149,7 +153,7 @@ def configure(
     request = dict(
         enabled=enabled,
         expected_version=expected_version,
-        reason=controls._text(reason, "reason"),
+        reason=controls._text(reason, "reason", 4000),
         max_landings=max_landings,
         request_key=request_key,
         expected_preview_sha256=expected_preview_sha256,
@@ -191,6 +195,12 @@ def configure(
             previous_authorization_id=prior.id if prior else None,
             path_profile=PATH_PROFILE,
             deny_rules=DENY_RULES,
+            path_limitations=[
+                "projects/monolith/BUILD remains eligible and declares the "
+                "gazelle-excluded factory and guard tests. The deny-list cannot "
+                "detect their removal; independent review and required CI must "
+                "preserve those test declarations."
+            ],
             max_files=MAX_FILES,
             max_landings=max_landings,
             max_landings_limit=MAX_LANDINGS,

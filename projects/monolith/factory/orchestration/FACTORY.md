@@ -220,17 +220,27 @@ The boundary is a deny-list, shown in full by preview. Only paths under
 `projects/` qualify. The factory's own code, deployment and chart directories,
 migrations, CRDs, cluster and platform projects, public surfaces, credential
 and authentication paths, agent instructions and Bazel macros need an operator.
+The excluded monolith directories include `factory/`, `core/`, `agent/`,
+`agent_sessions/` and `swarm/`, covering shared identity, GitHub credentials,
+MCP authorization and factory runtime dependencies.
 At most forty files may change, as regular non-executable blobs. The typed
 independent review must attest the complete diff at its exact merge base and
 head as private, internal and reversible, with every public, security,
 credential and destructive flag false. The deny-list is a second check on that
 attestation, not a replacement for it.
 
+`projects/monolith/BUILD` remains eligible because ordinary monolith deliveries
+also change it. It declares the gazelle-excluded factory and guard tests; the
+deny-list cannot detect removal of those declarations. Preview discloses this
+limitation in `path_limitations`. Independent review and required CI must
+preserve those test declarations.
+
 Preview and apply bind the standing operator's subject as well as the policy,
 version and bounds. File evidence records base and head blob identities, with
-both names for renames. Removed files must be safe at the merge base; modified
-and renamed files must be safe in both trees. Missing or truncated tree evidence
-refuses derivation.
+both names for renames. The review's `landing_scope.paths` lists only the new
+name for a rename, matching GitHub's compare listing. Removed files must be safe
+at the merge base; modified and renamed files must be safe in both trees.
+Missing or truncated tree evidence refuses derivation.
 
 Only the task's own `factory/<task-id>` branch qualifies, on an open, unassigned
 issue with no held label. Receipt holds, unknown execution, recovery limits,
