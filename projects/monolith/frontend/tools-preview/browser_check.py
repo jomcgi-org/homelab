@@ -230,11 +230,7 @@ def main():
                                 reduced_motion="reduce",
                             )
                             context.add_init_script(
-                                "localStorage.setItem('td-theme', '"
-                                + scheme
-                                + "'); document.documentElement.dataset.theme = '"
-                                + scheme
-                                + "';"
+                                "localStorage.setItem('td-theme', '" + scheme + "');"
                             )
                             page = context.new_page()
                             errors = []
