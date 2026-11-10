@@ -2732,11 +2732,19 @@ async def factory_configure_delivery_landing(
     owners and never fall through to this one. All EmberVM, Firecracker and MCP
     paths are excluded. Monolith exclusions include factory/shared authority,
     knowledge, goosecracker, observability, scheduler, grimoire, sandbox,
-    agent_kubernetes, personal_retrieval_audit and the central BUILD (image
-    entrypoints, PYTHONPATH, backend and tests). Frontend build/configuration,
-    hooks and guards remain excluded. Review path_limitations: other in-process
-    monolith code shares factory DB access and credentials. Safety relies on
-    typed review, not path isolation. Excluded paths need a per-head grant.
+    agent_kubernetes and personal_retrieval_audit. projects/monolith/BUILD is
+    excluded in full (image entrypoints, PYTHONPATH, backend and tests). Every current
+    app/modules_public.py domain root, including register_public routing, is
+    excluded. The entire monolith frontend and shared projects/design-system
+    are excluded, as is projects/monolith/ARCHITECTURE.md with its delivery
+    measure and stop condition. Review path_limitations: these are known paths,
+    not a complete public-exposure, authentication or credential boundary.
+    Other in-process monolith code shares factory DB access and credentials.
+    Binary (non-UTF-8) regular blobs remain eligible. Tree evidence binds blob
+    identities and modes without inspecting content or encoding. A reviewer
+    unable to assess content cannot attest private_internal_reversible.
+    Safety relies on typed review, which must still reject public-facing
+    changes outside known paths. Excluded paths need a per-head grant.
     Policy replacement or a deny-rule change invalidates authorization.
     Disabling revokes future arming and
     the landing observer fences queued grants on its next tick. Nothing is

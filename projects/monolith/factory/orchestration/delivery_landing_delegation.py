@@ -45,6 +45,7 @@ REPAIR_MARKER = "<!-- factory-problem:"
 DENY_RULES = {
     "root": "projects/",
     "prefixes": [
+        "projects/design-system/",
         "projects/embervm/",
         "projects/firecracker/",
         "projects/gke-apps/",
@@ -55,23 +56,36 @@ DENY_RULES = {
         "projects/monolith/agent_kubernetes/",
         "projects/monolith/agent_sessions/",
         "projects/monolith/app/",
+        "projects/monolith/artifact/",
+        "projects/monolith/campsites/",
         "projects/monolith/core/",
+        "projects/monolith/dr_jobs/",
+        "projects/monolith/faas/",
         "projects/monolith/factory/",
         "projects/monolith/framework/",
+        "projects/monolith/frontend/",
         "projects/monolith/goosecracker/",
         "projects/monolith/grimoire/",
+        "projects/monolith/grimoire_chat/",
+        "projects/monolith/hikes/",
+        "projects/monolith/home/",
         "projects/monolith/knowledge/",
         "projects/monolith/observability/",
         "projects/monolith/personal_retrieval_audit/",
         "projects/monolith/sandbox/",
         "projects/monolith/scheduler/",
         "projects/monolith/shared/",
+        "projects/monolith/ships/",
+        "projects/monolith/stars/",
         "projects/monolith/swarm/",
+        "projects/monolith/trips/",
+        "projects/monolith/worldcup/",
         "projects/operators/",
         "projects/platform-gke/",
         "projects/platform/",
     ],
     "paths": [
+        "projects/monolith/ARCHITECTURE.md",
         "projects/monolith/BUILD",
         "projects/monolith/frontend/BUILD",
         "projects/monolith/frontend/svelte.config.js",
@@ -230,9 +244,21 @@ def configure(
                 "not every factory dependency or credential surface. Remaining "
                 "in-process monolith code shares the factory's DB session and "
                 "credentials; its safety relies on typed independent review, "
-                "not path isolation. projects/monolith/BUILD is excluded, "
-                "including its image entrypoints, PYTHONPATH, packaged backend "
-                "and test declarations."
+                "not path isolation.",
+                "All current app/modules_public.py domain roots, including "
+                "register_public routing, are excluded, along with the entire "
+                "monolith frontend and projects/design-system shared frontend. "
+                "These known-path exclusions are not a complete public-exposure "
+                "or authentication boundary; typed review must still reject "
+                "public-facing changes.",
+                "projects/monolith/BUILD is excluded in full, including image "
+                "entrypoints, PYTHONPATH, packaged backend and test declarations. "
+                "projects/monolith/ARCHITECTURE.md is excluded because it defines "
+                "the delivery measure and stop condition.",
+                "Binary (non-UTF-8) regular blobs remain eligible. Immutable "
+                "tree checks bind blob identities and modes but do not inspect "
+                "content or encoding. A typed review unable to assess that "
+                "content cannot attest private_internal_reversible.",
             ],
             max_files=MAX_FILES,
             max_landings=max_landings,

@@ -25,7 +25,32 @@ from factory.orchestration.owner_pr_landing_delegation_test import (  # noqa: F4
 BASE = "b" * 40
 PATH = "projects/monolith/chat/summaries.py"
 REASON = "Land reviewed private deliveries"
+PUBLIC_DOMAIN_ROOTS = (
+    "projects/monolith/ships/",
+    "projects/monolith/stars/",
+    "projects/monolith/trips/",
+    "projects/monolith/hikes/",
+    "projects/monolith/dr_jobs/",
+    "projects/monolith/campsites/",
+    "projects/monolith/worldcup/",
+    "projects/monolith/home/",
+    "projects/monolith/artifact/",
+    "projects/monolith/grimoire_chat/",
+    "projects/monolith/faas/",
+)
+PUBLIC_ROOTS = (
+    *PUBLIC_DOMAIN_ROOTS,
+    "projects/monolith/frontend/",
+    "projects/design-system/",
+)
 AUTHORITY_PATHS = (
+    *(root + "__init__.py" for root in PUBLIC_DOMAIN_ROOTS),
+    "projects/monolith/faas/invoke_router.py",
+    "projects/monolith/faas/embervm_client.py",
+    "projects/monolith/artifact/s3.py",
+    "projects/monolith/frontend/src/lib/cache-headers.js",
+    "projects/design-system/components/Button.svelte",
+    "projects/monolith/ARCHITECTURE.md",
     "projects/monolith/core/github.py",
     "projects/monolith/core/identity.py",
     "projects/monolith/core/mcp_policy.py",
@@ -364,7 +389,7 @@ def rewrite_scope(engine, case, **changes):
     [
         "projects/monolith/chat/summaries.py",
         "projects/scotland-connector/internal/forecast/window_test.go",
-        "projects/monolith/frontend/src/lib/server/imgproxy.js",
+        "projects/monolith/dev/design/evidence/example.jpg",
     ],
 )
 def test_private_project_paths_are_inside_the_boundary(path):
@@ -374,6 +399,7 @@ def test_private_project_paths_are_inside_the_boundary(path):
 @pytest.mark.parametrize(
     "root",
     [
+        *PUBLIC_ROOTS,
         "projects/embervm/",
         "projects/firecracker/",
         "projects/mcp/",
@@ -447,9 +473,21 @@ def test_standing_preview_apply_is_default_off_bounded_and_replay_safe(db):
         "not every factory dependency or credential surface. Remaining "
         "in-process monolith code shares the factory's DB session and "
         "credentials; its safety relies on typed independent review, "
-        "not path isolation. projects/monolith/BUILD is excluded, "
-        "including its image entrypoints, PYTHONPATH, packaged backend "
-        "and test declarations."
+        "not path isolation.",
+        "All current app/modules_public.py domain roots, including "
+        "register_public routing, are excluded, along with the entire "
+        "monolith frontend and projects/design-system shared frontend. "
+        "These known-path exclusions are not a complete public-exposure "
+        "or authentication boundary; typed review must still reject "
+        "public-facing changes.",
+        "projects/monolith/BUILD is excluded in full, including image "
+        "entrypoints, PYTHONPATH, packaged backend and test declarations. "
+        "projects/monolith/ARCHITECTURE.md is excluded because it defines "
+        "the delivery measure and stop condition.",
+        "Binary (non-UTF-8) regular blobs remain eligible. Immutable "
+        "tree checks bind blob identities and modes but do not inspect "
+        "content or encoding. A typed review unable to assess that "
+        "content cannot attest private_internal_reversible.",
     ]
     assert (preview["max_landings"], preview["max_files"]) == (5, 40)
     assert applied == {
@@ -834,16 +872,18 @@ def test_native_landing_waits_outside_the_standing_boundary(
 
 
 @pytest.mark.parametrize("path", AUTHORITY_PATHS)
-@pytest.mark.parametrize("renamed", [False, True])
+@pytest.mark.parametrize("change", ["modified", "renamed_from", "renamed_to"])
 def test_factory_dependencies_refuse_even_when_review_scope_is_safe(
-    db, monkeypatch, path, renamed
+    db, monkeypatch, path, change
 ):
     from factory.orchestration import factory_landing as landing
 
     case = native_case(db, monkeypatch)
-    if renamed:
+    if change == "renamed_from":
         case.changed.update(status="renamed", previous_filename=path)
     else:
+        if change == "renamed_to":
+            case.changed.update(status="renamed", previous_filename=PATH)
         case.changed["filename"] = path
         rewrite_scope(db, case, paths=[path])
     landing.landing_tick(case.live)

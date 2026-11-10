@@ -843,7 +843,19 @@ the boundary.
    `factory_configure_refill` target or `factory_status.control_catalog` entry.
 2. Preview with `operation: "preview"`, `enabled: true`, `expected_version`,
    a reason and `max_landings` from 1 to 50. Review `deny_rules`, `max_files`
-   and the bounds, plus `path_limitations` for the eligible monolith BUILD file.
+   and the bounds, plus `path_limitations`. `projects/monolith/BUILD` is excluded
+   in full, including image entrypoints, `PYTHONPATH`, packaged backend and
+   test declarations. `projects/monolith/ARCHITECTURE.md`, which defines the
+   delivery measure and stop condition, is also excluded. All current domain
+   roots in `app/modules_public.py`, including `register_public` routing, the
+   entire monolith frontend and shared `projects/design-system/` are excluded.
+   Known paths do not establish a complete public-exposure, authentication or
+   credential boundary. Other in-process monolith code shares factory DB
+   access and credentials; its safety relies on typed independent review.
+   Binary (non-UTF-8) regular blobs remain eligible: tree evidence binds blob
+   identities and modes without inspecting content or encoding. A reviewer
+   unable to assess that content cannot attest `private_internal_reversible`.
+   Typed review must still reject public-facing changes outside the known paths.
 3. Apply identical arguments with `expected_preview_sha256` and a new
    `request_key`. Replay the same key after a lost response.
 4. Re-read `factory_status.delivery_landing` for `derivations_used` and
