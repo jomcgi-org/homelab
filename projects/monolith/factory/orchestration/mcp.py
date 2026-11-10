@@ -2751,6 +2751,56 @@ async def factory_configure_owner_prs(
 
 
 @mcp.tool
+async def factory_release_owner_pr_hold(
+    operation: Literal["preview", "apply"],
+    action: Literal["release", "revoke"],
+    pr_number: Annotated[MCPInteger, Field(ge=1)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    repo: str = "jomcgi-org/homelab",
+    request_key: str | None = None,
+    expected_preview_sha256: str | None = None,
+) -> dict:
+    """Release or restore the text holds on one owner PR. Standing operators only.
+
+    Owner PR discovery treats hold wording in a PR description or discussion
+    as an explicit hold. Use action release when the owner has decided that
+    wording no longer binds, with the decision as reason. Preview first, then
+    apply identical arguments with the preview digest and a new request_key.
+    Replay the same key after a lost response.
+
+    A release waives only that PR description and the comments written before
+    it. Labels, assignees, later comments, the objective issue and every
+    review, CI, landing and merge gate still bind. It starts no work, changes
+    no policy and lands nothing. Action revoke restores the wording.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from factory.orchestration import owner_pr_hold_release
+
+    try:
+        if operation == "preview":
+            return await asyncio.to_thread(
+                owner_pr_hold_release.preview, repo, pr_number, action, reason
+            )
+        if not request_key or not expected_preview_sha256:
+            return {"ok": False, "reason": "owner_pr_hold_release_preview_required"}
+        return await asyncio.to_thread(
+            owner_pr_hold_release.apply,
+            principal.subject,
+            repo,
+            pr_number,
+            action,
+            reason,
+            request_key,
+            expected_preview_sha256,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
 async def factory_configure_delivery_landing(
     operation: Literal["preview", "apply"],
     enabled: bool,

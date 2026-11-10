@@ -642,6 +642,7 @@ def test_factory_tools_are_registered():
         "factory_configure_refill",
         "factory_configure_problem_issues",
         "factory_configure_owner_prs",
+        "factory_release_owner_pr_hold",
         "factory_reconcile",
         "factory_diagnostics",
         "factory_session_dispatch_diagnostics",
@@ -4840,6 +4841,54 @@ def test_delivery_landing_wire_is_bounded_replay_safe_and_operator_only(db):
         assert not _as(
             actor, lambda: mcp.factory_configure_delivery_landing(**args)
         ).get("ok")
+
+
+def test_owner_pr_hold_release_tool_requires_operator_and_preview(monkeypatch):
+    from factory.orchestration import owner_pr_hold_release
+
+    calls = []
+    monkeypatch.setattr(
+        owner_pr_hold_release,
+        "preview",
+        lambda *args: calls.append(args) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        owner_pr_hold_release, "apply", lambda *args: calls.append(args) or {"ok": 1}
+    )
+    guest = _principal(groups=())
+    refused = _as(
+        guest,
+        lambda: mcp.factory_release_owner_pr_hold("preview", "release", 7, "reason"),
+    )
+    assert refused["error"] == mcp.OPERATOR_REQUIRED and not calls
+    operator = _principal()
+    assert _as(
+        operator,
+        lambda: mcp.factory_release_owner_pr_hold("preview", "release", 7, "reason"),
+    ) == {"ok": True}
+    assert calls == [("jomcgi-org/homelab", 7, "release", "reason")]
+    assert (
+        _as(
+            operator,
+            lambda: mcp.factory_release_owner_pr_hold("apply", "revoke", 7, "reason"),
+        )["reason"]
+        == "owner_pr_hold_release_preview_required"
+    )
+    applied = _as(
+        operator,
+        lambda: mcp.factory_release_owner_pr_hold(
+            "apply", "revoke", 7, "reason", "jomcgi-org/homelab", "key", "a" * 64
+        ),
+    )
+    assert applied == {"ok": 1}
+    assert calls[-1][1:] == (
+        "jomcgi-org/homelab",
+        7,
+        "revoke",
+        "reason",
+        "key",
+        "a" * 64,
+    )
 
 
 def test_owner_pr_adapter_binds_actor_and_requires_preview(monkeypatch):

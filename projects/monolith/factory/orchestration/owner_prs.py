@@ -15,6 +15,7 @@ import httpx
 from sqlmodel import select
 
 from factory.orchestration import factory_controls as controls
+from factory.orchestration import owner_pr_hold_release as hold_release
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt, WorkItem
 
 # Text can veto automatic action, never grant it. Historical staging directions
@@ -204,7 +205,7 @@ def identity_matches(pull: object, policy: dict) -> bool:
     )
 
 
-def _hold(item: dict, excluded: set[str]) -> str | None:
+def _hold(item: dict, excluded: set[str], *, text_released: bool = False) -> str | None:
     from factory.orchestration.factory_intake_loop import _label_names
 
     labels = _label_names(item)
@@ -219,7 +220,8 @@ def _hold(item: dict, excluded: set[str]) -> str | None:
         re.search(r"hold|blocked|do-not-merge|manual|agent-skip", x) for x in labels
     ):
         return "explicit_hold"
-    if has_hold(item.get("body") or ""):
+    # An operator release waives wording only. Labels and assignees still bind.
+    if not text_released and has_hold(item.get("body") or ""):
         return "explicit_hold"
     return None
 
@@ -449,7 +451,12 @@ def candidates(
             )
             reason = (
                 _identity_reason(pull, repo, policy)
-                or _hold(pull, excluded)
+                or _hold(
+                    pull,
+                    excluded,
+                    text_released=hold_release.released_at(db, repo, pull["number"])
+                    is not None,
+                )
                 or scope_reason
                 or _referenced_history(
                     db,
@@ -588,17 +595,22 @@ def receive(repo: str, number: int, policy: dict, *, generation: int) -> dict:
     if direct and reason == "scope_authority_missing":
         scoped, reason = issue, None
     excluded = {x.lower() for x in controls.repos_map(policy)[repo]["exclude_labels"]}
-    reason = reason or _hold(pull, excluded) or _hold(issue, excluded)
+    released = hold_release.read_released_at(repo, number)
+    reason = (
+        reason
+        or _hold(pull, excluded, text_released=released is not None)
+        # A direct owner PR is its own objective: the same description, once.
+        or _hold(issue, excluded, text_released=direct and released is not None)
+    )
     if reason or scoped is None or issue.get("number") != expected_issue:
         raise ValueError(reason or "scope_changed")
     reference_numbers = {
         n for _, n in objective_references(pull.get("body") or "", repo)
     }
-    for resource in (
-        f"issues/{n}/comments"
-        for n in sorted(reference_numbers | {number, expected_issue})
-    ):
-        comments = _pages(repo, resource, conductor.github_list)
+    for n in sorted(reference_numbers | {number, expected_issue}):
+        comments = _pages(repo, f"issues/{n}/comments", conductor.github_list)
+        if n == number:
+            comments = hold_release.binding_comments(comments, released)
         if any(has_hold(comment.get("body") or "") for comment in comments):
             raise OwnerPRHold("explicit_discussion_hold")
     # Evidence was fetched outside the control lock; all competing intake and
@@ -633,7 +645,11 @@ def receive(repo: str, number: int, policy: dict, *, generation: int) -> dict:
                 raise ValueError("refine_disabled")
         else:
             scoped, reason = _scope(pull, related, repo, live)
-        if reason or _hold(pull, {x.lower() for x in entry["exclude_labels"]}):
+        if reason or _hold(
+            pull,
+            {x.lower() for x in entry["exclude_labels"]},
+            text_released=hold_release.released_at(db, repo, number) is not None,
+        ):
             raise ValueError(reason or "explicit_hold")
         reason, owner = _history(db, repo, pull, issue, live)
         if reason:
@@ -718,9 +734,12 @@ def assert_unheld(
     pull = pull or read_get(task["repo"], f"pulls/{number}")
     if pull.get("user", {}).get("id") != task["owner_pr"]["author_id"]:
         raise ValueError("owner_pr_author_changed")
-    if _hold(pull, set()):
+    released = hold_release.read_released_at(task["repo"], number)
+    if _hold(pull, set(), text_released=released is not None):
         raise OwnerPRHold("owner_pr_explicit_hold")
-    comments = _pages(task["repo"], f"issues/{number}/comments", read_list)
+    comments = hold_release.binding_comments(
+        _pages(task["repo"], f"issues/{number}/comments", read_list), released
+    )
     if any(has_hold(comment.get("body") or "") for comment in comments):
         raise OwnerPRHold("owner_pr_explicit_discussion_hold")
     if pull.get("state") != "open" and not pull.get("merged"):

@@ -822,6 +822,24 @@ Read `intake.owner_pr_backlog` for the latest observed backlog and separate
 merged/verified delivery counts. An activated producer or queued receipt is not
 operational acceptance; #7597 retains the real autonomous delivery demonstration.
 
+### Owner PR text hold release
+
+Owner PR discovery reads hold wording in a PR description or its discussion as
+an explicit hold and does not interpret the prose. When the owner decides that
+wording no longer binds, `factory_release_owner_pr_hold` records the decision
+for one PR:
+
+1. Preview with `action: "release"`, the PR number and the decision as `reason`.
+2. Apply identical arguments with `expected_preview_sha256` and a new
+   `request_key`. Replay the same key after a lost response.
+3. Read `factory_status` after the next due owner PR sweep for the new blocker.
+
+The release waives that PR description and the comments written before it.
+Labels, assignees, later comments, the objective issue and every review, CI,
+landing and merge gate still bind. It starts no work and lands nothing.
+`action: "revoke"` restores the wording. To hold a released PR again, add a
+`human` label or a new comment.
+
 ### Owner PR standing landing decision
 
 `factory_configure_refill` also accepts `target=owner_pr_landing`. This distinct
