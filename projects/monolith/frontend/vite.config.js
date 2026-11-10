@@ -15,6 +15,9 @@ function inlineSvelteStyles() {
     },
     resolveId(id) {
       if (id.includes("inline") && id.includes("svelte&type=style")) {
+        // Workspace design-system primitives live outside this Vite root.
+        // Resolve their /@fs URL to the same filesystem id as local styles.
+        if (id.startsWith("/@fs/")) return id.slice(4);
         return id.startsWith("/src/") ? path.join(root, id) : id;
       }
     },
