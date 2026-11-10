@@ -6556,6 +6556,16 @@ def _audit_once(task_id: str, key: str, action: str, detail: dict) -> bool:
     return True
 
 
+def _machine_paused(task_id: str) -> bool:
+    """Whether the factory, not an operator, took the task's current pause."""
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_funding_limits import _latest_pause
+
+    with controls._read_session() as db:
+        pause = _latest_pause(db, task_id)
+    return pause is not None and pause.actor.startswith("factory:")
+
+
 def _settle_paused_task(
     task: dict, policy: dict, runs: list[dict], *, merge_unknown: bool = False
 ) -> bool:
@@ -6634,9 +6644,31 @@ def _settle_paused_task(
             # single option needs no person: apply it after its grace period.
             factory_pause.expire_stop_card(task["id"])
             return True
+        open_question = previous.get("resolved") is None and previous.get("question")
+        if (
+            not open_question
+            and not landing_held(snapshot)
+            and _machine_paused(task["id"])
+        ):
+            # A factory-owned pause with no question left to answer has nothing
+            # for a person to decide. Stop it and release the slot; the issue
+            # stays open. A new task is never started here, so attempts are
+            # not reset. An operator's own pause, a retained question and a
+            # landing hold (whose delivery may have merged) still ask.
+            controls.finish_task(
+                task["id"],
+                "cancelled",
+                ACTOR,
+                evidence={
+                    "state": "task_deadline",
+                    "reason": "Absolute task deadline elapsed while paused by the factory; all starts and runs are terminal.",
+                },
+                paused_trigger="deadline",
+            )
+            return True
         decision = (
             previous
-            if previous.get("resolved") is None and previous.get("question")
+            if open_question
             else {
                 "reason": "Absolute task deadline elapsed while paused; all starts and runs are terminal.",
                 "question": "The paused task reached its deadline without a verified delivery. Continue with a new task or keep it on hold?",
