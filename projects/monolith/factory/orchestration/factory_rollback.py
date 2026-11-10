@@ -96,6 +96,11 @@ def verdict(
         if not isinstance(observations, list):
             return unknown
         required = {"argocd"}
+        # The production collector declares applicable private health reads.
+        # Missing/unversioned responses cannot be replaced by Argo readiness.
+        required.update(delivery.get("required_signals", []))
+        if not required <= SIGNALS:
+            return unknown
         if chart.get("synthetic_signal"):
             required.add("synthetic:" + chart["synthetic_signal"])
         allowed = SIGNALS | required

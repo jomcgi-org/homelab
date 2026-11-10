@@ -52,6 +52,7 @@ def observe_targets(policy, item, pull, targets):
             "merged_at": pull["merged_at"],
             "commit_count": pull["commits"],
             "source_checked": False,
+            "required_signals": target.get("required_signals", []),
             **{k: target[k] for k in ("application", "chart", "revision")},
         }
         observations = [

@@ -1002,14 +1002,22 @@ def test_source_worker_replays_same_pr_after_create(engine, monkeypatch, lost_re
     d = delivery()
     branch = "factory/rollback-" + rollback.identity(d)[:32]
     result = {"branch": branch, "head_sha": "d" * 40}
-    created, calls = [], []
+    created, calls, published = [], [], []
 
     def run(_checkout, *args):
         calls.append(args)
+        if args[:2] == ("git", "ls-remote"):
+            return result["head_sha"] + "\trefs/heads/" + branch if published else ""
+        if args[:3] == ("git", "branch", "--show-current"):
+            return branch
+        if args[:3] == ("git", "status", "--porcelain"):
+            return ""
         if args[:3] == ("git", "rev-parse", "FETCH_HEAD"):
             return "b" * 40
         if args[0] == "git":
-            assert args[1] in {"fetch", "push"}
+            assert args[1] in {"fetch", "push", "merge"}
+            if args[1] == "push":
+                published.append(result["head_sha"])
             return ""
         if args[:3] == ("gh", "pr", "create"):
             created.append({"number": 99})
@@ -1041,6 +1049,235 @@ def test_source_worker_replays_same_pr_after_create(engine, monkeypatch, lost_re
         assert worker.publish("unused", d, 12)["pr_number"] == 99
     assert len(created) == 1
     assert len([c for c in calls if c[:3] == ("gh", "pr", "create")]) == 1
+
+
+def test_source_worker_unknown_create_never_repeats_from_new_guest(monkeypatch):
+    from factory.orchestration import factory_rollback_source as worker
+
+    d = delivery()
+    branch = "factory/rollback-" + rollback.identity(d)[:32]
+    published, creates = [], []
+
+    def run(_checkout, *args):
+        if args[:2] == ("git", "ls-remote"):
+            return "d" * 40 + "\trefs/heads/" + branch if published else ""
+        if args[:3] == ("git", "rev-parse", "FETCH_HEAD"):
+            return "b" * 40
+        if args[0] == "git":
+            assert args[1] in {"fetch", "push"}
+            if args[1] == "push":
+                published.append(True)
+            return ""
+        if args[:3] == ("gh", "pr", "create"):
+            creates.append(args)
+            raise subprocess.CalledProcessError(1, args)
+        assert args[:2] == ("gh", "api")
+        if "pulls?state=all" in args[2]:
+            return "[]"  # An empty read cannot resolve an uncertain write.
+        if args[2].endswith("/commits?per_page=100&page=1"):
+            return json.dumps([{"sha": "b" * 40}])
+        assert args[2].endswith("/pulls/1")
+        return json.dumps(
+            {
+                "merged": True,
+                "merge_commit_sha": d["merge_commit_sha"],
+                "commits": 1,
+                "head": {"sha": "b" * 40},
+            }
+        )
+
+    monkeypatch.setattr(worker, "_run", run)
+    monkeypatch.setattr(worker, "validate_landed_range", lambda *_a: None)
+    monkeypatch.setattr(
+        worker, "reverse_source", lambda *_a: {"branch": branch, "head_sha": "d" * 40}
+    )
+    with pytest.raises(subprocess.CalledProcessError):
+        worker.publish("first-guest", d, 12)
+    with pytest.raises(ValueError, match="creation outcome unknown"):
+        worker.publish("new-guest", d, 12)
+    assert len(creates) == 1
+
+
+@pytest.mark.parametrize(
+    "health", ["healthy", "failed", "unavailable", "wrong_revision", "malformed"]
+)
+def test_async_signal_caller_keeps_sessions_on_landing_thread(
+    engine, monkeypatch, health
+):
+    import asyncio
+    import sys
+    import threading
+    from types import SimpleNamespace
+
+    from core.platform_probe import PlatformProbe
+    from factory.orchestration import factory_rollout as rollout
+    from factory.orchestration import factory_rollback_runtime as runtime
+
+    d = delivery(application="monolith", chart="monolith")
+    target = {k: d[k] for k in ("application", "chart", "revision")}
+    target["observations"] = [
+        {
+            "signal": "argocd",
+            "available": True,
+            "outcome": "healthy",
+            "observed_at": NOW.isoformat(),
+        }
+    ]
+    policy = {
+        "repo": d["repo"],
+        "rollback": {"charts": {"monolith": {"synthetic_signal": "private.ready"}}},
+    }
+    PlatformProbe.__table__.create(engine, checkfirst=True)
+    with Session(engine) as db:
+        db.add(
+            PlatformProbe(
+                name="private.ready", ok=True, checked_at=NOW, detail=json.dumps(target)
+            )
+        )
+        db.commit()
+    owner = threading.get_ident()
+    sessions = []
+    original_exec = Session.exec
+
+    def thread_exec(session, *args, **kwargs):
+        assert threading.get_ident() != owner
+        with pytest.raises(RuntimeError, match="no running event loop"):
+            asyncio.get_running_loop()
+        sessions.append(session)
+        return original_exec(session, *args, **kwargs)
+
+    async def verify(name, revision):
+        assert asyncio.get_running_loop()
+        assert (name, revision) == ("monolith", d["revision"])
+        return {"kargo": {}}
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, _tz=None):
+            return NOW
+
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs["follow_redirects"] is False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url):
+            assert url == "http://private/healthz"
+            if health == "unavailable":
+                raise rollout.httpx.ConnectError("offline")
+
+            def body():
+                if health == "malformed":
+                    raise ValueError("invalid JSON")
+                return {
+                    "chart_version": "old"
+                    if health == "wrong_revision"
+                    else d["revision"],
+                    "status": "unhealthy" if health == "failed" else "ok",
+                }
+
+            return SimpleNamespace(
+                content=b"{}", status_code=503 if health == "failed" else 200, json=body
+            )
+
+    monkeypatch.setitem(
+        sys.modules, "cluster.mcp", SimpleNamespace(verify_deployment=verify)
+    )
+    monkeypatch.setattr(rollout.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(rollout, "datetime", Clock)
+    monkeypatch.setattr(runtime.landing, "_now", lambda: NOW)
+    monkeypatch.setenv("MONOLITH_INTERNAL_URL", "http://private")
+    monkeypatch.setattr(Session, "exec", thread_exec)
+
+    def landing_thread():
+        targets = rollout.collect_rollback_signals(policy, [target])
+        assert targets[0]["required_signals"] == ["revision_health"]
+        return runtime.observe_targets(
+            policy,
+            d,
+            {
+                "merged": True,
+                "merge_commit_sha": d["merge_commit_sha"],
+                "merged_at": d["merged_at"],
+                "commits": 1,
+            },
+            targets,
+        )
+
+    async def handler():
+        return await asyncio.to_thread(landing_thread)
+
+    result = asyncio.run(handler())
+    assert result == ("rollout_failed" if health == "failed" else "rollout_observing")
+    assert sessions
+    monkeypatch.setattr(Session, "exec", original_exec)
+    assert bool(events(engine, "rollback_window_started")) == (health == "healthy")
+    assert bool(events(engine, "rollout_failed")) == (health == "failed")
+
+
+@pytest.mark.parametrize("failed_revision", ["1.2.3", "1.2.2", None])
+def test_async_kargo_caller_checks_failed_expected_promotion(
+    monkeypatch, failed_revision
+):
+    import asyncio
+    import sys
+    from types import SimpleNamespace
+    from factory.orchestration import factory_rollout as rollout
+
+    async def verify(_name, _revision):
+        return {
+            "kargo": {
+                "current_promotion": {"version": "1.2.4", "phase": "Running"},
+                "last_promotion": {"version": failed_revision, "phase": "Errored"},
+            }
+        }
+
+    monkeypatch.setitem(
+        sys.modules, "cluster.mcp", SimpleNamespace(verify_deployment=verify)
+    )
+    monkeypatch.delenv("MONOLITH_INTERNAL_URL", raising=False)
+    target = {
+        "application": "demo",
+        "chart": "demo",
+        "revision": "1.2.3",
+        "observations": [],
+    }
+    result = asyncio.run(rollout._rollback_network_signals([target]))
+    assert bool(result[0]["observations"]) == (failed_revision == "1.2.3")
+    if failed_revision == "1.2.3":
+        assert result[0]["observations"][0]["outcome"] == "failed"
+
+
+def test_signal_timeout_cannot_verify_without_required_private_health(monkeypatch):
+    import asyncio
+    from factory.orchestration import factory_rollout as rollout
+
+    async def unavailable(_targets):
+        raise asyncio.TimeoutError("offline")
+
+    monkeypatch.setenv("MONOLITH_INTERNAL_URL", "http://private")
+    monkeypatch.setattr(rollout, "_rollback_network_signals", unavailable)
+    d = delivery(
+        application="monolith",
+        chart="monolith",
+        merged_at=NOW - timedelta(minutes=30),
+        window_started_at=NOW - timedelta(minutes=16),
+    )
+    target = {k: d[k] for k in ("application", "chart", "revision")}
+    target["observations"] = [sample(d, outcome="healthy")]
+    collected = rollout.collect_rollback_signals({}, [target])[0]
+    judged = rollback.verdict(
+        {},
+        {**d, "required_signals": collected["required_signals"]},
+        collected["observations"],
+        now=NOW,
+    )
+    assert judged["verdict"] == "unknown"
 
 
 def test_named_synthetic_requires_exact_revision(engine):
