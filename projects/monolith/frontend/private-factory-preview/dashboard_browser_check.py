@@ -304,7 +304,9 @@ def main():
                             child_result["chatHeight"] = page.locator(
                                 ".qwen-page .chat"
                             ).evaluate("(el) => el.getBoundingClientRect().height")
-                            assert child_result["chatHeight"] == 900, child_result
+                            assert child_result["chatHeight"] == (
+                                844 if width == 390 else 900
+                            ), child_result
                             child_result["transcriptOverflow"] = page.locator(
                                 ".qwen-page .log"
                             ).evaluate("(el) => getComputedStyle(el).overflowY")
