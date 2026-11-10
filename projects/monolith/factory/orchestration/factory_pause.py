@@ -7,14 +7,20 @@ this primitive takes no further locks and never performs network I/O.
 
 import json
 import os
+from datetime import timedelta
 
 from sqlmodel import select
 
+from core.clock import aware
 from core.jsonio import dumps
 from factory.orchestration import factory_controls as controls
 from factory.orchestration.factory_models import FactoryAudit, FactoryControl, WorkItem
 
 KIND = "automatic_pause"
+EXPIRY_ACTOR = "factory:pause-expiry"
+# A person keeps this long after the card is written to answer it differently,
+# for example by resuming the task, before the factory applies the stop.
+STOP_CARD_GRACE = timedelta(hours=24)
 STOP = {
     "key": "stop",
     "label": "Stop this task, leave the issue open",
@@ -182,6 +188,71 @@ def pause_locked(db, row, actor, reason):
         return not was_paused
     _write_card(db, row, actor, reason, body=row.body, prior=prior)
     return True
+
+
+def expire_stop_card(task_id):
+    """Apply a machine pause's only option once its task deadline has passed.
+
+    A stop-only card offers no decision: stopping is its sole choice. Asking a
+    person to press it left paused tasks holding delivery slots for days. Past
+    the task deadline and STOP_CARD_GRACE after the card was written, the
+    factory applies that same stop. It never invents another choice.
+
+    An operator's own pause, a pending repair of the paused node, a decision
+    in flight and any unknown execution all keep the card. Returns True when
+    the stop was applied.
+    """
+    from factory.orchestration import factory_decisions as decisions
+    from factory.orchestration import factory_funding as funding
+
+    with controls._locked_session() as (db, _control):
+        row = controls._receipt(db, task_id)
+        card = decisions.escalation_of(row) if row is not None else None
+        if (
+            not eligible(db, row)
+            or not decidable(row, card)
+            or card.get("options") != [STOP]
+            or card.get("resolved") is not None
+            or decisions.decision_in_flight(db, row.id)
+            or controls._quiescence_refusal(db, task_id)
+            or funding.repair_pause_evidence(db, task_id) is not None
+        ):
+            return False
+        pause_event = funding._latest_pause(db, task_id)
+        written = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action.in_(
+                    ("paused_card_created", "paused_card_superseded")
+                ),
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(1)
+        ).first()
+        if (
+            pause_event is None
+            or not pause_event.actor.startswith("factory:")
+            or written is None
+            or json.loads(written.detail_json).get("decision_id")
+            != _identity(row, card)
+            or controls._now() < aware(written.created_at) + STOP_CARD_GRACE
+        ):
+            return False
+        receipt_id, decision_id = row.id, _identity(row, card)
+    try:
+        result = decisions.apply_decision(
+            receipt_id,
+            STOP["key"],
+            EXPIRY_ACTOR,
+            "The task deadline passed and this pause offered only stop. Applied "
+            "automatically so the delivery slot is released. The issue stays open.",
+            expected_decision_id=decision_id,
+        )
+    except decisions.DecisionError:
+        # The card changed or was answered between the check and the claim.
+        return False
+    return bool(result.get("applied"))
 
 
 def pause(task_id, actor, reason, *, expected_version=None):
