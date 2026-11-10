@@ -994,8 +994,12 @@ four days. Per-head grants were the only authority for ordinary work, so every
 merge waited for a person and intake found no candidates behind the open PRs.
 `delivery_landing_delegation` lets a standing operator delegate that decision
 once, inside a previewed deny-list and rolling cap. The factory's own code and
-its monolith `core/`, `agent/`, `agent_sessions/` and `swarm/` dependencies stay
-outside it. `projects/monolith/BUILD` remains eligible; preview discloses that
+its monolith `core/`, `agent/`, `agent_sessions/`, `swarm/`, `app/`, `framework/`
+and `shared/` dependencies stay outside it, along with the repository catalog.
+Frontend build/configuration and exposure guards, hooks, secret redaction and
+the root authority guard tests also need an operator, as listed in
+[the boundary](factory/orchestration/FACTORY.md#standing-delivery-landing-delegation).
+`projects/monolith/BUILD` remains eligible; preview discloses that
 independent review and required CI must preserve its factory and guard test
 declarations. Revoke the delegation and return to per-head grants if the typed
 review's scope classification proves unreliable.
