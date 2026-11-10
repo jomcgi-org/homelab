@@ -270,6 +270,11 @@ def main():
                                             '.graph-hit-areas [role="button"]'
                                         ).first
                                     ).to_be_visible()
+                                    # The hit area exists before pencil/ink/text
+                                    # reveal. Capture the painted node too.
+                                    expect(
+                                        page.locator(".graph-nodes text").first
+                                    ).to_have_css("opacity", "1")
                                 if name == "notes":
                                     canvas = page.locator("canvas")
                                     box = canvas.bounding_box()
