@@ -50,16 +50,31 @@ DENY_RULES = {
         "projects/monolith-public/",
         "projects/monolith/agent/",
         "projects/monolith/agent_sessions/",
+        "projects/monolith/app/",
         "projects/monolith/core/",
         "projects/monolith/factory/",
+        "projects/monolith/framework/",
+        "projects/monolith/shared/",
         "projects/monolith/swarm/",
         "projects/operators/",
         "projects/platform-gke/",
         "projects/platform/",
     ],
+    "paths": [
+        "projects/monolith/frontend/BUILD",
+        "projects/monolith/frontend/svelte.config.js",
+        "projects/monolith/frontend/vite.config.js",
+        "projects/monolith/frontend/vitest.config.js",
+        "projects/monolith/frontend/src/build-exclusions.test.js",
+        "projects/monolith/goosecracker/repo_catalog.py",
+        "projects/monolith/goosecracker/repo_catalog_test.py",
+        "projects/monolith/import_boundaries_test.py",
+        "projects/monolith/observability_snapshot_grants_test.py",
+    ],
     "segments": [
         "chart",
         "cluster",
+        "crd",
         "crds",
         "deploy",
         "migrations",
@@ -71,6 +86,7 @@ DENY_RULES = {
         "authentik",
         "credential",
         "credentials",
+        "hooks",
         "kyverno",
         "login",
         "oauth",
@@ -78,6 +94,7 @@ DENY_RULES = {
         "password",
         "public",
         "rbac",
+        "redact",
         "secret",
         "secrets",
         "spiffe",
@@ -106,6 +123,7 @@ def denied(path):
         return True
     return (
         path.startswith(tuple(DENY_RULES["prefixes"]))
+        or path in DENY_RULES["paths"]
         or not set(segments[:-1]).isdisjoint(DENY_RULES["segments"])
         or segments[-1] in DENY_RULES["basenames"]
         or path.endswith(tuple(DENY_RULES["suffixes"]))

@@ -2731,7 +2731,11 @@ async def factory_configure_delivery_landing(
     Repair tasks, owner PRs and explicit per-head operator grants keep their own
     owners and never fall through to this one. Excluded paths, including the
     factory's own code, deployment, migrations, credential and public surfaces,
-    still need a per-head operator grant. Policy replacement or a deny-rule
+    still need a per-head operator grant. Preview includes exact exclusions for
+    frontend build/configuration and exposure guards, the repository catalog
+    and root authority guard tests, plus rules for runtime dependencies, hooks
+    and secret redaction. Review path_limitations for the eligible monolith
+    BUILD file. Policy replacement or a deny-rule
     change invalidates the authorization. Disabling revokes future arming and
     the landing observer fences queued grants on its next tick. Nothing is
     dispatched, merged or resumed by this operation. Re-read

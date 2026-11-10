@@ -221,8 +221,13 @@ The boundary is a deny-list, shown in full by preview. Only paths under
 migrations, CRDs, cluster and platform projects, public surfaces, credential
 and authentication paths, agent instructions and Bazel macros need an operator.
 The excluded monolith directories include `factory/`, `core/`, `agent/`,
-`agent_sessions/` and `swarm/`, covering shared identity, GitHub credentials,
-MCP authorization and factory runtime dependencies.
+`agent_sessions/`, `swarm/`, `app/`, `framework/` and `shared/`, covering shared
+identity, GitHub credentials, MCP authorization and factory runtime dependencies.
+Exact exclusions also cover `goosecracker/repo_catalog.py` and its test,
+the frontend `BUILD`, Svelte/Vite/Vitest configuration and build-exclusion guard,
+and the root import-boundary and observability-snapshot-grant tests. Path words
+`hooks` and `redact` exclude frontend server hooks and knowledge secret redaction,
+including their tests. Both `crd/` and `crds/` directory segments are excluded.
 At most forty files may change, as regular non-executable blobs. The typed
 independent review must attest the complete diff at its exact merge base and
 head as private, internal and reversible, with every public, security,
