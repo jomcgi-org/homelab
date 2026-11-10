@@ -1,5 +1,6 @@
 <script>
-  import "$lib/grimoire/theme.css";
+  import TechnicalDrawingChrome from "$lib/public/components/TechnicalDrawingChrome.svelte";
+  import Trail from "$lib/public/components/Trail.svelte";
 
   let { data, form } = $props();
 
@@ -25,7 +26,13 @@
   <title>Character sheets · Grimoire</title>
 </svelte:head>
 
-<main class="td grimoire sheets-page">
+<main class="td sheet sheets-page">
+  {#snippet trail()}<Trail
+      root={{ label: "dashboard", href: "/" }}
+      crumbs={[{ label: "Grimoire" }]}
+    />{/snippet}
+  <TechnicalDrawingChrome {trail} />
+  <div class="trail-dock">{@render trail()}</div>
   <header class="page-head">
     <div>
       <p class="eyebrow">Grimoire · private table</p>
@@ -58,8 +65,8 @@
     </section>
   {:else}
     {#each data.groups as group}
-      <section class="campaign">
-        <div class="campaign-head">
+      <section class="campaign edition">
+        <div class="campaign-head ed-head">
           <p class="eyebrow">Campaign</p>
           <h2>{group.campaign.name}</h2>
         </div>
@@ -74,10 +81,10 @@
             {@const draft = latest?.status === "draft" ? latest : null}
             {@const base = draft?.sheet ?? latest?.sheet ?? null}
             <article
-              class="sheet-card"
+              class="sheet-card edition"
               id={`character-${workspace.character.id}`}
             >
-              <header class="character-head">
+              <header class="character-head ed-head">
                 <div>
                   <p class="eyebrow">{workspace.viewer_role}</p>
                   <h3>{workspace.character.character_name}</h3>
@@ -346,7 +353,7 @@
   .lede,
   .summary,
   .empty-inline {
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
   }
   .contract,
   .status {
@@ -366,7 +373,7 @@
   .campaign-head {
     justify-content: flex-start;
     align-items: baseline;
-    border-bottom: 1px solid var(--grim-line);
+    border-bottom: 1px solid var(--stroke);
     margin-bottom: 1rem;
   }
   .character-grid {
@@ -393,7 +400,7 @@
   .derived span {
     display: block;
     margin-bottom: 0.3rem;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font-size: 0.72rem;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -403,9 +410,9 @@
   button {
     box-sizing: border-box;
     width: 100%;
-    border: 1px solid var(--grim-line);
+    border: 1px solid var(--stroke);
     border-radius: 0;
-    background: var(--grim-surface);
+    background: var(--sheet);
     color: inherit;
     font: inherit;
     padding: 0.65rem 0.7rem;
@@ -419,8 +426,8 @@
   button:hover,
   button:focus-visible,
   button.primary {
-    background: var(--grim-accent);
-    color: var(--grim-on-accent);
+    background: var(--ink);
+    color: var(--sheet);
   }
   fieldset {
     margin: 1rem 0;
@@ -479,13 +486,14 @@
   }
   blockquote footer,
   .history time {
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font-size: 0.75rem;
   }
   .history {
     margin-top: 1.25rem;
   }
   .history summary {
+    min-height: 44px;
     cursor: pointer;
     font-weight: 700;
   }
@@ -502,6 +510,31 @@
   .empty {
     max-width: 48rem;
     margin: 3rem auto;
+  }
+  .sheets-page {
+    overflow-wrap: anywhere;
+  }
+  .trail-dock {
+    max-width: 78rem;
+    margin: 0 auto 1rem;
+  }
+  .campaign,
+  .sheet-card,
+  label {
+    min-width: 0;
+  }
+  input,
+  textarea {
+    font-size: 16px;
+  }
+  button {
+    min-height: 44px;
+  }
+  .decision-actions {
+    flex-wrap: wrap;
+  }
+  .history li {
+    flex-wrap: wrap;
   }
   @media (max-width: 640px) {
     .page-head,

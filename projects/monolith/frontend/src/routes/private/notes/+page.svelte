@@ -6,6 +6,7 @@
   import GraphSearch from "$lib/components/notes/GraphSearch.svelte";
   import StatusBar from "$lib/components/notes/StatusBar.svelte";
   import "$lib/public/notes/sheet.css";
+  import SchemeToggle from "$lib/public/components/SchemeToggle.svelte";
 
   let { data } = $props();
 
@@ -43,16 +44,19 @@
   }
 </script>
 
-<div class="td notes-root">
-  <StatusBar
-    home={{ label: "dashboard", href: "/" }}
-    nodeCount={nodes.length}
-    edgeCount={edges.length}
-    {clusterCount}
-    {zoom}
-    {hoverTitle}
-    {indexedAt}
-  />
+<div class="td sheet notes-root">
+  <div class="notes-nav">
+    <StatusBar
+      home={{ label: "dashboard", href: "/" }}
+      nodeCount={nodes.length}
+      edgeCount={edges.length}
+      {clusterCount}
+      {zoom}
+      {hoverTitle}
+      {indexedAt}
+    />
+    <SchemeToggle />
+  </div>
 
   <div class="notes-stage sheet-graph">
     <KnowledgeGraph
@@ -95,7 +99,8 @@
   /* The private graph is the public one's sibling: the same components on
      the same sheet tokens, with the private endpoint behind it. */
   .notes-root {
-    height: 100vh;
+    height: 100dvh;
+    padding: 0;
     display: flex;
     flex-direction: column;
     background: var(--sheet);
@@ -105,8 +110,33 @@
     line-height: 1.45;
   }
   .notes-stage {
+    min-height: 0;
     flex: 1;
     position: relative;
     overflow: hidden;
+  }
+  .notes-nav {
+    display: flex;
+    align-items: center;
+    background: var(--band);
+  }
+  .notes-nav :global(.statusbar) {
+    flex: 1;
+    min-width: 0;
+  }
+  /* The readings remain reachable on narrow screens instead of being cut off. */
+  .notes-nav :global(.statusbar-track) {
+    width: max-content;
+  }
+  .notes-nav :global(.statusbar) {
+    overflow-x: auto;
+  }
+  .notes-stage :global(.search input) {
+    font-size: 16px;
+    min-height: 44px;
+  }
+  .notes-stage :global(.legend-row),
+  .notes-stage :global(.panel-close) {
+    min-height: 44px;
   }
 </style>
