@@ -95,10 +95,6 @@ def _validate_pin(pin: dict) -> dict:
     hydration_branch = (
         need_str("hydration_branch") if "hydration_branch" in pin else branch
     )
-    if branch.startswith("commit:") and (
-        not re.fullmatch(r"commit:[0-9a-f]{40}", branch) or hydration_branch != branch
-    ):
-        raise ValueError("commit pin does not match hydration")
     retry_context = pin.get("retry_context", "")
     if (
         not isinstance(retry_context, str)
@@ -178,6 +174,11 @@ def _validate_pin(pin: dict) -> dict:
         or not re.fullmatch(r"commit:[0-9a-f]{40}", branch)
     ):
         raise ValueError("refill inspection pin does not match hydration")
+
+    if branch.startswith("commit:") and (
+        not re.fullmatch(r"commit:[0-9a-f]{40}", branch) or hydration_branch != branch
+    ):
+        raise ValueError("commit pin does not match hydration")
 
     effort = pin.get("effort")
     if "effort" in pin:

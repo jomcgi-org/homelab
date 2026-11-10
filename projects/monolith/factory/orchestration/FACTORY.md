@@ -391,6 +391,8 @@ branch-ref lookup. The artifact schema requires the same PR and head. The guest
 cannot edit source, commit, push, merge or deploy. A rejected, failed or
 ambiguous terminal result stays visible as `merged_verify_review_blocked` and
 cannot enter source-writing correction. Unknown execution retains its fence.
+The changed checkpoint selection and its helper have a distinct node workflow
+version; historical workflow bodies retain their recorded identity.
 
 Review reuse authenticates the successful graph run and immutable model pin
 against the start ledger and server-owned session identity. Approval must name

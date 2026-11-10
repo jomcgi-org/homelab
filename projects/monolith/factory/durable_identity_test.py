@@ -38,7 +38,7 @@ def test_indented_source_and_unicode_columns_are_preserved():
     )
 
 
-def test_funding_profile_intentionally_versions_node_workflow():
+def test_immutable_commit_head_intentionally_versions_node_workflow():
     from dbos._utils import GlobalParams
 
     from factory.orchestration.runtime import (
@@ -50,14 +50,14 @@ def test_funding_profile_intentionally_versions_node_workflow():
         durable_source(inspect.getsource(f)) for f in _node_workflow_members()
     )
     # The package-only move retained 33891819c41b8a41725d7869a5059ed7.
-    # #7583 intentionally changes _read_turn_artifact's durable result contract:
-    # funding artifacts now require exact runtime profile metadata. Keep a new
-    # version, never replay that check as the historical checkpoint body.
-    # Derived after final formatting, which changed the unformatted
-    # 0485521be38f2d12fcee143bf6d370f2 fingerprint. Do not normalize whitespace
-    # or alter durable_source to make new code impersonate either prior version.
+    # #7583's funding-profile contract used 5e16dc2336c4950bcff0cad36bc39286.
+    # #7428 now omits the branch-head checkpoint for immutable commit pins.
+    # Include _node_head because it selects that checkpoint. Keep a distinct
+    # version instead of replaying the changed body as either historical one.
+    # This fingerprint is derived after formatting; never normalize whitespace
+    # or alter durable_source to preserve a version across a behavior change.
     source_hash = hashlib.md5("".join(sources).encode())
-    assert source_hash.hexdigest() == "5e16dc2336c4950bcff0cad36bc39286"
+    assert source_hash.hexdigest() == "2e91f39eb1604313f69f70d770f05546"
     source_hash.update(GlobalParams.dbos_version.encode())
     assert node_workflow_version() == source_hash.hexdigest()
 

@@ -49,6 +49,7 @@ def _node_workflow_members() -> tuple:
 
     return (
         node_workflows.execute_node,
+        node_workflows._node_head,
         node_workflows._await_node_turn,
         node_workflows._await_dispatched_node_turn,
         node_workflows._reconciled_identity,
