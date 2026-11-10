@@ -21,6 +21,8 @@ from grimoire.models import (
     PlayerCharacter,
 )
 from grimoire.visibility import (
+    can_read_book,
+    is_common_knowledge,
     _SPINE_FIELDS,
     _SPINE_IDENTITY_FIELDS,
     project_entity,
@@ -177,6 +179,54 @@ def test_unknown_and_adventure_globals_fail_closed(session, source):
     assert entity.id in _visible_ids(session, seed.campaign.id, "dm")
     assert entity.id not in _visible_ids(session, seed.campaign.id, seed.alice.id)
     assert project_entity(entity, None, None, seed.alice.id) is None
+
+
+@pytest.mark.parametrize(
+    "name,kind,book,common,book_open",
+    [
+        ("Fighter", "class", "explorers-guide-to-wildemount", True, False),
+        ("Human", "race", "explorers-guide-to-wildemount", True, False),
+        ("Ranger", "class", "players-handbook-2024", True, True),
+        ("Half-Elf", "race", "sword-coast-adventurers-guide", True, True),
+        (
+            "Warlock",
+            "class",
+            "mordenkainen-presents-monsters-of-the-multiverse",
+            True,
+            True,
+        ),
+        ("Fireball", "spell", "dungeon-masters-guide-2024", True, True),
+        ("Prone", "condition", "dungeon-masters-guide-2024", True, True),
+        ("Magic Missile", "spell", "monster-manual", True, True),
+        ("Grappled", "condition", "monster-manual", True, True),
+        ("Gundren", "npc", "lost-mine-of-phandelver", False, False),
+        ("Adventure feature", "class_feature", "lost-mine-of-phandelver", False, False),
+        ("Setting NPC", "npc", "explorers-guide-to-wildemount", False, False),
+        ("Setting location", "location", "explorers-guide-to-wildemount", False, False),
+        ("Unknown option", "class", "unclassified-book", False, False),
+        ("No source", "class", None, False, False),
+    ],
+)
+def test_real_provenance_has_matching_query_projection_and_book_access(
+    session, name, kind, book, common, book_open
+):
+    seed = seed_campaign(session)
+    entity = Entity(entity_type=kind, name=name, source_book=book)
+    session.add(entity)
+    session.commit()
+    assert is_common_knowledge(entity) is common
+    assert (
+        entity.id in _visible_ids(session, seed.campaign.id, seed.alice.id)
+    ) is common
+    assert (project_entity(entity, None, None, seed.alice.id) is not None) is common
+    assert can_read_book(session, seed.campaign.id, seed.alice.id, book) is book_open
+    unknown = {
+        row.id
+        for row, _ in session.exec(
+            visible_entities_query(seed.campaign.id, "dm", not_granted_to=seed.alice.id)
+        )
+    }
+    assert (entity.id in unknown) is not common
 
 
 @pytest.mark.parametrize("viewer", [None, "unknown-character"])

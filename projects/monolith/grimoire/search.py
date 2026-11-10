@@ -133,9 +133,9 @@ def _resolve_entity_hit(
 
     Builds on visible_entities_query()/project_entity() scoped to a single
     entity_id, keeping the grant predicate in the shared visibility helpers.
-    Returns None when the entity does not exist, is not visible to the viewer at all
-    (ungranted, non-global), or is a name_only grant (dropped in lookup
-    context per spec #3.3).
+    Returns None when the entity does not exist or is not visible to the viewer
+    (neither common knowledge nor granted). A name_only grant returns an
+    identity-only card, with no source or detail preview.
 
     The DM view can return multiple (entity, grant) row tuples for the same
     entity (one per grant, per visible_entities_query()'s docstring); these

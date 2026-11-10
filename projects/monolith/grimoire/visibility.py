@@ -30,18 +30,53 @@ COMMON_KNOWLEDGE_BOOK_IDS = frozenset(
         "system-reference-doc-5-2",
         "black-flag-reference-document",
         "a5e-srd",
+        "players-handbook-2024",
+        "dungeon-masters-guide-2024",
+        "monster-manual",
+        "mordenkainen-presents-monsters-of-the-multiverse",
+        "sword-coast-adventurers-guide",
+        "tashas-cauldron-of-everything",
+        "xanthars-guide-to-everything",
+        "deep-magic-5e",
     }
 )
+
+# Extraction deduplicates globally and retains the first source_book. In the
+# live corpus, even Human and Fighter were first extracted from Wildemount.
+# These mixed setting/adventure books supply character options only: their
+# lore, NPCs and source pages remain closed. Subraces use entity_type="race".
+CHARACTER_OPTION_BOOK_IDS = frozenset(
+    {
+        "explorers-guide-to-wildemount",
+        "eberron-rising-from-the-last-war",
+        "planescape-adventures-in-the-multiverse",
+    }
+)
+CHARACTER_OPTION_TYPES = frozenset({"race", "class", "subclass", "class_feature"})
 
 
 def common_knowledge_predicate():
     return and_(
-        Entity.is_global.is_(True), Entity.source_book.in_(COMMON_KNOWLEDGE_BOOK_IDS)
+        Entity.is_global.is_(True),
+        Entity.source_book.is_not(None),
+        or_(
+            Entity.source_book.in_(COMMON_KNOWLEDGE_BOOK_IDS),
+            and_(
+                Entity.source_book.in_(CHARACTER_OPTION_BOOK_IDS),
+                Entity.entity_type.in_(CHARACTER_OPTION_TYPES),
+            ),
+        ),
     )
 
 
 def is_common_knowledge(entity: Entity) -> bool:
-    return entity.is_global and entity.source_book in COMMON_KNOWLEDGE_BOOK_IDS
+    return entity.is_global and (
+        entity.source_book in COMMON_KNOWLEDGE_BOOK_IDS
+        or (
+            entity.source_book in CHARACTER_OPTION_BOOK_IDS
+            and entity.entity_type in CHARACTER_OPTION_TYPES
+        )
+    )
 
 
 def campaign_player_predicate(campaign_id: str, viewer: Viewer):

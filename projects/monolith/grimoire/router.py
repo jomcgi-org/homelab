@@ -2278,6 +2278,12 @@ def delete_grant(
     grant = session.get(KnowledgeGrant, grant_id, populate_existing=True)
     if grant is None:
         raise HTTPException(status_code=404, detail="grant not found")
+    sources = knowledge_sources.contributions(session, grant)
+    if sources and not any(source.source_key == "manual" for source in sources):
+        # DELETE retracts a manual reveal. A sheet-only grant is unchanged,
+        # including its history, for both silent and ordinary requests.
+        session.commit()
+        return
     _retract_grant_history(session, grant)
     survives = knowledge_sources.remove_manual(session, grant)
     current = _current_reveal_session(session, campaign_id)

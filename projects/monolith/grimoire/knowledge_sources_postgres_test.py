@@ -39,7 +39,7 @@ def lane(pg):
                 entity_type=kind,
                 name=f"{kind}-{uuid4().hex}",
                 is_global=True,
-                source_book="system-reference-doc-5-1",
+                source_book="explorers-guide-to-wildemount",
             )
             for kind in ("race", "class")
         ]

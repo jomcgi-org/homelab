@@ -4,14 +4,24 @@
 
 Campaign players need an assigned character in the same campaign. Global
 corpus membership grants DM visibility; it conveys no player permission.
-Unknown sources, source-less entities and adventure books fail closed.
-`visibility.COMMON_KNOWLEDGE_BOOK_IDS` is the exact allowlist of open rules
-sources: `system-reference-doc-5-1`, `system-reference-doc-5-2`,
-`black-flag-reference-document` and `a5e-srd`. These identifiers are already
-classified as reference documents in ingestion. Copyright flags, titles and
-filename patterns never establish common knowledge. PHB, DMG and MM remain
-closed until a separate reviewed classification explicitly includes their
-actual corpus identifiers. No campaign-adventure binding is needed.
+Unknown sources, source-less entities and adventure-only books fail closed.
+`visibility.COMMON_KNOWLEDGE_BOOK_IDS` explicitly classifies the four SRDs,
+PHB 2024, DMG 2024, Monster Manual, Monsters of the Multiverse, Sword Coast
+Adventurer's Guide, Tasha's, Xanathar's and Deep Magic as rules/reference sources.
+The code uses exact corpus identifiers, including `xanthars-guide-to-everything`
+and `mordenkainen-presents-monsters-of-the-multiverse`. Copyright flags, titles
+and filename patterns never establish common knowledge.
+
+**Why.** Extraction deduplicates by type and name across books and retains the
+first `source_book`. The public corpus on 2026-11-10 identifies Human and Fighter
+with `explorers-guide-to-wildemount`, Half-Elf with
+`sword-coast-adventurers-guide`, and Fireball with `dungeon-masters-guide-2024`.
+Requiring an SRD as the first extraction source rejects these shared rules.
+Wildemount, Eberron and Planescape mix character options with adventures. Their
+`race` (including subraces), `class`, `subclass` and `class_feature` entities
+are common knowledge; their other entities and source pages remain closed.
+Adventure-only books, unknown IDs and missing sources remain closed for every
+entity type. No campaign-adventure binding is needed. #7564 owns this policy.
 
 The canonical entity predicate and projection apply to campaign lookup,
 pagination, relationships, entity search and indirect entity labels. Scope
@@ -27,11 +37,17 @@ under the effective `knowledge_grant` row. The migration backfills every
 existing grant as manual without changing its scope, details or session.
 Effective scope is the maximum source scope; revealed details remain attached
 to their independent sources and are combined in the effective cache.
+Alias merges transfer contributions before deleting the old grant. Contributions
+with the same source key combine at maximum scope and preserve survivor-first
+details. Distinct sheet-version keys remain distinct; merges create no manual
+source for a sheet-only grant.
 Sheet approval replaces the effective approved-sheet contribution for that PC,
-preserving manual sources. Ancestry and class resolve against allowlisted
-reference entities before approval creates grants. Only one-hop `SUBRACE_OF`
+preserving manual sources. Ancestry and class resolve against common-knowledge
+entities before approval creates grants. Only one-hop `SUBRACE_OF`
 parent races and `FEATURE_OF` class features at or below the approved level
-are eligible, with a fixed 100-link bound per query. Every target must itself
+are eligible, with a fixed 100-entity bound after level filtering. Feature
+candidates stream in bounded batches; higher-level features do not consume
+the allowance for a lower-level sheet. Every target must itself
 be common knowledge. Arbitrary links and adventure targets are excluded.
 
 Decisions serialize on the character row. A repeated identical decision is

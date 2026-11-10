@@ -15,6 +15,7 @@ from grimoire.models import CharacterSheetVersion, Entity, PlayerCharacter
 from grimoire.router import router
 from grimoire import knowledge_sources
 from grimoire.models import KnowledgeContribution, KnowledgeGrant, Relationship
+from grimoire.visibility import is_common_knowledge, visible_entities_query
 
 DM = "dm@example.test"
 PLAYER = "player@example.test"
@@ -132,7 +133,7 @@ def table_fixture(session: Session, client: TestClient):
         Entity(
             entity_type="race",
             name="Human",
-            source_book="system-reference-doc-5-1",
+            source_book="explorers-guide-to-wildemount",
             is_global=True,
             detail={"speed": "30 feet"},
         )
@@ -141,7 +142,7 @@ def table_fixture(session: Session, client: TestClient):
         Entity(
             entity_type="class",
             name="Fighter",
-            source_book="system-reference-doc-5-1",
+            source_book="explorers-guide-to-wildemount",
             is_global=True,
             detail={"hit_die": "d10", "saves": "Strength, Constitution"},
         )
@@ -174,6 +175,40 @@ def _submitted(client, table, body=None):
     base = _version_path(campaign, character, created.json()["id"])
     assert _post(client, f"{base}/submit", PLAYER).status_code == 200
     return base, created.json()["id"]
+
+
+def test_first_extracted_character_options_validate_approve_and_stay_visible(
+    session, client, table
+):
+    campaign, character = table
+    # Real corpus provenance: both Human and Fighter were first extracted from
+    # Wildemount, despite also occurring in the SRDs. Keep this through the API.
+    roots = session.exec(select(Entity)).all()
+    assert {entity.source_book for entity in roots} == {"explorers-guide-to-wildemount"}
+    assert all(is_common_knowledge(entity) for entity in roots)
+    gundren = Entity(
+        entity_type="npc", name="Gundren", source_book="lost-mine-of-phandelver"
+    )
+    session.add(gundren)
+    session.commit()
+    base, version_id = _submitted(client, table)
+    approved = _post(client, f"{base}/approve", DM, {})
+    assert approved.status_code == 200, approved.text
+    grants = session.exec(select(KnowledgeGrant)).all()
+    assert {grant.entity_id for grant in grants} == {entity.id for entity in roots}
+    for grant in grants:
+        assert grant.grant_scope == "full"
+        source = knowledge_sources.contributions(session, grant)
+        assert len(source) == 1
+        assert source[0].source_sheet_version_id == version_id
+    visible = {
+        entity.id
+        for entity, _ in session.exec(
+            visible_entities_query(campaign["id"], character["id"])
+        ).all()
+    }
+    assert visible == {entity.id for entity in roots}
+    assert gundren.id not in visible
 
 
 def test_approval_sources_repeat_return_and_manual_fallback(session, client, table):
@@ -272,7 +307,7 @@ def test_creation_links_are_typed_bounded_and_not_adventures(session, client, ta
     safe = Entity(
         entity_type="class_feature",
         name="Second Wind",
-        source_book="system-reference-doc-5-1",
+        source_book="players-handbook-2024",
         detail={"level": 1},
     )
     late = Entity(
@@ -306,6 +341,51 @@ def test_creation_links_are_typed_bounded_and_not_adventures(session, client, ta
     granted = {grant.entity_id for grant in session.exec(select(KnowledgeGrant)).all()}
     assert safe.id in granted
     assert not granted.intersection({late.id, adventure.id, arbitrary.id})
+
+
+@pytest.mark.parametrize("eligible_overflow", [False, True])
+def test_creation_link_bound_counts_only_eligible_features(
+    session, client, table, eligible_overflow
+):
+    parent = session.exec(select(Entity).where(Entity.entity_type == "class")).one()
+    features = [
+        Entity(
+            entity_type="class_feature",
+            name=f"Feature {index}",
+            source_book="players-handbook-2024",
+            detail={"level": 1 if eligible_overflow else 20},
+        )
+        for index in range(knowledge_sources.MAX_CREATION_LINKS + 1)
+    ]
+    safe = Entity(
+        entity_type="class_feature",
+        name="Second Wind",
+        source_book="explorers-guide-to-wildemount",
+        detail={"level": 1},
+    )
+    session.add_all([*features, safe])
+    session.flush()
+    session.add_all(
+        [
+            Relationship(
+                from_entity_id=entity.id, to_entity_id=parent.id, rel_type="FEATURE_OF"
+            )
+            for entity in [*features, safe]
+        ]
+    )
+    session.commit()
+    base, version_id = _submitted(client, table, _sheet(level=1))
+    response = _post(client, f"{base}/approve", DM, {})
+    if eligible_overflow:
+        assert response.status_code == 422
+        assert "too many creation knowledge links" in response.text
+        assert session.get(CharacterSheetVersion, version_id).status == "submitted"
+        assert session.exec(select(KnowledgeGrant)).all() == []
+    else:
+        assert response.status_code == 200, response.text
+        granted = {grant.entity_id for grant in session.exec(select(KnowledgeGrant))}
+        assert safe.id in granted
+        assert not granted.intersection(entity.id for entity in features)
 
 
 def test_approval_revalidates_changed_source_and_rolls_back(session, client, table):

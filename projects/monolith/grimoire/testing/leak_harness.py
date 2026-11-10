@@ -663,7 +663,7 @@ def build_fixture(session: Session) -> LeakHarness:
             entity_type="race",
             name="Human",
             is_global=True,
-            source_book="system-reference-doc-5-1",
+            source_book="explorers-guide-to-wildemount",
         ),
     )
     keep(
@@ -672,7 +672,7 @@ def build_fixture(session: Session) -> LeakHarness:
             entity_type="class",
             name="Fighter",
             is_global=True,
-            source_book="system-reference-doc-5-1",
+            source_book="explorers-guide-to-wildemount",
             detail={"hit_die": "d10", "saves": "Strength, Constitution"},
         ),
     )

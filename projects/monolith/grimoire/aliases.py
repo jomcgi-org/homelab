@@ -21,6 +21,7 @@ from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from core.db import retryable_conflict
+from grimoire import knowledge_sources
 from grimoire.models import (
     ENTITY_DETAIL_MODELS,
     AliasCandidate,
@@ -996,14 +997,32 @@ def _rewrite_grants(session: Session, short: Entity, full: Entity) -> None:
         full_grant = next((row for row in rows if row.entity_id == full.id), None)
         short_grant = next((row for row in rows if row.entity_id == short.id), None)
         if full_grant is not None and short_grant is not None:
-            if (
-                _GRANT_SCOPE_RANK[short_grant.grant_scope]
-                > _GRANT_SCOPE_RANK[full_grant.grant_scope]
-            ):
-                full_grant.grant_scope = short_grant.grant_scope
-            full_grant.revealed_details = _merge_prefer_primary(
-                full_grant.revealed_details, short_grant.revealed_details
-            )
+            knowledge_sources.preserve_manual(session, full_grant)
+            knowledge_sources.preserve_manual(session, short_grant)
+            sources = {
+                source.source_key: source
+                for source in knowledge_sources.contributions(session, full_grant)
+            }
+            for source in knowledge_sources.contributions(session, short_grant):
+                survivor = sources.get(source.source_key)
+                if survivor is None:
+                    source.grant_id = full_grant.id
+                else:
+                    survivor.grant_scope = max(
+                        survivor.grant_scope,
+                        source.grant_scope,
+                        key=_GRANT_SCOPE_RANK.__getitem__,
+                    )
+                    survivor.revealed_details = _merge_prefer_primary(
+                        survivor.revealed_details, source.revealed_details
+                    )
+                    if survivor.granted_in_session is None:
+                        survivor.granted_in_session = source.granted_in_session
+                    session.delete(source)
+            # Move child FKs before deleting the old grant, whose contributions
+            # cascade. Rebuild the cache from sources, as PATCH/approval do.
+            session.flush()
+            knowledge_sources.recompute(session, full_grant)
             session.delete(short_grant)
         elif short_grant is not None:
             updates.append(short_grant)

@@ -15,6 +15,7 @@ from grimoire.models import (
     CampaignMember,
     Entity,
     GameSession,
+    KnowledgeGrant,
     PlayerCharacter,
     SessionEvent,
 )
@@ -343,6 +344,35 @@ def test_retract_identity_and_update_original_history(harness, silent):
         assert [event["body"] for event in reveals] == [None, expected]
         for value in (h.rows["partial"].id, h.rows["partial"].name):
             assert value.casefold() not in responses["player_b"].text.casefold()
+
+
+@pytest.mark.parametrize("silent", [False, True])
+def test_deleting_sheet_only_grant_does_not_retract_or_reannounce(harness, silent):
+    h = harness
+    h.prepare("play")
+    h.prepare("submitted")
+    with TestClient(h.app()) as client:
+        response = call(
+            client,
+            h,
+            "POST",
+            f"/characters/{h.rows['character'].id}/sheets/{h.rows['sheet'].id}/approve",
+            json={},
+        )
+        assert response.status_code == 200, response.text
+        grant = h.session.exec(
+            select(KnowledgeGrant).where(
+                KnowledgeGrant.entity_id == h.rows["class"].id,
+                KnowledgeGrant.player_character_id == h.rows["character"].id,
+            )
+        ).one()
+        before = h.snapshot()
+        response = call(
+            client, h, "DELETE", f"/grants/{grant.id}", params={"silent": silent}
+        )
+        assert response.status_code == 204
+        assert h.snapshot() == before
+        poll_all(client, h)
 
 
 @pytest.mark.parametrize("shape", ["one_pc", "one_entity"])

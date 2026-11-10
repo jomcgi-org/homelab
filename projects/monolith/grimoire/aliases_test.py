@@ -14,14 +14,19 @@ from sqlalchemy import event
 from sqlalchemy.exc import DBAPIError
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from grimoire import aliases
+from grimoire import aliases, knowledge_sources
 from grimoire.models import (
     AliasCandidate,
+    Campaign,
+    CharacterSheetVersion,
     ChunkEntityMention,
     Embedding,
     Entity,
     EntityNpc,
     KnowledgeChunk,
+    KnowledgeContribution,
+    KnowledgeGrant,
+    PlayerCharacter,
     Relationship,
 )
 from grimoire.router import router
@@ -298,6 +303,131 @@ def test_merge_rewrites_mentions_edges_and_typed_detail(session: Session):
     assert embedder.calls == [
         ["Gundren Rockseeker: full summary | map summary | short summary"]
     ]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize(
+    "short_scope,full_scope", [("full", "name_only"), ("name_only", "full")]
+)
+def test_alias_merge_preserves_manual_maximum_after_recompute(
+    session, legacy, short_scope, full_scope
+):
+    short = _entity(session, "npc", "Gundren")
+    full = _entity(session, "npc", "Gundren Rockseeker")
+    chunk = _chunk(session, "c1", "Gundren Rockseeker was known as Gundren.")
+    _mention(session, chunk, short)
+    _mention(session, chunk, full)
+    campaign = Campaign(name="Alias grants")
+    session.add(campaign)
+    session.flush()
+    pc = PlayerCharacter(campaign_id=campaign.id, character_name="Arden")
+    session.add(pc)
+    session.flush()
+    grants = [
+        KnowledgeGrant(
+            campaign_id=campaign.id,
+            player_character_id=pc.id,
+            entity_id=entity.id,
+            grant_scope=scope,
+            revealed_details={entity.name: "manual clue", "conflict": entity.name},
+        )
+        for entity, scope in ((short, short_scope), (full, full_scope))
+    ]
+    session.add_all(grants)
+    session.flush()
+    if not legacy:
+        for grant in grants:
+            knowledge_sources.preserve_manual(session, grant)
+    short_id, full_id, removed_id = short.id, full.id, grants[0].id
+    session.commit()
+    candidate = _candidate(session)
+    _approve(session, candidate)
+    asyncio.run(
+        aliases.execute_approved_candidate(session, candidate.id, FakeEmbedClient())
+    )
+    session.expire_all()
+    assert session.get(Entity, short_id) is None
+    assert session.get(KnowledgeGrant, removed_id) is None
+    survivor = session.exec(select(KnowledgeGrant)).one()
+    assert survivor.entity_id == full_id
+    assert survivor.grant_scope == "full"
+    assert knowledge_sources.recompute(session, survivor)
+    assert survivor.grant_scope == "full"
+    assert survivor.revealed_details == {
+        "Gundren": "manual clue",
+        "Gundren Rockseeker": "manual clue",
+        "conflict": "Gundren Rockseeker",
+    }
+    sources = knowledge_sources.contributions(session, survivor)
+    assert [(source.source_key, source.grant_scope) for source in sources] == [
+        ("manual", "full")
+    ]
+
+
+@pytest.mark.parametrize("overlap", [False, True])
+def test_alias_merge_moves_sheet_sources_without_inventing_manual_sources(
+    session, overlap
+):
+    short = _entity(session, "race", "Elf", book="system-reference-doc-5-1")
+    full = _entity(session, "race", "High Elf", book="system-reference-doc-5-1")
+    campaign = Campaign(name="Alias sheet sources")
+    session.add(campaign)
+    session.flush()
+    pc = PlayerCharacter(campaign_id=campaign.id, character_name="Arden")
+    session.add(pc)
+    session.flush()
+    versions = [
+        CharacterSheetVersion(
+            campaign_id=campaign.id,
+            player_character_id=pc.id,
+            version=index,
+            created_by_email="player@example.test",
+            sheet={},
+        )
+        for index in (1, 2)
+    ]
+    grants = [
+        KnowledgeGrant(
+            campaign_id=campaign.id,
+            player_character_id=pc.id,
+            entity_id=entity.id,
+            grant_scope="full",
+        )
+        for entity in (short, full)
+    ]
+    session.add_all([*versions, *grants])
+    session.flush()
+    sources = [
+        KnowledgeContribution(
+            grant_id=grant.id,
+            source_key=f"sheet:{version.id}",
+            source_sheet_version_id=version.id,
+            grant_scope="full",
+        )
+        for grant, version in zip(
+            grants, [versions[0], versions[0] if overlap else versions[1]]
+        )
+    ]
+    session.add_all(sources)
+    session.commit()
+    source_id = sources[0].id
+    aliases._rewrite_grants(session, short, full)
+    session.commit()
+    session.expire_all()
+    survivor = session.exec(select(KnowledgeGrant)).one()
+    assert survivor.entity_id == full.id
+    assert knowledge_sources.recompute(session, survivor)
+    assert survivor.grant_scope == "full"
+    remaining = knowledge_sources.contributions(session, survivor)
+    expected_versions = (
+        {versions[0].id} if overlap else {version.id for version in versions}
+    )
+    assert {source.source_sheet_version_id for source in remaining} == expected_versions
+    assert {source.source_key for source in remaining} == {
+        f"sheet:{vid}" for vid in expected_versions
+    }
+    if not overlap:
+        assert session.get(KnowledgeContribution, source_id).grant_id == survivor.id
 
 
 def test_generic_detail_merge_is_recursive_and_survivor_wins(session: Session):

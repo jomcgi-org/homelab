@@ -164,7 +164,7 @@ def creation_entities(session: Session, version: CharacterSheetVersion) -> set[s
         selected[field] = matches[0].id
     roots = set(selected.values())
     links = session.exec(
-        select(Entity, Relationship)
+        select(Entity)
         .join(Relationship, Relationship.from_entity_id == Entity.id)
         .where(
             common_knowledge_predicate(),
@@ -173,15 +173,14 @@ def creation_entities(session: Session, version: CharacterSheetVersion) -> set[s
             Entity.entity_type == "class_feature",
         )
         .order_by(Entity.id)
-        .limit(MAX_CREATION_LINKS + 1)
-    ).all()
-    if len(links) > MAX_CREATION_LINKS:
-        raise ValueError("too many creation knowledge links")
+    ).yield_per(MAX_CREATION_LINKS + 1)
     related = set()
-    for entity, _ in links:
+    for entity in links:
         level = (entity.detail or {}).get("level")
         if type(level) is int and 1 <= level <= version.sheet["level"]:
             related.add(entity.id)
+            if len(related) > MAX_CREATION_LINKS:
+                raise ValueError("too many creation knowledge links")
     # SUBRACE_OF points from the selected ancestry to its parent race.
     parents = session.exec(
         select(Entity)
