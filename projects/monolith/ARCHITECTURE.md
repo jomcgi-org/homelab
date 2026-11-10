@@ -993,16 +993,22 @@ sat in `landing` with independent exact-head approval and passing CI, most for
 four days. Per-head grants were the only authority for ordinary work, so every
 merge waited for a person and intake found no candidates behind the open PRs.
 `delivery_landing_delegation` lets a standing operator delegate that decision
-once, inside a previewed deny-list and rolling cap. The factory's own code and
-its monolith `core/`, `agent/`, `agent_sessions/`, `swarm/`, `app/`, `framework/`
-and `shared/` dependencies stay outside it, along with the repository catalog.
-Frontend build/configuration and exposure guards, hooks, secret redaction and
-the root authority guard tests also need an operator, as listed in
+once, inside a previewed deny-list and rolling cap. All EmberVM, Firecracker and
+MCP project paths stay outside it. The monolith exclusions cover the factory,
+shared identity and credentials, knowledge ingestion and caller authorization,
+the repository catalog API, observability, scheduler, Grimoire, sandbox,
+guest cluster reads and personal-retrieval audit, as listed in
 [the boundary](factory/orchestration/FACTORY.md#standing-delivery-landing-delegation).
-`projects/monolith/BUILD` remains eligible; preview discloses that
-independent review and required CI must preserve its factory and guard test
-declarations. Revoke the delegation and return to per-head grants if the typed
-review's scope classification proves unreliable.
+Frontend build/configuration, exposure guards, hooks and root authority tests
+remain excluded. `projects/monolith/BUILD` is excluded because it controls the
+factory's production entrypoint, `PYTHONPATH`, packaged dependencies and tests.
+
+The deny-list excludes known paths; it does not isolate code running inside
+the monolith. `app/modules_private.py` loads other domains into the factory's
+process with its DB session and credentials. Safety of remaining in-process
+code relies on typed independent review, not the deny-list. Preview exposes
+this limitation. Revoke the delegation and return to per-head grants if the
+typed review's scope classification proves unreliable.
 
 Measure, over the 72 hours before and after the operator's activation: receipts
 in `landing` older than 24 hours (`factory_status`), and agent-authored merges

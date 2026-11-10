@@ -38,7 +38,9 @@ AUTHORITY_PATHS = (
     "projects/monolith/shared/invocation_outcomes.py",
     "projects/monolith/shared/pricing.py",
     "projects/monolith/goosecracker/repo_catalog.py",
-    "projects/monolith/goosecracker/repo_catalog_test.py",
+    "projects/monolith/goosecracker/tests/repo_catalog_test.py",
+    "projects/monolith/goosecracker/api.py",
+    "projects/monolith/goosecracker/__init__.py",
     "projects/monolith/frontend/BUILD",
     "projects/monolith/frontend/svelte.config.js",
     "projects/monolith/frontend/vite.config.js",
@@ -49,8 +51,33 @@ AUTHORITY_PATHS = (
     "projects/monolith/frontend/src/hooks.server.test.js",
     "projects/monolith/knowledge/redact.py",
     "projects/monolith/knowledge/redact_test.py",
+    "projects/monolith/knowledge/api.py",
+    "projects/monolith/knowledge/retrieval_policy.py",
+    "projects/monolith/knowledge/visibility.py",
+    "projects/monolith/knowledge/mcp.py",
+    "projects/monolith/observability/factory_goals.py",
+    "projects/monolith/scheduler/api.py",
+    "projects/monolith/grimoire/visibility.py",
+    "projects/monolith/sandbox/mcp.py",
+    "projects/monolith/agent_kubernetes/client.py",
+    "projects/monolith/personal_retrieval_audit/BUILD",
+    "projects/monolith/BUILD",
     "projects/monolith/import_boundaries_test.py",
     "projects/monolith/observability_snapshot_grants_test.py",
+    "projects/firecracker/substrate/egress-proxy/cmd/broker_transport.go",
+    "projects/firecracker/substrate/egress-proxy/cmd/main.go",
+    "projects/firecracker/substrate/egress-proxy/cmd/classify.go",
+    "projects/firecracker/substrate/egress-proxy/cmd/quota.go",
+    "projects/embervm/xds/cmd/main.go",
+    "projects/embervm/noded/fcvm/driver/jail.go",
+    "projects/embervm/noded/fcvm/driver/uidlease_linux.go",
+    "projects/embervm/noded/egress/forwarder.go",
+    "projects/embervm/control/lib/embervm/key_service.ex",
+    "projects/embervm/control/lib/embervm/key_service/envelope.ex",
+    "projects/embervm/control/lib/embervm/customer_kms.ex",
+    "projects/embervm/control/lib/embervm/s3_client/sigv4.ex",
+    "projects/embervm/control/lib/embervm/artifact_principal.ex",
+    "projects/mcp/README.md",
 )
 
 
@@ -336,15 +363,34 @@ def rewrite_scope(engine, case, **changes):
     "path",
     [
         "projects/monolith/chat/summaries.py",
-        "projects/monolith/BUILD",
-        "projects/embervm/runtimes/ping/main.go",
-        "projects/embervm/runtimes/ping/BUILD",
         "projects/scotland-connector/internal/forecast/window_test.go",
         "projects/monolith/frontend/src/lib/server/imgproxy.js",
     ],
 )
 def test_private_project_paths_are_inside_the_boundary(path):
     assert delegation.denied(path) is False
+
+
+@pytest.mark.parametrize(
+    "root",
+    [
+        "projects/embervm/",
+        "projects/firecracker/",
+        "projects/mcp/",
+        "projects/monolith/agent_kubernetes/",
+        "projects/monolith/goosecracker/",
+        "projects/monolith/grimoire/",
+        "projects/monolith/knowledge/",
+        "projects/monolith/observability/",
+        "projects/monolith/personal_retrieval_audit/",
+        "projects/monolith/sandbox/",
+        "projects/monolith/scheduler/",
+    ],
+)
+@pytest.mark.parametrize("leaf", ["BUILD", "__init__.py", "nested/new_helper.py"])
+def test_runtime_roots_exclude_all_files_without_sensitive_path_words(root, leaf):
+    # Synthetic future files must not need another sensitive-name enumeration.
+    assert delegation.denied(root + leaf) is True
 
 
 @pytest.mark.parametrize(
@@ -368,6 +414,8 @@ def test_private_project_paths_are_inside_the_boundary(path):
         "projects/platform/authentik/blueprint.yaml",
         "projects/monolith/auth/api.py",
         "projects/embervm/tokenbroker/main.go",
+        "projects/embervm/runtimes/ping/main.go",
+        "projects/embervm/runtimes/ping/BUILD",
         "projects/monolith/shared/oauth_client.py",
         "projects/monolith/chat/secret_store.py",
         "projects/monolith/frontend/src/routes/public/slop/+page.svelte",
@@ -395,10 +443,13 @@ def test_standing_preview_apply_is_default_off_bounded_and_replay_safe(db):
     preview, applied, args = configure(db)
     assert preview["deny_rules"] == delegation.DENY_RULES
     assert preview["path_limitations"] == [
-        "projects/monolith/BUILD remains eligible and declares the "
-        "gazelle-excluded factory and guard tests. The deny-list cannot "
-        "detect their removal; independent review and required CI must "
-        "preserve those test declarations."
+        "The deny-list excludes known authority and runtime paths, "
+        "not every factory dependency or credential surface. Remaining "
+        "in-process monolith code shares the factory's DB session and "
+        "credentials; its safety relies on typed independent review, "
+        "not path isolation. projects/monolith/BUILD is excluded, "
+        "including its image entrypoints, PYTHONPATH, packaged backend "
+        "and test declarations."
     ]
     assert (preview["max_landings"], preview["max_files"]) == (5, 40)
     assert applied == {
