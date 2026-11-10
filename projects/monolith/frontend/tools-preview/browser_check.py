@@ -37,7 +37,7 @@ def check_reflow(page, width):
         if (!r.width || !r.height) continue;
         if (r.left < -1 || r.right > innerWidth + 1) bad.push({tag: el.tagName, class: el.className, left: r.left, right: r.right});
       }
-      const clipped = [...document.querySelectorAll('.body-scroll,.chat-log,.log,.panel-body,.sheet-card')].filter(el => el.scrollWidth > el.clientWidth + 1).map(el => el.className);
+      const clipped = [...document.querySelectorAll('.body-scroll,.chat-log,.log,.panel-body,.note-drawer,.sheet-card')].filter(el => el.scrollWidth > el.clientWidth + 1).map(el => el.className);
       return {viewport: innerWidth, document: document.documentElement.scrollWidth, bad, clipped};
     }""")
     assert result["document"] <= width, result

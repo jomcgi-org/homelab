@@ -199,6 +199,29 @@ describe("notes real page", () => {
   });
 });
 describe("Qwen real page", () => {
+  it("disables session controls during streaming and stops with AbortController", async () => {
+    fetch.mockImplementation(async (path, options) => {
+      if (path.endsWith("stats")) return Response.json(stats);
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(sse([qwenEvents[0]])));
+            options.signal.addEventListener("abort", () =>
+              controller.error(new DOMException("Stopped", "AbortError")),
+            );
+          },
+        }),
+      );
+    });
+    await show("qwen");
+    await enter("textarea", "Synthetic slow prompt");
+    button("Send").click();
+    await vi.waitFor(() => expect(button("Stop")).toBeDefined());
+    expect(button("+ New chat").disabled).toBe(true);
+    button("Stop").click();
+    await vi.waitFor(() => expect(text()).toContain("stopped"));
+    expect(button("+ New chat").disabled).toBe(false);
+  });
   it("starts empty, streams reasoning/answer, persists sessions and shows stats", async () => {
     fetch.mockImplementation(async (path) =>
       path.endsWith("stats")

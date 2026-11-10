@@ -1116,7 +1116,12 @@
     padding: 1.5rem;
     font-family: var(--font-code);
     z-index: 100;
-    animation: slideIn 200ms ease-out;
+    overflow-wrap: anywhere;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .note-drawer {
+      animation: slideIn 200ms ease-out;
+    }
   }
   @keyframes slideIn {
     from {
