@@ -39,63 +39,66 @@ RATE_WINDOW = timedelta(hours=24)
 REPAIR_MARKER = "<!-- factory-problem:"
 
 # Everything outside projects/ (CI, Bazel tooling, docs, root instructions)
-# stays with an operator. These rules exclude known authority and runtime
-# surfaces, not every path that can affect credentials or the factory process.
-# Remaining in-process monolith code relies on the typed review for safety.
+# stays with an operator. Inside it, the boundary Joe set on 2026-11-10 excludes
+# the factory and the packages it imports, deployment and schema, credential
+# and isolation code, and public routes. Other private project code is
+# eligible: the typed review's effect flags, required CI and the merge queue
+# gate every such merge. Do not widen these rules into whole projects or
+# domains without his decision; that made the delegation match almost nothing.
 DENY_RULES = {
     "root": "projects/",
     "prefixes": [
-        "projects/design-system/",
-        "projects/embervm/",
-        "projects/firecracker/",
+        "projects/embervm/control/lib/embervm/artifact_principal",
+        "projects/embervm/control/lib/embervm/customer_kms",
+        "projects/embervm/control/lib/embervm/key_service",
+        "projects/embervm/control/lib/embervm/s3_client/",
+        "projects/embervm/noded/egress/",
+        "projects/embervm/noded/fcvm/driver/",
+        "projects/embervm/xds/",
+        "projects/firecracker/substrate/egress-proxy/",
         "projects/gke-apps/",
         "projects/gke-cluster/",
-        "projects/mcp/",
         "projects/monolith-public/",
         "projects/monolith/agent/",
         "projects/monolith/agent_kubernetes/",
         "projects/monolith/agent_sessions/",
         "projects/monolith/app/",
         "projects/monolith/artifact/",
-        "projects/monolith/campsites/",
         "projects/monolith/core/",
-        "projects/monolith/dr_jobs/",
         "projects/monolith/faas/",
         "projects/monolith/factory/",
         "projects/monolith/framework/",
-        "projects/monolith/frontend/",
-        "projects/monolith/goosecracker/",
-        "projects/monolith/grimoire/",
-        "projects/monolith/grimoire_chat/",
-        "projects/monolith/hikes/",
-        "projects/monolith/home/",
-        "projects/monolith/knowledge/",
-        "projects/monolith/observability/",
         "projects/monolith/personal_retrieval_audit/",
         "projects/monolith/sandbox/",
-        "projects/monolith/scheduler/",
         "projects/monolith/shared/",
-        "projects/monolith/ships/",
-        "projects/monolith/stars/",
         "projects/monolith/swarm/",
-        "projects/monolith/trips/",
-        "projects/monolith/worldcup/",
         "projects/operators/",
         "projects/platform-gke/",
         "projects/platform/",
     ],
     "paths": [
         "projects/monolith/ARCHITECTURE.md",
-        "projects/monolith/BUILD",
+        "projects/monolith/campsites/__init__.py",
+        "projects/monolith/dr_jobs/__init__.py",
         "projects/monolith/frontend/BUILD",
+        "projects/monolith/frontend/src/build-exclusions.test.js",
+        "projects/monolith/frontend/src/lib/cache-headers.js",
         "projects/monolith/frontend/svelte.config.js",
         "projects/monolith/frontend/vite.config.js",
         "projects/monolith/frontend/vitest.config.js",
-        "projects/monolith/frontend/src/build-exclusions.test.js",
         "projects/monolith/goosecracker/repo_catalog.py",
         "projects/monolith/goosecracker/tests/repo_catalog_test.py",
+        "projects/monolith/grimoire_chat/__init__.py",
+        "projects/monolith/hikes/__init__.py",
+        "projects/monolith/home/__init__.py",
         "projects/monolith/import_boundaries_test.py",
+        "projects/monolith/knowledge/retrieval_policy.py",
+        "projects/monolith/observability/factory_goals.py",
         "projects/monolith/observability_snapshot_grants_test.py",
+        "projects/monolith/ships/__init__.py",
+        "projects/monolith/stars/__init__.py",
+        "projects/monolith/trips/__init__.py",
+        "projects/monolith/worldcup/__init__.py",
     ],
     "segments": [
         "chart",
@@ -112,7 +115,10 @@ DENY_RULES = {
         "authentik",
         "credential",
         "credentials",
+        "egress",
         "hooks",
+        "jail",
+        "kms",
         "kyverno",
         "login",
         "oauth",
@@ -123,11 +129,13 @@ DENY_RULES = {
         "redact",
         "secret",
         "secrets",
+        "sigv4",
         "spiffe",
         "token",
         "tokenbroker",
         "tokens",
         "turnstile",
+        "visibility",
     ],
     "basenames": ["AGENTS.md", "CLAUDE.md", "SKILL.md", "buildbuddy.yaml"],
     "suffixes": [".bzl"],
@@ -240,21 +248,20 @@ def configure(
             path_profile=PATH_PROFILE,
             deny_rules=DENY_RULES,
             path_limitations=[
-                "The deny-list excludes known authority and runtime paths, "
-                "not every factory dependency or credential surface. Remaining "
-                "in-process monolith code shares the factory's DB session and "
-                "credentials; its safety relies on typed independent review, "
-                "not path isolation.",
-                "All current app/modules_public.py domain roots, including "
-                "register_public routing, are excluded, along with the entire "
-                "monolith frontend and projects/design-system shared frontend. "
-                "These known-path exclusions are not a complete public-exposure "
-                "or authentication boundary; typed review must still reject "
-                "public-facing changes.",
-                "projects/monolith/BUILD is excluded in full, including image "
-                "entrypoints, PYTHONPATH, packaged backend and test declarations. "
-                "projects/monolith/ARCHITECTURE.md is excluded because it defines "
-                "the delivery measure and stop condition.",
+                "The deny-list excludes the factory, the packages it imports, "
+                "deployment, schema, credential, isolation and public-route "
+                "paths. It is not a complete boundary: eligible monolith code "
+                "runs in the factory's process, so its safety relies on the "
+                "typed independent review, required CI and the merge queue.",
+                "Public domain route registration (each domain __init__.py in "
+                "app/modules_public.py) is excluded. API and MCP modules inside "
+                "eligible domains are not excluded by path; the typed review "
+                "must set public_facing or security_sensitive for them.",
+                "projects/monolith/BUILD is eligible because most monolith "
+                "changes must edit it. It also declares image entrypoints and "
+                "guard tests; review and required CI must preserve those. "
+                "projects/monolith/ARCHITECTURE.md is excluded because it "
+                "defines the delivery measure and stop condition.",
                 "Binary (non-UTF-8) regular blobs remain eligible. Immutable "
                 "tree checks bind blob identities and modes but do not inspect "
                 "content or encoding. A typed review unable to assess that "
