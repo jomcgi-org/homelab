@@ -1001,6 +1001,20 @@ holds still ask. Measure over
 expected zero. Revert if a stop is applied while a repair of that node is
 pending.
 
+**Why an operator can release a text hold:** on 2026-11-10, 42 of 83 open PRs
+were classed `explicit_hold`, most because their descriptions said "leave
+unmerged". Joe approved landing about 29 of them, and the only way to say so was
+to rewrite each description, because discovery deliberately does not interpret
+hold prose. `factory_release_owner_pr_hold` records the decision for one PR and
+waives that description and its earlier comments. Labels, assignees, later
+comments, the objective issue and all review, CI and landing gates still bind,
+so the control cannot land anything. Landing status also gains `landing_wait`,
+the current reason an approved delivery lacks authority, which was invisible
+for 22 receipts. Measure over 72 hours either side of rollout: owner PRs
+classed `explicit_hold` (baseline 42) and approved receipts in `landing` with
+no visible reason (baseline 22, expected zero). Revert the release control if
+a released PR lands while it carries a hold label.
+
 **Why a standing delivery owner:** on 2026-11-09, 23 intake-admitted deliveries
 sat in `landing` with independent exact-head approval and passing CI, most for
 four days. Per-head grants were the only authority for ordinary work, so every

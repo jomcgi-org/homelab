@@ -3809,6 +3809,107 @@ def test_owner_pr_activation_preview_cas_replay_preserves_other_policy(db):
         assert session.exec(select(FactoryReceipt)).all() == []
 
 
+HELD_BODY = "Closes #1. Keep this PR draft and unmerged."
+
+
+def release_owner_hold(db, number=100, action="release", key="release-1"):
+    from factory.orchestration import owner_pr_hold_release as release
+
+    digest = release.preview("owner/repo", number, action, "Joe approved landing")[
+        "preview"
+    ]["preview_sha256"]
+    return release.apply(
+        "operator", "owner/repo", number, action, "Joe approved landing", key, digest
+    )
+
+
+def test_owner_pr_hold_release_preview_replay_conflict_and_revoke(db):
+    from factory.orchestration import owner_pr_hold_release as release
+
+    enable_owner_policy(db, owner_policy())
+    with pytest.raises(ValueError, match="owner_pr_hold_release_repo_unknown"):
+        release.preview("other/repo", 100, "release", "reason")
+    with pytest.raises(ValueError, match="owner_pr_hold_not_released"):
+        release.preview("owner/repo", 100, "revoke", "reason")
+    applied = release_owner_hold(db)
+    assert applied["dispatched"] is False
+    # The replay is answered from the audit before the state check.
+    digest = json.loads(audits(db, release.RELEASED)[-1].detail_json)["request"][
+        "expected_preview_sha256"
+    ]
+    replay = ("operator", "owner/repo", 100, "release", "Joe approved landing")
+    assert release.apply(*replay, "release-1", digest) == applied
+    with pytest.raises(ValueError, match="owner_pr_hold_release_request_conflict"):
+        release.apply("operator", "owner/repo", 101, *replay[3:], "release-1", digest)
+    with pytest.raises(ValueError, match="owner_pr_hold_already_released"):
+        release.preview("owner/repo", 100, "release", "again")
+    with pytest.raises(ValueError, match="owner_pr_hold_release_preview_changed"):
+        release.apply(*replay[:3], "revoke", "Joe approved landing", "k2", digest)
+    assert release.read_released_at("owner/repo", 100) is not None
+    assert release.read_released_at("owner/repo", 101) is None
+    release_owner_hold(db, action="revoke", key="revoke-1")
+    assert release.read_released_at("owner/repo", 100) is None
+    assert len(audits(db, release.RELEASED)) == 1
+    assert len(audits(db, release.REVOKED)) == 1
+
+
+def test_owner_pr_hold_release_waives_description_wording_only(db):
+    from factory.orchestration import owner_prs
+
+    enable_owner_policy(db, owner_policy())
+    issues = [issue(1, ["agent-ready"])]
+
+    def blocker(pull):
+        found = owner_prs.candidates("owner/repo", [pull], issues, owner_policy())
+        item = json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"][0]
+        return found, item["blocker"]
+
+    assert blocker(owner_pull(body=HELD_BODY)) == ([], "explicit_hold")
+    release_owner_hold(db)
+    found, reason = blocker(owner_pull(body=HELD_BODY))
+    assert len(found) == 1 and reason != "explicit_hold"
+    # A label is an explicit lever the release never touches.
+    labelled = owner_pull(body=HELD_BODY, labels=[{"name": "human"}])
+    assert blocker(labelled) == ([], "explicit_hold")
+    # Another PR's wording is not covered by this PR's release.
+    assert blocker(owner_pull(number=101, body=HELD_BODY)) == ([], "explicit_hold")
+    release_owner_hold(db, action="revoke", key="revoke-1")
+    assert blocker(owner_pull(body=HELD_BODY)) == ([], "explicit_hold")
+
+
+def test_owner_pr_hold_release_keeps_later_discussion_binding(db, monkeypatch):
+    from factory.orchestration import owner_pr_hold_release as release
+    from factory.orchestration import owner_prs
+
+    enable_owner_policy(db, owner_policy())
+    pull = owner_pull(draft=False, body=HELD_BODY)
+    old = {
+        "body": "Leave unmerged for now.",
+        "created_at": "2026-08-01T00:00:00Z",
+        "updated_at": "2026-08-01T00:00:00Z",
+    }
+    task = {
+        "repo": "owner/repo",
+        "delivery_pr_number": 100,
+        "owner_pr": {"author_id": 42, "observed_head_sha": "b" * 40},
+    }
+    owner_reads(monkeypatch, pull, issue(1, ["agent-ready"]), [old])
+    with pytest.raises(ValueError, match="owner_pr_explicit_hold"):
+        owner_prs.assert_unheld(task, pull)
+    release_owner_hold(db)
+    assert owner_prs.assert_unheld(task, pull) is None
+    released = release.read_released_at("owner/repo", 100)
+    later = (released + timedelta(seconds=1)).isoformat()
+    for comment in (
+        {"body": "Leave unmerged for now.", "created_at": later},
+        {**old, "updated_at": later},
+        {"body": "Leave unmerged for now."},
+    ):
+        owner_reads(monkeypatch, pull, issue(1, ["agent-ready"]), [old, comment])
+        with pytest.raises(ValueError, match="owner_pr_explicit_discussion_hold"):
+            owner_prs.assert_unheld(task, pull)
+
+
 def test_owner_pr_new_human_hold_fences_further_delivery(db, monkeypatch):
     from factory.orchestration import owner_prs
 
