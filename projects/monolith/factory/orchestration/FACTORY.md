@@ -446,7 +446,8 @@ Issue #7450 retains operational acceptance. The staged implementation connects
 `factory_rollout.py`, `factory_landing.py` and `factory_rollback_runtime.py` to
 the `factory_rollback.py` evidence and reservation core. No deployed policy enables
 rollback, and `promotion.revisionGate.enabled` remains off. Existing
-`MONOLITH_CHART_VERSION` and `/healthz` `chart_version` wiring is unchanged.
+`MONOLITH_CHART_VERSION` wiring is reused. Both healthy and unhealthy `/healthz`
+responses include `chart_version` for revision-scoped evidence.
 
 The policy defaults to `enabled: false`, `window_minutes: 15` and
 `max_per_hour: 2`. `charts.<chart>.window_minutes` overrides the observation
@@ -473,6 +474,9 @@ completion requires the configured window and a fresh healthy sample from
 each required signal. `rollout_failed` is an idempotent, terminal delivery
 audit with its evidence, regardless of rollback enablement, holds or breaker
 state. A later healthy read cannot turn that delivery into `rollout_verified`.
+This changes landing observation even with rollback disabled: verification
+waits for the observation window and matching private health, and a confirmed
+failure remains terminal for that delivery.
 
 Intent reservation uses the existing factory control-row transaction lock and
 append-only audit ledger. It reserves once per delivery before external effects
@@ -481,12 +485,22 @@ reservation records one breaker opening and files one `needs-human` issue.
 Source titles, bodies and the complete PR commit inventory identify human and
 generated reverts before factory-ownership checks; automatic revert-of-revert
 requires a person.
+Only failures first observed with both the live control and caller policy
+enabled can reserve a revert. Legacy and disabled-period failures remain
+non-actionable evidence. Reservation expires at the observation window's end,
+or one configured window after the first failure if healthy observation never
+started. Later enablement, healthy samples and breaker expiry cannot renew it.
+Durable per-repository scan cursors rotate the bounded failure, intent and
+breaker batches, including held entries and unavailable sources.
 
 Each intent files a recovery issue and receives one ordinary intake receipt.
 Its private ledger link gives it the deterministic `factory/rollback-<key>`
 branch. Admission, model selection, execution limits and ownership fences are
 unchanged; disabled intake or occupied lanes keep it queued. The ordinary
-implementation worker runs `factory_rollback_source.py`. It verifies the PR
+admission loop skips held recovery receipts so unrelated work can proceed.
+Human re-queue preserves the source link and branch while creating a new task
+identity for each admitted graph. The ordinary implementation worker runs
+`factory_rollback_source.py`. It verifies the PR
 commit count and patch identities against the landed range, reverses every
 rebased commit newest-first, and uses `git revert -m 1` for a true merge.
 It pushes and creates or adopts `revert(<scope>): ...` with `Reverts #N`, without

@@ -163,10 +163,23 @@ def validate_pr_branch(branch: object) -> str:
 
 
 def granted_delivery_surface(direction: object) -> tuple[str | None, int | None]:
-    """The branch and PR an operator direction grants, if it grants either."""
+    """The operator-granted or ledger-linked recovery branch and optional PR."""
     if not isinstance(direction, dict):
         return None, None
     number = direction.get("delivery_pr_number", direction.get("prior_pr_number"))
+    rollback_key = direction.get("rollback_delivery_key")
+    if rollback_key is not None:
+        if not isinstance(rollback_key, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", rollback_key
+        ):
+            raise ValueError("invalid rollback delivery key")
+        branch = "factory/rollback-" + rollback_key[:32]
+        prior_branch = direction.get("delivery_branch", direction.get("prior_branch"))
+        if prior_branch is not None and prior_branch != branch:
+            raise ValueError("rollback delivery branch changed")
+        if number is not None and (type(number) is not int or number <= 0):
+            raise ValueError("the prior pull request number is invalid")
+        return branch, number
     if number is None:
         return None, None
     if type(number) is not int or number <= 0:

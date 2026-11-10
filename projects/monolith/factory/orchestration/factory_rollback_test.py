@@ -411,12 +411,90 @@ def test_breaker_two_then_third_and_replay(engine):
     assert len(events(engine, "rollback_breaker_opened")) == 1
     assert len(events(engine, "rollback_reserved")) == 2
     later = NOW + timedelta(hours=1)
+    assert rollback.reserve(POLICY, d, sample(d), now=later) == {
+        "state": "non_actionable",
+        "reason": "failure_window_expired",
+    }
+    # Breaker expiry permits a fresh failure, never an expired queued failure.
+    d = delivery(4)
+    seed(engine, d)
     assert (
         rollback.reserve(
             POLICY, d, sample(d, observed_at=later.isoformat()), now=later
         )["state"]
         == "reserved"
     )
+
+
+@pytest.mark.parametrize("disabled_by", ["caller", "live_policy", "control"])
+def test_failure_observed_while_disabled_never_becomes_actionable(
+    engine, runtime, monkeypatch, disabled_by
+):
+    r, _issues, writes, _pulls = runtime
+    d = delivery()
+    seed(engine, d)
+    with controls._locked_session() as (_db, control):
+        if disabled_by == "live_policy":
+            control.policy_json = json.dumps({})
+        elif disabled_by == "control":
+            control.state = "paused"
+    observed = rollback.observe_window(
+        {} if disabled_by == "caller" else POLICY, d, [sample(d)], now=NOW
+    )
+    assert observed["verdict"] == "rollout_failed"
+    assert observed["automatic_rollback_eligible"] is False
+    with controls._locked_session() as (_db, control):
+        control.state = "enabled"
+        control.policy_json = json.dumps(POLICY)
+    later = NOW + timedelta(days=30)
+    monkeypatch.setattr(r.landing, "_now", lambda: later)
+    monkeypatch.setattr(
+        r, "source_details", lambda _d: pytest.fail("non-actionable source read")
+    )
+    for _ in range(3):
+        r.tick({"repo": d["repo"], **POLICY})
+    assert rollback.reserve(POLICY, d, sample(d), now=later) == {
+        "state": "non_actionable",
+        "reason": "failure_before_enablement",
+    }
+    assert not events(engine, "rollback_reserved")
+    assert not writes
+
+
+@pytest.mark.parametrize("started", [None, NOW - timedelta(minutes=14)])
+def test_enabled_failure_has_bounded_reservation_window(engine, started):
+    d = delivery(
+        merged_at=(NOW - timedelta(minutes=20)).isoformat(),
+        window_started_at=started.isoformat() if started else None,
+    )
+    seed(engine, d)
+    observed = rollback.observe_window(POLICY, d, [sample(d)], now=NOW)
+    deadline = (started or NOW) + timedelta(minutes=15)
+    assert rollback.utc(observed["reservation_deadline"]) == deadline
+    assert observed["automatic_rollback_eligible"] is True
+    assert rollback.reserve(
+        POLICY, d, sample(d), now=deadline + timedelta(seconds=1)
+    ) == {"state": "non_actionable", "reason": "failure_window_expired"}
+    assert not events(engine, "rollback_reserved")
+
+
+def test_legacy_failure_without_enablement_evidence_is_not_actionable(engine):
+    d = delivery()
+    seed(engine, d)
+    with controls._locked_session() as (db, _control):
+        rollback._append(
+            db,
+            d,
+            "rollout_failed",
+            rollback.identity(d),
+            NOW,
+            failure=sample(d),
+            delivery=d,
+        )
+    assert rollback.reserve(POLICY, d, sample(d), now=NOW) == {
+        "state": "non_actionable",
+        "reason": "failure_before_enablement",
+    }
 
 
 def test_revert_of_revert_and_holds(engine):
@@ -717,6 +795,108 @@ def test_issue_create_fence_unknown_never_duplicates(engine, runtime):
     r._record(d, "rollback_external_issue_started", "unknown")
     assert r._issue_once(d, "unknown", "breaker", "evidence", []) is None
     assert not writes
+
+
+@pytest.mark.parametrize(
+    "blocker", ["held", "source_error", "merge_unknown", "needs_human"]
+)
+def test_failure_scan_advances_past_twenty_unreservable_entries(
+    engine, runtime, monkeypatch, blocker
+):
+    r, _issues, _writes, _pulls = runtime
+    for n in range(1, 22):
+        d = delivery(n)
+        seed(engine, d)
+        rollback.observe_window(POLICY, d, [sample(d)], now=NOW)
+        with controls._locked_session() as (db, _control):
+            if n <= 20 and blocker == "held":
+                controls._receipt(db, d["task_id"]).task_paused = True
+            if n <= 20 and blocker == "merge_unknown":
+                row = db.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.task_id == d["task_id"],
+                        FactoryAudit.action == "merged",
+                    )
+                ).one()
+                db.delete(row)
+
+    def source(d):
+        if d["pr_number"] <= 20:
+            if blocker == "source_error":
+                raise ValueError("source unavailable")
+            if blocker == "needs_human":
+                return {**d, "is_revert": True}
+        return d
+
+    errors = []
+    monkeypatch.setattr(r, "source_details", source)
+    monkeypatch.setattr(r.landing, "_error", lambda *args: errors.append(args))
+    monkeypatch.setattr(r, "_issue_once", lambda *_a: None)
+    r.tick({"repo": "owner/repo", **POLICY})
+    assert not events(engine, "rollback_reserved")
+    # Cursor is durable, so the next invocation does not need process-local state.
+    assert events(engine, "rollback_scan_advanced")
+    r.tick({"repo": "owner/repo", **POLICY})
+    assert [e["delivery_key"] for e in events(engine, "rollback_reserved")] == [
+        rollback.identity(delivery(21))
+    ]
+    assert bool(errors) == (blocker == "source_error")
+
+
+@pytest.mark.parametrize("blocker", ["human", "closed_pr"])
+def test_intent_scan_advances_past_twenty_stuck_recoveries(
+    engine, runtime, monkeypatch, blocker
+):
+    r, issues, writes, _pulls = runtime
+    for n in range(1, 22):
+        d = delivery(n)
+        seed(engine, d)
+        when = NOW - timedelta(hours=21 - n)
+        source = {**d, "merged_at": when.isoformat()}
+        assert (
+            rollback.reserve(
+                POLICY, source, sample(source, observed_at=when.isoformat()), now=when
+            )["state"]
+            == "reserved"
+        )
+        rollback.begin_pr_creation(source, now=when)
+        issues[d["issue_number"]] = {
+            "number": d["issue_number"],
+            "state": "closed",
+            "body": "",
+            "labels": [{"name": "human"}] if n <= 20 else [],
+        }
+    monkeypatch.setattr(
+        r,
+        "_pull",
+        lambda d: (
+            pull(d, state="closed")
+            if blocker == "closed_pr" and d["pr_number"] <= 20
+            else None
+        ),
+    )
+    for _ in range(2):
+        # Existing intents still progress with new reservations disabled.
+        r.tick({"repo": "owner/repo", "generation": 0})
+    assert len(events(engine, "rollback_receipt")) == 1
+    assert events(engine, "rollback_receipt")[0]["delivery_key"] == rollback.identity(
+        delivery(21)
+    )
+    assert len([w for w in writes if w[0] == "issues"]) == 1
+
+
+def test_settlement_missing_source_task_remains_unsettled(engine, runtime):
+    r, _issues, _writes, _pulls = runtime
+    d = delivery()
+    seed(engine, d)
+    with controls._locked_session() as (db, _control):
+        db.delete(db.get(SwarmTask, d["task_id"]))
+        for action in ("rollback_landed", "rollback_issue_reopened"):
+            rollback._append(db, d, action, rollback.identity(d), NOW)
+    assert r.settle(d) is False
+    assert not events(engine, "rollback_settled")
+    with Session(engine) as db:
+        assert controls._receipt(db, d["task_id"]).state == "landing"
 
 
 def test_dispatch_replays_same_normal_receipt_after_fence(engine, runtime):

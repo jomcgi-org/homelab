@@ -471,9 +471,11 @@ def settle(delivery):
         row = controls._receipt(db, delivery["task_id"])
         if row is None:
             return False
+        task = db.get(SwarmTask, delivery["task_id"])
+        if task is None:
+            return False
         if controls._quiescence_refusal(db, delivery["task_id"]):
             return False
-        task = db.get(SwarmTask, delivery["task_id"])
         if row.state in {"landing", "succeeded"} and not row.cancellation_requested:
             row.state = "failed"
             task.settled_at = landing._now()
@@ -502,39 +504,74 @@ def settle(delivery):
         return True
 
 
-def tick(policy):
-    """Continue existing recovery work even when new rollback is disabled."""
-    with controls._read_session() as db:
-        failures = _details(db, "rollout_failed")
-        intents = _details(db, "rollback_reserved")
-        breakers = _details(db, "rollback_breaker_opened")
+def _pending_batches(policy):
+    """Persist scan progress before effects, including refused or failed reads."""
+    with controls._locked_session() as (db, _control):
+        actions = ("rollout_failed", "rollback_reserved", "rollback_breaker_opened")
+        entries = {
+            action: [(row.id, json.loads(row.detail_json)) for row in _rows(db, action)]
+            for action in actions
+        }
+        reserved = {d["delivery_key"] for _id, d in entries["rollback_reserved"]}
         settled = {d["delivery_key"] for d in _details(db, "rollback_settled")}
         issue_tokens = {
             d["token"] for d in _details(db, "rollback_external_issue_observed")
         }
-    reserved = {d["delivery_key"] for d in intents}
-    failures = [
-        d
-        for d in failures
-        if d["repo"] == policy["repo"] and d["delivery_key"] not in reserved | settled
-    ]
-    intents = [
-        d
-        for d in intents
-        if d["repo"] == policy["repo"] and d["delivery_key"] not in settled
-    ]
-    breakers = [
-        d
-        for d in breakers
-        if d["repo"] == policy["repo"] and "breaker:" + d["opening"] not in issue_tokens
-    ]
-    for entry in failures[:20]:
+        previous = db.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action == "rollback_scan_advanced")
+            .order_by(FactoryAudit.id.desc())
+            .limit(1)
+        ).first()
+        by_repo = json.loads(previous.detail_json)["cursors"] if previous else {}
+        cursors = by_repo.get(policy["repo"], {}).copy()
+        batches = {}
+        for action, rows in entries.items():
+            eligible = [
+                (row_id, d)
+                for row_id, d in rows
+                if d["repo"] == policy["repo"]
+                and (
+                    d["delivery_key"] not in reserved | settled
+                    if action == "rollout_failed"
+                    else d["delivery_key"] not in settled
+                    if action == "rollback_reserved"
+                    else "breaker:" + d["opening"] not in issue_tokens
+                )
+            ]
+            cursor = cursors.get(action, 0)
+            after = [(row_id, d) for row_id, d in eligible if row_id > cursor]
+            before = [(row_id, d) for row_id, d in eligible if row_id <= cursor]
+            batch = (after + before)[:20]
+            batches[action] = [d for _id, d in batch]
+            if batch:
+                cursors[action] = batch[-1][0]
+        if any(batches.values()):
+            by_repo[policy["repo"]] = cursors
+            controls._audit(
+                db,
+                rollback.ACTOR,
+                "rollback_scan_advanced",
+                repo=policy["repo"],
+                cursors=by_repo,
+            )
+        return tuple(batches[action] for action in actions)
+
+
+def tick(policy):
+    """Continue existing recovery work even when new rollback is disabled."""
+    failures, intents, breakers = _pending_batches(policy)
+    for entry in failures:
         delivery = entry["delivery"]
         if delivery["repo"] != policy["repo"]:
             continue
         try:
             if not controls.rollback_policy(policy)["enabled"]:
                 continue  # Failure is already durable; no new effects while off.
+            if entry.get("automatic_rollback_eligible") is not True or (
+                landing._now() > rollback.utc(entry["reservation_deadline"])
+            ):
+                continue  # Legacy, default-off and expired failures stay evidence only.
             delivery = source_details(delivery)
             decision = rollback.reserve(
                 policy, delivery, entry["failure"], now=landing._now()
@@ -550,7 +587,7 @@ def tick(policy):
                 )
         except Exception as exc:  # noqa: BLE001 - isolate an unavailable source; preserve its ledger
             landing._error(delivery["task_id"], "rollback_reserve", exc)
-    for entry in breakers[:20]:
+    for entry in breakers:
         delivery = entry.get("delivery")
         if delivery is None or delivery["repo"] != policy["repo"]:
             continue
@@ -566,7 +603,7 @@ def tick(policy):
             )
         except Exception as exc:  # noqa: BLE001 - an uncertain write is reconciled, never replayed
             landing._error(delivery["task_id"], "rollback_breaker_issue", exc)
-    for entry in intents[:20]:
+    for entry in intents:
         delivery = entry["delivery"]
         if delivery["repo"] != policy["repo"]:
             continue

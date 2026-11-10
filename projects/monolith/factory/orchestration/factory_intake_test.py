@@ -228,8 +228,7 @@ def test_full_repo_autonomous_queue_cannot_overtake_operator_receipts(
         assert controls.finish_task(admitted["task_id"], "succeeded", "test")["ok"]
 
 
-@pytest.mark.parametrize("held", [False, True])
-def test_rollback_receipt_uses_normal_admission_and_parent_fence(db, policy, held):
+def queued_rollback(db, policy, held=False):
     enable(policy)
     issue(1)
     parent_id = admit_next("scheduler")["task_id"]
@@ -259,9 +258,25 @@ def test_rollback_receipt_uses_normal_admission_and_parent_fence(db, policy, hel
             delivery_key=key,
         )
         session.commit()
+    return parent_id, child, key
+
+
+@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("unrelated", [False, True])
+def test_rollback_receipt_uses_normal_admission_and_parent_fence(
+    db, policy, held, unrelated
+):
+    policy["issue_numbers"] = [1, 2, 3]
+    parent_id, child, key = queued_rollback(db, policy, held)
+    if unrelated:
+        other = issue(3)["receipt"]["id"]
     result = admit_next("scheduler")
     if held:
-        assert result["reason"] == "rollback_recovery_held"
+        if unrelated:
+            assert result["ok"], result
+            assert result["receipt_id"] == other
+        else:
+            assert result["reason"] == "rollback_recovery_held"
         with Session(db) as session:
             assert session.get(FactoryReceipt, child).state == "queued"
     else:
@@ -272,6 +287,60 @@ def test_rollback_receipt_uses_normal_admission_and_parent_fence(db, policy, hel
             assert controls._can_start(
                 session, session.get(FactoryControl, "factory"), result["task_id"]
             ) == {"ok": False, "reason": "rollback_parent_held"}
+
+
+@pytest.mark.parametrize("existing_pr", [None, 42])
+def test_requeued_rollback_preserves_branch_fences_and_uses_fresh_task(
+    db, policy, existing_pr
+):
+    from factory.orchestration import factory_decisions as decisions
+
+    parent_id, receipt_id, key = queued_rollback(db, policy)
+    first = admit_next("scheduler")
+    assert first["ok"], first
+    branch = "factory/rollback-" + key[:32]
+    for _ in range(2):
+        with Session(db) as session:
+            row = session.get(FactoryReceipt, receipt_id)
+            prior_id = row.task_id
+            row.state = "escalated"
+            direction = decisions._direction(
+                row,
+                {
+                    "branch": branch,
+                    "pr_number": existing_pr,
+                    "question": "Inspect create",
+                },
+                {"key": "retry", "label": "Continue", "effect": "agent-ready"},
+                "operator",
+                "Inspected the existing branch",
+            )
+            assert direction["rollback_delivery_key"] == key
+            assert direction["rollback_parent_task_id"] == parent_id
+            assert prior_id in direction["previous_task_ids"]
+            row.direction_json = json.dumps(direction)
+            decisions._requeue(row)
+            session.commit()
+        admitted = admit_next("scheduler")
+        assert admitted["ok"], admitted
+        assert admitted["task_id"] != prior_id
+        with Session(db) as session:
+            row = session.get(FactoryReceipt, receipt_id)
+            assert controls.granted_delivery_surface(
+                json.loads(row.direction_json)
+            ) == (
+                branch,
+                existing_pr,
+            )
+            assert session.get(SwarmTask, prior_id) is not None
+            parent = controls._receipt(session, parent_id)
+            parent.task_paused = True
+            session.commit()
+            assert controls._can_start(
+                session, session.get(FactoryControl, "factory"), admitted["task_id"]
+            ) == {"ok": False, "reason": "rollback_parent_held"}
+            parent.task_paused = False
+            session.commit()
 
 
 @pytest.mark.parametrize("identity", ["canonical", "alias", "legacy"])

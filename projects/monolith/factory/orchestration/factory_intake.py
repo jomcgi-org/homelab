@@ -744,6 +744,10 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         # global ceiling and its contended split stay owned by open_lanes:
         # only a tier with room in `available` admits anything.
         row = None
+        recovery_identity = None
+        recovery_refusal = None
+        from factory.orchestration.factory_rollback_runtime import admission_identity
+
         for candidate in candidates:
             if candidate.actor in (
                 INTAKE_ACTOR,
@@ -792,6 +796,11 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                     label="human",
                 )
                 continue
+            try:
+                candidate_recovery_identity = admission_identity(db, candidate)
+            except ValueError as exc:
+                recovery_refusal = str(exc)
+                continue
             tier = routes[receipt_task_class(candidate)]["tier"]
             if tier not in available:
                 continue
@@ -804,8 +813,15 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             if held >= repo_limits[tier]:
                 continue
             row = candidate
+            recovery_identity = candidate_recovery_identity
             break
         if row is None:
+            if recovery_refusal is not None:
+                return {
+                    "ok": False,
+                    "reason": "rollback_recovery_held",
+                    "detail": recovery_refusal,
+                }
             remaining = [
                 candidate for candidate in candidates if candidate.state == "queued"
             ]
@@ -922,12 +938,11 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                     "reason": "model_restriction_invalid",
                     "detail": str(exc),
                 }
-        from factory.orchestration.factory_rollback_runtime import admission_identity
-
-        try:
-            task_id = admission_identity(db, row) or mint_task_id()
-        except ValueError as exc:
-            return {"ok": False, "reason": "rollback_recovery_held", "detail": str(exc)}
+        # Recovery keeps its branch across attempts, but every admitted graph
+        # needs its own task primary key and accounting history.
+        task_id = recovery_identity or mint_task_id()
+        if recovery_identity and db.get(SwarmTask, task_id) is not None:
+            task_id = mint_task_id()
         task = SwarmTask(
             id=task_id,
             task_text=(
