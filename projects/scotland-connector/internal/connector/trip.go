@@ -30,7 +30,9 @@ func (s *Service) walks() *walks.Dataset {
 	}
 	ds := s.Walks.Current()
 	if ds != nil && s.Hills != nil {
-		return ds.WithHills(s.Hills.Current())
+		if hills := s.Hills.Current(); hills != nil {
+			return s.hillCache.join(ds, hills)
+		}
 	}
 	return ds
 }

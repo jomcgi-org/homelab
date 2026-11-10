@@ -382,9 +382,10 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 	if err := limits.needsComplete(wk); err != nil {
 		return nil, err
 	}
-	if err := hills.available(wk); err != nil {
+	if err := hills.available(wk, s.Hills != nil); err != nil {
 		return nil, err
 	}
+	unfiltered := wk
 	wk = hills.filter(wk)
 	res := CheckResult{Items: make([]CheckResultItem, len(plans)), HillFilter: hills}
 	if walk && limits.walks().Active() {
@@ -399,6 +400,13 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 			res.Items[i] = CheckResultItem{Activity: ActivityWalk, Date: cp.item.Date, Error: noteWalksLoading}
 		default:
 			res.Items[i] = s.checkWalk(wk, cp, now, limits.walks())
+			if res.Items[i].Error != "" && hills.active() {
+				if cp.item.WalkID != "" && unfiltered.ByID(cp.item.WalkID) != nil {
+					res.Items[i].Error = "Walk with walk_id " + cp.item.WalkID + " does not match the requested hill filters."
+				} else if cp.item.WalkID == "" && len(unfiltered.Named(cp.name)) > 0 {
+					res.Items[i].Error = "Walks matching the requested name do not match the requested hill filters."
+				}
+			}
 		}
 		if res.Items[i].Error == "" {
 			results++

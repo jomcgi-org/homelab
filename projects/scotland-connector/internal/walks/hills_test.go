@@ -2,8 +2,35 @@ package walks
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
+
+func TestHillNameKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		keys []string
+	}{
+		{"Ben Nevis", []string{"ben nevis"}},
+		{"Ben Nevis [Beinn Nibheis]", []string{"ben nevis beinn nibheis", "ben nevis", "beinn nibheis"}},
+		{"Bla Bheinn [Blaven]", []string{"bla bheinn blaven", "bla bheinn", "blaven"}},
+		{"Ben Macdui [Beinn Macduibh]", []string{"ben macdui beinn macduibh", "ben macdui", "beinn macduibh"}},
+		{"Ben Nevis []", []string{"ben nevis"}},
+	} {
+		if got := HillNameKeys(tc.name); !reflect.DeepEqual(got, tc.keys) {
+			t.Fatalf("%s: got %v, want %v", tc.name, got, tc.keys)
+		}
+		d := hillFixture()
+		d.Hills = d.Hills[:1]
+		d.Hills[0].Name = tc.name
+		for _, key := range tc.keys {
+			w := &Walk{SummitNames: []string{key}, Lat: 56.79685, Lon: -5.00351, LengthKm: 17}
+			if hits, inferred := d.Match(w); len(hits) != 1 || inferred {
+				t.Fatalf("%s: %+v, inferred=%v", key, hits, inferred)
+			}
+		}
+	}
+}
 
 func hillFixture() *HillDataset {
 	return &HillDataset{SchemaVersion: 1, Source: HillSource{Name: "DoBIH", Version: "18.6", Attribution: "The Database of British and Irish Hills v18.6", URL: HillSourceURL, License: HillLicense, Modifications: "Filtered to Scotland; joined to walks."}, Hills: []Hill{

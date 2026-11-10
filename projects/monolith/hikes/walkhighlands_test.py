@@ -2,6 +2,8 @@
 
 import uuid
 
+import pytest
+
 from hikes.walkhighlands import (
     _parse_duration_hours,
     parse_area_links,
@@ -36,6 +38,27 @@ def test_explicit_summit_fields_are_scoped_and_deduplicated():
         "<dt>Distance</dt>", "<dt>Summits</dt><dd>None</dd><dt>Distance</dt>"
     )
     assert parse_walk(empty).summit_names == []
+
+
+@pytest.mark.parametrize(
+    "label", ["Munro", "Munro Top", "Corbett", "Graham", "Donald", "Summit", "Munros:"]
+)
+def test_singular_summit_labels(label):
+    html = WALK_PAGE_HTML.replace(
+        "<dt>Distance</dt>",
+        f'<dt>{label}</dt><dd><a href="/hill">Ben Nevis</a></dd><dt>Distance</dt>',
+    )
+    assert parse_walk(html).summit_names == ["Ben Nevis"]
+
+
+@pytest.mark.parametrize(
+    "markup", ["Ben Nevis", "<span>Ben Nevis</span>", "", '<a href="/hill"> </a>']
+)
+def test_unrecognised_summit_markup_is_absent_evidence(markup):
+    html = WALK_PAGE_HTML.replace(
+        "<dt>Distance</dt>", f"<dt>Munros</dt><dd>{markup}</dd><dt>Distance</dt>"
+    )
+    assert parse_walk(html).summit_names is None
 
 
 HOMEPAGE_HTML = """

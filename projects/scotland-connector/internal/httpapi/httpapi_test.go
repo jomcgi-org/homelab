@@ -244,12 +244,36 @@ func TestUnavailableIsNotCached(t *testing.T) {
 func TestHillFiltersReachBothRESTTools(t *testing.T) {
 	h := handler(true)
 	r, _ := get(t, h, "/v1/plan?lat=57&lon=-4&activities=walk&hill_class=Munro&hill_name=Ben%20Nevis")
-	if r.Code != http.StatusServiceUnavailable {
+	if r.Code != http.StatusBadRequest || r.Header().Get("Retry-After") != "" || !strings.Contains(r.Body.String(), `"code":"feature_not_enabled"`) || !strings.Contains(r.Body.String(), "hill filters are not enabled") {
 		t.Fatal(r.Code, r.Body)
 	}
 	r, _ = postCheck(t, h, `{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"Ben Nevis"}],"hill_class":"Munro","hill_name":"Ben Nevis"}`)
-	if r.Code != http.StatusServiceUnavailable {
+	if r.Code != http.StatusBadRequest || r.Header().Get("Retry-After") != "" || !strings.Contains(r.Body.String(), `"code":"feature_not_enabled"`) || !strings.Contains(r.Body.String(), "hill filters are not enabled") {
 		t.Fatal(r.Code, r.Body)
+	}
+}
+
+func TestHillTermsAndResponseDescription(t *testing.T) {
+	var spec struct {
+		Info       struct{ Description string } `json:"info"`
+		Components struct {
+			Schemas map[string]specSchema
+		}
+	}
+	if err := json.Unmarshal(openAPI, &spec); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Bulk extraction or redistribution of responses is not permitted.", "This restriction does not limit the reuse rights granted by CC BY 4.0 for DoBIH-derived fields"} {
+		if !strings.Contains(spec.Info.Description, text) {
+			t.Fatalf("missing terms: %s", text)
+		}
+	}
+	description := spec.Components.Schemas["Walk"].Properties["hills"].Items.Properties["class"].Description
+	if !strings.Contains(description, "This summit's DoBIH classification") || strings.Contains(description, "Only walks matching") {
+		t.Fatal(description)
+	}
+	if codes := spec.Components.Schemas["ErrorResponse"].Properties["error"].Properties["code"].Enum; !strings.Contains(strings.Join(codes, ","), "feature_not_enabled") {
+		t.Fatal("missing disabled-feature error code", codes)
 	}
 }
 
@@ -263,18 +287,19 @@ func TestUnknownPathIs404(t *testing.T) {
 }
 
 type specSchema struct {
-	Type       any                   `json:"type"`
-	Ref        string                `json:"$ref"`
-	Minimum    *float64              `json:"minimum"`
-	Maximum    *float64              `json:"maximum"`
-	Default    any                   `json:"default"`
-	MaxLength  *int                  `json:"maxLength"`
-	MinItems   *int                  `json:"minItems"`
-	MaxItems   *int                  `json:"maxItems"`
-	Enum       []string              `json:"enum"`
-	Required   []string              `json:"required"`
-	Properties map[string]specSchema `json:"properties"`
-	Items      *specSchema           `json:"items"`
+	Description string                `json:"description"`
+	Type        any                   `json:"type"`
+	Ref         string                `json:"$ref"`
+	Minimum     *float64              `json:"minimum"`
+	Maximum     *float64              `json:"maximum"`
+	Default     any                   `json:"default"`
+	MaxLength   *int                  `json:"maxLength"`
+	MinItems    *int                  `json:"minItems"`
+	MaxItems    *int                  `json:"maxItems"`
+	Enum        []string              `json:"enum"`
+	Required    []string              `json:"required"`
+	Properties  map[string]specSchema `json:"properties"`
+	Items       *specSchema           `json:"items"`
 }
 
 // openapi.json is the published contract: its operations must be exactly

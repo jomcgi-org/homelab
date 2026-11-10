@@ -101,6 +101,9 @@ func InCoverage(lat, lon float64) bool {
 // ErrUnavailable means no dataset has loaded yet.
 var ErrUnavailable = errors.New("connector: forecast data not loaded yet")
 
+// ErrHillsDisabled means the deployment has not enabled hill filters.
+var ErrHillsDisabled = errors.New("hill filters are not enabled")
+
 // ParamError is a caller mistake the caller can fix.
 type ParamError struct {
 	Param   string `json:"param"`
@@ -121,6 +124,7 @@ type WalksSource interface {
 
 // Service answers queries.
 type Service struct {
+	hillCache  hillJoinCache
 	Data       DatasetSource
 	Walks      WalksSource
 	Hills      interface{ Current() *walks.HillDataset }

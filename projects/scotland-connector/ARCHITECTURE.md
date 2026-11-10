@@ -424,12 +424,15 @@ exports `HILLS_ENABLED`. Only an enabled store polls `config.hillsKey`
 (`hills.json`) with conditional GETs at the existing 60-second cadence.
 Missing hills do not gate readiness or ordinary walk answers. Invalid uploads,
 404s and network failures retain the last valid in-memory copy. Hill-filtered
-calls without a snapshot return unavailable. Existing scraping schedules and
-production source settings remain unchanged.
+calls return `feature_not_enabled` (HTTP 400, no retry hint) while the store is
+disabled, and unavailable while an enabled store has no snapshot. Existing
+scraping schedules and production source settings remain unchanged.
 
 The scraper retains anchor names only in explicitly labelled Munros, Munro
-Tops, Corbetts, Grahams, Donalds or Summits entries in `#col dl`. A nullable
-`summit_names` field distinguishes absent evidence from an explicit empty list.
+Tops, Corbetts, Grahams, Donalds or Summits entries in `#col dl`, including
+singular labels. A label without usable anchors is absent evidence unless
+its text explicitly says `None`. A nullable `summit_names` field distinguishes
+absent evidence from an explicit empty list.
 Explicit lists suppress inference, including unknown or ambiguous names. Exact
 normalized names and bracketed DoBIH aliases must identify one hill within
 `min(25 km, walk length / 2)` of the start; nearby duplicate names are rejected.
@@ -440,12 +443,15 @@ Start elevation and route geometry are unavailable; this conservative rule
 can miss high-start routes and proximity never proves a summit was reached.
 Returned inferred matches carry that qualification in `meta.notes`.
 
-`plan` and `check` accept `hill_class` and exact normalized `hill_name`; both
+`plan` and `check` accept `hill_class` and exact normalized `hill_name`, including
+the full composite name and bracketed aliases using the join's name keys; both
 must match the same hill/class pair. Check also filters named selection and
 nearby alternatives. Answers include `hills: [{name, class, height_m}]` only
 for matched hills, repeating a multi-class hill once per class. Hill versions
 participate in plan ETags. `meta.sources` carries versioned DoBIH credit,
 CC BY 4.0 and the filtering/joining notice.
+The service caches one immutable joined snapshot per walk/hill version pair.
+Concurrent requests share the join; a change to either version rebuilds it.
 
 **Why.** A separate optional snapshot lets repository delivery precede live
 import and activation. Explicit lists establish route evidence; the bounded
@@ -461,7 +467,9 @@ CC BY 4.0. The custom Hill Bagging export requires registration and is unused.
 
 Operational acceptance remains on #7368: authorized landing and both rollout
 checks follow separately. Live import, activation and a live Ben Nevis answer
-remain outstanding under their own authorized scope.
+remain outstanding under their own authorized scope. Before activation, align
+the public `/scotland/terms` page with the OpenAPI and method DoBIH CC BY 4.0
+carve-out while preserving restrictions for other response fields.
 
 Walk answers read `walks.json`, which the monolith's
 `hikes-refresh-forecasts` job writes to the same bucket every two hours

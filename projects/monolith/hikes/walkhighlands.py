@@ -188,20 +188,25 @@ def parse_walk(html: str) -> Walk | None:
             dd_text = dd.get_text(strip=True)
 
             # Only labelled summit lists, never route prose, sidebar links or
-            # incidental mentions. None means no list was supplied; [] means
-            # an explicit empty list and must not trigger proximity inference.
-            if dt_text in {
-                "munros",
-                "munro tops",
-                "corbetts",
-                "grahams",
-                "donalds",
-                "summits",
+            # incidental mentions. Unrecognised markup is absent evidence;
+            # only an explicit "None" produces an empty list.
+            if dt_text.rstrip(":").removesuffix("s") in {
+                "munro",
+                "munro top",
+                "corbett",
+                "graham",
+                "donald",
+                "summit",
             }:
-                names = [a.get_text(" ", strip=True) for a in dd.find_all("a")]
-                if data.get("summit_names") is None:
-                    data["summit_names"] = []
-                data["summit_names"] = list(dict.fromkeys(data["summit_names"] + names))
+                names = [
+                    name
+                    for a in dd.find_all("a")
+                    if (name := a.get_text(" ", strip=True))
+                ]
+                if names or dd.get_text(" ", strip=True).casefold() == "none":
+                    data["summit_names"] = list(
+                        dict.fromkeys((data.get("summit_names") or []) + names)
+                    )
 
             if "distance" in dt_text:
                 match = re.search(r"([\d.]+)\s*km", dd_text)

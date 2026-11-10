@@ -4,7 +4,7 @@
     "title": "Scotland outdoors API",
     "version": "v1",
     "summary": "Read-only answers to Scottish trip questions: which walks fit the weather and where the night sky will be dark and clear, with a go, marginal, no or unknown verdict.",
-    "description": "Read-only plan and check endpoints plus staged, default-off hill classifications and near-term aurora. Every response carries a provenance envelope (sources, attribution, forecast fetch time, method). Results and radius are capped; there is no bulk listing. Source data retains the reuse rights granted by the licences in meta.sources, including CC BY 4.0 for DoBIH-derived fields.",
+    "description": "Read-only plan and check endpoints plus staged, default-off hill classifications and near-term aurora. Every response carries a provenance envelope (sources, attribution, forecast fetch time, method). Results and radius are capped; there is no bulk listing. Bulk extraction or redistribution of responses is not permitted. This restriction does not limit the reuse rights granted by CC BY 4.0 for DoBIH-derived fields; retain their attribution and licence in meta.sources.",
     "license": {
       "name": "Responses carry the source licences named in meta.sources"
     }
@@ -149,7 +149,7 @@
             "schema": {
               "type": "string",
               "enum": ["Munro", "Munro Top", "Corbett", "Graham", "Donald"],
-              "description": "Only walks matching this hill class. Requires the optional hill snapshot."
+              "description": "Only walks matching this hill class. Requires the optional hill snapshot; disabled deployments return feature_not_enabled without a retry hint."
             }
           },
           {
@@ -159,7 +159,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 100,
-              "description": "Exact normalized summit name; with hill_class both must match the same hill."
+              "description": "Exact normalized summit name or bracketed DoBIH alias; with hill_class both must match the same hill. Disabled deployments return feature_not_enabled."
             }
           },
           {
@@ -533,6 +533,7 @@
               "code": {
                 "enum": [
                   "invalid_parameter",
+                  "feature_not_enabled",
                   "unavailable",
                   "not_found",
                   "method_not_allowed"
@@ -656,7 +657,7 @@
                 "class": {
                   "type": "string",
                   "enum": ["Munro", "Munro Top", "Corbett", "Graham", "Donald"],
-                  "description": "Only walks matching this hill class. Requires the optional hill snapshot."
+                  "description": "This summit's DoBIH classification. A summit in multiple supported classes has one entry per class."
                 },
                 "height_m": { "type": "number" }
               }
@@ -808,13 +809,13 @@
               "hill_class": {
                 "type": "string",
                 "enum": ["Munro", "Munro Top", "Corbett", "Graham", "Donald"],
-                "description": "Only walks matching this hill class. Requires the optional hill snapshot."
+                "description": "Only walks matching this hill class. Requires the optional hill snapshot; disabled deployments return feature_not_enabled without a retry hint."
               },
               "hill_name": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 100,
-                "description": "Exact normalized summit name; with hill_class both must match the same hill."
+                "description": "Exact normalized summit name or bracketed DoBIH alias; with hill_class both must match the same hill. Disabled deployments return feature_not_enabled."
               },
               "lat": { "type": "number" },
               "lon": { "type": "number" },
@@ -1094,13 +1095,13 @@
           "hill_class": {
             "type": "string",
             "enum": ["Munro", "Munro Top", "Corbett", "Graham", "Donald"],
-            "description": "Only walks matching this hill class. Requires the optional hill snapshot."
+            "description": "Only walks matching this hill class. Requires the optional hill snapshot; disabled deployments return feature_not_enabled without a retry hint."
           },
           "hill_name": {
             "type": "string",
             "minLength": 1,
             "maxLength": 100,
-            "description": "Exact normalized summit name; with hill_class both must match the same hill."
+            "description": "Exact normalized summit name or bracketed DoBIH alias; with hill_class both must match the same hill. Disabled deployments return feature_not_enabled."
           },
           "items": {
             "type": "array",
@@ -1208,13 +1209,13 @@
           "hill_class": {
             "type": "string",
             "enum": ["Munro", "Munro Top", "Corbett", "Graham", "Donald"],
-            "description": "Only walks matching this hill class. Requires the optional hill snapshot."
+            "description": "Only walks matching this hill class. Requires the optional hill snapshot; disabled deployments return feature_not_enabled without a retry hint."
           },
           "hill_name": {
             "type": "string",
             "minLength": 1,
             "maxLength": 100,
-            "description": "Exact normalized summit name; with hill_class both must match the same hill."
+            "description": "Exact normalized summit name or bracketed DoBIH alias; with hill_class both must match the same hill. Disabled deployments return feature_not_enabled."
           },
           "limits": {
             "type": "object",

@@ -3,6 +3,7 @@ package connector_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +84,13 @@ func TestHillPlanAndCheck(t *testing.T) {
 		}
 		// No snapshot: filters explicitly fail, existing unfiltered answers remain.
 		svc.Hills = nil
+		if _, err := svc.Plan(pp); !errors.Is(err, connector.ErrHillsDisabled) {
+			t.Fatal(err)
+		}
+		if _, err := svc.Check(cp); !errors.Is(err, connector.ErrHillsDisabled) {
+			t.Fatal(err)
+		}
+		svc.Hills = hillSource{}
 		if _, err := svc.Plan(pp); !errors.Is(err, connector.ErrUnavailable) {
 			t.Fatal(err)
 		}
@@ -105,6 +113,7 @@ func TestHillFiltersAndUnmatchedOmission(t *testing.T) {
 	svc := hillService(t, true)
 	for _, class := range walks.HillClasses {
 		ds := svc.Hills.Current()
+		ds.Version = class
 		ds.Hills[0].Classes = []string{class}
 		for _, name := range []string{"", "BEN NEVIS", "unmatched"} {
 			filter := connector.HillFilter{HillClass: class, HillName: name}
@@ -127,6 +136,7 @@ func TestHillFiltersAndUnmatchedOmission(t *testing.T) {
 		}
 	}
 	svc.Hills.Current().Hills[0].Name = "Unrelated nearby summit"
+	svc.Hills.Current().Version = "unmatched"
 	env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-06-20", WalkID: "ben"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -146,6 +156,57 @@ func TestHillFiltersAndUnmatchedOmission(t *testing.T) {
 	for _, filter := range []connector.HillFilter{{HillClass: "Marilyn"}, {HillName: "!!!"}, {HillName: strings.Repeat("a", 101)}} {
 		if _, err := svc.Check(connector.CheckParams{HillFilter: filter}); err == nil {
 			t.Fatal("invalid filter accepted")
+		}
+	}
+}
+
+func TestHillNameAliasesInPlanAndCheck(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		for _, name := range []string{"Ben Nevis", "Beinn Nibheis", "Ben Nevis [Beinn Nibheis]", "BEINN NIBHEIS", "Nevis", "unmatched"} {
+			t.Run(fmt.Sprintf("%t/%s", explicit, name), func(t *testing.T) {
+				svc := hillService(t, explicit)
+				svc.Hills.Current().Hills[0].Name = "Ben Nevis [Beinn Nibheis]"
+				filter := connector.HillFilter{HillClass: "Munro", HillName: name}
+				pp := connector.PlanParams{Lat: f(56.82), Lon: f(-5.1), From: s("2026-06-20"), To: s("2026-06-20"), Activities: []string{"walk"}, WalkFilter: connector.WalkFilter{HillFilter: filter}}
+				cp := connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-06-20", WalkID: "ben"}}, HillFilter: filter}
+				want := name != "Nevis" && name != "unmatched"
+				p, err := svc.Plan(pp)
+				if err != nil {
+					t.Fatal(err)
+				}
+				opts := p.Data.(connector.PlanResult).Days[0].Walks
+				if (len(opts) == 1) != want {
+					t.Fatalf("plan: %+v", p.Data)
+				}
+				c, err := svc.Check(cp)
+				if err != nil {
+					t.Fatal(err)
+				}
+				item := c.Data.(connector.CheckResult).Items[0]
+				if (item.Walk != nil) != want {
+					t.Fatalf("check: %+v", item)
+				}
+				if !want && item.Error != "Walk with walk_id ben does not match the requested hill filters." {
+					t.Fatal(item.Error)
+				}
+			})
+		}
+	}
+}
+
+func TestHillFilteredWalkErrors(t *testing.T) {
+	svc := hillService(t, true)
+	for _, tc := range []struct{ id, name, want string }{
+		{"ben", "", "Walk with walk_id ben does not match the requested hill filters."},
+		{"absent", "", "No walk has walk_id absent."},
+		{"", "Ben Nevis", "Walks matching the requested name do not match the requested hill filters."},
+	} {
+		env, err := svc.Check(connector.CheckParams{HillFilter: connector.HillFilter{HillClass: "Corbett"}, Items: []connector.CheckItem{{Activity: "walk", Date: "2026-06-20", WalkID: tc.id, WalkName: tc.name}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := env.Data.(connector.CheckResult).Items[0].Error; got != tc.want {
+			t.Fatalf("got %q, want %q", got, tc.want)
 		}
 	}
 }

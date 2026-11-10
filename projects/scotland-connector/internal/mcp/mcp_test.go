@@ -29,7 +29,7 @@ func TestHillFiltersReachBothMCPTools(t *testing.T) {
 	} {
 		_, _, response := post(t, handler(), call, map[string]string{"MCP-Protocol-Version": "2025-06-18"})
 		body, _ := json.Marshal(response)
-		if !strings.Contains(string(body), `"isError":true`) || !strings.Contains(string(body), "Forecast data is still loading") {
+		if !strings.Contains(string(body), `"isError":true`) || !strings.Contains(string(body), "hill filters are not enabled") || strings.Contains(string(body), "retry") {
 			t.Fatal(string(body))
 		}
 	}

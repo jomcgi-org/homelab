@@ -280,6 +280,9 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, tool string, s
 			} else {
 				cacheControlError.set(w.Header())
 			}
+		case errors.Is(err, connector.ErrHillsDisabled):
+			body.Error.Code, body.Error.Message = "feature_not_enabled", err.Error()
+			noStore.set(w.Header())
 		case errors.Is(err, connector.ErrUnavailable):
 			status, outcome = http.StatusServiceUnavailable, "unavailable"
 			body.Error.Code, body.Error.Message = "unavailable", "forecast data is loading; retry shortly"

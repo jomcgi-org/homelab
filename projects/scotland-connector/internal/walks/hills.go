@@ -86,16 +86,27 @@ func ValidHillClass(c string) bool {
 	return false
 }
 
+// HillNameKeys returns the normalized full name and bracket-separated aliases.
+// Both summit joins and hill_name filters use these exact keys.
+func HillNameKeys(name string) []string {
+	aliases := append([]string{name}, strings.FieldsFunc(name, func(r rune) bool { return r == '[' || r == ']' })...)
+	var keys []string
+	seen := map[string]bool{}
+	for _, alias := range aliases {
+		key := Normalize(alias)
+		if key != "" && !seen[key] {
+			keys = append(keys, key)
+			seen[key] = true
+		}
+	}
+	return keys
+}
+
 func (d *HillDataset) nameIndex() map[string][]Hill {
 	index := map[string][]Hill{}
 	for _, h := range d.Hills {
-		seen := map[string]bool{}
-		for _, alias := range strings.FieldsFunc(h.Name, func(r rune) bool { return r == '[' || r == ']' }) {
-			key := Normalize(alias)
-			if key != "" && !seen[key] {
-				index[key] = append(index[key], h)
-				seen[key] = true
-			}
+		for _, key := range HillNameKeys(h.Name) {
+			index[key] = append(index[key], h)
 		}
 	}
 	return index

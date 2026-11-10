@@ -3,6 +3,7 @@ package connector
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
@@ -11,6 +12,24 @@ import (
 type HillFilter struct {
 	HillClass string `json:"hill_class,omitempty"`
 	HillName  string `json:"hill_name,omitempty"`
+}
+
+// Only the latest version pair is retained. Store snapshots are immutable.
+type hillJoinCache struct {
+	mu           sync.Mutex
+	walksVersion string
+	hillVersion  string
+	joined       *walks.Dataset
+}
+
+func (c *hillJoinCache) join(w *walks.Dataset, h *walks.HillDataset) *walks.Dataset {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.joined == nil || c.walksVersion != w.Version || c.hillVersion != h.Version {
+		c.joined = w.WithHills(h)
+		c.walksVersion, c.hillVersion = w.Version, h.Version
+	}
+	return c.joined
 }
 
 func hillFilter(f HillFilter) (HillFilter, error) {
@@ -40,16 +59,27 @@ func (f HillFilter) matches(w *walks.Walk) bool {
 		return true
 	}
 	for _, h := range w.Hills {
-		if (f.HillClass == "" || f.HillClass == h.Class) && (f.HillName == "" || walks.Normalize(h.Name) == f.HillName) {
+		if f.HillClass != "" && f.HillClass != h.Class {
+			continue
+		}
+		if f.HillName == "" {
 			return true
+		}
+		for _, key := range walks.HillNameKeys(h.Name) {
+			if key == f.HillName {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func (f HillFilter) available(wk *walks.Dataset) error {
+func (f HillFilter) available(wk *walks.Dataset, enabled bool) error {
+	if f.active() && !enabled {
+		return ErrHillsDisabled
+	}
 	if f.active() && (wk == nil || wk.HillSource == nil) {
-		return fmt.Errorf("%w: hill snapshot disabled or not loaded", ErrUnavailable)
+		return fmt.Errorf("%w: hill snapshot not loaded", ErrUnavailable)
 	}
 	return nil
 }

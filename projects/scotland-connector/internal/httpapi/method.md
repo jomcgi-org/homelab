@@ -31,6 +31,8 @@ with the release version in `meta.sources`, under
 Data is modified by filtering to Scotland and supported classes and joining
 to Walkhighlands walks. Hill ingestion and snapshot polling ship disabled;
 live import, activation and a live Ben Nevis answer remain outstanding on #7368.
+Before activation, align the public `/scotland/terms` page with the DoBIH
+CC BY 4.0 carve-out while preserving restrictions for other response fields.
 
 The service's result caps do not limit the reuse rights granted by CC BY 4.0
 for DoBIH-derived fields.
