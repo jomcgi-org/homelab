@@ -157,7 +157,7 @@ describe("startPrivatePrewarm", () => {
       });
       const urls = () => fetchImpl.mock.calls.map(([url]) => url).sort();
       expect(urls()).toEqual([
-        "http://b/api/agents/factory",
+        "http://b/api/agents/factory/summary",
         "http://b/api/home/dashboard",
       ]);
       // Let the first reads land before the clock moves on.

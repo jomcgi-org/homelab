@@ -142,8 +142,8 @@ def actions(page, view, snapshot):
             "window.__privateFixture.navigation.at(-1).options.replaceState"
         )
     elif view == "escalations":
-        page.locator("textarea").fill("Synthetic note pinned to receipt 31")
-        page.locator("textarea").press("Tab")
+        page.locator("#note-31").fill("Synthetic note pinned to receipt 31")
+        page.locator("#note-31").press("Tab")
         page.keyboard.press("e")
         expect(page.locator(".context details").first).to_have_attribute("open", "")
         page.locator(".escape-btn").first.click()
@@ -195,7 +195,9 @@ def actions(page, view, snapshot):
             "window.__privateFixture.requests.filter(r=>r.method==='POST').length"
         )
         page.locator(".option").first.click()
-        expect(page.locator('[role="status"]')).to_contain_text("Decision recorded")
+        expect(page.locator(".panel").first.locator('[role="status"]')).to_contain_text(
+            "Decision recorded"
+        )
         assert (
             page.evaluate(
                 "window.__privateFixture.requests.filter(r=>r.method==='POST').length"
@@ -247,6 +249,13 @@ def actions(page, view, snapshot):
             "stated_reason": None,
         }
         page.locator(".remove-btn").first.click()
+        assert not page.evaluate(
+            "window.__privateFixture.requests.some(r=>r.method==='DELETE')"
+        )
+        expect(
+            page.get_by_role("group", name="Confirm relationship removal")
+        ).to_contain_text("edge 1")
+        page.get_by_role("button", name="Confirm remove", exact=True).click()
         expect(page.locator(".remove-btn")).to_have_count(5)
         assert page.evaluate(
             "window.__privateFixture.requests.some(r=>r.method==='DELETE' && r.url.endsWith('/edges/1'))"
@@ -283,7 +292,7 @@ def main():
                 *(("missing",) if view == "item" else ()),
             ):
                 context = browser.new_context(
-                    viewport={"width": width, "height": 900},
+                    viewport={"width": width, "height": 844 if width == 390 else 900},
                     color_scheme="dark" if scheme == "light" else "light",
                     reduced_motion="reduce",
                     service_workers="block",
@@ -330,6 +339,51 @@ def main():
                         state,
                     )
                     snapshot()
+                    if view == "escalations" and scenario == "populated":
+                        expect(page.locator("h2.sec-label").first).to_have_text(
+                            "/ Waiting on you"
+                        )
+                        expect(page.locator("h3.title")).to_have_count(2)
+                        expect(page.locator("textarea")).to_have_count(2)
+                        if width == 390:
+                            expect(page.locator(".stats")).not_to_be_visible()
+                            expect(
+                                page.locator(".owner-next").first
+                            ).not_to_be_visible()
+                            assert (
+                                page.locator(".question").first.bounding_box()["y"]
+                                < 844
+                            )
+                            option = page.locator(
+                                ".options .option"
+                            ).first.bounding_box()
+                            assert option["y"] + option["height"] <= 844, option
+                    motion = page.evaluate("""() => {
+                      const style = document.createElement('style');
+                      style.textContent = '.motion-probe,.motion-probe::before,.motion-probe::after { content: ""; animation: synthetic-motion 2s infinite; transition: opacity 2s; }';
+                      document.head.append(style);
+                      const probe = document.createElement('div');
+                      probe.className = 'motion-probe'; document.body.append(probe);
+                      const result = [null,'::before','::after'].map(pseudo => {
+                        const css = getComputedStyle(probe,pseudo);
+                        return {pseudo, duration:css.animationDuration, iterations:css.animationIterationCount, transition:css.transitionDuration};
+                      });
+                      probe.remove(); style.remove(); return result;
+                    }""")
+                    assert all(
+                        row["duration"] == "1e-05s"
+                        and row["iterations"] == "1"
+                        and row["transition"] == "1e-05s"
+                        for row in motion
+                    ), motion
+                    checks.append(
+                        {
+                            "route": ROUTES[view],
+                            "viewport": width,
+                            "scheme": scheme,
+                            "reducedMotion": motion,
+                        }
+                    )
                     if scenario == "populated":
                         # Double computed text sizes, rather than zooming the
                         # screenshot, to exercise actual wrapping and controls.

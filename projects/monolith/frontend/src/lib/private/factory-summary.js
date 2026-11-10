@@ -69,3 +69,24 @@ export function summarizeBoard(board) {
     },
   };
 }
+
+/** Validate the complete bounded backend reading before presenting counts. */
+export function summarizeFactoryReading(reading) {
+  if (!reading || typeof reading !== "object") return null;
+  if (reading.ok === false) return summarizeBoard(reading);
+  if (
+    reading.ok !== true ||
+    !Array.isArray(reading.escalations) ||
+    ![reading.active_count, reading.queued_count, reading.paused_count].every(
+      (n) => Number.isSafeInteger(n) && n >= 0,
+    ) ||
+    reading.paused_count > reading.active_count
+  )
+    return null;
+  return {
+    ...summarizeBoard({ ...reading, active: [], queued: [] }),
+    inFlight: reading.active_count,
+    queued: reading.queued_count,
+    paused: reading.paused_count,
+  };
+}

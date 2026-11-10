@@ -166,6 +166,115 @@ afterEach(() => {
 });
 
 describe("escalations page", () => {
+  test("every open receipt keeps its own labelled note without expanding context", async () => {
+    stubFetch(vi.fn());
+    const target = renderPage({
+      escalations: [
+        escalation(),
+        escalation({ receipt_id: 4, issue_number: 6003 }),
+      ],
+    });
+    await tick();
+    const boxes = target.querySelectorAll("textarea");
+    expect(boxes).toHaveLength(2);
+    for (const [index, box] of [...boxes].entries()) {
+      expect(
+        target.querySelector(`label[for="${box.id}"]`).textContent,
+      ).toContain(index ? "6003" : "6002");
+      box.value = `independent note ${index}`;
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    await tick();
+    expect([...boxes].map((box) => box.value)).toEqual([
+      "independent note 0",
+      "independent note 1",
+    ]);
+    expect(target.querySelector("details[open]")).toBeNull();
+    expect(target.querySelectorAll("h2.sec-label")).toHaveLength(1);
+    expect(target.querySelectorAll("h3.title")).toHaveLength(2);
+  });
+
+  test("a delayed result stays with the exact decision after reordering and departure", async () => {
+    const one = escalation(),
+      two = escalation({ receipt_id: 4, issue_number: 6003 });
+    let finish;
+    const fetchMock = vi.fn((url, init) =>
+      init?.method === "POST"
+        ? new Promise((resolve) => {
+            finish = resolve;
+          })
+        : Promise.resolve({
+            ok: true,
+            json: async () => ({ escalations: [two, one] }),
+          }),
+    );
+    stubFetch(fetchMock);
+    const target = renderPage({ escalations: [one, two] });
+    await tick();
+    target.querySelector(".option").click();
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    finish({ ok: true, json: async () => ({ ok: true }) });
+    await settle();
+    expect(
+      target.querySelector("#receipt-3 [role=status]").textContent,
+    ).toContain("6002");
+    expect(target.querySelector("#receipt-4 [role=status]")).toBeNull();
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({ escalations: [] }),
+    }));
+    // Replaying accepted state triggers a refresh without another POST.
+    target.querySelector("#receipt-3 .option").click();
+    await settle();
+    expect(
+      target.querySelector('[aria-label="Decision result for issue 6002"]')
+        .textContent,
+    ).toContain("Decision recorded");
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toHaveLength(1);
+  });
+
+  test("receipt hashes select delayed cards and hash navigation cancels an armed close", async () => {
+    vi.useFakeTimers();
+    try {
+      window.history.replaceState(null, "", "#receipt-4");
+      stubFetch(
+        vi.fn(async () => ({
+          ok: true,
+          json: async () => ({
+            escalations: [
+              escalation(),
+              escalation({ receipt_id: 4, issue_number: 6003 }),
+            ],
+          }),
+        })),
+      );
+      const target = renderPage({ escalations: [] });
+      await tick();
+      await vi.advanceTimersByTimeAsync(20000);
+      await tick();
+      expect(target.querySelector(".panel.here").id).toBe("receipt-4");
+      target.querySelector("#receipt-4 .escape-btn").click();
+      await tick();
+      expect(target.querySelector(".confirm")).not.toBeNull();
+      for (const hash of [
+        "#receipt-3",
+        "#receipt-missing",
+        "#receipt-999",
+        "",
+      ]) {
+        window.history.replaceState(null, "", hash || window.location.pathname);
+        window.dispatchEvent(new Event("hashchange"));
+        await tick();
+        expect(target.querySelector(".confirm")).toBeNull();
+      }
+    } finally {
+      window.history.replaceState(null, "", window.location.pathname);
+      vi.useRealTimers();
+    }
+  });
+
   test("reuses the request key after a transport failure on the sheet", async () => {
     const fetchMock = vi
       .fn()
@@ -402,7 +511,10 @@ describe("escalations page", () => {
     await tick();
     target.querySelector(".context-select").click();
     await tick();
-    expect(target.querySelector("textarea").id).toBe("note-4");
+    expect(target.querySelectorAll("textarea")).toHaveLength(2);
+    expect(
+      target.querySelectorAll(".panel")[1].querySelector("textarea").id,
+    ).toBe("note-4");
     expect(contexts).toHaveBeenCalledWith(
       "/factory/escalations/context/4",
       undefined,
