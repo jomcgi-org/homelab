@@ -287,17 +287,21 @@ A `needs-human` verdict arrives as two to four options, recommendation first; `e
 
 A machine pause writes a stop-only card: its single option stops the task and
 leaves the issue open. That is a restriction, not a decision, so it does not
-wait for a person indefinitely. Once the task deadline has passed and 24 hours
-have elapsed since the card was written, `factory:pause-expiry` applies that
-same stop and the delivery slot is released. An operator's own pause, a pending
-repair of the paused node, a decision in flight, unknown execution and human
-ownership all keep the card. Expiry never offers or applies any other choice.
+wait for a person indefinitely. Once the task deadline has passed, and 24 hours
+have elapsed since both the card was written and the current pause was taken,
+`factory:pause-expiry` applies that same stop. Cancellation is requested and
+the slot is released when the reconciler settles the task. An operator's own
+pause, a landing hold, a recorded and unconsumed repair wait for that pause
+(whatever the lane or policy state), a decision in flight, unknown execution
+and human ownership all keep the card. Expiry never offers or applies any
+other choice.
 
 A factory-owned pause with no card and no open question is also stopped at its
 deadline: the task settles `cancelled` with `task_deadline` evidence and the
 issue stays open. No new task is started, so attempts are never reset. An
-operator's own pause, a retained planner question and a landing hold still
-raise the continue-or-hold card, because those are a person's decision.
+operator's own pause, a funding pause that awaits an operator's approval, a
+retained planner question and a landing hold still raise the continue-or-hold
+card, because those are a person's decision.
 
 ### Routine planner pauses
 
