@@ -878,12 +878,33 @@ def _scope_wait(item: dict, reason: str) -> None:
     # Missing authority is a wait for an explicit grant, not permission to
     # erase an unrelated permanent refusal. Existing refusal handling is intact.
     item["refused"] = True
-    _record(
-        item["task_id"],
-        "landing_authorization_wait",
-        reason=reason,
-        pr_number=item["pr_number"],
-    )
+    # One row per change of reason: status reads the latest, so a wait that
+    # moves from "no delegation" to "path denied" must not keep the old answer.
+    with _locked_session() as (db, _control):
+        last = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == item["task_id"],
+                FactoryAudit.action == "landing_authorization_wait",
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(1)
+        ).first()
+        if last is not None:
+            detail = json.loads(last.detail_json)
+            if (detail.get("reason"), detail.get("pr_number")) == (
+                reason,
+                item["pr_number"],
+            ):
+                return
+        _audit(
+            db,
+            ACTOR,
+            "landing_authorization_wait",
+            task_id=item["task_id"],
+            reason=reason,
+            pr_number=item["pr_number"],
+        )
 
 
 def _fence_operator_queue_entry(repo, item):

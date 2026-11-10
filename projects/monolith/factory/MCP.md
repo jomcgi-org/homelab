@@ -646,6 +646,15 @@ the existing landing owner refused acceptance; inspect its approved delivery
 identity and the current PR through the owning review/landing workflow. Status
 does not rewrite the approved head, accept a different merge or clear a hold.
 
+### Recorded landing waits
+
+Each compact status row also includes `landing_wait`: the latest recorded
+`landing_authorization_wait` reason, PR number, audit ID and timestamp. It says
+why an approved delivery has no landing authority yet, for example a path
+outside the delivery delegation or a missing current-head review. The landing
+tick records a new row only when the reason or PR changes. A newer grant,
+recovery request, arm or merge answers it. Null does not prove authority.
+
 ### Separate restriction, continuation and refill activation
 
 After code release, each live change still needs its applicable authority.

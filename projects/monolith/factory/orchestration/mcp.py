@@ -277,6 +277,7 @@ def _task_row(receipt: dict, *, queue_position: int | None = None) -> dict:
         "progress": _progress(receipt.get("nodes") or []),
         "stop": _stop_summary(receipt),
         "landing_refusal": receipt.get("landing_refusal"),
+        "landing_wait": receipt.get("landing_wait"),
     }
 
 
@@ -303,6 +304,50 @@ def _landing_refusal(db, task_id):
         .limit(1)
     ).first()
     if event is None or event.action != "merge_arm_refused":
+        return None
+    detail = json.loads(event.detail_json)
+    return {
+        "source": "recorded_landing_audit",
+        "audit_id": event.id,
+        "observed_at": iso_or_str(event.created_at),
+        "reason": str(detail.get("reason") or "unspecified")[:200],
+        "pr_number": detail.get("pr_number")
+        if type(detail.get("pr_number")) is int
+        else None,
+    }
+
+
+# A grant, recovery request or merge answers the wait recorded before it.
+_LANDING_WAIT_SUPERSEDED_BY = (
+    "delivery_landing_authorized",
+    "owner_pr_landing_authorized",
+    "repair_landing_authorized",
+    "operator_scoped_landing_authorized",
+    "landing_recovery_requested",
+    "merge_armed",
+    "merged",
+)
+
+
+def _landing_wait(db, task_id):
+    """Latest recorded authority wait, not a live queue or GitHub observation."""
+    from sqlmodel import select
+    from factory.orchestration.factory_models import FactoryAudit
+
+    if not task_id:
+        return None
+    event = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.task_id == task_id,
+            FactoryAudit.action.in_(
+                ("landing_authorization_wait", *_LANDING_WAIT_SUPERSEDED_BY)
+            ),
+        )
+        .order_by(FactoryAudit.id.desc())
+        .limit(1)
+    ).first()
+    if event is None or event.action != "landing_authorization_wait":
         return None
     detail = json.loads(event.detail_json)
     return {
@@ -745,6 +790,7 @@ def _operator_view(
                 else:
                     cards.append(shape_receipt(receipt))
                 cards[-1]["landing_refusal"] = _landing_refusal(db, row.task_id)
+                cards[-1]["landing_wait"] = _landing_wait(db, row.task_id)
             buckets[name] = cards
             pagination[name] = _pagination(total, offset, limit, len(cards))
         # Lane accounting needs all active/eligible queue identities, including
@@ -889,6 +935,9 @@ async def factory_status(
         ``landing_refusal`` is the latest recorded refusal in the current
         landing attempt, not a live GitHub or queue check. A newer recovery
         or accepted merge supersedes it. Arming or observing a merge does not.
+        ``landing_wait`` is the latest recorded reason an approved delivery
+        still lacks landing authority. A newer grant, recovery, arm or merge
+        answers it. Null does not prove the delivery is authorized.
         ``control_catalog`` reports native controls and their supported targets.
         It cannot observe or refresh a gateway or caller's cached tool list.
     """

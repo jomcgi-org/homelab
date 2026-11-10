@@ -3207,6 +3207,23 @@ def test_scoped_grant_never_substitutes_for_independent_review(
     assert calls["graphql"] == []
 
 
+def test_scope_wait_records_each_change_of_reason_once(db):
+    delivered(db, "t-wait", 101, 9, state="landing")
+    delivered(db, "t-other", 102, 9, state="landing")
+    item = {"task_id": "t-wait", "pr_number": 9}
+    for reason in ("missing", "missing", "path_denied", "path_denied", "missing"):
+        landing._scope_wait(item, reason)
+    landing._scope_wait({"task_id": "t-wait", "pr_number": 10}, "missing")
+    landing._scope_wait({"task_id": "t-other", "pr_number": 9}, "missing")
+
+    assert [
+        (row["reason"], row["pr_number"])
+        for row in audits(db, "landing_authorization_wait", "t-wait")
+    ] == [("missing", 9), ("path_denied", 9), ("missing", 9), ("missing", 10)]
+    assert len(audits(db, "landing_authorization_wait", "t-other")) == 1
+    assert item["refused"] is True
+
+
 @pytest.mark.parametrize("publication", [False, True])
 @pytest.mark.parametrize("ready_index", [6, 16])
 def test_scope_waits_do_not_starve_later_observation_page_candidates(
