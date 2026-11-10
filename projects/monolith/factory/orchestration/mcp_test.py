@@ -1563,6 +1563,82 @@ def test_status_landing_refusal_is_bounded_read_only_and_epoch_scoped(
         ] == starts_before
 
 
+@pytest.mark.parametrize(
+    "superseding",
+    [
+        None,
+        "merge_arm_refused",
+        "delivery_landing_authorized",
+        "owner_pr_landing_authorized",
+        "repair_landing_authorized",
+        "operator_scoped_landing_authorized",
+        "landing_recovery_requested",
+        "merge_armed",
+        "merged",
+    ],
+)
+def test_status_landing_wait_reads_latest_reason_until_answered(
+    db, monkeypatch, superseding
+):
+    from factory.orchestration import graph
+
+    monkeypatch.setattr(graph, "load_graph", lambda *a, **kw: [])
+    monkeypatch.setattr(graph, "node_runs", lambda *a, **kw: [])
+    with Session(db) as session, session.begin():
+        session.add(
+            SwarmTask(id="synthetic", task_text="work", conductor_model="astra")
+        )
+    seed_operator_rows(
+        db,
+        [
+            {
+                "issue_number": 7,
+                "task_id": "synthetic",
+                "state": "landing",
+                "policy_json": json.dumps(
+                    {
+                        "task_timeout_seconds": 3600,
+                        "task_budget_usd": 10,
+                        "max_turns_per_task": 9,
+                    }
+                ),
+            }
+        ],
+    )
+    with Session(db) as session, session.begin():
+        for reason in ("scoped_landing_authorization_missing", "path_denied"):
+            session.add(
+                FactoryAudit(
+                    actor="factory:landing",
+                    task_id="synthetic",
+                    action="landing_authorization_wait",
+                    detail_json=json.dumps(
+                        {"reason": reason, "pr_number": 17, "private": "hidden"}
+                    ),
+                )
+            )
+            session.flush()
+        if superseding:
+            session.add(
+                FactoryAudit(
+                    actor="factory:landing", task_id="synthetic", action=superseding
+                )
+            )
+    wait = mcp._status_payload(False)["active"][0]["landing_wait"]
+    if superseding in (None, "merge_arm_refused"):
+        assert wait["reason"] == "path_denied"
+        assert wait["pr_number"] == 17
+        assert set(wait) == {
+            "reason",
+            "pr_number",
+            "source",
+            "audit_id",
+            "observed_at",
+        }
+    else:
+        assert wait is None
+
+
 def test_status_payload_pages_each_bucket_and_keeps_queue_positions(db):
     seed_operator_rows(
         db,
