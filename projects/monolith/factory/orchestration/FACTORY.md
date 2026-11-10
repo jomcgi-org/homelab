@@ -474,6 +474,8 @@ or one configured window after the first failure if healthy observation never
 started. Later enablement, healthy samples and breaker expiry cannot renew it.
 Durable per-repository scan cursors rotate the bounded failure, intent and
 breaker batches, including held entries and unavailable sources.
+Failures without enablement evidence or a valid, unexpired reservation deadline
+remain in the audit ledger but do not consume a failure batch slot.
 
 Each intent files a recovery issue and receives one ordinary intake receipt.
 Its private ledger link gives it the deterministic `factory/rollback-<key>`
