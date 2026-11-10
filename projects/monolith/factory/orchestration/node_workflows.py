@@ -95,6 +95,10 @@ def _validate_pin(pin: dict) -> dict:
     hydration_branch = (
         need_str("hydration_branch") if "hydration_branch" in pin else branch
     )
+    if branch.startswith("commit:") and (
+        not re.fullmatch(r"commit:[0-9a-f]{40}", branch) or hydration_branch != branch
+    ):
+        raise ValueError("commit pin does not match hydration")
     retry_context = pin.get("retry_context", "")
     if (
         not isinstance(retry_context, str)
@@ -1304,7 +1308,7 @@ def execute_node(pin: dict) -> dict:
             session_id, turn.get("seq"), pin["artifact_path"], pin["artifact_schema"]
         )
         phase = "head_read"
-        head_sha = read_branch_head(pin["repo"], pin["branch"])
+        head_sha = _node_head(pin)
     except Exception as exc:
         note = ""
         if phase == "start":
@@ -1386,6 +1390,15 @@ def _read_reconciliation_head(repo: str, branch: str) -> str | None:
     # This caller is outside workflow replay. Invoke the underlying bounded
     # GitHub GET, not a DBOS checkpoint or a previously cached head observation.
     return read_branch_head.__wrapped__(repo, branch)
+
+
+def _node_head(pin: dict, *, reconciliation: bool = False) -> str | None:
+    # The server pins this selector, and the shim verifies detached HEAD before
+    # invoking the model. A commit selector is never a GitHub branch reference.
+    if pin["branch"].startswith("commit:"):
+        return pin["branch"][len("commit:") :]
+    read = _read_reconciliation_head if reconciliation else read_branch_head
+    return read(pin["repo"], pin["branch"])
 
 
 def _expected_session_identity(pin: dict) -> dict:
@@ -1555,7 +1568,7 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
             turn.artifact_outcome,
         )
 
-    head_sha = _read_reconciliation_head(pin["repo"], pin["branch"])
+    head_sha = _node_head(pin, reconciliation=True)
     reasons = []
     if cost is None:
         reasons.append("unknown_cost: consume the full admission reservation")

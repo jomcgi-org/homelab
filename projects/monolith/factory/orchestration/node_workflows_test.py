@@ -153,6 +153,24 @@ def harness(monkeypatch):
     return state
 
 
+@pytest.mark.parametrize(
+    "branch,hydration_branch",
+    [
+        ("commit:" + "a" * 40, "commit:" + "b" * 40),
+        ("commit:" + "a" * 40, "main"),
+        ("commit:short", "commit:short"),
+    ],
+)
+def test_commit_pin_requires_exact_hydration_before_start(
+    harness, branch, hydration_branch
+):
+    with pytest.raises(ValueError, match="commit pin does not match hydration"):
+        nodes.execute_node.__wrapped__(
+            pin(branch=branch, hydration_branch=hydration_branch)
+        )
+    assert harness.starts == [] and harness.clocks == []
+
+
 @pytest.mark.parametrize("diff_kind", ["absent", "truncated", "modified"])
 def test_success_uses_real_whole_file_schema_and_explicit_parent(harness, diff_kind):
     if diff_kind == "truncated":

@@ -384,8 +384,11 @@ activation), `factory_merged_delivery.reconcile_merged_delivery` can append one
 `review_merged_<pr>_<head>` node. Its single attempt uses existing reviewer
 routing and reservations. Graph admission accepts `read_only` only for this
 flag-gated merged-head caller; unrelated callers retain their existing admission
-rules. The checkout and artifact schema select the immutable merged head. The
-guest cannot edit source, commit, push, merge or deploy. A rejected, failed or
+rules. Both branch pins use `commit:<head>` so the guest fetches and detaches at
+the immutable merged head, checking HEAD before invoking the reviewer. Immediate
+and late-completion settlement bind the run head to that pinned commit without a
+branch-ref lookup. The artifact schema requires the same PR and head. The guest
+cannot edit source, commit, push, merge or deploy. A rejected, failed or
 ambiguous terminal result stays visible as `merged_verify_review_blocked` and
 cannot enter source-writing correction. Unknown execution retains its fence.
 

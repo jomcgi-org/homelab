@@ -7828,7 +7828,7 @@ def _dispatch_ready(
         if merged_target is not None:
             # The merged branch may have been deleted or moved. Checkout the
             # immutable PR head and never enter source-writing correction.
-            branch = merged_target[1]
+            branch = "commit:" + merged_target[1]
         reviewer = None
         if node_key.startswith("review_") and policy is not None:
             may_run, reviewer = _reviewer_override(task_id, policy, node)
@@ -7877,7 +7877,7 @@ def _dispatch_ready(
                 and not node_key.startswith("conductor_")
                 else artifact_schema
             ),
-            "hydration_branch": merged_target[1]
+            "hydration_branch": branch
             if merged_target is not None
             else branch_hydration(task, branch, hydration),
             "retry_context": json.dumps(
@@ -7916,7 +7916,7 @@ def _dispatch_ready(
         if merged_target is not None:
             number, head = merged_target
             context["read_only"] = True
-            context["hydration_branch"] = head
+            context["hydration_branch"] = "commit:" + head
             context["artifact_schema"] = json.loads(
                 json.dumps(context["artifact_schema"])
             )

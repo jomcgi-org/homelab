@@ -3483,10 +3483,21 @@ def test_staged_read_only_admission_rejects_malformed_schema(
 
 
 @pytest.mark.parametrize("actual_model", ["opus", "luna"])
-def test_staged_real_admission_pins_immutable_read_only_review_and_fallback_provenance(
-    merged_handoff, monkeypatch, actual_model
+@pytest.mark.parametrize("completion", ["execute", "reconcile"])
+@pytest.mark.parametrize("mismatch", [None, "pin", "artifact"])
+def test_staged_real_execution_binds_immutable_review_head_through_delivery(
+    merged_handoff, monkeypatch, actual_model, completion, mismatch
 ):
-    from factory.orchestration import factory_controls as controls, node_workflows
+    import httpx
+    from sqlmodel import SQLModel
+    import core.db
+    from factory.execution.models import AgentTurn, PendingMessage
+    from factory.orchestration import (
+        factory_controls as controls,
+        node_workflows,
+        steps,
+    )
+    from factory.orchestration.models import SwarmNodeRun
 
     s = merged_handoff
     conductor.tick()  # Record while explicitly paused, without dispatch.
@@ -3507,7 +3518,8 @@ def test_staged_real_admission_pins_immutable_read_only_review_and_fallback_prov
     pin = run["pin"]
     assert pin["model"] == actual_model
     assert pin["read_only"] is True
-    assert pin["branch"] == pin["hydration_branch"] == s.pr["head"]["sha"]
+    head = s.pr["head"]["sha"]
+    assert pin["branch"] == pin["hydration_branch"] == "commit:" + head
     assert pin["artifact_schema"]["properties"]["head_sha"] == {
         "const": s.pr["head"]["sha"]
     }
@@ -3521,22 +3533,120 @@ def test_staged_real_admission_pins_immutable_read_only_review_and_fallback_prov
         branch=pin["branch"],
     )
     assert "read-only" in prompt and "Commit and push source changes" not in prompt
-    settle_admitted_node(
-        s.task,
-        s.review_key,
-        {
-            "pr_number": 3,
-            "head_sha": s.pr["head"]["sha"],
-            "verdict": "approve",
-            "summary": "Independent immutable-head approval",
-        },
-        head=s.pr["head"]["sha"],
+    if mismatch == "pin":
+        pin = {
+            **pin,
+            "branch": "commit:" + "d" * 40,
+            "hydration_branch": "commit:" + "d" * 40,
+        }
+        with Session(s.engine) as db, db.begin():
+            db.get(SwarmNodeRun, run["id"]).pin_json = json.dumps(pin)
+    session_id = 201
+    authenticate_handoff_review(s, {**run, "pin": pin, "session_id": session_id})
+    SQLModel.metadata.create_all(
+        s.engine, tables=[AgentTurn.__table__, PendingMessage.__table__]
     )
-    run = conductor.graph.node_runs(s.task["id"])[-1]
-    authenticate_handoff_review(s, run)
+    value = {
+        "pr_number": 3,
+        "head_sha": "d" * 40 if mismatch == "artifact" else head,
+        "verdict": "approve",
+        "summary": "Independent immutable-head approval",
+    }
+    turn = {
+        "seq": 1,
+        "terminal_reason": "completed",
+        "stop_reason": "end_turn",
+        "cost_usd": 0.25,
+        "model": actual_model,
+    }
+    with Session(s.engine) as db, db.begin():
+        db.add(
+            AgentTurn(
+                session_id=session_id,
+                prompt=prompt,
+                result_text="Review completed",
+                artifact_path=pin["artifact_path"],
+                artifact_outcome="ok",
+                artifact_blob=json.dumps(value).encode(),
+                **turn,
+            )
+        )
+    monkeypatch.setattr(core.db, "get_engine", lambda: s.engine)
+    # The real GitHub head reader must return 404 for the old bare-SHA path.
+    # Neither successful completion path may rely on that nonexistent ref.
+    reads = []
+
+    def github(request):
+        reads.append(request.url.path)
+        assert "/git/ref/heads/" in request.url.path
+        return httpx.Response(404)
+
+    client = httpx.Client
+    monkeypatch.setattr(
+        steps.httpx,
+        "Client",
+        lambda **kw: client(transport=httpx.MockTransport(github), **kw),
+    )
+    assert steps.read_branch_head.__wrapped__(pin["repo"], head) is None
+    reads.clear()
+    if completion == "execute":
+        monkeypatch.setattr(
+            node_workflows, "read_branch_head", steps.read_branch_head.__wrapped__
+        )
+        monkeypatch.setattr(
+            node_workflows, "observe_clock", lambda: s.clock[0].isoformat()
+        )
+        monkeypatch.setattr(
+            node_workflows,
+            "_start_node_session",
+            lambda *a: {"started": True, "session_id": session_id},
+        )
+        monkeypatch.setattr(
+            node_workflows, "_await_dispatched_node_turn", lambda *a: turn
+        )
+        monkeypatch.setattr(
+            node_workflows,
+            "_read_turn_artifact",
+            node_workflows._read_turn_artifact.__wrapped__,
+        )
+        monkeypatch.setattr(
+            node_workflows, "_cleanup_node", lambda *a: {"status": "completed"}
+        )
+        result = node_workflows.execute_node.__wrapped__(pin)
+    else:
+        monkeypatch.setattr(
+            node_workflows, "_recover_response_lost", lambda *a, **kw: None
+        )
+        result = node_workflows.reconcile_completed_node(pin, session_id)
+    assert reads == []
+    assert result["head_sha"] == ("d" * 40 if mismatch == "pin" else head)
+    assert result["status"] == ("failed" if mismatch == "artifact" else "succeeded")
+    assert conductor.graph.record_dispatch(
+        s.task["id"], s.review_key, 1, session_id, None
+    ).ok
+    assert conductor.graph.record_outcome(
+        s.task["id"],
+        s.review_key,
+        1,
+        result["status"],
+        result["cost_usd"],
+        result["head_sha"],
+        json.dumps(result),
+    ).ok
+    assert controls.record_start_outcome(
+        s.task["id"],
+        pin["workflow_id"],
+        result["status"],
+        "worker",
+        cost_usd=result["cost_usd"],
+        session_id=session_id,
+    )["ok"]
     for _ in range(2):
         conductor.tick()
-    assert controls.task_snapshot(s.task["id"])["state"] == "landing"
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == ("escalated" if mismatch else "landing")
+    if mismatch:
+        assert after["evidence"]["state"] == "merged_verify_review_blocked"
     assert len(conductor.graph.node_runs(s.task["id"])) == 3
 
 
