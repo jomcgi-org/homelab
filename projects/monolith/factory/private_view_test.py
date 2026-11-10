@@ -385,13 +385,36 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path, monkeypatch):
         ]
         assert "private body" not in json.dumps(summary)
 
+        # Stable same-issue ties match the board's oldest-receipt-first input.
+        later = extra_receipt(
+            5984,
+            generation=1,
+            task_class="refine",
+            state="admitted",
+            task_paused=True,
+            escalation_json=refine.escalation_json,
+        )
+        db.add(later)
+        db.commit()
+        # The unresolved but non-actionable pause still counts toward coverage.
+        with pytest.raises(ValueError, match="coverage"):
+            build_factory_summary(session=db)
+        monkeypatch.setattr("factory.private_view.SUMMARY_DECISION_LIMIT", 3)
+        expected = controls.escalations(
+            [controls._snapshot(db, row) for row in (refine, later)]
+        )
+        assert expected[1]["pause_warning"] == (
+            "active_paused_without_actionable_question"
+        )
+        assert build_factory_summary(session=db)["escalations"] == expected
+
         def forbidden(*args, **kwargs):
             raise AssertionError("dashboard must not enrich the board")
 
         monkeypatch.setattr(controls, "status", forbidden)
         monkeypatch.setattr(controls, "_snapshot", forbidden)
         monkeypatch.setattr("factory.private_view.build_factory_view", forbidden)
-        assert build_factory_summary(session=db)["active_count"] == 2
+        assert build_factory_summary(session=db)["active_count"] == 3
         monkeypatch.setattr("factory.private_view.SUMMARY_DECISION_LIMIT", 0)
         with pytest.raises(ValueError, match="coverage"):
             build_factory_summary(session=db)

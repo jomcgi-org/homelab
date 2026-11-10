@@ -34,6 +34,7 @@
   let addingEdge = $state(null);
   let addFormError = $state(null);
   let removing = $state(null);
+  let removalTrigger;
   // svelte-ignore state_referenced_locally
   let renderedItemId = $state(data.itemId);
 
@@ -52,9 +53,21 @@
     return `${edge.kind} relationship from work item ${edge.from_id ?? document?.item?.id} to work item ${edge.to_id ?? document?.item?.id} (${edge.source}, edge ${edge.id})`;
   }
 
-  function armRemove(edge) {
+  function armRemove(edge, trigger) {
     if (busy || unavailable) return;
+    removalTrigger = trigger;
     removing = { identity: edgeIdentity(edge), edge: { ...edge } };
+  }
+
+  function focusRemoval(node) {
+    node.focus();
+  }
+
+  function cancelRemove() {
+    if (!removing) return;
+    removing = null;
+    removalTrigger?.focus();
+    removalTrigger = null;
   }
 
   $effect(() => {
@@ -133,7 +146,11 @@
       ...(document.edges_out ?? []),
     ].find((edge) => edgeIdentity(edge) === removing.identity);
     removing = null;
-    if (!exact) return;
+    if (!exact) {
+      notice =
+        "This relationship is no longer available. Refresh before removing it.";
+      return;
+    }
     const edgeId = exact.id;
 
     busy = "delete";
@@ -175,13 +192,43 @@
 <svelte:window
   onhashchange={() => (removing = null)}
   onkeydown={(event) => {
-    if (event.key === "Escape") removing = null;
+    if (event.key === "Escape") cancelRemove();
   }}
 />
 
 <svelte:head>
   <title>Work Item</title>
 </svelte:head>
+
+{#snippet removeControl(edge)}
+  <Button
+    variant="secondary"
+    class="remove-btn"
+    aria-label={`Remove ${edgeName(edge)}`}
+    disabled={busy !== null || unavailable}
+    onclick={(event) => armRemove(edge, event.currentTarget)}
+  >
+    x
+  </Button>
+  {#if removing?.identity === edgeIdentity(edge)}
+    <div
+      class="remove-confirm"
+      role="group"
+      aria-label="Confirm relationship removal"
+      aria-describedby={`remove-edge-${edge.id}`}
+      tabindex="-1"
+      use:focusRemoval
+    >
+      <p id={`remove-edge-${edge.id}`}>Remove {edgeName(removing.edge)}?</p>
+      <Button
+        variant="secondary"
+        disabled={busy !== null || unavailable}
+        onclick={deleteEdge}>Confirm remove</Button
+      >
+      <Button variant="secondary" onclick={cancelRemove}>Cancel remove</Button>
+    </div>
+  {/if}
+{/snippet}
 
 <FactorySheet className="work-item-page" view="work-item">
   <h1 class="sr-only">Work Item</h1>
@@ -233,19 +280,6 @@
     </header>
 
     <section class="edition item-section" aria-label="Work item edges">
-      {#if removing}
-        <div role="group" aria-label="Confirm relationship removal">
-          <p>Remove {edgeName(removing.edge)}?</p>
-          <Button
-            variant="secondary"
-            disabled={busy !== null || unavailable}
-            onclick={deleteEdge}>Confirm remove</Button
-          >
-          <Button variant="secondary" onclick={() => (removing = null)}
-            >Cancel remove</Button
-          >
-        </div>
-      {/if}
       <h2 class="sec-label">/ Blocked by</h2>
       {#if !edges.blocked_by?.length}
         <p class="none">none</p>
@@ -256,15 +290,7 @@
               work item {edge.from_id}
             </a>
             <span class="tag code">{edge.source}</span>
-            <Button
-              variant="secondary"
-              class="remove-btn"
-              aria-label={`Remove ${edgeName(edge)}`}
-              disabled={busy !== null}
-              onclick={() => armRemove(edge)}
-            >
-              x
-            </Button>
+            {@render removeControl(edge)}
           </div>
         {/each}
       {/if}
@@ -279,15 +305,7 @@
               work item {edge.to_id}
             </a>
             <span class="tag code">{edge.source}</span>
-            <Button
-              variant="secondary"
-              class="remove-btn"
-              aria-label={`Remove ${edgeName(edge)}`}
-              disabled={busy !== null}
-              onclick={() => armRemove(edge)}
-            >
-              x
-            </Button>
+            {@render removeControl(edge)}
           </div>
         {/each}
       {/if}
@@ -302,15 +320,7 @@
               work item {edge.from_id}
             </a>
             <span class="tag code">{edge.source}</span>
-            <Button
-              variant="secondary"
-              class="remove-btn"
-              aria-label={`Remove ${edgeName(edge)}`}
-              disabled={busy !== null}
-              onclick={() => armRemove(edge)}
-            >
-              x
-            </Button>
+            {@render removeControl(edge)}
           </div>
         {/each}
       {/if}
@@ -325,15 +335,7 @@
               work item {edge.to_id}
             </a>
             <span class="tag code">{edge.source}</span>
-            <Button
-              variant="secondary"
-              class="remove-btn"
-              aria-label={`Remove ${edgeName(edge)}`}
-              disabled={busy !== null}
-              onclick={() => armRemove(edge)}
-            >
-              x
-            </Button>
+            {@render removeControl(edge)}
           </div>
         {/each}
       {/if}
@@ -348,15 +350,7 @@
               work item {edge.to_id}
             </a>
             <span class="tag code">{edge.source}</span>
-            <Button
-              variant="secondary"
-              class="remove-btn"
-              aria-label={`Remove ${edgeName(edge)}`}
-              disabled={busy !== null}
-              onclick={() => armRemove(edge)}
-            >
-              x
-            </Button>
+            {@render removeControl(edge)}
           </div>
         {/each}
       {/if}
@@ -371,15 +365,7 @@
               work item {edge.from_id}
             </a>
             <span class="tag code">{edge.source}</span>
-            <Button
-              variant="secondary"
-              class="remove-btn"
-              aria-label={`Remove ${edgeName(edge)}`}
-              disabled={busy !== null}
-              onclick={() => armRemove(edge)}
-            >
-              x
-            </Button>
+            {@render removeControl(edge)}
           </div>
         {/each}
       {/if}
@@ -601,6 +587,13 @@
   }
   .edge-line :global(.remove-btn) {
     margin-left: auto;
+  }
+  .remove-confirm {
+    flex-basis: 100%;
+    min-width: 0;
+    padding: 0.5rem;
+    outline: 2px solid var(--accent-ink);
+    outline-offset: 2px;
   }
 
   .add-form {

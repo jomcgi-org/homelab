@@ -248,13 +248,23 @@ def actions(page, view, snapshot):
             "other": "#90099",
             "stated_reason": None,
         }
-        page.locator(".remove-btn").first.click()
+        page.locator(".remove-btn").first.focus()
+        page.keyboard.press("Enter")
         assert not page.evaluate(
             "window.__privateFixture.requests.some(r=>r.method==='DELETE')"
         )
         expect(
             page.get_by_role("group", name="Confirm relationship removal")
         ).to_contain_text("edge 1")
+        expect(
+            page.get_by_role("group", name="Confirm relationship removal")
+        ).to_be_focused()
+        expect(page.locator(".edge-line").first.get_by_role("group")).to_be_visible()
+        snapshot("relationship-removal-armed")
+        page.keyboard.press("Tab")
+        expect(
+            page.get_by_role("button", name="Confirm remove", exact=True)
+        ).to_be_focused()
         page.get_by_role("button", name="Confirm remove", exact=True).click()
         expect(page.locator(".remove-btn")).to_have_count(5)
         assert page.evaluate(

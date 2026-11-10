@@ -1,6 +1,6 @@
 // The dashboard's view of the factory board: what is waiting on Joe, what is
 // moving, and the one link into a conductor conversation. Computed on the
-// server from /api/agents/factory and refreshed with the rest of the
+// server from /api/agents/factory/summary and refreshed with the rest of the
 // dashboard, so the root page never carries the whole board.
 import {
   conductorHref,

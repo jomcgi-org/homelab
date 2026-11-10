@@ -235,6 +235,72 @@ describe("escalations page", () => {
     ).toHaveLength(1);
   });
 
+  test.each(["initial", "delayed"])(
+    "a receipt hash applies once after %s load without overriding keyboard selection on poll",
+    async (load) => {
+      vi.useFakeTimers();
+      const scroll = vi
+        .spyOn(Element.prototype, "scrollIntoView")
+        .mockImplementation(() => {});
+      try {
+        window.history.replaceState(null, "", "#receipt-3");
+        const rows = [
+          escalation(),
+          escalation({ receipt_id: 4, issue_number: 6003 }),
+        ];
+        const fetchMock = vi.fn(async (_url, init) => ({
+          ok: true,
+          json: async () =>
+            init?.method === "POST" ? { ok: true } : { escalations: rows },
+        }));
+        stubFetch(fetchMock);
+        const target = renderPage({
+          escalations: load === "initial" ? rows : [],
+        });
+        await tick();
+        if (load === "delayed") await vi.advanceTimersByTimeAsync(20000);
+        await tick();
+        expect(target.querySelector(".panel.here").id).toBe("receipt-3");
+        await vi.waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "j" }));
+        await tick();
+        expect(target.querySelector(".panel.here").id).toBe("receipt-4");
+        await vi.advanceTimersByTimeAsync(20000);
+        await tick();
+        expect(target.querySelector(".panel.here").id).toBe("receipt-4");
+        expect(scroll).toHaveBeenCalledTimes(1);
+        // Native crypto uses real timers while the decision request settles.
+        vi.useRealTimers();
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "1" }));
+        await settle();
+        expect(
+          fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"),
+        ).toEqual([
+          [
+            "/factory/escalations/decisions/4",
+            expect.objectContaining({ method: "POST" }),
+          ],
+        ]);
+        for (const [hash, selected, scrollCount] of [
+          ["#receipt-4", "receipt-4", 2],
+          ["#receipt-3", "receipt-3", 3],
+        ]) {
+          window.history.replaceState(null, "", hash);
+          window.dispatchEvent(new Event("hashchange"));
+          await tick();
+          expect(target.querySelector(".panel.here").id).toBe(selected);
+          await vi.waitFor(() =>
+            expect(scroll).toHaveBeenCalledTimes(scrollCount),
+          );
+        }
+      } finally {
+        window.history.replaceState(null, "", window.location.pathname);
+        scroll.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   test("receipt hashes select delayed cards and hash navigation cancels an armed close", async () => {
     vi.useFakeTimers();
     try {

@@ -336,7 +336,7 @@ export function dashboardData(scenario = "populated") {
     tasksDaily: scenario === "empty" ? [] : [daily],
     tasksWeekly: scenario === "empty" ? [] : [daily, weekly],
     dashboard: {
-      // The same summary the server attaches, from the same synthetic board.
+      // Match the dashboard shape from /api/agents/factory/summary with fixtures.
       factory: summarizeBoard(board(scenario === "empty")),
       today: {
         events:
