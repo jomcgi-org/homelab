@@ -1455,6 +1455,7 @@ def admit_dispatch(
                 factory_merged_delivery.enabled()
                 and factory_merged_delivery.review_target(node_key) is not None
                 and context["read_only"] is True
+                and isinstance(context.get("artifact_schema"), dict)
             )
             # Preserve the separately scoped refill path. The staged merged-head
             # exception grants nothing to other read-only callers.

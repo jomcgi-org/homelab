@@ -3450,6 +3450,38 @@ def test_staged_invalid_approval_cannot_become_success(
     )
 
 
+@pytest.mark.parametrize("schema", [None, "invalid", []])
+def test_staged_read_only_admission_rejects_malformed_schema(
+    feedback_db, monkeypatch, schema
+):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = feedback_task()
+    monkeypatch.setenv("FACTORY_MERGED_VERIFY_HANDOFF_ENABLED", "true")
+    node_key = "review_merged_7433_" + "a" * 40
+    assert conductor._add(
+        task, policy, node_key, "Read-only work", [], "opus", "test:schema", "fixture"
+    ).ok
+    key = f"factory-node:{task['id']}:{node_key}:1"
+    before = controls.task_snapshot(task["id"])
+    result = conductor.reserve_node(
+        task["id"],
+        node_key,
+        key,
+        {
+            "repo": task["repo"],
+            "branch": "a" * 40,
+            "workflow_id": key,
+            "read_only": True,
+            "artifact_schema": schema,
+        },
+    )
+    assert not result
+    assert result.refusal_code == "invalid_execution_context"
+    assert conductor.graph.node_runs(task["id"]) == []
+    assert controls.task_snapshot(task["id"])["starts"] == before["starts"]
+
+
 @pytest.mark.parametrize("actual_model", ["opus", "luna"])
 def test_staged_real_admission_pins_immutable_read_only_review_and_fallback_provenance(
     merged_handoff, monkeypatch, actual_model
