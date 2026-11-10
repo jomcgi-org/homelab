@@ -74,9 +74,16 @@ func (f HillFilter) matches(w *walks.Walk) bool {
 	return false
 }
 
-func (f HillFilter) available(wk *walks.Dataset, enabled bool) error {
+func (f HillFilter) available(wk *walks.Dataset, enabled, walkRequested bool) error {
 	if f.active() && !enabled {
 		return ErrHillsDisabled
+	}
+	if f.active() && !walkRequested {
+		param := "hill_name"
+		if f.HillClass != "" {
+			param = "hill_class"
+		}
+		return &ParamError{param, "requires a walk activity"}
 	}
 	if f.active() && (wk == nil || wk.HillSource == nil) {
 		return fmt.Errorf("%w: hill snapshot not loaded", ErrUnavailable)

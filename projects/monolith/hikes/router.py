@@ -206,7 +206,20 @@ def get_walks(
     now = datetime.now(timezone.utc)
     cutoff = top_of_hour(now)
 
-    walk_rows = session.exec(select(Walk).order_by(Walk.name)).all()
+    # monolith-public promotes independently of monolith's migrations. Select
+    # only public response fields so a new ingestion column cannot break reads.
+    walk_rows = session.exec(
+        select(
+            Walk.uuid,
+            Walk.name,
+            Walk.url,
+            Walk.distance_km,
+            Walk.ascent_m,
+            Walk.duration_h,
+            Walk.latitude,
+            Walk.longitude,
+        ).order_by(Walk.name)
+    ).all()
 
     # Read-time correctness filter: only hours at or after the current clock
     # hour. The prune job is best-effort housekeeping; the endpoint must not
@@ -282,7 +295,10 @@ def get_walk_detail(
     filtered to the current clock hour and reassembled into the wire tuples the
     frontend expects.
     """
-    walk = session.get(Walk, uuid)
+    # Keep this read independent of ingestion columns and their migrations too.
+    walk = session.exec(
+        select(Walk.uuid, Walk.summary).where(Walk.uuid == uuid)
+    ).first()
     if walk is None:
         raise HTTPException(status_code=404, detail="walk not found")
 

@@ -382,7 +382,7 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 	if err := limits.needsComplete(wk); err != nil {
 		return nil, err
 	}
-	if err := hills.available(wk, s.Hills != nil); err != nil {
+	if err := hills.available(wk, s.Hills != nil, walk); err != nil {
 		return nil, err
 	}
 	unfiltered := wk

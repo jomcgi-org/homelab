@@ -12,6 +12,7 @@ When the optional hill snapshot is enabled and loaded, `plan` and `check`
 accept `hill_class` (Munro, Munro Top, Corbett, Graham or Donald) and
 `hill_name` (an exact normalized summit name). Together they must match the
 same summit/class. Check applies these filters to named walks and alternatives.
+Hill filters require a walk activity; stargaze-only calls return a parameter error.
 Unavailable hill data returns an unavailable error for filtered calls;
 unfiltered calls retain the existing weather behavior.
 
@@ -29,10 +30,7 @@ Source: [The Database of British and Irish Hills](https://www.hill-bagging.co.uk
 with the release version in `meta.sources`, under
 [Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/).
 Data is modified by filtering to Scotland and supported classes and joining
-to Walkhighlands walks. Hill ingestion and snapshot polling ship disabled;
-live import, activation and a live Ben Nevis answer remain outstanding on #7368.
-Before activation, align the public `/scotland/terms` page with the DoBIH
-CC BY 4.0 carve-out while preserving restrictions for other response fields.
+to Walkhighlands walks. Hill ingestion and snapshot polling are disabled by default.
 
 The service's result caps do not limit the reuse rights granted by CC BY 4.0
 for DoBIH-derived fields.

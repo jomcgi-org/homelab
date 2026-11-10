@@ -275,6 +275,15 @@ func TestHillTermsAndResponseDescription(t *testing.T) {
 	if codes := spec.Components.Schemas["ErrorResponse"].Properties["error"].Properties["code"].Enum; !strings.Contains(strings.Join(codes, ","), "feature_not_enabled") {
 		t.Fatal("missing disabled-feature error code", codes)
 	}
+	r, _ := get(t, handler(true), "/v1/method")
+	if r.Code != http.StatusOK {
+		t.Fatal(r.Code, r.Body)
+	}
+	for _, internal := range []string{"#7368", "Before activation, align", "Conductor rescope:"} {
+		if strings.Contains(r.Body.String(), internal) {
+			t.Fatalf("public method exposes internal delivery text: %s", internal)
+		}
+	}
 }
 
 func TestUnknownPathIs404(t *testing.T) {

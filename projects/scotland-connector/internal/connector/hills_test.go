@@ -42,6 +42,35 @@ func hillService(t *testing.T, explicit bool) *connector.Service {
 	return svc
 }
 
+func TestHillFiltersRequireWalkActivity(t *testing.T) {
+	for _, filter := range []connector.HillFilter{{HillClass: "Munro"}, {HillName: "Ben Nevis"}, {HillClass: "Munro", HillName: "Ben Nevis"}} {
+		t.Run(fmt.Sprintf("%s/%s", filter.HillClass, filter.HillName), func(t *testing.T) {
+			svc := hillService(t, true)
+			pp := connector.PlanParams{Lat: f(56.82), Lon: f(-5.1), From: s("2026-06-20"), To: s("2026-06-20"), Activities: []string{"stargaze"}, WalkFilter: connector.WalkFilter{HillFilter: filter}}
+			cp := connector.CheckParams{Items: []connector.CheckItem{{Activity: "stargaze", Date: "2026-06-20", Lat: f(56.82), Lon: f(-5.1)}}, HillFilter: filter}
+			for name, call := range map[string]func() (*connector.Envelope, error){
+				"plan":  func() (*connector.Envelope, error) { return svc.Plan(pp) },
+				"check": func() (*connector.Envelope, error) { return svc.Check(cp) },
+			} {
+				t.Run(name, func(t *testing.T) {
+					_, err := call()
+					var param *connector.ParamError
+					if !errors.As(err, &param) || !strings.Contains(param.Message, "walk") || errors.Is(err, connector.ErrUnavailable) {
+						t.Fatalf("expected a non-retryable walk-activity parameter error, got %v", err)
+					}
+					want := "hill_name"
+					if filter.HillClass != "" {
+						want = "hill_class"
+					}
+					if param.Param != want {
+						t.Fatalf("error parameter %q, want %q", param.Param, want)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestHillPlanAndCheck(t *testing.T) {
 	for _, explicit := range []bool{false, true} {
 		svc := hillService(t, explicit)

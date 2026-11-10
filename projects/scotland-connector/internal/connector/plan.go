@@ -437,7 +437,7 @@ func (s *Service) Plan(p PlanParams) (*Envelope, error) {
 		return nil, err
 	}
 	var inRange []walkCandidate
-	if err := q.HillFilter.available(wk, s.Hills != nil); err != nil {
+	if err := q.HillFilter.available(wk, s.Hills != nil, has(q.Activities, ActivityWalk)); err != nil {
 		return nil, err
 	}
 	if wk != nil {
