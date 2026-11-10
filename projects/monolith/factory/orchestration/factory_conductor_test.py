@@ -3947,11 +3947,14 @@ def test_staged_discovery_failure_leaves_peers_and_landing_tick_reachable(
 
 
 @pytest.mark.parametrize(
-    "fence", ["landing", "cancel", "disabled", "ownership", "uncertain"]
+    "fence", ["none", "landing", "cancel", "disabled", "ownership", "uncertain"]
 )
 def test_staged_reserved_review_rechecks_physical_start_authority(
     merged_handoff, monkeypatch, fence
 ):
+    import builtins
+
+    from factory.orchestration.api import factory_session_allowed
     from factory.orchestration import factory_controls as controls
     from factory.orchestration.factory_models import FactoryStart
 
@@ -3966,7 +3969,7 @@ def test_staged_reserved_review_rechecks_physical_start_authority(
         request_task_cancellation(s)
     elif fence == "disabled":
         monkeypatch.delenv("FACTORY_MERGED_VERIFY_HANDOFF_ENABLED")
-    else:
+    elif fence != "none":
         with Session(s.engine) as db, db.begin():
             row = controls._receipt(db, s.task["id"])
             if fence == "landing":
@@ -3988,7 +3991,24 @@ def test_staged_reserved_review_rechecks_physical_start_authority(
     with controls.start_guard(
         s.task["id"], start_key=run["dispatch_key"]
     ) as permission:
-        assert not permission["ok"]
+        assert permission["ok"] is (fence == "none")
+    original_import = builtins.__import__
+
+    def pruned_import(name, globals=None, locals=None, fromlist=(), level=0):
+        names = {name, *(f"{name}.{item}" for item in fromlist or ())}
+        writers = {
+            f"factory.orchestration.{module}"
+            for module in ("factory_conductor", "factory_funding", "graph")
+        }
+        if names & writers:
+            raise ImportError("writer module absent from executor image")
+        return original_import(name, globals, locals, fromlist, level)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(builtins, "__import__", pruned_import)
+        assert factory_session_allowed(
+            f"factory:{s.task['id']}:{s.review_key}:{run['attempt']}"
+        ) is (fence == "none")
     assert len(conductor.graph.node_runs(s.task["id"])) == 3
 
 

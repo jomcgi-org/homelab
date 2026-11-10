@@ -1479,6 +1479,8 @@ py_library(
         # Status needs the durable landing reader in the pruned controls closure.
         # pkg_swarm's existing glob shares this same source artifact.
         "factory/orchestration/factory_landing.py",
+        # Physical merged-head admission uses only receipt and audit readers.
+        "factory/orchestration/factory_merged_delivery.py",
         "factory/orchestration/factory_models.py",
         "factory/orchestration/intake_evidence.py",
         "factory/orchestration/factory_pause.py",

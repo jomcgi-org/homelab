@@ -94,10 +94,8 @@ def _authority(db, control, row, task_id: str) -> bool:
 
 
 def dispatch_authorized(db, control, row, task_id: str, start_key: str) -> bool:
-    from factory.orchestration import (
-        factory_controls as controls,
-        factory_conductor as conductor,
-    )
+    # The physical executor ships the admission readers without the conductor.
+    from factory.orchestration import factory_controls as controls
 
     matched = controls._START_KEY.match(start_key)
     target = review_target(matched.group("node_key")) if matched else None
@@ -114,11 +112,13 @@ def dispatch_authorized(db, control, row, task_id: str, start_key: str) -> bool:
         .order_by(controls.FactoryAudit.id.desc())
     ).first()
     detail = json.loads(event.detail_json) if event else {}
-    task = conductor._task(task_id, session=db)
+    branch, number = controls.granted_delivery_surface(
+        json.loads(row.direction_json) if row.direction_json else None
+    )
     return (
         (detail.get("pr_number"), detail.get("head_sha")) == target
-        and detail.get("delivery_branch") == conductor.delivery_branch(task)
-        and conductor.delivery_pr_number(task) in (None, target[0])
+        and detail.get("delivery_branch") == (branch or f"factory/{task_id}")
+        and number in (None, target[0])
     )
 
 
