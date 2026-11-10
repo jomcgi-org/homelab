@@ -47,7 +47,13 @@ window.fetch = async (input, options = {}) => {
     return Response.json({ type: "success", status: 200 });
   throw new Error(`Unexpected fixture network call: ${path}`);
 };
-if (view === "qwen" && !params.has("empty"))
+if (view === "qwen" && params.has("empty"))
+  localStorage.removeItem("qwen-chat-sessions-v1");
+if (
+  view === "qwen" &&
+  !params.has("empty") &&
+  !localStorage.getItem("qwen-chat-sessions-v1")
+)
   localStorage.setItem("qwen-chat-sessions-v1", JSON.stringify([qwenSession]));
 let data;
 if (params.has("empty")) {

@@ -23,8 +23,7 @@ partial screenshots and memory readings.
 `//projects/monolith/frontend:tools_page_dom_test` runs page DOM tests on Linux.
 `//projects/monolith/frontend:tools_fixture_preview_build_test` builds the
 browser harness. The existing Factory mobile preview workflow runs both the
-DOM suite and browser matrix, uploading `tools-preview-evidence-<head>` to its
-GitHub Actions run for PR readers. The existing Python entry point invokes
+DOM suite and browser matrix for PR readers. The existing Python entry point invokes
 `tools-preview/ci_check.py` serially. Download
 `factory-preview-evidence-<head>` and open `tools/MATRIX.md`.
 Evidence proves synthetic page behavior only. Live acceptance remains on #7156.
