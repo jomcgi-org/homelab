@@ -993,35 +993,20 @@ sat in `landing` with independent exact-head approval and passing CI, most for
 four days. Per-head grants were the only authority for ordinary work, so every
 merge waited for a person and intake found no candidates behind the open PRs.
 `delivery_landing_delegation` lets a standing operator delegate that decision
-once, inside a previewed deny-list and rolling cap. All EmberVM, Firecracker and
-MCP project paths stay outside it. The monolith exclusions cover the factory,
-shared identity and credentials, knowledge ingestion and caller authorization,
-the repository catalog API, observability, scheduler, Grimoire, sandbox,
-guest cluster reads and personal-retrieval audit, as listed in
-[the boundary](factory/orchestration/FACTORY.md#standing-delivery-landing-delegation).
-All current domain roots in `app/modules_public.py`, including their
-`register_public` routing, are excluded. This includes `ships/`, `stars/`,
-`trips/`, `hikes/`, `dr_jobs/`, `campsites/`, `worldcup/`, `home/`, `artifact/`,
-`grimoire_chat/` and `faas/`, alongside the previously excluded public domains.
-The entire monolith `frontend/` and shared `projects/design-system/` are
-excluded because the public frontend packages their code. Root authority
-tests remain excluded. `projects/monolith/BUILD` is excluded in full because it
-controls the factory's production entrypoint, `PYTHONPATH`, packaged
-dependencies and tests.
-`projects/monolith/ARCHITECTURE.md` is excluded to keep this delivery measure
-and stop condition outside the delegation.
+once, inside a previewed deny-list and rolling cap. The factory, the packages
+it imports, deployment and schema, credential and isolation code, and public
+routes stay outside it, so the factory cannot widen its own authority
+unattended. [The boundary](factory/orchestration/FACTORY.md#standing-delivery-landing-delegation)
+lists them.
 
-The deny-list is not a complete public-exposure, authentication or credential
-boundary and does not isolate code running inside the monolith.
-`app/modules_private.py` loads other domains into the factory's
-process with its DB session and credentials. Safety of remaining in-process
-code relies on typed independent review, not the deny-list. Preview exposes
-this limitation. Binary (non-UTF-8) regular blobs remain eligible: immutable
-tree checks bind blob identities and modes without inspecting content or
-encoding. A reviewer unable to assess that content cannot attest
-`private_internal_reversible`. Typed review must still reject public-facing
-changes outside the known paths. Revoke the delegation and return to per-head
-grants if the typed review's scope classification proves unreliable.
+Joe set that boundary on 2026-11-10. Successive review rounds had excluded whole
+projects and every monolith domain, each for a defensible reason, until three
+of the 23 waiting deliveries still qualified: the fence-on-fence pattern that
+stalled landing in the first place. The deny-list is a second check, not
+isolation. Eligible monolith code runs in the factory's process, so its safety
+rests on the typed independent review, required CI and the merge queue. Revoke
+the delegation and return to per-head grants if the typed review's scope
+classification proves unreliable.
 
 Measure, over the 72 hours before and after the operator's activation: receipts
 in `landing` older than 24 hours (`factory_status`), and agent-authored merges

@@ -216,50 +216,44 @@ Each receipt has one authority owner: an explicit grant, the owner-PR
 delegation, the repair delegation for producer-marked repairs, or this owner
 for everything else. None falls through to another.
 
-The boundary is a deny-list, shown in full by preview. Only paths under
-`projects/` qualify. Entire `embervm/`, `firecracker/` and `mcp/` projects are
-excluded, including broker transport, egress, VM isolation, key management and
-signing. Enumerated deployment, schema, cluster and authentication paths,
-agent instructions and Bazel macros are also excluded. These known-path rules
-do not establish a complete public-exposure or authentication boundary.
+The boundary is a deny-list, shown in full by preview. Joe set it on 2026-11-10
+after review rounds had widened the exclusions to whole projects and domains
+until three of the 23 waiting deliveries still qualified. Do not widen it into
+whole projects or domains without his decision.
 
-Excluded monolith directories are `factory/`, `core/`, `agent/`,
-`agent_kubernetes/`, `agent_sessions/`, `swarm/`, `app/`, `framework/`, `shared/`,
-`knowledge/`, `goosecracker/`, `observability/`, `scheduler/`, `grimoire/`,
-`sandbox/` and `personal_retrieval_audit/`. Every current domain root in
-`app/modules_public.py` is excluded, including `register_public` routing:
-`ships/`, `stars/`, `trips/`, `hikes/`, `dr_jobs/`, `campsites/`, `worldcup/`,
-`home/`, `artifact/`, `grimoire_chat/` and `faas/` join the already excluded
-`factory/`, `knowledge/`, `observability/` and `grimoire/` roots.
-This covers the catalog API and its
-real `goosecracker/tests/repo_catalog_test.py`, the knowledge redaction wrapper
-and retrieval authorization, and the guest cluster-read client. The entire
-monolith `frontend/` and `projects/design-system/` are excluded: the public
-frontend packages shared source, static assets and design-system components.
-Root authority tests remain excluded. Both `crd/` and `crds/` directory
-segments are excluded.
-At most forty files may change, as regular non-executable blobs. The typed
-independent review must attest the complete diff at its exact merge base and
-head as private, internal and reversible, with every public, security,
-credential and destructive flag false. The deny-list is a second check on that
-attestation, not a replacement for it.
+Only paths under `projects/` qualify. Excluded:
 
-`projects/monolith/BUILD` is excluded in full. It controls production image
-entrypoints, `PYTHONPATH`, the packaged backend and its dependencies, as well
-as factory and guard test declarations.
-`projects/monolith/ARCHITECTURE.md` is excluded because it defines this
-delegation's delivery measure and stop condition.
+- The factory and the packages it imports: monolith `factory/`, `core/`,
+  `shared/`, `app/`, `framework/`, `agent/`, `agent_kubernetes/`,
+  `agent_sessions/` and `swarm/`.
+- Deployment and schema: `chart`, `deploy`, `migrations`, `crd`, `crds`,
+  `templates`, `overlays` and `cluster` directories, and the `gke-apps`,
+  `gke-cluster`, `platform`, `platform-gke`, `operators` and `monolith-public`
+  projects.
+- Credential and isolation code: monolith `faas/`, `artifact/`, `sandbox/` and
+  `personal_retrieval_audit/`, EmberVM key management, signing, xDS, egress
+  and the jailer driver, the Firecracker egress proxy, and any path naming
+  authentication, tokens, secrets, redaction, visibility or hooks.
+- Public routes: any path naming `public`, each public domain's `__init__.py`
+  route registration, and the frontend build, cache-header and exposure-guard
+  files.
+- Agent instructions, Bazel macros, the root authority guard tests, the
+  repository catalog and `projects/monolith/ARCHITECTURE.md`, which defines this
+  delegation's measure and stop condition.
 
-These are known-path exclusions, not a complete runtime dependency or credential
-boundary. `app/modules_private.py` loads other monolith domains into the factory's
-process with its DB session and credentials. Remaining in-process monolith code
-relies on the typed independent review for safety, not the deny-list. Preview
-discloses this limitation in `path_limitations`; an apparently ordinary path
-does not prove the change is safe.
-Binary (non-UTF-8) regular blobs remain eligible. Immutable tree checks bind
-blob identities and modes without inspecting content or encoding. A reviewer
-unable to assess that content cannot attest `private_internal_reversible`.
-Typed review must still reject public-facing changes outside the known paths.
+Other private project code is eligible, including `projects/monolith/BUILD`,
+which most monolith changes must edit. At most forty files may change, as
+regular non-executable blobs. The typed independent review must attest the
+complete diff at its exact merge base and head as private, internal and
+reversible, with every public, security, credential and destructive flag false.
+
+The deny-list is a second check on that attestation, not an isolation boundary.
+Eligible monolith code runs in the factory's process, and API or MCP modules in
+eligible domains are not excluded by path. Their safety relies on the typed
+review, required CI and the merge queue; preview states this in
+`path_limitations`. Binary regular blobs remain eligible: tree checks bind blob
+identities and modes without inspecting content, so a reviewer unable to assess
+that content cannot attest `private_internal_reversible`.
 
 Preview and apply bind the standing operator's subject as well as the policy,
 version and bounds. File evidence records base and head blob identities, with
