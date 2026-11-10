@@ -4,7 +4,7 @@
     "title": "Scotland outdoors API",
     "version": "v1",
     "summary": "Read-only answers to Scottish trip questions: which walks fit the weather and where the night sky will be dark and clear, with a go, marginal, no or unknown verdict.",
-    "description": "Read-only plan and check endpoints plus a staged, default-off near-term aurora heuristic. Every response carries a provenance envelope (sources, attribution, forecast fetch time, method). Results and radius are capped; there is no bulk listing. Bulk extraction or redistribution of responses is not permitted.",
+    "description": "Read-only plan and check endpoints plus staged, default-off hill classifications and near-term aurora. Every response carries a provenance envelope (sources, attribution, forecast fetch time, method). Results and radius are capped; there is no bulk listing. Source data retains the reuse rights granted by the licences in meta.sources, including CC BY 4.0 for DoBIH-derived fields.",
     "license": {
       "name": "Responses carry the source licences named in meta.sources"
     }

@@ -6,9 +6,7 @@ that fit the weather and the night's best stargazing. **check** answers "is
 my plan on": for a named walk on a date, or stargazing at a point on a night,
 a verdict, the timing, the other days that suit it and better options nearby.
 
-## Verdicts
-
-### Optional hill filters
+## Hill filters
 
 When the optional hill snapshot is enabled and loaded, `plan` and `check`
 accept `hill_class` (Munro, Munro Top, Corbett, Graham or Donald) and
@@ -33,6 +31,11 @@ with the release version in `meta.sources`, under
 Data is modified by filtering to Scotland and supported classes and joining
 to Walkhighlands walks. Hill ingestion and snapshot polling ship disabled;
 live import, activation and a live Ben Nevis answer remain outstanding on #7368.
+
+The service's result caps do not limit the reuse rights granted by CC BY 4.0
+for DoBIH-derived fields.
+
+## Verdicts
 
 Every walk and night leads with a verdict and a one-line `why` in UK local
 time.
