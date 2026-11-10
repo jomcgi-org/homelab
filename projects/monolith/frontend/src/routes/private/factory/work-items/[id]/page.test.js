@@ -83,6 +83,53 @@ afterEach(() => {
 });
 
 describe("work item page", () => {
+  test("names every relationship and cancels exact removal on refresh or navigation", async () => {
+    vi.useFakeTimers();
+    try {
+      const doc = fixture();
+      const fetchMock = successfulFetch(doc);
+      vi.stubGlobal("fetch", fetchMock);
+      const target = renderPage({ itemId: "100001", document: doc });
+      await tick();
+      const controls = [...target.querySelectorAll(".remove-btn")];
+      expect(
+        new Set(controls.map((button) => button.getAttribute("aria-label")))
+          .size,
+      ).toBe(6);
+      controls[0].click();
+      await tick();
+      expect(fetchMock).not.toHaveBeenCalled();
+      target
+        .querySelector(
+          '[aria-label="Confirm relationship removal"] button:last-child',
+        )
+        .click();
+      await tick();
+      expect(
+        target.querySelector('[aria-label="Confirm relationship removal"]'),
+      ).toBeNull();
+      controls[0].click();
+      await tick();
+      doc.edges_in.reverse();
+      await vi.advanceTimersByTimeAsync(20000);
+      await tick();
+      expect(
+        target.querySelector('[aria-label="Confirm relationship removal"]'),
+      ).toBeNull();
+      target.querySelector(".remove-btn").click();
+      await tick();
+      window.dispatchEvent(new Event("hashchange"));
+      await tick();
+      expect(
+        target.querySelector('[aria-label="Confirm relationship removal"]'),
+      ).toBeNull();
+      expect(
+        fetchMock.mock.calls.every(([, init]) => init?.method !== "DELETE"),
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   test("polling marks stale data unavailable and clears the warning on recovery", async () => {
     vi.useFakeTimers();
     vi.stubGlobal(
@@ -160,6 +207,11 @@ describe("work item page", () => {
     const target = renderPage({ itemId: "100001", document });
 
     target.querySelector(".remove-btn").click();
+    await tick();
+    expect(fetchMock).not.toHaveBeenCalled();
+    target
+      .querySelector('[aria-label="Confirm relationship removal"] button')
+      .click();
     await settle();
 
     expect(fetchMock.mock.calls[0][0]).toBe(

@@ -33,23 +33,62 @@
   let expandedEdge = $state(null);
   let addingEdge = $state(null);
   let addFormError = $state(null);
+  let removing = $state(null);
+  // svelte-ignore state_referenced_locally
+  let renderedItemId = $state(data.itemId);
+
+  function edgeIdentity(edge) {
+    return JSON.stringify([
+      data.itemId,
+      edge.id,
+      edge.kind,
+      edge.from_id,
+      edge.to_id,
+      edge.source,
+    ]);
+  }
+
+  function edgeName(edge) {
+    return `${edge.kind} relationship from work item ${edge.from_id ?? document?.item?.id} to work item ${edge.to_id ?? document?.item?.id} (${edge.source}, edge ${edge.id})`;
+  }
+
+  function armRemove(edge) {
+    if (busy || unavailable) return;
+    removing = { identity: edgeIdentity(edge), edge: { ...edge } };
+  }
+
+  $effect(() => {
+    if (renderedItemId !== data.itemId) {
+      removing = null;
+      renderedItemId = data.itemId;
+      document = data.document ?? null;
+    }
+  });
 
   const edges = $derived(document ? edgeRows(document) : {});
   const eventHistory = $derived(document ? eventLines(document, now) : []);
 
   async function refresh() {
+    const requestedItem = data.itemId;
+    removing = null;
     try {
-      const response = await fetch(`/factory/work-items/${data.itemId}`);
+      const response = await fetch(`/factory/work-items/${requestedItem}`);
       if (!response.ok) throw new Error("unavailable");
-      document = await response.json();
+      const next = await response.json();
+      if (requestedItem !== data.itemId) return;
+      removing = null;
+      document = next;
       unavailable = false;
       now = Date.now();
     } catch {
+      if (requestedItem !== data.itemId) return;
+      removing = null;
       unavailable = true;
     }
   }
 
   async function addEdge(kind, direction, other, reason) {
+    removing = null;
     const itemId = document?.item?.id;
     if (!itemId || busy) return;
 
@@ -86,9 +125,16 @@
     }
   }
 
-  async function deleteEdge(edgeId) {
+  async function deleteEdge() {
     const itemId = document?.item?.id;
-    if (!itemId || busy) return;
+    if (!itemId || busy || unavailable || !removing) return;
+    const exact = [
+      ...(document.edges_in ?? []),
+      ...(document.edges_out ?? []),
+    ].find((edge) => edgeIdentity(edge) === removing.identity);
+    removing = null;
+    if (!exact) return;
+    const edgeId = exact.id;
 
     busy = "delete";
     failure = null;
@@ -125,6 +171,13 @@
     };
   });
 </script>
+
+<svelte:window
+  onhashchange={() => (removing = null)}
+  onkeydown={(event) => {
+    if (event.key === "Escape") removing = null;
+  }}
+/>
 
 <svelte:head>
   <title>Work Item</title>
@@ -180,7 +233,20 @@
     </header>
 
     <section class="edition item-section" aria-label="Work item edges">
-      <p class="sec-label">/ Blocked by</p>
+      {#if removing}
+        <div role="group" aria-label="Confirm relationship removal">
+          <p>Remove {edgeName(removing.edge)}?</p>
+          <Button
+            variant="secondary"
+            disabled={busy !== null || unavailable}
+            onclick={deleteEdge}>Confirm remove</Button
+          >
+          <Button variant="secondary" onclick={() => (removing = null)}
+            >Cancel remove</Button
+          >
+        </div>
+      {/if}
+      <h2 class="sec-label">/ Blocked by</h2>
       {#if !edges.blocked_by?.length}
         <p class="none">none</p>
       {:else}
@@ -193,9 +259,9 @@
             <Button
               variant="secondary"
               class="remove-btn"
-              aria-label="remove edge"
+              aria-label={`Remove ${edgeName(edge)}`}
               disabled={busy !== null}
-              onclick={() => deleteEdge(edge.id)}
+              onclick={() => armRemove(edge)}
             >
               x
             </Button>
@@ -203,7 +269,7 @@
         {/each}
       {/if}
 
-      <p class="sec-label">/ Blocks</p>
+      <h2 class="sec-label">/ Blocks</h2>
       {#if !edges.blocks?.length}
         <p class="none">none</p>
       {:else}
@@ -216,9 +282,9 @@
             <Button
               variant="secondary"
               class="remove-btn"
-              aria-label="remove edge"
+              aria-label={`Remove ${edgeName(edge)}`}
               disabled={busy !== null}
-              onclick={() => deleteEdge(edge.id)}
+              onclick={() => armRemove(edge)}
             >
               x
             </Button>
@@ -226,7 +292,7 @@
         {/each}
       {/if}
 
-      <p class="sec-label">/ Parent</p>
+      <h2 class="sec-label">/ Parent</h2>
       {#if !edges.parent?.length}
         <p class="none">none</p>
       {:else}
@@ -239,9 +305,9 @@
             <Button
               variant="secondary"
               class="remove-btn"
-              aria-label="remove edge"
+              aria-label={`Remove ${edgeName(edge)}`}
               disabled={busy !== null}
-              onclick={() => deleteEdge(edge.id)}
+              onclick={() => armRemove(edge)}
             >
               x
             </Button>
@@ -249,7 +315,7 @@
         {/each}
       {/if}
 
-      <p class="sec-label">/ Children</p>
+      <h2 class="sec-label">/ Children</h2>
       {#if !edges.children?.length}
         <p class="none">none</p>
       {:else}
@@ -262,9 +328,9 @@
             <Button
               variant="secondary"
               class="remove-btn"
-              aria-label="remove edge"
+              aria-label={`Remove ${edgeName(edge)}`}
               disabled={busy !== null}
-              onclick={() => deleteEdge(edge.id)}
+              onclick={() => armRemove(edge)}
             >
               x
             </Button>
@@ -272,7 +338,7 @@
         {/each}
       {/if}
 
-      <p class="sec-label">/ Supersedes</p>
+      <h2 class="sec-label">/ Supersedes</h2>
       {#if !edges.supersedes?.length}
         <p class="none">none</p>
       {:else}
@@ -285,9 +351,9 @@
             <Button
               variant="secondary"
               class="remove-btn"
-              aria-label="remove edge"
+              aria-label={`Remove ${edgeName(edge)}`}
               disabled={busy !== null}
-              onclick={() => deleteEdge(edge.id)}
+              onclick={() => armRemove(edge)}
             >
               x
             </Button>
@@ -295,7 +361,7 @@
         {/each}
       {/if}
 
-      <p class="sec-label">/ Superseded by</p>
+      <h2 class="sec-label">/ Superseded by</h2>
       {#if !edges.superseded_by?.length}
         <p class="none">none</p>
       {:else}
@@ -308,9 +374,9 @@
             <Button
               variant="secondary"
               class="remove-btn"
-              aria-label="remove edge"
+              aria-label={`Remove ${edgeName(edge)}`}
               disabled={busy !== null}
-              onclick={() => deleteEdge(edge.id)}
+              onclick={() => armRemove(edge)}
             >
               x
             </Button>
@@ -378,7 +444,7 @@
 
     {#if document.receipts?.length}
       <section class="edition item-section" aria-label="Receipts">
-        <p class="sec-label">/ Receipts</p>
+        <h2 class="sec-label">/ Receipts</h2>
         {#each document.receipts as receipt}
           {#if receipt.state === "escalated"}
             <p class="receipt-line">
@@ -414,7 +480,7 @@
     {/if}
 
     <section class="edition item-section" aria-label="Event history">
-      <p class="sec-label">/ Events</p>
+      <h2 class="sec-label">/ Events</h2>
       {#if !eventHistory.length}
         <p class="none">none</p>
       {:else}

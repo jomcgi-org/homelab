@@ -64,7 +64,7 @@ def main():
             (390, 1440), ("light", "dark"), ("populated", "empty", "unavailable")
         ):
             context = browser.new_context(
-                viewport={"width": width, "height": 900},
+                viewport={"width": width, "height": 844 if width == 390 else 900},
                 color_scheme="dark" if scheme == "light" else "light",
                 reduced_motion="reduce",
                 service_workers="block",

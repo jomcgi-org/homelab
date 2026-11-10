@@ -6,11 +6,11 @@
 // standing, and a dead home aggregate still reports the factory.
 import {
   backendCache,
-  boardStatus,
-  readBoard,
+  factorySummaryStatus,
+  readFactorySummary,
   readHome,
 } from "./backend-cache.js";
-import { summarizeBoard } from "./factory-summary.js";
+import { summarizeFactoryReading } from "./factory-summary.js";
 
 /**
  * `{ dashboard }`, where dashboard is the home aggregate with a `factory`
@@ -20,10 +20,10 @@ export async function loadDashboard(apiBase, { cache } = {}) {
   const options = cache ? { cache } : {};
   const [home, board] = await Promise.all([
     readHome(apiBase, options),
-    readBoard(apiBase, options),
+    readFactorySummary(apiBase, options),
   ]);
   const factory = summarize(board);
-  const status = boardStatus(cache ?? backendCache);
+  const status = factorySummaryStatus(cache ?? backendCache);
   // No board yet but a first read on the way: the page says "reading", not
   // "unavailable", and asks again shortly. Once a read has failed, a board
   // still missing is unavailable, however many retries are in flight.
@@ -45,7 +45,7 @@ export async function loadDashboard(apiBase, { cache } = {}) {
 // A malformed board reads as no factory reading, never as a broken page.
 function summarize(board) {
   try {
-    return summarizeBoard(board);
+    return summarizeFactoryReading(board);
   } catch {
     return null;
   }

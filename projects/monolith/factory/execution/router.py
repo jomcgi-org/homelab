@@ -346,6 +346,14 @@ def factory_board(task: str | None = None) -> dict:
     return build_factory_view(task)
 
 
+@router.get("/factory/summary")
+def factory_summary() -> dict:
+    """Read-only dashboard projection, under the same private boundary as board."""
+    from factory.private_view import build_factory_summary
+
+    return build_factory_summary()
+
+
 @router.get("/factory/work-items")
 def factory_work_items(
     state: str | None = None,

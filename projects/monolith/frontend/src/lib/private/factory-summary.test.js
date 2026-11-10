@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { summarizeBoard, waitingDecisions } from "./factory-summary.js";
+import {
+  summarizeBoard,
+  summarizeFactoryReading,
+  waitingDecisions,
+} from "./factory-summary.js";
 
 const board = {
   ok: true,
@@ -37,6 +41,21 @@ const board = {
 };
 
 describe("summarizeBoard", () => {
+  it("matches the summary projection and rejects incomplete counts", () => {
+    const reading = {
+      ...board,
+      active_count: 2,
+      queued_count: 1,
+      paused_count: 1,
+    };
+    expect(summarizeFactoryReading(reading)).toEqual(summarizeBoard(board));
+    for (const bad of [undefined, -1, 1.5, "2", NaN]) {
+      expect(
+        summarizeFactoryReading({ ...reading, active_count: bad }),
+      ).toBeNull();
+    }
+    expect(summarizeFactoryReading({ ...reading, paused_count: 3 })).toBeNull();
+  });
   it("keeps the lane counts, open decisions and the conductor link", () => {
     const summary = summarizeBoard(board);
     expect(summary).toMatchObject({

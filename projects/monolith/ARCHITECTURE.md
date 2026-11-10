@@ -381,6 +381,19 @@ catalog evidence identifies the route without claiming gateway refresh.
 
 ### Owned records
 
+The private dashboard reads `/api/agents/factory/summary`. SQL aggregates supply
+lane counts; the board's decision projection supplies exact identities, options
+and pause eligibility. This synchronous read owns its database session and skips
+receipt accounting, plans, sessions, intake and GitHub enrichment. At most 500
+unresolved escalation-bearing receipts are read; overflow fails the observation instead of
+publishing partial counts or decisions. The frontend holds this reading under a
+separate cache key with the board's freshness and stale limits. Full-board
+consumers retain `/api/agents/factory`. Rollout acceptance remains on #7520.
+
+**Why.** The dashboard needs counts and pending decisions; full-board enrichment
+loads per-task accounting and graphs on each refresh. Separate cache entries
+preserve the full-board contract and retain failed, cold and stale observations.
+
 Schema and durable workflow identities survive the package consolidation.
 The model definitions are [orchestration records](factory/orchestration/factory_models.py),
 [graph records](factory/orchestration/models.py) and [session records](factory/execution/models.py).
