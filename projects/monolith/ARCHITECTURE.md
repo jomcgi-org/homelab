@@ -1006,9 +1006,11 @@ were classed `explicit_hold`, most because their descriptions said "leave
 unmerged". Joe approved landing about 29 of them, and the only way to say so was
 to rewrite each description, because discovery deliberately does not interpret
 hold prose. `factory_release_owner_pr_hold` records the decision for one PR and
-waives that description and its earlier comments. Labels, assignees, later
-comments, the objective issue and all review, CI and landing gates still bind,
-so the control cannot land anything. Landing status also gains `landing_wait`,
+waives the exact description read at release and its earlier comments. An
+edited description, labels, assignees, later comments, the objective issue and
+all review, CI and landing gates still bind. Standing landing delegations do
+not read a release, so a released PR still lands on a per-head grant and the
+control cannot land anything. Landing status also gains `landing_wait`,
 the current reason an approved delivery lacks authority, which was invisible
 for 22 receipts. Measure over 72 hours either side of rollout: owner PRs
 classed `explicit_hold` (baseline 42) and approved receipts in `landing` with
