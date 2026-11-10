@@ -29,7 +29,8 @@
   );
   let showBack = $derived.by(() => {
     if (path === "/") return false;
-    if (/^\/(app|review|chat|notes|qwen)(\/|$)/.test(path)) return false;
+    if (/^\/(app|review|chat|notes|qwen|grimoire)(\/|$)/.test(path))
+      return false;
     // The factory documents, the execution console and the updates journal
     // carry their own Trail, whose root is the dashboard, and their own
     // persisted scheme switch.

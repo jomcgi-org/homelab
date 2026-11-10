@@ -81,6 +81,51 @@ build_test(
     targets = [":chat_fixture_preview"],
 )
 
+# Five real private tools under production layouts with invented data only.
+js_library(
+    name = "tools_fixture_src",
+    srcs = glob(["tools-preview/**"]) + [
+        "preview/fonts.css",
+        "preview/fonts/OFL.txt",
+        "preview/fonts/SchibstedGrotesk.ttf",
+    ],
+    deps = [
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/vitest",
+        ":src",
+        "//:node_modules/happy-dom",
+    ],
+)
+
+vitest_bin.vitest_test(
+    name = "tools_page_dom_test",
+    args = [
+        "run",
+        "--config",
+        "tools-preview/vitest.config.js",
+    ],
+    chdir = package_name(),
+    data = [":tools_fixture_src"],
+)
+
+js_run_binary(
+    name = "tools_fixture_preview",
+    srcs = [":tools_fixture_src"],
+    args = [
+        "build",
+        "--config",
+        "tools-preview/vite.config.js",
+    ],
+    chdir = package_name(),
+    out_dirs = ["tools-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "tools_fixture_preview_build_test",
+    targets = [":tools_fixture_preview"],
+)
+
 # The frontend package now owns a fixture-harness README. Keep it in the
 # same indexed documentation closure as every other repository package.
 filegroup(

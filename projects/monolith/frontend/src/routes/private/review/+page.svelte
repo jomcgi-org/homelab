@@ -5,6 +5,7 @@
   import ReviewCard from "$lib/private/components/ReviewCard.svelte";
   import ModeToggle from "$lib/private/components/ModeToggle.svelte";
   import UndoToast from "$lib/private/components/UndoToast.svelte";
+  import SchemeToggle from "$lib/public/components/SchemeToggle.svelte";
 
   let { data } = $props();
 
@@ -404,6 +405,7 @@
           >
         {/if}
       </span>
+      <SchemeToggle />
     </header>
 
     {#if pendingError}
@@ -489,6 +491,7 @@
   }
 
   .tabs button {
+    min-height: 44px;
     padding: 0.55em 0.8em;
     border: 0;
     border-bottom: 2px solid transparent;

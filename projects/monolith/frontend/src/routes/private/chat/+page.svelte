@@ -2,6 +2,7 @@
   import rough from "roughjs";
   import Markdown from "$lib/public/factory/Markdown.svelte";
   import { createGraphState } from "./graph-layout.js";
+  import SchemeToggle from "$lib/public/components/SchemeToggle.svelte";
 
   /** Strip YAML frontmatter and the auto-generated LINKS section from note markdown. */
   function cleanNoteContent(md) {
@@ -27,19 +28,19 @@
   let svgEl = $state(null);
 
   const TYPE_COLORS = {
-    note: { border: "#ffd54f" },
-    atom: { border: "#64a0ff" },
-    fact: { border: "#00c853" },
-    paper: { border: "#2979ff" },
-    article: { border: "#ff6d00" },
-    recipe: { border: "#d500f9" },
+    note: { border: "var(--warn)" },
+    atom: { border: "var(--tone-cache)" },
+    fact: { border: "var(--tone-ram)" },
+    paper: { border: "var(--tone-gpu)" },
+    article: { border: "var(--tone-disk)" },
+    recipe: { border: "var(--tone-hot)" },
   };
 
   const EDGE_COLORS = {
-    link: "#bbb",
-    related: "#ffd54f",
-    derives_from: "#1a1a1a",
-    edge: "#bbb",
+    link: "var(--stroke)",
+    related: "var(--warn)",
+    derives_from: "var(--ink)",
+    edge: "var(--stroke)",
   };
 
   /** Remove all child nodes from an element. */
@@ -360,7 +361,7 @@
   function fillEdgeGroup(rc, g, x1, y1, x2, y2, color, edgeSeed, isPending) {
     // Pencil: light gray sketch
     const pencil = rc.line(x1, y1, x2, y2, {
-      stroke: "#c0b8a8",
+      stroke: "var(--stroke)",
       roughness: 1,
       strokeWidth: 1,
       seed: edgeSeed,
@@ -446,7 +447,7 @@
     // Solid fill — starts transparent for pending, visible for pre-existing
     const fillEl = rc.rectangle(-w / 2, -h / 2, w, h, {
       stroke: "none",
-      fill: node.discarded ? "#eee" : "#fff",
+      fill: node.discarded ? "var(--band)" : "var(--sheet)",
       fillStyle: "solid",
       roughness: 1.2,
       seed: seed(node.id + "fill"),
@@ -477,7 +478,7 @@
         side.to[0],
         side.to[1],
         {
-          stroke: "#c0b8a8",
+          stroke: "var(--stroke)",
           roughness: 1.2,
           strokeWidth: 1,
           seed: sideSeed,
@@ -489,7 +490,7 @@
 
       // Ink: colored border retrace
       const ink = rc.line(side.from[0], side.from[1], side.to[0], side.to[1], {
-        stroke: node.discarded ? "#999" : colors.border,
+        stroke: node.discarded ? "var(--ink-2)" : colors.border,
         roughness: 1.2,
         strokeWidth: 1.8,
         seed: sideSeed + 7,
@@ -674,14 +675,14 @@
       const y2 = node.y + h / 2 - 3;
       discardG.appendChild(
         rc.line(x1, y1, x2, y2, {
-          stroke: "#ff3d00",
+          stroke: "var(--tone-disk)",
           strokeWidth: 2,
           roughness: 1.5,
         }),
       );
       discardG.appendChild(
         rc.line(x2, y1, x1, y2, {
-          stroke: "#ff3d00",
+          stroke: "var(--tone-disk)",
           strokeWidth: 2,
           roughness: 1.5,
         }),
@@ -717,12 +718,13 @@
   <title>Knowledge Explorer</title>
 </svelte:head>
 
-<div class="td explorer">
+<div class="td sheet explorer">
   <div class="explorer-body">
     <aside class="chat-panel">
       <header class="explorer-header">
         <a class="header-home" href="/">&larr; dashboard</a>
         <span class="header-title">KNOWLEDGE</span>
+        <SchemeToggle />
       </header>
       <div class="chat-log" bind:this={chatLog}>
         {#each messages as msg, i}
@@ -755,6 +757,7 @@
           disabled={isStreaming}
         />
         <button
+          aria-label="Send message"
           onclick={sendMessage}
           disabled={isStreaming || !inputText.trim()}
         >
@@ -792,6 +795,12 @@
                   onmouseleave={() => (hoveredNode = null)}
                   onclick={() =>
                     (selectedNode = selectedNode === node.id ? null : node.id)}
+                  onkeydown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      selectedNode = selectedNode === node.id ? null : node.id;
+                    }
+                  }}
                 />
               {/if}
             {/each}
@@ -803,7 +812,11 @@
 
   {#if selectedNode}
     <div class="note-drawer" role="complementary" aria-label="Note details">
-      <button class="drawer-close" onclick={() => (selectedNode = null)}>
+      <button
+        class="drawer-close"
+        aria-label="Close note"
+        onclick={() => (selectedNode = null)}
+      >
         &times;
       </button>
       {#if drawerLoading}
@@ -853,7 +866,8 @@
   /* The explorer is a sheet split in two: the chat column and the drawn
      graph. Chrome reads from the sheet tokens so it follows the scheme. */
   .explorer {
-    height: 100vh;
+    height: 100dvh;
+    padding: 0;
     background: var(--sheet);
     color: var(--ink);
     font-family: var(--font-ui);
@@ -886,6 +900,7 @@
     border-bottom: 1px solid var(--stroke);
   }
   .header-title {
+    flex: 1;
     font-weight: 700;
     font-size: 12px;
     letter-spacing: 0.15em;
@@ -994,7 +1009,7 @@
   }
   .chat-empty {
     text-align: center;
-    opacity: 0.4;
+    color: var(--ink-2);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     font-size: 12px;
@@ -1245,7 +1260,24 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
-  @media (max-width: 700px) {
+  .chat-text {
+    overflow-wrap: anywhere;
+  }
+  .chat-input-bar input {
+    min-width: 0;
+    font-size: 16px;
+    min-height: 44px;
+  }
+  .chat-input-bar button,
+  .drawer-close {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  @media (max-width: 760px) {
+    .explorer {
+      height: auto;
+      min-height: 100dvh;
+    }
     .explorer-body {
       flex-direction: column;
     }
@@ -1253,9 +1285,19 @@
       width: 100%;
       min-width: 0;
       max-width: none;
-      height: 60%;
+      min-height: 55dvh;
       border-right: 0;
-      border-bottom: 1px solid var(--stroke);
+    }
+    .chat-log {
+      flex-basis: auto;
+      max-height: 55dvh;
+    }
+    .graph-area {
+      min-height: 40dvh;
+      border-top: 1px solid var(--stroke);
+    }
+    .graph-svg {
+      min-height: 40dvh;
     }
     .note-drawer {
       width: 100%;
