@@ -33,6 +33,10 @@ Review corrections were checked on 2026-11-09 against PR #7690 head
 `673daf2e4c6e2f53ace3553753c4a25c5886377c`; the implementation sources are
 unchanged from the baseline. GitHub reads confirmed #7688 open with
 `needs-human`, #7255 closed as not planned, #7252 completed and #7253 open.
+Round 2 checks on 2026-11-10 against head
+`4e886aeb419cf1b2918c0a25e0056db24a44005a` add the affiliation and
+bulk-extraction assessments and explicit outcomes below. They change no
+implementation, package or public wording.
 
 ## Client validation
 
@@ -139,17 +143,20 @@ Validating marketplace manifest: /tmp/scotland-review-validation/marketplace/.cl
 ## Skill and tool behavior
 
 Connector source paths in this table start at `projects/scotland-connector/`.
+**PASS** means the named check is supported by repository evidence;
+**FAIL** identifies a source or wording gap; **UNVERIFIED** requires evidence
+outside this audit. Mixed outcomes name the separate checks.
 
 | Source evidence | Verified behavior or gap |
 | --- | --- |
-| `plugin/skills/scotland-trips/SKILL.md:17`; `internal/connector/plan.go:139`; `internal/connector/check.go:91` | Open questions use `plan`; named walks use `check`, accepting a name or prior ID. Check requires activity/date, and stargazing requires coordinates. The skill's examples and weather/filter parameter names match the implementation. |
-| `internal/connector/connector.go:28`; `internal/connector/plan.go:139`; `internal/connector/check.go:91`; `internal/connector/light.go:74` | Plan spans at most seven days, with its final date no later than today plus 13. Plan has a 1 to 100 km search radius and returns three options by default, at most five. Light shares the radius cap. Check accepts at most ten items within the date horizon and has no radius or option-count parameter. Dates use Europe/London. Before 09:00 the current stargazing night can start yesterday, including in a default combined plan. The skill's “today and the next two days” omits that exception; its “starting up to 13 days ahead” must not imply another seven days beyond the final-date cap. |
-| `internal/walks/walks.go:537`; `internal/connector/trip.go:253` | Default good-hour limits are 2 mm/h rain and 80 km/h wind. Suggested overrides of 0 or 4 mm/h, 40 km/h and 0 degrees C are accepted. Looser limits need a complete snapshot (`needsComplete`); the skill omits that possible error. A marginal slot can include a bad hour, so “dry” is not a guarantee of an entirely dry marginal outing. |
-| `internal/connector/trip.go:20`; `internal/walks/verdict.go:90`; `internal/connector/connector_test.go` | Start-point weather, summit caveat, MWIS advice, route links and climatology distinction are supported. `unknown` can mean missing entity forecast metadata, incomplete supporting coverage or a date beyond roughly 2.5 days. Read the returned `why`; the skill and support copy over-narrow this meaning. |
-| `internal/connector/light.go:42`; `internal/connector/light.go:74`; `internal/mcp/tools.go:36` | The skill says `light` “has no verdict”. Current output has cloud-support verdicts and separate night suitability verdicts. Proposed correction: distinguish astronomical windows, partial cloud support and night suitability. |
-| `internal/mcp/mcp.go:91`; `internal/mcp/tools.go:42`; `deploy/values.yaml:12` | Aurora is advertised only with an enabled store. Repository deploy values enable it, while chart defaults disable it; neither proves live state. The skill correctly says “when it is listed” but supplies no exact-instant, stale/missing-input or heuristic guidance. Proposed addition: aurora supports the published NOAA instant only, with no multi-day forecast or calibrated sighting probability. |
-| `internal/mcp/tools.go:27`; `internal/mcp/tools.go:126`; `internal/connector/plan.go:406`; `internal/connector/aurora.go:17` | All four tools have descriptive titles and matching annotation titles. All use `readOnlyHint=true`, `destructiveHint=false`, `idempotentHint=true`, `openWorldHint=false`. Calls read snapshots and compute results; they do not fetch providers or mutate user/domain data. Metrics and internal-error logging are incidental effects. Clocks and refreshed snapshots can change answers; idempotence does not promise byte-identical replies. |
-| `internal/mcp/mcp_test.go:102` | `TestToolListAndAnnotations` asserts titles/read-only/destructive hints; the other two booleans were inspected in the common constructor. Existing tests do not independently assert idempotent/open-world values. |
+| `plugin/skills/scotland-trips/SKILL.md:17`; `internal/connector/plan.go:139`; `internal/connector/check.go:91` | **PASS (tool selection and parameters).** Open questions use `plan`; named walks use `check`, accepting a name or prior ID. Check requires activity/date, and stargazing requires coordinates. The skill's examples and weather/filter parameter names match the implementation. |
+| `internal/connector/connector.go:28`; `internal/connector/plan.go:139`; `internal/connector/check.go:91`; `internal/connector/light.go:74` | **PASS (implemented caps); FAIL (skill date wording).** Plan spans at most seven days, with its final date no later than today plus 13. Plan has a 1 to 100 km search radius and returns three options by default, at most five. Light shares the radius cap. Check accepts at most ten items within the date horizon and has no radius or option-count parameter. Dates use Europe/London. Before 09:00 the current stargazing night can start yesterday, including in a default combined plan. The skill's “today and the next two days” omits that exception; its “starting up to 13 days ahead” must not imply another seven days beyond the final-date cap. |
+| `internal/walks/walks.go:537`; `internal/connector/trip.go:253` | **PASS (weather parameters); FAIL (skill limitations).** Default good-hour limits are 2 mm/h rain and 80 km/h wind. Suggested overrides of 0 or 4 mm/h, 40 km/h and 0 degrees C are accepted. Looser limits need a complete snapshot (`needsComplete`); the skill omits that possible error. A marginal slot can include a bad hour, so “dry” is not a guarantee of an entirely dry marginal outing. |
+| `internal/connector/trip.go:20`; `internal/walks/verdict.go:90`; `internal/connector/connector_test.go` | **PASS (weather and source caveats); FAIL (`unknown` wording).** Start-point weather, summit caveat, MWIS advice, route links and climatology distinction are supported. `unknown` can mean missing entity forecast metadata, incomplete supporting coverage or a date beyond roughly 2.5 days. Read the returned `why`; the skill and support copy over-narrow this meaning. |
+| `internal/connector/light.go:42`; `internal/connector/light.go:74`; `internal/mcp/tools.go:36` | **FAIL (light verdict wording).** The skill says `light` “has no verdict”. Current output has cloud-support verdicts and separate night suitability verdicts. Proposed correction: distinguish astronomical windows, partial cloud support and night suitability. |
+| `internal/mcp/mcp.go:94`; `internal/mcp/tools.go:42`; `deploy/values.yaml:12` | **PASS (conditional listing); FAIL (missing skill guidance); UNVERIFIED (live enablement, #7688).** Aurora is advertised only with an enabled store. Repository deploy values enable it, while chart defaults disable it; neither proves live state. The skill correctly says “when it is listed” but supplies no exact-instant, stale/missing-input or heuristic guidance. Proposed addition: aurora supports the published NOAA instant only, with no multi-day forecast or calibrated sighting probability. |
+| `internal/mcp/tools.go:27`; `internal/mcp/tools.go:126`; `internal/connector/plan.go:406`; `internal/connector/aurora.go:17` | **PASS (titles and annotations).** All four tools have descriptive titles and matching annotation titles. All use `readOnlyHint=true`, `destructiveHint=false`, `idempotentHint=true`, `openWorldHint=false`. Calls read snapshots and compute results; they do not fetch providers or mutate user/domain data. Metrics and internal-error logging are incidental effects. Clocks and refreshed snapshots can change answers; idempotence does not promise byte-identical replies. |
+| `internal/mcp/mcp_test.go:102` | **PASS (existing assertion coverage).** `TestToolListAndAnnotations` asserts titles/read-only/destructive hints; the other two booleans were inspected in the common constructor. Existing tests do not independently assert idempotent/open-world values. |
 
 ## Public pages and claims
 
@@ -158,7 +165,8 @@ boundary and `docs/runbooks/public-tier-checklist.md`. This audit changes no
 route, grant, caching policy or deployment. References in this section are
 relative to `projects/monolith/` unless stated otherwise.
 
-- **Marketplace and naming.** `frontend/src/routes/public/scotland/scotland-data.js:15`
+- **Marketplace and naming: PASS (source metadata and cache configuration).**
+  `frontend/src/routes/public/scotland/scotland-data.js:15`
   names marketplace `jomcgi`, plugin `scotland`, and the public Git repository's
   `projects/scotland-connector/plugin` subdirectory on `main`. Both manifests
   use `scotland`, version `0.1.1`, Joe McGinley and the same repository URL.
@@ -170,39 +178,76 @@ relative to `projects/monolith/` unless stated otherwise.
   `stale-if-error=31536000`. The Cloudflare header uses `max-age=3600`
   with the same stale windows. Its two tests verify those headers and the
   source reference; the strict catalog validator result is recorded above.
+  **UNVERIFIED (fetching, installation and live caching, #7688).**
   No current clone-size or installation result is established: the README's
   “does not clone the monorepo” should be qualified as subdirectory packaging,
   subject to client
   fetching behavior. No new marketplace was created.
-- **Rendering and support.** `frontend/src/routes/public/scotland/PolicyPage.svelte:13`
+- **Implied affiliation: PASS (publisher identified); UNVERIFIED (implied
+  affiliation).** `frontend/src/routes/public/scotland/policy-data.js:32`
+  is the only individual-publisher statement: “run by Joe McGinley, an
+  individual in Scotland”. The plugin manifests name Joe McGinley as author,
+  and the OpenAI interface names him as developer. No inspected public page,
+  manifest or listing explicitly disclaims official or government
+  affiliation. The labels and author fields alone do not establish that the
+  name cannot be mistaken for an official body. Directory-review risk for
+  the bare `scotland` ID remains **UNVERIFIED under #7688**, including its
+  publisher identity and namespace review. Proposed action for Joe: review
+  an explicit non-affiliation statement alongside the public name before
+  publication. This audit supplies no approved disclaimer and changes no copy.
+- **Rendering and support: PASS (rendering and contact consistency).**
+  `frontend/src/routes/public/scotland/PolicyPage.svelte:13`
   renders supplied sections as text, anchored headings, dated metadata and
   policy cross-links. The privacy, terms and support wrappers each select
   the matching data object. `policy-data.js:11` uses `joe@jomcgi.dev`, matching
   manifest author and marketplace owner. `page.dom.test.js`,
   `policy.dom.test.js`, sitemap and llms tests verify rendered links and copy.
-  They cannot verify mailbox delivery, replies “usually within a few days”,
-  legal sufficiency or URL availability. The loading promise “clears within
-  a minute or two” is not guaranteed by a 60-second snapshot refresh: fetch
+  **UNVERIFIED (mailbox delivery, reply time, legal sufficiency and live URL
+  availability, #7688).** These tests cannot verify replies “usually within
+  a few days”. **FAIL (recovery-time wording).** The loading promise “clears
+  within a minute or two” is not guaranteed by a 60-second snapshot refresh: fetch
   failures or missing snapshots can persist. Connector
   `internal/connector/trip.go:23` instead says “retry in a few minutes”.
   Proposed correction: align both messages and make recovery conditional.
-- **Limits.** `frontend/src/routes/public/scotland/scotland-data.js:39`
-  advertises plan/check and the supported seven-day/ten-item caps. “Tools:
-  plan, check” omits `light` and conditional `aurora`. Forecast refresh every
+- **Limits: PASS (source caps).**
+  `frontend/src/routes/public/scotland/scotland-data.js:39`
+  advertises plan/check and the supported seven-day/ten-item caps.
+  **FAIL (tool inventory).** “Tools: plan, check” omits `light` and conditional
+  `aurora`. **PASS (refresh schedules).** Forecast refresh every
   two to three hours matches `chart/values.yaml:662` and `:685` schedules.
-  Current data freshness requires live evidence beyond the schedule. No
+  **UNVERIFIED (current data freshness, #7688).** A schedule supplies no live
+  freshness evidence. **PASS (package declarations and rate-limit source).** No
   sign-up/key is declared in the client packages. Connector
   `chart/values.yaml:170` sets local per-client and known-assistant buckets;
   its comments specify
   route/replica scope. `chart/templates/httproute.yaml` renders them. Do not
   turn these into a universal global request quota. Public terms promise
-  refusal over limits but quote no numerical quota.
-- **Logging and retention.** `frontend/src/routes/public/scotland/policy-data.js:37`
+  refusal over limits but quote no numerical quota; live enforcement remains
+  **UNVERIFIED under #7688**.
+- **Bulk extraction: PASS (contractual restriction and per-call bounds);
+  UNVERIFIED (live enforcement, #7688).**
+  `frontend/src/routes/public/scotland/policy-data.js:106` forbids bulk
+  extraction, rebuilding or redistribution of the underlying data, and
+  getting round rate limits. The following paths start at
+  `projects/scotland-connector/`. `internal/connector/connector.go:25`
+  declares caps and no corpus-listing operation. `internal/connector/plan.go:139`
+  bounds each plan to seven days, a 100 km radius and at most five options;
+  `internal/connector/check.go:91` bounds each check to ten items.
+  `chart/values.yaml:158-191` configures local per-client and known-assistant
+  rate buckets, scoped by route and Envoy replica. These source controls
+  bound individual requests and request rates. The bulk-extraction
+  prohibition is contractual: many in-limit calls can still sweep the grid.
+  Source limits do not establish prevention of bulk reconstruction or
+  redistribution. Enforcement in the live service remains unverified; no
+  extraction or rate-limit probe was run.
+- **Logging and retention: UNVERIFIED (privacy promises, #7688).**
+  `frontend/src/routes/public/scotland/policy-data.js:37`
   describes hosted/local callers; `:49` promises rolling gateway logs, no
-  bodies and no onward shipping. Connector `internal/mcp/mcp.go:433` logs
+  bodies and no onward shipping. **PASS (inspected source and default format).**
+  Connector `internal/mcp/mcp.go:433` logs
   internal tool errors, and `internal/meter/meter.go:91` records bounded
   tool/surface/client/outcome labels without coordinates or addresses.
-  Protocol `_meta` is read for negotiation (`mcp.go:220`); location/user/
+  Protocol `_meta` is read for negotiation (`mcp.go:228`); location/user/
   conversation hints are not consumed by tool dispatch. Gateway configuration
   does not override default access logging
   (`projects/platform/cloudflare-gateway/templates/gateway-envoyproxy.yaml:8`).
@@ -212,7 +257,8 @@ relative to `projects/monolith/` unless stated otherwise.
   `a06df2485770b5a678758290bf8298d5ad77ae8813016175d8226f1e61f457cf`).
   The repository collector's opt-in namespaces exclude this gateway and
   connector (`projects/platform/otel-collector/values-gke.yaml:85`;
-  `templates/logs-configmap.yaml:29`). That does not prove absence of GKE or
+  `templates/logs-configmap.yaml:29`). **UNVERIFIED (actual logging, onward
+  copies and retention).** That does not prove absence of GKE or
   Cloudflare logging, copies, backups or a retention duration. No bounded
   retention configuration was established here. Proposed correction: qualify
   “never shipped”, “kept anywhere else”, “only short-lived” and deletion
@@ -222,20 +268,24 @@ relative to `projects/monolith/` unless stated otherwise.
   `frontend/src/routes/public/scotland/policy.dom.test.js:90` asserts
   “never shipped”; any later approved wording correction must update that
   assertion with the policy copy.
-- **Attribution and licence.** `frontend/src/routes/public/scotland/scotland-data.js:82`
+- **Attribution and licence: PASS (listed source identities and package licence);
+  FAIL (missing source attribution).**
+  `frontend/src/routes/public/scotland/scotland-data.js:82`
   and terms list MET Norway, CERRA, OSM, Natural Earth and Walkhighlands,
   matching connector `internal/connector/connector.go:169`. Package `LICENSE`
   is byte-identical to root MPL-2.0
   (`sha256sum LICENSE projects/scotland-connector/plugin/LICENSE`). This does
-  not license upstream datasets. The connector source explicitly leaves the
-  light-pollution render unattributed pending open #7253. Walkhighlands
+  not license upstream datasets. **FAIL (light-pollution attribution, #7253).**
+  The connector source explicitly leaves that render unattributed pending
+  open #7253. **PASS (recorded Walkhighlands sourcing boundary).** Walkhighlands
   sourcing was decided in completed #7252 and recorded in the connector's
   `ARCHITECTURE.md:454`: facts and links, with route prose, maps and GPX
-  excluded. Aurora adds NOAA and GMTED2010 provenance in
-  `internal/connector/aurora.go:35`, absent from the page's source list.
+  excluded. **FAIL (public NOAA/GMTED2010 attribution).** Aurora adds their
+  provenance in `internal/connector/aurora.go:35`, absent from the page's source list.
   Proposed correction: resolve the #7253 attribution gap and add the missing
   NOAA/GMTED2010 attribution to the public list before publication. This audit
-  makes no new rights-clearance or legal decision.
+  makes no new rights-clearance or legal decision; provider rights remain
+  **UNVERIFIED under #7688**.
 
 ### Query and body exposure
 
@@ -245,7 +295,7 @@ after that prefix is stripped. Source references start at
 v1.8.3 default request-path field inspected above; live logging and retention
 remain unverified under #7688.
 
-| Route or transport | Argument source | Exposure in the inspected default access log |
+| Route or transport | Argument source | Exposure in the inspected default access log (PASS: source mapping only) |
 | --- | --- | --- |
 | `GET /v1/plan` | `internal/httpapi/httpapi.go:134-157`: query `lat`, `lon`, `from`, `to`, `radius_km`, activities, option count and weather/walk filters. | The full query string includes supplied coordinates, dates and filters. |
 | `GET /v1/light` | `internal/httpapi/httpapi.go:174-188`: query `lat`, `lon`, `radius_km`, `from`, `to`. | The full query string includes supplied coordinates, radius and dates. |
@@ -253,6 +303,7 @@ remain unverified under #7688.
 | `POST /v1/check` | `internal/httpapi/httpapi.go:201-214`; `internal/connector/check.go:15-32`: JSON body with item dates, names/IDs and stargazing coordinates, plus shared weather limits. | Path/query are logged. The body arguments are outside the default format's fields. |
 | `POST /mcp` (`plan`, `check`, `light`, `aurora`) | `internal/mcp/mcp.go:158-184`, `:401-411`: JSON-RPC body with `params.arguments`. | Path/query are logged. Tool arguments in the body are outside the default format's fields. |
 
+**FAIL (privacy query-transport coverage).**
 Privacy `frontend/src/routes/public/scotland/policy-data.js:43` mentions only
 plan's point and dates in the URL; `:51` says “so a plan's coordinates”. Light
 and aurora use the same query transport. Proposed replacement for Joe's
@@ -320,7 +371,8 @@ Its `needs-human` hold requires explicit publisher authorization. The retained
 checklist includes live docs/privacy/terms/support/marketplace responses and
 edge caching, running logging and retention, live `tools/list` and bounded
 plan/check requests, both client installations, exact publisher accounts and
-namespace, duplicate-submission checks, and review/listing outcomes.
+namespace, naming and implied affiliation, duplicate-submission checks, and
+review/listing outcomes.
 No claim is made about account eligibility, directory approval or live
 availability. The audit's findings can inform that work without changing
 this receipt's repository-only acceptance.
