@@ -205,7 +205,7 @@ def identity_matches(pull: object, policy: dict) -> bool:
     )
 
 
-def _hold(item: dict, excluded: set[str], *, text_released: bool = False) -> str | None:
+def _hold(item: dict, excluded: set[str], *, release=None) -> str | None:
     from factory.orchestration.factory_intake_loop import _label_names
 
     labels = _label_names(item)
@@ -221,7 +221,7 @@ def _hold(item: dict, excluded: set[str], *, text_released: bool = False) -> str
     ):
         return "explicit_hold"
     # An operator release waives wording only. Labels and assignees still bind.
-    if not text_released and has_hold(item.get("body") or ""):
+    if has_hold(item.get("body") or "") and not hold_release.waives(release, item):
         return "explicit_hold"
     return None
 
@@ -454,8 +454,7 @@ def candidates(
                 or _hold(
                     pull,
                     excluded,
-                    text_released=hold_release.released_at(db, repo, pull["number"])
-                    is not None,
+                    release=hold_release.release(db, repo, pull["number"]),
                 )
                 or scope_reason
                 or _referenced_history(
@@ -480,8 +479,11 @@ def candidates(
                 )
                 .order_by(FactoryAudit.id.desc())
             ).all()
+            found = hold_release.release(db, repo, pull["number"])
             if any(
-                json.loads(event.detail_json).get("repo") == repo
+                # A recorded discussion hold older than the release is answered.
+                (found is None or event.id > found.audit_id)
+                and json.loads(event.detail_json).get("repo") == repo
                 and json.loads(event.detail_json).get("pr_number") == pull["number"]
                 and json.loads(event.detail_json).get("pr_updated_at")
                 == pull.get("updated_at")
@@ -595,12 +597,12 @@ def receive(repo: str, number: int, policy: dict, *, generation: int) -> dict:
     if direct and reason == "scope_authority_missing":
         scoped, reason = issue, None
     excluded = {x.lower() for x in controls.repos_map(policy)[repo]["exclude_labels"]}
-    released = hold_release.read_released_at(repo, number)
+    released = hold_release.read_release(repo, number)
     reason = (
         reason
-        or _hold(pull, excluded, text_released=released is not None)
+        or _hold(pull, excluded, release=released)
         # A direct owner PR is its own objective: the same description, once.
-        or _hold(issue, excluded, text_released=direct and released is not None)
+        or _hold(issue, excluded, release=released if direct else None)
     )
     if reason or scoped is None or issue.get("number") != expected_issue:
         raise ValueError(reason or "scope_changed")
@@ -648,7 +650,7 @@ def receive(repo: str, number: int, policy: dict, *, generation: int) -> dict:
         if reason or _hold(
             pull,
             {x.lower() for x in entry["exclude_labels"]},
-            text_released=hold_release.released_at(db, repo, number) is not None,
+            release=hold_release.release(db, repo, number),
         ):
             raise ValueError(reason or "explicit_hold")
         reason, owner = _history(db, repo, pull, issue, live)
@@ -738,13 +740,13 @@ def assert_unheld(
     # unheld path stays free of a database read.
     released = None
     if _hold(pull, set()):
-        released = hold_release.read_released_at(task["repo"], number)
-        if _hold(pull, set(), text_released=released is not None):
+        released = hold_release.read_release(task["repo"], number)
+        if _hold(pull, set(), release=released):
             raise OwnerPRHold("owner_pr_explicit_hold")
     comments = _pages(task["repo"], f"issues/{number}/comments", read_list)
     held = [comment for comment in comments if has_hold(comment.get("body") or "")]
     if held:
-        released = released or hold_release.read_released_at(task["repo"], number)
+        released = released or hold_release.read_release(task["repo"], number)
         if hold_release.binding_comments(held, released):
             raise OwnerPRHold("owner_pr_explicit_discussion_hold")
     if pull.get("state") != "open" and not pull.get("merged"):
