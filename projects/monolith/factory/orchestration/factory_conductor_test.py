@@ -28884,13 +28884,20 @@ def test_machine_stop_card_is_kept_when_expiry_has_no_authority(
         )
         assert factory_pause.expire_stop_card(s.task["id"]) is False
     else:
-        # A repair of the paused node is pending: the repair owner keeps the
-        # pause so the same node can retry after the repair rolls out.
+        # A repair of the paused node is pending. The fixture has admissions
+        # paused, which must not let expiry destroy the recorded repair wait.
+        from factory.orchestration import factory_funding as funding
+
+        with controls._locked_session() as (db, _):
+            pause = funding._latest_pause(db, s.task["id"])
+            funding.record_audit(
+                db,
+                funding.ACTOR,
+                "repair_allocation_wait",
+                task_id=s.task["id"],
+                pause_id=pause.id,
+            )
         s.clock[0] = late
-        monkeypatch.setattr(
-            "factory.orchestration.factory_funding.repair_pause_evidence",
-            lambda *_a: {"audit_id": 1},
-        )
         assert conductor._settle_paused_task(s.task, s.policy, [])
     after = controls.task_snapshot(s.task["id"])
     assert after["escalation"]["resolved"] is None
@@ -28916,7 +28923,6 @@ def test_expired_machine_pause_stops_without_asking(paused_settlement):
     after = controls.task_snapshot(s.task["id"])
     assert after["state"] == "cancelled"
     assert after["escalation"] is None
-    assert after["task_paused"] is False or after["state"] == "cancelled"
 
 
 @pytest.mark.parametrize("keeper", ["operator", "question", "landing_hold"])
@@ -28960,6 +28966,91 @@ def test_expired_pause_still_asks_when_a_person_owns_the_decision(
     after = controls.task_snapshot(s.task["id"])
     assert after["state"] == "escalated"
     assert after["escalation"]["resolved"] is None
+
+
+def test_consumed_repair_wait_no_longer_keeps_the_stop_card(paused_settlement):
+    from datetime import timedelta
+
+    from factory.orchestration import factory_controls as controls, factory_pause
+    from factory.orchestration import factory_funding as funding
+
+    s = paused_settlement
+    _machine_stop_card(s)
+    with controls._locked_session() as (db, _):
+        pause = funding._latest_pause(db, s.task["id"])
+        funding.record_audit(
+            db,
+            funding.ACTOR,
+            "repair_allocation_wait",
+            task_id=s.task["id"],
+            pause_id=pause.id,
+        )
+        wait = funding.latest(db, s.task["id"], "repair_allocation_wait")
+        funding.record_audit(
+            db,
+            funding.ACTOR,
+            "repair_funding_requested",
+            task_id=s.task["id"],
+            wait_id=wait["audit_id"],
+        )
+    s.clock[0] = (
+        _card_written_at(s) + factory_pause.STOP_CARD_GRACE + timedelta(hours=1)
+    )
+    assert s.clock[0] > s.deadline
+    assert factory_pause.expire_stop_card(s.task["id"]) is True
+
+
+def test_a_fresh_pause_reusing_an_old_stop_card_keeps_a_full_grace(paused_settlement):
+    from datetime import datetime, timedelta, timezone
+
+    from core.clock import aware
+    from factory.orchestration import factory_controls as controls, factory_pause
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = paused_settlement
+    card = _machine_stop_card(s)
+    # The card was written three days ago and an operator resumed the task.
+    with Session(s.engine) as db, db.begin():
+        written = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "paused_card_created",
+            )
+        ).one()
+        written.created_at = datetime.now(timezone.utc).replace(
+            tzinfo=None
+        ) - timedelta(days=3)
+    assert controls.set_control("resume_task", "operator", task_id=s.task["id"])["ok"]
+    # The factory pauses again for another reason and reuses the old card.
+    assert factory_pause.pause(s.task["id"], "factory:funding", "second reason")
+    assert controls.task_snapshot(s.task["id"])["escalation"] == card
+    with Session(s.engine) as db:
+        repaused_at = aware(funding._latest_pause(db, s.task["id"]).created_at)
+    pause_trigger(s, "deadline")
+    assert s.clock[0] > _card_written_at(s) + factory_pause.STOP_CARD_GRACE
+    assert s.clock[0] < repaused_at + factory_pause.STOP_CARD_GRACE
+    assert conductor._settle_paused_task(s.task, s.policy, [])
+    kept = controls.task_snapshot(s.task["id"])
+    assert kept["escalation"]["resolved"] is None
+    assert not kept["cancellation_requested"]
+    s.clock[0] = repaused_at + factory_pause.STOP_CARD_GRACE + timedelta(seconds=1)
+    assert conductor._settle_paused_task(s.task, s.policy, [])
+    assert controls.task_snapshot(s.task["id"])["cancellation_requested"] is True
+
+
+def test_expired_funding_pause_awaiting_an_operator_still_asks(
+    paused_settlement, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_funding as funding
+
+    s = paused_settlement
+    _machine_pause(s)
+    monkeypatch.setattr(funding, "_awaiting_operator", lambda *_a: True)
+    pause_trigger(s, "deadline")
+    assert conductor._settle_paused_task(s.task, s.policy, [])
+    assert controls.task_snapshot(s.task["id"])["state"] == "escalated"
 
 
 def _control_version(s):

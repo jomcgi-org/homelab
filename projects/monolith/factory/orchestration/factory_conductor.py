@@ -6561,9 +6561,16 @@ def _machine_paused(task_id: str) -> bool:
     from factory.orchestration import factory_controls as controls
     from factory.orchestration.factory_funding_limits import _latest_pause
 
+    from factory.orchestration import factory_funding as funding
+
     with controls._read_session() as db:
         pause = _latest_pause(db, task_id)
-    return pause is not None and pause.actor.startswith("factory:")
+        # A funding pause that waits for an operator's approval or answer is
+        # that person's decision, whoever took the pause.
+        awaited = funding._awaiting_operator(
+            db, task_id, funding.latest(db, task_id, "funding_review_settled")
+        )
+    return pause is not None and pause.actor.startswith("factory:") and not awaited
 
 
 def _settle_paused_task(
