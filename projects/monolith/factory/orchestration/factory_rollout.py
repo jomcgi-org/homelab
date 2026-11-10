@@ -1132,14 +1132,15 @@ async def _rollback_network_signals(targets):
                     verify_deployment(name, revision), timeout=5
                 )
                 kargo = proof.get("kargo") or {}
-                promotion = (
-                    kargo.get("current_promotion") or kargo.get("last_promotion") or {}
-                )
-                if promotion.get("version") == revision and promotion.get("phase") in {
-                    "Failed",
-                    "Errored",
-                    "Aborted",
-                }:
+                if any(
+                    isinstance(promotion, dict)
+                    and promotion.get("version") == revision
+                    and promotion.get("phase") in {"Failed", "Errored", "Aborted"}
+                    for promotion in (
+                        kargo.get("current_promotion"),
+                        kargo.get("last_promotion"),
+                    )
+                ):
                     signals.append(
                         {
                             "signal": "kargo_promotion",
@@ -1156,6 +1157,7 @@ async def _rollback_network_signals(targets):
             # follow URLs supplied by issue text or probe data.
             internal_url = os.environ.get("MONOLITH_INTERNAL_URL", "")
             if internal_url and name == "monolith" and target["chart"] == "monolith":
+                target["required_signals"] = ["revision_health"]
                 try:
                     response = await client.get(internal_url.rstrip("/") + "/healthz")
                     body = response.json() if len(response.content) <= 65536 else {}
@@ -1188,6 +1190,11 @@ async def _rollback_network_signals(targets):
 def collect_rollback_signals(policy, targets):
     """Network first, then fresh synchronous sessions on the landing thread."""
     from factory.orchestration import factory_controls as controls
+
+    if os.environ.get("MONOLITH_INTERNAL_URL"):
+        for target in targets:
+            if target["application"] == "monolith" and target["chart"] == "monolith":
+                target["required_signals"] = ["revision_health"]
 
     async def bounded():
         return await asyncio.wait_for(_rollback_network_signals(targets), timeout=28)

@@ -459,6 +459,10 @@ synthetic failures. The first covering publication identifies the expected
 chart revision, including when its Argo sync failed. Kargo failures must name
 that revision. The private monolith `/healthz` read requires matching
 `chart_version`; an unavailable endpoint or an unversioned error stays unknown.
+When the private endpoint is configured, its matching healthy response is
+required to start or complete the observation window, including after a
+collector timeout. A running newer Promotion does not hide the expected
+revision's failed last Promotion.
 Named synthetics read `PlatformProbe` by exact name; its JSON `detail` must carry
 `application`, `chart` and `revision`, and `checked_at` supplies freshness.
 Missing, malformed and stale observations remain unknown. No new synthetic
@@ -488,6 +492,10 @@ rebased commit newest-first, and uses `git revert -m 1` for a true merge.
 It pushes and creates or adopts `revert(<scope>): ...` with `Reverts #N`, without
 editing pins or cluster state. The branch and complete range marker survive a
 worker restart or formatter writeback. Closed PRs are adopted, never replaced.
+Before a resumed worker prepares source, it reads the deterministic remote
+branch and PR and fast-forwards its checkout through existing writeback. A
+published branch without a visible PR requires inspection of the uncertain
+create; another guest never blindly repeats it.
 
 `rollback_pr_started` fences the logical recovery worker. A crash before PR
 creation resumes its same receipt and deterministic branch. Issue writes have

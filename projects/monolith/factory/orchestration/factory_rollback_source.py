@@ -142,6 +142,33 @@ def publish(checkout, delivery, recovery_issue):
     def gh(*args):
         return _run(checkout, "gh", *args)
 
+    branch = "factory/rollback-" + delivery_key(delivery)[:32]
+    owner = repo.split("/", 1)[0]
+    path = f"repos/{repo}/pulls?state=all&head={owner}:{branch}&base=main&per_page=100"
+    # A published branch is the durable external-effect fence. A new guest
+    # must inspect it before preparing or pushing source, including CI writeback.
+    remote = _run(checkout, "git", "ls-remote", "origin", f"refs/heads/{branch}")
+    pulls = json.loads(gh("api", path))
+    if len(pulls) > 1:
+        raise ValueError("duplicate rollback pull requests")
+    if remote:
+        if not pulls:
+            # The previous worker may have died before or after requesting PR
+            # creation. An empty read cannot prove the request never happened.
+            raise ValueError(
+                "rollback PR creation outcome unknown; inspect published branch"
+            )
+        if _run(checkout, "git", "branch", "--show-current") != branch:
+            raise ValueError("rollback source branch is not owned")
+        if _run(checkout, "git", "status", "--porcelain"):
+            raise ValueError("rollback source worktree is dirty")
+        _run(checkout, "git", "fetch", "origin", f"refs/heads/{branch}")
+        _run(checkout, "git", "merge", "--ff-only", "FETCH_HEAD")
+    elif pulls:
+        raise ValueError(
+            "rollback PR exists without its source branch; inspect before publishing"
+        )
+
     source = json.loads(gh("api", f"repos/{repo}/pulls/{delivery['pr_number']}"))
     if (
         source.get("merged") is not True
@@ -171,12 +198,12 @@ def publish(checkout, delivery, recovery_issue):
     validate_landed_range(checkout, delivery, source_commits)
     result = reverse_source(checkout, delivery)
     _run(checkout, "git", "push", "origin", f"HEAD:refs/heads/{result['branch']}")
-    owner = repo.split("/", 1)[0]
-    path = f"repos/{repo}/pulls?state=all&head={owner}:{result['branch']}&base=main&per_page=100"
     pulls = json.loads(gh("api", path))
     if len(pulls) > 1:
         raise ValueError("duplicate rollback pull requests")
     if not pulls:
+        if remote:
+            raise ValueError("rollback PR disappeared; inspect before publishing")
         try:
             gh(
                 "pr",
