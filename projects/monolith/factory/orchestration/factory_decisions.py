@@ -1082,6 +1082,8 @@ def _direction(
                 "landing_hold_refusals",
                 "nonrenewable_recovery",
                 "model_restriction",
+                "rollback_delivery_key",
+                "rollback_parent_task_id",
             )
             if key in stored
         },

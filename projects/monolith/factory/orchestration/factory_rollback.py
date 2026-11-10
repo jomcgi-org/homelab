@@ -198,7 +198,7 @@ def _append(db, delivery: dict, action: str, key: str, now: datetime, /, **detai
     )
 
 
-def _observe(db, policy, delivery, observations, now):
+def _observe(db, policy, delivery, observations, now, *, enabled):
     key = identity(delivery)
     events = _events(db, key, delivery["task_id"], delivery["application"])
     if "rollout_failed" in events:
@@ -212,6 +212,22 @@ def _observe(db, policy, delivery, observations, now):
     }
     result = verdict(policy, delivery, observations, now=now)
     if result["verdict"] == "rollout_failed":
+        config = controls.rollback_policy(policy)
+        window = (
+            config["charts"]
+            .get(delivery["chart"], {})
+            .get("window_minutes", config["window_minutes"])
+        )
+        # A failed pipeline may never start its healthy observation window.
+        # Bound reservation from its first failure in that case. Never replay
+        # failures collected while disabled at a later enablement.
+        result.update(
+            automatic_rollback_eligible=enabled,
+            reservation_deadline=(
+                utc(delivery.get("window_started_at") or now)
+                + timedelta(minutes=window)
+            ).isoformat(),
+        )
         _append(
             db,
             delivery,
@@ -220,6 +236,8 @@ def _observe(db, policy, delivery, observations, now):
             now,
             failure=result["failure"],
             delivery=delivery,
+            automatic_rollback_eligible=result["automatic_rollback_eligible"],
+            reservation_deadline=result["reservation_deadline"],
         )
     elif result["verdict"] == "rollout_observing" and not started:
         _append(
@@ -245,8 +263,15 @@ def _observe(db, policy, delivery, observations, now):
 
 def observe_window(policy, delivery, observations, *, now, session=None):
     """Persist the window and its terminal failure, independently of enablement."""
-    with controls._locked_session(session) as (db, _control):
-        return _observe(db, policy, delivery, observations, now)
+    with controls._locked_session(session) as (db, control):
+        enabled = (
+            control.state == "enabled"
+            and controls.rollback_policy(json.loads(control.policy_json or "{}"))[
+                "enabled"
+            ]
+            and controls.rollback_policy(policy)["enabled"]
+        )
+        return _observe(db, policy, delivery, observations, now, enabled=enabled)
 
 
 def reserve(
@@ -265,7 +290,14 @@ def reserve(
         if events.get("rollback_reserved"):
             return {"state": "existing", **events["rollback_reserved"]}
         live = controls.rollback_policy(json.loads(control.policy_json or "{}"))
-        judged = _observe(db, {"rollback": live}, delivery, [evidence], clock)
+        enabled = (
+            live["enabled"]
+            and controls.rollback_policy(policy)["enabled"]
+            and control.state == "enabled"
+        )
+        judged = _observe(
+            db, {"rollback": live}, delivery, [evidence], clock, enabled=enabled
+        )
         from factory.orchestration.factory_reverts import is_revert_source
 
         reverted_prs = db.exec(
@@ -281,15 +313,15 @@ def reserve(
             )
         ):
             return {"state": "needs_human", "reason": "automatic_revert_of_revert"}
-        if (
-            not live["enabled"]
-            or not controls.rollback_policy(policy)["enabled"]
-            or control.state != "enabled"
-        ):
+        if not enabled:
             return {"state": "disabled"}
         # Re-evaluate the raw observation under current policy inside the lock.
         if judged["verdict"] != "rollout_failed":
             return {"state": "unknown"}
+        if judged.get("automatic_rollback_eligible") is not True:
+            return {"state": "non_actionable", "reason": "failure_before_enablement"}
+        if clock > utc(judged["reservation_deadline"]):
+            return {"state": "non_actionable", "reason": "failure_window_expired"}
         evidence = judged["failure"]
         if delivery.get("source_checked") is not True:
             return {"state": "source_unknown"}
