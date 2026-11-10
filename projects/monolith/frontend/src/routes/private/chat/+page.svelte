@@ -1066,13 +1066,13 @@
     stroke-linecap: round;
     stroke-linejoin: round;
   }
-  .node-label {
+  .graph-svg :global(.node-label) {
     font-family: var(--font-code);
     font-weight: 700;
     fill: var(--ink);
     pointer-events: none;
   }
-  .node-label--discarded {
+  .graph-svg :global(.node-label--discarded) {
     text-decoration: line-through;
     opacity: 0.4;
   }
