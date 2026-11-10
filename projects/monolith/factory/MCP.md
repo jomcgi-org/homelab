@@ -844,7 +844,7 @@ the boundary.
 2. Preview with `operation: "preview"`, `enabled: true`, `expected_version`,
    a reason and `max_landings` from 1 to 50. Review `deny_rules`, `max_files`
    and the bounds, plus `path_limitations`. The rules exclude the factory and
-   the packages it imports, deployment and schema, credential and isolation
+   its framework packages, deployment and schema, credential and isolation
    code, public routes and `projects/monolith/ARCHITECTURE.md`. Other private
    project code is eligible, including `projects/monolith/BUILD`. The deny-list
    is a second check, not isolation: safety relies on the typed independent
@@ -856,6 +856,6 @@ the boundary.
 
 To revoke, preview and apply `enabled: false` with `max_landings` omitted. A
 delivery outside the boundary records a `landing_authorization_wait` whose
-reason starts `delivery_landing_`, and still needs
+reason usually starts `delivery_landing_`, and still needs
 `factory_release_landing_hold`. Activation dispatches nothing and is not
 evidence that any delivery landed.

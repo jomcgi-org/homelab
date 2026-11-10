@@ -37,6 +37,9 @@ PUBLIC_DOMAIN_ROOTS = (
     "projects/monolith/artifact/",
     "projects/monolith/grimoire_chat/",
     "projects/monolith/faas/",
+    "projects/monolith/knowledge/",
+    "projects/monolith/observability/",
+    "projects/monolith/grimoire/",
 )
 EXCLUDED_ROOTS = (
     "projects/monolith/faas/",
@@ -453,6 +456,18 @@ def test_runtime_roots_exclude_all_files_without_sensitive_path_words(root, leaf
         "projects/monolith/frontend/src/routes/public/slop/+page.svelte",
         "projects/monolith-public/chart/values.yaml",
         "projects/monolith/chat_public/api.py",
+        # camelCase and inflected names must not slip past the word rule.
+        "projects/monolith/frontend/src/routes/private/factory/execution/CodexLogin.svelte",
+        "projects/monolith/knowledge/testdata/codex_session_redacted.txt",
+        "projects/monolith/chat/authToken.py",
+        "projects/monolith/chat/secretStore.py",
+        "projects/monolith/chat/authentication.py",
+        "projects/monolith/chat/redaction.py",
+        "projects/monolith/chat/hook.py",
+        "projects/monolith/chat/passwords.py",
+        "projects/monolith/ember_synthetic_probe_grants_test.py",
+        "projects/monolith/chat/Migrations/x.sql",
+        "projects/monolith/macros.BZL",
         "projects/monolith/bdd_test.bzl",
         "projects/monolith/.hidden/config.py",
         "projects/monolith/../../AGENTS.md",

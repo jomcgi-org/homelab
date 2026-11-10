@@ -2730,7 +2730,7 @@ async def factory_configure_delivery_landing(
 
     Repair tasks, owner PRs and explicit per-head operator grants keep their own
     owners and never fall through to this one. The previewed deny rules exclude
-    the factory and the packages it imports, deployment and schema, credential
+    the factory and its framework packages, deployment and schema, credential
     and isolation code, public routes, agent instructions and
     projects/monolith/ARCHITECTURE.md with its delivery measure and stop
     condition. Other private project code is eligible, including
