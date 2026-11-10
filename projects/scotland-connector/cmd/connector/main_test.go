@@ -196,3 +196,59 @@ func TestSitesKeyDefaultAndSelection(t *testing.T) {
 		t.Fatalf("selected: %+v, %v", cfg, err)
 	}
 }
+
+func TestHillsDefaultOffAndAbsentDoesNotAffectReadiness(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", "fixture")
+		switch r.URL.Path {
+		case "/stars/sites.json":
+			io.WriteString(w, fixture.Sites)
+		case "/stars/history-map.json":
+			io.WriteString(w, fixture.History)
+		default:
+			calls++
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("R2_ENDPOINT", srv.URL)
+	t.Setenv("S3_ACCESS_KEY_ID", "fixture")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "fixture")
+	t.Setenv("HILLS_ENABLED", "")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.hillsEnabled || cfg.refreshInterval != time.Minute || cfg.hillsKey != "hills.json" {
+		t.Fatal(cfg)
+	}
+	for _, enabled := range []bool{false, true} {
+		cfg.hillsEnabled = enabled
+		a, err := newApp(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), srv.Client())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (a.hills != nil) != enabled {
+			t.Fatal("activation mismatch")
+		}
+		if err := a.store.Refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if !enabled && calls != 0 {
+			t.Fatal("disabled hills fetched")
+		}
+		if enabled && (a.hills.Refresh(context.Background()) == nil || a.hills.Current() != nil) {
+			t.Fatal("missing hills accepted")
+		}
+		rec := httptest.NewRecorder()
+		a.admin.ServeHTTP(rec, httptest.NewRequest("GET", "/readyz", nil))
+		if rec.Code != 200 {
+			t.Fatal(rec.Body)
+		}
+	}
+	t.Setenv("HILLS_ENABLED", "maybe")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("invalid activation accepted")
+	}
+}

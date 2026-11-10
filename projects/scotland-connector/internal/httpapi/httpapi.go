@@ -144,6 +144,7 @@ func (h *Handler) plan(w http.ResponseWriter, r *http.Request) {
 	p.MinLengthKm, err = floatParam(q.Get("min_length_km"), "min_length_km", err)
 	p.MaxLengthKm, err = floatParam(q.Get("max_length_km"), "max_length_km", err)
 	p.MaxAscentM, err = intParam(q.Get("max_ascent_m"), "max_ascent_m", err)
+	p.HillClass, p.HillName = q.Get("hill_class"), q.Get("hill_name")
 	p.MaxRainMMH, err = floatParam(q.Get("max_rain_mm_h"), "max_rain_mm_h", err)
 	p.MaxWindKmh, err = floatParam(q.Get("max_wind_kmh"), "max_wind_kmh", err)
 	p.MinTempC, err = floatParam(q.Get("min_temp_c"), "min_temp_c", err)

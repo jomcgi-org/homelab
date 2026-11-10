@@ -50,6 +50,21 @@ def _utc(dt):
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
+def test_scrape_persists_and_replaces_explicit_summits(session):
+    jobs._upsert_walks(session, [_scraped("hill", summit_names=["Ben Nevis"])])
+    session.commit()
+    session.expire_all()
+    assert session.get(Walk, "hill").summit_names == ["Ben Nevis"]
+    jobs._upsert_walks(session, [_scraped("hill", summit_names=[])])
+    session.commit()
+    session.expire_all()
+    assert session.get(Walk, "hill").summit_names == []
+    jobs._upsert_walks(session, [_scraped("hill")])
+    session.commit()
+    session.expire_all()
+    assert session.get(Walk, "hill").summit_names is None
+
+
 def test_entity_success_time_includes_empty_and_survives_scrape_prune(
     session, monkeypatch
 ):

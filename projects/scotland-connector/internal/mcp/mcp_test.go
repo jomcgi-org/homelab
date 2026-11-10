@@ -22,6 +22,19 @@ func handler() *Handler {
 		ServerInfo{Name: "scotland-connector", Version: "test"}, []string{"https://claude.ai"})
 }
 
+func TestHillFiltersReachBothMCPTools(t *testing.T) {
+	for _, call := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"plan","arguments":{"lat":57,"lon":-4,"activities":["walk"],"hill_class":"Munro"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check","arguments":{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"Ben Nevis"}],"hill_name":"Ben Nevis"}}}`,
+	} {
+		_, _, response := post(t, handler(), call, map[string]string{"MCP-Protocol-Version": "2025-06-18"})
+		body, _ := json.Marshal(response)
+		if !strings.Contains(string(body), `"isError":true`) || !strings.Contains(string(body), "Forecast data is still loading") {
+			t.Fatal(string(body))
+		}
+	}
+}
+
 // auroraStore is an enabled aurora store whose snapshot has not loaded.
 type auroraStore struct{}
 

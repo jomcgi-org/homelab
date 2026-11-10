@@ -99,6 +99,11 @@ def build_payload(
                 "duration_h": w.duration_h,
                 "hours": by_walk.get(w.uuid, []),
                 "forecast_fetched_at": iso(w.forecast_fetched_at),
+                **(
+                    {"summit_names": w.summit_names}
+                    if hill_source_enabled() and w.summit_names is not None
+                    else {}
+                ),
             }
             for w in sorted(walks, key=lambda w: w.uuid)
             if _publishable(w)
@@ -177,3 +182,41 @@ def materialize_sync(now: datetime | None = None) -> int | None:
 async def materialize_handler() -> None:
     """Materialize off the event loop (the work is DB reads and one PUT)."""
     await asyncio.to_thread(materialize_sync)
+    await asyncio.to_thread(materialize_hills_sync)
+
+
+def hill_source_enabled() -> bool:
+    """Opt in only after separately authorizing local input and publication."""
+    return os.environ.get("HIKES_HILLS_ENABLED", "false") == "true"
+
+
+def materialize_hills_sync() -> int | None:
+    """Publish an explicitly supplied local CSV, never fetch a release.
+
+    Disabled before file access or S3 client creation. Ordinary failures keep
+    the previous object and cannot fail the existing forecast materialization.
+    No importer, schedule or production source configuration is installed.
+    """
+    if not hill_source_enabled():
+        return None
+    from hikes.dobih import build_hills
+
+    try:
+        if not os.environ.get("SEAWEEDFS_S3_ENDPOINT", "").startswith("https://"):
+            return None
+        with open(
+            os.environ["HIKES_DOBIH_CSV_PATH"], encoding="utf-8-sig", newline=""
+        ) as source:
+            payload = build_hills(source, os.environ["HIKES_DOBIH_VERSION"])
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        _s3_client().put_object(
+            Bucket=os.environ.get("STARS_GRID_S3_BUCKET", "stars"),
+            Key="hills.json",
+            Body=body,
+            ContentType="application/json",
+            CacheControl="no-store",
+        )
+        return len(body)
+    except Exception:
+        logger.exception("hills materialization failed; keeping previous snapshot")
+        return None

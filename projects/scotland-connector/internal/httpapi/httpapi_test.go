@@ -241,6 +241,18 @@ func TestUnavailableIsNotCached(t *testing.T) {
 	}
 }
 
+func TestHillFiltersReachBothRESTTools(t *testing.T) {
+	h := handler(true)
+	r, _ := get(t, h, "/v1/plan?lat=57&lon=-4&activities=walk&hill_class=Munro&hill_name=Ben%20Nevis")
+	if r.Code != http.StatusServiceUnavailable {
+		t.Fatal(r.Code, r.Body)
+	}
+	r, _ = postCheck(t, h, `{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"Ben Nevis"}],"hill_class":"Munro","hill_name":"Ben Nevis"}`)
+	if r.Code != http.StatusServiceUnavailable {
+		t.Fatal(r.Code, r.Body)
+	}
+}
+
 func TestUnknownPathIs404(t *testing.T) {
 	for _, p := range []string{"/v1/sites", "/v1/dark-sky-windows", "/v1/walk-windows"} {
 		rec, body := get(t, handler(true), p)
@@ -348,6 +360,14 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 			bounds(where, p.Schema, connector.MinTempLimitC, connector.MaxTempLimitC)
 		case "max_ascent_m":
 			bounds(where, p.Schema, 1, connector.MaxAscentM)
+		case "hill_class":
+			if strings.Join(p.Schema.Enum, ",") != "Munro,Munro Top,Corbett,Graham,Donald" {
+				t.Fatal(p.Schema)
+			}
+		case "hill_name":
+			if p.Schema.MaxLength == nil || *p.Schema.MaxLength != connector.MaxNameLength {
+				t.Fatal(p.Schema)
+			}
 		case "from":
 			if !strings.Contains(p.Description, fmt.Sprintf("up to %d days ahead", connector.MaxDaysAhead)) {
 				t.Errorf("%s description %q does not match the code's window", where, p.Description)
@@ -367,7 +387,7 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 			t.Errorf("%s required = %v", where, p.Required)
 		}
 	}
-	if len(seen) != 15 {
+	if len(seen) != 17 {
 		t.Errorf("plan parameters = %v", seen)
 	}
 

@@ -28,7 +28,11 @@ func (s *Service) walks() *walks.Dataset {
 	if s.Walks == nil {
 		return nil
 	}
-	return s.Walks.Current()
+	ds := s.Walks.Current()
+	if ds != nil && s.Hills != nil {
+		return ds.WithHills(s.Hills.Current())
+	}
+	return ds
 }
 
 // SlotOut is a walk's best slot on a day and the weather across its good
@@ -82,6 +86,8 @@ type WalkFacts struct {
 
 // WalkOption is one walk on one day.
 type WalkOption struct {
+	Hills         []walks.HillMatch `json:"hills,omitempty"`
+	hillsInferred bool
 	WalkFacts
 	FromPointKm *float64        `json:"from_point_km,omitempty"`
 	Verdict     verdict.Verdict `json:"verdict"`
@@ -212,7 +218,7 @@ type walkAsk struct {
 func walkOption(ds *walks.Dataset, w *walks.Walk, day int32, now time.Time, ask walkAsk) (WalkOption, float64) {
 	d := ds.DayWithin(w, day, now, ask.lim)
 	a := w.Assess(d, ds.HourlyUntil)
-	o := WalkOption{WalkFacts: walkFacts(w), Verdict: a.Verdict, Why: a.Why}
+	o := WalkOption{WalkFacts: walkFacts(w), Verdict: a.Verdict, Why: a.Why, Hills: w.Hills, hillsInferred: w.HillsInferred}
 	good := 0.0
 	if a.Verdict == verdict.Go || a.Verdict == verdict.Marginal {
 		o.StartFrom, o.StartBy, o.Slot = timep(a.StartFrom), timep(a.StartBy), slotOut(&d, ask.hours)

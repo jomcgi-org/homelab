@@ -12,6 +12,32 @@ from hikes.walkhighlands import (
 
 BASE_URL = "https://www.walkhighlands.co.uk/"
 
+
+def test_explicit_summit_fields_are_scoped_and_deduplicated():
+    # Synthetic extension of the existing observed #col/dl stats fixture.
+    # Live summit markup could not be verified (403 on 2026-11-10).
+    html = WALK_PAGE_HTML.replace(
+        "<dt>Distance</dt>",
+        """
+      <dt>Munros</dt><dd><a href="/munros/ben-nevis">Ben Nevis</a>
+      <a href="/munros/ben-nevis">Ben Nevis</a></dd>
+      <dt>Corbetts</dt><dd><a href="/corbetts/example">Example</a></dd>
+      <dt>Distance</dt>""",
+    )
+    html += '<aside><a href="/munros/unrelated">Unrelated summit</a></aside>'
+    walk = parse_walk(html)
+    assert walk.summit_names == ["Ben Nevis", "Example"]
+    assert walk.distance_km == 13.25
+    assert walk.ascent_m == 730
+    assert walk.duration_h == 6.5
+    assert walk.latitude == 58.55180
+    assert parse_walk(WALK_PAGE_HTML).summit_names is None
+    empty = WALK_PAGE_HTML.replace(
+        "<dt>Distance</dt>", "<dt>Summits</dt><dd>None</dd><dt>Distance</dt>"
+    )
+    assert parse_walk(empty).summit_names == []
+
+
 HOMEPAGE_HTML = """
 <html><body>
 <div id="choosearea">

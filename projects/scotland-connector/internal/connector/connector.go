@@ -123,6 +123,7 @@ type WalksSource interface {
 type Service struct {
 	Data       DatasetSource
 	Walks      WalksSource
+	Hills      interface{ Current() *walks.HillDataset }
 	AuroraData interface{ Current() *aurora.Snapshot }
 	// MethodURL is published in every envelope.
 	MethodURL string
@@ -131,11 +132,13 @@ type Service struct {
 
 // Source is one attribution in the envelope.
 type Source struct {
-	Name        string `json:"name"`
-	Attribution string `json:"attribution"`
-	License     string `json:"license"`
-	URL         string `json:"url"`
-	Use         string `json:"use"`
+	Version       string `json:"version,omitempty"`
+	Modifications string `json:"modifications,omitempty"`
+	Name          string `json:"name"`
+	Attribution   string `json:"attribution"`
+	License       string `json:"license"`
+	URL           string `json:"url"`
+	Use           string `json:"use"`
 }
 
 // Meta is the provenance block on every response.

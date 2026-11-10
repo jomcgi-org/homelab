@@ -60,6 +60,7 @@ class Walk(BaseModel):
     ascent_m: int
     duration_h: float
     summary: str
+    summit_names: list[str] | None = None
     latitude: float = Field(ge=-90.0, le=90.0)
     longitude: float = Field(ge=-180.0, le=180.0)
 
@@ -185,6 +186,22 @@ def parse_walk(html: str) -> Walk | None:
             if not dd:
                 continue
             dd_text = dd.get_text(strip=True)
+
+            # Only labelled summit lists, never route prose, sidebar links or
+            # incidental mentions. None means no list was supplied; [] means
+            # an explicit empty list and must not trigger proximity inference.
+            if dt_text in {
+                "munros",
+                "munro tops",
+                "corbetts",
+                "grahams",
+                "donalds",
+                "summits",
+            }:
+                names = [a.get_text(" ", strip=True) for a in dd.find_all("a")]
+                if data.get("summit_names") is None:
+                    data["summit_names"] = []
+                data["summit_names"] = list(dict.fromkeys(data["summit_names"] + names))
 
             if "distance" in dt_text:
                 match = re.search(r"([\d.]+)\s*km", dd_text)

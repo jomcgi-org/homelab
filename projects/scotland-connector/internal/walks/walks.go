@@ -89,6 +89,9 @@ func Known(v float32) bool { return v == v }
 
 // Walk is one WalkHighlands walk with its viable hours in time order.
 type Walk struct {
+	SummitNames       []string
+	Hills             []HillMatch
+	HillsInferred     bool
 	ForecastFetchedAt time.Time
 	ID                string
 	Name              string
@@ -110,9 +113,10 @@ type Walk struct {
 
 // Dataset is one parsed snapshot.
 type Dataset struct {
-	Walks     []Walk
-	FetchedAt time.Time
-	Version   string
+	HillSource *HillSource
+	Walks      []Walk
+	FetchedAt  time.Time
+	Version    string
 	// HourlyUntil is how far the hourly forecast is known to reach: the later
 	// of FetchedAt plus minHourlyHorizon and the end of the latest hour in the
 	// snapshot. Both are lower bounds, so a daylight hour before it that is
@@ -141,6 +145,7 @@ type doc struct {
 		ForecastFetchedAt *string      `json:"forecast_fetched_at"`
 		ID                string       `json:"id"`
 		Name              string       `json:"name"`
+		SummitNames       []string     `json:"summit_names"`
 		URL               string       `json:"url"`
 		Lat               float64      `json:"lat"`
 		Lon               float64      `json:"lon"`
@@ -185,7 +190,8 @@ func Parse(body []byte, version string) (*Dataset, error) {
 			continue
 		}
 		out := Walk{
-			ID: w.ID, Name: w.Name, URL: w.URL, Lat: w.Lat, Lon: w.Lon,
+			SummitNames: w.SummitNames,
+			ID:          w.ID, Name: w.Name, URL: w.URL, Lat: w.Lat, Lon: w.Lon,
 			LengthKm: w.DistanceKm, AscentM: w.AscentM, DurationH: w.DurationH,
 			Hours:    make([]Hour, len(w.Hours)),
 			cosLat:   math.Cos(w.Lat * math.Pi / 180),

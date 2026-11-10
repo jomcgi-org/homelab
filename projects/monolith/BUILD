@@ -7538,6 +7538,16 @@ py_test(
 )
 
 py_test(
+    name = "hikes_dobih_test",
+    srcs = ["hikes/dobih_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_hikes",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "hikes_router_test",
     srcs = ["hikes/router_test.py"],
     imports = ["."],

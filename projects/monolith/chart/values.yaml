@@ -1979,6 +1979,9 @@ stars:
   # Written by hikes-refresh-forecasts for the Scotland connector, which reads
   # this bucket with its own read-only key (hikes/materialize.py).
   walksKey: "walks.json"
+  # No local CSV path or version is configured. Import and activation need
+  # their own authorized scope on #7368.
+  hillsEnabled: false
   onepassword:
     itemPath: "vaults/k8s-homelab/items/r2-s3-credentials"
   # Dedicated near-static geospatial computation. The production overlay

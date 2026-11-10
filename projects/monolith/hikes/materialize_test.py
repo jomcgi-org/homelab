@@ -13,6 +13,52 @@ NOW = datetime(2026, 10, 20, 12, 30, tzinfo=timezone.utc)
 TOP = NOW.replace(minute=0)
 
 
+def test_hills_disabled_has_no_file_or_publish_access(monkeypatch):
+    monkeypatch.delenv("HIKES_HILLS_ENABLED", raising=False)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("disabled hills accessed input or storage")
+
+    monkeypatch.setattr("builtins.open", forbidden)
+    monkeypatch.setattr(materialize, "_s3_client", forbidden)
+    assert materialize.materialize_hills_sync() is None
+    payload = materialize.build_payload(
+        [_walk("a", summit_names=["Ben Nevis"])], [], None, NOW
+    )
+    assert "summit_names" not in payload["walks"][0]
+
+
+def test_hills_local_materialization_and_failed_replacement(tmp_path, monkeypatch):
+    source = tmp_path / "fixture.csv"
+    source.write_text(
+        "Number,Name,Country,Classification,Metres,Latitude,Longitude\n1347,Ben Nevis,S,M,1345,56.79685,-5.00351\n2,Other,E,M,1000,55,-2\n"
+    )
+    monkeypatch.setenv("HIKES_HILLS_ENABLED", "true")
+    monkeypatch.setenv("HIKES_DOBIH_CSV_PATH", str(source))
+    monkeypatch.setenv("HIKES_DOBIH_VERSION", "18.6")
+    monkeypatch.setenv("SEAWEEDFS_S3_ENDPOINT", "https://fixture.invalid")
+    writes = []
+
+    class Sink:
+        def put_object(self, **kw):
+            writes.append(kw)
+
+    monkeypatch.setattr(materialize, "_s3_client", Sink)
+    assert materialize.materialize_hills_sync() > 0
+    assert writes[0]["Key"] == "hills.json"
+    body = json.loads(writes[0]["Body"])
+    assert len(body["hills"]) == 1
+    assert body["source"]["version"] == "18.6"
+    assert body["hills"][0]["height_m"] == 1345
+    source.write_text("broken")
+    assert materialize.materialize_hills_sync() is None
+    assert len(writes) == 1
+    payload = materialize.build_payload(
+        [_walk("a", summit_names=["Ben Nevis"])], [], None, NOW
+    )
+    assert payload["walks"][0]["summit_names"] == ["Ben Nevis"]
+
+
 def _walk(uuid, **over):
     fields = dict(
         uuid=uuid,

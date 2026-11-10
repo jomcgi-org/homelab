@@ -8,6 +8,32 @@ a verdict, the timing, the other days that suit it and better options nearby.
 
 ## Verdicts
 
+### Optional hill filters
+
+When the optional hill snapshot is enabled and loaded, `plan` and `check`
+accept `hill_class` (Munro, Munro Top, Corbett, Graham or Donald) and
+`hill_name` (an exact normalized summit name). Together they must match the
+same summit/class. Check applies these filters to named walks and alternatives.
+Unavailable hill data returns an unavailable error for filtered calls;
+unfiltered calls retain the existing weather behavior.
+
+Matched walks carry `hills: [{name, class, height_m}]`. A hill with several
+supported classes has an entry for each. Unmatched walks omit `hills` entirely.
+Explicit summit lists take precedence. Without one, inference requires the
+hill name in the walk title, a summit within the smaller of 5 km, half the
+walk length and ascent divided by 200 (km), and ascent at least 80% of the
+summit height. Only a single unambiguous candidate is accepted. There is no
+route geometry or start elevation; nearby hills are not proof of ascent.
+`meta.notes` identifies returned inferred matches. Follow the linked route
+and remember that forecasts are at the start, not on the summit.
+
+Source: [The Database of British and Irish Hills](https://www.hill-bagging.co.uk/dobih/),
+with the release version in `meta.sources`, under
+[Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/).
+Data is modified by filtering to Scotland and supported classes and joining
+to Walkhighlands walks. Hill ingestion and snapshot polling ship disabled;
+live import, activation and a live Ben Nevis answer remain outstanding on #7368.
+
 Every walk and night leads with a verdict and a one-line `why` in UK local
 time.
 

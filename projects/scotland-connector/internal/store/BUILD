@@ -11,6 +11,7 @@ go_library(
     name = "store",
     srcs = [
         "aurora.go",
+        "hills.go",
         "store.go",
         "walks.go",
     ],
@@ -27,6 +28,7 @@ go_library(
 go_test(
     name = "store_test",
     srcs = [
+        "hills_test.go",
         "refresh_bench_test.go",
         "store_test.go",
         "walks_test.go",

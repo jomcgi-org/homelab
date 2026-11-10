@@ -62,6 +62,7 @@ def _upsert_walks(session: Session, walks: list[ScrapedWalk]) -> tuple[int, int]
                     ascent_m=walk.ascent_m,
                     duration_h=walk.duration_h,
                     summary=walk.summary,
+                    summit_names=walk.summit_names,
                     latitude=walk.latitude,
                     longitude=walk.longitude,
                     scraped_at=now,
@@ -74,6 +75,7 @@ def _upsert_walks(session: Session, walks: list[ScrapedWalk]) -> tuple[int, int]
         existing.ascent_m = walk.ascent_m
         existing.duration_h = walk.duration_h
         existing.summary = walk.summary
+        existing.summit_names = walk.summit_names
         existing.latitude = walk.latitude
         existing.longitude = walk.longitude
         existing.scraped_at = now

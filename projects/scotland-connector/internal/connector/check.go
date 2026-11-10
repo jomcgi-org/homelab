@@ -25,6 +25,7 @@ type CheckItem struct {
 
 // CheckParams are the check inputs.
 type CheckParams struct {
+	HillFilter
 	Items []CheckItem `json:"items"`
 	// WeatherLimits apply to every walk item, its other days and the
 	// walks offered nearby.
@@ -76,6 +77,7 @@ type CheckResultItem struct {
 
 // CheckResult is check's data.
 type CheckResult struct {
+	HillFilter
 	// Limits echoes the weather limits used, when any were given.
 	Limits *WeatherLimits    `json:"limits,omitempty"`
 	Items  []CheckResultItem `json:"items"`
@@ -342,6 +344,10 @@ func distinctNearbyNights(ranked []rankedNight) []NightOption {
 // nearby the same day.
 func (s *Service) Check(p CheckParams) (*Envelope, error) {
 	now := s.Now()
+	hills, err := hillFilter(p.HillFilter)
+	if err != nil {
+		return nil, err
+	}
 	plans, err := checkItems(p, walks.LocalDay(now), stars.FirstNight(now))
 	if err != nil {
 		return nil, err
@@ -376,7 +382,11 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 	if err := limits.needsComplete(wk); err != nil {
 		return nil, err
 	}
-	res := CheckResult{Items: make([]CheckResultItem, len(plans))}
+	if err := hills.available(wk); err != nil {
+		return nil, err
+	}
+	wk = hills.filter(wk)
+	res := CheckResult{Items: make([]CheckResultItem, len(plans)), HillFilter: hills}
 	if walk && limits.walks().Active() {
 		res.Limits = &limits
 	}
@@ -400,5 +410,13 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 		meta.Notes = append(meta.Notes, noteWalkStart)
 	}
 	// No ETag: check is a POST, which no cache keys on.
+	var options []WalkOption
+	for _, item := range res.Items {
+		if item.Walk != nil {
+			options = append(options, item.Walk.WalkOption)
+		}
+		options = append(options, item.NearbyWalks...)
+	}
+	hillMeta(&meta, wk, options)
 	return &Envelope{Data: res, Meta: meta, Results: results}, nil
 }

@@ -79,6 +79,10 @@ spec:
               value: {{ .Values.config.walksKey | quote }}
             - name: AURORA_ENABLED
               value: {{ .Values.config.auroraEnabled | quote }}
+            - name: HILLS_ENABLED
+              value: {{ .Values.config.hillsEnabled | quote }}
+            - name: STARS_HILLS_KEY
+              value: {{ .Values.config.hillsKey | quote }}
             - name: STARS_AURORA_KEY
               value: {{ .Values.config.auroraKey | quote }}
             - name: REFRESH_INTERVAL
