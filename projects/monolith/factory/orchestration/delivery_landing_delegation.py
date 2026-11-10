@@ -156,10 +156,12 @@ def denied(path):
     if any(not part or part.startswith(".") for part in segments):
         return True
     lowered = path.lower()
-    # Split camelCase before lowercasing, then match stems as word prefixes so
-    # authToken, CodexLogin, redacted and passwords are all caught.
-    words = re.split(
-        r"[^a-z0-9]+", re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", path).lower()
+    # Match stems against the plain lowercased words and against the camelCase
+    # split, including acronym-led names, so sigV4, authToken, APIToken,
+    # CodexLogin, redacted and passwords are all caught.
+    split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", path)
+    words = set(re.split(r"[^a-z0-9]+", lowered)) | set(
+        re.split(r"[^a-z0-9]+", split.lower())
     )
     return (
         path.startswith(tuple(DENY_RULES["prefixes"]))
