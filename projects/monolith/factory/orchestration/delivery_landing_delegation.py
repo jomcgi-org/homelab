@@ -40,8 +40,9 @@ REPAIR_MARKER = "<!-- factory-problem:"
 
 # Everything outside projects/ (CI, Bazel tooling, docs, root instructions)
 # stays with an operator. Inside it, the boundary Joe set on 2026-11-10 excludes
-# the factory and the packages it imports, deployment and schema, credential
-# and isolation code, and public routes. Other private project code is
+# the factory and its framework packages (core, shared, app, framework, agent*,
+# swarm), deployment and schema, credential and isolation code, and public
+# routes. Domain packages the factory imports, such as knowledge, stay eligible. Other private project code is
 # eligible: the typed review's effect flags, required CI and the merge queue
 # gate every such merge. Do not widen these rules into whole projects or
 # domains without his decision; that made the delegation match almost nothing.
@@ -88,11 +89,14 @@ DENY_RULES = {
         "projects/monolith/frontend/vitest.config.js",
         "projects/monolith/goosecracker/repo_catalog.py",
         "projects/monolith/goosecracker/tests/repo_catalog_test.py",
+        "projects/monolith/grimoire/__init__.py",
         "projects/monolith/grimoire_chat/__init__.py",
         "projects/monolith/hikes/__init__.py",
         "projects/monolith/home/__init__.py",
         "projects/monolith/import_boundaries_test.py",
+        "projects/monolith/knowledge/__init__.py",
         "projects/monolith/knowledge/retrieval_policy.py",
+        "projects/monolith/observability/__init__.py",
         "projects/monolith/observability/factory_goals.py",
         "projects/monolith/observability_snapshot_grants_test.py",
         "projects/monolith/ships/__init__.py",
@@ -110,13 +114,12 @@ DENY_RULES = {
         "overlays",
         "templates",
     ],
-    "words": [
+    "word_stems": [
         "auth",
-        "authentik",
         "credential",
-        "credentials",
         "egress",
-        "hooks",
+        "grant",
+        "hook",
         "jail",
         "kms",
         "kyverno",
@@ -128,14 +131,11 @@ DENY_RULES = {
         "rbac",
         "redact",
         "secret",
-        "secrets",
         "sigv4",
         "spiffe",
         "token",
-        "tokenbroker",
-        "tokens",
         "turnstile",
-        "visibility",
+        "visib",
     ],
     "basenames": ["AGENTS.md", "CLAUDE.md", "SKILL.md", "buildbuddy.yaml"],
     "suffixes": [".bzl"],
@@ -155,15 +155,21 @@ def denied(path):
     segments = path.split("/")
     if any(not part or part.startswith(".") for part in segments):
         return True
+    lowered = path.lower()
+    # Split camelCase before lowercasing, then match stems as word prefixes so
+    # authToken, CodexLogin, redacted and passwords are all caught.
+    words = re.split(
+        r"[^a-z0-9]+", re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", path).lower()
+    )
     return (
         path.startswith(tuple(DENY_RULES["prefixes"]))
         or path in DENY_RULES["paths"]
-        or not set(segments[:-1]).isdisjoint(DENY_RULES["segments"])
-        or segments[-1] in DENY_RULES["basenames"]
-        or path.endswith(tuple(DENY_RULES["suffixes"]))
-        or not set(re.split(r"[^a-z0-9]+", path.lower())).isdisjoint(
-            DENY_RULES["words"]
+        or not {part.lower() for part in segments[:-1]}.isdisjoint(
+            DENY_RULES["segments"]
         )
+        or segments[-1] in DENY_RULES["basenames"]
+        or lowered.endswith(tuple(DENY_RULES["suffixes"]))
+        or any(word.startswith(tuple(DENY_RULES["word_stems"])) for word in words)
     )
 
 
@@ -248,11 +254,13 @@ def configure(
             path_profile=PATH_PROFILE,
             deny_rules=DENY_RULES,
             path_limitations=[
-                "The deny-list excludes the factory, the packages it imports, "
-                "deployment, schema, credential, isolation and public-route "
-                "paths. It is not a complete boundary: eligible monolith code "
-                "runs in the factory's process, so its safety relies on the "
-                "typed independent review, required CI and the merge queue.",
+                "The deny-list excludes the factory and its framework packages "
+                "(core, shared, app, framework, agent*, swarm), deployment, "
+                "schema, credential, isolation and public-route paths. Domain "
+                "packages the factory imports, such as knowledge, goosecracker "
+                "and grimoire, stay eligible and run in the factory's process, "
+                "so their safety relies on the typed independent review, "
+                "required CI and the merge queue.",
                 "Public domain route registration (each domain __init__.py in "
                 "app/modules_public.py) is excluded. API and MCP modules inside "
                 "eligible domains are not excluded by path; the typed review "

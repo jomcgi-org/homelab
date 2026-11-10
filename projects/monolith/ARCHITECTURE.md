@@ -993,10 +993,10 @@ sat in `landing` with independent exact-head approval and passing CI, most for
 four days. Per-head grants were the only authority for ordinary work, so every
 merge waited for a person and intake found no candidates behind the open PRs.
 `delivery_landing_delegation` lets a standing operator delegate that decision
-once, inside a previewed deny-list and rolling cap. The factory, the packages
-it imports, deployment and schema, credential and isolation code, and public
-routes stay outside it, so the factory cannot widen its own authority
-unattended. [The boundary](factory/orchestration/FACTORY.md#standing-delivery-landing-delegation)
+once, inside a previewed deny-list and rolling cap. The factory and its framework
+packages, deployment and schema, credential and isolation code, and public
+routes stay outside it. Domain packages the factory imports stay eligible.
+[The boundary](factory/orchestration/FACTORY.md#standing-delivery-landing-delegation)
 lists them.
 
 Joe set that boundary on 2026-11-10. Successive review rounds had excluded whole

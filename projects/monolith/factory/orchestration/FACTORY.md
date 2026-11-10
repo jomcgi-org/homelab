@@ -223,7 +223,7 @@ whole projects or domains without his decision.
 
 Only paths under `projects/` qualify. Excluded:
 
-- The factory and the packages it imports: monolith `factory/`, `core/`,
+- The factory and its framework packages: monolith `factory/`, `core/`,
   `shared/`, `app/`, `framework/`, `agent/`, `agent_kubernetes/`,
   `agent_sessions/` and `swarm/`.
 - Deployment and schema: `chart`, `deploy`, `migrations`, `crd`, `crds`,
@@ -232,9 +232,10 @@ Only paths under `projects/` qualify. Excluded:
   projects.
 - Credential and isolation code: monolith `faas/`, `artifact/`, `sandbox/` and
   `personal_retrieval_audit/`, EmberVM key management, signing, xDS, egress
-  and the jailer driver, the Firecracker egress proxy, and any path naming
-  authentication, tokens, secrets, redaction, visibility or hooks.
-- Public routes: any path naming `public`, each public domain's `__init__.py`
+  and the jailer driver, the Firecracker egress proxy, and any path with a
+  word beginning `auth`, `token`, `secret`, `credential`, `password`, `login`,
+  `redact`, `visib`, `hook` or `grant`, matched after splitting camelCase.
+- Public routes: any path with a word beginning `public`, each public domain's `__init__.py`
   route registration, and the frontend build, cache-header and exposure-guard
   files.
 - Agent instructions, Bazel macros, the root authority guard tests, the
@@ -248,7 +249,8 @@ complete diff at its exact merge base and head as private, internal and
 reversible, with every public, security, credential and destructive flag false.
 
 The deny-list is a second check on that attestation, not an isolation boundary.
-Eligible monolith code runs in the factory's process, and API or MCP modules in
+Domain packages the factory imports, such as `knowledge/`, `goosecracker/` and
+`grimoire/`, stay eligible and run in its process, and API or MCP modules in
 eligible domains are not excluded by path. Their safety relies on the typed
 review, required CI and the merge queue; preview states this in
 `path_limitations`. Binary regular blobs remain eligible: tree checks bind blob
