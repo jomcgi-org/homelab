@@ -59,7 +59,7 @@ def build_factory_summary(*, session: Session | None = None) -> dict:
         rows = db.exec(
             select(FactoryReceipt)
             .where(FactoryReceipt.escalation_json.is_not(None), resolved.is_(None))
-            .order_by(FactoryReceipt.id.desc())
+            .order_by(FactoryReceipt.id)
             .limit(SUMMARY_DECISION_LIMIT + 1)
         ).all()
         if len(rows) > SUMMARY_DECISION_LIMIT:
@@ -86,6 +86,13 @@ def build_factory_summary(*, session: Session | None = None) -> dict:
                 task_class=controls.receipt_task_class(row),
                 escalation=brief,
                 paused_card_actionable=factory_pause.actionable(db, row, brief),
+            )
+            snapshot["pause_warning"] = (
+                "active_paused_without_actionable_question"
+                if row.state in controls._ACTIVE
+                and row.task_paused
+                and not snapshot["paused_card_actionable"]
+                else None
             )
             decisions.append(snapshot)
         return {

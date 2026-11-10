@@ -43,6 +43,7 @@
   let feedback = $state({});
   let now = $state(Date.now());
   let requestedReceipt = $state(null);
+  let appliedReceipt = $state(null);
   // The exact receipt and decision whose close is armed, or null. Closing is the one escape
   // another button cannot undo, so it is asked about once before it is sent.
   let confirming = $state(null);
@@ -77,20 +78,31 @@
 
   function readHash(event) {
     const match = /^#receipt-([1-9]\d*)$/.exec(window.location.hash);
-    requestedReceipt = match ? Number(match[1]) : null;
+    const next = match ? Number(match[1]) : null;
+    if (next !== requestedReceipt) {
+      requestedReceipt = next;
+      appliedReceipt = null;
+    }
     if (event) confirming = null;
   }
 
   $effect(() => {
+    // Wait for a delayed card once, then preserve the operator's selection
+    // and scroll position across polls until the URL hash changes.
+    if (requestedReceipt === null || appliedReceipt === requestedReceipt)
+      return;
     const index = pending.findIndex(
       (row) => row.receipt_id === requestedReceipt,
     );
     if (index < 0) return;
+    appliedReceipt = requestedReceipt;
     cursor = index;
     const id = requestedReceipt;
-    tick().then(() =>
-      document.getElementById(`receipt-${id}`)?.scrollIntoView(),
-    );
+    tick().then(() => {
+      if (requestedReceipt === id && appliedReceipt === id) {
+        document.getElementById(`receipt-${id}`)?.scrollIntoView();
+      }
+    });
   });
   // The card a keypress acts on. An armed close pins it to the card that was
   // armed rather than to the cursor: a poll can reorder the list under an
