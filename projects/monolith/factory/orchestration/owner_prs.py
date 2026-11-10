@@ -734,13 +734,18 @@ def assert_unheld(
     pull = pull or read_get(task["repo"], f"pulls/{number}")
     if pull.get("user", {}).get("id") != task["owner_pr"]["author_id"]:
         raise ValueError("owner_pr_author_changed")
-    released = hold_release.read_released_at(task["repo"], number)
-    if _hold(pull, set(), text_released=released is not None):
-        raise OwnerPRHold("owner_pr_explicit_hold")
-    comments = hold_release.binding_comments(
-        _pages(task["repo"], f"issues/{number}/comments", read_list), released
-    )
-    if any(has_hold(comment.get("body") or "") for comment in comments):
-        raise OwnerPRHold("owner_pr_explicit_discussion_hold")
+    # Read the release only when wording would otherwise hold: the common
+    # unheld path stays free of a database read.
+    released = None
+    if _hold(pull, set()):
+        released = hold_release.read_released_at(task["repo"], number)
+        if _hold(pull, set(), text_released=released is not None):
+            raise OwnerPRHold("owner_pr_explicit_hold")
+    comments = _pages(task["repo"], f"issues/{number}/comments", read_list)
+    held = [comment for comment in comments if has_hold(comment.get("body") or "")]
+    if held:
+        released = released or hold_release.read_released_at(task["repo"], number)
+        if hold_release.binding_comments(held, released):
+            raise OwnerPRHold("owner_pr_explicit_discussion_hold")
     if pull.get("state") != "open" and not pull.get("merged"):
         raise ValueError("owner_pr_closed_without_merge")
