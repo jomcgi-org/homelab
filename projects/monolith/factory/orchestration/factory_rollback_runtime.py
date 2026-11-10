@@ -504,6 +504,15 @@ def settle(delivery):
         return True
 
 
+def _actionable_failure(entry, now):
+    if entry.get("automatic_rollback_eligible") is not True:
+        return False
+    try:
+        return now <= rollback.utc(entry.get("reservation_deadline"))
+    except (TypeError, ValueError):
+        return False
+
+
 def _pending_batches(policy):
     """Persist scan progress before effects, including refused or failed reads."""
     with controls._locked_session() as (db, _control):
@@ -526,11 +535,13 @@ def _pending_batches(policy):
         by_repo = json.loads(previous.detail_json)["cursors"] if previous else {}
         cursors = by_repo.get(policy["repo"], {}).copy()
         batches = {}
+        now = landing._now()
         for action, rows in entries.items():
             eligible = [
                 (row_id, d)
                 for row_id, d in rows
                 if d["repo"] == policy["repo"]
+                and (action != "rollout_failed" or _actionable_failure(d, now))
                 and (
                     d["delivery_key"] not in reserved | settled
                     if action == "rollout_failed"
@@ -568,9 +579,7 @@ def tick(policy):
         try:
             if not controls.rollback_policy(policy)["enabled"]:
                 continue  # Failure is already durable; no new effects while off.
-            if entry.get("automatic_rollback_eligible") is not True or (
-                landing._now() > rollback.utc(entry["reservation_deadline"])
-            ):
+            if not _actionable_failure(entry, landing._now()):
                 continue  # Legacy, default-off and expired failures stay evidence only.
             delivery = source_details(delivery)
             decision = rollback.reserve(

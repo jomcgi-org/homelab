@@ -798,6 +798,85 @@ def test_issue_create_fence_unknown_never_duplicates(engine, runtime):
 
 
 @pytest.mark.parametrize(
+    "ineligible", ["disabled", "expired", "legacy", "missing_deadline", "bad_deadline"]
+)
+def test_non_actionable_failures_do_not_consume_recovery_batch(
+    engine, runtime, monkeypatch, ineligible
+):
+    r, _issues, writes, _pulls = runtime
+    for n in range(1, 22):
+        d = delivery(n)
+        seed(engine, d)
+        rollback.observe_window(
+            {} if n <= 20 and ineligible == "disabled" else POLICY,
+            d,
+            [sample(d)],
+            now=NOW,
+        )
+    with Session(engine) as db:
+        rows = db.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action == "rollout_failed")
+            .order_by(FactoryAudit.id)
+        ).all()
+        for row in rows[:20]:
+            detail = json.loads(row.detail_json)
+            if ineligible == "expired":
+                detail["reservation_deadline"] = (
+                    NOW - timedelta(seconds=1)
+                ).isoformat()
+            elif ineligible == "legacy":
+                detail.pop("automatic_rollback_eligible")
+                detail.pop("reservation_deadline")
+            elif ineligible == "missing_deadline":
+                detail.pop("reservation_deadline")
+            elif ineligible == "bad_deadline":
+                detail["reservation_deadline"] = "unknown"
+            row.detail_json = json.dumps(detail)
+        db.commit()
+    before = events(engine, "rollout_failed")
+    sources = []
+
+    def source(d):
+        sources.append(d["pr_number"])
+        return d
+
+    monkeypatch.setattr(r, "source_details", source)
+    r.tick({"repo": "owner/repo", **POLICY})
+    assert sources == [21]
+    assert [e["delivery_key"] for e in events(engine, "rollback_reserved")] == [
+        rollback.identity(delivery(21))
+    ]
+    # Keep terminal failure evidence; filtering the batch never rewrites history.
+    assert events(engine, "rollout_failed") == before
+    assert not writes
+
+
+def test_failure_expiring_after_batch_selection_cannot_reserve(
+    engine, runtime, monkeypatch
+):
+    r, _issues, writes, _pulls = runtime
+    d = delivery()
+    seed(engine, d)
+    rollback.observe_window(POLICY, d, [sample(d)], now=NOW)
+    pending = r._pending_batches
+
+    def expire_after_selection(policy):
+        batches = pending(policy)
+        assert len(batches[0]) == 1
+        monkeypatch.setattr(r.landing, "_now", lambda: NOW + timedelta(minutes=16))
+        return batches
+
+    monkeypatch.setattr(r, "_pending_batches", expire_after_selection)
+    monkeypatch.setattr(
+        r, "source_details", lambda _d: pytest.fail("expired source read")
+    )
+    r.tick({"repo": d["repo"], **POLICY})
+    assert not events(engine, "rollback_reserved")
+    assert not writes
+
+
+@pytest.mark.parametrize(
     "blocker", ["held", "source_error", "merge_unknown", "needs_human"]
 )
 def test_failure_scan_advances_past_twenty_unreservable_entries(
