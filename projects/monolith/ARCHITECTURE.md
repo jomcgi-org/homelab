@@ -992,7 +992,11 @@ are outside both standing repair profiles and the owner-PR diagnostics profile.
 machine pauses whose only option was "stop". Some had held a delivery slot for
 ten days, and answering them needed no judgement. `factory_pause.expire_stop_card`
 applies the card's own option after the task deadline and a 24-hour grace. It
-cannot continue or re-fund work, so recovery limits are unchanged. Measure over
+cannot continue or re-fund work, so recovery limits are unchanged. Joe chose
+the same default on 2026-11-10 for a factory pause that reaches its deadline
+with no question left: stop and release the slot, never continue in a new task,
+because that would reset attempts. Operator pauses, open questions and landing
+holds still ask. Measure over
 72 hours either side of rollout: open stop-only cards older than 36 hours,
 expected zero. Revert if a stop is applied while a repair of that node is
 pending.

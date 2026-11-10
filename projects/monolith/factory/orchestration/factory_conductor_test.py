@@ -28898,6 +28898,70 @@ def test_machine_stop_card_is_kept_when_expiry_has_no_authority(
     assert not after["cancellation_requested"]
 
 
+def _machine_pause(s, actor="factory:funding"):
+    """Replace the fixture's operator pause with a card-less factory pause."""
+    from factory.orchestration import factory_controls as controls
+
+    assert controls.set_control("resume_task", "operator", task_id=s.task["id"])["ok"]
+    assert controls.set_control("pause_task", actor, task_id=s.task["id"])["ok"]
+
+
+def test_expired_machine_pause_stops_without_asking(paused_settlement):
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    _machine_pause(s)
+    pause_trigger(s, "deadline")
+    assert conductor._settle_paused_task(s.task, s.policy, [])
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == "cancelled"
+    assert after["escalation"] is None
+    assert after["task_paused"] is False or after["state"] == "cancelled"
+
+
+@pytest.mark.parametrize("keeper", ["operator", "question", "landing_hold"])
+def test_expired_pause_still_asks_when_a_person_owns_the_decision(
+    paused_settlement, keeper
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    if keeper != "operator":
+        _machine_pause(s)
+    with Session(s.engine) as db, db.begin():
+        row = controls._receipt(db, s.task["id"])
+        if keeper == "question":
+            row.escalation_json = json.dumps(
+                {
+                    "resolved": None,
+                    "question": "Which storage destination?",
+                    "reason": "Planner needs a choice",
+                    "options": [
+                        {
+                            "key": "a",
+                            "label": "A",
+                            "effect": conductor.CONTINUE_EFFECT,
+                            "detail": {"scope": "Use destination A."},
+                        },
+                        {"key": "b", "label": "B", "effect": "hold", "detail": {}},
+                    ],
+                }
+            )
+        elif keeper == "landing_hold":
+            direction = json.loads(row.direction_json or "{}")
+            direction["landing_hold"] = {
+                "actor": "factory:conductor",
+                "cause": "test",
+                "reason": "Leave unmerged",
+            }
+            row.direction_json = json.dumps(direction)
+    pause_trigger(s, "deadline")
+    assert conductor._settle_paused_task(s.task, s.policy, [])
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == "escalated"
+    assert after["escalation"]["resolved"] is None
+
+
 def _control_version(s):
     from factory.orchestration.factory_models import FactoryControl
 
