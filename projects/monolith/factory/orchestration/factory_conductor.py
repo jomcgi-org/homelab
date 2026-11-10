@@ -6629,8 +6629,10 @@ def _settle_paused_task(
             factory_pause.STOP
         ]:
             # This typed stop-only card is already an actionable restriction,
-            # not a planner's two-to-four-option escalation. Keep it and its
-            # pause owner; expiry is not authority to invent a continue choice.
+            # not a planner's two-to-four-option escalation. Expiry is not
+            # authority to invent a continue choice, but a machine pause's
+            # single option needs no person: apply it after its grace period.
+            factory_pause.expire_stop_card(task["id"])
             return True
         decision = (
             previous

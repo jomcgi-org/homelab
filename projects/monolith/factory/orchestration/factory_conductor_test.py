@@ -28783,6 +28783,128 @@ def test_expired_typed_stop_card_is_not_a_planner_decision(paused_settlement):
     assert after["task_paused"] is True
 
 
+def _machine_stop_card(s, reason="funding_without_progress"):
+    """Replace the fixture's operator pause with a real machine pause and card."""
+    from factory.orchestration import factory_controls as controls, factory_pause
+
+    assert controls.set_control("resume_task", "operator", task_id=s.task["id"])["ok"]
+    assert factory_pause.pause(s.task["id"], "factory:allocation-recovery", reason)
+    card = controls.task_snapshot(s.task["id"])["escalation"]
+    assert card["options"] == [factory_pause.STOP]
+    return card
+
+
+def _card_written_at(s):
+    """Audit rows carry wall-clock time, so read the card's own write time."""
+    from core.clock import aware
+    from factory.orchestration.factory_models import FactoryAudit
+
+    with Session(s.engine) as db:
+        row = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action.in_(
+                    ("paused_card_created", "paused_card_superseded")
+                ),
+            )
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+    return aware(row.created_at)
+
+
+def test_expired_machine_stop_card_is_stopped_after_its_grace(paused_settlement):
+    from datetime import timedelta
+
+    from factory.orchestration import factory_controls as controls, factory_pause
+
+    s = paused_settlement
+    card = _machine_stop_card(s)
+    grace_ends = _card_written_at(s) + factory_pause.STOP_CARD_GRACE
+    pause_trigger(s, "deadline")
+    assert s.clock[0] < grace_ends
+    # Past the deadline but inside the grace: the card and pause are kept.
+    assert conductor._settle_paused_task(s.task, s.policy, [])
+    kept = controls.task_snapshot(s.task["id"])
+    assert kept["escalation"] == card
+    assert kept["task_paused"] is True and not kept["cancellation_requested"]
+    s.clock[0] = grace_ends + timedelta(seconds=1)
+    assert conductor._settle_paused_task(s.task, s.policy, [])
+    after = controls.task_snapshot(s.task["id"])
+    resolved = after["escalation"]["resolved"]
+    assert resolved["option_key"] == "stop"
+    assert resolved["actor"] == factory_pause.EXPIRY_ACTOR
+    assert after["cancellation_requested"] is True
+    # A replay applies nothing further.
+    assert factory_pause.expire_stop_card(s.task["id"]) is False
+
+
+@pytest.mark.parametrize(
+    "keeper", ["before_deadline", "superseded", "in_flight", "repair_wait"]
+)
+def test_machine_stop_card_is_kept_when_expiry_has_no_authority(
+    paused_settlement, monkeypatch, keeper
+):
+    from datetime import timedelta
+
+    from factory.orchestration import factory_controls as controls, factory_pause
+
+    s = paused_settlement
+    card = _machine_stop_card(s)
+    late = _card_written_at(s) + factory_pause.STOP_CARD_GRACE + timedelta(hours=1)
+    if keeper == "before_deadline":
+        # Settlement only reaches the card once the task deadline has passed,
+        # however old the card is.
+        conductor._settle_paused_task(s.task, s.policy, [])
+    elif keeper == "superseded":
+        # A newer card restarts the grace from its own write time.
+        before = controls.task_snapshot(s.task["id"])
+        assert factory_pause.refresh(
+            {
+                "receipt_id": before["id"],
+                "task_id": s.task["id"],
+                "generation": before["generation"],
+                "control_version": _control_version(s),
+                "decision_id": controls.decision_identity(before),
+            },
+            "Edited acceptance",
+            "factory:escalation-revalidation",
+        )
+        card = controls.task_snapshot(s.task["id"])["escalation"]
+        s.clock[0] = (
+            _card_written_at(s) + factory_pause.STOP_CARD_GRACE - timedelta(minutes=1)
+        )
+        assert s.clock[0] > s.deadline
+        assert conductor._settle_paused_task(s.task, s.policy, [])
+    elif keeper == "in_flight":
+        s.clock[0] = late
+        monkeypatch.setattr(
+            "factory.orchestration.factory_decisions.decision_in_flight",
+            lambda *_a: True,
+        )
+        assert factory_pause.expire_stop_card(s.task["id"]) is False
+    else:
+        # A repair of the paused node is pending: the repair owner keeps the
+        # pause so the same node can retry after the repair rolls out.
+        s.clock[0] = late
+        monkeypatch.setattr(
+            "factory.orchestration.factory_funding.repair_pause_evidence",
+            lambda *_a: {"audit_id": 1},
+        )
+        assert conductor._settle_paused_task(s.task, s.policy, [])
+    after = controls.task_snapshot(s.task["id"])
+    assert after["escalation"]["resolved"] is None
+    assert after["escalation"]["options"] == card["options"]
+    assert not after["cancellation_requested"]
+
+
+def _control_version(s):
+    from factory.orchestration.factory_models import FactoryControl
+
+    with Session(s.engine) as db:
+        return db.get(FactoryControl, "factory").version
+
+
 @pytest.fixture
 def settled_retry_recovery(drained_retry_not_invoked, monkeypatch):
     """An empty first receipt and uninvoked second dispatch need explicit proof."""

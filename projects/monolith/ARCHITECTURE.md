@@ -988,6 +988,15 @@ projection. Raw errors, SQL and private identities stay private. All four paths
 are outside both standing repair profiles and the owner-PR diagnostics profile.
 `repair_landing_paths_require_operator` remains binding.
 
+**Why stop-only cards expire:** on 2026-11-09, 8 of 29 open escalations were
+machine pauses whose only option was "stop". Some had held a delivery slot for
+ten days, and answering them needed no judgement. `factory_pause.expire_stop_card`
+applies the card's own option after the task deadline and a 24-hour grace. It
+cannot continue or re-fund work, so recovery limits are unchanged. Measure over
+72 hours either side of rollout: open stop-only cards older than 36 hours,
+expected zero. Revert if a stop is applied while a repair of that node is
+pending.
+
 **Why a standing delivery owner:** on 2026-11-09, 23 intake-admitted deliveries
 sat in `landing` with independent exact-head approval and passing CI, most for
 four days. Per-head grants were the only authority for ordinary work, so every
