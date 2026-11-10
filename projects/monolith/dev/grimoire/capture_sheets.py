@@ -93,8 +93,9 @@ def capture(output: Path):
                             scroll_width: document.documentElement.scrollWidth,
                             scheme: document.documentElement.dataset.theme || 'light',
                             font: getComputedStyle(document.querySelector('main')).fontFamily,
+                            heading_font: getComputedStyle(document.querySelector('main h1')).fontFamily,
                             font_loaded: document.fonts.check('16px "Schibsted Grotesk"'),
-                            buttons: [...document.querySelectorAll('main button')].filter(b => b.getBoundingClientRect().height > 0).map(b => ({label: b.textContent.trim(), height: b.getBoundingClientRect().height}))
+                            buttons: [...document.querySelectorAll('main button')].filter(b => b.getBoundingClientRect().height > 0).map(b => ({label: b.textContent.trim(), height: b.getBoundingClientRect().height, font: getComputedStyle(b).fontFamily, radius: getComputedStyle(b).borderRadius}))
                         })""")
                         assert response.status == 200, (view, response.status)
                         assert metrics["scroll_width"] <= width, (view, role, metrics)
@@ -102,11 +103,17 @@ def capture(output: Path):
                         assert (
                             metrics["font_loaded"]
                             and "Schibsted Grotesk" in metrics["font"]
+                            and "Schibsted Grotesk" in metrics["heading_font"]
                         ), metrics
                         if width == 390:
                             assert all(
                                 button["height"] >= 44 for button in metrics["buttons"]
                             ), (view, metrics)
+                        assert all(
+                            "Schibsted Grotesk" in button["font"]
+                            and button["radius"] == "0px"
+                            for button in metrics["buttons"]
+                        ), (view, metrics)
                         assert not errors, errors
                         filename = f"{role}-{view}-{width}-{scheme}.png"
                         page.screenshot(path=str(output / filename), full_page=True)
