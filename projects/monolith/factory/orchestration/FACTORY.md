@@ -219,17 +219,25 @@ for everything else. None falls through to another.
 The boundary is a deny-list, shown in full by preview. Only paths under
 `projects/` qualify. Entire `embervm/`, `firecracker/` and `mcp/` projects are
 excluded, including broker transport, egress, VM isolation, key management and
-signing. Known deployment, schema, cluster, public and authentication paths,
-agent instructions and Bazel macros are also excluded.
+signing. Enumerated deployment, schema, cluster and authentication paths,
+agent instructions and Bazel macros are also excluded. These known-path rules
+do not establish a complete public-exposure or authentication boundary.
 
 Excluded monolith directories are `factory/`, `core/`, `agent/`,
 `agent_kubernetes/`, `agent_sessions/`, `swarm/`, `app/`, `framework/`, `shared/`,
 `knowledge/`, `goosecracker/`, `observability/`, `scheduler/`, `grimoire/`,
-`sandbox/` and `personal_retrieval_audit/`. This covers the catalog API and its
+`sandbox/` and `personal_retrieval_audit/`. Every current domain root in
+`app/modules_public.py` is excluded, including `register_public` routing:
+`ships/`, `stars/`, `trips/`, `hikes/`, `dr_jobs/`, `campsites/`, `worldcup/`,
+`home/`, `artifact/`, `grimoire_chat/` and `faas/` join the already excluded
+`factory/`, `knowledge/`, `observability/` and `grimoire/` roots.
+This covers the catalog API and its
 real `goosecracker/tests/repo_catalog_test.py`, the knowledge redaction wrapper
-and retrieval authorization, and the guest cluster-read client. Frontend
-build/configuration, hooks, exposure guards and root authority tests remain
-excluded. Both `crd/` and `crds/` directory segments are excluded.
+and retrieval authorization, and the guest cluster-read client. The entire
+monolith `frontend/` and `projects/design-system/` are excluded: the public
+frontend packages shared source, static assets and design-system components.
+Root authority tests remain excluded. Both `crd/` and `crds/` directory
+segments are excluded.
 At most forty files may change, as regular non-executable blobs. The typed
 independent review must attest the complete diff at its exact merge base and
 head as private, internal and reversible, with every public, security,
@@ -239,6 +247,8 @@ attestation, not a replacement for it.
 `projects/monolith/BUILD` is excluded in full. It controls production image
 entrypoints, `PYTHONPATH`, the packaged backend and its dependencies, as well
 as factory and guard test declarations.
+`projects/monolith/ARCHITECTURE.md` is excluded because it defines this
+delegation's delivery measure and stop condition.
 
 These are known-path exclusions, not a complete runtime dependency or credential
 boundary. `app/modules_private.py` loads other monolith domains into the factory's
@@ -246,6 +256,10 @@ process with its DB session and credentials. Remaining in-process monolith code
 relies on the typed independent review for safety, not the deny-list. Preview
 discloses this limitation in `path_limitations`; an apparently ordinary path
 does not prove the change is safe.
+Binary (non-UTF-8) regular blobs remain eligible. Immutable tree checks bind
+blob identities and modes without inspecting content or encoding. A reviewer
+unable to assess that content cannot attest `private_internal_reversible`.
+Typed review must still reject public-facing changes outside the known paths.
 
 Preview and apply bind the standing operator's subject as well as the policy,
 version and bounds. File evidence records base and head blob identities, with
