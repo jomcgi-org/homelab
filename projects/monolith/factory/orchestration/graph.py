@@ -1467,9 +1467,13 @@ def admit_dispatch(
             ):
                 return refuse("invalid_execution_context")
             source = context["artifact_schema"].get("x-factory-refill-inspection")
-            if not merged_review and source is not None and (
-                context.get("branch") != "commit:" + source["sha"]
-                or context.get("hydration_branch") != "commit:" + source["sha"]
+            if (
+                not merged_review
+                and source is not None
+                and (
+                    context.get("branch") != "commit:" + source["sha"]
+                    or context.get("hydration_branch") != "commit:" + source["sha"]
+                )
             ):
                 return refuse("invalid_execution_context")
             context_fields = context_fields | {"read_only"}
