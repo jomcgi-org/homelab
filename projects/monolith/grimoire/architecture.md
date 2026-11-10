@@ -46,6 +46,12 @@ The DM grants matrix loads one 100-entity granted page plus at most 50
 server-side search matches. Searching retains the current granted page.
 Entity pagination selects distinct IDs in SQL before hydrating grant rows.
 
+The authenticated frontend retries a GET once when its pooled backend socket
+closes (`UND_ERR_SOCKET`), within the original ten-second deadline. HTTP errors,
+other transport failures and writes are never retried by this adapter. The
+three-seat rehearsal retains its five-second detail-update assertion and saves
+each seat's effective state after that assertion for diagnosis.
+
 Grimoire is a domain of the Python Monolith. The former standalone Go API,
 React frontend, WebSocket gateway, Redis service, Helm chart, and GCP bootstrap
 have been retired. Their implementation remains available in git history.

@@ -11,11 +11,27 @@ export function grimoireHeaders(cookies) {
 }
 
 export async function grimoireJson(fetch, cookies, path, options = {}) {
-  const response = await fetch(`${process.env.API_BASE}/api/grimoire${path}`, {
+  const url = `${process.env.API_BASE}/api/grimoire${path}`;
+  const request = {
     ...options,
     signal: AbortSignal.timeout(10_000),
     headers: { ...options.headers, ...grimoireHeaders(cookies) },
-  });
+  };
+  let response;
+  try {
+    response = await fetch(url, request);
+  } catch (failure) {
+    // A pooled connection can close between selection and the read. Retry
+    // only that transport failure, once, within the original deadline.
+    // Writes may already have committed and must never be replayed here.
+    if (
+      (options.method || "GET").toUpperCase() !== "GET" ||
+      failure?.cause?.code !== "UND_ERR_SOCKET" ||
+      request.signal.aborted
+    )
+      throw failure;
+    response = await fetch(url, request);
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     const error = new Error(

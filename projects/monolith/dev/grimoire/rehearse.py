@@ -833,11 +833,22 @@ def main():
                 matrix.get_by_role("region", name="Edit character knowledge")
             ).to_have_count(0)
             a.bring_to_front()
-            expect(
-                a.get_by_role("region", name="Session feed").get_by_text(
-                    "Mara remembers our promise.", exact=False
+            try:
+                expect(
+                    a.get_by_role("region", name="Session feed").get_by_text(
+                        "Mara remembers our promise.", exact=False
+                    )
+                ).to_be_visible(timeout=5000)
+            finally:
+                # Inspect committed projections without delaying or replacing
+                # the original feed assertion, including on its failure path.
+                matrix_state = {
+                    seat: json.loads(state_text(page))
+                    for seat, page in (("dm", dm), ("a", a), ("b", b))
+                }
+                (args.output / "matrix-detail-state.json").write_text(
+                    json.dumps(matrix_state, indent=2) + "\n"
                 )
-            ).to_be_visible(timeout=5000)
             a_state = a.request.get(a.url + "/state").json()
             assert (
                 a_state["journal"]["mine"]["learned"][0]["entity"]["revealed_details"][

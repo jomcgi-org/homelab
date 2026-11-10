@@ -180,7 +180,7 @@ def test_migration_backfills_manual_scope_details_and_session_without_deletion(p
     engine = create_engine(pg.url)
     schema = f"source_backfill_{uuid4().hex}"
     migration = (
-        (_find_migrations_dir() / "20261103120000_grimoire_knowledge_sources.sql")
+        (_find_migrations_dir() / "20261110140000_grimoire_knowledge_sources.sql")
         .read_text()
         .replace("grimoire.", f"{schema}.")
     )

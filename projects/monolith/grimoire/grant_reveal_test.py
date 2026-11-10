@@ -261,6 +261,37 @@ def test_scope_and_partial_detail_changes_emit_current_projection(
         poll_all(client, h)
 
 
+def test_paused_matrix_replaces_existing_manual_detail_and_retracts(harness):
+    h = harness
+    h.prepare("play")
+    grant = h.rows["grant_partial"]
+    game = h.rows["campaign_session"]
+    game.status = "paused"
+    h.session.commit()
+    with TestClient(h.app()) as client:
+        for clue in ("The inn opens.", "A promise is remembered."):
+            response = call(
+                client,
+                h,
+                "PATCH",
+                f"/grants/{grant.id}",
+                json={"grant_scope": "partial", "revealed_details": {"clue": clue}},
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["revealed_details"] == {"clue": clue}
+            projections = poll_all(client, h)
+            own = projections["player_a"].json()
+            live = [
+                event for event in own if event["body"] and event["kind"] == "reveal"
+            ]
+            assert len(live) == 1
+            assert live[0]["body"]["entity"]["revealed_details"] == {"clue": clue}
+            assert clue not in projections["player_b"].text
+        response = call(client, h, "DELETE", f"/grants/{grant.id}")
+        assert response.status_code == 204
+        assert "A promise is remembered." not in poll_all(client, h)["player_a"].text
+
+
 @pytest.mark.parametrize("silent", [False, True])
 def test_retract_identity_and_update_original_history(harness, silent):
     h = harness
