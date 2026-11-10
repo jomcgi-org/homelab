@@ -2729,14 +2729,16 @@ async def factory_configure_delivery_landing(
     queue all still apply. Each task gets at most three derivations.
 
     Repair tasks, owner PRs and explicit per-head operator grants keep their own
-    owners and never fall through to this one. Excluded paths, including the
-    factory's own code, deployment, migrations, credential and public surfaces,
-    still need a per-head operator grant. Preview includes exact exclusions for
-    frontend build/configuration and exposure guards, the repository catalog
-    and root authority guard tests, plus rules for runtime dependencies, hooks
-    and secret redaction. Review path_limitations for the eligible monolith
-    BUILD file. Policy replacement or a deny-rule
-    change invalidates the authorization. Disabling revokes future arming and
+    owners and never fall through to this one. All EmberVM, Firecracker and MCP
+    paths are excluded. Monolith exclusions include factory/shared authority,
+    knowledge, goosecracker, observability, scheduler, grimoire, sandbox,
+    agent_kubernetes, personal_retrieval_audit and the central BUILD (image
+    entrypoints, PYTHONPATH, backend and tests). Frontend build/configuration,
+    hooks and guards remain excluded. Review path_limitations: other in-process
+    monolith code shares factory DB access and credentials. Safety relies on
+    typed review, not path isolation. Excluded paths need a per-head grant.
+    Policy replacement or a deny-rule change invalidates authorization.
+    Disabling revokes future arming and
     the landing observer fences queued grants on its next tick. Nothing is
     dispatched, merged or resumed by this operation. Re-read
     factory_status.delivery_landing afterwards.

@@ -39,21 +39,32 @@ RATE_WINDOW = timedelta(hours=24)
 REPAIR_MARKER = "<!-- factory-problem:"
 
 # Everything outside projects/ (CI, Bazel tooling, docs, root instructions)
-# stays with an operator. Inside it, these rules exclude the factory's own
-# code, deployment and schema, credential and public surfaces. The review's
-# effect flags remain a second, independent check on every allowed path.
+# stays with an operator. These rules exclude known authority and runtime
+# surfaces, not every path that can affect credentials or the factory process.
+# Remaining in-process monolith code relies on the typed review for safety.
 DENY_RULES = {
     "root": "projects/",
     "prefixes": [
+        "projects/embervm/",
+        "projects/firecracker/",
         "projects/gke-apps/",
         "projects/gke-cluster/",
+        "projects/mcp/",
         "projects/monolith-public/",
         "projects/monolith/agent/",
+        "projects/monolith/agent_kubernetes/",
         "projects/monolith/agent_sessions/",
         "projects/monolith/app/",
         "projects/monolith/core/",
         "projects/monolith/factory/",
         "projects/monolith/framework/",
+        "projects/monolith/goosecracker/",
+        "projects/monolith/grimoire/",
+        "projects/monolith/knowledge/",
+        "projects/monolith/observability/",
+        "projects/monolith/personal_retrieval_audit/",
+        "projects/monolith/sandbox/",
+        "projects/monolith/scheduler/",
         "projects/monolith/shared/",
         "projects/monolith/swarm/",
         "projects/operators/",
@@ -61,13 +72,14 @@ DENY_RULES = {
         "projects/platform/",
     ],
     "paths": [
+        "projects/monolith/BUILD",
         "projects/monolith/frontend/BUILD",
         "projects/monolith/frontend/svelte.config.js",
         "projects/monolith/frontend/vite.config.js",
         "projects/monolith/frontend/vitest.config.js",
         "projects/monolith/frontend/src/build-exclusions.test.js",
         "projects/monolith/goosecracker/repo_catalog.py",
-        "projects/monolith/goosecracker/repo_catalog_test.py",
+        "projects/monolith/goosecracker/tests/repo_catalog_test.py",
         "projects/monolith/import_boundaries_test.py",
         "projects/monolith/observability_snapshot_grants_test.py",
     ],
@@ -214,10 +226,13 @@ def configure(
             path_profile=PATH_PROFILE,
             deny_rules=DENY_RULES,
             path_limitations=[
-                "projects/monolith/BUILD remains eligible and declares the "
-                "gazelle-excluded factory and guard tests. The deny-list cannot "
-                "detect their removal; independent review and required CI must "
-                "preserve those test declarations."
+                "The deny-list excludes known authority and runtime paths, "
+                "not every factory dependency or credential surface. Remaining "
+                "in-process monolith code shares the factory's DB session and "
+                "credentials; its safety relies on typed independent review, "
+                "not path isolation. projects/monolith/BUILD is excluded, "
+                "including its image entrypoints, PYTHONPATH, packaged backend "
+                "and test declarations."
             ],
             max_files=MAX_FILES,
             max_landings=max_landings,
