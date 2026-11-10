@@ -75,7 +75,7 @@ def submit_form(page, selector, expected_action, expected_fields):
     return requests[-1]
 
 
-def exercise(page, name, base, width):
+def exercise(page, name, base, width, output):
     results = []
     if name == "review":
         page.get_by_role("button", name="Keep (y)").click()
@@ -103,7 +103,14 @@ def exercise(page, name, base, width):
         node.focus()
         node.press("Enter")
         expect(page.get_by_role("complementary", name="Note details")).to_be_visible()
+        expect(page.locator(".drawer-content")).to_contain_text("Fixture paragraph")
         check_reflow(page, width)
+        scheme = page.locator("html").get_attribute("data-theme")
+        page.screenshot(
+            path=str(output / f"detail-chat-{width}-{scheme}.png"),
+            full_page=True,
+            animations="disabled",
+        )
         page.get_by_role("button", name="Close note").click()
         expect(page.get_by_role("complementary", name="Note details")).to_have_count(0)
         results += [
@@ -275,6 +282,12 @@ def main():
                                     expect(
                                         page.locator(".graph-nodes text").first
                                     ).to_have_css("opacity", "1")
+                                    ink = page.locator(".explorer").evaluate(
+                                        "el => getComputedStyle(el).color"
+                                    )
+                                    expect(
+                                        page.locator(".graph-nodes text").first
+                                    ).to_have_css("fill", ink)
                                 if name == "notes":
                                     canvas = page.locator("canvas")
                                     box = canvas.bounding_box()
@@ -322,7 +335,7 @@ def main():
                                     ).click()
                                 case["interactions"] = [
                                     "Persisted scheme toggle",
-                                    *exercise(page, name, base, width),
+                                    *exercise(page, name, base, width, args.output),
                                 ]
                                 # Error fixtures prove recovery UI, not live outage handling.
                                 if name in {"chat", "qwen"}:
