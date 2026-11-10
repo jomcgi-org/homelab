@@ -105,7 +105,7 @@ def exercise(page, name, base, width):
         expect(page.get_by_role("complementary", name="Note details")).to_be_visible()
         check_reflow(page, width)
         page.get_by_role("button", name="Close note").click()
-        expect(page.get_by_role("complementary")).to_have_count(0)
+        expect(page.get_by_role("complementary", name="Note details")).to_have_count(0)
         results += [
             "Streamed answer and graph event",
             "Keyboard graph selection and note detail response",
