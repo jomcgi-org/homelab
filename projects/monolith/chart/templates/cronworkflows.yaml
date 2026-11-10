@@ -211,8 +211,10 @@ spec:
               value: {{ $.Values.stars.historyMapKey | quote }}
             - name: HIKES_WALKS_S3_KEY
               value: {{ $.Values.stars.walksKey | quote }}
+            {{- if has "hikes-refresh-forecasts" (.args | default list) }}
             - name: HIKES_HILLS_ENABLED
               value: {{ $.Values.stars.hillsEnabled | quote }}
+            {{- end }}
             {{- end }}
             {{- if .changelog }}
             # chat.changelog needs the full config list (to look up the named

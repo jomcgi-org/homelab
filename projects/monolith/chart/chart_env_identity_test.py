@@ -1204,6 +1204,27 @@ def test_connector_snapshot_setting_reaches_real_stars_refresh(tmp_path):
         assert env["STARS_SITES_S3_KEY"]["value"] == "sites.json"
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_hill_activation_reaches_only_hikes_refresh(tmp_path, enabled):
+    overlay = _write_values(
+        tmp_path, "hills.yaml", {"stars": {"hillsEnabled": enabled}}
+    )
+    docs = _cron_docs(_render("production", [overlay]))
+    assert "hikes-refresh-forecasts" in docs
+    for name, doc in docs.items():
+        container = doc["spec"]["workflowSpec"]["templates"][0]["container"]
+        env = _env_by_name(container["env"])
+        if name == "hikes-refresh-forecasts":
+            assert env["HIKES_HILLS_ENABLED"]["value"] == str(enabled).lower()
+            assert container["args"] == ["hikes-refresh-forecasts"]
+            assert doc["spec"]["schedules"] == ["20 */2 * * *"]
+        else:
+            assert "HIKES_HILLS_ENABLED" not in env, name
+    off = _write_values(tmp_path, "hills-no-s3.yaml", {"sharedS3": {"enabled": False}})
+    for name, env in _cron_containers(_render("production", [overlay, off])):
+        assert "HIKES_HILLS_ENABLED" not in _env_by_name(env), name
+
+
 def test_shared_s3_probe_jobs_positive_then_omission(tmp_path):
     true_docs, false_docs = _probe_renders(tmp_path)
     assert set(true_docs) == {

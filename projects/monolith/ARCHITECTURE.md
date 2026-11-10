@@ -1902,7 +1902,7 @@ supported classes and records source version, CC BY 4.0 attribution and the
 filtering/joining modification notice. The publisher's workbook-linked notes
 and licence were verified on 2026-11-10 (#7368 comment 6760868704). No release
 is committed or imported. `stars.hillsEnabled: false` exports
-`HIKES_HILLS_ENABLED` to existing S3 jobs. Disabled execution reads no hill
+`HIKES_HILLS_ENABLED` only to the existing hikes forecast job. Disabled execution reads no hill
 input and publishes no hills. Future activation also needs local
 `HIKES_DOBIH_CSV_PATH` and `HIKES_DOBIH_VERSION`, neither configured here.
 Existing schedules remain unchanged.
