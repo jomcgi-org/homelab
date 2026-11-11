@@ -68,6 +68,18 @@ BUILD
 	# widening run.log would break them, while the flags are what case 9 needs.
 	cat >"$WORK/bin/bazel" <<'STUB'
 #!/usr/bin/env bash
+# `query` answers with STUB_LAYERS (one label per line) only for the image
+# named in STUB_LAYERED_IMAGE, and `build` records what it was asked to fetch.
+if [ "${1:-}" = "query" ]; then
+	if [ -n "${STUB_LAYERED_IMAGE:-}" ] && [[ "$2" == *"deps(${STUB_LAYERED_IMAGE%.push},"* ]]; then
+		printf '%s\n' "$STUB_LAYERS"
+	fi
+	exit 0
+fi
+if [ "${1:-}" = "build" ] && [[ "$*" == *"--remote_download_toplevel"* ]]; then
+	echo "$*" >>"$STUB_ORDER_LOG"
+	exit 0
+fi
 if [ "${1:-}" = "run" ]; then
 	if [[ "$*" == *"--run_under="* ]]; then
 		echo "$2" >>"$STUB_PREFLIGHT_LOG"
@@ -432,6 +444,26 @@ else
 	pass "unreadable layout stops publication before registry writes"
 fi
 unset STUB_PREFLIGHT_FAIL
+teardown
+
+# 19. A layered image downloads its own layer tars, top-level, before its layout
+#     check. Under --remote_download_minimal a layer blob otherwise dangles.
+setup "$MANIFEST_3" "ghcr.io/jomcgi/homelab/alpha@sha256:aaa
+ghcr.io/jomcgi/homelab/gamma@sha256:ccc"
+export STUB_LAYERED_IMAGE="//projects/beta:image.push"
+export STUB_LAYERS="//bazel/tools/image:prettier_tar"
+OUT=$(run_script)
+EXPECTED=$(printf '%s\n' \
+	"build --config=ci --stamp --remote_download_toplevel //bazel/tools/image:prettier_tar" \
+	"check //projects/beta:image.push" \
+	"push //projects/beta:image.push" \
+	"push //bazel/images:push_charts")
+if [ "$(cat "$STUB_ORDER_LOG")" = "$EXPECTED" ]; then
+	pass "layer tars are downloaded before the layout check"
+else
+	fail "layer tars are downloaded before the layout check" "$(cat "$STUB_ORDER_LOG")"
+fi
+unset STUB_LAYERED_IMAGE STUB_LAYERS
 teardown
 
 echo ""
