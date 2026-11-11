@@ -4,8 +4,9 @@
  * The gateway renews tokens in place. When it cannot, a fetch gets a 401. One
  * such answer can be transient, so the state is "reconnecting" until a second
  * one confirms it (see lib/session-expiry.js). Only a full page load can pass
- * the login again, so a confirmed expiry reloads the tab, at most once a
- * minute, after every registered `beforeReload` hook has saved its work.
+ * the login again. Where a screen registered a `beforeReload` hook, a confirmed
+ * expiry reloads the tab, at most once a minute, after the hook has saved its
+ * work. Elsewhere the page shows a notice and the player reloads when ready.
  */
 import { claimReload, expiryCheck } from "../lib/session-expiry.js";
 
@@ -27,6 +28,13 @@ function set(next: SignInState) {
 }
 
 function expired() {
+  // Reload only where a screen has said how to save its work first. Anywhere
+  // else a reload would discard a half-written sheet or note, so the page
+  // shows the signed-out notice and leaves the reload to the player.
+  if (hooks.size === 0) {
+    set("signed-out");
+    return;
+  }
   for (const hook of hooks) if (hook() === false) return;
   if (claimReload()) {
     location.reload();

@@ -107,6 +107,24 @@ describe("Session", () => {
     );
   });
 
+  it("clears the box when the sent text had surrounding whitespace", async () => {
+    const { user } = openApp(
+      {
+        ...dm,
+        "POST /campaigns/{campaign_id}/sessions/{session_id}/events": (call) =>
+          event({
+            kind: "narration",
+            body: (call.body as { body: object }).body as never,
+          }),
+      },
+      path,
+    );
+    const box = await screen.findByLabelText("Set the scene");
+    await user.type(box, "The door creaks. ");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe(""));
+  });
+
   it("keeps the draft and reuses the request id when a send fails", async () => {
     const { user, backend } = openApp(
       {
