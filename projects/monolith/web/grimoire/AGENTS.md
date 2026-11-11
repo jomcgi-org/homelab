@@ -54,15 +54,15 @@ recalling an API.
 
 ## Layout
 
-| Path                     | Holds                                                       |
-| ------------------------ | ----------------------------------------------------------- |
-| `src/api/`               | `client.ts`, the generated `schema.ts`, one module per area |
-| `src/app/`               | Providers, `Page`, `Loaded`, `useAction`, sign-in state     |
-| `src/screens/<name>/`    | One directory per route                                     |
-| `src/lib/`               | Framework-free logic with its own tests                     |
-| `src/theme/`             | `sheetTheme.ts` and its compiled output                     |
-| `src/test/`              | Fixture backend, fixtures, test entry                       |
-| `preview/`               | Fixture preview entry                                       |
+| Path                  | Holds                                                       |
+| --------------------- | ----------------------------------------------------------- |
+| `src/api/`            | `client.ts`, the generated `schema.ts`, one module per area |
+| `src/app/`            | Providers, `Page`, `Loaded`, `useAction`, sign-in state     |
+| `src/screens/<name>/` | One directory per route                                     |
+| `src/lib/`            | Framework-free logic with its own tests                     |
+| `src/theme/`          | `sheetTheme.ts` and its compiled output                     |
+| `src/test/`           | Fixture backend, fixtures, test entry                       |
+| `preview/`            | Fixture preview entry                                       |
 
 ## Commands
 
