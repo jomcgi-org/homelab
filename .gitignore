@@ -83,3 +83,6 @@ bb-out/
 # for `pnpm dev` (the frontend's predev script).
 /projects/monolith/knowledge/repo_docs_manifest.ndjson
 /projects/monolith/frontend/src/lib/public/docs/docs-manifest.json
+
+# Local fixture-preview build output for the Grimoire web app.
+dist-preview/

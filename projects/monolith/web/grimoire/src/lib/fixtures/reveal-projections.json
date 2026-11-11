@@ -1,0 +1,132 @@
+{
+  "description": "Golden reveal projections. grimoire/visibility_test.py asserts project_entity() returns each case's expected object; the frontend vitest renders the same expected object and asserts which fields a player sees. Change both sides together.",
+  "spine_fields": [
+    "id",
+    "entity_type",
+    "name",
+    "source_type",
+    "is_global",
+    "source_book",
+    "created_in_session",
+    "created_at"
+  ],
+  "identity_fields": ["id", "entity_type", "name"],
+  "entities": {
+    "private": {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "entity_type": "npc",
+      "name": "Yasha Nydoorin",
+      "source_type": "homebrew",
+      "is_global": false,
+      "source_book": null,
+      "created_in_session": "22222222-2222-4222-8222-222222222222",
+      "created_at": "2026-03-04T05:06:07+00:00"
+    },
+    "global": {
+      "id": "33333333-3333-4333-8333-333333333333",
+      "entity_type": "npc",
+      "name": "Captain Ardent",
+      "source_type": "extracted",
+      "is_global": true,
+      "source_book": "Example Gazetteer",
+      "created_in_session": null,
+      "created_at": "2026-01-02T03:04:05+00:00"
+    }
+  },
+  "details": {
+    "private": {
+      "race": "Aasimar",
+      "occupation": "Former cultist",
+      "disposition": "loyal",
+      "description": "A **tall** barbarian with a scarred jaw and a hidden past."
+    },
+    "global": {
+      "race": "Human",
+      "occupation": "Harbour guard",
+      "disposition": "wary",
+      "description": "Keeps the east gate."
+    }
+  },
+  "viewer": "44444444-4444-4444-8444-444444444444",
+  "cases": [
+    {
+      "name": "full",
+      "entity": "private",
+      "grant": { "grant_scope": "full", "revealed_details": null },
+      "context": "lookup",
+      "expected": {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "entity_type": "npc",
+        "name": "Yasha Nydoorin",
+        "source_type": "homebrew",
+        "is_global": false,
+        "source_book": null,
+        "created_in_session": "22222222-2222-4222-8222-222222222222",
+        "created_at": "2026-03-04T05:06:07+00:00",
+        "race": "Aasimar",
+        "occupation": "Former cultist",
+        "disposition": "loyal",
+        "description": "A **tall** barbarian with a scarred jaw and a hidden past."
+      },
+      "visible_fields": ["race", "occupation", "disposition", "description"]
+    },
+    {
+      "name": "partial",
+      "entity": "private",
+      "grant": {
+        "grant_scope": "partial",
+        "revealed_details": {
+          "disposition": "loyal",
+          "clue": "Seen near the docks at night."
+        }
+      },
+      "context": "lookup",
+      "expected": {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "entity_type": "npc",
+        "name": "Yasha Nydoorin",
+        "revealed_details": {
+          "disposition": "loyal",
+          "clue": "Seen near the docks at night."
+        }
+      },
+      "visible_fields": ["disposition", "clue"],
+      "hidden_values": ["Aasimar", "Former cultist", "hidden past"]
+    },
+    {
+      "name": "name_only",
+      "entity": "private",
+      "grant": { "grant_scope": "name_only", "revealed_details": null },
+      "context": "relationship",
+      "expected": {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "name": "Yasha Nydoorin",
+        "entity_type": "npc",
+        "recognition_only": true
+      },
+      "visible_fields": [],
+      "hidden_values": ["Aasimar", "Former cultist", "loyal", "hidden past"]
+    },
+    {
+      "name": "global_no_grant",
+      "entity": "global",
+      "grant": null,
+      "context": "lookup",
+      "expected": {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "entity_type": "npc",
+        "name": "Captain Ardent",
+        "source_type": "extracted",
+        "is_global": true,
+        "source_book": "Example Gazetteer",
+        "created_in_session": null,
+        "created_at": "2026-01-02T03:04:05+00:00",
+        "race": "Human",
+        "occupation": "Harbour guard",
+        "disposition": "wary",
+        "description": "Keeps the east gate."
+      },
+      "visible_fields": ["race", "occupation", "disposition", "description"]
+    }
+  ]
+}
