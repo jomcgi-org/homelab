@@ -53,8 +53,8 @@ const rules: Rule[] = [
     name: "no raw HTML injection",
     pattern: /dangerouslySetInnerHTML|\.innerHTML\s*=/,
     instead:
-      "render text as text; the one escaping renderer is src/session/HandoutText.tsx",
-    allow: ["src/session/HandoutText.tsx"],
+      "render text as text; the one escaping renderer is src/handouts/HandoutText.tsx",
+    allow: ["src/handouts/HandoutText.tsx"],
   },
   {
     name: "no raw interactive elements",
@@ -86,9 +86,12 @@ const rules: Rule[] = [
     instead: "component props (gap, padding, width) or a class in a .css file",
   },
   {
-    name: "no browser storage outside session-expiry",
+    name: "no browser storage outside the modules that own it",
     pattern: /\b(localStorage|sessionStorage)\b/,
-    instead: "src/lib/session-expiry.js, which owns the kept draft",
+    instead:
+      "src/lib/session-expiry.js for the kept draft; read-aloud settings go through src/lib/read-aloud.js",
+    // Passes window.localStorage to lib/read-aloud.js, which does the reading.
+    allow: ["src/voices/ReadAloud.tsx"],
   },
 ];
 
