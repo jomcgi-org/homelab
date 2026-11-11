@@ -1,13 +1,20 @@
 # Local Grimoire table
 
 Run the friends UI against the real Grimoire router and a disposable Postgres
-16 database with pgvector. Three signed demo identities share one campaign:
+16 database with pgvector. The UI is the React app in
+`projects/monolith/web/grimoire`: the launcher builds it and the local backend
+serves it with `grimoire/web.py`, as the production image does. One loopback
+origin, `http://friends.localhost:8177`, serves the app and the invitation
+landing under `/grimoire` and the API under `/api/grimoire`. There is no Node
+server at run time. Three signed demo identities share one campaign:
 Rowan (DM), Elowen (ranger), and Bram (fighter). Each launch starts fresh.
 
 Install the repository's Node/pnpm tools with `./bootstrap.sh`, and install
 Postgres 16 plus pgvector. On Ubuntu these are `postgresql-16` and
 `postgresql-16-pgvector`. `GRIMOIRE_PG_BIN` selects another Postgres bin directory.
-The launcher uses ports 4177, 8177 and 55477 and binds only to loopback.
+The launcher uses ports 8177 and 55477 and binds only to loopback.
+`GRIMOIRE_WEB_DIR` names an already built bundle and skips the launcher's own
+build.
 
 The lobby supports campaign invitations, player character creation, and DM
 assignment of existing or new characters. Clearing an assignment keeps the
@@ -19,7 +26,7 @@ starts a session with a quick roll using the approved modifier. Inspect
 `nyx-submitted.png`, `wren-submitted.png`, `new-player-session.png` and
 `new-dm-session.png` for those steps.
 
-From the repository root, prepare Python 3.13 and frontend dependencies:
+From the repository root, prepare Python 3.13 and the web app's dependencies:
 
 ```bash
 uv venv grimoire.venv
@@ -60,14 +67,19 @@ grimoire.venv/bin/python projects/monolith/dev/grimoire/run.py --rehearse --join
 ```
 
 The flag selects the link rehearsal instead of the default table and its 33
-session checks. Enrollment stays disabled in both modes, and the launcher clears inherited provider token
+session checks. `report.json` lists passed checks in `checks` and any check the
+app fails in `failed_checks`, with what was observed. A failed check that is
+already understood is recorded and the rehearsal continues, so one defect does
+not hide the checks after it; the run still exits nonzero. Enrollment stays disabled in both modes, and the launcher clears inherited provider token
 and flow settings. These checks use signed local identities and never enroll a
 real account.
 
 The link rehearsal covers owner creation, hiding the one-time copy surface,
 anonymous fragment capture, cookie attributes and resume, the wrong account,
 close and browser back, a changed invitation in another tab, explicit acceptance,
-retry, removal and replay, and revocation while acceptance is open. It checks
+retry, removal and replay, and revocation while acceptance is open. The
+anonymous landing is the backend's own page (`grimoire/join_landing.py`); the
+signed-in accept screen is the React route `/grimoire/join/accept`. It checks
 membership through the real backend after each mutation. Chromium treats the
 `friends.localhost` loopback host as trustworthy for Secure cookies; the checks
 assert the cookie is actually stored and can resume the invitation.
@@ -87,12 +99,13 @@ Postgres 16 with pgvector, and Chromium's system libraries:
 GRIMOIRE_EVIDENCE_DIR=/tmp/grimoire-ci-evidence projects/monolith/dev/grimoire/ci.sh
 ```
 
-The wrapper installs the pinned runtime and Playwright, checks three cold frontend
-starts, and runs the full browser scenario twice with fresh databases and dependency
-caches. A third fresh launch runs the opted-in link scenarios. It preserves the
-run log and evidence even on failure. Browser reports
-are under `cold-start-1/` and `cold-start-2/`; dependency-readiness checks are in
-`startup.log`. Link reports, screenshots and traces are under `join-links/`, with
+The wrapper installs the pinned runtime and Playwright, builds the React bundle
+once from the checkout (`web-build.log`), and runs the full browser scenario
+twice with fresh databases. A third fresh launch runs the link scenarios. Every
+stage runs even when an earlier one fails, so the run log and evidence are
+complete; the wrapper then exits nonzero. Browser reports are under
+`cold-start-1/` and `cold-start-2/`; `startup.log` counts the launches whose
+shell and assets were served. Link reports, screenshots and traces are under `join-links/`, with
 their launcher log in `join-links.log`. It removes only its
 own temporary Python environment. The BuildBuddy PR gate calls `ci-runner.sh`
 after Bazel for relevant changes. It provisions Ubuntu dependencies and uses
@@ -101,11 +114,10 @@ are uploaded from `BUILDBUDDY_ARTIFACTS_DIRECTORY/grimoire`, including on failur
 Root runners give the disposable PostgreSQL
 directory and process to the system `postgres` account.
 
-The launcher transforms the factory markdown renderer
-(`src/lib/public/factory/markdown.js`) with the running Vite server and waits for
-the dependency scan and optimized files to finish before announcing readiness.
-Each launch owns a fresh cache. A broken client import fails startup without
-publishing readiness; browser assertions and interaction deadlines are unchanged.
+Before announcing readiness the launcher fetches the app shell and every script
+and stylesheet it names. A bundle built for another base path, or a missing
+asset, fails startup before any browser runs. Browser assertions and
+interaction deadlines are unchanged.
 
 This starts the whole table, exercises three separate browser contexts, saves
 evidence to `/tmp/grimoire-rehearsal`, and stops. `--output /path` changes the
@@ -118,9 +130,11 @@ grimoire.venv/bin/playwright show-trace /tmp/grimoire-rehearsal/dm-trace.zip
 ```
 
 Inspect `report.md` for linked screenshots and traces, and `report.json` for
-machine-readable checks and timings. Inspect `dm.png`, `elowen.png`, `bram.png`, and
+machine-readable checks and timings. A failed session rehearsal also saves each
+open page's accessibility tree as `<seat>-final-<n>.aria.yml`. Inspect `dm.png`, `elowen.png`, `bram.png`, and
 `player-reconnecting.png`. The rehearsal checks message audiences in rendered
-pages and response payloads, denied player mutations, phone overflow,
+pages and in the seat's own `/api/grimoire` reads (the lobby, sessions,
+characters, feed, turn order and both journals), denied player mutations, phone overflow,
 polling recovery with an unsent draft, and the session lifecycle.
 It also drops a successful send's response, checks that the draft and retry
 guidance remain, and retries without duplicating the stored event. Message
@@ -202,14 +216,20 @@ reveal snapshots, and reduced scopes remove broader data from the player feed
 and journal. The rehearsal exercises editing, scope reduction and retraction
 while confirming players cannot open the matrix.
 
-The launcher serves its own ephemeral JWKS and signs local ID tokens. The
-normal backend signature, issuer, audience and campaign checks still run.
+The launcher serves its own ephemeral JWKS and signs local ID tokens.
+`/__local/login/{role}` stands in for the gateway's login: it sets the signed
+token in the `grimoire-id-token` cookie for this origin, and the launcher sets
+`GRIMOIRE_BROWSER_ORIGIN` to the same origin so the backend accepts it. The
+normal backend signature, issuer, audience and campaign checks still run, and a
+write must carry the matching `Origin`, as in production.
 These identity and embedding endpoints live only in this development
 entrypoint, outside the production source globs. Local runs require no model,
 Authentik or cluster credentials. Fixtures use model schema creation;
 production migration and real OIDC enrollment checks remain separate from this
 simulated rehearsal.
 
+The `evidence/` snapshot predates the React app: it records the Svelte UI at
+the commit named in `review.json` and has not been regenerated.
 A reviewed local snapshot is included in [evidence/report.json](evidence/report.json),
 with provenance and screenshot checks in [evidence/review.json](evidence/review.json).
 Inspect the [DM desktop](evidence/dm.png), [Bram phone](evidence/bram.png),
