@@ -70,6 +70,32 @@ describe("Session", () => {
     expect(calls().at(-1)!.query.get("after")).toBe(String(story.at(-1)!.seq));
   });
 
+  it("re-reads the whole feed as soon as a reveal arrives", async () => {
+    // A reveal can retract knowledge already shown, which edits old events.
+    const reveal = event({ kind: "reveal", body: { retracted: true } });
+    let delivered = false;
+    const { backend } = openApp(
+      {
+        ...dm,
+        "GET /campaigns/{campaign_id}/sessions/{session_id}/events": (call) => {
+          if (call.query.get("after") === "0")
+            return delivered ? [...story, reveal] : story;
+          if (delivered) return [];
+          delivered = true;
+          return [reveal];
+        },
+      },
+      path,
+    );
+    await screen.findByRole("list", { name: "Session feed" });
+    const fullReads = () =>
+      backend
+        .callsTo("GET /campaigns/{campaign_id}/sessions/{session_id}/events")
+        .filter((call) => call.query.get("after") === "0");
+    // Well inside the periodic full read's fifteen seconds.
+    await waitFor(() => expect(fullReads()).toHaveLength(2), { timeout: 4000 });
+  });
+
   it("sends narration to everyone with a request id", async () => {
     const { user, backend } = openApp(
       {

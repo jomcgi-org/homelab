@@ -32,7 +32,10 @@ export type TurnOrder = {
 
 const FEED_MS = 2_000;
 const SLOW_MS = 15_000;
-/** Retractions edit old events in place, so the feed is re-read in full this often. */
+/**
+ * A retraction edits old events in place and appends a reveal event, which
+ * prompts a full read at once. This periodic full read is the backstop.
+ */
 const FULL_RESYNC_MS = 15_000;
 const PAGE = 500;
 
@@ -52,6 +55,11 @@ export const sessionKeys = {
     ["campaign", campaignId, "session", sessionId, "journal", view] as const,
 };
 
+/**
+ * A running session's feed keeps its players busy, so the list is read slowly.
+ * With none running, players are waiting for the DM to start or resume, and
+ * the list is the only signal: it is read at the feed's pace.
+ */
 export const useSessions = (campaignId: string) =>
   useQuery({
     queryKey: sessionKeys.sessions(campaignId),
@@ -59,7 +67,10 @@ export const useSessions = (campaignId: string) =>
       api("GET /campaigns/{campaign_id}/sessions", {
         params: { campaign_id: campaignId },
       }),
-    refetchInterval: SLOW_MS,
+    refetchInterval: (query) =>
+      query.state.data?.some((row) => row.status === "active")
+        ? SLOW_MS
+        : FEED_MS,
   });
 
 export const useVoices = (campaignId: string) =>
@@ -122,6 +133,12 @@ export function useEvents(campaignId: string, session: GameSessionView | null) {
         return all;
       }
       const fresh = await eventsAfter(campaignId, sessionId, held.at(-1)!.seq);
+      if (fresh.some((event) => event.kind === "reveal")) {
+        // A reveal may retract or reduce knowledge already in the feed.
+        const all = await eventsAfter(campaignId, sessionId, 0);
+        lastFull.current = Date.now();
+        return all;
+      }
       return fresh.length ? [...held, ...fresh] : held;
     },
     // An ended session gains no events. Polling pauses while the tab is hidden
