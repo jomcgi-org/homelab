@@ -28,9 +28,10 @@ async def browser_or_operator(
 ):
     """Prefer a signed login token over the shared resolver's principal.
 
-    The Svelte BFF relays the token as a header. The friends lane's browser UI
-    carries the same token in its session cookie, which is a credential only
-    under the Origin rules in ``auth.browser_cookie``.
+    The friends lane's browser UI carries the token in its session cookie,
+    which is a credential only under the Origin rules in
+    ``auth.browser_cookie``. The ``x-platform-token`` header is the same token
+    for callers without a browser: tests and the local rehearsal.
     """
     tokens = request.headers.getlist("x-platform-token")
     if len(tokens) > 1:

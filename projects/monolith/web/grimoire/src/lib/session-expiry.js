@@ -1,7 +1,7 @@
 // Recovery when the friends sign-in lapses mid-session. The gateway renews
 // tokens with a refresh token; when it cannot, a fetch gets a 401 (or, from a
-// browser without Sec-Fetch-Mode, a redirect to authentik) and the BFF answers
-// 401 when the backend rejects the token. A full page load is the only way
+// browser without Sec-Fetch-Mode, a redirect to authentik). A full page load
+// is the only way
 // back through the login, so once a second signal confirms the expiry the
 // page keeps the composer in this tab's sessionStorage and reloads, at most
 // once a minute.

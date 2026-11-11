@@ -30,8 +30,9 @@ author's knowledge, with DM access requiring `dm_readable`.
   profiles.
 - Private routes live under `/api/grimoire` in `router.py`.
 - Read-only public routes use the same prefix through `router_public.py`.
-- The Svelte frontend lives in `projects/monolith/frontend/src/lib/grimoire`
-  and `projects/monolith/frontend/src/routes/public/app/grimoire`.
+- The public pages are Svelte: `projects/monolith/frontend/src/lib/public/grimoire`
+  and `projects/monolith/frontend/src/routes/public/app/grimoire`. The private
+  operator sheets page is `projects/monolith/frontend/src/routes/private/grimoire`.
 - The friends web app lives in `projects/monolith/web/grimoire`. See
   [Friends web app](#friends-web-app).
 - Persistent state lives in the Monolith Postgres cluster. There is no separate
@@ -327,15 +328,21 @@ withdraws handouts already posted. The upload key is matched in full against
 this campaign's prefix and a uuid4 name, which rules out traversal and other
 campaigns' objects without trusting the client's filename or declared type.
 
-The frontend reaches all of this through the SvelteKit BFF: the session state
-endpoint's `handout` operation (limits mirrored from `handouts.py`), a multipart
-upload proxy that forwards only the file, and an image proxy that takes the
-campaign, session and event ids as single encoded segments and answers
-`Cache-Control: private, no-store`. Pages only ever hold the proxy URL, never the
-key. The DM composer offers uploaded images only; chunk images are accepted by
-the API but have no picker yet. The frontend container sets `BODY_SIZE_LIMIT`
-to 6M because adapter-node's 512K default would refuse the upload before the
-proxy ran.
+The React app calls these routes directly (`web/grimoire/src/api/handouts.ts`).
+The composer posts the `handout` event to the events route, with limits mirrored
+from `handouts.py` in `src/lib/handout.js`. `uploadHandoutImage` posts the file
+to the upload route as multipart under the fixed name `handout`, so the DM's
+filename stays on their machine. `handoutImageUrl` builds the event image
+route's URL from the campaign, session and event ids, each encoded as one
+segment, and the page loads the image from the API. The gateway sets
+`Cache-Control: private, no-store` on every routed API response. The upload
+response gives the DM's page the storage key, which it sends back in the
+handout event. For every other viewer `project_handout_body` in `handouts.py`
+reduces the image reference to its `source`, so a recipient's page holds only
+the image URL. The DM composer offers uploaded images only; chunk images are
+accepted by the API but have no picker yet. The frontend container still sets
+`BODY_SIZE_LIMIT` to 6M for the deleted upload proxy; no Grimoire upload passes
+through it.
 
 ## Journal
 
@@ -391,17 +398,19 @@ under the feed's DM-or-self rules.
 Reply ordering uses the session sequence, so an earlier reference cannot close
 a later action. Live enablement and audience checks remain owned by #6610.
 
-The UI ships a props-driven `JournalPanel`, used by the standalone campaign
-journal page and by the session screen's Journal tab. The tab reads the
-canonical session journal (mine and party) that the BFF state endpoint already
-returns on every feed poll, so it refreshes with the feed and needs no loop of
-its own. The page holds the Mine/Party choice, so a poll replaces the data
-without resetting it. `showEvent` and `openKnowledge` are optional panel props;
-the standalone page omits them and renders no navigation buttons.
+The UI ships a props-driven `JournalPanel`
+(`web/grimoire/src/journal/JournalPanel.tsx`), used by the campaign journal
+screen and by the session screen's Journal tab. While the tab is open it reads
+the session journal route for the chosen view (`useJournal` in
+`src/api/session.ts`) every thirty seconds and again when a new event arrives.
+The session screen holds the Mine/Party choice, so a refresh replaces the data
+without resetting it. `onShowEvent` and `onOpenKnowledge` are optional panel
+props; the campaign journal screen passes only `onOpenKnowledge`, so its
+entries open knowledge and have no link to a story feed.
 
 **Why.** One renderer keeps retraction, name-only and partial-journal handling in
-a single place, and the BFF passes the audience-filtered API shape through
-instead of re-aliasing it per surface.
+a single place. `journalSections` in `src/api/journal.ts` passes the
+audience-filtered API shape through and only fills in missing lists.
 
 ## Grant changes
 
@@ -479,10 +488,13 @@ the party pool and their own items, with quantity edits and partial moves.
 Hidden owned items retain a text badge and quantity edits; the backend refuses
 player moves of hidden items. The DM sees sections named for every campaign PC
 and can give, edit, move or delete items. Each item has an on-demand audit
-history disclosure. The session BFF keeps its play gate and private, no-store
-reads: `inventory=items` and `inventory=changes&item=<id>` proxy the inventory
-list and audit routes. `giveItem`, `updateItem`, `moveItem` and `deleteItem`
-proxy mutations; patches forward only supplied fields.
+history disclosure. The tab calls the inventory routes directly
+(`web/grimoire/src/api/inventory.ts`). The item list refreshes every four
+seconds and an item's changes load when its history opens. Give, edit, move
+and delete call `POST /inventory`, `PATCH /inventory/{item_id}`,
+`POST /inventory/{item_id}/move` and `DELETE /inventory/{item_id}` under the
+campaign. A player's patch carries only quantity and reason; the DM's adds
+name, notes and the hidden flag.
 
 DM-only Give item buttons on visible, non-retracted reveal entries and handouts
 open the tab with the name and source event prefilled. Reveals also carry their
@@ -520,15 +532,14 @@ to the author and DM; the sharing flag goes only to the author. A viewer-compute
 `can_edit` flag exposes edit capability without adding author identity to another
 player's projection. There is no `public_reader` grant on notes.
 
-The friends campaign notes route loads and writes through the server's dedicated
-Grimoire token, validates campaign and form UUIDs, and disables caching. Failed
-reads reject the load rather than returning an empty list. `NotesPanel` takes
-notes, viewer capabilities, filters and form actions as props, with no client
-API calls. Mine and Party tabs forward `kind` and `q`. Quick-add offers Campaign
-default (omits `dm_readable`), Private and Share with DM. DMs see Shared with you
-and can only add party notes. Markdown uses the existing text-node renderer;
-entity chips come only from resolved viewer-visible objects. Feed pinning and
-session-screen mounting remain in #6689, blocked by #6610 and #6612.
+The campaign notes screen (`/grimoire/campaigns/{campaign_id}/notes`) and the
+session screen's Notes tab call the notes routes directly
+(`web/grimoire/src/api/notes.ts`). A failed read shows the failure rather than
+an empty list. Mine and Party tabs send `kind` and `q`. Quick-add offers
+Campaign default (omits `dm_readable`), Private and Share with DM. DMs see
+Shared with you and can only add party notes. Note text renders as plain text
+(`src/notes/NoteText.tsx`); entity chips come only from resolved viewer-visible
+objects. The feed's pin action posts `from_event_id` to the notes route.
 
 **Why.** Notes are player-owned records. DM access to generic play rows does not
 authorize access to a private character note. Read-time chip resolution retains
@@ -602,35 +613,50 @@ Monolith domain, its web UIs, or its batch jobs.
 
 ## Friends web app
 
-The friends UI is being rebuilt as a client-only React app on the
-[Astryx](https://github.com/facebook/astryx) component library
-(`projects/monolith/web/grimoire`, #7698). It is served at `/grimoire/next`
-beside the Svelte pages until it reaches parity, then moves to `/grimoire`.
-Public Grimoire pages stay in Svelte.
+The friends UI at `https://friends.jomcgi.dev/grimoire` is a client-only React
+app on the [Astryx](https://github.com/facebook/astryx) component library
+(`projects/monolith/web/grimoire`, #7698). The SvelteKit friends pages and
+their server helpers, which relayed the ID token to the API, are deleted.
+Public Grimoire pages and the private operator sheets page stay in Svelte.
 
 - **Static files.** `grimoire/web.py` serves the built bundle from the API
-  port. Any path under the base that is not a built asset answers with
-  `index.html`; a missing asset is a 404, never the shell. The base path is
-  read from the bundle, so server and bundle cannot disagree. There is no
-  server rendering, no React Server Components and no server actions.
-- **Direct API calls.** The browser calls `/api/grimoire` itself. The
-  `-grimoire` HTTPRoute forwards an explicit list of prefixes to the API port:
-  `/api/grimoire/lobby`, `/api/grimoire/campaigns` and
-  `/api/grimoire/invitations` (`grimoire/browser_lane.py`). The prefix is
-  never routed whole: `/api/grimoire/books` and `/api/grimoire/chunks/*/image`
-  have no identity check of their own, because the private lane's Cloudflare
-  Access session is their gate.
+  port at `/grimoire`. Any path under the base that is not a built asset
+  answers with `index.html`; a missing asset is a 404, never the shell. The
+  base path is read from the bundle, so server and bundle cannot disagree.
+  There is no server rendering, no React Server Components and no server
+  actions.
+- **Direct API calls.** The browser calls the API itself. The `-grimoire`
+  HTTPRoute (`chart/templates/httproute-grimoire.yaml`) forwards each prefix
+  in `cfIngress.grimoire.apiPrefixes` to the API port. The list is
+  `BROWSER_API_PREFIXES` in `grimoire/browser_lane.py`: the three Grimoire
+  prefixes defined there and the four account-API prefixes in
+  `auth/browser_cookie.py`. `/api/grimoire` and `/api/auth/platform` are never
+  routed whole. `/api/grimoire/books` and `/api/grimoire/chunks/*/image` have
+  no identity check of their own, because the private lane's Cloudflare Access
+  session is their gate. The account API's enrollment routes are capability
+  callbacks with no identity dependency.
 - **Credential.** Envoy's OIDC filter decrypts the session cookie before
   forwarding, so the API port receives the signed ID token in the
-  `grimoire-id-token` cookie. `grimoire/access.py` verifies it exactly as it
-  verifies `X-Grimoire-Token`: issuer, audience, signature and expiry. The
-  cookie is a credential only when `GRIMOIRE_BROWSER_ORIGIN` is set, which
-  the chart does only when the route is enabled.
+  `grimoire-id-token` cookie. `browser_token` in `auth/browser_cookie.py`
+  reads it for both APIs. `grimoire/access.py` verifies it against the
+  Grimoire issuer, audience, signature and expiry;
+  `auth/platform/identity.py` passes it to its login verifier. The cookie is a
+  credential only when `GRIMOIRE_BROWSER_ORIGIN` is set, which the chart does
+  only when the route is enabled.
 - **Cross-site requests.** A cookie rides along on requests another site
   makes. A write carrying the cookie must send exactly one `Origin` header
   equal to `GRIMOIRE_BROWSER_ORIGIN`, and `Sec-Fetch-Site`, when present,
   must be `same-origin`. Reads are not restricted: they change nothing and a
   cross-origin page cannot read the answer.
+- **Invitation links.** `grimoire/join_landing.py` serves the anonymous
+  landing at `/grimoire/join` and the signed-in endpoints
+  `POST /grimoire/join/accept` and `GET /grimoire/join/accept/state`. The
+  landing embeds `web/grimoire/src/lib/join-landing.js` as its script. The
+  signed-in accept page is the React screen at `/grimoire/join/accept`. See
+  [Single-use campaign links](#single-use-campaign-links).
+- **Account pages.** The React screens at `/grimoire/platform` and
+  `/grimoire/platform/profile` call the account API under
+  `/api/auth/platform` (`src/api/platform.ts`).
 - **Caching.** Hashed assets are `private, max-age=31536000, immutable`.
   `index.html` is `private, no-cache`, so a deploy takes effect on the next
   reload. API responses are `private, no-store`. Everything carries
@@ -642,13 +668,22 @@ Public Grimoire pages stay in Svelte.
   bundle ships the hash in `style-hashes.json` and `src/csp.test.tsx` fails
   when an upgrade changes it.
 - **Contract.** `grimoire/browser_api_schema.py` generates
-  `web/grimoire/src/api/schema.ts` from the response models. A test compares
-  the committed file with the generator's output, and the app's typecheck
-  compiles against it.
-- **Polling.** The session screen fetches new events and the turn order every
-  two seconds, by `after` sequence number, and everything else less often or
-  when an event arrives. The Svelte BFF refetched every event page and about
-  ten other reads on each poll.
+  `web/grimoire/src/api/schema.ts` from the Grimoire response models. A test
+  compares the committed file with the generator's output, and the app's
+  typecheck compiles against it.
+- **Polling.** There is no aggregate state endpoint. The session screen
+  assembles independent reads (`src/screens/session/useTable.ts`,
+  `src/api/session.ts`). While the tab is visible and the session has not
+  ended, it fetches events after the last sequence number it holds every two
+  seconds and re-reads the whole feed every fifteen, because a retraction
+  edits an old event in place. The lobby, the session list, the voice map and
+  the turn order refresh every fifteen seconds; approved sheets every sixty.
+  A new event refreshes the journal, and a `turn` event refreshes the turn
+  order. Inventory, notes, voices, initiative, grants and reveals call their
+  own API routes.
+- **Sign-in expiry.** `src/app/signIn.ts` and `src/lib/session-expiry.js`
+  handle a lapsed sign-in. See
+  [Deployment and verification](#deployment-and-verification).
 
 **Why.** Agents write most of this UI. A component library with tested
 overlays, comboboxes, focus handling and announcements removes the parts they
@@ -660,25 +695,32 @@ and the table.
 **Tested.** `grimoire/browser_lane_test.py` covers the cookie credential, the
 cross-site rules and an audit that every routed path depends on the Grimoire
 identity check while every route without one stays unrouted.
-`chart/grimoire_browser_lane_test.py` pins the rendered route to that prefix
-list and to the one SecurityPolicy. `grimoire/web_test.py` covers the shell,
-the asset fallback and the response headers.
+`auth/platform/browser_identity_test.py` covers the same cookie rules for the
+account API and audits that only the capability enrollment routes skip the
+identity dependency. `chart/grimoire_browser_lane_test.py` pins the rendered
+route to the prefix list, to the one SecurityPolicy and to the exact anonymous
+landing path. `grimoire/web_test.py` covers the shell, the asset fallback and
+the response headers. `grimoire/join_landing_test.py` and
+`web/grimoire/src/lib/join-landing.test.js` cover the invitation landing.
 
-**Outstanding.** The Svelte friends pages, the BFF helpers under
-`frontend/src/lib/server/grimoire-*.js` and the `X-Grimoire-Token` header path
-remain until cutover. Join links (`/grimoire/join`, `/grimoire/join/accept`)
-stay on the Svelte routes under #6858. Live verification against the
-production gateway is listed in #7698.
+**Outstanding.** The `X-Grimoire-Token` and `x-platform-token` header paths
+remain in `grimoire/access.py` and `auth/platform/identity.py`. Tests and
+`dev/grimoire/rehearse_join_links.py` send them. No production component
+originates either header; the private sheets loader
+(`frontend/src/routes/private/grimoire/+page.server.js`) copies
+`x-grimoire-token` only when an incoming request carries it. Live verification
+of the invitation flow and the account pages against the production gateway is
+outstanding (#7698). The port of the browser rehearsal harness in
+`projects/monolith/dev/grimoire` to the React app is in progress.
 
 ## Friend onboarding and campaign ownership
 
 The friend UI lives at `https://friends.jomcgi.dev/grimoire`. Its dedicated
 Authentik provider and OIDC cookies are separate from the operator and moving
-applications. The Svelte BFF forwards the signed Grimoire ID token, which the
-backend independently checks against the Grimoire issuer, audience, signature
-and expiry. The React app at `/grimoire/next` presents the same token in its
-session cookie and reaches only the API prefixes listed under
-[Friends web app](#friends-web-app). This provider is not added to the shared
+applications. The React app presents the signed Grimoire ID token in its
+session cookie, which the backend independently checks against the Grimoire
+issuer, audience, signature and expiry. The browser reaches only the API
+prefixes listed under [Friends web app](#friends-web-app). This provider is not added to the shared
 operator/MCP token resolver.
 
 Account signup remains administrator-controlled. The lobby does not send email
@@ -745,9 +787,13 @@ There is only one unexpired pending link for a campaign and email. Duplicate
 Create requests return an instruction to revoke the old link before replacing
 it; they never recover a stored raw token. Links that expire or are revoked
 cannot be redeemed. The exact anonymous `/grimoire/join` route serves a
-self-contained, no-store landing page with no telemetry or authenticated assets.
-The authenticated `/grimoire/join/accept` route and every other Grimoire route
-keep their existing OIDC policy. No private API is exposed on the friends host.
+self-contained, no-store landing page with no telemetry or authenticated assets
+(`grimoire/join_landing.py`, with its script in
+`web/grimoire/src/lib/join-landing.js`). The React accept screen at
+`/grimoire/join/accept`, its endpoints `POST /grimoire/join/accept` and
+`GET /grimoire/join/accept/state`, and every other Grimoire route keep the OIDC
+policy. The friends host routes only the API prefixes listed under
+[Friends web app](#friends-web-app).
 
 New-account enrollment has a default-off flag,
 `grimoire.invitationLinks.enrollmentEnabled`. Issuance requires both campaign
@@ -811,7 +857,8 @@ Back/Close/reopen, wrong-account rejection, duplicate submission, expiry,
 concurrent redemption, revoke during signup, provider outage and cleanup retry.
 Verify the adapter cannot read/delete unrelated invitations, and explicitly
 review the remaining model-wide create privilege. Check that the anonymous
-route is exact-only and does not expose `/join/accept`, assets or private APIs.
+route is exact-only and does not expose `/grimoire/join/accept`,
+`/grimoire/join/accept/state`, `/grimoire/assets` or any API prefix.
 Verify no operator/family group assignment and no Moving-policy changes.
 
 ### Deployment and verification
@@ -836,10 +883,15 @@ After the normal Linux CI and deployment gates, verify with two fresh accounts:
    has no email-delivery option or global account-admin redirect. Optional
    enrollment controls require the existing account-administrator entitlement.
 6. The moving app and preview lane retain their original access policies.
-   Shared `/_app/` assets accept either app's signed cookie, while page and API
-   permissions remain separate. On the friends hostname only the listed
-   Grimoire API prefixes have a backend route: `/api/grimoire/books` and any
-   other unlisted path answer 404.
+   Shared `/_app/` requests redirect only to the moving lane
+   (`chart/templates/httproute-friends-assets.yaml`); Grimoire assets load from
+   `/grimoire/assets` on the Grimoire route. Page and API permissions remain
+   separate. Under `/api/grimoire` and `/api/auth/platform` on the friends
+   hostname, only the prefixes in `cfIngress.grimoire.apiPrefixes` have a
+   backend route: `/api/grimoire/books` and any other unlisted path answer 404.
+7. A single-use link opens the anonymous landing at `/grimoire/join`, and the
+   signed-in recipient joins from `/grimoire/join/accept`. `/grimoire/platform`
+   and `/grimoire/platform/profile` load for a signed-in account.
 
 Sign-in renews in place. The gateway requests `offline_access`, which the
 provider maps, so Authentik issues a refresh token and Envoy renews the
@@ -850,15 +902,18 @@ editing the application's policies no longer signs them out of Grimoire; to
 cut someone off, deactivate their Authentik account, which deletes their
 refresh tokens, or remove them from the campaign. When renewal fails, a fetch
 (`Sec-Fetch-Mode: cors`) gets a 401 and a navigation still redirects to the
-login. The BFF state endpoint also answers 401 for a missing or rejected token.
-A single 401 or login redirect can be transient, so the session page shows
-Reconnecting and treats it as expiry only when another one arrives two to
-thirty seconds later with no other answer between them. Then, once no send is
-in flight, it keeps the composer, its audience, any interrupted send's request
-id and the viewer's user id and role in the tab's `sessionStorage` and reloads
-at most once a minute; within that minute it shows a signed-out notice. A
-restored draft never widens its audience, and a draft kept for another viewer
-is dropped. A poll that answers for a different account or role reloads the
-page, because panels such as knowledge search keep their own state. The live
+login. `web/grimoire/src/api/client.ts` sends every request with
+`redirect: "manual"` and reports a 401 or a login redirect to
+`src/app/signIn.ts`. A single one can be transient, so the session screen
+shows Reconnecting and `src/lib/session-expiry.js` treats it as expiry only
+when another arrives two to thirty seconds later with no other answer between
+them. Then, once no send is in flight, the session composer keeps its text,
+its audience, any interrupted send's request id and the viewer's user id and
+role in the tab's `sessionStorage`, and the tab reloads at most once a minute;
+within that minute it shows a signed-out notice. Other screens show the
+signed-out notice and leave the reload to the player. A restored draft never
+widens its audience, and a draft kept for another viewer is dropped. A poll
+that answers for a different account, role or character reloads the session
+screen, because panels such as knowledge search keep their own state. The live
 check remains: hold a real login past the access-token lifetime and confirm
 the session stays Live without a reload.

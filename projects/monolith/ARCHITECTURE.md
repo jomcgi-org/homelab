@@ -133,8 +133,10 @@ The deployed service has three audience tiers, plus the agents tier of sections
 2 and 7: the private monolith carries the full route and MCP surface, the public
 deployment is a pruned composition on a read-only database role with a
 separately scoped writer for Grimoire chat, and the friends tier
-exposes only the moving planner, its browser API, and the SvelteKit bundle. The
-friends hostname has no Cloudflare Access application in front of it, only an
+exposes only the moving planner with its browser API and SvelteKit bundle, and
+the Grimoire React app with the API prefixes listed in
+`grimoire/browser_lane.py`. The friends hostname has no Cloudflare Access
+application in front of it, only an
 authentik `SecurityPolicy` that is a separate object from its route, so verify
 the deny path against the live URL with the checklist kept beside the
 `cfIngress.friends` values rather than trusting the manifest.
@@ -142,6 +144,7 @@ the deny path against the live URL with the checklist kept beside the
 (see: /projects/monolith/app/modules_public.py)
 (see: /projects/monolith/deploy/values.yaml)
 (see: /projects/monolith/chart/templates/httproute-friends.yaml)
+(see: /projects/monolith/chart/templates/httproute-grimoire.yaml)
 
 ```mermaid
 flowchart LR
