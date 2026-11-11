@@ -3,10 +3,11 @@
 Owner PR discovery treats hold wording in a PR description or its discussion
 as an explicit hold, deliberately without interpreting the prose. This control
 records a standing operator's decision that the wording on one PR no longer
-binds. It waives only the exact description read at release and the comments
-written before the release. An edited description, labels, assignees, a later
-comment, the objective issue and every review, CI and landing gate still
-apply. Standing landing delegations do not read a release, so a released PR
+binds. It waives the exact description read at release, the comments written
+before the release, and holds the PR only inherits from issues or PRs its
+description mentions. An edited description, its labels and assignees, a
+later comment, the closing objective issue and every review, CI and landing
+gate still apply. Standing landing delegations do not read a release, so a released PR
 lands on an explicit per-head grant. It starts no work.
 """
 
@@ -135,13 +136,17 @@ def _plan(db, control, repo, pr_number, operation, reason, body):
         "latest_audit_id": latest.id if latest else None,
         "body_sha256": sha,
         "reason": reason,
-        "waives": ["this_exact_pr_description", "pr_comments_before_release"],
+        "waives": [
+            "this_exact_pr_description",
+            "pr_comments_before_release",
+            "holds_inherited_from_mentioned_items",
+        ],
         "still_binding": [
             "edited_description",
             "labels",
             "assignees",
             "later_comments",
-            "objective_issue",
+            "closing_objective_issue",
             "standing_landing_delegations",
             "review_ci_and_landing_gates",
         ],
