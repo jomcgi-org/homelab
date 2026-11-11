@@ -191,7 +191,8 @@ function TableView({ table }: { table: Table }) {
         />
       )}
       <TabList
-        label="Session sections"
+        role="tablist"
+        aria-label="Session sections"
         value={tab}
         onChange={(value) => setTab(value as TabName)}
       >
