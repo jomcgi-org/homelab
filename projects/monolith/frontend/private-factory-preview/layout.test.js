@@ -30,6 +30,16 @@ const render = async (view, scenario = "populated") => {
   await tick();
 };
 
+test("updates keeps its own dashboard Trail without fixed back chrome", async () => {
+  await render("updates");
+  expect(document.querySelector("main.updates-page")).not.toBeNull();
+  const home = [...document.querySelectorAll(".trail a")];
+  expect(home.length).toBeGreaterThan(0);
+  for (const link of home) expect(link.getAttribute("href")).toBe("/");
+  expect(document.querySelector(".back-to-dashboard")).toBeNull();
+  expect(document.querySelectorAll(".scheme")).toHaveLength(1);
+});
+
 for (const view of ["board", "escalations", "item"]) {
   for (const scenario of [
     "populated",
@@ -77,6 +87,8 @@ for (const view of ["board", "escalations", "item"]) {
 test.each([
   "/factory/escalations-extra",
   "/factory/work-items",
+  "/updates-extra",
+  "/private/updates-extra/",
   "/updates/archive",
   "/application",
   "/reviewer",
@@ -103,6 +115,10 @@ test.each([
   "/",
   "/private",
   "/private/",
+  "/updates",
+  "/updates/",
+  "/private/updates",
+  "/private/updates/",
   "/app",
   "/app/tool",
   "/review/",
@@ -118,9 +134,6 @@ test.each([
   "/factory/execution/drain",
   "/private/factory/execution/",
   "/private/factory/execution/drain/",
-  "/updates",
-  "/updates/",
-  "/private/updates",
 ])("suppresses shared back chrome on %s", async (path) => {
   page.set({
     url: new URL(`https://private.example.test${path}`),
