@@ -3,7 +3,9 @@
 import argparse
 import os
 import pwd
+import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -13,6 +15,25 @@ from pathlib import Path
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[4]
+WEB = ROOT / "projects/monolith/web/grimoire"
+PORT = 8177
+# The one browser origin: the web app, the invitation landing and the API.
+# Chromium resolves *.localhost to loopback and treats it as trustworthy, so
+# the landing's Secure cookie is stored here as it is over https in production.
+ORIGIN = f"http://friends.localhost:{PORT}"
+LOOPBACK = f"http://127.0.0.1:{PORT}"
+
+
+def build_web(pnpm, directory):
+    """Build the React bundle for /grimoire, exactly as the image build does."""
+    subprocess.run(
+        [pnpm, "exec", "vite", "build", "--outDir", str(directory), "--emptyOutDir"],
+        cwd=WEB,
+        env=os.environ | {"GRIMOIRE_BASE": "/grimoire/"},
+        check=True,
+        timeout=300,
+        stdout=subprocess.DEVNULL,
+    )
 
 
 def main():
@@ -28,10 +49,18 @@ def main():
     parser.add_argument("--output", default="/tmp/grimoire-rehearsal")
     args = parser.parse_args()
     pg_bin = Path(os.environ.get("GRIMOIRE_PG_BIN", "/usr/lib/postgresql/16/bin"))
-    node = shutil.which("node")
-    if not node or not (pg_bin / "initdb").exists():
-        raise SystemExit("Install Node and PostgreSQL 16 with pgvector first.")
-    for port in (4177, 8177, 55477):
+    if not (pg_bin / "initdb").exists():
+        raise SystemExit("Install PostgreSQL 16 with pgvector first.")
+    # A caller that already built the bundle (ci.sh) names it; otherwise each
+    # launch builds the current checkout into its own disposable directory.
+    prebuilt = os.environ.get("GRIMOIRE_WEB_DIR")
+    pnpm = shutil.which("pnpm")
+    if prebuilt:
+        if not (Path(prebuilt) / "index.html").is_file():
+            raise SystemExit(f"GRIMOIRE_WEB_DIR has no index.html: {prebuilt}")
+    elif not pnpm:
+        raise SystemExit("Install pnpm first, or set GRIMOIRE_WEB_DIR to a build.")
+    for port in (PORT, 55477):
         with socket.socket() as probe:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
@@ -40,6 +69,12 @@ def main():
                 raise SystemExit(
                     f"Port {port} is occupied; stop that local table first."
                 ) from error
+
+    def terminated(signum, _frame):
+        # A plain SIGTERM would skip the cleanup below and orphan the database.
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, terminated)
     children = []
     with tempfile.TemporaryDirectory(prefix="grimoire-local-") as directory:
         state = Path(directory)
@@ -101,17 +136,23 @@ def main():
                 time.sleep(0.1)
             else:
                 raise RuntimeError((state / "postgres.log").read_text())
+            web_dir = Path(prebuilt) if prebuilt else state / "web"
+            if not prebuilt:
+                build_web(pnpm, web_dir)
             env = os.environ | {
                 "PYTHONPATH": str(ROOT / "projects/monolith"),
                 "DATABASE_URL": "postgresql://grimoire_local@127.0.0.1:55477/postgres",
                 "GRIMOIRE_LOCAL_PLAYGROUND": "true",
-                "GRIMOIRE_AUTH_ISSUER": "http://127.0.0.1:8177/__local/",
-                "GRIMOIRE_AUTH_JWKS_URL": "http://127.0.0.1:8177/__local/jwks",
+                "GRIMOIRE_AUTH_ISSUER": f"{LOOPBACK}/__local/",
+                "GRIMOIRE_AUTH_JWKS_URL": f"{LOOPBACK}/__local/jwks",
                 "GRIMOIRE_AUTH_AUDIENCE": "grimoire-local",
-                "API_BASE": "http://127.0.0.1:8177",
-                "GRIMOIRE_LOCAL_FRONTEND": "http://friends.localhost:4177",
+                # grimoire/web.py serves this bundle at the base it was built for.
+                "GRIMOIRE_WEB_DIR": str(web_dir),
+                # The session cookie is a credential only for pages on this
+                # origin, and a write must name it in its Origin header.
+                "GRIMOIRE_BROWSER_ORIGIN": ORIGIN,
                 # The playground's deterministic embedder; never a live model.
-                "EMBEDDING_URL": "http://127.0.0.1:8177/__local",
+                "EMBEDDING_URL": f"{LOOPBACK}/__local",
                 # Never inherit a live enrollment provider into this fixture.
                 "GRIMOIRE_INVITATION_ENROLLMENT_ENABLED": "false",
                 "GRIMOIRE_INVITATION_API_TOKEN": "",
@@ -128,51 +169,41 @@ def main():
                         "--host",
                         "127.0.0.1",
                         "--port",
-                        "8177",
+                        str(PORT),
                     ],
                     cwd=ROOT,
                     env=env,
                 )
             )
-            children.append(
-                subprocess.Popen(
-                    [
-                        node,
-                        "test/grimoire-dev-server.mjs",
-                        "--cache-dir",
-                        str(state / "vite-cache"),
-                        "--ready-file",
-                        str(state / "frontend-ready.json"),
-                    ],
-                    cwd=ROOT / "projects/monolith/frontend",
-                    env=env,
-                )
-            )
-            # Every table owns a cold dependency cache. Wait for the running
-            # server's committed batch, not merely its Vite runtime endpoint.
-            for _ in range(100):
-                if children[-1].poll() is not None:
-                    raise RuntimeError("Frontend exited before dependency readiness")
-                if (state / "frontend-ready.json").exists():
-                    break
-                time.sleep(0.1)
-            else:
-                raise RuntimeError("Frontend dependencies did not become ready")
-            print("\nLocal table: http://friends.localhost:8177/__local\n", flush=True)
+            # Ready means the identity keys and the app shell both answer, and
+            # every script and stylesheet the shell names is served. A bundle
+            # built for another base path fails here, before any browser runs.
+            shell = ""
+            for address in (f"{LOOPBACK}/__local/jwks", f"{LOOPBACK}/grimoire"):
+                for _ in range(300):
+                    if children[-1].poll() is not None:
+                        raise RuntimeError("Backend exited before readiness")
+                    try:
+                        with urlopen(address, timeout=1) as response:
+                            if response.status == 200:
+                                shell = response.read().decode()
+                                break
+                    except OSError:
+                        time.sleep(0.1)
+                else:
+                    raise RuntimeError(f"Server did not become ready: {address}")
+            assets = re.findall(r'(?:src|href)="(/grimoire/assets/[^"]+)"', shell)
+            if not assets:
+                raise RuntimeError("The app shell names no /grimoire/assets file")
+            for asset in assets:
+                with urlopen(f"{LOOPBACK}{asset}", timeout=5) as response:
+                    if response.status != 200 or "html" in response.headers.get(
+                        "content-type", ""
+                    ):
+                        raise RuntimeError(f"App asset is not served: {asset}")
+            print(f"App shell ready with {len(assets)} assets", flush=True)
+            print(f"\nLocal table: {ORIGIN}/__local\n", flush=True)
             if args.rehearse:
-                for address in [
-                    "http://127.0.0.1:8177/__local/jwks",
-                    "http://127.0.0.1:4177/@vite/client",
-                ]:
-                    for _ in range(100):
-                        try:
-                            with urlopen(address, timeout=1) as response:
-                                if response.status == 200:
-                                    break
-                        except OSError:
-                            time.sleep(0.1)
-                    else:
-                        raise RuntimeError(f"Server did not become ready: {address}")
                 subprocess.run(
                     [
                         sys.executable,
@@ -182,7 +213,7 @@ def main():
                         *(["--join-links"] if args.join_links else []),
                     ],
                     check=True,
-                    timeout=180,
+                    timeout=900,
                 )
                 return
             while all(child.poll() is None for child in children):
