@@ -178,6 +178,20 @@ def test_exhausted_head_moved_recovery_names_the_moved_head():
     assert "authorized operator push" in result["text"]
 
 
+def test_exhausted_review_stale_recovery_names_the_missing_scope():
+    nodes = [factory_node("implement_fix"), factory_node("review_fix")]
+    runs = [factory_run("implement_fix"), factory_run("review_fix")]
+    result = deviation(
+        nodes,
+        runs,
+        review_rounds_used=2,
+        pending_review="review_fix",
+        pending_reason="review_stale",
+    )
+    assert result["code"] == "review_rounds_exhausted"
+    assert "without a valid typed landing scope" in result["text"]
+
+
 def test_an_unresolved_review_within_its_rounds_is_not_yet_exhausted():
     nodes = [factory_node("implement_fix"), factory_node("review_fix")]
     runs = [factory_run("implement_fix"), factory_run("review_fix")]

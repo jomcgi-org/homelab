@@ -3824,10 +3824,61 @@ def test_landing_rereview_preview_then_apply_requests_head_moved_recovery(
         )
 
 
+def test_landing_rereview_requests_review_stale_for_an_unscoped_unmoved_head(
+    db, monkeypatch
+):
+    from factory.orchestration import landing_rereview
+
+    receipt_id, _pulls = _rereview_case(db, monkeypatch, head_sha=HEAD)
+    # No durable scoped approval exists for this head in the fixture.
+    assert not landing_rereview._review_scope_current(
+        Session(db), "t-1", "owner/repo", 3, HEAD
+    )
+    proposal = landing_rereview.preview(receipt_id, 3, HEAD, "scope missing")["preview"]
+    assert proposal["approved_head_sha"] == proposal["head_sha"] == HEAD
+    assert proposal["requests"] == "landing_recovery reason review_stale"
+    result = landing_rereview.apply(
+        "joe",
+        receipt_id,
+        3,
+        HEAD,
+        "scope missing",
+        "key-1",
+        proposal["preview_sha256"],
+    )
+    assert result["ok"] is True
+    assert receipt_state(db, "t-1") == "admitted"
+    [request] = audits(db, "landing_recovery_requested", "t-1")
+    assert request["reason"] == "review_stale"
+    assert request["head_sha"] == HEAD
+    assert "current_head_sha" not in request
+
+
+def test_pending_review_stale_recovery_retries_when_capacity_opens(db, monkeypatch):
+    pulls, calls = recovery_at_capacity(db, monkeypatch, "chart")
+    # Only the pending request, not a conflict, reopens this unmoved head.
+    pulls[3] = pull(3)
+    assert controls.request_landing_recovery(
+        "t-1", 3, HEAD, "delivered_pr", "test", reason="review_stale"
+    ) == {"ok": False, "reason": "delivery_capacity", "pending": True}
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-1") == "landing"
+    with Session(db) as session, session.begin():
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == "t-2")
+        ).one()
+        row.state = "cancelled"
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-1") == "admitted"
+    [request] = audits(db, "landing_recovery_requested", "t-1")
+    assert request["reason"] == "review_stale"
+    assert calls["graphql"] == []
+
+
 @pytest.mark.parametrize(
     "case,refusal",
     [
-        ("unmoved", "landing_rereview_head_not_moved"),
+        ("unmoved", "landing_rereview_review_current"),
         ("held", "landing_rereview_landing_held"),
         ("branch", "landing_rereview_branch_mismatch"),
         ("closed", "landing_rereview_pr_not_open"),
@@ -3841,6 +3892,8 @@ def test_landing_rereview_preview_refusals(db, monkeypatch, case, refusal):
     from factory.orchestration import landing_rereview
 
     head = HEAD if case == "unmoved" else MOVED
+    # An unmoved head is refused only while its approval is already scoped.
+    monkeypatch.setattr(landing_rereview, "_review_scope_current", lambda *_a: True)
     fields = {}
     if case == "branch":
         fields["head"] = {**pull(3)["head"], "sha": MOVED, "ref": "feature/other"}

@@ -5154,7 +5154,12 @@ def finish_task(
         return {"ok": True, "state": outcome}
 
 
-LANDING_RECOVERY_REASONS = ("merge_conflict", "queue_ejection", "head_moved")
+LANDING_RECOVERY_REASONS = (
+    "merge_conflict",
+    "queue_ejection",
+    "head_moved",
+    "review_stale",
+)
 
 
 def request_landing_recovery(
@@ -5177,7 +5182,9 @@ def request_landing_recovery(
 
     ``head_sha`` is always the approved head, so the request pairs with the
     review that approved it. Reason ``head_moved`` also names the moved PR
-    head in ``current_head_sha`` for the correction to verify.
+    head in ``current_head_sha`` for the correction to verify. Reason
+    ``review_stale`` reopens an unmoved head whose approval lacks a valid
+    typed landing scope, so a fresh review can record one.
     """
     actor = _text(actor, "actor")
     if type(pr_number) is not int or pr_number <= 0:

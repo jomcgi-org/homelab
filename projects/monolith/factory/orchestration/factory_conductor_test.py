@@ -23150,6 +23150,44 @@ def test_head_moved_recovery_verifies_new_head_and_reviews_it_fresh(
     assert conductor._landing_recovery_requests(task["id"]) == []
 
 
+def test_review_stale_recovery_confirms_head_and_reviews_it_fresh(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = reviewed_task(verdict="approve")
+    with pytest.raises(ValueError, match="current_head_sha requires head_moved"):
+        controls.request_landing_recovery(
+            task["id"],
+            21,
+            HEAD_ONE,
+            "delivered_pr",
+            "operator",
+            reason="review_stale",
+            current_head_sha="e" * 40,
+        )
+    assert controls.request_landing_recovery(
+        task["id"], 21, HEAD_ONE, "delivered_pr", "operator", reason="review_stale"
+    )["ok"]
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda _repo, path: (
+            {} if path == "pulls/21" else pytest.fail("durable request is sufficient")
+        ),
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {node["node_key"]: node for node in conductor.graph.load_graph(task["id"])}
+    prompt = nodes["correct_1"]["prompt"]
+    assert "no valid typed landing scope" in prompt
+    assert f"PR head is still {HEAD_ONE}" in prompt
+    assert "push nothing" in prompt
+    assert "force-with-lease" not in prompt
+    assert nodes["review_1"]["deps"] == ["correct_1"]
+    assert "at its exact current head" in nodes["review_1"]["prompt"]
+    assert conductor._landing_recovery_requests(task["id"]) == []
+
+
 def test_landing_recovery_has_a_fresh_bounded_deadline_without_resetting_spend(
     feedback_db,
 ):

@@ -5384,6 +5384,20 @@ def _insert_review_round(
             + "The earlier review is evidence, not new authority:\n"
             + findings
         )
+    if merge_conflict is not None and merge_conflict.get("reason") == "review_stale":
+        correction = (
+            f"Pull request {number} at approved head {reviewed_head} has an "
+            "independent approval that carries no valid typed landing scope, "
+            "which automatic landing requires. The operator asked for a fresh "
+            "review of the same head. Confirm that the PR head is still "
+            f"{reviewed_head} and that it is open and ready. Do not change the "
+            "branch and push nothing. If the head moved, report that instead. "
+            "Report the exact PR head and what you confirmed in the declared "
+            "JSON artifact. A fresh independent review of that exact head and "
+            "Linux CI must pass before landing can re-arm. "
+            + "The earlier review is evidence, not new authority:\n"
+            + findings
+        )
     if merge_conflict is not None:
         correction += (
             "\nRead the current issue and PR discussion before changing code. "
