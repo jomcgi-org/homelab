@@ -97,6 +97,10 @@ export function useTable(
   if (!campaign) return { status: "not-member" };
   if (selectedSessionId && !session) return { status: "session-missing" };
   if (session && events.data === undefined) return { status: "loading" };
+  // The DM's composer restores a kept draft against the saved voices, so it
+  // must not mount before they have loaded.
+  if (dm && voices.data === undefined && !voices.isError)
+    return { status: "loading" };
 
   return {
     status: "ready",

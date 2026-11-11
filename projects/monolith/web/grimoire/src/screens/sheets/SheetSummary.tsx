@@ -22,7 +22,7 @@ export function SheetSummary({ version, showFacts }: SheetSummaryProps) {
       {showFacts && (
         <VStack gap={2}>
           <Heading level={4}>Version {version.version}</Heading>
-          <MetadataList columns="multi">
+          <MetadataList columns={3}>
             <MetadataListItem label="Ancestry">
               {sheet.ancestry}
             </MetadataListItem>
@@ -41,7 +41,7 @@ export function SheetSummary({ version, showFacts }: SheetSummaryProps) {
       {derived && (
         <VStack gap={2}>
           <Heading level={4}>Calculated mechanics</Heading>
-          <MetadataList columns="multi">
+          <MetadataList columns={2}>
             <MetadataListItem label="Proficiency">
               {signed(derived.proficiency_bonus)}
             </MetadataListItem>

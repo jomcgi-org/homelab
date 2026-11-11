@@ -27,6 +27,8 @@ interface ComposerProps {
   /** Set by the feed's "Reply privately" button; cleared here. */
   reply: ReplyTarget | null;
   onReplyDone: () => void;
+  /** Extra actions shown beside Send: dice, handouts. */
+  tools?: React.ReactNode;
 }
 
 const SPEAKER_LABEL = /^(?!\.+$)[A-Za-z0-9 _'.-]{1,64}$/;
@@ -41,6 +43,7 @@ export function Composer({
   sessionId,
   reply,
   onReplyDone,
+  tools,
 }: ComposerProps) {
   const { viewer, characters, voices } = table;
   const campaignId = viewer.campaign.id;
@@ -135,6 +138,26 @@ export function Composer({
     }
   }, [reply]);
 
+  // Ctrl or Cmd with Enter sends. Enter alone stays a new line, and an Enter
+  // that confirms an IME composition is never a send.
+  const submitRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    const box = input.current;
+    if (!box) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.key === "Enter" &&
+        (event.ctrlKey || event.metaKey) &&
+        !event.isComposing
+      ) {
+        event.preventDefault();
+        submitRef.current();
+      }
+    };
+    box.addEventListener("keydown", onKeyDown);
+    return () => box.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const label = speakerLabel.trim();
   const labelValid = speakerKey !== FREE_LABEL || SPEAKER_LABEL.test(label);
   const canSend = text.trim().length > 0 && labelValid && !send.isPending;
@@ -181,39 +204,10 @@ export function Composer({
     });
   };
 
+  submitRef.current = submit;
+
   return (
     <VStack gap={3} as="section" aria-label="Message">
-      {dm && (
-        <HStack gap={2} wrap="wrap" vAlign="end">
-          <Selector
-            label="Narration speaker"
-            options={[
-              { value: "narrator", label: "Narrator" },
-              ...speakers.map((row) => ({ value: row.key, label: row.name })),
-              { value: FREE_LABEL, label: "Free label" },
-            ]}
-            value={speakerKey}
-            onChange={setSpeakerKey}
-            width={220}
-          />
-          {speakerKey === FREE_LABEL && (
-            <TextInput
-              label="Speaker label"
-              value={speakerLabel}
-              onChange={(value) => setSpeakerLabel(value.slice(0, 64))}
-              status={
-                label && !labelValid
-                  ? {
-                      type: "error",
-                      message: "Letters, numbers, spaces and _ ' . - only.",
-                    }
-                  : undefined
-              }
-              width={220}
-            />
-          )}
-        </HStack>
-      )}
       {reply && (
         <HStack gap={2} vAlign="center" wrap="wrap">
           <Text type="label">Replying privately to {reply.name}</Text>
@@ -228,6 +222,7 @@ export function Composer({
       <TextArea
         ref={input}
         label={dm ? "Set the scene" : "What do you do?"}
+        isLabelHidden
         placeholder={
           dm
             ? "The lantern flickers as someone knocks…"
@@ -235,36 +230,81 @@ export function Composer({
         }
         value={text}
         onChange={(value) => setText(value.slice(0, 8000))}
-        rows={3}
+        rows={2}
       />
       <HStack gap={2} vAlign="end" wrap="wrap">
         <StackItem size="fill">
-          <Selector
-            label="Send to"
-            isDisabled={reply !== null}
-            options={[
-              { value: "table", label: "Everyone" },
-              { value: "dm", label: dm ? "DM notes" : "DM privately" },
-              ...(dm
-                ? characters.map((row) => ({
-                    value: `pc:${row.id}`,
-                    label: `${row.character_name} and DM`,
-                  }))
-                : []),
-            ]}
-            value={reply ? `pc:${reply.characterId}` : audience}
-            onChange={setAudience}
-            width={240}
-          />
+          <HStack gap={2} wrap="wrap" vAlign="end">
+            {dm && (
+              <>
+                <Selector
+                  label="Narration speaker"
+                  isLabelHidden
+                  options={[
+                    { value: "narrator", label: "Narrator" },
+                    ...speakers.map((row) => ({
+                      value: row.key,
+                      label: row.name,
+                    })),
+                    { value: FREE_LABEL, label: "Free label" },
+                  ]}
+                  value={speakerKey}
+                  onChange={setSpeakerKey}
+                  width={160}
+                />
+                {speakerKey === FREE_LABEL && (
+                  <TextInput
+                    label="Speaker label"
+                    isLabelHidden
+                    placeholder="Speaker label"
+                    value={speakerLabel}
+                    onChange={(value) => setSpeakerLabel(value.slice(0, 64))}
+                    status={
+                      label && !labelValid
+                        ? {
+                            type: "error",
+                            message:
+                              "Letters, numbers, spaces and _ ' . - only.",
+                          }
+                        : undefined
+                    }
+                    width={160}
+                  />
+                )}
+              </>
+            )}
+            <Selector
+              label="Send to"
+              isLabelHidden
+              isDisabled={reply !== null}
+              options={[
+                { value: "table", label: "Everyone" },
+                { value: "dm", label: dm ? "DM notes" : "DM privately" },
+                ...(dm
+                  ? characters.map((row) => ({
+                      value: `pc:${row.id}`,
+                      label: `${row.character_name} and DM`,
+                    }))
+                  : []),
+              ]}
+              value={reply ? `pc:${reply.characterId}` : audience}
+              onChange={setAudience}
+              width={190}
+            />
+          </HStack>
         </StackItem>
         <StackItem size="static">
-          <Button
-            label="Send"
-            variant="primary"
-            isLoading={send.isPending}
-            isDisabled={!canSend}
-            onClick={submit}
-          />
+          <HStack gap={2} wrap="wrap" hAlign="end">
+            {tools}
+            <Button
+              label="Send"
+              variant="primary"
+              tooltip="Ctrl+Enter"
+              isLoading={send.isPending}
+              isDisabled={!canSend}
+              onClick={submit}
+            />
+          </HStack>
         </StackItem>
       </HStack>
       {reply && (

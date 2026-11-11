@@ -1,3 +1,4 @@
+import { Collapsible } from "@astryxdesign/core/Collapsible";
 import { useEffect, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
@@ -86,32 +87,38 @@ export function ReadAloud({
     saveReadAloudSettings(deviceStorage(), campaignId, next);
   };
 
+  // A set-once preference, so it stays folded away above the story.
   return (
-    <VStack gap={2} as="section" aria-label="Read aloud">
-      <HStack gap={4} wrap="wrap" vAlign="center">
-        <CheckboxInput
-          label="Read DM narration"
-          value={settings.narration}
-          onChange={(narration) => choose({ narration })}
-        />
-        {role !== "dm" && (
+    <Collapsible
+      defaultIsOpen={false}
+      trigger={<Text type="label">Read aloud</Text>}
+    >
+      <VStack gap={2} as="section" aria-label="Read aloud">
+        <HStack gap={4} wrap="wrap" vAlign="center">
           <CheckboxInput
-            label="Read my reveals and private narration"
-            value={settings.reveals}
-            onChange={(reveals) => choose({ reveals })}
+            label="Read DM narration"
+            value={settings.narration}
+            onChange={(narration) => choose({ narration })}
           />
-        )}
-        <Button
-          label="Stop read-aloud"
-          isDisabled={!speaking}
-          onClick={() => speaker.stop()}
-        />
-      </HStack>
-      <Text type="supporting" as="p">
-        Saved on this device for this campaign. For a table speaker, the DM
-        turns narration off and one table member turns it on. Private messages
-        and reveals never play on the DM room speaker.
-      </Text>
-    </VStack>
+          {role !== "dm" && (
+            <CheckboxInput
+              label="Read my reveals and private narration"
+              value={settings.reveals}
+              onChange={(reveals) => choose({ reveals })}
+            />
+          )}
+          <Button
+            label="Stop read-aloud"
+            isDisabled={!speaking}
+            onClick={() => speaker.stop()}
+          />
+        </HStack>
+        <Text type="supporting" as="p">
+          Saved on this device for this campaign. For a table speaker, the DM
+          turns narration off and one table member turns it on. Private messages
+          and reveals never play on the DM room speaker.
+        </Text>
+      </VStack>
+    </Collapsible>
   );
 }
