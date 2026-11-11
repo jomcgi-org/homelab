@@ -5,10 +5,10 @@ host, starts one control plane and one `noded`, runs a Python hello-world task,
 and exercises a session through create, invoke, automatic suspend, relight with
 workspace continuity, inspection, and deletion.
 
-It is independent of the homelab reference deployment. It does not use its k3s
-fleet shape, SeaweedFS, 1Password Operator, Cloudflare Tunnel, Longhorn, or
-SigNoz. Kubernetes remains part of EmberVM's supported platform contract: the
-single machine runs k3s and both EmberVM components.
+This standalone profile uses local storage and k3s on one machine for both
+EmberVM components. It requires none of the GKE hub reference deployment's
+GCS store, 1Password Operator, Cloudflare Tunnel, or Honeycomb integration.
+Kubernetes remains part of EmberVM's supported platform contract.
 
 ## Support boundary and prerequisites
 

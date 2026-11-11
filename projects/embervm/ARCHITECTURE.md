@@ -400,9 +400,10 @@ stateDiagram-v2
 This internal stateful-bank checkpoint is not a user-facing session checkpoint,
 fork or rollback API. That programme is not planned
 ([#5700](https://github.com/jomcgi-org/homelab/issues/5700)). The separately
-approved exact-turn interrupt relay and stop control remains bounded work under
-[#4321](https://github.com/jomcgi-org/homelab/issues/4321); it does not create a
-snapshot or rollback capability.
+approved exact-turn interrupt relay and Stop control has repository support.
+Its remaining operational acceptance belongs to
+[#6564](https://github.com/jomcgi-org/homelab/issues/6564), the open successor
+to closed-not-planned #4321. It creates no snapshot or rollback capability.
 
 **Why.** Duplicate Stop for the same dispatch replays the successful 202 outcome
 after turn completion on every runtime, until a successor starts. A double click
@@ -1297,7 +1298,9 @@ never stores or witnesses anything that scales with the fleet.
   official experimental metrics API and SDK 0.6.0 packages. Release boot fails
   immediately if that exporter module is missing, and the Linux release-boot
   smoke exercises this configured path without requiring a live collector.
-  Production delivery and stability checks remain outstanding on #6258.
+  Repository support merged in #6328. Joe closed #6258 on 2026-09-27 because
+  its remaining passive observation did not warrant an open task, with a
+  direction to reopen on failure. Closure is not a new live stability result.
 - **Health surface tiers** (historical embervm/031): #4338 built a detector
   for sustained artifact-export failure streaks and warmth-GC manifest age.
   It was never armed. #7058 removes the detector, its HTTP route and its
@@ -1759,10 +1762,11 @@ drain coordination as explicit costs.
 {kind: BASE | SESSION | SERVING | STATEFUL | GROUP_SET | VOLUME}`.
 Control-plane-driven, idempotent per key; evict refuses while referenced, and
 base retention holds when the current base is unverified (#4401). Keys are
-namespaced by workload (and vendor, below); a principal-scoped
-`shared/<principal>/<sha256>` keyspace is **Planned** (#5075), not
-implemented: `ArtifactRef` is `{kind, workload, ref}` with keys
+namespaced by workload (and vendor, below): `ArtifactRef` is
+`{kind, workload, ref}` with keys
 `<kind>/<vendor>/<workload>/<ref>/<file>`.
+The proposed principal-scoped shared keyspace was dropped when #5075 closed
+as not planned: no concrete cross-workload consumer was identified.
 
 **Baked rootfs cache (Built, #5772)**: Baked guest rootfs files use
 `rootfs/<architecture-digest>/size-<rootfs-size>/format-<bake-format>/`
@@ -2189,7 +2193,10 @@ egress proxy then authorizes by (principal, host) and the MCP lane validates
 the guest's own SVID. GCP credential federation follows. State: SPIRE is
 live with the platform registration entries (phases 0 and 1); platform mTLS
 (phase 2) is **Built, default off** on both sides of the CP-to-noded hop
-and awaits staged acceptance on #5757 and #5758; guest identity,
+and its staged live acceptance belongs to open parent #5706. #5757 and #5758
+closed completed for repository delivery, with that checklist transferred to
+the parent. Open #5791 separately owns the broker login, refresh and quota
+mTLS rollout and plaintext-retirement acceptance; guest identity,
 request-scoped injection, and federation (phases 3 to 5) are **Planned**.
 
 **Built, default off** (phase 2 of #5706): noded opens a second gRPC
@@ -2414,7 +2421,8 @@ S3-compatible object store.
   target agree, and no active consumer is found. The verified inode stays open
   across mkfs so a concurrent path replacement cannot redirect the reformat.
   It never reformats XFS, never force-unmounts, and leaves foreign bind mounts
-  untouched. Both gates remain default-off pending the live checks in #5699.
+  untouched. Both gates remain default-off pending the live checks in #6562,
+  the operational successor to closed #5699.
   Bases under scratch are node-shared across co-located bricks.
   Scratch does not survive a Spot node replacement: every guest rootfs rebakes
   in the brick init containers and the control plane re-drives the dropped
@@ -2433,7 +2441,7 @@ S3-compatible object store.
   named workload cannot tolerate, or a workload that declares local data must
   survive with a stated RPO and RTO, and even then reconstruction or export
   recovery is compared first. The filesystem choice for any such disk follows
-  #5699.
+  #6562's hub validation; #6563 owns the dependent bounded diff-banking trial.
 - **Warmth never crosses a CPU vendor** (until CPU templates land):
   artifacts are keyed per vendor, the gate fails closed at the daemon, and
   each vendor pool holds its own warmth.
@@ -2508,7 +2516,10 @@ with its counters. S8 has a task guest dial the host's egress
 vsock port and requires the egress sidecar's CA certificate back, which proves
 a jailed Firecracker can connect to its egress socket. A
 failed or all-vacuous run blocks promotion; Freight approval is the explicit
-operator override. Phase 1 is tracked in #5224. The launch-mode, crash-relaunch,
+operator override. #5224 closed as not planned on 2026-09-18 after the
+conformance implementation landed, when the hub lacked a dev promotion stage.
+The current hub Application and Kargo values now configure that stage;
+#5224 is not an outstanding owner or proof of a live verdict. The launch-mode, crash-relaunch,
 and architecture acceptance matrix for restore-time vsock overrides is a
 separate manual readiness gate in
 [`docs/drills/vsock-override-acceptance.md`](docs/drills/vsock-override-acceptance.md).
