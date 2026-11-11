@@ -1032,6 +1032,17 @@ rollout: owner PRs classed `explicit_hold` (baseline 42) and approved receipts
 in `landing` with no visible reason (baseline 22, expected zero). Revert the
 release control if a released PR lands while it carries a hold label.
 
+**Why an operator can request a moved-head re-review:** on 2026-11-11, five
+approved deliveries (#7192, #7193, #7212, #7337, #7663) were stuck after an
+operator merged main into them. Landing refuses `head_moved` and its recovery
+skips that reason, so no control could ask for a review of the new head.
+`factory_request_landing_rereview` reopens one delivery through the existing
+bounded landing recovery with reason `head_moved`. Its correction round
+verifies the merge without rewriting history, and a fresh native review of the
+exact current head gates landing as before. Measure over 72 hours: receipts
+refused `head_moved` with no recovery requested, baseline 5, expected 0.
+Revert if a `head_moved` recovery lands a head without a fresh native review.
+
 **Why a standing delivery owner:** on 2026-11-09, 23 intake-admitted deliveries
 sat in `landing` with independent exact-head approval and passing CI, most for
 four days. Per-head grants were the only authority for ordinary work, so every

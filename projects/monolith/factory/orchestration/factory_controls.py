@@ -5154,6 +5154,9 @@ def finish_task(
         return {"ok": True, "state": outcome}
 
 
+LANDING_RECOVERY_REASONS = ("merge_conflict", "queue_ejection", "head_moved")
+
+
 def request_landing_recovery(
     task_id: str,
     pr_number: int,
@@ -5163,6 +5166,7 @@ def request_landing_recovery(
     *,
     session: Session | None = None,
     reason: str = "merge_conflict",
+    current_head_sha: str | None = None,
 ) -> dict:
     """Reopen one delivery for bounded assessment without resetting its spend.
 
@@ -5170,6 +5174,10 @@ def request_landing_recovery(
     retries. The conductor can also request recovery before first settlement.
     Capacity waiting retains request identity. The fixed deadline starts when
     recovery acquires execution capacity and is never extended by a replay.
+
+    ``head_sha`` is always the approved head, so the request pairs with the
+    review that approved it. Reason ``head_moved`` also names the moved PR
+    head in ``current_head_sha`` for the correction to verify.
     """
     actor = _text(actor, "actor")
     if type(pr_number) is not int or pr_number <= 0:
@@ -5178,8 +5186,17 @@ def request_landing_recovery(
         raise ValueError("invalid head_sha")
     if source not in ("delivered_pr", "merge_queue"):
         raise ValueError("invalid landing recovery source")
-    if reason not in ("merge_conflict", "queue_ejection"):
+    if reason not in LANDING_RECOVERY_REASONS:
         raise ValueError("invalid landing recovery reason")
+    if reason == "head_moved":
+        if not isinstance(current_head_sha, str) or not re.fullmatch(
+            r"[0-9a-f]{40}", current_head_sha
+        ):
+            raise ValueError("invalid current_head_sha")
+        if current_head_sha == head_sha:
+            raise ValueError("head_not_moved")
+    elif current_head_sha is not None:
+        raise ValueError("current_head_sha requires head_moved")
     with _locked_session(session) as (db, _control):
         if operator_landing_target(task_id):
             return {"ok": False, "reason": "operator_landing_ownership"}
@@ -5284,6 +5301,11 @@ def request_landing_recovery(
                 head_sha=head_sha,
                 source=source,
                 reason=reason,
+                **(
+                    {"current_head_sha": current_head_sha}
+                    if current_head_sha is not None
+                    else {}
+                ),
                 deadline_at=(
                     (
                         _now() + timedelta(seconds=LANDING_RECOVERY_TIMEOUT_SECONDS)

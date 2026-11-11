@@ -23112,6 +23112,44 @@ def test_queue_ejection_opens_evidence_assessment_and_independent_review(
     assert conductor._landing_recovery_requests(task["id"]) == []
 
 
+def test_head_moved_recovery_verifies_new_head_and_reviews_it_fresh(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = reviewed_task(verdict="approve")
+    moved = "e" * 40
+    assert controls.request_landing_recovery(
+        task["id"],
+        21,
+        HEAD_ONE,
+        "delivered_pr",
+        "operator",
+        reason="head_moved",
+        current_head_sha=moved,
+    )["ok"]
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda _repo, path: (
+            {} if path == "pulls/21" else pytest.fail("durable request is sufficient")
+        ),
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {node["node_key"]: node for node in conductor.graph.load_graph(task["id"])}
+    prompt = nodes["correct_1"]["prompt"]
+    assert f"reviewed head {HEAD_ONE} to current head {moved}" in prompt
+    assert "authorized operator push" in prompt
+    assert f"Read every commit between {HEAD_ONE} and {moved}" in prompt
+    assert "no conflict markers" in prompt
+    assert "never force-push" in prompt
+    assert "force-with-lease" not in prompt
+    assert "Report the exact resulting PR head" in prompt
+    assert nodes["review_1"]["deps"] == ["correct_1"]
+    assert "at its exact current head" in nodes["review_1"]["prompt"]
+    assert conductor._landing_recovery_requests(task["id"]) == []
+
+
 def test_landing_recovery_has_a_fresh_bounded_deadline_without_resetting_spend(
     feedback_db,
 ):

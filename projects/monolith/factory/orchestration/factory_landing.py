@@ -534,6 +534,13 @@ def _deliveries(
                     and not audits["landing_recovery_round"]
                 ),
                 "recovery_skipped": bool(audits["landing_recovery_skipped"]),
+                # A head_moved request names the moved head it was made for.
+                "recovery_moved_head": (
+                    audits["landing_recovery_requested"][-1].get("current_head_sha")
+                    if audits["landing_recovery_requested"]
+                    and not audits["landing_recovery_round"]
+                    else None
+                ),
                 "refusal": audits["merge_arm_refused"][-1]
                 if audits["merge_arm_refused"]
                 else None,
@@ -723,6 +730,16 @@ def _arm(repo: str, item: dict) -> None:
             _refuse(item, "pull_request_head_missing", approved_head_sha=approved)
             return
         if head != approved:
+            if item.get("recovery_pending") and head == item.get("recovery_moved_head"):
+                # An operator-requested re-review waiting for capacity.
+                _recover_delivery(
+                    item,
+                    approved,
+                    "delivered_pr",
+                    reason="head_moved",
+                    current_head_sha=head,
+                )
+                return
             _refuse(item, "head_moved", approved_head_sha=approved, head_sha=head)
             return
         if item.get("recovery_pending") or pr.get("mergeable") is False:
@@ -1012,7 +1029,12 @@ def _fence_ungranted_queue_entry(repo: str, item: dict, pr: dict | None = None) 
 
 
 def _recover_delivery(
-    item: dict, head: object, source: str, *, reason: str = "merge_conflict"
+    item: dict,
+    head: object,
+    source: str,
+    *,
+    reason: str = "merge_conflict",
+    current_head_sha: str | None = None,
 ) -> dict:
     if _enforce_landing_hold(item.get("repo", ""), item):
         return {"ok": False, "reason": "receipt_landing_held"}
@@ -1027,6 +1049,7 @@ def _recover_delivery(
         source,
         ACTOR,
         reason=reason,
+        current_head_sha=current_head_sha,
     )
     if result.get("reason") == "recovery_limit":
         _refuse(item, "landing_recovery_exhausted")
@@ -1115,6 +1138,19 @@ def _recover_refused(policy: dict) -> None:
                 )
                 return
             head = (pr.get("head") or {}).get("sha")
+            if (
+                item.get("recovery_pending")
+                and head != item["approved_head_sha"]
+                and head == item.get("recovery_moved_head")
+            ):
+                _recover_delivery(
+                    item,
+                    item["approved_head_sha"],
+                    "delivered_pr",
+                    reason="head_moved",
+                    current_head_sha=head,
+                )
+                return
             if head != item["approved_head_sha"]:
                 _record(
                     item["task_id"],

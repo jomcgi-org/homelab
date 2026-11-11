@@ -230,6 +230,12 @@ def factory_deviation(
                 f"after {review_rounds_used} engine-owned correction rounds. "
                 "Assess queue and CI evidence before further recovery or escalation."
             )
+        if pending_reason == "head_moved":
+            text = (
+                f"{pending_review} approved a head that an authorized operator push "
+                f"then moved, after {review_rounds_used} engine-owned correction "
+                "rounds. Verify the moved head before further recovery or escalation."
+            )
         if failed is not None:
             # Without this the planner reads an exhausted loop as "the reviewer
             # kept objecting" when the last round never produced a head to

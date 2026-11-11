@@ -643,6 +643,7 @@ def test_factory_tools_are_registered():
         "factory_configure_problem_issues",
         "factory_configure_owner_prs",
         "factory_release_owner_pr_hold",
+        "factory_request_landing_rereview",
         "factory_reconcile",
         "factory_diagnostics",
         "factory_session_dispatch_diagnostics",
@@ -4889,6 +4890,55 @@ def test_owner_pr_hold_release_tool_requires_operator_and_preview(monkeypatch):
         "key",
         "a" * 64,
     )
+
+
+def test_landing_rereview_tool_requires_operator_and_preview(monkeypatch):
+    from factory.orchestration import landing_rereview
+
+    calls = []
+    monkeypatch.setattr(
+        landing_rereview, "preview", lambda *args: calls.append(args) or {"ok": True}
+    )
+    monkeypatch.setattr(
+        landing_rereview, "apply", lambda *args: calls.append(args) or {"ok": 1}
+    )
+    head = "c" * 40
+    for refused in (
+        _principal(groups=()),
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        result = _as(
+            refused,
+            lambda: mcp.factory_request_landing_rereview(
+                "preview", 5, 7, head, "merged main"
+            ),
+        )
+        assert result.get("ok") is not True and not calls
+    operator = _principal()
+    assert _as(
+        operator,
+        lambda: mcp.factory_request_landing_rereview(
+            "preview", 5, 7, head, "merged main"
+        ),
+    ) == {"ok": True}
+    assert calls == [(5, 7, head, "merged main")]
+    assert (
+        _as(
+            operator,
+            lambda: mcp.factory_request_landing_rereview(
+                "apply", 5, 7, head, "merged main", "key"
+            ),
+        )["reason"]
+        == "landing_rereview_preview_required"
+    )
+    assert _as(
+        operator,
+        lambda: mcp.factory_request_landing_rereview(
+            "apply", 5, 7, head, "merged main", "key", "a" * 64
+        ),
+    ) == {"ok": 1}
+    assert calls[-1] == ("joe", 5, 7, head, "merged main", "key", "a" * 64)
 
 
 def test_owner_pr_adapter_binds_actor_and_requires_preview(monkeypatch):

@@ -164,6 +164,20 @@ def test_exhausted_review_rounds_outrank_an_exhausted_graph():
     assert result["node_key"] == "review_fix"
 
 
+def test_exhausted_head_moved_recovery_names_the_moved_head():
+    nodes = [factory_node("implement_fix"), factory_node("review_fix")]
+    runs = [factory_run("implement_fix"), factory_run("review_fix")]
+    result = deviation(
+        nodes,
+        runs,
+        review_rounds_used=2,
+        pending_review="review_fix",
+        pending_reason="head_moved",
+    )
+    assert result["code"] == "review_rounds_exhausted"
+    assert "authorized operator push" in result["text"]
+
+
 def test_an_unresolved_review_within_its_rounds_is_not_yet_exhausted():
     nodes = [factory_node("implement_fix"), factory_node("review_fix")]
     runs = [factory_run("implement_fix"), factory_run("review_fix")]
