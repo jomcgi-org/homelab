@@ -286,6 +286,18 @@ def test_session_binding_compatibility_seam_keeps_the_node_version(monkeypatch):
     assert runtime.node_workflow_version() == before
 
 
+def test_commit_head_checkpoint_selection_changes_the_node_version(monkeypatch):
+    from factory.orchestration import node_workflows
+
+    before = runtime.node_workflow_version()
+
+    def node_head(pin, *, reconciliation=False):
+        return None
+
+    monkeypatch.setattr(node_workflows, "_node_head", node_head)
+    assert runtime.node_workflow_version() != before
+
+
 def test_an_unreadable_source_fails_launch_rather_than_falling_back(monkeypatch):
     """Falling back to the DBOS-computed version is not the neutral choice.
 

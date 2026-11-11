@@ -175,6 +175,11 @@ def _validate_pin(pin: dict) -> dict:
     ):
         raise ValueError("refill inspection pin does not match hydration")
 
+    if branch.startswith("commit:") and (
+        not re.fullmatch(r"commit:[0-9a-f]{40}", branch) or hydration_branch != branch
+    ):
+        raise ValueError("commit pin does not match hydration")
+
     effort = pin.get("effort")
     if "effort" in pin:
         from factory.execution import EFFORT_LEVELS
@@ -245,6 +250,7 @@ def _node_prompt(
         )
         or schema.get("x-factory-scout-read-only") is True
         or schema.get("x-factory-evidence-acceptance") is True
+        or schema.get("x-factory-merged-read-only") is True
     )
     evidence_only = schema.get("x-factory-evidence-continuation") is not None
     working = (
@@ -1303,7 +1309,7 @@ def execute_node(pin: dict) -> dict:
             session_id, turn.get("seq"), pin["artifact_path"], pin["artifact_schema"]
         )
         phase = "head_read"
-        head_sha = read_branch_head(pin["repo"], pin["branch"])
+        head_sha = _node_head(pin)
     except Exception as exc:
         note = ""
         if phase == "start":
@@ -1385,6 +1391,15 @@ def _read_reconciliation_head(repo: str, branch: str) -> str | None:
     # This caller is outside workflow replay. Invoke the underlying bounded
     # GitHub GET, not a DBOS checkpoint or a previously cached head observation.
     return read_branch_head.__wrapped__(repo, branch)
+
+
+def _node_head(pin: dict, *, reconciliation: bool = False) -> str | None:
+    # The server pins this selector, and the shim verifies detached HEAD before
+    # invoking the model. A commit selector is never a GitHub branch reference.
+    if pin["branch"].startswith("commit:"):
+        return pin["branch"][len("commit:") :]
+    read = _read_reconciliation_head if reconciliation else read_branch_head
+    return read(pin["repo"], pin["branch"])
 
 
 def _expected_session_identity(pin: dict) -> dict:
@@ -1554,7 +1569,7 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
             turn.artifact_outcome,
         )
 
-    head_sha = _read_reconciliation_head(pin["repo"], pin["branch"])
+    head_sha = _node_head(pin, reconciliation=True)
     reasons = []
     if cost is None:
         reasons.append("unknown_cost: consume the full admission reservation")
