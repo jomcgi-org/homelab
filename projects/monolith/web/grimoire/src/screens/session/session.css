@@ -1,0 +1,23 @@
+/* The story column beside the table sidebar; stacked on a narrow screen. */
+.table-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: var(--spacing-6);
+  align-items: start;
+}
+
+.table-layout[hidden] {
+  display: none;
+}
+
+@media (max-width: 860px) {
+  .table-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.feed {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}

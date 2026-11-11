@@ -11,8 +11,13 @@ export const keys = {
   joinLinks: (id: string) => ["campaign", id, "join-links"] as const,
 };
 
+/** Also the viewer's identity: who is signed in and their role per campaign. */
 export const useLobby = () =>
-  useQuery({ queryKey: keys.lobby, queryFn: () => api("GET /lobby") });
+  useQuery({
+    queryKey: keys.lobby,
+    queryFn: () => api("GET /lobby"),
+    refetchInterval: 15_000,
+  });
 
 export const useMembers = (campaignId: string, enabled = true) =>
   useQuery({

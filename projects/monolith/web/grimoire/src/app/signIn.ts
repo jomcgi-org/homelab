@@ -53,12 +53,16 @@ export const signIn = {
   state: () => state,
   subscribe(listener: Listener) {
     listeners.add(listener);
-    return () => listeners.delete(listener);
+    return () => {
+      listeners.delete(listener);
+    };
   },
   /** Runs before an automatic reload; unregister with the returned function. */
   beforeReload(hook: ReloadHook) {
     hooks.add(hook);
-    return () => hooks.delete(hook);
+    return () => {
+      hooks.delete(hook);
+    };
   },
   /** Test seam. */
   reset() {
