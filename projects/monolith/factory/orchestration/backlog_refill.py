@@ -7,7 +7,6 @@ their own publication identity after bounded reconciliation.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from copy import deepcopy
@@ -40,10 +39,6 @@ REVIEW_CONTRACTS = (REVIEW_CONTRACT, REVIEW_FALLBACK)
 MAX_REVIEW_PROMPT_CHARS = 60000
 PREFIX = "backlog_refill_"
 TERMINAL = {"succeeded", "failed", "cancelled"}
-
-
-def digest(value) -> str:
-    return hashlib.sha256(dumps(value).encode()).hexdigest()
 
 
 def _events(db, action):
@@ -323,7 +318,7 @@ def observe(
             inspection_contract=1,
             routine=routine,
             eligible=eligible,
-            policy_digest=digest(policy),
+            policy_digest=controls.digest(policy),
             **(
                 {"repair_contract": {"version": repair_version, "epoch": epoch(db)}}
                 if repair_version == 2 or funding_profile.PROVIDER_ROUTE_AVAILABLE
@@ -555,7 +550,8 @@ def _inspection_owner_current(db, control, task, start):
         or owner.task_paused
         or owner.cancellation_requested
         or control.state != "enabled"
-        or digest(json.loads(control.policy_json or "{}")) != start["policy_digest"]
+        or controls.digest(json.loads(control.policy_json or "{}"))
+        != start["policy_digest"]
         or current is None
         or _detail(current) != start
         or latest_event(db, "completed", run_id=start["run_id"])
@@ -706,7 +702,7 @@ def review_brief(value):
         "Empty yield is valid. Return the exact collection_digest and an "
         "independent summary.\n"
         + json.dumps(
-            {"collection_digest": digest(value), "collection": value},
+            {"collection_digest": controls.digest(value), "collection": value},
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -802,7 +798,7 @@ def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
             or receipt.generation != policy.get("generation")
             or receipt.repo not in controls.enabled_repos(policy)
             or not normalize(policy)["enabled"]
-            or digest(policy) != _detail(start)["policy_digest"]
+            or controls.digest(policy) != _detail(start)["policy_digest"]
         ):
             return False
         if latest_event(db, "completed", run_id=receipt.recurrence_key):

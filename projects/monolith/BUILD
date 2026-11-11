@@ -4513,6 +4513,16 @@ py_test(
 )
 
 py_test(
+    name = "shared_sse_test",
+    srcs = ["shared/sse_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "shared_embedding_retryable_test",
     srcs = ["shared/embedding_retryable_test.py"],
     imports = ["."],

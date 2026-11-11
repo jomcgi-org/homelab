@@ -25,7 +25,7 @@ import httpx
 from sqlalchemy import or_
 from sqlmodel import select
 
-from core.clock import aware
+from core.clock import aware, aware_iso
 from core.github import GITHUB_API, github_headers
 from factory.orchestration.factory_controls import (
     ADVISORY_CLASSES,
@@ -578,7 +578,7 @@ def _rollout_wait(item: dict, now: datetime) -> dict | None:
         "task_id": item["task_id"],
         "issue_number": item["issue_number"],
         "pr_number": item["pr_number"],
-        "merged_at": aware(merged_at).isoformat(),
+        "merged_at": aware_iso(merged_at),
         "waited_minutes": waited,
         **{key: observation.get(key) for key in ("reason", "application", "resource")},
     }

@@ -1,6 +1,18 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
+from io import BytesIO
+from struct import pack
+from zoneinfo import ZoneInfo
 
-from core.clock import as_utc, aware, aware_iso, iso, iso_or_str, iso_z, utc_now
+from core.clock import (
+    as_utc,
+    aware,
+    aware_iso,
+    iso,
+    iso_or_str,
+    iso_z,
+    isoformat_or_none,
+    utc_now,
+)
 
 _BST = timezone(timedelta(hours=1))
 
@@ -33,6 +45,39 @@ def test_aware_labels_naive_and_keeps_zone():
     assert aware(stamped) is stamped
 
 
+def test_aware_preserves_supported_timezone_objects():
+    class FalseZone(tzinfo):
+        def __bool__(self):
+            return False
+
+        def utcoffset(self, dt):
+            return timedelta(hours=2)
+
+        def dst(self, dt):
+            return timedelta(0)
+
+    for zone in (
+        timezone.utc,
+        timezone(timedelta(hours=-5, minutes=-30)),
+        # A fixed-offset TZif avoids depending on the host's timezone database.
+        ZoneInfo.from_file(
+            BytesIO(
+                b"TZif\x00"
+                + b"\x00" * 15
+                + pack(">6l", 0, 0, 0, 0, 1, 4)
+                + pack(">lbb", 3600, 0, 0)
+                + b"BST\x00"
+            ),
+            key="Test/BST",
+        ),
+        FalseZone(),
+    ):
+        stamped = datetime(2026, 10, 25, 1, 30, tzinfo=zone, fold=1)
+        assert aware(stamped) is stamped
+        assert aware_iso(stamped) == stamped.isoformat()
+        assert isoformat_or_none(stamped) == stamped.isoformat()
+
+
 def test_aware_iso_keeps_zone_and_passes_none():
     assert aware_iso(None) is None
     assert aware_iso(datetime(2026, 10, 11, 2, 0, 30)) == "2026-10-11T02:00:30+00:00"
@@ -63,3 +108,12 @@ def test_utc_now_is_aware_utc():
     stamp = utc_now()
     assert stamp.tzinfo is timezone.utc
     assert abs((datetime.now(timezone.utc) - stamp).total_seconds()) < 5
+
+
+def test_isoformat_or_none_keeps_offsets_and_passes_none_through():
+    assert isoformat_or_none(None) is None
+    assert isoformat_or_none(datetime(2026, 1, 2, 3, 4, 5)) == "2026-01-02T03:04:05"
+    assert (
+        isoformat_or_none(datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc))
+        == "2026-01-02T03:04:05+00:00"
+    )

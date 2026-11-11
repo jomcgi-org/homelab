@@ -47,7 +47,7 @@ from grimoire_chat import (
 from grimoire_chat.db import get_chat_session
 from grimoire_chat.models import ChatMessage, ChatSession
 from grimoire_chat.retrieval import RetrievedPassage
-from grimoire_chat.sse import format_sse
+from shared.sse import format_sse
 
 logger = logging.getLogger(__name__)
 

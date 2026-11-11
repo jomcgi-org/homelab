@@ -26,7 +26,7 @@ from factory.api import (
     lock_capacity_pool,
     lock_cessation_session,
 )
-from core.db import get_engine
+from core.db import get_engine, query_rows
 from knowledge.api import EXTRACTION_VERSION
 from shared.invocation_outcomes import UNKNOWN_INVOCATION, terminal_dispatch_cessation
 
@@ -45,10 +45,6 @@ def _table(db, schema, name):
     return name if db.bind.dialect.name == "sqlite" else f"{schema}.{name}"
 
 
-def _rows(db, sql, params):
-    return [dict(row) for row in db.execute(text(sql), params).mappings()]
-
-
 def _payload(value):
     value = json.loads(value) if isinstance(value, str) else value
     if not isinstance(value, dict):
@@ -57,7 +53,7 @@ def _payload(value):
 
 
 def _review_batch_state(db, key):
-    batches = _rows(
+    batches = query_rows(
         db,
         f"SELECT invocation_key, member_keys, status, completed_at FROM "
         f"{_table(db, 'knowledge', 'fact_review_batches')} WHERE invocation_key=:key",
@@ -77,7 +73,7 @@ def _review_batch_state(db, key):
     members = []
     for member in keys:
         members.extend(
-            _rows(
+            query_rows(
                 db,
                 f"SELECT invocation_key, status, completed_at FROM "
                 f"{_table(db, 'knowledge', 'fact_review_runs')} WHERE invocation_key=:key",
@@ -98,12 +94,12 @@ def _review_batch_state(db, key):
 
 def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> dict:
     """SELECT-only expected-state evidence, without prompts, tokens or raw text."""
-    jobs = _rows(
+    jobs = query_rows(
         db,
         f"SELECT * FROM {_table(db, 'claude_agent', 'routine_jobs')} WHERE name=:name",
         {"name": job_name},
     )
-    agents = _rows(
+    agents = query_rows(
         db,
         f"SELECT * FROM {_table(db, 'agent_sessions', 'agent_sessions')} WHERE id=:id",
         {"id": session_id},
@@ -111,24 +107,24 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
     if len(jobs) != 1 or len(agents) != 1:
         raise ValueError("Exact routine/session identity is missing")
     job, agent = jobs[0], agents[0]
-    turns = _rows(
+    turns = query_rows(
         db,
         f"SELECT * FROM {_table(db, 'agent_sessions', 'agent_turns')} WHERE session_id=:id ORDER BY seq LIMIT 129",
         {"id": session_id},
     )
     if not turns or len(turns) >= 129:
         raise ValueError("Turn evidence is missing or exceeds the reconciliation bound")
-    pending = _rows(
+    pending = query_rows(
         db,
         f"SELECT seq FROM {_table(db, 'agent_sessions', 'pending_messages')} WHERE session_id=:id LIMIT 1",
         {"id": session_id},
     )
-    workflows = _rows(
+    workflows = query_rows(
         db,
         f"SELECT workflow_uuid,name,status,application_version FROM {_table(db, 'dbos', 'workflow_status')} WHERE workflow_uuid=:id",
         {"id": agent["workflow_id"]},
     )
-    owners = _rows(
+    owners = query_rows(
         db,
         f"SELECT id FROM {_table(db, 'agent_sessions', 'agent_sessions')} WHERE ember_session_id=:guest ORDER BY id LIMIT 2",
         {"guest": agent["ember_session_id"]},
@@ -136,7 +132,7 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
     routine_kind = job["routine_kind"]
     if routine_kind not in {KG_NODE_KEY, DRAINER_NODE_KEY}:
         raise ValueError("Unsupported routine kind")
-    latest_routine = _rows(
+    latest_routine = query_rows(
         db,
         f"SELECT id FROM {_table(db, 'agent_sessions', 'agent_sessions')} WHERE node_key=:kind AND local_session_id=workflow_id||:suffix ORDER BY id DESC LIMIT 1",
         {"kind": routine_kind, "suffix": f":{routine_kind}:" + job_name},
@@ -157,7 +153,7 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
             raw_id = payload.get("raw_id")
             if not isinstance(raw_id, str) or job_name != "kg:" + raw_id:
                 raise ValueError("Raw payload identity mismatch")
-            raws = _rows(
+            raws = query_rows(
                 db,
                 f"SELECT id,raw_id,source,content_hash,extra FROM {_table(db, 'knowledge', 'raw_inputs')} WHERE raw_id=:id",
                 {"id": raw_id},
@@ -167,7 +163,7 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
             raw = raws[0]
             extra = _payload(raw["extra"] or {})
             raw["extra"] = extra
-            provenance = _rows(
+            provenance = query_rows(
                 db,
                 f"SELECT * FROM {_table(db, 'knowledge', 'atom_raw_provenance')} WHERE raw_fk=:id AND gardener_version=:version ORDER BY id LIMIT 1001",
                 {"id": raw["id"], "version": EXTRACTION_VERSION},
@@ -175,7 +171,7 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
             if len(provenance) >= 1001:
                 raise ValueError("Provenance exceeds the reconciliation bound")
     latest = turns[-1]
-    reservations = _rows(
+    reservations = query_rows(
         db,
         f"SELECT id,state,outcome,pending_seq,tier,routine_job_name,session_id,"
         "local_session_id,owner FROM "
@@ -183,7 +179,7 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
         "WHERE session_id=:id AND pending_seq=:seq",
         {"id": session_id, "seq": latest["seq"]},
     )
-    active_reservations = _rows(
+    active_reservations = query_rows(
         db,
         f"SELECT id FROM {_table(db, 'agent_sessions', 'capacity_reservations')} "
         "WHERE session_id=:id AND state!='settled' ORDER BY id LIMIT 3",
@@ -674,7 +670,7 @@ def _recover_review(db, request, observation=None):
             )
         ).one()
         # Serialize against the batch writer before binding the preview digest.
-        local = _rows(
+        local = query_rows(
             db,
             f"SELECT local_session_id FROM {_table(db, 'agent_sessions', 'agent_sessions')} WHERE id=:id",
             {"id": request["session_id"]},
@@ -936,7 +932,7 @@ def recovered_review_original_outcome(
 def _completed_raw_state(db, job_name, session_id, permit_id):
     """Fail closed on any ambiguity; completion is not inferred from lease age."""
     state = read_reconciliation_state(db, job_name, session_id)
-    siblings = _rows(
+    siblings = query_rows(
         db,
         f"SELECT id FROM {_table(db, 'agent_sessions', 'capacity_reservations')} WHERE routine_job_name=:name AND state!='settled' ORDER BY id LIMIT 1",
         {"name": job_name},
@@ -979,7 +975,7 @@ def _completed_raw_state(db, job_name, session_id, permit_id):
         != ([] if state["guest_id"] is None else [session_id])
     ):
         raise ValueError("Completed raw ownership or application evidence is ambiguous")
-    raw = _rows(
+    raw = query_rows(
         db,
         f"SELECT source,extra FROM {_table(db, 'knowledge', 'raw_inputs')} WHERE raw_id=:raw",
         {"raw": job_name[3:]},
@@ -989,7 +985,7 @@ def _completed_raw_state(db, job_name, session_id, permit_id):
         k in extra for k in ("note_id", "dispute_id")
     ):
         raise ValueError("Recovery is limited to ordinary session/report extraction")
-    turn = _rows(
+    turn = query_rows(
         db,
         f"SELECT result_text FROM {_table(db, 'agent_sessions', 'agent_turns')} WHERE session_id=:id AND seq=1",
         {"id": session_id},
