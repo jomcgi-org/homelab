@@ -676,7 +676,9 @@ deadline, automatic landing policy and active-work guards. The result carries
 that call's outcome; `delivery_capacity` waits and retries while the PR head
 stays at the requested head. One correction round reads the commits between
 the two heads, checks that the base merge kept both sides, runs validation
-and fixes only what evidence requires without a force-push. A fresh
+and fixes only what evidence requires. The merge queue lands by rebase, so a
+head with a merge commit is rebuilt as linear commits with the same net change
+and pushed with force-with-lease against the observed head. A fresh
 independent review of the exact current head and required CI must pass before
 landing re-arms. The control grants no landing authority.
 
