@@ -4,7 +4,7 @@ import { LinkProvider } from "@astryxdesign/core/Link";
 import { Theme } from "@astryxdesign/core/theme";
 import { ToastViewport } from "@astryxdesign/core/Toast";
 import { ApiError } from "../api/client";
-import { sheetTheme } from "../theme/sheet.js";
+import { sheetTheme } from "../theme";
 import { RouterLink } from "./RouterLink";
 
 export function createQueryClient() {
