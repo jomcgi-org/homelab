@@ -363,7 +363,7 @@ func TestExecProcessCleanupRemovesJailTreeAndReleasesUID(t *testing.T) {
 		t.Fatal(err)
 	}
 	released := 0
-	proc := &execProcess{jail: jail, releaseID: func() { released++ }}
+	proc := &execProcess{jail: jail, exited: true, releaseID: func() { released++ }}
 	proc.cleanup()
 	proc.cleanup()
 	if _, err := os.Stat(jail.Dir); !os.IsNotExist(err) {
@@ -409,5 +409,57 @@ func TestSnapshotDriveResourcesUsesPatchedVolume(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("snapshot resources = %#v, want %#v", got, want)
+	}
+}
+
+func TestFailedProcessLaunchReturnsUnprovenProcess(t *testing.T) {
+	cause := errors.New("socket or containment failure")
+	for _, kind := range []string{"kill", "wait", "confirmed"} {
+		t.Run(kind, func(t *testing.T) {
+			p := &delayedReleaseProcess{}
+			if kind == "kill" {
+				p.killErr = errors.New("kill denied")
+			}
+			if kind == "wait" {
+				p.waitErr = errors.New("wait unproven")
+			}
+			got, err := failedProcessLaunch(p, cause)
+			if !errors.Is(err, cause) {
+				t.Fatal("primary launch error lost")
+			}
+			if kind == "confirmed" {
+				if got != nil {
+					t.Fatal("confirmed process still transferred")
+				}
+			} else if got != p {
+				t.Fatal("unproven process ownership lost")
+			}
+		})
+	}
+}
+
+func TestExecProcessUnprovenWaitPreservesJailAndUID(t *testing.T) {
+	bundle := t.TempDir()
+	jail, err := prepareJail(bundle, "/opt/fc/firecracker", "vm-unproven", os.Getuid(), os.Getgid(), filepath.Join(bundle, "api.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := 0
+	waitErr := errors.New("wait failed without process status")
+	p := &execProcess{jail: jail, releaseID: func() { released++ }, waitProcess: func() error { return waitErr }, exitCh: make(chan struct{})}
+	if err := p.Wait(); !errors.Is(err, waitErr) {
+		t.Fatalf("Wait=%v", err)
+	}
+	p.cleanup()
+	if p.Exited() || released != 0 {
+		t.Fatalf("unproven Wait released resources: exited=%t releases=%d", p.Exited(), released)
+	}
+	if _, err := os.Stat(jail.Dir); err != nil {
+		t.Fatalf("unproven Wait removed jail: %v", err)
+	}
+	select {
+	case <-p.exitCh:
+		t.Fatal("unproven Wait signalled exit")
+	default:
 	}
 }

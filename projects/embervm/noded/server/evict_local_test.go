@@ -85,7 +85,7 @@ func newEvictTestServer(t *testing.T) (nodev1.NodeServiceClient, *Server, string
 		Transport:      &fakeTransport{},
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
 
 	lis := bufconn.Listen(1 << 20)
 	gs := grpc.NewServer()

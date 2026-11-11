@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/fcclient"
+	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
 
 const (
@@ -40,9 +41,27 @@ const (
 func (d *Driver) JailPreflight(ctx context.Context, rootfsPaths []string) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, jailPreflightTimeout)
 	defer cancel()
+	d.preflightOnce.Do(func() { d.preflightGate = make(chan struct{}, 1) })
+	select {
+	case d.preflightGate <- struct{}{}:
+		defer func() { <-d.preflightGate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if d.cfg.KernelImagePath == "" {
 		return errors.New("driver: jail preflight: kernel image path is unset")
 	}
+	d.mu.Lock()
+	for _, inst := range d.live {
+		if inst.workload == jailPreflightWorkload {
+			d.mu.Unlock()
+			return errors.New("driver: jail preflight still owns a process")
+		}
+	}
+	d.mu.Unlock()
 	root := filepath.Join(d.warmthRoot(), jailPreflightDirName)
 	if err := removeJailTree(root); err != nil {
 		return fmt.Errorf("driver: jail preflight: clear stale preflight tree: %w", err)
@@ -51,8 +70,22 @@ func (d *Driver) JailPreflight(ctx context.Context, rootfsPaths []string) (err e
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("driver: jail preflight: %w", err)
 	}
+	var teardownDone <-chan struct{}
+	cleanup := func() error {
+		rmErr := removeJailTree(dir)
+		_ = os.Remove(root) // Remove only an empty root, never another preflight's tree.
+		return rmErr
+	}
 	defer func() {
-		if rmErr := removeJailTree(root); rmErr != nil {
+		if teardownDone != nil {
+			select {
+			case <-teardownDone:
+			default:
+				go func() { <-teardownDone; _ = cleanup() }()
+				return
+			}
+		}
+		if rmErr := cleanup(); rmErr != nil {
 			err = errors.Join(err, fmt.Errorf("driver: jail preflight: remove preflight tree: %w", rmErr))
 		}
 	}()
@@ -61,18 +94,25 @@ func (d *Driver) JailPreflight(ctx context.Context, rootfsPaths []string) (err e
 		return fmt.Errorf("driver: jail preflight: create probe drive: %w", err)
 	}
 	sock := filepath.Join(dir, "api.sock")
+	vmID := newID("vm")
 	proc, err := d.launcher.Launch(ctx, LaunchSpec{
-		VMID: newID("vm"), SocketPath: sock, Workload: jailPreflightWorkload,
+		VMID: vmID, SocketPath: sock, Workload: jailPreflightWorkload,
 		Phase: guestPhaseInit, MemMib: jailPreflightMemMib,
 	})
+	if proc != nil {
+		inst := &instance{handle: substrate.Handle{ID: vmID, ThreadID: filepath.Base(dir), Node: d.cfg.Node}, workload: jailPreflightWorkload, proc: proc, dir: dir, sock: sock, memMib: jailPreflightMemMib}
+		defer func() {
+			_, failure := d.retainFailedLaunch(inst, err)
+			proof := failure.(*failedLaunchError)
+			teardownDone = proof.TeardownDone()
+			if !proof.TeardownConfirmed() {
+				err = failure
+			}
+		}()
+	}
 	if err != nil {
 		return fmt.Errorf("driver: jail preflight: launch jailed firecracker: %w", err)
 	}
-	defer func() {
-		if killErr := proc.Kill(); killErr != nil {
-			err = errors.Join(err, fmt.Errorf("driver: jail preflight: kill firecracker: %w", killErr))
-		}
-	}()
 	if provider, ok := proc.(jailProvider); !ok || provider.Jail() == nil {
 		return errors.New("driver: jail preflight: firecracker launched without a jail")
 	}
