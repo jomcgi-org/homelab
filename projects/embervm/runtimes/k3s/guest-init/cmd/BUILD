@@ -27,7 +27,9 @@ go_library(
     ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/runtimes/k3s/guest-init/cmd",
     visibility = ["//visibility:private"],
-    deps = select({
+    deps = [
+        "//projects/firecracker/substrate/bootenv",
+    ] + select({
         "@rules_go//go/platform:android": [
             "//projects/embervm/noded/guestagent",
             "//projects/firecracker/substrate/guestvsock",
@@ -57,10 +59,13 @@ go_test(
     srcs = [
         "cmdline_test.go",
         "k3s_test.go",
+        "mmds_test.go",
         "vsock_linux_test.go",
     ],
     embed = [":cmd_lib"],
-    deps = select({
+    deps = [
+        "//projects/firecracker/substrate/bootenv",
+    ] + select({
         "@rules_go//go/platform:android": [
             "//projects/firecracker/substrate/guestvsock",
         ],

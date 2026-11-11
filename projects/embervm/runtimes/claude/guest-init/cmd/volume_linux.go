@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/bootenv"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/guestvolume"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -86,8 +88,8 @@ func mountWorkspaceVolume(logger *slog.Logger) error {
 func ensureWorkspaceVolumeWithDevice(logger *slog.Logger, explicitDevice string) error {
 	root, dev := defaultSessionRoot, ""
 	if raw, err := os.ReadFile(procCmdlinePath); err == nil {
-		dev = valueFromCmdline(string(raw), volumeDevCmdlineKey)
-		if mount := valueFromCmdline(string(raw), volumeMountCmdlineKey); mount != "" {
+		dev = bootenv.Value(string(raw), volumeDevCmdlineKey)
+		if mount := bootenv.Value(string(raw), volumeMountCmdlineKey); mount != "" {
 			root = mount
 		}
 	}
