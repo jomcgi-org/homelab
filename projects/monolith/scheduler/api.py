@@ -12,7 +12,6 @@ from sqlmodel import Field, Session, SQLModel
 
 if TYPE_CHECKING:
     from scheduler.service import RunNowResult
-    from scheduler.views import SchedulerJobView
 
 
 def argo_handled(job_name: str) -> bool:
@@ -42,19 +41,6 @@ class ScheduledJob(SQLModel, table=True):
     locked_by: str | None = None
     locked_at: datetime | None = None
     ttl_secs: int = Field(default=1200)
-
-
-def list_jobs(session: Session) -> list["SchedulerJobView"]:
-    """List all scheduled job rows as view models (cross-domain facade).
-
-    Thin delegate to ``scheduler.service.list_jobs``, imported lazily to
-    avoid a module-load cycle (``scheduler.service`` imports from this
-    module). Other domains must call this instead of importing
-    ``scheduler.service`` directly.
-    """
-    from scheduler.service import list_jobs as _list_jobs
-
-    return _list_jobs(session)
 
 
 async def run_now(session: Session, name: str) -> "RunNowResult":

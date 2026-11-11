@@ -11,8 +11,7 @@ from grimoire.testing.leak_harness import sqlite_harness
 
 
 @pytest.fixture
-def http(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "false")
+def http(tmp_path):
     with sqlite_harness(tmp_path / "inventory.db") as h, TestClient(h.app()) as client:
         yield h, client
 
@@ -261,7 +260,6 @@ def test_play_events_atomic_neutral_and_hidden_suppression(
         entity_id=h.rows["private"].id,
         hidden_from_party=operation == "unhide",
     )
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     current = h.rows["campaign_session"]
     current.status = status
     h.session.commit()
@@ -323,7 +321,6 @@ def test_play_events_atomic_neutral_and_hidden_suppression(
 
 def test_hidden_changes_record_session_without_event(http, monkeypatch):
     h, _ = http
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     h.prepare("play")
     before = set(h.session.exec(select(SessionEvent.id)).all())
     item = create(http, hidden_from_party=True)
@@ -350,8 +347,7 @@ def test_hidden_changes_record_session_without_event(http, monkeypatch):
     assert set(h.session.exec(select(SessionEvent.id)).all()) == before
 
 
-def test_no_current_session_even_with_play_enabled(http, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
+def test_no_current_session(http):
     item = create(http)
     h, _ = http
     assert audits(h, item["id"])[0].session_id is None
@@ -485,7 +481,6 @@ def test_ended_session_rolls_back_item_event_and_audit(http, monkeypatch):
     from grimoire.session_events import SessionEndedError
 
     h, _ = http
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     h.prepare("play")
     before = h.snapshot()
 

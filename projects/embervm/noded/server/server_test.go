@@ -37,6 +37,7 @@ import (
 	fcvmdriver "github.com/jomcgi/homelab/projects/embervm/noded/fcvm/driver"
 	artifactstore "github.com/jomcgi/homelab/projects/embervm/noded/store"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
+	"github.com/jomcgi/homelab/projects/embervm/noded/volume"
 )
 
 // fakeDriver is an in-memory vmDriver + buildDriver that records the lifecycle
@@ -90,17 +91,16 @@ type fakeDriver struct {
 	sessionBundles map[string]string // snapshot_ref -> banked state marker
 	// restoreMarkers maps a relit threadID back to the marker its bundle carried, so
 	// a fake transport can echo the persisted state on the post-relight round-trip.
-	restoreMarkers             map[string]string // threadID -> marker
-	sessionsDir                string
-	snapshotSessions           int
-	snapshotSessionStarted     chan struct{}
-	blockSnapshotSession       <-chan struct{}
-	restoreSessions            int
-	lastRestoreTrackDirtyPages bool
-	lastRestoreWorkload        string
-	guestReady                 int
-	removeSessions             int
-	nextBankMarker             string // the marker the NEXT Bank persists (the pre-bank guest state)
+	restoreMarkers         map[string]string // threadID -> marker
+	sessionsDir            string
+	snapshotSessions       int
+	snapshotSessionStarted chan struct{}
+	blockSnapshotSession   <-chan struct{}
+	restoreSessions        int
+	lastRestoreWorkload    string
+	guestReady             int
+	removeSessions         int
+	nextBankMarker         string // the marker the NEXT Bank persists (the pre-bank guest state)
 }
 
 func (f *fakeDriver) Claim(_ context.Context, spec substrate.ClaimSpec) (substrate.Handle, error) {
@@ -132,12 +132,6 @@ func (f *fakeDriver) claimSpec() substrate.ClaimSpec {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastClaim
-}
-
-func (f *fakeDriver) restoreTracksDirtyPages() bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.lastRestoreTrackDirtyPages
 }
 
 func (f *fakeDriver) Release(_ context.Context, _ substrate.Handle) error {
@@ -280,7 +274,7 @@ func (f *fakeDriver) snapshotSessionCount() int {
 // banked (else it errors, exactly the unrestorable-ref case Relight maps to
 // FAILED_PRECONDITION), and the restored handle's threadID is bound to the banked
 // marker so a post-relight round-trip can echo the persisted state.
-func (f *fakeDriver) RestoreSession(_ context.Context, workload, snapshotRef string, trackDirtyPages bool) (substrate.Handle, error) {
+func (f *fakeDriver) RestoreSession(_ context.Context, workload, snapshotRef string) (substrate.Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	marker, ok := f.sessionBundles[snapshotRef]
@@ -289,7 +283,6 @@ func (f *fakeDriver) RestoreSession(_ context.Context, workload, snapshotRef str
 	}
 	f.restoreSessions++
 	f.lastRestoreWorkload = workload
-	f.lastRestoreTrackDirtyPages = trackDirtyPages
 	f.claims++
 	f.live++
 	threadID := "relit-" + snapshotRef
@@ -728,6 +721,7 @@ func TestPrimeVolumeRequestCarriesColdBootInputs(t *testing.T) {
 	drv := &fakeDriver{}
 	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
 	srv.cfg.HarnessInit = "/shim/init"
+	srv.volumes = volume.NewManager(t.TempDir())
 	const ref = "echo__abcdef000001"
 	seedBase(srv, ref, "echo")
 	base, ok := srv.bases.get(ref)
@@ -741,8 +735,7 @@ func TestPrimeVolumeRequestCarriesColdBootInputs(t *testing.T) {
 	}
 
 	if _, err := client.Prime(context.Background(), &nodev1.PrimeRequest{
-		SnapshotRef:    ref,
-		VolumeDiskPath: "/sessions/lineage/workspace.img",
+		SnapshotRef: ref, LineageId: "lineage", VolumeMount: "/workspace", VolumeSizeBytes: 1 << 20,
 	}); err != nil {
 		t.Fatalf("Prime: %v", err)
 	}
@@ -754,78 +747,8 @@ func TestPrimeVolumeRequestCarriesColdBootInputs(t *testing.T) {
 	if spec.ColdBootHarnessInit != srv.cfg.HarnessInit {
 		t.Errorf("cold-boot init = %q, want %q", spec.ColdBootHarnessInit, srv.cfg.HarnessInit)
 	}
-	if spec.VolumeDiskPath != "/sessions/lineage/workspace.img" {
-		t.Errorf("cold-boot volume = %q, want requested volume", spec.VolumeDiskPath)
-	}
-}
-
-func TestPrimeTracksDirtyPagesOnlyForConfiguredBankingWorkload(t *testing.T) {
-	drv := &fakeDriver{}
-	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
-	srv.cfg.DiffBanking = true
-	srv.cfg.DiffBankingWorkloads = []string{"sandbox-session"}
-	seedBase(srv, "session__banking01", "sandbox-session")
-	seedBase(srv, "task__plain01", "echo")
-
-	banking, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "session__banking01"})
-	if err != nil {
-		t.Fatalf("banking Prime: %v", err)
-	}
-	if !drv.claimSpec().TrackDirtyPages {
-		t.Fatal("banking Prime did not request dirty-page tracking")
-	}
-	if _, err := client.Destroy(context.Background(), &nodev1.DestroyRequest{VmId: banking.GetVmId()}); err != nil {
-		t.Fatalf("destroy banking VM: %v", err)
-	}
-
-	nonBanking, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "task__plain01"})
-	if err != nil {
-		t.Fatalf("non-banking Prime: %v", err)
-	}
-	if drv.claimSpec().TrackDirtyPages {
-		t.Fatal("non-banking Prime requested dirty-page tracking")
-	}
-	if _, err := client.Destroy(context.Background(), &nodev1.DestroyRequest{VmId: nonBanking.GetVmId()}); err != nil {
-		t.Fatalf("destroy non-banking VM: %v", err)
-	}
-}
-
-func TestRelightTracksDirtyPagesOnlyForConfiguredBankingWorkload(t *testing.T) {
-	drv := &fakeDriver{}
-	client, srv := newSessionTestServer(t, drv, &fakeTransport{}, 8)
-	srv.cfg.DiffBanking = true
-	srv.cfg.DiffBankingWorkloads = []string{"sandbox-session"}
-
-	for _, tc := range []struct {
-		ref           string
-		workload      string
-		traceWorkload string
-		want          bool
-	}{
-		{ref: "banking-ref", workload: "sandbox-session", traceWorkload: "echo", want: true},
-		{ref: "plain-ref", workload: "echo", traceWorkload: "sandbox-session", want: false},
-	} {
-		drv.mu.Lock()
-		if drv.sessionBundles == nil {
-			drv.sessionBundles = map[string]string{}
-		}
-		drv.sessionBundles[tc.ref] = "state"
-		drv.mu.Unlock()
-		srv.sessionSnap.add(sessionSnapshotEntry{snapshotRef: tc.ref, workload: tc.workload})
-
-		resp, err := client.Relight(context.Background(), &nodev1.RelightRequest{
-			Trace:       &nodev1.Trace{Workload: tc.traceWorkload},
-			SnapshotRef: tc.ref,
-		})
-		if err != nil {
-			t.Fatalf("Relight %s: %v", tc.workload, err)
-		}
-		if got := drv.restoreTracksDirtyPages(); got != tc.want {
-			t.Errorf("Relight %s track dirty pages = %v, want %v", tc.workload, got, tc.want)
-		}
-		if _, err := client.Destroy(context.Background(), &nodev1.DestroyRequest{VmId: resp.GetVmId()}); err != nil {
-			t.Fatalf("destroy %s VM: %v", tc.workload, err)
-		}
+	if want := srv.volumes.SessionVolumePath("echo", "lineage"); spec.VolumeDiskPath != want {
+		t.Errorf("cold-boot volume = %q, want lineage-derived path %q", spec.VolumeDiskPath, want)
 	}
 }
 
@@ -2072,6 +1995,13 @@ func TestBuildBaseZipColdBootFailureNoSnapshot(t *testing.T) {
 	if build.snapshots != 0 {
 		t.Errorf("failed cold boot still snapshotted: snapshots = %d, want 0", build.snapshots)
 	}
+	ns := s.nodeStatus()
+	if ns.GetBuildError() == "" || !strings.Contains(status.Convert(err).Message(), ns.GetBuildError()) {
+		t.Fatalf("daemon diagnostic = %q, want the failure contained in RPC error %v", ns.GetBuildError(), err)
+	}
+	if len(ns.GetWorkloads()) != 1 || ns.GetWorkloads()[0].GetBaseState() != nodev1.BaseBuildState_BASE_BUILD_STATE_FAILED {
+		t.Fatalf("failed build not reported in node capacity: %v", ns.GetWorkloads())
+	}
 }
 
 // TestBuildBaseZipUnknownRuntime rejects a zip build whose runtime image is not
@@ -2406,18 +2336,23 @@ func TestSyncRegistryRecoversOnlyCurrentValidatedImageLaneBase(t *testing.T) {
 	sync(currentRef, 8080)
 	assertOnlyCurrent("restored replay")
 
-	if _, err := s.DeregisterWorkload(context.Background(), &nodev1.DeregisterWorkloadRequest{Workload: workload}); err != nil {
-		t.Fatalf("DeregisterWorkload: %v", err)
+	// Full replacement drops only the omitted workload; unrelated entries remain.
+	if _, err := s.SyncRegistry(context.Background(), &nodev1.SyncRegistryRequest{Entries: []*nodev1.RegistryEntry{
+		entry("image:"+staleRef, staleRef, readRootfs(staleKey), 0),
+		entry("task-only", "runtime:task", readRootfs(taskKey), 0),
+		entry("unprovisioned", "runtime:gone", "", 8080),
+		entry("orphan", "runtime:orphan", readRootfs(currentKey), 8080),
+	}}); err != nil {
+		t.Fatalf("SyncRegistry removal: %v", err)
 	}
 	if got := s.servingImage.snapshot(); len(got) != 0 {
-		t.Fatalf("deregister retained inventory: %+v", got)
+		t.Fatalf("removal replay retained inventory: %+v", got)
 	}
-	if _, err := s.RegisterWorkload(context.Background(), &nodev1.RegisterWorkloadRequest{
-		Entry: entry(workload, currentRef, readRootfs(currentKey), 8080),
-	}); err != nil {
-		t.Fatalf("RegisterWorkload: %v", err)
+	if s.registry.count() != 4 {
+		t.Fatalf("removal replay lost unrelated entries: count = %d", s.registry.count())
 	}
-	assertOnlyCurrent("incremental restore")
+	sync(currentRef, 8080)
+	assertOnlyCurrent("full-snapshot restore")
 }
 
 func TestServingImageReplayPreservesZipLaneBootScan(t *testing.T) {
@@ -3046,7 +2981,7 @@ func TestAbandonedDispatchClearedByNextOperation(t *testing.T) {
 					t.Fatal("successor could not take the guard")
 				}
 				if action == "assign-ended" {
-					e.endInFlight()
+					e.endSessionAssign("", false)
 				}
 			case "bank-guard":
 				if _, ok := srv.sessionVMs.beginInFlight(vmID); !ok {
@@ -4053,10 +3988,11 @@ func TestScratchGenerationChangeReadoptsAndSignals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read new rootfspath: %v", err)
 	}
-	if _, err := s.RegisterWorkload(context.Background(), &nodev1.RegisterWorkloadRequest{Entry: &nodev1.RegistryEntry{
-		Workload: "wl-b", ImageRef: "img-new", RootfsRef: strings.TrimSpace(string(newRootfs)), ServingPort: 8080,
+	if _, err := s.SyncRegistry(context.Background(), &nodev1.SyncRegistryRequest{Entries: []*nodev1.RegistryEntry{
+		{Workload: "wl-a", ImageRef: "img-old", RootfsRef: strings.TrimSpace(string(oldRootfs)), ServingPort: 8080},
+		{Workload: "wl-b", ImageRef: "img-new", RootfsRef: strings.TrimSpace(string(newRootfs)), ServingPort: 8080},
 	}}); err != nil {
-		t.Fatalf("RegisterWorkload: %v", err)
+		t.Fatalf("SyncRegistry: %v", err)
 	}
 	if err := servingDriver.WriteServingImageMarker("wl-b__new", "img-new"); err != nil {
 		t.Fatalf("write new serving marker: %v", err)

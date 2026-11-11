@@ -57,11 +57,16 @@ func main() {
 }
 
 func runLoop(ctx context.Context, cfg config, client *controlPlaneClient, store *verdictStore) {
+	codexGate := &codexProbeGate{}
 	for {
 		started := time.Now().UTC()
 		store.start(started)
 		readyCtx, cancelReady := context.WithTimeout(ctx, cfg.readyWait)
-		err := waitForReady(readyCtx, client, cfg.taskWorkload, cfg.sessionWorkload, cfg.elixirWorkload)
+		workloads := []string{cfg.taskWorkload, cfg.sessionWorkload, cfg.elixirWorkload}
+		if cfg.codexProbe {
+			workloads = append(workloads, cfg.codexWorkload)
+		}
+		err := waitForReady(readyCtx, client, workloads...)
 		cancelReady()
 		if err != nil {
 			result := scenarioVerdict{ID: "S0", Verdict: verdictFail, Detail: fmt.Sprintf("workload readiness failed within READY_WAIT: %v", err), MS: time.Since(started).Milliseconds()}
@@ -78,8 +83,11 @@ func runLoop(ctx context.Context, cfg config, client *controlPlaneClient, store 
 			if cfg.requireJailer {
 				totalBudget += cfg.budgets["S7"]
 			}
+			if cfg.codexProbe {
+				totalBudget += cfg.budgets["S9"]
+			}
 			suiteCtx, cancelSuite := context.WithTimeout(ctx, totalBudget)
-			scenarios := runScenarios(suiteCtx, cfg, client, started)
+			scenarios := runScenarios(suiteCtx, cfg, client, started, codexGate)
 			cancelSuite()
 			store.finish(started, scenarios)
 		}
@@ -99,6 +107,11 @@ func loadConfig() (config, error) {
 		taskWorkload:         envOr("TASK_WORKLOAD", "sandbox-python"),
 		sessionWorkload:      envOr("SESSION_WORKLOAD", "pi-runtime"),
 		elixirWorkload:       envOr("ELIXIR_WORKLOAD", "sandbox-elixir"),
+		codexWorkload:        envOr("S9_CODEX_WORKLOAD", "claude-runtime"),
+		codexModel:           envOr("S9_CODEX_MODEL", "terra"),
+		codexProviderModel:   envOr("S9_CODEX_PROVIDER_MODEL", "gpt-6.1-terra"),
+		codexGuestDigest:     os.Getenv("S9_CODEX_GUEST_DIGEST"),
+		codexCLIVersion:      os.Getenv("S9_CODEX_CLI_VERSION"),
 		idleBankSeconds:      20,
 		sweepGraceSeconds:    15,
 		minPassingInvariants: 4,
@@ -130,7 +143,7 @@ func loadConfig() (config, error) {
 	if cfg.cloneStartupHeadroom >= cfg.cloneHold {
 		return config{}, fmt.Errorf("S1_CLONE_STARTUP_HEADROOM must be shorter than S1_CLONE_HOLD to reject two serialized holds")
 	}
-	for key, fallback := range map[string]time.Duration{"S1": 90 * time.Second, "S2": 2 * time.Minute, "S3": time.Minute, "S4": 10 * time.Second, "S5": time.Minute, "S6": time.Minute, "S7": 15 * time.Second, "S8": 20 * time.Second} {
+	for key, fallback := range map[string]time.Duration{"S1": 90 * time.Second, "S2": 2 * time.Minute, "S3": time.Minute, "S4": 10 * time.Second, "S5": time.Minute, "S6": time.Minute, "S7": 15 * time.Second, "S8": 20 * time.Second, "S9": 5 * time.Minute} {
 		cfg.budgets[key], err = durationEnv(key+"_BUDGET", fallback)
 		if err != nil {
 			return config{}, err
@@ -139,6 +152,22 @@ func loadConfig() (config, error) {
 	cfg.s6Enabled = os.Getenv("S6_ENABLED") == "true"
 	cfg.requireJailer = os.Getenv("S7_REQUIRE_JAILER") == "true"
 	cfg.egressProbe = os.Getenv("S8_EGRESS_PROBE") == "true"
+	switch os.Getenv("S9_CODEX_PROBE") {
+	case "", "false":
+	case "true":
+		cfg.codexProbe = true
+	default:
+		return config{}, fmt.Errorf("S9_CODEX_PROBE must be true or false")
+	}
+	if cfg.codexProbe && !validCodexGuestDigest(cfg.codexGuestDigest) {
+		return config{}, fmt.Errorf("S9_CODEX_GUEST_DIGEST must be the candidate sha256 image digest")
+	}
+	if cfg.codexProbe && strings.TrimSpace(cfg.codexCLIVersion) == "" {
+		return config{}, fmt.Errorf("S9_CODEX_CLI_VERSION is required when S9_CODEX_PROBE is enabled")
+	}
+	if cfg.codexProbe && (strings.TrimSpace(cfg.codexWorkload) == "" || strings.TrimSpace(cfg.codexModel) == "" || strings.TrimSpace(cfg.codexProviderModel) == "") {
+		return config{}, fmt.Errorf("S9_CODEX_WORKLOAD, S9_CODEX_MODEL and S9_CODEX_PROVIDER_MODEL must be nonempty")
+	}
 	if cfg.minTraceEvents, err = intEnv("S6_MIN_TRACE_EVENTS", 4); err != nil {
 		return config{}, err
 	}

@@ -5,16 +5,32 @@ backend:
   autoscaling:
     enabled: false
 
+agentSessions:
+  # Requires verified schema and compatible backend/progress-ingest rollout.
+  # Roll back with false; retain the additive receipt schema.
+  stagedReceiptsEnabled: true
+
 # The private /qwen chat page streams from FreeToken on node-4 through the
 # Tailscale egress Service (projects/platform-gke/tailscale/values.yaml).
 frontend:
   qwenApiBase: "http://inference-bridge-freetoken.tailscale.svc.cluster.local:8090"
 
 tokenBroker:
+  # Reuse this private tier's rotating SVID for dev device login only.
+  devLoginUrl: "https://embervm-dev-embervm-tokenbroker.embervm-dev.svc:8443"
+  devLoginServerId: "spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-tokenbroker"
   spiffe:
-    enabled: false
+    # Stage 1 of #5791: login/start, login/status, refresh and quota go to the
+    # broker's SPIFFE mTLS port (8443) through the spiffe-helper sidecar. The
+    # broker listener went live first (embervm values-gke.yaml). Port 8080 is
+    # still served, so rollback is setting this back to false.
+    enabled: true
 
 swarm:
+  factoryPlannerHoldRefusalEnabled: false
+  # One display-only GitHub comment per GitHub-sourced work item, linking its
+  # durable factory record. Never read back. Rollback is this flag.
+  factoryWorkItemPointerEnabled: true
   # Make the bounded reconciler available on the existing GKE stack. Durable
   # operator policy separately controls issue admission and starts disabled.
   factoryEnabled: true
@@ -22,100 +38,28 @@ swarm:
   # bounds. Capacity is released only after durable guest cessation proof.
   factoryReservationReviewEnabled: true
   factoryConductorFundingEnabled: true
+  # Only pre-retirement charts read this key. Keep merit judging enabled while
+  # HEAD values reach an older chart during promotion or pin-lowering rollback.
+  # Remove in #7596 once those charts are no longer supported revert targets.
+  factoryMeritJudgeEnabled: true
   # The funding judge and the watchdog decide on progress, proximity to
   # landing and value, and a repeated envelope deficit goes to the judge,
   # capped at the pinned budget plus min(1x, $50). On 2026-10-01 #6541 paged
   # for $1.20 over $50 (#6508: $1.94, #5938: $0.89). Priority issues are the
   # Phase 1 factory roadmap and the KG drain blockers.
-  factoryMeritJudgeEnabled: true
   factoryMeritJudgePriorityIssues: "6460,6461,6462,6463,6481,6482"
   factoryAutonomousContinuationEnabled: true
-  factoryStopSupervisionEnabled: true
   # Activation is a separate reviewed operator action, never implied by merge.
   factoryRuntimeMeterEnabled: false
   factoryRuntimeMeterTaskIds: ""
   # Repository-staged for #6266. Live brick-roll, restart, and uncertain DELETE
   # checks must pass before this hub behavior is enabled.
   factoryTransientStopRetryEnabled: false
-  # Finished repository work with only live checks left hands those checks to
-  # a needs-human issue instead of paging, and intake stops re-admitting it.
-  # On 2026-09-30 #6288, #5803, #5787, #5758, #5757, #5699 and #4321 were
-  # re-admitted after the 13 -> 14 bump and each paged; split children for
-  # live checks (#6559) were briefed by intake within seconds.
-  factoryOperationalHandoffEnabled: true
-  # Accept EmberVM's failed/failed record for the exact guest whose invoke
-  # failed inside this dispatch as cessation evidence. On 2026-09-30 noded
-  # restarts at 21:22 and 23:27 left six attempts holding six of ten delivery
-  # lanes on exactly this view until a manual cessation. The state is absorbing
-  # and written before the 502 is sent, and the proof only observes.
-  factoryInvokeFailureCessationEnabled: true
-  # Settle an attempt whose exact guest EmberVM reports never invoked
-  # (turn_seq 0, no invoke stamp) and for which no result receipt was ever
-  # minted. On 2026-10-01 the 01:37 rollout cancelled the executor for permit
-  # 10690 between guest create and invoke POST; the parked guest had no stop
-  # precondition and held a delivery lane. Both facts are durable and the
-  # proof only observes.
-  factoryNeverInvokedGuestSettlementEnabled: true
-  # Carry brick-drain relay continuations through to an owner (#6256). On
-  # 2026-10-01 three review nodes ended uncertain as their 00:44 relay was
-  # claimed and then held lanes behind an unclaimed grant after the 00:48
-  # brick roll, and session 13635's drain-parked guest held one on
-  # missing_stop_precondition. Every settlement is at unknown cost and every
-  # proof reads durable, dispatch-exact markers.
-  factoryDrainRelayContinuationEnabled: true
-  # Settle attempts lost between "invoke sent" and "guest bound" (#6025):
-  # the template landed one PR earlier; this is the behaviour flip.
-  factoryLostBeforeGuestSettlementEnabled: true
-  # Recover aged reservations only after the locked no-session proof. The
-  # missing-workflow path also fences delayed creators (#6382); ordinary
-  # retry and funding policy decide what can run after settlement.
-  factoryLostBeforeSessionSweepEnabled: true
-  # Release a lane slot held past its deadline by a start no cessation proof
-  # can settle (#6025): the template landed in #6156, this is the behaviour
-  # flip. Measured, not assumed. On 2026-09-14 four delivery slots were held
-  # for thirty hours in this exact shape and only a manual release at 19:03
-  # on 09-15 cleared them. The absence proof that shipped in the same PR does
-  # not cover it: a torn-down guest answers 200 "destroyed" until op-log
-  # compaction seven days later, so the 404 that proof keys on is nearly
-  # unreachable inside the backstop window, and both incidents instead failed
-  # observation with a transport error, which it deliberately excludes.
-  # Confirmed again after #6156 rolled out at 02:47 on 09-16: receipts 424,
-  # 429 and 430 sat uncertain with nothing running and the proof did not
-  # release any of them in the following forty minutes.
-  #
-  # This is the only path that frees such a slot. It settles the stranded
-  # starts and their capacity permits and escalates the task, never
-  # interrupting a start that is still reserved.
-  factoryDeadlineBackstopEnabled: true
-  # Page only for authority decisions; digest the rest daily. All 24
-  # intervention pages in the week to 2026-10-01 were settled automatically
-  # (active cessation is on), and cards stay on the escalations page.
-  factoryNotifyDigestEnabled: true
-  # Produce the cessation proof the backstop waits for (#6495). The backstop
-  # is still staged off in code because elapsed time is not cessation
-  # evidence, so uncertain attempts past their deadline held their permits
-  # forever. This destroys the recorded guest, observes that same guest gone,
-  # settles the attempt and its permit in one transaction and escalates the
-  # task. Guests that never started settle at their reserved cost from local
-  # records.
-  factoryActiveCessationEnabled: true
-  # Retire escalation cards their own issue has already answered (#6164): the
-  # template landed one PR earlier, this is the behaviour flip. A sweep on
-  # 2026-09-15 found 47 of 103 open cards stale, most of them because a card
-  # snapshots its issue at admission and never re-reads it, so an operator
-  # decision written into the issue body was invisible to the card still
-  # asking the question. Revalidation paces itself at 15 minutes and makes no
-  # GitHub call while this is false.
-  factoryEscalationRevalidationEnabled: true
   # Cards on still-active receipts are decidable across a generation bump.
   # On 2026-10-01 receipts 700/703 (generation 13, admitted) had watchdog
   # cards factory_decide refused once the policy moved to 14.
   factoryActiveReceiptDecisionsEnabled: true
-  # Off (#7161): dollars are accounting only, so an attempt is never stopped
-  # at its max_cost_usd reservation and an overrun no longer fails a node.
-  # The quota guard and the turn, attempt and deadline limits bound the work.
-  # #6169 turned this on when an overrunning node was failed regardless.
-  factoryEnforceCostCeilingEnabled: false
+  factoryRoutinePauseFundingEnabled: true
   # Per-class floors on remaining quota percent (#5974). A floor only bites
   # for a role whose stored factory policy carries a model_pools entry with
   # somewhere to spill to; a single-member pool never consults quota. The
@@ -128,69 +72,37 @@ swarm:
   # planned non-implement work nodes the planner left to policy, and
   # escalation of investigate_ nodes. codex.implement covers the implement
   # role: planned implement nodes, correction rounds, and escalation of
-  # implement_, integrate_ and correct_ nodes. Both spill from sol below 10
-  # percent Codex remaining. claude.conductor covers the planner, which
+  # implement_, integrate_ and correct_ nodes. Workers/refill reserve 8
+  # percent Codex remaining; implementation keeps its 10 percent reserve.
+  # claude.conductor covers the planner, which
   # spills from opus to sol below 25 percent Claude remaining, so planning
   # never starves Claude review, which pauses at 85 percent used.
   # codex.drainer covers the work-queue drainer (provider_walled and the KG
   # check), judged on the least-used Codex grant: while any grant has room
   # the drainer keeps claiming and the egress sidecar carries each
-  # connection to the roomier grant. Below 25 percent on every grant it
-  # defers claims rather than switching model, so the drainer yields first,
-  # workers next, the planner last. The reviewer and refine roles carry no
-  # floor.
+  # connection to the roomier grant. Below 8 percent on every grant it
+  # defers claims rather than switching model. This shared floor includes
+  # the hourly retrospective and knowledge drainers. Joe approved the worker
+  # and drainer reserves at 8 percent on 2026-10-31; subscription billing,
+  # grant selection and all other role floors stay unchanged.
+  # The reviewer and refine roles carry no floor.
   quotaFloors:
     codex:
-      worker: 10
+      worker: 8
       implement: 10
-      drainer: 25
+      drainer: 8
     claude:
       conductor: 25
 
 agents:
   sessions:
-    # Exact-turn Stop (#6564). Flipped 2026-10-01 for the live checks; set back
-    # to false if any of the seven checks on #4321 fails.
-    stopControlEnabled: true
-    # Release failed probe holds after exact guest eviction is confirmed.
-    probeSupervisionEnabled: true
-    # Settle uncertain permits from control-plane cessation evidence for the
-    # kg, project and interactive tiers too, and let the factory accept an
-    # already-evicted guest as proof (#5979). Flipped 2026-09-10 after the
-    # template deployed on 0.477.3.
-    uncertainPermitSupervisionEnabled: true
     # Staged repository delivery for #6288. Live proof validation is tracked
     # on #6559.
     boundZeroTurnSettlementEnabled: false
-    # Preserve native results before their synchronous response is delivered.
-    resultReceiptsEnabled: true
-    responseLostRecoveryEnabled: true
-    # 2026-10-01: hand off active invokes before rollout observer teardown (#6670).
-    rolloutHandoffEnabled: true
-    # Resume a held turn a brick drain interrupted on its exact dispatch,
-    # through the drain relay, instead of settling it unknown (session 13635
-    # on 2026-10-01). factoryDrainRelayContinuationEnabled is already on.
-    responseLostDrainRelayEnabled: true
-    # A cancelled executor that never sent its invoke POST records not_invoked
-    # at once, and supervision settles a non-factory permit whose guest never
-    # ran an invoke and has no receipt (permit 10690's shape, 2026-10-01).
-    executorNotInvokedRecordEnabled: true
-    # Heartbeats skip the global pool lock. On 2026-10-01, 15 factory runs
-    # (lease_expired or zombie_observer_lost) lost a healthy invoke because
-    # a heartbeat queued behind capacity_pool past the 30 second lease.
-    claimHeartbeatSessionLockEnabled: true
-    neverInvokedGuestSettlementEnabled: true
-    resultReceiptAdoptionEnabled: true
-    # Settle a non-factory permit on the guest's own error answer. At
-    # 01:25-01:30 on 2026-10-01 six KG permits sat uncertain after their
-    # guests answered 503/422 (workspace volume not mounted, CLI exit). Inert
-    # until the control plane sends x-ember-invoke-outcome.
-    guestAnswerSettlementEnabled: true
   drainer:
-    # Settle drainer permits lost between reserve_start and session creation
-    # once their DBOS workflow is terminal (permit 10732 held a KG slot and a
-    # daily-allowance unit from 01:59 to 07:00 on 2026-10-01).
-    lostBeforeSessionSweepEnabled: true
+    # Skip unchanged input only after a verified completed empty retrospective.
+    # Keep one report-only diagnosis per fingerprint under the existing limits.
+    learningInputDedupEnabled: true
 
 postgres:
   storage:
@@ -254,7 +166,8 @@ tailnet:
 deploymentObservations:
   enabled: true
 
-# Repository-only staging for #7002; enable with the shared checker later.
+# Read the shared hub backup observations and notify on stale base backups
+# through private advisory health (#7002). Unknown observations never recover.
 healthAlerts:
   cnpgBackups:
-    enabled: false
+    enabled: true

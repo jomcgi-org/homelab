@@ -1,8 +1,8 @@
-// Splits rendered post HTML at ```interactive markers (see renderDoc). Each
-// marker takes the next N top-level blocks as its fallback: the page renders
-// them as-is on the server and swaps in the interactive figure on hydration.
+// Splits rendered post HTML at ```figure markers (see renderDoc). Each marker
+// takes the next N top-level blocks (its markdown version, usually a table) and
+// the page renders the figure in their place.
 const MARKER =
-  /<div class="ix-slot" data-ix="([a-z][a-z0-9-]*)" data-ix-blocks="([1-9])"><\/div>\n?/g;
+  /<div class="ix-slot" data-ix="([a-z][a-z0-9-]*)" data-ix-blocks="([0-9])"><\/div>\n?/g;
 
 // End index of the top-level element that starts at or after `from`.
 function blockEnd(html, from) {
@@ -22,7 +22,7 @@ function blockEnd(html, from) {
   return -1;
 }
 
-export function splitInteractive(html) {
+export function splitFigures(html) {
   const parts = [];
   let previous = 0;
   for (const match of html.matchAll(MARKER)) {

@@ -23,9 +23,8 @@
 //   WatchNode   server-streamed capacity heartbeat; the daemon is the health
 //               authority and this is the control plane's only source of node
 //               truth.
-//   GetNodeStatus  unary snapshot of the same facts. The daemon implements it,
-//               but it is reserved for future control-plane polling or
-//               reconciliation; the current control plane uses WatchNode.
+//   GetNodeStatus  test-only unary snapshot of the same facts. Production
+//               consumers use WatchNode.
 //
 // Concurrency is owned by the control plane, NOT the daemon: the per-workload
 // semaphore of fc-invoke is deliberately dropped on the fork. The daemon
@@ -273,57 +272,6 @@ func (ResolveMode) EnumDescriptor() ([]byte, []int) {
 	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{3}
 }
 
-// GROUP_GUEST_AGENT_VSOCK_PORT is the dedicated vsock port a member guest's
-// control agent listens on for the sync_clock handshake (see the StartGroupMember
-// / group-verbs comment for the frame contract). It is a documented constant of
-// the frozen guest contract, distinct from the guest HTTP port; the daemon dials
-// it only on a RELIGHT resume.
-type GroupGuestAgent int32
-
-const (
-	GroupGuestAgent_GROUP_GUEST_AGENT_UNSPECIFIED GroupGuestAgent = 0
-	GroupGuestAgent_GROUP_GUEST_AGENT_VSOCK_PORT  GroupGuestAgent = 1024
-)
-
-// Enum value maps for GroupGuestAgent.
-var (
-	GroupGuestAgent_name = map[int32]string{
-		0:    "GROUP_GUEST_AGENT_UNSPECIFIED",
-		1024: "GROUP_GUEST_AGENT_VSOCK_PORT",
-	}
-	GroupGuestAgent_value = map[string]int32{
-		"GROUP_GUEST_AGENT_UNSPECIFIED": 0,
-		"GROUP_GUEST_AGENT_VSOCK_PORT":  1024,
-	}
-)
-
-func (x GroupGuestAgent) Enum() *GroupGuestAgent {
-	p := new(GroupGuestAgent)
-	*p = x
-	return p
-}
-
-func (x GroupGuestAgent) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (GroupGuestAgent) Descriptor() protoreflect.EnumDescriptor {
-	return file_embervm_node_v1_node_proto_enumTypes[4].Descriptor()
-}
-
-func (GroupGuestAgent) Type() protoreflect.EnumType {
-	return &file_embervm_node_v1_node_proto_enumTypes[4]
-}
-
-func (x GroupGuestAgent) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use GroupGuestAgent.Descriptor instead.
-func (GroupGuestAgent) EnumDescriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{4}
-}
-
 type StartGroupMemberMode int32
 
 const (
@@ -357,11 +305,11 @@ func (x StartGroupMemberMode) String() string {
 }
 
 func (StartGroupMemberMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_embervm_node_v1_node_proto_enumTypes[5].Descriptor()
+	return file_embervm_node_v1_node_proto_enumTypes[4].Descriptor()
 }
 
 func (StartGroupMemberMode) Type() protoreflect.EnumType {
-	return &file_embervm_node_v1_node_proto_enumTypes[5]
+	return &file_embervm_node_v1_node_proto_enumTypes[4]
 }
 
 func (x StartGroupMemberMode) Number() protoreflect.EnumNumber {
@@ -370,7 +318,7 @@ func (x StartGroupMemberMode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use StartGroupMemberMode.Descriptor instead.
 func (StartGroupMemberMode) EnumDescriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{5}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{4}
 }
 
 type StopGroupMemberMode int32
@@ -406,11 +354,11 @@ func (x StopGroupMemberMode) String() string {
 }
 
 func (StopGroupMemberMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_embervm_node_v1_node_proto_enumTypes[6].Descriptor()
+	return file_embervm_node_v1_node_proto_enumTypes[5].Descriptor()
 }
 
 func (StopGroupMemberMode) Type() protoreflect.EnumType {
-	return &file_embervm_node_v1_node_proto_enumTypes[6]
+	return &file_embervm_node_v1_node_proto_enumTypes[5]
 }
 
 func (x StopGroupMemberMode) Number() protoreflect.EnumNumber {
@@ -419,7 +367,7 @@ func (x StopGroupMemberMode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use StopGroupMemberMode.Descriptor instead.
 func (StopGroupMemberMode) EnumDescriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{6}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{5}
 }
 
 type BaseBuildState int32
@@ -429,7 +377,7 @@ const (
 	BaseBuildState_BASE_BUILD_STATE_NONE        BaseBuildState = 1 // no base on this node for the workload
 	BaseBuildState_BASE_BUILD_STATE_BUILDING    BaseBuildState = 2 // BuildBase in progress
 	BaseBuildState_BASE_BUILD_STATE_READY       BaseBuildState = 3 // base built and restorable
-	BaseBuildState_BASE_BUILD_STATE_FAILED      BaseBuildState = 4 // last BuildBase failed (see build_error)
+	BaseBuildState_BASE_BUILD_STATE_FAILED      BaseBuildState = 4 // daemon recorded a failed base build; see NodeStatus.build_error
 )
 
 // Enum value maps for BaseBuildState.
@@ -461,11 +409,11 @@ func (x BaseBuildState) String() string {
 }
 
 func (BaseBuildState) Descriptor() protoreflect.EnumDescriptor {
-	return file_embervm_node_v1_node_proto_enumTypes[7].Descriptor()
+	return file_embervm_node_v1_node_proto_enumTypes[6].Descriptor()
 }
 
 func (BaseBuildState) Type() protoreflect.EnumType {
-	return &file_embervm_node_v1_node_proto_enumTypes[7]
+	return &file_embervm_node_v1_node_proto_enumTypes[6]
 }
 
 func (x BaseBuildState) Number() protoreflect.EnumNumber {
@@ -474,7 +422,7 @@ func (x BaseBuildState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use BaseBuildState.Descriptor instead.
 func (BaseBuildState) EnumDescriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{7}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{6}
 }
 
 // InstanceOrigin marks WHO created a live VM the node reports, the discriminator
@@ -520,11 +468,11 @@ func (x InstanceOrigin) String() string {
 }
 
 func (InstanceOrigin) Descriptor() protoreflect.EnumDescriptor {
-	return file_embervm_node_v1_node_proto_enumTypes[8].Descriptor()
+	return file_embervm_node_v1_node_proto_enumTypes[7].Descriptor()
 }
 
 func (InstanceOrigin) Type() protoreflect.EnumType {
-	return &file_embervm_node_v1_node_proto_enumTypes[8]
+	return &file_embervm_node_v1_node_proto_enumTypes[7]
 }
 
 func (x InstanceOrigin) Number() protoreflect.EnumNumber {
@@ -533,7 +481,7 @@ func (x InstanceOrigin) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use InstanceOrigin.Descriptor instead.
 func (InstanceOrigin) EnumDescriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{8}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{7}
 }
 
 // ArtifactKind is the closed set of banked-artifact kinds the continuity verbs
@@ -588,11 +536,11 @@ func (x ArtifactKind) String() string {
 }
 
 func (ArtifactKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_embervm_node_v1_node_proto_enumTypes[9].Descriptor()
+	return file_embervm_node_v1_node_proto_enumTypes[8].Descriptor()
 }
 
 func (ArtifactKind) Type() protoreflect.EnumType {
-	return &file_embervm_node_v1_node_proto_enumTypes[9]
+	return &file_embervm_node_v1_node_proto_enumTypes[8]
 }
 
 func (x ArtifactKind) Number() protoreflect.EnumNumber {
@@ -601,18 +549,17 @@ func (x ArtifactKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ArtifactKind.Descriptor instead.
 func (ArtifactKind) EnumDescriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{9}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{8}
 }
 
 // Trace carries the cross-cutting identifiers every RPC threads for tracing and
-// correlation. workload is the CR name the operation is for; task_id/
-// correlation_id are opaque strings the control plane assigns (empty for pool
-// operations with no task, e.g. Prime/BuildBase).
+// correlation. workload is the CR name the operation is for; task_id is an
+// opaque string the control plane assigns (empty for pool operations with no
+// task, e.g. Prime/BuildBase).
 type Trace struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Workload      string                 `protobuf:"bytes,1,opt,name=workload,proto3" json:"workload,omitempty"`
 	TaskId        string                 `protobuf:"bytes,2,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	CorrelationId string                 `protobuf:"bytes,3,opt,name=correlation_id,json=correlationId,proto3" json:"correlation_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -657,13 +604,6 @@ func (x *Trace) GetWorkload() string {
 func (x *Trace) GetTaskId() string {
 	if x != nil {
 		return x.TaskId
-	}
-	return ""
-}
-
-func (x *Trace) GetCorrelationId() string {
-	if x != nil {
-		return x.CorrelationId
 	}
 	return ""
 }
@@ -824,9 +764,8 @@ type BuildBaseRequest struct {
 	// idempotency key for the base build. For the ZIP lane the idempotency key is
 	// (runtime image digest, archive sha256) instead (see server.baseKeyForZip).
 	WorkloadRevision string `protobuf:"bytes,3,opt,name=workload_revision,json=workloadRevision,proto3" json:"workload_revision,omitempty"`
-	// Guest contract knobs (frozen contract): the port the guest HTTP server
-	// listens on over vsock, and the path that answers 200 when ready.
-	GuestPort uint32 `protobuf:"varint,4,opt,name=guest_port,json=guestPort,proto3" json:"guest_port,omitempty"`
+	// Path that answers 200 when ready. The guest HTTP vsock port is fixed by
+	// the guest contract, not configured by this request.
 	ReadyPath string `protobuf:"bytes,5,opt,name=ready_path,json=readyPath,proto3" json:"ready_path,omitempty"`
 	// Resource shape of the base VM (vcpus, mem). memMib in particular sizes the
 	// snapshot and the restore footprint.
@@ -921,13 +860,6 @@ func (x *BuildBaseRequest) GetWorkloadRevision() string {
 		return x.WorkloadRevision
 	}
 	return ""
-}
-
-func (x *BuildBaseRequest) GetGuestPort() uint32 {
-	if x != nil {
-		return x.GuestPort
-	}
-	return 0
 }
 
 func (x *BuildBaseRequest) GetReadyPath() string {
@@ -1068,9 +1000,7 @@ type PrimeRequest struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	Trace       *Trace                 `protobuf:"bytes,1,opt,name=trace,proto3" json:"trace,omitempty"`
 	SnapshotRef string                 `protobuf:"bytes,2,opt,name=snapshot_ref,json=snapshotRef,proto3" json:"snapshot_ref,omitempty"`
-	// Optional node-local writable session volume. When set, the node cold-boots
-	// the base rootfs with this per-lineage drive instead of restoring memory.
-	VolumeDiskPath  string `protobuf:"bytes,3,opt,name=volume_disk_path,json=volumeDiskPath,proto3" json:"volume_disk_path,omitempty"`
+	// Session volumes are resolved on the node from lineage_id, never a caller path.
 	VolumeMount     string `protobuf:"bytes,4,opt,name=volume_mount,json=volumeMount,proto3" json:"volume_mount,omitempty"`
 	VolumeSizeBytes uint64 `protobuf:"varint,5,opt,name=volume_size_bytes,json=volumeSizeBytes,proto3" json:"volume_size_bytes,omitempty"`
 	LineageId       string `protobuf:"bytes,6,opt,name=lineage_id,json=lineageId,proto3" json:"lineage_id,omitempty"`
@@ -1118,13 +1048,6 @@ func (x *PrimeRequest) GetTrace() *Trace {
 func (x *PrimeRequest) GetSnapshotRef() string {
 	if x != nil {
 		return x.SnapshotRef
-	}
-	return ""
-}
-
-func (x *PrimeRequest) GetVolumeDiskPath() string {
-	if x != nil {
-		return x.VolumeDiskPath
 	}
 	return ""
 }
@@ -1769,9 +1692,7 @@ type SessionAssignRequest struct {
 	// NodeStatus.session_vms so a restarted control plane adopts rather than
 	// orphans. The daemon never interprets it.
 	SessionId string `protobuf:"bytes,5,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	// Carried for wire compatibility and observability. Session boot provisioning
-	// happens on Prime, before this invoke RPC is possible.
-	VolumeDiskPath  string `protobuf:"bytes,6,opt,name=volume_disk_path,json=volumeDiskPath,proto3" json:"volume_disk_path,omitempty"`
+	// Session boot provisioning happens on Prime, before this invoke RPC.
 	VolumeMount     string `protobuf:"bytes,7,opt,name=volume_mount,json=volumeMount,proto3" json:"volume_mount,omitempty"`
 	VolumeSizeBytes uint64 `protobuf:"varint,8,opt,name=volume_size_bytes,json=volumeSizeBytes,proto3" json:"volume_size_bytes,omitempty"`
 	LineageId       string `protobuf:"bytes,9,opt,name=lineage_id,json=lineageId,proto3" json:"lineage_id,omitempty"`
@@ -1844,13 +1765,6 @@ func (x *SessionAssignRequest) GetTimeoutMs() uint32 {
 func (x *SessionAssignRequest) GetSessionId() string {
 	if x != nil {
 		return x.SessionId
-	}
-	return ""
-}
-
-func (x *SessionAssignRequest) GetVolumeDiskPath() string {
-	if x != nil {
-		return x.VolumeDiskPath
 	}
 	return ""
 }
@@ -2918,13 +2832,8 @@ type StartStatefulRequest struct {
 	// only the node-local activator's blessing lease may advance a generation
 	// without one).
 	BlessedGeneration uint64 `protobuf:"varint,11,opt,name=blessed_generation,json=blessedGeneration,proto3" json:"blessed_generation,omitempty"`
-	// volume_device is the host block-device path (e.g. /dev/longhorn/<name>) the
-	// control plane resolved for this workload's Longhorn-native volume (R7,
-	// standing decision 2). Empty means the legacy vol.img lane during the
-	// transition: the daemon falls back to volume_size_bytes/volume_mount.
-	VolumeDevice  string `protobuf:"bytes,12,opt,name=volume_device,json=volumeDevice,proto3" json:"volume_device,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *StartStatefulRequest) Reset() {
@@ -3032,13 +2941,6 @@ func (x *StartStatefulRequest) GetBlessedGeneration() uint64 {
 		return x.BlessedGeneration
 	}
 	return 0
-}
-
-func (x *StartStatefulRequest) GetVolumeDevice() string {
-	if x != nil {
-		return x.VolumeDevice
-	}
-	return ""
 }
 
 type StartStatefulResponse struct {
@@ -4656,8 +4558,7 @@ func (x *GroupMemberPlanEntry) GetSubnetCidr() string {
 
 // RegistryEntry is the node-side identity of ONE workload the daemon can build a
 // base for and prime/serve. The current control plane pushes entries with
-// SyncRegistry; RegisterWorkload is a reserved future incremental path. An entry
-// carries exactly what the retired EMBERVM_NODED_IMAGES env
+// SyncRegistry. An entry carries exactly what the retired EMBERVM_NODED_IMAGES env
 // table carried per image (rootfs path, harness init) plus the resolved image
 // digest and the base VM sizing, keyed by workload rather than by image ref. The
 // daemon interprets these node-side facts (a rootfs path is on-disk, an
@@ -4665,7 +4566,7 @@ func (x *GroupMemberPlanEntry) GetSubnetCidr() string {
 type RegistryEntry struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// workload is the CR name this entry is for and the registry KEY: SyncRegistry
-	// converges on the set of workloads, Deregister removes by this name.
+	// converges on the set of workloads, removing names absent from the push.
 	Workload string `protobuf:"bytes,1,opt,name=workload,proto3" json:"workload,omitempty"`
 	// image_digest is the resolved OCI digest of the workload's guest image (the
 	// identity BuildBase records and the store keys rootfs artifacts under). Opaque
@@ -4716,15 +4617,6 @@ type RegistryEntry struct {
 	StatefulPort uint32 `protobuf:"varint,11,opt,name=stateful_port,json=statefulPort,proto3" json:"stateful_port,omitempty"`
 	// stateful_volume_mount is the guest mount path (StartStatefulRequest.volume_mount).
 	StatefulVolumeMount string `protobuf:"bytes,12,opt,name=stateful_volume_mount,json=statefulVolumeMount,proto3" json:"stateful_volume_mount,omitempty"`
-	// stateful_boot_image_ref is the cold-boot source for the COLD fallback when the
-	// banked bundle is absent (StartStatefulRequest.boot_image_ref). The RELIGHT path
-	// resolves the bundle from local inventory and never needs this.
-	StatefulBootImageRef string `protobuf:"bytes,13,opt,name=stateful_boot_image_ref,json=statefulBootImageRef,proto3" json:"stateful_boot_image_ref,omitempty"`
-	// stateful_volume_device is the resolved host block-device path (e.g.
-	// /dev/longhorn/<name>) for the workload's Longhorn-native volume
-	// (StartStatefulRequest.volume_device). Empty means the legacy vol.img lane
-	// (VolumeRoot/<workload>/vol.img), exactly as StartStateful falls back.
-	StatefulVolumeDevice string `protobuf:"bytes,14,opt,name=stateful_volume_device,json=statefulVolumeDevice,proto3" json:"stateful_volume_device,omitempty"`
 	// group_listen_port is the composite entry listen port
 	// (spec.group.entry.listenPort), the L4 accept identity for the node-local
 	// group activator, analogous to stateful_listen_port.
@@ -4850,20 +4742,6 @@ func (x *RegistryEntry) GetStatefulPort() uint32 {
 func (x *RegistryEntry) GetStatefulVolumeMount() string {
 	if x != nil {
 		return x.StatefulVolumeMount
-	}
-	return ""
-}
-
-func (x *RegistryEntry) GetStatefulBootImageRef() string {
-	if x != nil {
-		return x.StatefulBootImageRef
-	}
-	return ""
-}
-
-func (x *RegistryEntry) GetStatefulVolumeDevice() string {
-	if x != nil {
-		return x.StatefulVolumeDevice
 	}
 	return ""
 }
@@ -5069,202 +4947,6 @@ func (x *SyncRegistryResponse) GetEntryCount() uint32 {
 	return 0
 }
 
-// RegisterWorkloadRequest adds-or-updates one registry entry incrementally.
-type RegisterWorkloadRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Entry         *RegistryEntry         `protobuf:"bytes,1,opt,name=entry,proto3" json:"entry,omitempty"`
-	Trace         *Trace                 `protobuf:"bytes,2,opt,name=trace,proto3" json:"trace,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *RegisterWorkloadRequest) Reset() {
-	*x = RegisterWorkloadRequest{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[58]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *RegisterWorkloadRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*RegisterWorkloadRequest) ProtoMessage() {}
-
-func (x *RegisterWorkloadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[58]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use RegisterWorkloadRequest.ProtoReflect.Descriptor instead.
-func (*RegisterWorkloadRequest) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{58}
-}
-
-func (x *RegisterWorkloadRequest) GetEntry() *RegistryEntry {
-	if x != nil {
-		return x.Entry
-	}
-	return nil
-}
-
-func (x *RegisterWorkloadRequest) GetTrace() *Trace {
-	if x != nil {
-		return x.Trace
-	}
-	return nil
-}
-
-// RegisterWorkloadResponse echoes the resulting registry size after the add.
-type RegisterWorkloadResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	EntryCount    uint32                 `protobuf:"varint,1,opt,name=entry_count,json=entryCount,proto3" json:"entry_count,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *RegisterWorkloadResponse) Reset() {
-	*x = RegisterWorkloadResponse{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[59]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *RegisterWorkloadResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*RegisterWorkloadResponse) ProtoMessage() {}
-
-func (x *RegisterWorkloadResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[59]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use RegisterWorkloadResponse.ProtoReflect.Descriptor instead.
-func (*RegisterWorkloadResponse) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{59}
-}
-
-func (x *RegisterWorkloadResponse) GetEntryCount() uint32 {
-	if x != nil {
-		return x.EntryCount
-	}
-	return 0
-}
-
-// DeregisterWorkloadRequest removes one registry entry by workload name.
-type DeregisterWorkloadRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Workload      string                 `protobuf:"bytes,1,opt,name=workload,proto3" json:"workload,omitempty"`
-	Trace         *Trace                 `protobuf:"bytes,2,opt,name=trace,proto3" json:"trace,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *DeregisterWorkloadRequest) Reset() {
-	*x = DeregisterWorkloadRequest{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[60]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DeregisterWorkloadRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DeregisterWorkloadRequest) ProtoMessage() {}
-
-func (x *DeregisterWorkloadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[60]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DeregisterWorkloadRequest.ProtoReflect.Descriptor instead.
-func (*DeregisterWorkloadRequest) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{60}
-}
-
-func (x *DeregisterWorkloadRequest) GetWorkload() string {
-	if x != nil {
-		return x.Workload
-	}
-	return ""
-}
-
-func (x *DeregisterWorkloadRequest) GetTrace() *Trace {
-	if x != nil {
-		return x.Trace
-	}
-	return nil
-}
-
-// DeregisterWorkloadResponse echoes the resulting registry size after the removal.
-type DeregisterWorkloadResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	EntryCount    uint32                 `protobuf:"varint,1,opt,name=entry_count,json=entryCount,proto3" json:"entry_count,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *DeregisterWorkloadResponse) Reset() {
-	*x = DeregisterWorkloadResponse{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[61]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DeregisterWorkloadResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DeregisterWorkloadResponse) ProtoMessage() {}
-
-func (x *DeregisterWorkloadResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[61]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DeregisterWorkloadResponse.ProtoReflect.Descriptor instead.
-func (*DeregisterWorkloadResponse) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{61}
-}
-
-func (x *DeregisterWorkloadResponse) GetEntryCount() uint32 {
-	if x != nil {
-		return x.EntryCount
-	}
-	return 0
-}
-
 // WorkloadCapacity is the daemon's per-workload capacity view: how many primed
 // VMs are parked and ready, and what base build state the workload's snapshot
 // is in. The control plane reads free_primed_slots from ETS-cached copies of
@@ -5316,7 +4998,7 @@ type WorkloadCapacity struct {
 
 func (x *WorkloadCapacity) Reset() {
 	*x = WorkloadCapacity{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[62]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5328,7 +5010,7 @@ func (x *WorkloadCapacity) String() string {
 func (*WorkloadCapacity) ProtoMessage() {}
 
 func (x *WorkloadCapacity) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[62]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5341,7 +5023,7 @@ func (x *WorkloadCapacity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkloadCapacity.ProtoReflect.Descriptor instead.
 func (*WorkloadCapacity) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{62}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *WorkloadCapacity) GetWorkload() string {
@@ -5434,7 +5116,7 @@ type BaseInventoryEntry struct {
 
 func (x *BaseInventoryEntry) Reset() {
 	*x = BaseInventoryEntry{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[63]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5446,7 +5128,7 @@ func (x *BaseInventoryEntry) String() string {
 func (*BaseInventoryEntry) ProtoMessage() {}
 
 func (x *BaseInventoryEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[63]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5459,7 +5141,7 @@ func (x *BaseInventoryEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BaseInventoryEntry.ProtoReflect.Descriptor instead.
 func (*BaseInventoryEntry) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{63}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *BaseInventoryEntry) GetRef() string {
@@ -5521,7 +5203,7 @@ type SessionVm struct {
 
 func (x *SessionVm) Reset() {
 	*x = SessionVm{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[64]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5533,7 +5215,7 @@ func (x *SessionVm) String() string {
 func (*SessionVm) ProtoMessage() {}
 
 func (x *SessionVm) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[64]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5546,7 +5228,7 @@ func (x *SessionVm) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionVm.ProtoReflect.Descriptor instead.
 func (*SessionVm) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{64}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *SessionVm) GetVmId() string {
@@ -5596,7 +5278,7 @@ type SessionSnapshot struct {
 
 func (x *SessionSnapshot) Reset() {
 	*x = SessionSnapshot{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[65]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5608,7 +5290,7 @@ func (x *SessionSnapshot) String() string {
 func (*SessionSnapshot) ProtoMessage() {}
 
 func (x *SessionSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[65]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5621,7 +5303,7 @@ func (x *SessionSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionSnapshot.ProtoReflect.Descriptor instead.
 func (*SessionSnapshot) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{65}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *SessionSnapshot) GetSnapshotRef() string {
@@ -5697,7 +5379,7 @@ type SessionVolume struct {
 
 func (x *SessionVolume) Reset() {
 	*x = SessionVolume{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[66]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5709,7 +5391,7 @@ func (x *SessionVolume) String() string {
 func (*SessionVolume) ProtoMessage() {}
 
 func (x *SessionVolume) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[66]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5722,7 +5404,7 @@ func (x *SessionVolume) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionVolume.ProtoReflect.Descriptor instead.
 func (*SessionVolume) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{66}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *SessionVolume) GetWorkload() string {
@@ -5783,7 +5465,7 @@ type Endpoint struct {
 
 func (x *Endpoint) Reset() {
 	*x = Endpoint{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[67]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5795,7 +5477,7 @@ func (x *Endpoint) String() string {
 func (*Endpoint) ProtoMessage() {}
 
 func (x *Endpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[67]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5808,7 +5490,7 @@ func (x *Endpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Endpoint.ProtoReflect.Descriptor instead.
 func (*Endpoint) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{67}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *Endpoint) GetIp() string {
@@ -5853,7 +5535,7 @@ type ServingVm struct {
 
 func (x *ServingVm) Reset() {
 	*x = ServingVm{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[68]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5865,7 +5547,7 @@ func (x *ServingVm) String() string {
 func (*ServingVm) ProtoMessage() {}
 
 func (x *ServingVm) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[68]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5878,7 +5560,7 @@ func (x *ServingVm) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServingVm.ProtoReflect.Descriptor instead.
 func (*ServingVm) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{68}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *ServingVm) GetVmId() string {
@@ -5965,7 +5647,7 @@ type ServingSnapshot struct {
 
 func (x *ServingSnapshot) Reset() {
 	*x = ServingSnapshot{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[69]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5977,7 +5659,7 @@ func (x *ServingSnapshot) String() string {
 func (*ServingSnapshot) ProtoMessage() {}
 
 func (x *ServingSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[69]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5990,7 +5672,7 @@ func (x *ServingSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServingSnapshot.ProtoReflect.Descriptor instead.
 func (*ServingSnapshot) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{69}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *ServingSnapshot) GetSnapshotRef() string {
@@ -6108,7 +5790,7 @@ type StatefulVm struct {
 
 func (x *StatefulVm) Reset() {
 	*x = StatefulVm{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[70]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6120,7 +5802,7 @@ func (x *StatefulVm) String() string {
 func (*StatefulVm) ProtoMessage() {}
 
 func (x *StatefulVm) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[70]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6133,7 +5815,7 @@ func (x *StatefulVm) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatefulVm.ProtoReflect.Descriptor instead.
 func (*StatefulVm) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{70}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *StatefulVm) GetVmId() string {
@@ -6256,7 +5938,7 @@ type StatefulBundle struct {
 
 func (x *StatefulBundle) Reset() {
 	*x = StatefulBundle{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[71]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6268,7 +5950,7 @@ func (x *StatefulBundle) String() string {
 func (*StatefulBundle) ProtoMessage() {}
 
 func (x *StatefulBundle) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[71]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6281,7 +5963,7 @@ func (x *StatefulBundle) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatefulBundle.ProtoReflect.Descriptor instead.
 func (*StatefulBundle) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{71}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *StatefulBundle) GetSnapshotRef() string {
@@ -6371,7 +6053,7 @@ type Volume struct {
 
 func (x *Volume) Reset() {
 	*x = Volume{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[72]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6383,7 +6065,7 @@ func (x *Volume) String() string {
 func (*Volume) ProtoMessage() {}
 
 func (x *Volume) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[72]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6396,7 +6078,7 @@ func (x *Volume) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Volume.ProtoReflect.Descriptor instead.
 func (*Volume) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{72}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *Volume) GetWorkload() string {
@@ -6465,7 +6147,7 @@ type GroupNetwork struct {
 
 func (x *GroupNetwork) Reset() {
 	*x = GroupNetwork{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[73]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6477,7 +6159,7 @@ func (x *GroupNetwork) String() string {
 func (*GroupNetwork) ProtoMessage() {}
 
 func (x *GroupNetwork) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[73]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6490,7 +6172,7 @@ func (x *GroupNetwork) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupNetwork.ProtoReflect.Descriptor instead.
 func (*GroupNetwork) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{73}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *GroupNetwork) GetGroupInstanceId() string {
@@ -6544,7 +6226,7 @@ type GroupMemberVm struct {
 
 func (x *GroupMemberVm) Reset() {
 	*x = GroupMemberVm{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[74]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6556,7 +6238,7 @@ func (x *GroupMemberVm) String() string {
 func (*GroupMemberVm) ProtoMessage() {}
 
 func (x *GroupMemberVm) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[74]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6569,7 +6251,7 @@ func (x *GroupMemberVm) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupMemberVm.ProtoReflect.Descriptor instead.
 func (*GroupMemberVm) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{74}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *GroupMemberVm) GetVmId() string {
@@ -6637,7 +6319,7 @@ type GroupBundleMember struct {
 
 func (x *GroupBundleMember) Reset() {
 	*x = GroupBundleMember{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[75]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6649,7 +6331,7 @@ func (x *GroupBundleMember) String() string {
 func (*GroupBundleMember) ProtoMessage() {}
 
 func (x *GroupBundleMember) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[75]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6662,7 +6344,7 @@ func (x *GroupBundleMember) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupBundleMember.ProtoReflect.Descriptor instead.
 func (*GroupBundleMember) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{75}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *GroupBundleMember) GetMemberName() string {
@@ -6722,7 +6404,7 @@ type GroupBundleSet struct {
 
 func (x *GroupBundleSet) Reset() {
 	*x = GroupBundleSet{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[76]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6734,7 +6416,7 @@ func (x *GroupBundleSet) String() string {
 func (*GroupBundleSet) ProtoMessage() {}
 
 func (x *GroupBundleSet) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[76]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6747,7 +6429,7 @@ func (x *GroupBundleSet) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupBundleSet.ProtoReflect.Descriptor instead.
 func (*GroupBundleSet) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{76}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *GroupBundleSet) GetSetId() string {
@@ -6804,7 +6486,7 @@ type ArtifactRef struct {
 
 func (x *ArtifactRef) Reset() {
 	*x = ArtifactRef{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[77]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6816,7 +6498,7 @@ func (x *ArtifactRef) String() string {
 func (*ArtifactRef) ProtoMessage() {}
 
 func (x *ArtifactRef) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[77]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6829,7 +6511,7 @@ func (x *ArtifactRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactRef.ProtoReflect.Descriptor instead.
 func (*ArtifactRef) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{77}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *ArtifactRef) GetKind() ArtifactKind {
@@ -6865,7 +6547,7 @@ type ExportArtifactRequest struct {
 
 func (x *ExportArtifactRequest) Reset() {
 	*x = ExportArtifactRequest{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[78]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6877,7 +6559,7 @@ func (x *ExportArtifactRequest) String() string {
 func (*ExportArtifactRequest) ProtoMessage() {}
 
 func (x *ExportArtifactRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[78]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6890,7 +6572,7 @@ func (x *ExportArtifactRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExportArtifactRequest.ProtoReflect.Descriptor instead.
 func (*ExportArtifactRequest) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{78}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *ExportArtifactRequest) GetArtifact() *ArtifactRef {
@@ -6927,7 +6609,7 @@ type ExportArtifactResponse struct {
 
 func (x *ExportArtifactResponse) Reset() {
 	*x = ExportArtifactResponse{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[79]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6939,7 +6621,7 @@ func (x *ExportArtifactResponse) String() string {
 func (*ExportArtifactResponse) ProtoMessage() {}
 
 func (x *ExportArtifactResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[79]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6952,7 +6634,7 @@ func (x *ExportArtifactResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExportArtifactResponse.ProtoReflect.Descriptor instead.
 func (*ExportArtifactResponse) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{79}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *ExportArtifactResponse) GetBytesMoved() uint64 {
@@ -7012,7 +6694,7 @@ type RestoreArtifactRequest struct {
 
 func (x *RestoreArtifactRequest) Reset() {
 	*x = RestoreArtifactRequest{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[80]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7024,7 +6706,7 @@ func (x *RestoreArtifactRequest) String() string {
 func (*RestoreArtifactRequest) ProtoMessage() {}
 
 func (x *RestoreArtifactRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[80]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7037,7 +6719,7 @@ func (x *RestoreArtifactRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreArtifactRequest.ProtoReflect.Descriptor instead.
 func (*RestoreArtifactRequest) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{80}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *RestoreArtifactRequest) GetArtifact() *ArtifactRef {
@@ -7107,7 +6789,7 @@ type RestoreArtifactResponse struct {
 
 func (x *RestoreArtifactResponse) Reset() {
 	*x = RestoreArtifactResponse{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[81]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7119,7 +6801,7 @@ func (x *RestoreArtifactResponse) String() string {
 func (*RestoreArtifactResponse) ProtoMessage() {}
 
 func (x *RestoreArtifactResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[81]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7132,7 +6814,7 @@ func (x *RestoreArtifactResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreArtifactResponse.ProtoReflect.Descriptor instead.
 func (*RestoreArtifactResponse) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{81}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *RestoreArtifactResponse) GetBytesMoved() uint64 {
@@ -7198,7 +6880,7 @@ type EvictArtifactRequest struct {
 
 func (x *EvictArtifactRequest) Reset() {
 	*x = EvictArtifactRequest{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[82]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7210,7 +6892,7 @@ func (x *EvictArtifactRequest) String() string {
 func (*EvictArtifactRequest) ProtoMessage() {}
 
 func (x *EvictArtifactRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[82]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7223,7 +6905,7 @@ func (x *EvictArtifactRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EvictArtifactRequest.ProtoReflect.Descriptor instead.
 func (*EvictArtifactRequest) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{82}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *EvictArtifactRequest) GetArtifact() *ArtifactRef {
@@ -7265,7 +6947,7 @@ type EvictArtifactResponse struct {
 
 func (x *EvictArtifactResponse) Reset() {
 	*x = EvictArtifactResponse{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[83]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7277,7 +6959,7 @@ func (x *EvictArtifactResponse) String() string {
 func (*EvictArtifactResponse) ProtoMessage() {}
 
 func (x *EvictArtifactResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[83]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7290,7 +6972,7 @@ func (x *EvictArtifactResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EvictArtifactResponse.ProtoReflect.Descriptor instead.
 func (*EvictArtifactResponse) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{83}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *EvictArtifactResponse) GetBytesFreed() uint64 {
@@ -7320,7 +7002,7 @@ type ListArtifactsRequest struct {
 
 func (x *ListArtifactsRequest) Reset() {
 	*x = ListArtifactsRequest{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[84]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7332,7 +7014,7 @@ func (x *ListArtifactsRequest) String() string {
 func (*ListArtifactsRequest) ProtoMessage() {}
 
 func (x *ListArtifactsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[84]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7345,7 +7027,7 @@ func (x *ListArtifactsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListArtifactsRequest.ProtoReflect.Descriptor instead.
 func (*ListArtifactsRequest) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{84}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *ListArtifactsRequest) GetKind() ArtifactKind {
@@ -7408,7 +7090,7 @@ type ListArtifactsEntry struct {
 
 func (x *ListArtifactsEntry) Reset() {
 	*x = ListArtifactsEntry{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[85]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7420,7 +7102,7 @@ func (x *ListArtifactsEntry) String() string {
 func (*ListArtifactsEntry) ProtoMessage() {}
 
 func (x *ListArtifactsEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[85]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7433,7 +7115,7 @@ func (x *ListArtifactsEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListArtifactsEntry.ProtoReflect.Descriptor instead.
 func (*ListArtifactsEntry) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{85}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *ListArtifactsEntry) GetRef() string {
@@ -7486,7 +7168,7 @@ type ListArtifactsResponse struct {
 
 func (x *ListArtifactsResponse) Reset() {
 	*x = ListArtifactsResponse{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[86]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7498,7 +7180,7 @@ func (x *ListArtifactsResponse) String() string {
 func (*ListArtifactsResponse) ProtoMessage() {}
 
 func (x *ListArtifactsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[86]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7511,7 +7193,7 @@ func (x *ListArtifactsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListArtifactsResponse.ProtoReflect.Descriptor instead.
 func (*ListArtifactsResponse) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{86}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *ListArtifactsResponse) GetEntries() []*ListArtifactsEntry {
@@ -7559,7 +7241,7 @@ type CpuSku struct {
 
 func (x *CpuSku) Reset() {
 	*x = CpuSku{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[87]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7571,7 +7253,7 @@ func (x *CpuSku) String() string {
 func (*CpuSku) ProtoMessage() {}
 
 func (x *CpuSku) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[87]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7584,7 +7266,7 @@ func (x *CpuSku) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CpuSku.ProtoReflect.Descriptor instead.
 func (*CpuSku) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{87}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *CpuSku) GetVendor() string {
@@ -7618,8 +7300,9 @@ type NodeStatus struct {
 	MaxLiveVms            uint32 `protobuf:"varint,6,opt,name=max_live_vms,json=maxLiveVms,proto3" json:"max_live_vms,omitempty"`
 	// draining true means the daemon is shutting down or cordoned; stop assigning.
 	Draining bool `protobuf:"varint,7,opt,name=draining,proto3" json:"draining,omitempty"`
-	// build_error carries the last BuildBase failure string for any workload in
-	// BASE_BUILD_STATE_FAILED, surfaced into the Workload CR condition message.
+	// build_error carries a daemon diagnostic from any base in FAILED state.
+	// The control plane derives Workload condition messages from the BuildBase
+	// RPC error, not this node-wide diagnostic.
 	BuildError string `protobuf:"bytes,8,opt,name=build_error,json=buildError,proto3" json:"build_error,omitempty"`
 	// session_vms lists every LIVE session VM this node holds. Disjoint from every
 	// WorkloadCapacity.primed_vm_ids (a session VM is never in the task pool).
@@ -7686,11 +7369,6 @@ type NodeStatus struct {
 	// placement decisions on this (standing decision 1): memory snapshots never
 	// cross the vendor boundary.
 	CpuVendor string `protobuf:"bytes,24,opt,name=cpu_vendor,json=cpuVendor,proto3" json:"cpu_vendor,omitempty"`
-	// node_template_hash is the pod-template hash the running noded was deployed
-	// from (the DaemonSet controller-revision the pod's owner reference names).
-	// The CP rollout controller (standing decision 6) compares this against the
-	// current DaemonSet template hash to decide which node still needs a roll.
-	NodeTemplateHash string `protobuf:"bytes,25,opt,name=node_template_hash,json=nodeTemplateHash,proto3" json:"node_template_hash,omitempty"`
 	// mem_budget_mib is the cgroup v2 memory.max ceiling in MiB, minus the
 	// daemon's own RSS reserve (EMBERVM_NODED_DAEMON_RESERVE_MIB). 0 means
 	// unknown (unlimited cgroup or read error), never a guess.
@@ -7844,7 +7522,7 @@ type NodeStatus struct {
 
 func (x *NodeStatus) Reset() {
 	*x = NodeStatus{}
-	mi := &file_embervm_node_v1_node_proto_msgTypes[88]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7856,7 +7534,7 @@ func (x *NodeStatus) String() string {
 func (*NodeStatus) ProtoMessage() {}
 
 func (x *NodeStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_embervm_node_v1_node_proto_msgTypes[88]
+	mi := &file_embervm_node_v1_node_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7869,7 +7547,7 @@ func (x *NodeStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeStatus.ProtoReflect.Descriptor instead.
 func (*NodeStatus) Descriptor() ([]byte, []int) {
-	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{88}
+	return file_embervm_node_v1_node_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *NodeStatus) GetNodeId() string {
@@ -8054,13 +7732,6 @@ func (x *NodeStatus) GetCpuVendor() string {
 	return ""
 }
 
-func (x *NodeStatus) GetNodeTemplateHash() string {
-	if x != nil {
-		return x.NodeTemplateHash
-	}
-	return ""
-}
-
 func (x *NodeStatus) GetMemBudgetMib() uint64 {
 	if x != nil {
 		return x.MemBudgetMib
@@ -8240,11 +7911,10 @@ var File_embervm_node_v1_node_proto protoreflect.FileDescriptor
 
 const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\n" +
-	"\x1aembervm/node/v1/node.proto\x12\x0fembervm.node.v1\"c\n" +
+	"\x1aembervm/node/v1/node.proto\x12\x0fembervm.node.v1\"R\n" +
 	"\x05Trace\x12\x1a\n" +
 	"\bworkload\x18\x01 \x01(\tR\bworkload\x12\x17\n" +
-	"\atask_id\x18\x02 \x01(\tR\x06taskId\x12%\n" +
-	"\x0ecorrelation_id\x18\x03 \x01(\tR\rcorrelationId\"=\n" +
+	"\atask_id\x18\x02 \x01(\tR\x06taskIdJ\x04\b\x03\x10\x04R\x0ecorrelation_id\"=\n" +
 	"\fResourceSpec\x12\x14\n" +
 	"\x05vcpus\x18\x01 \x01(\rR\x05vcpus\x12\x17\n" +
 	"\amem_mib\x18\x02 \x01(\rR\x06memMib\"\x7f\n" +
@@ -8252,14 +7922,12 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\x11runtime_image_ref\x18\x01 \x01(\tR\x0fruntimeImageRef\x12\x1f\n" +
 	"\varchive_url\x18\x02 \x01(\tR\n" +
 	"archiveUrl\x12%\n" +
-	"\x0earchive_sha256\x18\x03 \x01(\tR\rarchiveSha256\"\xe0\x03\n" +
+	"\x0earchive_sha256\x18\x03 \x01(\tR\rarchiveSha256\"\xd3\x03\n" +
 	"\x10BuildBaseRequest\x12,\n" +
 	"\x05trace\x18\x01 \x01(\v2\x16.embervm.node.v1.TraceR\x05trace\x12.\n" +
 	"\x03zip\x18\b \x01(\v2\x1a.embervm.node.v1.ZipSourceH\x00R\x03zip\x12\x1b\n" +
 	"\timage_ref\x18\x02 \x01(\tR\bimageRef\x12+\n" +
 	"\x11workload_revision\x18\x03 \x01(\tR\x10workloadRevision\x12\x1d\n" +
-	"\n" +
-	"guest_port\x18\x04 \x01(\rR\tguestPort\x12\x1d\n" +
 	"\n" +
 	"ready_path\x18\x05 \x01(\tR\treadyPath\x12;\n" +
 	"\tresources\x18\x06 \x01(\v2\x1d.embervm.node.v1.ResourceSpecR\tresources\x12I\n" +
@@ -8268,22 +7936,22 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\fInitEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\b\n" +
-	"\x06source\"\xe6\x01\n" +
+	"\x06sourceJ\x04\b\x04\x10\x05R\n" +
+	"guest_port\"\xe6\x01\n" +
 	"\x11BuildBaseResponse\x12!\n" +
 	"\fsnapshot_ref\x18\x01 \x01(\tR\vsnapshotRef\x12!\n" +
 	"\fimage_digest\x18\x02 \x01(\tR\vimageDigest\x12&\n" +
 	"\x0fbase_size_bytes\x18\x03 \x01(\x04R\rbaseSizeBytes\x12\x12\n" +
 	"\x04arch\x18\x04 \x01(\tR\x04arch\x12#\n" +
 	"\ralready_built\x18\x05 \x01(\bR\falreadyBuilt\x12*\n" +
-	"\x11serving_image_ref\x18\x06 \x01(\tR\x0fservingImageRef\"\xf7\x01\n" +
+	"\x11serving_image_ref\x18\x06 \x01(\tR\x0fservingImageRef\"\xe5\x01\n" +
 	"\fPrimeRequest\x12,\n" +
 	"\x05trace\x18\x01 \x01(\v2\x16.embervm.node.v1.TraceR\x05trace\x12!\n" +
-	"\fsnapshot_ref\x18\x02 \x01(\tR\vsnapshotRef\x12(\n" +
-	"\x10volume_disk_path\x18\x03 \x01(\tR\x0evolumeDiskPath\x12!\n" +
+	"\fsnapshot_ref\x18\x02 \x01(\tR\vsnapshotRef\x12!\n" +
 	"\fvolume_mount\x18\x04 \x01(\tR\vvolumeMount\x12*\n" +
 	"\x11volume_size_bytes\x18\x05 \x01(\x04R\x0fvolumeSizeBytes\x12\x1d\n" +
 	"\n" +
-	"lineage_id\x18\x06 \x01(\tR\tlineageId\"$\n" +
+	"lineage_id\x18\x06 \x01(\tR\tlineageIdJ\x04\b\x03\x10\x04R\x10volume_disk_path\"$\n" +
 	"\rPrimeResponse\x12\x13\n" +
 	"\x05vm_id\x18\x01 \x01(\tR\x04vmId\"\xd0\x01\n" +
 	"\fGuestRequest\x12\x16\n" +
@@ -8336,7 +8004,7 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\x12teardown_confirmed\x18\x01 \x01(\bR\x11teardownConfirmed\x12B\n" +
 	"\n" +
 	"completion\x18\x02 \x01(\v2\".embervm.node.v1.DestroyCompletionR\n" +
-	"completion\"\x89\x03\n" +
+	"completion\"\xf7\x02\n" +
 	"\x14SessionAssignRequest\x12,\n" +
 	"\x05trace\x18\x01 \x01(\v2\x16.embervm.node.v1.TraceR\x05trace\x12\x13\n" +
 	"\x05vm_id\x18\x02 \x01(\tR\x04vmId\x127\n" +
@@ -8344,15 +8012,14 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\n" +
 	"timeout_ms\x18\x04 \x01(\rR\ttimeoutMs\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x05 \x01(\tR\tsessionId\x12(\n" +
-	"\x10volume_disk_path\x18\x06 \x01(\tR\x0evolumeDiskPath\x12!\n" +
+	"session_id\x18\x05 \x01(\tR\tsessionId\x12!\n" +
 	"\fvolume_mount\x18\a \x01(\tR\vvolumeMount\x12*\n" +
 	"\x11volume_size_bytes\x18\b \x01(\x04R\x0fvolumeSizeBytes\x12\x1d\n" +
 	"\n" +
 	"lineage_id\x18\t \x01(\tR\tlineageId\x12\x1f\n" +
 	"\vdispatch_id\x18\n" +
 	" \x01(\tR\n" +
-	"dispatchId\"\xa0\x01\n" +
+	"dispatchIdJ\x04\b\x06\x10\aR\x10volume_disk_path\"\xa0\x01\n" +
 	"\x15SessionAssignResponse\x12:\n" +
 	"\bresponse\x18\x01 \x01(\v2\x1e.embervm.node.v1.GuestResponseR\bresponse\x121\n" +
 	"\x05usage\x18\x02 \x01(\v2\x1b.embervm.node.v1.UsageStatsR\x05usage\x12\x18\n" +
@@ -8423,7 +8090,7 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"size_bytes\x18\x02 \x01(\x04R\tsizeBytes\x12-\n" +
 	"\x12teardown_confirmed\x18\x03 \x01(\bR\x11teardownConfirmed\x122\n" +
 	"\x15bundle_schema_version\x18\x04 \x01(\rR\x13bundleSchemaVersion\x12'\n" +
-	"\x0frootfs_identity\x18\x05 \x01(\tR\x0erootfsIdentity\"\xff\x04\n" +
+	"\x0frootfs_identity\x18\x05 \x01(\tR\x0erootfsIdentity\"\xef\x04\n" +
 	"\x14StartStatefulRequest\x12,\n" +
 	"\x05trace\x18\x01 \x01(\v2\x16.embervm.node.v1.TraceR\x05trace\x126\n" +
 	"\x04mode\x18\x02 \x01(\x0e2\".embervm.node.v1.StartStatefulModeR\x04mode\x12$\n" +
@@ -8436,11 +8103,10 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\tresources\x18\t \x01(\v2\x1d.embervm.node.v1.ResourceSpecR\tresources\x12M\n" +
 	"\bmmds_env\x18\n" +
 	" \x03(\v22.embervm.node.v1.StartStatefulRequest.MmdsEnvEntryR\ammdsEnv\x12-\n" +
-	"\x12blessed_generation\x18\v \x01(\x04R\x11blessedGeneration\x12#\n" +
-	"\rvolume_device\x18\f \x01(\tR\fvolumeDevice\x1a:\n" +
+	"\x12blessed_generation\x18\v \x01(\x04R\x11blessedGeneration\x1a:\n" +
 	"\fMmdsEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbb\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\f\x10\rR\rvolume_device\"\xbb\x01\n" +
 	"\x15StartStatefulResponse\x12\x13\n" +
 	"\x05vm_id\x18\x01 \x01(\tR\x04vmId\x12\x0e\n" +
 	"\x02ip\x18\x02 \x01(\tR\x02ip\x12\x12\n" +
@@ -8575,7 +8241,7 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\x06sizing\x18\x06 \x01(\v2\x1d.embervm.node.v1.ResourceSpecR\x06sizing\x120\n" +
 	"\x14ready_budget_seconds\x18\a \x01(\rR\x12readyBudgetSeconds\x12\x1f\n" +
 	"\vsubnet_cidr\x18\b \x01(\tR\n" +
-	"subnetCidr\"\x9f\x06\n" +
+	"subnetCidr\"\xef\x05\n" +
 	"\rRegistryEntry\x12\x1a\n" +
 	"\bworkload\x18\x01 \x01(\tR\bworkload\x12!\n" +
 	"\fimage_digest\x18\x02 \x01(\tR\vimageDigest\x12\x1b\n" +
@@ -8590,12 +8256,10 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\x14stateful_listen_port\x18\n" +
 	" \x01(\rR\x12statefulListenPort\x12#\n" +
 	"\rstateful_port\x18\v \x01(\rR\fstatefulPort\x122\n" +
-	"\x15stateful_volume_mount\x18\f \x01(\tR\x13statefulVolumeMount\x125\n" +
-	"\x17stateful_boot_image_ref\x18\r \x01(\tR\x14statefulBootImageRef\x124\n" +
-	"\x16stateful_volume_device\x18\x0e \x01(\tR\x14statefulVolumeDevice\x12*\n" +
+	"\x15stateful_volume_mount\x18\f \x01(\tR\x13statefulVolumeMount\x12*\n" +
 	"\x11group_listen_port\x18\x0f \x01(\rR\x0fgroupListenPort\x12Q\n" +
 	"\x11group_member_plan\x18\x10 \x03(\v2%.embervm.node.v1.GroupMemberPlanEntryR\x0fgroupMemberPlan\x12G\n" +
-	"\x0fblessing_leases\x18\x11 \x03(\v2\x1e.embervm.node.v1.BlessingLeaseR\x0eblessingLeases\"z\n" +
+	"\x0fblessing_leases\x18\x11 \x03(\v2\x1e.embervm.node.v1.BlessingLeaseR\x0eblessingLeasesJ\x04\b\r\x10\x0eJ\x04\b\x0e\x10\x0fR\x17stateful_boot_image_refR\x16stateful_volume_device\"z\n" +
 	"\rBlessingLease\x12'\n" +
 	"\x0fnext_generation\x18\x01 \x01(\x04R\x0enextGeneration\x12\x1b\n" +
 	"\tlease_end\x18\x02 \x01(\x04R\bleaseEnd\x12#\n" +
@@ -8605,18 +8269,6 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\x05trace\x18\x02 \x01(\v2\x16.embervm.node.v1.TraceR\x05trace\x12;\n" +
 	"\x1acontrol_plane_activator_ip\x18\x03 \x01(\tR\x17controlPlaneActivatorIp\"7\n" +
 	"\x14SyncRegistryResponse\x12\x1f\n" +
-	"\ventry_count\x18\x01 \x01(\rR\n" +
-	"entryCount\"}\n" +
-	"\x17RegisterWorkloadRequest\x124\n" +
-	"\x05entry\x18\x01 \x01(\v2\x1e.embervm.node.v1.RegistryEntryR\x05entry\x12,\n" +
-	"\x05trace\x18\x02 \x01(\v2\x16.embervm.node.v1.TraceR\x05trace\";\n" +
-	"\x18RegisterWorkloadResponse\x12\x1f\n" +
-	"\ventry_count\x18\x01 \x01(\rR\n" +
-	"entryCount\"e\n" +
-	"\x19DeregisterWorkloadRequest\x12\x1a\n" +
-	"\bworkload\x18\x01 \x01(\tR\bworkload\x12,\n" +
-	"\x05trace\x18\x02 \x01(\v2\x16.embervm.node.v1.TraceR\x05trace\"=\n" +
-	"\x1aDeregisterWorkloadResponse\x12\x1f\n" +
 	"\ventry_count\x18\x01 \x01(\rR\n" +
 	"entryCount\"\xa9\x02\n" +
 	"\x10WorkloadCapacity\x12\x1a\n" +
@@ -8814,7 +8466,7 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\ttruncated\x18\x02 \x01(\bR\ttruncated\"<\n" +
 	"\x06CpuSku\x12\x16\n" +
 	"\x06vendor\x18\x01 \x01(\tR\x06vendor\x12\x1a\n" +
-	"\btemplate\x18\x02 \x01(\tR\btemplate\"\x92\x18\n" +
+	"\btemplate\x18\x02 \x01(\tR\btemplate\"\xfe\x17\n" +
 	"\n" +
 	"NodeStatus\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12?\n" +
@@ -8848,8 +8500,7 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\x16drain_deadline_unix_ms\x18\x16 \x01(\x03R\x13drainDeadlineUnixMs\x12'\n" +
 	"\x0fstore_reachable\x18\x17 \x01(\bR\x0estoreReachable\x12\x1d\n" +
 	"\n" +
-	"cpu_vendor\x18\x18 \x01(\tR\tcpuVendor\x12,\n" +
-	"\x12node_template_hash\x18\x19 \x01(\tR\x10nodeTemplateHash\x12$\n" +
+	"cpu_vendor\x18\x18 \x01(\tR\tcpuVendor\x12$\n" +
 	"\x0emem_budget_mib\x18\x1a \x01(\x04R\fmemBudgetMib\x122\n" +
 	"\x15cpu_budget_millicores\x18\x1b \x01(\x04R\x13cpuBudgetMillicores\x12/\n" +
 	"\x14mem_reject_floor_mib\x18\" \x01(\x04R\x11memRejectFloorMib\x120\n" +
@@ -8888,7 +8539,7 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\x1a>\n" +
 	"\x10LaunchModesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01*o\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01J\x04\b\x19\x10\x1aR\x12node_template_hash*o\n" +
 	"\x0fStopServingMode\x12!\n" +
 	"\x1dSTOP_SERVING_MODE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16STOP_SERVING_MODE_BANK\x10\x01\x12\x1d\n" +
@@ -8906,10 +8557,7 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\vResolveMode\x12\x1c\n" +
 	"\x18RESOLVE_MODE_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13RESOLVE_MODE_COMMIT\x10\x01\x12\x16\n" +
-	"\x12RESOLVE_MODE_ABORT\x10\x02*W\n" +
-	"\x0fGroupGuestAgent\x12!\n" +
-	"\x1dGROUP_GUEST_AGENT_UNSPECIFIED\x10\x00\x12!\n" +
-	"\x1cGROUP_GUEST_AGENT_VSOCK_PORT\x10\x80\b*\x87\x01\n" +
+	"\x12RESOLVE_MODE_ABORT\x10\x02*\x87\x01\n" +
 	"\x14StartGroupMemberMode\x12'\n" +
 	"#START_GROUP_MEMBER_MODE_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dSTART_GROUP_MEMBER_MODE_FRESH\x10\x01\x12#\n" +
@@ -8936,7 +8584,7 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\x16ARTIFACT_KIND_STATEFUL\x10\x04\x12\x1b\n" +
 	"\x17ARTIFACT_KIND_GROUP_SET\x10\x05\x12\x18\n" +
 	"\x14ARTIFACT_KIND_VOLUME\x10\x06\x12#\n" +
-	"\x1fARTIFACT_KIND_SESSION_WORKSPACE\x10\a2\x81\x16\n" +
+	"\x1fARTIFACT_KIND_SESSION_WORKSPACE\x10\a2\xa9\x14\n" +
 	"\vNodeService\x12R\n" +
 	"\tBuildBase\x12!.embervm.node.v1.BuildBaseRequest\x1a\".embervm.node.v1.BuildBaseResponse\x12F\n" +
 	"\x05Prime\x12\x1d.embervm.node.v1.PrimeRequest\x1a\x1e.embervm.node.v1.PrimeResponse\x12I\n" +
@@ -8944,9 +8592,7 @@ const file_embervm_node_v1_node_proto_rawDesc = "" +
 	"\aDestroy\x12\x1f.embervm.node.v1.DestroyRequest\x1a .embervm.node.v1.DestroyResponse\x12M\n" +
 	"\tWatchNode\x12!.embervm.node.v1.WatchNodeRequest\x1a\x1b.embervm.node.v1.NodeStatus0\x01\x12S\n" +
 	"\rGetNodeStatus\x12%.embervm.node.v1.GetNodeStatusRequest\x1a\x1b.embervm.node.v1.NodeStatus\x12[\n" +
-	"\fSyncRegistry\x12$.embervm.node.v1.SyncRegistryRequest\x1a%.embervm.node.v1.SyncRegistryResponse\x12g\n" +
-	"\x10RegisterWorkload\x12(.embervm.node.v1.RegisterWorkloadRequest\x1a).embervm.node.v1.RegisterWorkloadResponse\x12m\n" +
-	"\x12DeregisterWorkload\x12*.embervm.node.v1.DeregisterWorkloadRequest\x1a+.embervm.node.v1.DeregisterWorkloadResponse\x12^\n" +
+	"\fSyncRegistry\x12$.embervm.node.v1.SyncRegistryRequest\x1a%.embervm.node.v1.SyncRegistryResponse\x12^\n" +
 	"\rSessionAssign\x12%.embervm.node.v1.SessionAssignRequest\x1a&.embervm.node.v1.SessionAssignResponse\x12g\n" +
 	"\x10SessionInterrupt\x12(.embervm.node.v1.SessionInterruptRequest\x1a).embervm.node.v1.SessionInterruptResponse\x12C\n" +
 	"\x04Bank\x12\x1c.embervm.node.v1.BankRequest\x1a\x1d.embervm.node.v1.BankResponse\x12L\n" +
@@ -8981,273 +8627,261 @@ func file_embervm_node_v1_node_proto_rawDescGZIP() []byte {
 	return file_embervm_node_v1_node_proto_rawDescData
 }
 
-var file_embervm_node_v1_node_proto_enumTypes = make([]protoimpl.EnumInfo, 10)
-var file_embervm_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 98)
+var file_embervm_node_v1_node_proto_enumTypes = make([]protoimpl.EnumInfo, 9)
+var file_embervm_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 94)
 var file_embervm_node_v1_node_proto_goTypes = []any{
 	(StopServingMode)(0),               // 0: embervm.node.v1.StopServingMode
 	(StartStatefulMode)(0),             // 1: embervm.node.v1.StartStatefulMode
 	(StopStatefulMode)(0),              // 2: embervm.node.v1.StopStatefulMode
 	(ResolveMode)(0),                   // 3: embervm.node.v1.ResolveMode
-	(GroupGuestAgent)(0),               // 4: embervm.node.v1.GroupGuestAgent
-	(StartGroupMemberMode)(0),          // 5: embervm.node.v1.StartGroupMemberMode
-	(StopGroupMemberMode)(0),           // 6: embervm.node.v1.StopGroupMemberMode
-	(BaseBuildState)(0),                // 7: embervm.node.v1.BaseBuildState
-	(InstanceOrigin)(0),                // 8: embervm.node.v1.InstanceOrigin
-	(ArtifactKind)(0),                  // 9: embervm.node.v1.ArtifactKind
-	(*Trace)(nil),                      // 10: embervm.node.v1.Trace
-	(*ResourceSpec)(nil),               // 11: embervm.node.v1.ResourceSpec
-	(*ZipSource)(nil),                  // 12: embervm.node.v1.ZipSource
-	(*BuildBaseRequest)(nil),           // 13: embervm.node.v1.BuildBaseRequest
-	(*BuildBaseResponse)(nil),          // 14: embervm.node.v1.BuildBaseResponse
-	(*PrimeRequest)(nil),               // 15: embervm.node.v1.PrimeRequest
-	(*PrimeResponse)(nil),              // 16: embervm.node.v1.PrimeResponse
-	(*GuestRequest)(nil),               // 17: embervm.node.v1.GuestRequest
-	(*AssignRequest)(nil),              // 18: embervm.node.v1.AssignRequest
-	(*GuestResponse)(nil),              // 19: embervm.node.v1.GuestResponse
-	(*UsageStats)(nil),                 // 20: embervm.node.v1.UsageStats
-	(*AssignResponse)(nil),             // 21: embervm.node.v1.AssignResponse
-	(*DestroyRequest)(nil),             // 22: embervm.node.v1.DestroyRequest
-	(*DestroyCompletion)(nil),          // 23: embervm.node.v1.DestroyCompletion
-	(*DestroyResponse)(nil),            // 24: embervm.node.v1.DestroyResponse
-	(*SessionAssignRequest)(nil),       // 25: embervm.node.v1.SessionAssignRequest
-	(*SessionAssignResponse)(nil),      // 26: embervm.node.v1.SessionAssignResponse
-	(*SessionInterruptRequest)(nil),    // 27: embervm.node.v1.SessionInterruptRequest
-	(*SessionInterruptResponse)(nil),   // 28: embervm.node.v1.SessionInterruptResponse
-	(*BankRequest)(nil),                // 29: embervm.node.v1.BankRequest
-	(*BankResponse)(nil),               // 30: embervm.node.v1.BankResponse
-	(*RelightRequest)(nil),             // 31: embervm.node.v1.RelightRequest
-	(*RelightResponse)(nil),            // 32: embervm.node.v1.RelightResponse
-	(*EvictSnapshotRequest)(nil),       // 33: embervm.node.v1.EvictSnapshotRequest
-	(*EvictSnapshotResponse)(nil),      // 34: embervm.node.v1.EvictSnapshotResponse
-	(*FreshSource)(nil),                // 35: embervm.node.v1.FreshSource
-	(*RelightSource)(nil),              // 36: embervm.node.v1.RelightSource
-	(*StartServingRequest)(nil),        // 37: embervm.node.v1.StartServingRequest
-	(*StartServingResponse)(nil),       // 38: embervm.node.v1.StartServingResponse
-	(*StopServingRequest)(nil),         // 39: embervm.node.v1.StopServingRequest
-	(*StopServingResponse)(nil),        // 40: embervm.node.v1.StopServingResponse
-	(*StartStatefulRequest)(nil),       // 41: embervm.node.v1.StartStatefulRequest
-	(*StartStatefulResponse)(nil),      // 42: embervm.node.v1.StartStatefulResponse
-	(*StopStatefulRequest)(nil),        // 43: embervm.node.v1.StopStatefulRequest
-	(*StopStatefulResponse)(nil),       // 44: embervm.node.v1.StopStatefulResponse
-	(*ResolveStatefulRequest)(nil),     // 45: embervm.node.v1.ResolveStatefulRequest
-	(*ResolveStatefulResponse)(nil),    // 46: embervm.node.v1.ResolveStatefulResponse
-	(*DeleteVolumeRequest)(nil),        // 47: embervm.node.v1.DeleteVolumeRequest
-	(*DeleteVolumeResponse)(nil),       // 48: embervm.node.v1.DeleteVolumeResponse
-	(*ArchiveVolumeRequest)(nil),       // 49: embervm.node.v1.ArchiveVolumeRequest
-	(*ArchiveVolumeResponse)(nil),      // 50: embervm.node.v1.ArchiveVolumeResponse
-	(*RetireVolumeRequest)(nil),        // 51: embervm.node.v1.RetireVolumeRequest
-	(*RetireVolumeResponse)(nil),       // 52: embervm.node.v1.RetireVolumeResponse
-	(*CreateGroupNetworkRequest)(nil),  // 53: embervm.node.v1.CreateGroupNetworkRequest
-	(*CreateGroupNetworkResponse)(nil), // 54: embervm.node.v1.CreateGroupNetworkResponse
-	(*DeleteGroupNetworkRequest)(nil),  // 55: embervm.node.v1.DeleteGroupNetworkRequest
-	(*DeleteGroupNetworkResponse)(nil), // 56: embervm.node.v1.DeleteGroupNetworkResponse
-	(*StartGroupMemberRequest)(nil),    // 57: embervm.node.v1.StartGroupMemberRequest
-	(*StartGroupMemberResponse)(nil),   // 58: embervm.node.v1.StartGroupMemberResponse
-	(*StopGroupMemberRequest)(nil),     // 59: embervm.node.v1.StopGroupMemberRequest
-	(*StopGroupMemberResponse)(nil),    // 60: embervm.node.v1.StopGroupMemberResponse
-	(*WatchNodeRequest)(nil),           // 61: embervm.node.v1.WatchNodeRequest
-	(*GetNodeStatusRequest)(nil),       // 62: embervm.node.v1.GetNodeStatusRequest
-	(*GroupMemberPlanEntry)(nil),       // 63: embervm.node.v1.GroupMemberPlanEntry
-	(*RegistryEntry)(nil),              // 64: embervm.node.v1.RegistryEntry
-	(*BlessingLease)(nil),              // 65: embervm.node.v1.BlessingLease
-	(*SyncRegistryRequest)(nil),        // 66: embervm.node.v1.SyncRegistryRequest
-	(*SyncRegistryResponse)(nil),       // 67: embervm.node.v1.SyncRegistryResponse
-	(*RegisterWorkloadRequest)(nil),    // 68: embervm.node.v1.RegisterWorkloadRequest
-	(*RegisterWorkloadResponse)(nil),   // 69: embervm.node.v1.RegisterWorkloadResponse
-	(*DeregisterWorkloadRequest)(nil),  // 70: embervm.node.v1.DeregisterWorkloadRequest
-	(*DeregisterWorkloadResponse)(nil), // 71: embervm.node.v1.DeregisterWorkloadResponse
-	(*WorkloadCapacity)(nil),           // 72: embervm.node.v1.WorkloadCapacity
-	(*BaseInventoryEntry)(nil),         // 73: embervm.node.v1.BaseInventoryEntry
-	(*SessionVm)(nil),                  // 74: embervm.node.v1.SessionVm
-	(*SessionSnapshot)(nil),            // 75: embervm.node.v1.SessionSnapshot
-	(*SessionVolume)(nil),              // 76: embervm.node.v1.SessionVolume
-	(*Endpoint)(nil),                   // 77: embervm.node.v1.Endpoint
-	(*ServingVm)(nil),                  // 78: embervm.node.v1.ServingVm
-	(*ServingSnapshot)(nil),            // 79: embervm.node.v1.ServingSnapshot
-	(*StatefulVm)(nil),                 // 80: embervm.node.v1.StatefulVm
-	(*StatefulBundle)(nil),             // 81: embervm.node.v1.StatefulBundle
-	(*Volume)(nil),                     // 82: embervm.node.v1.Volume
-	(*GroupNetwork)(nil),               // 83: embervm.node.v1.GroupNetwork
-	(*GroupMemberVm)(nil),              // 84: embervm.node.v1.GroupMemberVm
-	(*GroupBundleMember)(nil),          // 85: embervm.node.v1.GroupBundleMember
-	(*GroupBundleSet)(nil),             // 86: embervm.node.v1.GroupBundleSet
-	(*ArtifactRef)(nil),                // 87: embervm.node.v1.ArtifactRef
-	(*ExportArtifactRequest)(nil),      // 88: embervm.node.v1.ExportArtifactRequest
-	(*ExportArtifactResponse)(nil),     // 89: embervm.node.v1.ExportArtifactResponse
-	(*RestoreArtifactRequest)(nil),     // 90: embervm.node.v1.RestoreArtifactRequest
-	(*RestoreArtifactResponse)(nil),    // 91: embervm.node.v1.RestoreArtifactResponse
-	(*EvictArtifactRequest)(nil),       // 92: embervm.node.v1.EvictArtifactRequest
-	(*EvictArtifactResponse)(nil),      // 93: embervm.node.v1.EvictArtifactResponse
-	(*ListArtifactsRequest)(nil),       // 94: embervm.node.v1.ListArtifactsRequest
-	(*ListArtifactsEntry)(nil),         // 95: embervm.node.v1.ListArtifactsEntry
-	(*ListArtifactsResponse)(nil),      // 96: embervm.node.v1.ListArtifactsResponse
-	(*CpuSku)(nil),                     // 97: embervm.node.v1.CpuSku
-	(*NodeStatus)(nil),                 // 98: embervm.node.v1.NodeStatus
-	nil,                                // 99: embervm.node.v1.BuildBaseRequest.InitEnvEntry
-	nil,                                // 100: embervm.node.v1.GuestRequest.HeadersEntry
-	nil,                                // 101: embervm.node.v1.GuestResponse.HeadersEntry
-	nil,                                // 102: embervm.node.v1.StartStatefulRequest.MmdsEnvEntry
-	nil,                                // 103: embervm.node.v1.StartGroupMemberRequest.EnvEntry
-	nil,                                // 104: embervm.node.v1.NodeStatus.VmmExitCountsEntry
-	nil,                                // 105: embervm.node.v1.NodeStatus.GuestMemoryStateCountsEntry
-	nil,                                // 106: embervm.node.v1.NodeStatus.AdmissionRefusalsEntry
-	nil,                                // 107: embervm.node.v1.NodeStatus.LaunchModesEntry
+	(StartGroupMemberMode)(0),          // 4: embervm.node.v1.StartGroupMemberMode
+	(StopGroupMemberMode)(0),           // 5: embervm.node.v1.StopGroupMemberMode
+	(BaseBuildState)(0),                // 6: embervm.node.v1.BaseBuildState
+	(InstanceOrigin)(0),                // 7: embervm.node.v1.InstanceOrigin
+	(ArtifactKind)(0),                  // 8: embervm.node.v1.ArtifactKind
+	(*Trace)(nil),                      // 9: embervm.node.v1.Trace
+	(*ResourceSpec)(nil),               // 10: embervm.node.v1.ResourceSpec
+	(*ZipSource)(nil),                  // 11: embervm.node.v1.ZipSource
+	(*BuildBaseRequest)(nil),           // 12: embervm.node.v1.BuildBaseRequest
+	(*BuildBaseResponse)(nil),          // 13: embervm.node.v1.BuildBaseResponse
+	(*PrimeRequest)(nil),               // 14: embervm.node.v1.PrimeRequest
+	(*PrimeResponse)(nil),              // 15: embervm.node.v1.PrimeResponse
+	(*GuestRequest)(nil),               // 16: embervm.node.v1.GuestRequest
+	(*AssignRequest)(nil),              // 17: embervm.node.v1.AssignRequest
+	(*GuestResponse)(nil),              // 18: embervm.node.v1.GuestResponse
+	(*UsageStats)(nil),                 // 19: embervm.node.v1.UsageStats
+	(*AssignResponse)(nil),             // 20: embervm.node.v1.AssignResponse
+	(*DestroyRequest)(nil),             // 21: embervm.node.v1.DestroyRequest
+	(*DestroyCompletion)(nil),          // 22: embervm.node.v1.DestroyCompletion
+	(*DestroyResponse)(nil),            // 23: embervm.node.v1.DestroyResponse
+	(*SessionAssignRequest)(nil),       // 24: embervm.node.v1.SessionAssignRequest
+	(*SessionAssignResponse)(nil),      // 25: embervm.node.v1.SessionAssignResponse
+	(*SessionInterruptRequest)(nil),    // 26: embervm.node.v1.SessionInterruptRequest
+	(*SessionInterruptResponse)(nil),   // 27: embervm.node.v1.SessionInterruptResponse
+	(*BankRequest)(nil),                // 28: embervm.node.v1.BankRequest
+	(*BankResponse)(nil),               // 29: embervm.node.v1.BankResponse
+	(*RelightRequest)(nil),             // 30: embervm.node.v1.RelightRequest
+	(*RelightResponse)(nil),            // 31: embervm.node.v1.RelightResponse
+	(*EvictSnapshotRequest)(nil),       // 32: embervm.node.v1.EvictSnapshotRequest
+	(*EvictSnapshotResponse)(nil),      // 33: embervm.node.v1.EvictSnapshotResponse
+	(*FreshSource)(nil),                // 34: embervm.node.v1.FreshSource
+	(*RelightSource)(nil),              // 35: embervm.node.v1.RelightSource
+	(*StartServingRequest)(nil),        // 36: embervm.node.v1.StartServingRequest
+	(*StartServingResponse)(nil),       // 37: embervm.node.v1.StartServingResponse
+	(*StopServingRequest)(nil),         // 38: embervm.node.v1.StopServingRequest
+	(*StopServingResponse)(nil),        // 39: embervm.node.v1.StopServingResponse
+	(*StartStatefulRequest)(nil),       // 40: embervm.node.v1.StartStatefulRequest
+	(*StartStatefulResponse)(nil),      // 41: embervm.node.v1.StartStatefulResponse
+	(*StopStatefulRequest)(nil),        // 42: embervm.node.v1.StopStatefulRequest
+	(*StopStatefulResponse)(nil),       // 43: embervm.node.v1.StopStatefulResponse
+	(*ResolveStatefulRequest)(nil),     // 44: embervm.node.v1.ResolveStatefulRequest
+	(*ResolveStatefulResponse)(nil),    // 45: embervm.node.v1.ResolveStatefulResponse
+	(*DeleteVolumeRequest)(nil),        // 46: embervm.node.v1.DeleteVolumeRequest
+	(*DeleteVolumeResponse)(nil),       // 47: embervm.node.v1.DeleteVolumeResponse
+	(*ArchiveVolumeRequest)(nil),       // 48: embervm.node.v1.ArchiveVolumeRequest
+	(*ArchiveVolumeResponse)(nil),      // 49: embervm.node.v1.ArchiveVolumeResponse
+	(*RetireVolumeRequest)(nil),        // 50: embervm.node.v1.RetireVolumeRequest
+	(*RetireVolumeResponse)(nil),       // 51: embervm.node.v1.RetireVolumeResponse
+	(*CreateGroupNetworkRequest)(nil),  // 52: embervm.node.v1.CreateGroupNetworkRequest
+	(*CreateGroupNetworkResponse)(nil), // 53: embervm.node.v1.CreateGroupNetworkResponse
+	(*DeleteGroupNetworkRequest)(nil),  // 54: embervm.node.v1.DeleteGroupNetworkRequest
+	(*DeleteGroupNetworkResponse)(nil), // 55: embervm.node.v1.DeleteGroupNetworkResponse
+	(*StartGroupMemberRequest)(nil),    // 56: embervm.node.v1.StartGroupMemberRequest
+	(*StartGroupMemberResponse)(nil),   // 57: embervm.node.v1.StartGroupMemberResponse
+	(*StopGroupMemberRequest)(nil),     // 58: embervm.node.v1.StopGroupMemberRequest
+	(*StopGroupMemberResponse)(nil),    // 59: embervm.node.v1.StopGroupMemberResponse
+	(*WatchNodeRequest)(nil),           // 60: embervm.node.v1.WatchNodeRequest
+	(*GetNodeStatusRequest)(nil),       // 61: embervm.node.v1.GetNodeStatusRequest
+	(*GroupMemberPlanEntry)(nil),       // 62: embervm.node.v1.GroupMemberPlanEntry
+	(*RegistryEntry)(nil),              // 63: embervm.node.v1.RegistryEntry
+	(*BlessingLease)(nil),              // 64: embervm.node.v1.BlessingLease
+	(*SyncRegistryRequest)(nil),        // 65: embervm.node.v1.SyncRegistryRequest
+	(*SyncRegistryResponse)(nil),       // 66: embervm.node.v1.SyncRegistryResponse
+	(*WorkloadCapacity)(nil),           // 67: embervm.node.v1.WorkloadCapacity
+	(*BaseInventoryEntry)(nil),         // 68: embervm.node.v1.BaseInventoryEntry
+	(*SessionVm)(nil),                  // 69: embervm.node.v1.SessionVm
+	(*SessionSnapshot)(nil),            // 70: embervm.node.v1.SessionSnapshot
+	(*SessionVolume)(nil),              // 71: embervm.node.v1.SessionVolume
+	(*Endpoint)(nil),                   // 72: embervm.node.v1.Endpoint
+	(*ServingVm)(nil),                  // 73: embervm.node.v1.ServingVm
+	(*ServingSnapshot)(nil),            // 74: embervm.node.v1.ServingSnapshot
+	(*StatefulVm)(nil),                 // 75: embervm.node.v1.StatefulVm
+	(*StatefulBundle)(nil),             // 76: embervm.node.v1.StatefulBundle
+	(*Volume)(nil),                     // 77: embervm.node.v1.Volume
+	(*GroupNetwork)(nil),               // 78: embervm.node.v1.GroupNetwork
+	(*GroupMemberVm)(nil),              // 79: embervm.node.v1.GroupMemberVm
+	(*GroupBundleMember)(nil),          // 80: embervm.node.v1.GroupBundleMember
+	(*GroupBundleSet)(nil),             // 81: embervm.node.v1.GroupBundleSet
+	(*ArtifactRef)(nil),                // 82: embervm.node.v1.ArtifactRef
+	(*ExportArtifactRequest)(nil),      // 83: embervm.node.v1.ExportArtifactRequest
+	(*ExportArtifactResponse)(nil),     // 84: embervm.node.v1.ExportArtifactResponse
+	(*RestoreArtifactRequest)(nil),     // 85: embervm.node.v1.RestoreArtifactRequest
+	(*RestoreArtifactResponse)(nil),    // 86: embervm.node.v1.RestoreArtifactResponse
+	(*EvictArtifactRequest)(nil),       // 87: embervm.node.v1.EvictArtifactRequest
+	(*EvictArtifactResponse)(nil),      // 88: embervm.node.v1.EvictArtifactResponse
+	(*ListArtifactsRequest)(nil),       // 89: embervm.node.v1.ListArtifactsRequest
+	(*ListArtifactsEntry)(nil),         // 90: embervm.node.v1.ListArtifactsEntry
+	(*ListArtifactsResponse)(nil),      // 91: embervm.node.v1.ListArtifactsResponse
+	(*CpuSku)(nil),                     // 92: embervm.node.v1.CpuSku
+	(*NodeStatus)(nil),                 // 93: embervm.node.v1.NodeStatus
+	nil,                                // 94: embervm.node.v1.BuildBaseRequest.InitEnvEntry
+	nil,                                // 95: embervm.node.v1.GuestRequest.HeadersEntry
+	nil,                                // 96: embervm.node.v1.GuestResponse.HeadersEntry
+	nil,                                // 97: embervm.node.v1.StartStatefulRequest.MmdsEnvEntry
+	nil,                                // 98: embervm.node.v1.StartGroupMemberRequest.EnvEntry
+	nil,                                // 99: embervm.node.v1.NodeStatus.VmmExitCountsEntry
+	nil,                                // 100: embervm.node.v1.NodeStatus.GuestMemoryStateCountsEntry
+	nil,                                // 101: embervm.node.v1.NodeStatus.AdmissionRefusalsEntry
+	nil,                                // 102: embervm.node.v1.NodeStatus.LaunchModesEntry
 }
 var file_embervm_node_v1_node_proto_depIdxs = []int32{
-	10,  // 0: embervm.node.v1.BuildBaseRequest.trace:type_name -> embervm.node.v1.Trace
-	12,  // 1: embervm.node.v1.BuildBaseRequest.zip:type_name -> embervm.node.v1.ZipSource
-	11,  // 2: embervm.node.v1.BuildBaseRequest.resources:type_name -> embervm.node.v1.ResourceSpec
-	99,  // 3: embervm.node.v1.BuildBaseRequest.init_env:type_name -> embervm.node.v1.BuildBaseRequest.InitEnvEntry
-	10,  // 4: embervm.node.v1.PrimeRequest.trace:type_name -> embervm.node.v1.Trace
-	100, // 5: embervm.node.v1.GuestRequest.headers:type_name -> embervm.node.v1.GuestRequest.HeadersEntry
-	10,  // 6: embervm.node.v1.AssignRequest.trace:type_name -> embervm.node.v1.Trace
-	17,  // 7: embervm.node.v1.AssignRequest.request:type_name -> embervm.node.v1.GuestRequest
-	101, // 8: embervm.node.v1.GuestResponse.headers:type_name -> embervm.node.v1.GuestResponse.HeadersEntry
-	19,  // 9: embervm.node.v1.AssignResponse.response:type_name -> embervm.node.v1.GuestResponse
-	20,  // 10: embervm.node.v1.AssignResponse.usage:type_name -> embervm.node.v1.UsageStats
-	10,  // 11: embervm.node.v1.DestroyRequest.trace:type_name -> embervm.node.v1.Trace
-	23,  // 12: embervm.node.v1.DestroyResponse.completion:type_name -> embervm.node.v1.DestroyCompletion
-	10,  // 13: embervm.node.v1.SessionAssignRequest.trace:type_name -> embervm.node.v1.Trace
-	17,  // 14: embervm.node.v1.SessionAssignRequest.request:type_name -> embervm.node.v1.GuestRequest
-	19,  // 15: embervm.node.v1.SessionAssignResponse.response:type_name -> embervm.node.v1.GuestResponse
-	20,  // 16: embervm.node.v1.SessionAssignResponse.usage:type_name -> embervm.node.v1.UsageStats
-	10,  // 17: embervm.node.v1.BankRequest.trace:type_name -> embervm.node.v1.Trace
-	10,  // 18: embervm.node.v1.RelightRequest.trace:type_name -> embervm.node.v1.Trace
-	10,  // 19: embervm.node.v1.EvictSnapshotRequest.trace:type_name -> embervm.node.v1.Trace
-	10,  // 20: embervm.node.v1.StartServingRequest.trace:type_name -> embervm.node.v1.Trace
-	35,  // 21: embervm.node.v1.StartServingRequest.fresh:type_name -> embervm.node.v1.FreshSource
-	36,  // 22: embervm.node.v1.StartServingRequest.relight:type_name -> embervm.node.v1.RelightSource
-	11,  // 23: embervm.node.v1.StartServingRequest.resources:type_name -> embervm.node.v1.ResourceSpec
-	10,  // 24: embervm.node.v1.StopServingRequest.trace:type_name -> embervm.node.v1.Trace
+	9,   // 0: embervm.node.v1.BuildBaseRequest.trace:type_name -> embervm.node.v1.Trace
+	11,  // 1: embervm.node.v1.BuildBaseRequest.zip:type_name -> embervm.node.v1.ZipSource
+	10,  // 2: embervm.node.v1.BuildBaseRequest.resources:type_name -> embervm.node.v1.ResourceSpec
+	94,  // 3: embervm.node.v1.BuildBaseRequest.init_env:type_name -> embervm.node.v1.BuildBaseRequest.InitEnvEntry
+	9,   // 4: embervm.node.v1.PrimeRequest.trace:type_name -> embervm.node.v1.Trace
+	95,  // 5: embervm.node.v1.GuestRequest.headers:type_name -> embervm.node.v1.GuestRequest.HeadersEntry
+	9,   // 6: embervm.node.v1.AssignRequest.trace:type_name -> embervm.node.v1.Trace
+	16,  // 7: embervm.node.v1.AssignRequest.request:type_name -> embervm.node.v1.GuestRequest
+	96,  // 8: embervm.node.v1.GuestResponse.headers:type_name -> embervm.node.v1.GuestResponse.HeadersEntry
+	18,  // 9: embervm.node.v1.AssignResponse.response:type_name -> embervm.node.v1.GuestResponse
+	19,  // 10: embervm.node.v1.AssignResponse.usage:type_name -> embervm.node.v1.UsageStats
+	9,   // 11: embervm.node.v1.DestroyRequest.trace:type_name -> embervm.node.v1.Trace
+	22,  // 12: embervm.node.v1.DestroyResponse.completion:type_name -> embervm.node.v1.DestroyCompletion
+	9,   // 13: embervm.node.v1.SessionAssignRequest.trace:type_name -> embervm.node.v1.Trace
+	16,  // 14: embervm.node.v1.SessionAssignRequest.request:type_name -> embervm.node.v1.GuestRequest
+	18,  // 15: embervm.node.v1.SessionAssignResponse.response:type_name -> embervm.node.v1.GuestResponse
+	19,  // 16: embervm.node.v1.SessionAssignResponse.usage:type_name -> embervm.node.v1.UsageStats
+	9,   // 17: embervm.node.v1.BankRequest.trace:type_name -> embervm.node.v1.Trace
+	9,   // 18: embervm.node.v1.RelightRequest.trace:type_name -> embervm.node.v1.Trace
+	9,   // 19: embervm.node.v1.EvictSnapshotRequest.trace:type_name -> embervm.node.v1.Trace
+	9,   // 20: embervm.node.v1.StartServingRequest.trace:type_name -> embervm.node.v1.Trace
+	34,  // 21: embervm.node.v1.StartServingRequest.fresh:type_name -> embervm.node.v1.FreshSource
+	35,  // 22: embervm.node.v1.StartServingRequest.relight:type_name -> embervm.node.v1.RelightSource
+	10,  // 23: embervm.node.v1.StartServingRequest.resources:type_name -> embervm.node.v1.ResourceSpec
+	9,   // 24: embervm.node.v1.StopServingRequest.trace:type_name -> embervm.node.v1.Trace
 	0,   // 25: embervm.node.v1.StopServingRequest.mode:type_name -> embervm.node.v1.StopServingMode
-	10,  // 26: embervm.node.v1.StartStatefulRequest.trace:type_name -> embervm.node.v1.Trace
+	9,   // 26: embervm.node.v1.StartStatefulRequest.trace:type_name -> embervm.node.v1.Trace
 	1,   // 27: embervm.node.v1.StartStatefulRequest.mode:type_name -> embervm.node.v1.StartStatefulMode
-	11,  // 28: embervm.node.v1.StartStatefulRequest.resources:type_name -> embervm.node.v1.ResourceSpec
-	102, // 29: embervm.node.v1.StartStatefulRequest.mmds_env:type_name -> embervm.node.v1.StartStatefulRequest.MmdsEnvEntry
-	10,  // 30: embervm.node.v1.StopStatefulRequest.trace:type_name -> embervm.node.v1.Trace
+	10,  // 28: embervm.node.v1.StartStatefulRequest.resources:type_name -> embervm.node.v1.ResourceSpec
+	97,  // 29: embervm.node.v1.StartStatefulRequest.mmds_env:type_name -> embervm.node.v1.StartStatefulRequest.MmdsEnvEntry
+	9,   // 30: embervm.node.v1.StopStatefulRequest.trace:type_name -> embervm.node.v1.Trace
 	2,   // 31: embervm.node.v1.StopStatefulRequest.mode:type_name -> embervm.node.v1.StopStatefulMode
-	10,  // 32: embervm.node.v1.ResolveStatefulRequest.trace:type_name -> embervm.node.v1.Trace
+	9,   // 32: embervm.node.v1.ResolveStatefulRequest.trace:type_name -> embervm.node.v1.Trace
 	3,   // 33: embervm.node.v1.ResolveStatefulRequest.mode:type_name -> embervm.node.v1.ResolveMode
-	10,  // 34: embervm.node.v1.DeleteVolumeRequest.trace:type_name -> embervm.node.v1.Trace
-	10,  // 35: embervm.node.v1.ArchiveVolumeRequest.trace:type_name -> embervm.node.v1.Trace
-	10,  // 36: embervm.node.v1.RetireVolumeRequest.trace:type_name -> embervm.node.v1.Trace
-	10,  // 37: embervm.node.v1.CreateGroupNetworkRequest.trace:type_name -> embervm.node.v1.Trace
-	10,  // 38: embervm.node.v1.DeleteGroupNetworkRequest.trace:type_name -> embervm.node.v1.Trace
-	10,  // 39: embervm.node.v1.StartGroupMemberRequest.trace:type_name -> embervm.node.v1.Trace
-	5,   // 40: embervm.node.v1.StartGroupMemberRequest.mode:type_name -> embervm.node.v1.StartGroupMemberMode
-	11,  // 41: embervm.node.v1.StartGroupMemberRequest.resources:type_name -> embervm.node.v1.ResourceSpec
-	103, // 42: embervm.node.v1.StartGroupMemberRequest.env:type_name -> embervm.node.v1.StartGroupMemberRequest.EnvEntry
-	10,  // 43: embervm.node.v1.StopGroupMemberRequest.trace:type_name -> embervm.node.v1.Trace
-	6,   // 44: embervm.node.v1.StopGroupMemberRequest.mode:type_name -> embervm.node.v1.StopGroupMemberMode
-	11,  // 45: embervm.node.v1.GroupMemberPlanEntry.sizing:type_name -> embervm.node.v1.ResourceSpec
-	11,  // 46: embervm.node.v1.RegistryEntry.sizing:type_name -> embervm.node.v1.ResourceSpec
-	63,  // 47: embervm.node.v1.RegistryEntry.group_member_plan:type_name -> embervm.node.v1.GroupMemberPlanEntry
-	65,  // 48: embervm.node.v1.RegistryEntry.blessing_leases:type_name -> embervm.node.v1.BlessingLease
-	64,  // 49: embervm.node.v1.SyncRegistryRequest.entries:type_name -> embervm.node.v1.RegistryEntry
-	10,  // 50: embervm.node.v1.SyncRegistryRequest.trace:type_name -> embervm.node.v1.Trace
-	64,  // 51: embervm.node.v1.RegisterWorkloadRequest.entry:type_name -> embervm.node.v1.RegistryEntry
-	10,  // 52: embervm.node.v1.RegisterWorkloadRequest.trace:type_name -> embervm.node.v1.Trace
-	10,  // 53: embervm.node.v1.DeregisterWorkloadRequest.trace:type_name -> embervm.node.v1.Trace
-	7,   // 54: embervm.node.v1.WorkloadCapacity.base_state:type_name -> embervm.node.v1.BaseBuildState
-	7,   // 55: embervm.node.v1.BaseInventoryEntry.base_state:type_name -> embervm.node.v1.BaseBuildState
-	8,   // 56: embervm.node.v1.ServingVm.origin:type_name -> embervm.node.v1.InstanceOrigin
-	8,   // 57: embervm.node.v1.StatefulVm.origin:type_name -> embervm.node.v1.InstanceOrigin
-	8,   // 58: embervm.node.v1.GroupMemberVm.origin:type_name -> embervm.node.v1.InstanceOrigin
-	85,  // 59: embervm.node.v1.GroupBundleSet.members:type_name -> embervm.node.v1.GroupBundleMember
-	9,   // 60: embervm.node.v1.ArtifactRef.kind:type_name -> embervm.node.v1.ArtifactKind
-	87,  // 61: embervm.node.v1.ExportArtifactRequest.artifact:type_name -> embervm.node.v1.ArtifactRef
-	10,  // 62: embervm.node.v1.ExportArtifactRequest.trace:type_name -> embervm.node.v1.Trace
-	87,  // 63: embervm.node.v1.RestoreArtifactRequest.artifact:type_name -> embervm.node.v1.ArtifactRef
-	10,  // 64: embervm.node.v1.RestoreArtifactRequest.trace:type_name -> embervm.node.v1.Trace
-	87,  // 65: embervm.node.v1.EvictArtifactRequest.artifact:type_name -> embervm.node.v1.ArtifactRef
-	10,  // 66: embervm.node.v1.EvictArtifactRequest.trace:type_name -> embervm.node.v1.Trace
-	9,   // 67: embervm.node.v1.ListArtifactsRequest.kind:type_name -> embervm.node.v1.ArtifactKind
-	10,  // 68: embervm.node.v1.ListArtifactsRequest.trace:type_name -> embervm.node.v1.Trace
-	95,  // 69: embervm.node.v1.ListArtifactsResponse.entries:type_name -> embervm.node.v1.ListArtifactsEntry
-	72,  // 70: embervm.node.v1.NodeStatus.workloads:type_name -> embervm.node.v1.WorkloadCapacity
-	74,  // 71: embervm.node.v1.NodeStatus.session_vms:type_name -> embervm.node.v1.SessionVm
-	75,  // 72: embervm.node.v1.NodeStatus.session_snapshots:type_name -> embervm.node.v1.SessionSnapshot
-	76,  // 73: embervm.node.v1.NodeStatus.session_volumes:type_name -> embervm.node.v1.SessionVolume
-	78,  // 74: embervm.node.v1.NodeStatus.serving_vms:type_name -> embervm.node.v1.ServingVm
-	79,  // 75: embervm.node.v1.NodeStatus.serving_snapshots:type_name -> embervm.node.v1.ServingSnapshot
-	80,  // 76: embervm.node.v1.NodeStatus.stateful_vms:type_name -> embervm.node.v1.StatefulVm
-	81,  // 77: embervm.node.v1.NodeStatus.stateful_bundles:type_name -> embervm.node.v1.StatefulBundle
-	82,  // 78: embervm.node.v1.NodeStatus.volumes:type_name -> embervm.node.v1.Volume
-	83,  // 79: embervm.node.v1.NodeStatus.group_networks:type_name -> embervm.node.v1.GroupNetwork
-	84,  // 80: embervm.node.v1.NodeStatus.group_member_vms:type_name -> embervm.node.v1.GroupMemberVm
-	86,  // 81: embervm.node.v1.NodeStatus.group_bundle_sets:type_name -> embervm.node.v1.GroupBundleSet
-	97,  // 82: embervm.node.v1.NodeStatus.cpu_sku:type_name -> embervm.node.v1.CpuSku
-	73,  // 83: embervm.node.v1.NodeStatus.local_bases:type_name -> embervm.node.v1.BaseInventoryEntry
-	77,  // 84: embervm.node.v1.NodeStatus.activator_endpoint:type_name -> embervm.node.v1.Endpoint
-	104, // 85: embervm.node.v1.NodeStatus.vmm_exit_counts:type_name -> embervm.node.v1.NodeStatus.VmmExitCountsEntry
-	105, // 86: embervm.node.v1.NodeStatus.guest_memory_state_counts:type_name -> embervm.node.v1.NodeStatus.GuestMemoryStateCountsEntry
-	106, // 87: embervm.node.v1.NodeStatus.admission_refusals:type_name -> embervm.node.v1.NodeStatus.AdmissionRefusalsEntry
-	107, // 88: embervm.node.v1.NodeStatus.launch_modes:type_name -> embervm.node.v1.NodeStatus.LaunchModesEntry
-	13,  // 89: embervm.node.v1.NodeService.BuildBase:input_type -> embervm.node.v1.BuildBaseRequest
-	15,  // 90: embervm.node.v1.NodeService.Prime:input_type -> embervm.node.v1.PrimeRequest
-	18,  // 91: embervm.node.v1.NodeService.Assign:input_type -> embervm.node.v1.AssignRequest
-	22,  // 92: embervm.node.v1.NodeService.Destroy:input_type -> embervm.node.v1.DestroyRequest
-	61,  // 93: embervm.node.v1.NodeService.WatchNode:input_type -> embervm.node.v1.WatchNodeRequest
-	62,  // 94: embervm.node.v1.NodeService.GetNodeStatus:input_type -> embervm.node.v1.GetNodeStatusRequest
-	66,  // 95: embervm.node.v1.NodeService.SyncRegistry:input_type -> embervm.node.v1.SyncRegistryRequest
-	68,  // 96: embervm.node.v1.NodeService.RegisterWorkload:input_type -> embervm.node.v1.RegisterWorkloadRequest
-	70,  // 97: embervm.node.v1.NodeService.DeregisterWorkload:input_type -> embervm.node.v1.DeregisterWorkloadRequest
-	25,  // 98: embervm.node.v1.NodeService.SessionAssign:input_type -> embervm.node.v1.SessionAssignRequest
-	27,  // 99: embervm.node.v1.NodeService.SessionInterrupt:input_type -> embervm.node.v1.SessionInterruptRequest
-	29,  // 100: embervm.node.v1.NodeService.Bank:input_type -> embervm.node.v1.BankRequest
-	31,  // 101: embervm.node.v1.NodeService.Relight:input_type -> embervm.node.v1.RelightRequest
-	33,  // 102: embervm.node.v1.NodeService.EvictSnapshot:input_type -> embervm.node.v1.EvictSnapshotRequest
-	37,  // 103: embervm.node.v1.NodeService.StartServing:input_type -> embervm.node.v1.StartServingRequest
-	39,  // 104: embervm.node.v1.NodeService.StopServing:input_type -> embervm.node.v1.StopServingRequest
-	41,  // 105: embervm.node.v1.NodeService.StartStateful:input_type -> embervm.node.v1.StartStatefulRequest
-	43,  // 106: embervm.node.v1.NodeService.StopStateful:input_type -> embervm.node.v1.StopStatefulRequest
-	45,  // 107: embervm.node.v1.NodeService.ResolveStateful:input_type -> embervm.node.v1.ResolveStatefulRequest
-	47,  // 108: embervm.node.v1.NodeService.DeleteVolume:input_type -> embervm.node.v1.DeleteVolumeRequest
-	51,  // 109: embervm.node.v1.NodeService.RetireVolume:input_type -> embervm.node.v1.RetireVolumeRequest
-	49,  // 110: embervm.node.v1.NodeService.ArchiveVolume:input_type -> embervm.node.v1.ArchiveVolumeRequest
-	53,  // 111: embervm.node.v1.NodeService.CreateGroupNetwork:input_type -> embervm.node.v1.CreateGroupNetworkRequest
-	55,  // 112: embervm.node.v1.NodeService.DeleteGroupNetwork:input_type -> embervm.node.v1.DeleteGroupNetworkRequest
-	57,  // 113: embervm.node.v1.NodeService.StartGroupMember:input_type -> embervm.node.v1.StartGroupMemberRequest
-	59,  // 114: embervm.node.v1.NodeService.StopGroupMember:input_type -> embervm.node.v1.StopGroupMemberRequest
-	88,  // 115: embervm.node.v1.NodeService.ExportArtifact:input_type -> embervm.node.v1.ExportArtifactRequest
-	90,  // 116: embervm.node.v1.NodeService.RestoreArtifact:input_type -> embervm.node.v1.RestoreArtifactRequest
-	92,  // 117: embervm.node.v1.NodeService.EvictArtifact:input_type -> embervm.node.v1.EvictArtifactRequest
-	94,  // 118: embervm.node.v1.NodeService.ListArtifacts:input_type -> embervm.node.v1.ListArtifactsRequest
-	14,  // 119: embervm.node.v1.NodeService.BuildBase:output_type -> embervm.node.v1.BuildBaseResponse
-	16,  // 120: embervm.node.v1.NodeService.Prime:output_type -> embervm.node.v1.PrimeResponse
-	21,  // 121: embervm.node.v1.NodeService.Assign:output_type -> embervm.node.v1.AssignResponse
-	24,  // 122: embervm.node.v1.NodeService.Destroy:output_type -> embervm.node.v1.DestroyResponse
-	98,  // 123: embervm.node.v1.NodeService.WatchNode:output_type -> embervm.node.v1.NodeStatus
-	98,  // 124: embervm.node.v1.NodeService.GetNodeStatus:output_type -> embervm.node.v1.NodeStatus
-	67,  // 125: embervm.node.v1.NodeService.SyncRegistry:output_type -> embervm.node.v1.SyncRegistryResponse
-	69,  // 126: embervm.node.v1.NodeService.RegisterWorkload:output_type -> embervm.node.v1.RegisterWorkloadResponse
-	71,  // 127: embervm.node.v1.NodeService.DeregisterWorkload:output_type -> embervm.node.v1.DeregisterWorkloadResponse
-	26,  // 128: embervm.node.v1.NodeService.SessionAssign:output_type -> embervm.node.v1.SessionAssignResponse
-	28,  // 129: embervm.node.v1.NodeService.SessionInterrupt:output_type -> embervm.node.v1.SessionInterruptResponse
-	30,  // 130: embervm.node.v1.NodeService.Bank:output_type -> embervm.node.v1.BankResponse
-	32,  // 131: embervm.node.v1.NodeService.Relight:output_type -> embervm.node.v1.RelightResponse
-	34,  // 132: embervm.node.v1.NodeService.EvictSnapshot:output_type -> embervm.node.v1.EvictSnapshotResponse
-	38,  // 133: embervm.node.v1.NodeService.StartServing:output_type -> embervm.node.v1.StartServingResponse
-	40,  // 134: embervm.node.v1.NodeService.StopServing:output_type -> embervm.node.v1.StopServingResponse
-	42,  // 135: embervm.node.v1.NodeService.StartStateful:output_type -> embervm.node.v1.StartStatefulResponse
-	44,  // 136: embervm.node.v1.NodeService.StopStateful:output_type -> embervm.node.v1.StopStatefulResponse
-	46,  // 137: embervm.node.v1.NodeService.ResolveStateful:output_type -> embervm.node.v1.ResolveStatefulResponse
-	48,  // 138: embervm.node.v1.NodeService.DeleteVolume:output_type -> embervm.node.v1.DeleteVolumeResponse
-	52,  // 139: embervm.node.v1.NodeService.RetireVolume:output_type -> embervm.node.v1.RetireVolumeResponse
-	50,  // 140: embervm.node.v1.NodeService.ArchiveVolume:output_type -> embervm.node.v1.ArchiveVolumeResponse
-	54,  // 141: embervm.node.v1.NodeService.CreateGroupNetwork:output_type -> embervm.node.v1.CreateGroupNetworkResponse
-	56,  // 142: embervm.node.v1.NodeService.DeleteGroupNetwork:output_type -> embervm.node.v1.DeleteGroupNetworkResponse
-	58,  // 143: embervm.node.v1.NodeService.StartGroupMember:output_type -> embervm.node.v1.StartGroupMemberResponse
-	60,  // 144: embervm.node.v1.NodeService.StopGroupMember:output_type -> embervm.node.v1.StopGroupMemberResponse
-	89,  // 145: embervm.node.v1.NodeService.ExportArtifact:output_type -> embervm.node.v1.ExportArtifactResponse
-	91,  // 146: embervm.node.v1.NodeService.RestoreArtifact:output_type -> embervm.node.v1.RestoreArtifactResponse
-	93,  // 147: embervm.node.v1.NodeService.EvictArtifact:output_type -> embervm.node.v1.EvictArtifactResponse
-	96,  // 148: embervm.node.v1.NodeService.ListArtifacts:output_type -> embervm.node.v1.ListArtifactsResponse
-	119, // [119:149] is the sub-list for method output_type
-	89,  // [89:119] is the sub-list for method input_type
-	89,  // [89:89] is the sub-list for extension type_name
-	89,  // [89:89] is the sub-list for extension extendee
-	0,   // [0:89] is the sub-list for field type_name
+	9,   // 34: embervm.node.v1.DeleteVolumeRequest.trace:type_name -> embervm.node.v1.Trace
+	9,   // 35: embervm.node.v1.ArchiveVolumeRequest.trace:type_name -> embervm.node.v1.Trace
+	9,   // 36: embervm.node.v1.RetireVolumeRequest.trace:type_name -> embervm.node.v1.Trace
+	9,   // 37: embervm.node.v1.CreateGroupNetworkRequest.trace:type_name -> embervm.node.v1.Trace
+	9,   // 38: embervm.node.v1.DeleteGroupNetworkRequest.trace:type_name -> embervm.node.v1.Trace
+	9,   // 39: embervm.node.v1.StartGroupMemberRequest.trace:type_name -> embervm.node.v1.Trace
+	4,   // 40: embervm.node.v1.StartGroupMemberRequest.mode:type_name -> embervm.node.v1.StartGroupMemberMode
+	10,  // 41: embervm.node.v1.StartGroupMemberRequest.resources:type_name -> embervm.node.v1.ResourceSpec
+	98,  // 42: embervm.node.v1.StartGroupMemberRequest.env:type_name -> embervm.node.v1.StartGroupMemberRequest.EnvEntry
+	9,   // 43: embervm.node.v1.StopGroupMemberRequest.trace:type_name -> embervm.node.v1.Trace
+	5,   // 44: embervm.node.v1.StopGroupMemberRequest.mode:type_name -> embervm.node.v1.StopGroupMemberMode
+	10,  // 45: embervm.node.v1.GroupMemberPlanEntry.sizing:type_name -> embervm.node.v1.ResourceSpec
+	10,  // 46: embervm.node.v1.RegistryEntry.sizing:type_name -> embervm.node.v1.ResourceSpec
+	62,  // 47: embervm.node.v1.RegistryEntry.group_member_plan:type_name -> embervm.node.v1.GroupMemberPlanEntry
+	64,  // 48: embervm.node.v1.RegistryEntry.blessing_leases:type_name -> embervm.node.v1.BlessingLease
+	63,  // 49: embervm.node.v1.SyncRegistryRequest.entries:type_name -> embervm.node.v1.RegistryEntry
+	9,   // 50: embervm.node.v1.SyncRegistryRequest.trace:type_name -> embervm.node.v1.Trace
+	6,   // 51: embervm.node.v1.WorkloadCapacity.base_state:type_name -> embervm.node.v1.BaseBuildState
+	6,   // 52: embervm.node.v1.BaseInventoryEntry.base_state:type_name -> embervm.node.v1.BaseBuildState
+	7,   // 53: embervm.node.v1.ServingVm.origin:type_name -> embervm.node.v1.InstanceOrigin
+	7,   // 54: embervm.node.v1.StatefulVm.origin:type_name -> embervm.node.v1.InstanceOrigin
+	7,   // 55: embervm.node.v1.GroupMemberVm.origin:type_name -> embervm.node.v1.InstanceOrigin
+	80,  // 56: embervm.node.v1.GroupBundleSet.members:type_name -> embervm.node.v1.GroupBundleMember
+	8,   // 57: embervm.node.v1.ArtifactRef.kind:type_name -> embervm.node.v1.ArtifactKind
+	82,  // 58: embervm.node.v1.ExportArtifactRequest.artifact:type_name -> embervm.node.v1.ArtifactRef
+	9,   // 59: embervm.node.v1.ExportArtifactRequest.trace:type_name -> embervm.node.v1.Trace
+	82,  // 60: embervm.node.v1.RestoreArtifactRequest.artifact:type_name -> embervm.node.v1.ArtifactRef
+	9,   // 61: embervm.node.v1.RestoreArtifactRequest.trace:type_name -> embervm.node.v1.Trace
+	82,  // 62: embervm.node.v1.EvictArtifactRequest.artifact:type_name -> embervm.node.v1.ArtifactRef
+	9,   // 63: embervm.node.v1.EvictArtifactRequest.trace:type_name -> embervm.node.v1.Trace
+	8,   // 64: embervm.node.v1.ListArtifactsRequest.kind:type_name -> embervm.node.v1.ArtifactKind
+	9,   // 65: embervm.node.v1.ListArtifactsRequest.trace:type_name -> embervm.node.v1.Trace
+	90,  // 66: embervm.node.v1.ListArtifactsResponse.entries:type_name -> embervm.node.v1.ListArtifactsEntry
+	67,  // 67: embervm.node.v1.NodeStatus.workloads:type_name -> embervm.node.v1.WorkloadCapacity
+	69,  // 68: embervm.node.v1.NodeStatus.session_vms:type_name -> embervm.node.v1.SessionVm
+	70,  // 69: embervm.node.v1.NodeStatus.session_snapshots:type_name -> embervm.node.v1.SessionSnapshot
+	71,  // 70: embervm.node.v1.NodeStatus.session_volumes:type_name -> embervm.node.v1.SessionVolume
+	73,  // 71: embervm.node.v1.NodeStatus.serving_vms:type_name -> embervm.node.v1.ServingVm
+	74,  // 72: embervm.node.v1.NodeStatus.serving_snapshots:type_name -> embervm.node.v1.ServingSnapshot
+	75,  // 73: embervm.node.v1.NodeStatus.stateful_vms:type_name -> embervm.node.v1.StatefulVm
+	76,  // 74: embervm.node.v1.NodeStatus.stateful_bundles:type_name -> embervm.node.v1.StatefulBundle
+	77,  // 75: embervm.node.v1.NodeStatus.volumes:type_name -> embervm.node.v1.Volume
+	78,  // 76: embervm.node.v1.NodeStatus.group_networks:type_name -> embervm.node.v1.GroupNetwork
+	79,  // 77: embervm.node.v1.NodeStatus.group_member_vms:type_name -> embervm.node.v1.GroupMemberVm
+	81,  // 78: embervm.node.v1.NodeStatus.group_bundle_sets:type_name -> embervm.node.v1.GroupBundleSet
+	92,  // 79: embervm.node.v1.NodeStatus.cpu_sku:type_name -> embervm.node.v1.CpuSku
+	68,  // 80: embervm.node.v1.NodeStatus.local_bases:type_name -> embervm.node.v1.BaseInventoryEntry
+	72,  // 81: embervm.node.v1.NodeStatus.activator_endpoint:type_name -> embervm.node.v1.Endpoint
+	99,  // 82: embervm.node.v1.NodeStatus.vmm_exit_counts:type_name -> embervm.node.v1.NodeStatus.VmmExitCountsEntry
+	100, // 83: embervm.node.v1.NodeStatus.guest_memory_state_counts:type_name -> embervm.node.v1.NodeStatus.GuestMemoryStateCountsEntry
+	101, // 84: embervm.node.v1.NodeStatus.admission_refusals:type_name -> embervm.node.v1.NodeStatus.AdmissionRefusalsEntry
+	102, // 85: embervm.node.v1.NodeStatus.launch_modes:type_name -> embervm.node.v1.NodeStatus.LaunchModesEntry
+	12,  // 86: embervm.node.v1.NodeService.BuildBase:input_type -> embervm.node.v1.BuildBaseRequest
+	14,  // 87: embervm.node.v1.NodeService.Prime:input_type -> embervm.node.v1.PrimeRequest
+	17,  // 88: embervm.node.v1.NodeService.Assign:input_type -> embervm.node.v1.AssignRequest
+	21,  // 89: embervm.node.v1.NodeService.Destroy:input_type -> embervm.node.v1.DestroyRequest
+	60,  // 90: embervm.node.v1.NodeService.WatchNode:input_type -> embervm.node.v1.WatchNodeRequest
+	61,  // 91: embervm.node.v1.NodeService.GetNodeStatus:input_type -> embervm.node.v1.GetNodeStatusRequest
+	65,  // 92: embervm.node.v1.NodeService.SyncRegistry:input_type -> embervm.node.v1.SyncRegistryRequest
+	24,  // 93: embervm.node.v1.NodeService.SessionAssign:input_type -> embervm.node.v1.SessionAssignRequest
+	26,  // 94: embervm.node.v1.NodeService.SessionInterrupt:input_type -> embervm.node.v1.SessionInterruptRequest
+	28,  // 95: embervm.node.v1.NodeService.Bank:input_type -> embervm.node.v1.BankRequest
+	30,  // 96: embervm.node.v1.NodeService.Relight:input_type -> embervm.node.v1.RelightRequest
+	32,  // 97: embervm.node.v1.NodeService.EvictSnapshot:input_type -> embervm.node.v1.EvictSnapshotRequest
+	36,  // 98: embervm.node.v1.NodeService.StartServing:input_type -> embervm.node.v1.StartServingRequest
+	38,  // 99: embervm.node.v1.NodeService.StopServing:input_type -> embervm.node.v1.StopServingRequest
+	40,  // 100: embervm.node.v1.NodeService.StartStateful:input_type -> embervm.node.v1.StartStatefulRequest
+	42,  // 101: embervm.node.v1.NodeService.StopStateful:input_type -> embervm.node.v1.StopStatefulRequest
+	44,  // 102: embervm.node.v1.NodeService.ResolveStateful:input_type -> embervm.node.v1.ResolveStatefulRequest
+	46,  // 103: embervm.node.v1.NodeService.DeleteVolume:input_type -> embervm.node.v1.DeleteVolumeRequest
+	50,  // 104: embervm.node.v1.NodeService.RetireVolume:input_type -> embervm.node.v1.RetireVolumeRequest
+	48,  // 105: embervm.node.v1.NodeService.ArchiveVolume:input_type -> embervm.node.v1.ArchiveVolumeRequest
+	52,  // 106: embervm.node.v1.NodeService.CreateGroupNetwork:input_type -> embervm.node.v1.CreateGroupNetworkRequest
+	54,  // 107: embervm.node.v1.NodeService.DeleteGroupNetwork:input_type -> embervm.node.v1.DeleteGroupNetworkRequest
+	56,  // 108: embervm.node.v1.NodeService.StartGroupMember:input_type -> embervm.node.v1.StartGroupMemberRequest
+	58,  // 109: embervm.node.v1.NodeService.StopGroupMember:input_type -> embervm.node.v1.StopGroupMemberRequest
+	83,  // 110: embervm.node.v1.NodeService.ExportArtifact:input_type -> embervm.node.v1.ExportArtifactRequest
+	85,  // 111: embervm.node.v1.NodeService.RestoreArtifact:input_type -> embervm.node.v1.RestoreArtifactRequest
+	87,  // 112: embervm.node.v1.NodeService.EvictArtifact:input_type -> embervm.node.v1.EvictArtifactRequest
+	89,  // 113: embervm.node.v1.NodeService.ListArtifacts:input_type -> embervm.node.v1.ListArtifactsRequest
+	13,  // 114: embervm.node.v1.NodeService.BuildBase:output_type -> embervm.node.v1.BuildBaseResponse
+	15,  // 115: embervm.node.v1.NodeService.Prime:output_type -> embervm.node.v1.PrimeResponse
+	20,  // 116: embervm.node.v1.NodeService.Assign:output_type -> embervm.node.v1.AssignResponse
+	23,  // 117: embervm.node.v1.NodeService.Destroy:output_type -> embervm.node.v1.DestroyResponse
+	93,  // 118: embervm.node.v1.NodeService.WatchNode:output_type -> embervm.node.v1.NodeStatus
+	93,  // 119: embervm.node.v1.NodeService.GetNodeStatus:output_type -> embervm.node.v1.NodeStatus
+	66,  // 120: embervm.node.v1.NodeService.SyncRegistry:output_type -> embervm.node.v1.SyncRegistryResponse
+	25,  // 121: embervm.node.v1.NodeService.SessionAssign:output_type -> embervm.node.v1.SessionAssignResponse
+	27,  // 122: embervm.node.v1.NodeService.SessionInterrupt:output_type -> embervm.node.v1.SessionInterruptResponse
+	29,  // 123: embervm.node.v1.NodeService.Bank:output_type -> embervm.node.v1.BankResponse
+	31,  // 124: embervm.node.v1.NodeService.Relight:output_type -> embervm.node.v1.RelightResponse
+	33,  // 125: embervm.node.v1.NodeService.EvictSnapshot:output_type -> embervm.node.v1.EvictSnapshotResponse
+	37,  // 126: embervm.node.v1.NodeService.StartServing:output_type -> embervm.node.v1.StartServingResponse
+	39,  // 127: embervm.node.v1.NodeService.StopServing:output_type -> embervm.node.v1.StopServingResponse
+	41,  // 128: embervm.node.v1.NodeService.StartStateful:output_type -> embervm.node.v1.StartStatefulResponse
+	43,  // 129: embervm.node.v1.NodeService.StopStateful:output_type -> embervm.node.v1.StopStatefulResponse
+	45,  // 130: embervm.node.v1.NodeService.ResolveStateful:output_type -> embervm.node.v1.ResolveStatefulResponse
+	47,  // 131: embervm.node.v1.NodeService.DeleteVolume:output_type -> embervm.node.v1.DeleteVolumeResponse
+	51,  // 132: embervm.node.v1.NodeService.RetireVolume:output_type -> embervm.node.v1.RetireVolumeResponse
+	49,  // 133: embervm.node.v1.NodeService.ArchiveVolume:output_type -> embervm.node.v1.ArchiveVolumeResponse
+	53,  // 134: embervm.node.v1.NodeService.CreateGroupNetwork:output_type -> embervm.node.v1.CreateGroupNetworkResponse
+	55,  // 135: embervm.node.v1.NodeService.DeleteGroupNetwork:output_type -> embervm.node.v1.DeleteGroupNetworkResponse
+	57,  // 136: embervm.node.v1.NodeService.StartGroupMember:output_type -> embervm.node.v1.StartGroupMemberResponse
+	59,  // 137: embervm.node.v1.NodeService.StopGroupMember:output_type -> embervm.node.v1.StopGroupMemberResponse
+	84,  // 138: embervm.node.v1.NodeService.ExportArtifact:output_type -> embervm.node.v1.ExportArtifactResponse
+	86,  // 139: embervm.node.v1.NodeService.RestoreArtifact:output_type -> embervm.node.v1.RestoreArtifactResponse
+	88,  // 140: embervm.node.v1.NodeService.EvictArtifact:output_type -> embervm.node.v1.EvictArtifactResponse
+	91,  // 141: embervm.node.v1.NodeService.ListArtifacts:output_type -> embervm.node.v1.ListArtifactsResponse
+	114, // [114:142] is the sub-list for method output_type
+	86,  // [86:114] is the sub-list for method input_type
+	86,  // [86:86] is the sub-list for extension type_name
+	86,  // [86:86] is the sub-list for extension extendee
+	0,   // [0:86] is the sub-list for field type_name
 }
 
 func init() { file_embervm_node_v1_node_proto_init() }
@@ -9267,8 +8901,8 @@ func file_embervm_node_v1_node_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_embervm_node_v1_node_proto_rawDesc), len(file_embervm_node_v1_node_proto_rawDesc)),
-			NumEnums:      10,
-			NumMessages:   98,
+			NumEnums:      9,
+			NumMessages:   94,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

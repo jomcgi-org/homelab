@@ -28,9 +28,13 @@ go_library(
         "//projects/firecracker/substrate/vsockproto",
     ] + select({
         "@rules_go//go/platform:android": [
+            "//projects/firecracker/substrate/guestvolume",
+            "//projects/firecracker/substrate/guestvsock",
             "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:linux": [
+            "//projects/firecracker/substrate/guestvolume",
+            "//projects/firecracker/substrate/guestvsock",
             "@org_golang_x_sys//unix",
         ],
         "//conditions:default": [],
@@ -48,6 +52,19 @@ go_test(
     srcs = [
         "main_test.go",
         "postgres_linux_test.go",
+        "volume_linux_test.go",
+        "vsock_linux_test.go",
     ],
     embed = [":cmd_lib"],
+    deps = select({
+        "@rules_go//go/platform:android": [
+            "//projects/firecracker/substrate/guestvolume",
+            "//projects/firecracker/substrate/guestvsock",
+        ],
+        "@rules_go//go/platform:linux": [
+            "//projects/firecracker/substrate/guestvolume",
+            "//projects/firecracker/substrate/guestvsock",
+        ],
+        "//conditions:default": [],
+    }),
 )

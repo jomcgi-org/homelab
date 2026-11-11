@@ -112,7 +112,7 @@ def test_build_workload_spec_shape_equals_checked_in_sample():
             assert built["invocation"] == sample["spec"]["invocation"]
             return
         root = os.path.dirname(root)
-    pytest.skip("crd sample not reachable from runfiles")
+    pytest.fail(f"{sample_path} not found above {here}")
 
 
 # --------------------------------------------------------------------------- #

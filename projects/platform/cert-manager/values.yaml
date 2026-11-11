@@ -74,11 +74,11 @@ cert-manager:
       seccompProfile:
         type: RuntimeDefault
 
-  # Prometheus metrics
+  # The hub has no Prometheus scraper.
   prometheus:
-    enabled: true
+    enabled: false
     servicemonitor:
-      enabled: false # Enable if you have Prometheus Operator
+      enabled: false
 
   # Startup API check
   startupapicheck:

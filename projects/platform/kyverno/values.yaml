@@ -22,10 +22,6 @@ kyverno:
   # Admission controller configuration
   admissionController:
     replicas: 1
-    # Prometheus annotations expose metrics to pod-discovery collectors.
-    podAnnotations:
-      prometheus.io/scrape: "true"
-      prometheus.io/port: "8000"
     resources:
       limits:
         cpu: 500m
@@ -47,10 +43,6 @@ kyverno:
   backgroundController:
     enabled: true
     replicas: 1
-    # Prometheus annotations expose metrics to pod-discovery collectors.
-    podAnnotations:
-      prometheus.io/scrape: "true"
-      prometheus.io/port: "8000"
     resources:
       limits:
         cpu: 200m
@@ -63,10 +55,6 @@ kyverno:
   cleanupController:
     enabled: true
     replicas: 1
-    # Prometheus annotations expose metrics to pod-discovery collectors.
-    podAnnotations:
-      prometheus.io/scrape: "true"
-      prometheus.io/port: "8000"
     resources:
       limits:
         cpu: 100m
@@ -79,10 +67,6 @@ kyverno:
   reportsController:
     enabled: true
     replicas: 1
-    # Prometheus annotations expose metrics to pod-discovery collectors.
-    podAnnotations:
-      prometheus.io/scrape: "true"
-      prometheus.io/port: "8000"
     resources:
       limits:
         cpu: 200m

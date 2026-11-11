@@ -5,7 +5,7 @@ def _exec_filegroup_impl(ctx):
 
     Use this to wrap platform-independent build outputs (e.g. JS/CSS/HTML from
     vite) so they aren't needlessly rebuilt under target platform transitions
-    (e.g. py3_image's multi-platform builds).
+    (e.g. py3_image's Linux platform transition).
     """
     return [DefaultInfo(files = ctx.attr.src[DefaultInfo].files)]
 

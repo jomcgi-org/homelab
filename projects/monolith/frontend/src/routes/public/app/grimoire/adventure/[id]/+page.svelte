@@ -52,7 +52,7 @@
   });
 </script>
 
-<div class="wrap-narrow detail-page page">
+<div class="wrap-narrow detail-page page edition">
   {#if loading}
     <div class="skeleton-block"></div>
   {:else if notFound}
@@ -112,7 +112,7 @@
     font-size: 11px;
     letter-spacing: 0.22em;
     text-transform: uppercase;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     font-weight: 600;
     margin: 0;
   }
@@ -123,7 +123,7 @@
   }
 
   .back-link:hover {
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .adventure-title {
@@ -136,7 +136,7 @@
   }
 
   .adventure-summary {
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font-size: 16px;
     line-height: 1.6;
   }
@@ -154,8 +154,8 @@
   }
 
   .roster-group-title {
-    font-family: var(--font-mono);
-    color: var(--grim-text-faint);
+    font-family: var(--font-code);
+    color: var(--ink-2);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     font-size: 11px;
@@ -180,11 +180,11 @@
   }
 
   .rel-name:hover {
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .roster-empty {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 12px;
   }
 
@@ -199,24 +199,19 @@
   }
 
   .empty-help {
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
 
   .status-error {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     color: var(--grim-type-creature);
     padding: 32px 0;
   }
 
   .skeleton-block {
     height: 320px;
-    border-radius: 7px;
-    background: linear-gradient(
-      90deg,
-      var(--grim-surface-2) 25%,
-      transparent 37%,
-      var(--grim-surface-2) 63%
-    );
+    border-radius: 0;
+    background: var(--band);
     background-size: 400% 100%;
     animation: shimmer 1.4s ease infinite;
   }

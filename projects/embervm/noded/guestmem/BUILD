@@ -10,6 +10,7 @@ go_library(
     visibility = ["//projects/embervm/noded:__subpackages__"],
     deps = [
         "//projects/embervm/noded/guestagent",
+        "//projects/embervm/noded/unixsock",
         "//projects/embervm/noded/vsockproto",
     ],
 )

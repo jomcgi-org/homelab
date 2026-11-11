@@ -69,6 +69,10 @@ class StalePreview(Unsafe):
     """A valid run is no longer the current open PR head."""
 
 
+class IneligiblePreview(Unsafe):
+    """A valid current build targets a base outside publication scope."""
+
+
 def require(condition, message):
     if not condition:
         raise Unsafe(message)
@@ -235,25 +239,50 @@ def extract_assets(raw):
     return assets
 
 
-def validate_pr(pr, number, sha=None):
-    require(pr.get("number") == number, "PR identity mismatch")
+def validate_pr_metadata(pr, number, sha=None):
+    require(
+        type(pr.get("number")) is int and pr["number"] > 0 and pr["number"] == number,
+        "PR identity mismatch",
+    )
     require(
         pr.get("base", {}).get("repo", {}).get("full_name") == REPOSITORY,
         "PR base repository mismatch",
     )
-    require(pr.get("base", {}).get("ref") == "main", "PR does not target main")
-    if sha is not None and (
-        pr.get("state") != "open" or pr.get("head", {}).get("sha") != sha
-    ):
-        raise StalePreview("closed PR or stale head")
+    base_ref = pr.get("base", {}).get("ref")
+    require(isinstance(base_ref, str) and base_ref, "invalid PR base ref")
+    if sha is not None:
+        state = pr.get("state")
+        require(
+            isinstance(state, str) and state in {"open", "closed"}, "invalid PR state"
+        )
+        head_sha = pr.get("head", {}).get("sha")
+        require(
+            isinstance(head_sha, str) and SHA.fullmatch(head_sha) is not None,
+            "invalid PR head SHA",
+        )
+        if state != "open" or head_sha != sha:
+            raise StalePreview("closed PR or stale head")
+    return base_ref
+
+
+def validate_pr(pr, number, sha=None):
+    require(validate_pr_metadata(pr, number, sha) == "main", "PR does not target main")
 
 
 def validate_run(run, workflow, event_run, pr):
     """All identity facts come from authenticated API responses and the event."""
-    require(run.get("id") == event_run.get("id"), "run identity mismatch")
-    require(
-        run.get("run_attempt") == event_run.get("run_attempt"), "superseded run attempt"
-    )
+    for field, message in [
+        ("id", "run identity mismatch"),
+        ("run_attempt", "superseded run attempt"),
+    ]:
+        actual, expected = run.get(field), event_run.get(field)
+        require(
+            type(actual) is int
+            and actual > 0
+            and type(expected) is int
+            and actual == expected,
+            message,
+        )
     require(
         run.get("repository", {}).get("full_name") == REPOSITORY,
         "run repository mismatch",
@@ -267,8 +296,12 @@ def validate_run(run, workflow, event_run, pr):
         workflow.get("path") == BUILD_WORKFLOW and workflow.get("name") == BUILD_NAME,
         "workflow identity mismatch",
     )
+    workflow_id = workflow.get("id")
     require(
-        run.get("workflow_id") == workflow.get("id")
+        type(workflow_id) is int
+        and workflow_id > 0
+        and type(run.get("workflow_id")) is int
+        and run["workflow_id"] == workflow_id
         and run.get("path", "").partition("@")[0] == BUILD_WORKFLOW,
         "run workflow mismatch",
     )
@@ -280,12 +313,16 @@ def validate_run(run, workflow, event_run, pr):
         "ambiguous run PR association",
     )
     require(associated[0].get("head", {}).get("sha") == sha, "run PR head mismatch")
-    validate_pr(pr, pr["number"], sha)
+    head_repository = run.get("head_repository", {}).get("full_name")
     require(
-        run.get("head_repository", {}).get("full_name")
-        == pr.get("head", {}).get("repo", {}).get("full_name"),
+        isinstance(head_repository, str)
+        and head_repository
+        and head_repository == pr.get("head", {}).get("repo", {}).get("full_name"),
         "head repository mismatch",
     )
+    # Classify an unsupported base only after every provenance check has passed.
+    if validate_pr_metadata(pr, pr["number"], sha) != "main":
+        raise IneligiblePreview("PR does not target main")
     return pr["number"], sha
 
 
@@ -422,10 +459,62 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def http_route(path):
+    """Return a fixed category, never a caller-supplied path or query."""
+    prefix = f"/repos/{REPOSITORY}"
+    path = path.partition("?")[0]
+    routes = (
+        (r"/pages", "pages"),
+        (r"/actions/runs/[0-9]+", "build-run"),
+        (r"/actions/runs/[0-9]+/artifacts", "run-artifacts"),
+        (r"/actions/workflows/[^/]+", "build-workflow"),
+        (r"/actions/artifacts/[0-9]+/zip", "artifact-redirect"),
+        (r"/pulls/[0-9]+", "pull-request"),
+        (r"/git/refs?(?:/heads/[^/]+)?", "git-reference"),
+        (r"/git/blobs(?:/[^/]+)?", "git-blob"),
+        (r"/git/trees(?:/[^/]+)?", "git-tree"),
+        (r"/git/commits(?:/[^/]+)?", "git-commit"),
+        (r"/contents/.+", "repository-content"),
+        (r"/issues/(?:[0-9]+/comments|comments/[0-9]+)", "preview-comment"),
+    )
+    for pattern, category in routes:
+        if re.fullmatch(re.escape(prefix) + pattern, path):
+            return category
+    return "repository-api"
+
+
 class API:
     def __init__(self, token):
         self.token = token
         self.opener = urllib.request.build_opener(NoRedirect)
+
+    def _read(self, req, limit, route):
+        try:
+            with self.opener.open(req, timeout=60) as response:
+                return response.read(limit + 1)
+        except urllib.error.HTTPError as error:
+            method = req.get_method()
+            if method not in {
+                "GET",
+                "HEAD",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+                "OPTIONS",
+            }:
+                method = "OTHER"
+            status = (
+                error.code
+                if type(error.code) is int and 100 <= error.code <= 599
+                else 0
+            )
+            # Only fixed categories, allowlisted methods and numeric status.
+            # Never stringify the exception, request URL, headers or body.
+            print(
+                f"HTTP method={method} route={route} status={status}", file=sys.stderr
+            )
+            raise
 
     def request(self, path, method="GET", payload=None, limit=MAX_SITE):
         require(path.startswith("/repos/"), "unexpected API path")
@@ -442,8 +531,7 @@ class API:
                 "User-Agent": "homelab-fixture-publisher",
             },
         )
-        with self.opener.open(req, timeout=60) as response:
-            raw = response.read(limit + 1)
+        raw = self._read(req, limit, http_route(path))
         require(len(raw) <= limit, "API response exceeds limit")
         return json.loads(raw) if raw else None
 
@@ -503,8 +591,9 @@ class API:
             ),
             "unexpected artifact storage host",
         )
-        with self.opener.open(urllib.request.Request(location), timeout=60) as response:
-            raw = response.read(MAX_ARCHIVE + 1)
+        raw = self._read(
+            urllib.request.Request(location), MAX_ARCHIVE, "artifact-storage"
+        )
         require(
             len(raw) <= MAX_ARCHIVE
             and "sha256:" + hashlib.sha256(raw).hexdigest() == digest,
@@ -525,13 +614,12 @@ def state_path(path):
     return path
 
 
-def load_state(api, url, bootstrap):
+def load_state(api, url):
     ref = api.optional(f"/git/ref/heads/{STATE_BRANCH}")
     if ref is None:
-        require(
-            bootstrap,
-            "state branch missing; dedicated Pages ownership must be explicitly acknowledged before bootstrap",
-        )
+        # The repository owner confirmed this Pages site is dedicated to
+        # synthetic previews. Initialize its marked state without a second
+        # ownership acknowledgement; existing unmarked branches still fail.
         return None, empty_state(url), {}
     commit_sha = ref["object"]["sha"]
     require(SHA.fullmatch(commit_sha) is not None, "invalid state commit")
@@ -638,7 +726,7 @@ def output(name, value):
         destination.write(f"{name}={value}\n")
 
 
-def prepare(api, event, event_name, directory, bootstrap):
+def prepare(api, event, event_name, directory):
     require(
         event.get("repository", {}).get("full_name") == REPOSITORY,
         "event repository mismatch",
@@ -647,7 +735,10 @@ def prepare(api, event, event_name, directory, bootstrap):
     candidate = None
     if event_name == "workflow_run":
         event_run = event["workflow_run"]
-        require(type(event_run.get("id")) is int, "invalid event run id")
+        require(
+            type(event_run.get("id")) is int and event_run["id"] > 0,
+            "invalid event run id",
+        )
         run = api.repo(f"/actions/runs/{event_run['id']}")
         workflow = api.repo(
             f"/actions/workflows/{urllib.parse.quote(BUILD_WORKFLOW.rsplit('/', 1)[1])}"
@@ -660,6 +751,11 @@ def prepare(api, event, event_name, directory, bootstrap):
         pr = api.repo(f"/pulls/{associations[0]['number']}")
         try:
             number, sha = validate_run(run, workflow, event_run, pr)
+        except IneligiblePreview:
+            print(
+                "Skipping ineligible build: PR does not target main; "
+                "reconciling existing previews."
+            )
         except StalePreview:
             print("Ignoring a closed/superseded build; reconciling existing previews.")
         else:
@@ -683,7 +779,7 @@ def prepare(api, event, event_name, directory, bootstrap):
         validate_pr(api.repo(f"/pulls/{int(event['number'])}"), event["number"])
     else:
         require(event_name in {"schedule", "workflow_dispatch"}, "unsupported event")
-    parent, state, files = load_state(api, url, bootstrap)
+    parent, state, files = load_state(api, url)
     known_blobs = {blob_sha(data) for data in files.values()}
     now = int(time.time())
     reconcile(state, files, current_prs(api, state), now)
@@ -794,7 +890,6 @@ def main():
             event,
             os.environ["GITHUB_EVENT_NAME"],
             args.output,
-            os.environ.get("BOOTSTRAP_OWNED_SITE") == "true",
         )
     elif args.command == "guard":
         guard(

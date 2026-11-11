@@ -14,8 +14,6 @@ const tooLarge = () =>
 // is obviously oversize before buffering it and never forwards a client
 // filename or content type of its own.
 export async function POST({ request, fetch, cookies, params }) {
-  if (process.env.GRIMOIRE_PLAY_ENABLED !== "true")
-    error(404, "Session play is not enabled.");
   if (!UUID.test(params.id)) error(404, "Campaign not found.");
   const declared = Number(request.headers.get("content-length"));
   if (declared > HANDOUT_IMAGE_MAX_BYTES + FRAMING_ALLOWANCE) return tooLarge();

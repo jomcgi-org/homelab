@@ -4,7 +4,8 @@ Thin layer over kubernetes_asyncio, shared by the home observability stats
 and the ``k8s-*`` debug MCP tools (``cluster/``). Read-only except for one
 explicitly-named mutation: ``sync_argocd_app`` patches an Application's
 ``.operation`` field to trigger a sync (the same mechanism as
-``argocd app sync``). Keep the interface minimal."""
+``argocd app sync``), recording the caller the MCP tool names as
+``initiatedBy``. Keep the interface minimal."""
 
 from __future__ import annotations
 
@@ -566,18 +567,25 @@ class KubernetesClient:
         namespace: str = "argocd",
         prune: bool = False,
         dry_run: bool = False,
+        *,
+        initiated_by: str,
     ) -> dict:
         """Trigger an ArgoCD sync by patching the Application's ``.operation``.
 
         This is the same mechanism ``argocd app sync`` uses under the hood: the
         application controller watches ``.operation`` and executes it. Note it
         bypasses ArgoCD's own RBAC/audit — gated only by the K8s ``patch`` verb.
+
+        ``initiated_by`` is recorded as ``initiatedBy.username``. It has no
+        default so a caller cannot forget to attribute the sync: the MCP tool
+        passes the verified request subject. It is a label on the operation,
+        not impersonation; the API server still sees this ServiceAccount.
         """
         api = await self._ensure_client()
         custom = client.CustomObjectsApi(api)
         body = {
             "operation": {
-                "initiatedBy": {"username": "monolith-k8s-mcp"},
+                "initiatedBy": {"username": initiated_by},
                 "sync": {"prune": prune, "dryRun": dry_run},
             }
         }

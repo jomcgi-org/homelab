@@ -6,6 +6,8 @@
     zoom = 1,
     hoverTitle = "—",
     indexedAt = null,
+    // {label, href}: a way home for a tier whose bar is its only chrome.
+    home = null,
   } = $props();
 
   function formatAgo(iso) {
@@ -20,8 +22,11 @@
   }
 </script>
 
-<div class="statusbar">
+<div class="statusbar" class:with-home={Boolean(home)}>
   <div class="statusbar-track">
+    {#if home}
+      <a class="stat home" href={home.href}>&larr; {home.label}</a>
+    {/if}
     <span class="stat">~/KG</span>
     <span class="stat"><strong>{nodeCount.toLocaleString()}</strong> NOTES</span
     >
@@ -39,12 +44,12 @@
   .statusbar {
     position: relative;
     height: 32px;
-    background: #f5d90a;
-    border-bottom: 1.5px solid #141414;
+    background: var(--band, #f5d90a);
+    border-bottom: 1px solid var(--stroke, #141414);
     overflow: hidden;
     z-index: 4;
-    font-family: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
-    color: #141414;
+    font-family: var(--font-code, ui-monospace, monospace);
+    color: var(--ink-2, #141414);
   }
   .statusbar-track {
     display: flex;
@@ -56,6 +61,18 @@
     font-size: 11px;
     letter-spacing: 0.06em;
   }
+  /* A bar that is a page's only way home grows to a thumb's height. */
+  .statusbar.with-home {
+    height: 44px;
+  }
+  .home {
+    align-self: stretch;
+    color: inherit;
+    text-decoration: none;
+  }
+  .home:hover {
+    color: var(--accent-ink, inherit);
+  }
   .stat {
     display: inline-flex;
     align-items: center;
@@ -65,8 +82,7 @@
     content: "";
     width: 5px;
     height: 5px;
-    background: #141414;
-    border-radius: 50%;
+    background: var(--ink-2, #141414);
     display: inline-block;
     margin-right: 4px;
   }

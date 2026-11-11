@@ -33,6 +33,7 @@ defmodule Embervm.NodeRoundtripTest do
     NodeService,
     NodeStatus,
     PrimeRequest,
+    RegistryEntry,
     RelightRequest,
     RelightSource,
     RetireVolumeRequest,
@@ -80,7 +81,6 @@ defmodule Embervm.NodeRoundtripTest do
 
     {:ok, pr} = NodeService.Stub.prime(ch, %PrimeRequest{
       snapshot_ref: "snapX",
-      volume_disk_path: "/var/lib/ember/session/w/workspace.img",
       volume_mount: "/workspace",
       volume_size_bytes: 10_737_418_240,
       lineage_id: "lineage-1"
@@ -125,7 +125,6 @@ defmodule Embervm.NodeRoundtripTest do
         request: %GuestRequest{method: "POST", path: "/invoke", body: "state"},
         timeout_ms: 1_000,
         session_id: "s-abc",
-        volume_disk_path: "/var/lib/ember/volumes/session/claude-runtime/s-abc/workspace.img",
         volume_mount: "/workspace-persistent",
         volume_size_bytes: 10_737_418_240,
         lineage_id: "s-abc"
@@ -351,7 +350,7 @@ defmodule Embervm.NodeRoundtripTest do
              NodeService.Stub.delete_volume(ch, %DeleteVolumeRequest{workload: "scratch-postgres", lineage_id: "lineage-1"})
   end
 
-  test "StartStateful honors blessed_generation and volume_device (R7 additive fields)", %{
+  test "StartStateful honors blessed_generation (R7 additive field)", %{
     channel: ch
   } do
     # FRESH with blessed_generation set: the control-plane-issued generation wins
@@ -402,27 +401,43 @@ defmodule Embervm.NodeRoundtripTest do
 
     assert relight_legacy.generation == 7
 
-    # volume_device set (R7, Longhorn-native lane): the fake echoes it into vm_id
-    # so the client can assert the device path crossed the wire.
-    {:ok, device_set} =
-      NodeService.Stub.start_stateful(ch, %StartStatefulRequest{
-        mode: :START_STATEFUL_MODE_FRESH,
-        boot_image_ref: "pg-base",
-        port: 5432,
-        volume_device: "/dev/longhorn/scratch-postgres"
-      })
+    assert fresh_legacy.vm_id == "vm:pg-base"
+  end
 
-    assert device_set.vm_id == "vm:pg-base@/dev/longhorn/scratch-postgres"
+  test "retired fields remain unknown across Elixir encoding and the Go RPC", %{channel: ch} do
+    # Literal wire bytes from the previous schema, including the two-byte tag
+    # for NodeStatus field 25. No legacy generated client is needed.
+    cases = [
+      {%Trace{workload: "w"}, <<26, 3, "old">>, :correlation_id},
+      {%BuildBaseRequest{image_ref: "img"}, <<32, 187, 8>>, :guest_port},
+      {%PrimeRequest{lineage_id: "l"}, <<26, 3, "old">>, :volume_disk_path},
+      {%SessionAssignRequest{session_id: "s"}, <<50, 3, "old">>, :volume_disk_path},
+      {%RegistryEntry{workload: "w"}, <<106, 3, "old">>, :stateful_boot_image_ref},
+      {%RegistryEntry{workload: "w"}, <<114, 3, "old">>, :stateful_volume_device},
+      {%StartStatefulRequest{boot_image_ref: "pg-base", blessed_generation: 42}, <<98, 3, "old">>, :volume_device},
+      {%NodeStatus{cpu_vendor: "amd"}, <<202, 1, 3, "old">>, :node_template_hash}
+    ]
 
-    # volume_device empty (legacy vol.img lane): no suffix on vm_id.
-    {:ok, device_unset} =
-      NodeService.Stub.start_stateful(ch, %StartStatefulRequest{
-        mode: :START_STATEFUL_MODE_FRESH,
-        boot_image_ref: "pg-base",
-        port: 5432
-      })
+    for {request, legacy, field} <- cases do
+      mod = request.__struct__
+      wire = IO.iodata_to_binary(mod.encode(request)) <> legacy
+      decoded = mod.decode(wire)
+      refute Map.has_key?(decoded, field)
+      for {key, value} <- Map.from_struct(request), key != :__unknown_fields__ do
+        assert Map.fetch!(decoded, key) == value
+      end
+      reencoded = IO.iodata_to_binary(mod.encode(decoded))
+      assert :binary.match(reencoded, legacy) != :nomatch
+      assert mod.decode(reencoded) == decoded
 
-    assert device_unset.vm_id == "vm:pg-base"
+      if mod == StartStatefulRequest do
+        # The old device field survives the Elixir encoder, reaches Go as an
+        # unknown tag, and cannot change the retained boot/generation behavior.
+        assert {:ok, response} = NodeService.Stub.start_stateful(ch, decoded)
+        assert response.vm_id == "vm:pg-base"
+        assert response.generation == 42
+      end
+    end
   end
 
   test "ResolveStatefulRequest.blessed_generation survives protobuf encode/decode (R7 abort-blessing fix)" do
@@ -894,7 +909,6 @@ defmodule Embervm.NodeRoundtripTest do
     {:ok, ns} = NodeService.Stub.get_node_status(ch, %GetNodeStatusRequest{node_id: "node-4"})
 
     assert ns.cpu_vendor == "amd"
-    assert ns.node_template_hash == "tmpl-abc123"
 
     assert [vol] = ns.volumes
     assert vol.generation_blessed == true

@@ -8,7 +8,10 @@ go_library(
     ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/noded/groupclock",
     visibility = ["//projects/embervm/noded:__subpackages__"],
-    deps = ["//projects/embervm/noded/vsockproto"],
+    deps = [
+        "//projects/embervm/noded/unixsock",
+        "//projects/embervm/noded/vsockproto",
+    ],
 )
 
 go_test(

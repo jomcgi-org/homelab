@@ -49,11 +49,6 @@ argo-workflows:
     # must not manage them (would need cluster RBAC + the cluster-scoped CRD).
     clusterWorkflowTemplates:
       enabled: false
-    # Expose the controller's :9090 telemetry endpoint for pod discovery.
-    podAnnotations:
-      prometheus.io/scrape: "true"
-      prometheus.io/port: "9090"
-      prometheus.io/path: "/metrics"
     # Cluster convention: CPU requests but NO CPU limit (avoid throttling);
     # memory request == limit.
     resources:
@@ -75,10 +70,6 @@ argo-workflows:
     # templates (no cluster RBAC granted).
     clusterWorkflowTemplates:
       enabled: false
-    podAnnotations:
-      prometheus.io/scrape: "true"
-      prometheus.io/port: "9090"
-      prometheus.io/path: "/metrics"
     resources:
       requests:
         cpu: 50m

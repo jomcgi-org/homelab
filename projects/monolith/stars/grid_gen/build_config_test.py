@@ -1,6 +1,8 @@
 """Static checks for the grid image's dependency and runtime isolation."""
 
+import ast
 import json
+import os
 import re
 from pathlib import Path
 
@@ -61,6 +63,7 @@ def test_grid_job_has_an_explicit_minimal_runfiles_closure():
     assert 'srcs = ["stars/grid_gen/job.py"],  # keep' in job
     assert 'imports = ["."],  # keep' in job
     assert _list_attr(job, "deps") == {
+        ":job_tracing",
         ":stars_grid_generator",
         ":stars_grid_ingest",
         "@pip//boto3",
@@ -70,6 +73,46 @@ def test_grid_job_has_an_explicit_minimal_runfiles_closure():
         "@pip//opentelemetry_sdk",
     }
     assert ":pkg_stars" not in job
+
+
+def test_tracing_helper_has_only_otel_dependencies():
+    build = (MONOLITH / "BUILD").read_text()
+    helper = _named_target(build, "job_tracing")
+    assert 'srcs = ["core/job_tracing.py"]' in helper
+    assert _list_attr(helper, "deps") == {
+        "@pip//opentelemetry_api",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_sdk",
+    }
+    job_test = _named_target(build, "stars_grid_job_test")
+    assert ":job_tracing" in _list_attr(job_test, "deps")
+    for target in (helper, _named_target(build, "stars_grid_job"), job_test):
+        for forbidden in (":pkg_core", ":pkg_shared", ":monolith_backend", "app/"):
+            assert forbidden not in target
+
+
+def test_built_grid_runfiles_include_helper_and_existing_dependencies():
+    # The binary is test data, so Bazel builds it and merges its real runfiles.
+    root = Path(os.environ["TEST_SRCDIR"])
+    # Keep symlinked local runfiles inside the built closure, not the source tree.
+    monolith = root / "_main/projects/monolith"
+    assert (monolith / "core/job_tracing.py").is_file()
+    assert (monolith / "core/db.py").is_file()  # Existing ingest closure.
+    assert (monolith / "stars/grid_gen/job.py").is_file()
+    for relative in (
+        "opentelemetry/trace/__init__.py",
+        "opentelemetry/sdk/trace/__init__.py",
+        "opentelemetry/exporter/otlp/proto/http/trace_exporter/__init__.py",
+    ):
+        assert any(root.glob(f"**/{relative}")), relative
+    assert not (monolith / "app").exists()
+    assert not (monolith / "shared").exists()
+    assert not (monolith / "framework").exists()
+    assert {p.name for p in (monolith / "core").glob("*.py")} <= {
+        "__init__.py",
+        "db.py",
+        "job_tracing.py",
+    }
 
 
 def test_grid_runtime_image_is_amd64_only_and_non_root():
@@ -84,7 +127,40 @@ def test_grid_runtime_image_is_amd64_only_and_non_root():
     assert "arm64 = False" in image
     final_image = _named_target(build, "stars_grid_image")
     assert 'base = ":stars_grid_apko_base"' in final_image
-    assert "multi_platform = False" in final_image
+    assert final_image.startswith("py3_image(")
+    assert "bash_symlink = False" in final_image
+
+    # Verify the wrapper's surviving path: one image inheriting the apko user,
+    # with the public image and its digest both selecting Linux AMD64 in CI.
+    macro = ast.parse(
+        (MONOLITH.parents[1] / "bazel/tools/oci/py3_image.bzl").read_text()
+    )
+    calls = [
+        node
+        for node in ast.walk(macro)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    ]
+    images = [call for call in calls if call.func.id == "oci_image"]
+    assert len(images) == 1
+    image_attrs = {kw.arg: kw.value for kw in images[0].keywords}
+    assert isinstance(image_attrs["base"], ast.Name)
+    assert image_attrs["base"].id == "base"
+    assert "user" not in image_attrs  # Preserve uid 65532 from the custom base.
+    assert not any(call.func.id == "oci_image_index" for call in calls)
+    transitions = [
+        call for call in calls if call.func.id == "platform_transition_filegroup"
+    ]
+    assert len(transitions) == 2
+    for transition in transitions:
+        attrs = {kw.arg: kw.value for kw in transition.keywords}
+        selection = attrs["target_platform"]
+        assert isinstance(selection, ast.Call)
+        assert isinstance(selection.func, ast.Name)
+        assert selection.func.id == "select"
+        platforms = ast.literal_eval(selection.args[0])
+        assert platforms["@platforms//cpu:x86_64"] == (
+            "//bazel/tools/platforms:linux_x86_64"
+        )
 
 
 def test_grid_runtime_contains_native_cpp_library_on_both_architectures():

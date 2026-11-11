@@ -51,9 +51,6 @@ auth:
     audience: "https://private.jomcgi.dev"
   jwksCacheTtlSeconds: 300
 
-frontend:
-  otelCollectorUrl: ""
-
 # Repository support for the token broker's SPIFFE listener is staged only.
 # Live production keeps the existing plaintext route until the issue checklist
 # has validated both listener authorization and SVID rotation.
@@ -143,9 +140,10 @@ cfIngress:
 knowledge:
   enabled: true
   factReview:
+    # Approved bounded source coverage; existing review quotas stay unchanged.
+    coverageEnabled: true
     # Catch-up allowance. Actual coverage is reported separately from retries;
     # bounded batches retain an independent evidence verdict for each fact.
-    enabled: true
     maxDaily: 20000
     intervalSeconds: 1
     batchSize: 32
@@ -162,8 +160,11 @@ knowledge:
     maxRunCostUsd: 2.0
     clarityRepairs:
       enabled: false
+    # Process feedback: open a bounded issue when a defect pattern repeats
+    # across audit runs (threshold, window and weekly cap below). The audit
+    # itself has run since 2026-10-16.
     issues:
-      enabled: false
+      enabled: true
       thresholdDefects: 5
       thresholdRuns: 3
       windowDays: 28
@@ -183,28 +184,17 @@ knowledge:
   # there is no sidecar, no vault volume, and no git-sync backup left to wire.
   feeds:
     emberSessions:
-      # Dark feed verified in the 0.412 templates (#5527); no backfill because
-      # since is empty, so only sessions after the pod start are exported.
-      enabled: true
       # Pinned floor: the default floor is the pod's process start, which every
       # chart roll resets, so sessions that finish across a roll were never
       # exported. Persisting the floor is tracked in #5587.
       since: "2026-09-03T17:00:00Z"
     # Hourly scout over the main diff since the last processed SHA (#5570).
     repoDiff:
-      enabled: true
-    # Demand-driven verification of docfix PRs against main; comments only
-    # while docFixAutoMerge is off.
-    docFixReview:
-      enabled: true
-  # Read side of ADR agents/063 (#5680): recall top knowledge-graph facts into
-  # every Ember session's system prompt. Chart 0.432.1 carries the template.
-  recall:
-    enabled: true
-  # #5787 receipt-conversation maintenance and Planner input, enabled for the
-  # live checks on #6561. Set back to false to roll back.
-  conductorContinuity:
-    enabled: true
+      # Backfill authoritative raws for ranges first ingested from placeholder
+      # evidence. Idempotent: covered ranges are filtered, so a later pass
+      # writes nothing and makes no source calls.
+      reconcile:
+        enabled: true
 
 chat:
   enabled: true
@@ -237,6 +227,7 @@ chat:
     - name: "colin-homelab"
       channelId: "1491186550472708117"
       githubRepo: "ColinCee/homelab"
+      excludeDependencyOnly: true
       prompt: "professional"
       embedTitle: "Colin - Homelab"
       embedColor: "0x2ECC71"
@@ -294,7 +285,9 @@ metaSpark:
 # publisher and the operator prerequisites that remain before rollout are
 # documented in factory/orchestration/FACTORY.md under "Review publisher".
 swarm:
+  factoryPlannerHoldRefusalEnabled: false
   enabled: true
+  codexPreferredGrant: codex-b
   # Webhook stays homelab-only: the legacy repository value in the chart is
   # ingested, and no extra repos are configured until the staged
   # weave-hand/loom operator migration in FACTORY.md sets this.
@@ -308,6 +301,9 @@ swarm:
 # switches.
 agents:
   drainer:
+    # Reconcile only the observed existing daily payload. Preserve its cadence.
+    learningHandoffEnabled: true
+    learningDailyPayloadSha256: "e121e88364d8636ebaed35f00c2ff6711d5650a08e1c276af9b697a7780acf02"
     enabled: true
     # Accommodate the 20,000-review catch-up allowance plus the former 2,000
     # extraction/audit allowance. This is a shared ceiling, not a reservation.
@@ -339,11 +335,8 @@ grimoire:
   # Registered-player pilot (#6858). Account enrollment remains disabled;
   # this path requires no Authentik invitation credential or permission grant.
   invitationLinks:
-    enabled: true
     enrollmentEnabled: false
   enabled: true
-  play:
-    enabled: true
   s3Bucket: "grimoire"
   # Production default: direct DeepSeek (first-party, native precision, no fp4
   # quantization, prompt cache preserved). Model id is the bare DeepSeek id (not
@@ -359,12 +352,12 @@ grimoire:
   # tuned for the local GPU's 8 decode slots, irrelevant for a hosted provider.)
   extractConcurrency: "64"
 
-# ADR 036 orchestrator brief compiler (Phase 3 live enable). The primary planner
+# ADR 036 chat-versus-session router (Phase 3 live enable). The primary provider
 # is NVIDIA Nemotron 3 Ultra (free, 256K context, orchestrator-tuned tool calling;
 # ORCHESTRATOR_API_KEY sourced from the NVIDIA_API_KEY field of the existing
 # "goosecracker" Secret). NVIDIA's free tier is ~40 RPM per key, so on a rate
-# limit or error the ordered chain degrades to DeepSeek on OpenRouter (the proven
-# forced-tool-call path), then to Meta Spark, before failing open to direct
+# limit or error the ordered chain degrades to DeepSeek on OpenRouter,
+# then to Meta Spark, before failing open to direct
 # submit. The Meta key comes from the dedicated meta-spark item. The
 # orchestrator only runs on channels with the ADR 029 "orchestrator" consent
 # grant; ungranted channels fail open to direct submit with no external traffic.
@@ -431,13 +424,17 @@ cdHealth:
       kargo_namespace: kargo-monolith-agents
       chart_repo_suffix: /charts/monolith-agents
       chart_path: projects/monolith-agents/chart
+    - app: scotland-connector
+      kargo_namespace: kargo-scotland-connector
+      chart_repo_suffix: /charts/scotland-connector
+      chart_path: projects/scotland-connector/chart
 
 # Staged separately after repository acceptance. Keep cdHealth and
 # podRestartWatch on their existing settings while this writer stays off.
 deploymentObservations:
   enabled: false
 
-# Repository-only staging for #7002; enable with the shared checker later.
+# Base deployment stays opt-in; the hub enables the #7002 advisory reader.
 healthAlerts:
   cnpgBackups:
     enabled: false

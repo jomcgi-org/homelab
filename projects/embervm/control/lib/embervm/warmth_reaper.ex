@@ -384,7 +384,7 @@ defmodule Embervm.WarmthReaper do
     remote_request = %EvictArtifactRequest{artifact: artifact, remote: true, vendor: vendor || "", trace: %Trace{workload: workload}}
 
     spawn(fn ->
-      with {:ok, channel} <- safe_channel(state, dial_key) do
+      with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_key) do
         # Remote (S3) evict fires ONLY if the local disk evict succeeded: never
         # delete the recovery copy of a bundle the node refused/failed to remove.
         run_evict(state, channel, [local], if(remote, do: {:artifact, remote_request}, else: nil))
@@ -415,7 +415,7 @@ defmodule Embervm.WarmthReaper do
     per_member = for ref <- member_refs, do: {:snapshot, %EvictSnapshotRequest{trace: %Trace{}, snapshot_ref: ref}}
 
     spawn(fn ->
-      with {:ok, channel} <- safe_channel(state, dial_key) do
+      with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_key) do
         # The single remote GROUP_SET evict (drops the whole S3 set prefix at once)
         # fires ONLY if EVERY member's local evict succeeded: one refused/failed
         # member (e.g. a live relit member) leaves the set's recovery copy intact.
@@ -602,14 +602,6 @@ defmodule Embervm.WarmthReaper do
   defp schedule_sweep(_state), do: :ok
 
   # -- channel + default seams -------------------------------------------------
-
-  defp safe_channel(state, dial_key) do
-    state.channel_fun.(dial_key)
-  rescue
-    e -> {:error, {:channel_raised, e}}
-  catch
-    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
-  end
 
   # NodeChannel pools channels per dial key; release is a no-op for a keyed pool but
   # kept so a test channel_fun that returns a per-call channel can be torn down.

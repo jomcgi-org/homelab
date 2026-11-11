@@ -24,7 +24,7 @@ import httpx
 import pytest
 from sqlalchemy import delete
 from sqlalchemy.pool import NullPool
-from sqlmodel import Session, create_engine, select
+from sqlmodel import Session, create_engine
 
 from factory.execution import store
 from factory.execution.models import AgentSession, AgentTurn, PendingMessage
@@ -162,9 +162,15 @@ def crash_lane(pg, tmp_path, monkeypatch):
         engine.dispose()
 
 
-def test_observer_kill_preserves_unknown_outcome_without_remote_replay(
+def test_observer_kill_holds_turn_until_late_result_without_remote_replay(
     crash_lane, tmp_path
 ):
+    """The lease backstop holds a dead observer's turn on its exact receipt.
+
+    Nothing re-invokes the guest. Its late result, delivered with the dead
+    attempt's owner and count, finishes the same turn, and only then does the
+    session move on to its queued successor.
+    """
     engine, create, environment, client, remote_state = crash_lane
     identity = create(PROMPT)
     with Session(engine) as session:
@@ -202,10 +208,13 @@ def test_observer_kill_preserves_unknown_outcome_without_remote_replay(
             turn = store.get_turn(session, identity, 1)
             if turn is None:
                 return False
-            assert turn.stop_reason == store.UNKNOWN_INVOCATION
-            # Read the atomic disposition in the same database transaction.
-            assert store.get_pending_message(session, identity, 1) is None
-            assert store.get_session(session, identity).status == "failed"
+            assert turn.stop_reason == store.RESPONSE_LOST
+            assert turn.terminal_reason == "interrupted"
+            # Read the hold disposition in the same database transaction.
+            pending = store.get_pending_message(session, identity, 1)
+            assert pending.claimed_by_replica == owner
+            assert pending.dispatch_count == 1
+            assert store.get_session(session, identity).status == "recovering"
             return True
 
     def snapshot():
@@ -213,23 +222,9 @@ def test_observer_kill_preserves_unknown_outcome_without_remote_replay(
             row = store.get_session(session, identity)
             turns = store.get_turns(session, identity)
             successor = store.get_pending_message(session, identity, 2)
-            assert (
-                len(
-                    session.exec(
-                        select(PendingMessage).where(
-                            PendingMessage.session_id == identity
-                        )
-                    ).all()
-                )
-                == 1
-            )
             assert len(turns) == 1
             turn = turns[0]
             assert turn.prompt == PROMPT and turn.result_text == PARTIAL
-            assert (
-                turn.terminal_reason == "error"
-                and turn.stop_reason == store.UNKNOWN_INVOCATION
-            )
             assert turn.cost_usd is None
             usage = json.loads(turn.usage_json)
             assert usage["activities"] == ACTIVITIES
@@ -240,7 +235,12 @@ def test_observer_kill_preserves_unknown_outcome_without_remote_replay(
             assert recovery["last_dispatch_at"] == dispatched.isoformat()
             assert recovery["partial_text"] == PARTIAL
             assert json.loads(recovery["partial_activities"]) == ACTIVITIES
-            assert row.status == "failed" and row.progress_token is None
+            assert recovery["invocation_phase"] == store.RESPONSE_LOST
+            hold = recovery["response_lost"]
+            assert hold["reason"] == "lease_expired"
+            assert hold["source"] == "lease_backstop"
+            assert hold["guest_id"] == row.ember_session_id
+            assert row.status == "recovering"
             assert (
                 row.ember_session_id,
                 row.ember_lineage_id,
@@ -254,39 +254,61 @@ def test_observer_kill_preserves_unknown_outcome_without_remote_replay(
             return turn.model_dump(), row.model_dump(), successor.model_dump()
 
     first_marker = tmp_path / "first-sweep.json"
-    with _child(tmp_path, environment, "recovery", first_marker):
-        _wait(held, "lease-expiry reconciliation", timeout=60)
+    with _child(tmp_path, environment, "recovery", first_marker) as recovery:
+        _wait(held, "lease-expiry response-loss hold", timeout=60)
         assert (
             datetime.now(timezone.utc) - heartbeat.replace(tzinfo=timezone.utc)
             >= store.RECLAIM_LEASE
         )
         original = snapshot()
-        assert len(remote_state()["invocations"]) == 1
-        client.post("/test/release").raise_for_status()
-        completed = _wait(
-            lambda: remote_state()["invocations"][0].get("result"),
-            "remote completion after observer death",
-        )
-        assert remote_state()["invocations"][0]["late_progress_status"] == 401
-        # Deliver the late result to the real persistence boundary with the
-        # dead attempt's original owner/count. This does not issue an invoke.
-        with pytest.raises(store.SessionOutcomeUnknown):
-            store.persist_turn_from_pending_sync(
-                identity,
-                1,
-                PROMPT,
-                Turn(**completed),
-                "late completion",
-                "completed",
-                completed["session_id"],
-                "luna",
-                owner,
-                1,
-            )
-        with Session(engine) as session:
-            with pytest.raises(store.SessionOutcomeUnknown, match="new session"):
-                store.create_pending_message(session, identity, "blocked send", "luna")
+
+        def two_polls():
+            assert recovery.poll() is None, "recovery process exited"
+            if not first_marker.exists():
+                return False
+            return json.loads(first_marker.read_text())["polls"] >= 2
+
+        # Further sweeps leave the hold exactly as written and replay nothing.
+        _wait(two_polls, "two real sweeps over the hold", timeout=25)
         assert snapshot() == original
+        assert len(remote_state()["invocations"]) == 1
+
+    client.post("/test/release").raise_for_status()
+    completed = _wait(
+        lambda: remote_state()["invocations"][0].get("result"),
+        "remote completion after observer death",
+    )
+    # Deliver the late result to the real persistence boundary with the dead
+    # attempt's original owner/count. This does not issue an invoke.
+    turn = store.persist_turn_from_pending_sync(
+        identity,
+        1,
+        PROMPT,
+        Turn(**completed),
+        "late completion",
+        "completed",
+        completed["session_id"],
+        "luna",
+        owner,
+        1,
+    )
+    assert turn.terminal_reason == "completed"
+    with Session(engine) as session:
+        turns = store.get_turns(session, identity)
+        assert [(t.seq, t.terminal_reason) for t in turns] == [(1, "completed")]
+        assert turns[0].result_text == completed["result"]
+        assert store.get_pending_message(session, identity, 1) is None
+        row = store.get_session(session, identity)
+        assert row.status != "recovering"
+        assert (
+            row.ember_session_id,
+            row.ember_lineage_id,
+            row.ember_session_token,
+        ) == binding
+        assert (
+            store.get_pending_message(session, identity, 2).message_text
+            == "held successor"
+        )
 
     second_marker = tmp_path / "second-sweep.json"
     untouched = create("unrelated untouched admission")
@@ -314,11 +336,32 @@ def test_observer_kill_preserves_unknown_outcome_without_remote_replay(
                 return True
 
         _wait(unrelated_completed, "untouched admission through restarted sweep")
-        assert snapshot() == original
+
+        def successor_completed():
+            with Session(engine) as session:
+                turn = store.get_turn(session, identity, 2)
+                if turn is None:
+                    return False
+                assert turn.terminal_reason == "completed"
+                assert store.get_pending_message(session, identity, 2) is None
+                return True
+
+        _wait(successor_completed, "held successor on the same guest")
+        with Session(engine) as session:
+            assert [
+                (turn.seq, turn.terminal_reason)
+                for turn in store.get_turns(session, identity)
+            ] == [(1, "completed"), (2, "completed")]
         state = remote_state()
         assert len(state["creates"]) == 2
-        assert [item["message"] for item in state["invocations"]] == [
-            PROMPT,
-            "unrelated untouched admission",
-        ]
+        invoked = [(item["identity"], item["message"]) for item in state["invocations"]]
+        # The original prompt reached the guest exactly once; the successor
+        # reused the same guest, and only the unrelated admission created one.
+        assert invoked[0] == (binding[0], PROMPT)
+        assert sorted(invoked[1:]) == sorted(
+            [
+                (binding[0], "held successor"),
+                (state["creates"][1], "unrelated untouched admission"),
+            ]
+        )
         assert state["deletes"] == [] and state["unexpected"] == []

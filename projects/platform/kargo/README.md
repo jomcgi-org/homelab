@@ -1,6 +1,6 @@
 # Kargo
 
-Kargo owns the live chart revision of five Applications on the GKE hub.
+Kargo owns the live chart revision of six Applications on the GKE hub.
 The UI is at `private.jomcgi.dev/app/kargo`, behind Cloudflare Access and
 Authentik. The `homelab-admin` group has promotion rights.
 
@@ -17,10 +17,12 @@ are true in this configuration.
 | monolith-agents | kargo-monolith-agents | monolith-agents-chart | prod: monolith-agents |
 | monolith-public | kargo-monolith-public | monolith-public-chart | prod: monolith-public |
 | embervm | kargo-embervm | embervm-chart | dev: embervm-dev; prod: embervm |
+| scotland-connector | kargo-scotland-connector | scotland-connector-chart | prod: scotland-connector |
 
-All five Applications live in `argocd` and are registered through
-`projects/gke-apps/kustomization.yaml`. The three monolith pipelines subscribe
-directly to their Warehouses and have no upstream Stage or soak. There is no
+All six Applications live in `argocd` and are registered through
+`projects/gke-apps/kustomization.yaml`. The three monolith pipelines and the
+scotland-connector pipeline subscribe directly to their Warehouses and have no
+upstream Stage or soak. There is no
 registered monolith dev Application. This configuration makes no decision
 about adding one.
 
@@ -146,10 +148,10 @@ inspect hub objects and do not approve Freight, promote, sync or patch anything:
 
 ```sh
 kubectl --context "${HUB_CONTEXT:?Set the homelab-hub context}" -n argocd get application hub -o yaml
-for project in kargo-monolith kargo-monolith-agents kargo-monolith-public kargo-embervm; do
+for project in kargo-monolith kargo-monolith-agents kargo-monolith-public kargo-embervm kargo-scotland-connector; do
   kubectl --context "$HUB_CONTEXT" -n "$project" get warehouses,stages,promotions,freights
 done
-for app in monolith monolith-agents monolith-public embervm-dev embervm; do
+for app in monolith monolith-agents monolith-public embervm-dev embervm scotland-connector; do
   kubectl --context "$HUB_CONTEXT" -n argocd get application "$app" \
     -o jsonpath='{.metadata.name}{" "}{.spec.sources[0].targetRevision}{" "}{.status.sync.status}{" "}{.status.health.status}{"\n"}'
 done

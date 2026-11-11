@@ -130,8 +130,8 @@ defmodule Embervm.SpecVocabularyTest do
   end
 
   # Strip `#` comments and @doc/@moduledoc heredocs before looking for an atom.
-  # Both are why the naive greps failed: `:primed` appeared in a base_builder
-  # comment, and async_writer's @moduledoc names several kinds it does not append.
+  # Prose can name kinds it does not append: `:primed` appeared in a
+  # base_builder comment. Only executable source counts as evidence.
   defp executable_source(path) do
     path
     |> File.read!()

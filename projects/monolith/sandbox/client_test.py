@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import runpy
 
+import httpx
 import pytest
 
 from sandbox import client
+
+_REAL_CLIENT = httpx.AsyncClient
 
 
 class _Resp:
@@ -163,6 +167,10 @@ async def test_idempotency_key_canonicalizes_file_order():
     first_key = _FakeClient.posts[0]["headers"]["Idempotency-Key"]
     second_key = _FakeClient.posts[1]["headers"]["Idempotency-Key"]
     assert first_key == second_key
+    # Captured by executing sandbox/client.py at baseline 4fa27937f before refactor.
+    assert (
+        first_key == "fa79c8feda49470e43f0ea30b3a2e1b9927dafb6d2219a03b043bcce44c2e912"
+    )
 
 
 @pytest.mark.asyncio
@@ -185,3 +193,93 @@ async def test_empty_code_short_circuits():
     result = await client.run_code_in_sandbox("   ")
     assert "error" in result
     assert _FakeClient.posts == []
+
+
+def _mock_transport(monkeypatch, handler):
+    monkeypatch.setattr(httpx, "AsyncClient", _REAL_CLIENT)
+    real_init = _REAL_CLIENT.__init__
+
+    def init(self, *args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(_REAL_CLIENT, "__init__", init)
+
+
+@pytest.mark.asyncio
+async def test_wire_contract_url_timing_and_rotating_auth(monkeypatch, tmp_path):
+    token = tmp_path / "token"
+    monkeypatch.setenv("K8S_AUTH_TOKEN_FILE", str(token))
+    monkeypatch.setenv("EMBERVM_URL", "http://import-time")
+    monkeypatch.setenv("SCRATCH_POSTGRES_DSN", "")
+    monkeypatch.setenv("SANDBOX_WORKLOAD_PREFIX", "sandbox-")
+    module = runpy.run_module("sandbox.client")
+    monkeypatch.setenv("EMBERVM_URL", "http://later")
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"exit_code": 0})
+
+    _mock_transport(monkeypatch, handler)
+    for value, timeout in (("first", 1), ("rotated", 25), (None, 99)):
+        if value is None:
+            token.unlink()
+        else:
+            token.write_text(value)
+        await module["_run_embervm"](
+            {"code": "same source", "timeout_seconds": timeout}, "python"
+        )
+    assert [r.headers.get("Authorization") for r in requests] == [
+        "Bearer first",
+        "Bearer rotated",
+        None,
+    ]
+    assert len({r.headers["Idempotency-Key"] for r in requests}) == 1
+    for request in requests:
+        assert (
+            str(request.url)
+            == "http://import-time/v1/workloads/sandbox-python/tasks?wait=true"
+        )
+        assert request.headers["content-type"] == "application/json"
+        assert json.loads(request.content)["code"] == "same source"
+        assert request.extensions["timeout"] == {
+            "connect": 5,
+            "read": 35,
+            "write": 35,
+            "pool": 35,
+        }
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_url_returns_structured_error(monkeypatch):
+    monkeypatch.setattr(client, "EMBERVM_URL", "")
+    assert await client.run_code_in_sandbox("source") == {
+        "error": "EMBERVM_URL is not configured"
+    }
+    assert _FakeClient.posts == []
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (httpx.ConnectError("refused"), "could not reach embervm: refused"),
+        (httpx.ReadTimeout("timeout"), "sandbox execution failed: timeout"),
+        (httpx.RemoteProtocolError("broken"), "sandbox execution failed: broken"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_transport_failures_are_structured(monkeypatch, error, message):
+    def handler(request):
+        raise error
+
+    _mock_transport(monkeypatch, handler)
+    assert await client.run_code_in_sandbox("source") == {"error": message}
+
+
+@pytest.mark.asyncio
+async def test_http_failure_is_structured_and_truncated(monkeypatch):
+    _mock_transport(monkeypatch, lambda request: httpx.Response(503, text="x" * 600))
+    assert await client.run_code_in_sandbox("source") == {
+        "error": "embervm returned HTTP 503: " + "x" * 500
+    }

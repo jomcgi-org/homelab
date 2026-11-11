@@ -12,8 +12,9 @@ import httpx
 from sqlalchemy import text
 from sqlmodel import Session
 
+from core.env import flag
 from shared.invocation_outcomes import UNKNOWN_INVOCATION
-from core.github import GITHUB_API, GITHUB_REPO
+from core.github import GITHUB_API, GITHUB_REPO, github_get
 
 DOCFIX_REVIEW_TEMPLATE_VERSION = "docfix-review/luna@v1"
 DOCFIX_ALLOWED_PATH_GLOBS = ("docs/**", "**/README.md", "**/ARCHITECTURE.md")
@@ -146,20 +147,14 @@ Finish with a JSON summary block
 as the last thing in the message."""
 
 
-def _review_enabled() -> bool:
-    return os.environ.get("KG_DOCFIX_REVIEW_ENABLED", "false").lower() == "true"
-
-
 def _auto_merge_enabled() -> bool:
-    return os.environ.get("DRAINER_DOCFIX_AUTO_MERGE", "false").lower() == "true"
+    return flag("DRAINER_DOCFIX_AUTO_MERGE")
 
 
 def schedule_docfix_review(
     session: Session, pr_numbers: list[int], delay_seconds: int
 ) -> bool:
     """Register a debounced, one-shot docfix review job."""
-    if not _review_enabled():
-        return False
     numbers = list(dict.fromkeys(pr_numbers))[:DOCFIX_REVIEW_MAX_PRS]
     if not numbers:
         return False
@@ -247,21 +242,16 @@ def prune_completed_docfix_reviews(session: Session) -> int:
 
 
 def _github_get(url: str) -> httpx.Response:
-    headers = {"Accept": "application/vnd.github+json"}
-    token = os.environ.get("GITHUB_API_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    with httpx.Client(timeout=15.0, follow_redirects=True) as client:
-        response = client.get(url, headers=headers)
-        response.raise_for_status()
-        return response
+    response = github_get(
+        url, timeout=15.0, follow_redirects=True, user_agent="monolith-docfix"
+    )
+    response.raise_for_status()
+    return response
 
 
 def find_reviewable_docfix_prs(session: Session) -> list[int]:
     """Return up to ten open docs PRs that still need docfix review."""
     del session
-    if not _review_enabled():
-        return []
     if not os.environ.get("GITHUB_API_TOKEN"):
         logger.warning(
             "docfix-review sweep unavailable without GITHUB_API_TOKEN; "

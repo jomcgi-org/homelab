@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  executionView,
   activityRow,
   activitySummary,
   attemptMark,
@@ -54,7 +55,7 @@ const POLICY = {
 const LIVE_TASK = {
   issue_number: 5980,
   review_rounds: 1,
-  state: "in flight",
+  state: "executing",
   phase: "review_1",
   title: "Worker-delivered probes leave guests parked",
   admitted_at: "2026-09-11T08:14:00Z",
@@ -173,7 +174,7 @@ describe("formatting", () => {
 
 describe("state vocabulary", () => {
   it.each([
-    ["in flight", "running live"],
+    ["executing", "running live"],
     ["landed", "landed"],
     ["failed", "failed"],
     ["cancelled", "cancelled"],
@@ -187,6 +188,7 @@ describe("state vocabulary", () => {
   it("calls a pending node queued and leaves the rest alone", () => {
     expect(nodeWord("pending")).toBe("queued");
     expect(nodeWord("retired")).toBe("retired");
+    expect(nodeWord("escalated")).toBe("escalated");
   });
 
   it("calls an admitted attempt running", () => {
@@ -195,6 +197,8 @@ describe("state vocabulary", () => {
     expect(attemptMark("admitted")).toBe("running");
     expect(attemptMark("succeeded")).toBe("done");
     expect(attemptMark("failed")).toBe("failed");
+    expect(attemptWord("escalated")).toBe("escalated");
+    expect(attemptMark("escalated")).toBe("escalated");
   });
 
   it("counts correction nodes as the review rounds", () => {
@@ -290,7 +294,7 @@ describe("ledger", () => {
 describe("ledgerMeta", () => {
   it("names the phase and the deadline for a live task", () => {
     expect(ledgerMeta(LIVE_TASK, POLICY, NOW)).toBe(
-      "in flight · review_1 · 5h 42m left",
+      "executing · review_1 · 5h 42m left",
     );
   });
 
@@ -345,7 +349,7 @@ describe("outcome", () => {
 
   it("points a live task at its running step and its draft PR", () => {
     const verdict = outcome(LIVE_TASK, POLICY, NOW, 4);
-    expect(verdict.headline).toBe("in flight");
+    expect(verdict.headline).toBe("executing");
     expect(verdict.parts).toContainEqual({ text: "review_1", code: true });
     expect(verdict.parts).toContainEqual({ text: "step 5", step: 5 });
     expect(verdict.parts).toContainEqual({
@@ -360,7 +364,7 @@ describe("outcome", () => {
   it("gives a landing task its PR state and the deadline", () => {
     const verdict = outcome({ ...LIVE_TASK, state: "landing" }, POLICY, NOW);
     expect(verdict.headline).toBe("landing");
-    expect(verdict.mark).toBe("running live");
+    expect(verdict.mark).toBe("queued");
     expect(text(verdict)).toBe("PR #5996 draft · 1 review round · 5h 42m left");
   });
 
@@ -409,7 +413,7 @@ describe("outcome", () => {
 describe("specs", () => {
   it("reads elapsed time as so-far while a task is still running", () => {
     const rows = taskSpec(LIVE_TASK, POLICY, NOW);
-    expect(rows.find((row) => row.label === "Elapsed").value).toBe(
+    expect(rows.find((row) => row.label === "Task age").value).toBe(
       "6h 18m so far",
     );
     expect(rows.find((row) => row.label === "Spend").value).toBe(
@@ -420,7 +424,7 @@ describe("specs", () => {
 
   it("closes elapsed time once a task has finished", () => {
     expect(
-      taskSpec(LANDED_TASK, POLICY, NOW).find((row) => row.label === "Elapsed")
+      taskSpec(LANDED_TASK, POLICY, NOW).find((row) => row.label === "Task age")
         .value,
     ).toBe("1h 39m");
   });
@@ -847,7 +851,7 @@ describe("ledger filters", () => {
     {
       issue_number: 3,
       title: "embervm: traces",
-      state: "in flight",
+      state: "executing",
       task_class: "bug-fix",
       phase: "review_1",
       admitted_at: "2026-09-11T11:00:00Z",
@@ -926,4 +930,42 @@ describe("ledger filters", () => {
     expect(taskTypes(TASKS)).toEqual(["bug-fix", "refine"]);
     expect(taskTypes([])).toEqual([]);
   });
+});
+
+it("separates six unfinished tasks into one execution, four waits and one uncertainty", () => {
+  const active = [
+    { state: "executing" },
+    ...Array.from({ length: 4 }, () => ({ state: "paused" })),
+    { state: "uncertain" },
+  ];
+  const book = ledger({ active, snapshotted_at: NOW }, NOW);
+  expect(book.live).toHaveLength(1);
+  expect(book.waiting).toHaveLength(4);
+  expect(book.uncertain).toHaveLength(1);
+  expect(ledger({ active: [{ state: "in flight" }] }, NOW).live).toEqual([]);
+  expect(taskMark("in flight")).toBe("uncertain");
+  expect(taskMark("landing")).not.toContain("live");
+});
+
+it("never counts a stale executing snapshot as current execution", () => {
+  const book = ledger(
+    { snapshotted_at: "2026-09-11T14:00:00Z", active: [LIVE_TASK] },
+    NOW,
+  );
+  expect(book.live).toEqual([]);
+  expect(book.stale).toBe(true);
+  expect(book.uncertain[0].state).toBe("uncertain");
+  expect(book.uncertain[0].nodes.some((node) => node.state === "running")).toBe(
+    false,
+  );
+});
+
+it("projects stale task detail without rewriting historical attempts", () => {
+  const task = executionView(LIVE_TASK, "2026-09-11T14:00:00Z", NOW);
+  expect(outcome(task, POLICY, NOW).headline).toBe("uncertain");
+  expect(taskSpec(task, POLICY, NOW)[0].value).toBe("uncertain");
+  expect(
+    task.nodes.find((node) => node.node_key === "review_1").attempts[0].status,
+  ).toBe("admitted");
+  expect(LIVE_TASK.state).toBe("executing");
 });

@@ -5,14 +5,12 @@ import { startJoinLanding } from "$lib/grimoire/join-landing.js";
 import {
   JOIN_COOKIE,
   JoinLinkError,
-  JOIN_UNAVAILABLE,
   bearerJoinJson,
   clearJoinToken,
   checkJoinSelection,
   enrollmentUrl,
   joinMetadata,
   joinToken,
-  linksEnabled,
   saveJoinToken,
   safeJoinMessage,
 } from "$lib/server/grimoire-join-links.js";
@@ -60,9 +58,7 @@ form { margin:1rem 0; } button:disabled { opacity:.65; cursor:wait; } [hidden] {
 }
 
 export function GET() {
-  return linksEnabled()
-    ? landing("Opening your invitation…", true)
-    : landing(JOIN_UNAVAILABLE, false, 503);
+  return landing("Opening your invitation…", true);
 }
 
 export async function POST({ request, url, fetch, cookies }) {
@@ -94,7 +90,6 @@ export async function POST({ request, url, fetch, cookies }) {
       false,
     );
   }
-  if (!linksEnabled()) return failure(JOIN_UNAVAILABLE, 503);
   try {
     if (data?.action === "capture" || data?.action === "inspect") {
       // New links always replace stale resumptions, including an invalid link.

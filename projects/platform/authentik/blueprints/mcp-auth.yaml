@@ -26,8 +26,8 @@ entries:
     attrs:
       is_superuser: false
 
-  # Literal name operators is required by the standing human factory and
-  # intervention guards, which match this exact group name.
+  # Literal name operators is required by the standing human factory guards,
+  # which match this exact group name.
   - model: authentik_core.group
     id: operators
     identifiers:

@@ -467,6 +467,22 @@ def store(session, embed_client):
 # ---------------------------------------------------------------------------
 
 
+def _wait_for_live_server(base_url):
+    """Retry readiness probes within the existing ten-second startup budget."""
+    deadline = time.monotonic() + 10.0
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            response = httpx.get(f"{base_url}/healthz", timeout=min(1.0, remaining))
+            if response.status_code == 200:
+                return
+        except (httpx.ConnectError, httpx.TimeoutException):
+            pass
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(0.1, remaining))
+    raise RuntimeError(f"Live FastAPI server failed to start within 10s at {base_url}")
+
+
 @pytest.fixture(scope="session")
 def live_server(pg):
     """Start a real uvicorn server backed by the test PostgreSQL.
@@ -519,27 +535,15 @@ def live_server(pg):
 
     # Wait for the server to accept connections
     base_url = f"http://127.0.0.1:{port}"
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        try:
-            r = httpx.get(f"{base_url}/healthz", timeout=1.0)
-            if r.status_code == 200:
-                break
-        except httpx.ConnectError:
-            pass
-        time.sleep(0.1)
-    else:
-        raise RuntimeError(
-            f"Live FastAPI server failed to start within 10s on port {port}"
-        )
-
-    logger.info("Live server ready at %s", base_url)
-    yield base_url
-
-    # Teardown
-    server.should_exit = True
-    thread.join(timeout=5)
-    get_engine.cache_clear()
+    try:
+        _wait_for_live_server(base_url)
+        logger.info("Live server ready at %s", base_url)
+        yield base_url
+    finally:
+        # Startup failures must also stop the server and clear the cached engine.
+        server.should_exit = True
+        thread.join(timeout=5)
+        get_engine.cache_clear()
 
 
 # ---------------------------------------------------------------------------

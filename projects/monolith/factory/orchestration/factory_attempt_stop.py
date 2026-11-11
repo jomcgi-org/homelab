@@ -7,9 +7,7 @@ cessation. The existing factory supervisor consumes exact durable Ember proof.
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import re
 
 from sqlmodel import Session, select
@@ -25,14 +23,6 @@ from factory.orchestration.models import SwarmNodeRun
 REQUEST_ACTION = "attempt_stop_requested"
 CANCEL_ACTION = "attempt_stop_cancel"
 MAX_CANCEL_REQUESTS = 2
-
-
-def enabled() -> bool:
-    return os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() == "true"
-
-
-def _digest(value) -> str:
-    return hashlib.sha256(controls._json(value).encode()).hexdigest()
 
 
 def _requests(db: Session, task_id: str) -> list[dict]:
@@ -106,9 +96,9 @@ def _candidate(db, task_id, node_key, attempt, session_id):
         "run_id": run.id,
         "start_id": start.id,
         **session_identity,
-        "pin_sha256": _digest(pin),
+        "pin_sha256": controls.digest(pin),
     }
-    identity["identity_sha256"] = _digest(identity)
+    identity["identity_sha256"] = controls.digest(identity)
     return identity, pin, bool(pending)
 
 
@@ -145,8 +135,6 @@ def request_attempt_stop(
     expected_stop_precondition: dict | None = None,
 ) -> dict:
     """Persist authority and UNKNOWN atomically; no external cancellation here."""
-    if not enabled():
-        raise ValueError("stop_supervision_disabled")
     request = {
         "task_id": controls._text(task_id, "task_id"),
         "node_key": controls._text(node_key, "node_key"),
@@ -312,8 +300,6 @@ def process_attempt_stop(
     The original workflow may never have returned its session ID. The durable
     request supplies that same identity without recreating or replaying work.
     """
-    if not enabled():
-        return False, None
     with controls._locked_session() as (db, _control):
         records = [
             row

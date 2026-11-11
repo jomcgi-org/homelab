@@ -1,9 +1,9 @@
 dependencies:
 - name: homelab-library
   repository: file://../../shared/helm/homelab-library/chart
-  version: 0.6.0
+  version: 0.7.0
 - name: cf-ingress
   repository: file://../../platform/cf-ingress-library
   version: 0.1.0
-digest: sha256:bdabeaabe7c7d5b690a976bfefdca313fa08bc3aa20387e2a40fcda1c4cc1643
-generated: "2026-08-11T09:55:06.109986-07:00"
+digest: sha256:35382594851a17942a3050b23a0b6cea1533e113aff5146529aa3bd96279847c
+generated: "2026-10-19T01:25:04.855164458Z"

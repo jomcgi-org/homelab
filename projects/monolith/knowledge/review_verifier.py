@@ -469,15 +469,9 @@ class GitHubVerifier:
 def httpx_fetcher(client, *, token: str = "") -> Fetch:
     """Production fetcher: a transport failure is unavailable, never a verdict."""
     import httpx
-    from core.github import GITHUB_API
+    from core.github import GITHUB_API, github_headers
 
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "monolith-knowledge-review",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    headers = github_headers("monolith-knowledge-review", token)
 
     def fetch(path: str) -> GitHubResponse:
         try:

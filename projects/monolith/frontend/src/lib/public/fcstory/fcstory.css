@@ -1,54 +1,71 @@
-/* Design tokens for the public /ember/firecracker scroll story. Ported 1:1
- * from the approved reference mockup's `:root` block:
- * ../../../../docs/reference-mockups/fcstory/reference-mockup.html.
- * All literal hex values live here, scoped under .fcstory, so
- * FcScrollStory.svelte and ReplayWidget.svelte's <style> blocks can reference
- * var(--fc-*) exclusively (semgrep rule svelte-hardcoded-color-in-style flags
- * bare hex literals inside a .svelte <style> block).
- */
-
+/* Sheet roles also feed the imperative replay fill. No runtime HSL palette:
+ * disk, RAM and readiness retain explicit keys alongside their measurements.
+ * The story uses one normal-flow document for JS, reduced motion and no JS. */
 .fcstory {
-  --fc-ground: #f7f5f0;
-  --fc-panel: #ffffff;
-  --fc-line: #e3dfd5;
-  --fc-line-soft: #ece8df;
-  --fc-ink: #20222a;
-  --fc-muted: #525965;
-  --fc-faint: #7d838e;
-  --fc-ember: #e05c26;
-  --fc-ember-deep: #b7461a;
-  --fc-ember-dim: #f0c4ae;
-  --fc-frost: #3d7ec2;
-  --fc-frost-dim: #b9d2ea;
-  --fc-mono:
-    ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
-  --fc-sans:
-    -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
-  --fc-shadow:
-    0 2px 6px rgba(32, 34, 42, 0.04), 0 18px 44px rgba(32, 34, 42, 0.09);
+  counter-reset: fig;
+  --fc-phase-firecracker-boot: var(--ink-2);
+  --fc-phase-snapshot-save: var(--tone-disk);
+  --fc-phase-auth-tokenreview: var(--accent-ink);
+  --fc-phase-acquire-slot: var(--ink-2);
+  --fc-phase-snapshot-restore: var(--tone-cache);
+  --fc-phase-guest-wait-ready: var(--warn);
+  --fc-phase-guest-exec: var(--tone-ram);
+}
 
-  /* Timing-bar segment colors (mockup .seg.boot / .seg.wait / .seg.save /
-   * .seg.restore). */
-  --fc-seg-boot: #f2b04e;
-  --fc-seg-wait-a: #c94e1d;
-  --fc-seg-wait-b: #e05c26;
-  --fc-seg-save: var(--fc-frost);
-  --fc-seg-restore: var(--fc-ember);
+.fcstory .prose {
+  counter-reset: none;
+}
 
-  /* Per-phase colors for the replay console / zoom legend (mockup
-   * PHASE_COLORS). Keyed to the real span names in data/trace.js. */
-  --fc-phase-auth-tokenreview: #8e77c9;
-  --fc-phase-acquire-slot: #9aa0aa;
-  --fc-phase-snapshot-restore: #e05c26;
-  --fc-phase-guest-wait-ready: #f2b04e;
-  --fc-phase-guest-exec: #3d7ec2;
+.fcstory .ed-lead h1 {
+  margin: 0;
+  font: 700 1.35rem/1.2 var(--font-ui);
+  letter-spacing: -0.02em;
+}
 
-  /* Memory-cell and timing-bar backgrounds. */
-  --fc-cell-idle-bg: #e6e2d7;
-  --fc-ram-bg: #eeebe3;
-  --fc-bar-track-bg: #eceade;
+.fcstory .num {
+  font-family: var(--font-code);
+  font-variant-numeric: tabular-nums;
+}
 
-  /* VM state pill (frozen) and bar-note text-on-color. */
-  --fc-frozen-text: #2b628f;
-  --fc-on-color: #ffffff;
+.fcstory .timing {
+  padding: 0.8rem 0;
+  font-family: var(--font-code);
+  font-size: 0.75rem;
+}
+
+.fcstory .timing-bar {
+  display: flex;
+  height: 1rem;
+  background: var(--band);
+  border: 1px solid var(--stroke);
+}
+
+.fcstory .timing-bar > span {
+  flex: none;
+}
+
+.fcstory .restore-segment {
+  background: var(--fc-phase-snapshot-restore);
+}
+
+.fcstory .phase-spec dt {
+  overflow-wrap: anywhere;
+}
+
+.fcstory .phase-key {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.5rem;
+}
+
+.fcstory .recorded-runs li {
+  flex: 1 1 10rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.fcstory section[id] {
+  scroll-margin-top: 4rem;
 }

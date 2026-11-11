@@ -5,11 +5,12 @@ import functools
 import hashlib
 import http.server
 import json
+import subprocess
+import sys
+import tempfile
 import threading
 from pathlib import Path
 from urllib.parse import urlsplit
-
-from playwright.sync_api import sync_playwright
 
 PREFIX = "/homelab/pr/42/" + "a" * 40 + "/"
 VIEWPORTS = [(360, 640), (390, 844), (1440, 1000)]
@@ -36,7 +37,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-def check(root, output):
+def check_blog(root, output):
+    from playwright.sync_api import sync_playwright
+
     before = digest_tree(root)
     output.mkdir(parents=True, exist_ok=True)
     server = http.server.ThreadingHTTPServer(
@@ -171,6 +174,44 @@ def check(root, output):
         (output / "result.json").write_text(json.dumps(evidence, indent=2) + "\n")
     assert before == digest_tree(root), "browser check changed the publish artifact"
     (output / "tested-files.json").write_text(json.dumps(before, indent=2) + "\n")
+
+
+def check(root, output):
+    check_blog(root, output)
+    # compare.py loads this entry point through suite.py. Keep sheet evidence
+    # under head/blog/sheets in the exact-head CI upload, while the temporary
+    # build stays outside both the checkout and the Pages publication artifact.
+    # The subprocess keeps the sheet's opaque iframe contexts independent of
+    # the shared suite's service-worker instrumentation.
+    frontend = Path(__file__).resolve().parent.parent
+    with tempfile.TemporaryDirectory(prefix="sheet-fixture-") as temporary:
+        artifact = Path(temporary) / "build"
+        subprocess.run(
+            [
+                "pnpm",
+                "exec",
+                "vite",
+                "build",
+                "--config",
+                "sheet-preview/vite.config.js",
+                "--outDir",
+                str(artifact),
+            ],
+            cwd=frontend,
+            check=True,
+        )
+        subprocess.run(
+            [
+                sys.executable,
+                str(frontend / "sheet-preview/browser_check.py"),
+                "--artifact",
+                str(artifact),
+                "--output",
+                str(output.resolve() / "sheets"),
+            ],
+            cwd=frontend,
+            check=True,
+        )
 
 
 if __name__ == "__main__":

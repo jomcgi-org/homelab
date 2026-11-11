@@ -2066,7 +2066,7 @@ def test_dispatch_read_uses_persisted_timestamp_and_rejects_second_claim(
 
 @pytest.mark.parametrize(
     "case",
-    ["drain", "brick_preempted", "flag_off", "no_turn", "unknown_turn", "past_bound"],
+    ["drain", "brick_preempted", "no_turn", "unknown_turn", "past_bound"],
 )
 def test_dispatch_read_keeps_a_relay_continuation_on_its_attempt(
     queued_attempt, monkeypatch, case
@@ -2076,8 +2076,6 @@ def test_dispatch_read_keeps_a_relay_continuation_on_its_attempt(
     from factory.execution.models import PendingMessage
     from sqlmodel import select
 
-    if case != "flag_off":
-        monkeypatch.setenv("FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED", "true")
     with Session(queued_attempt.engine) as db:
         row = db.exec(select(PendingMessage)).one()
         row.dispatch_count = 4 if case == "past_bound" else 2
@@ -2298,3 +2296,86 @@ def test_dependency_read_only_pin_reaches_guest_prompt():
     assert "Commit and push source changes" not in prompt
     with pytest.raises(ValueError, match="read_only"):
         nodes._validate_pin(pin(read_only="true"))
+
+
+def test_review_artifact_cannot_pass_without_authoritative_workspace_preflight(
+    tmp_path, monkeypatch
+):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'browser-review.db'}"
+    ).execution_options(
+        schema_translate_map={"agent_sessions": None},
+    )
+    SQLModel.metadata.create_all(
+        engine, tables=[AgentSession.__table__, AgentTurn.__table__]
+    )
+    monkeypatch.setattr(core.db, "get_engine", lambda: engine)
+    monkeypatch.setattr(
+        "factory.orchestration.browser_review_dispatch.get_engine", lambda: engine
+    )
+    schema = {
+        "type": "object",
+        "required": ["verdict", "browser_evidence_handoff_sha256"],
+        "properties": {
+            "verdict": {"enum": ["approve"]},
+            "browser_evidence_handoff_sha256": {"enum": ["a" * 64]},
+        },
+    }
+    with Session(engine) as db:
+        db.add(
+            AgentSession(
+                id=7,
+                local_session_id="factory:t:review_browser:1",
+                node_key="review_browser",
+                node_attempt=1,
+                workspace="guest",
+                branch="main",
+            )
+        )
+        db.add(
+            AgentTurn(
+                session_id=7,
+                seq=1,
+                prompt="review",
+                result_text="approved",
+                artifact_path=".factory/t/review_browser-1.json",
+                artifact_outcome="ok",
+                artifact_blob=json.dumps(
+                    {"verdict": "approve", "browser_evidence_handoff_sha256": "a" * 64}
+                ).encode(),
+                usage_json=json.dumps({"verdict": "approve"}),
+            )
+        )
+        db.commit()
+    result = nodes._read_turn_artifact.__wrapped__(
+        7, 1, ".factory/t/review_browser-1.json", schema
+    )
+    assert result["status"] == "invalid"
+    assert "trusted workspace handoff" in result["errors"][0]
+    engine.dispose()
+
+
+def test_reconciliation_cannot_bypass_browser_preflight(reconciliation_db, monkeypatch):
+    state = reconciliation_db
+    monkeypatch.setattr(
+        "factory.orchestration.browser_review_dispatch.get_engine", lambda: state.engine
+    )
+    state.pin["node_key"] = "review_browser"
+    state.pin["artifact_path"] = ".factory/t-11/review_browser-1.json"
+    state.pin["artifact_schema"] = {
+        **SCHEMA,
+        "properties": {
+            **SCHEMA["properties"],
+            "browser_evidence_handoff_sha256": {"enum": ["a" * 64]},
+        },
+    }
+    with Session(state.engine) as db:
+        owner = db.get(AgentSession, 7)
+        owner.node_key = "review_browser"
+        owner.local_session_id = "factory:t-11:review_browser:1"
+        db.add(owner)
+        db.commit()
+    state.complete()
+    result = nodes.reconcile_completed_node(state.pin, 7)
+    assert result["status"] == "failed"
+    assert "trusted workspace handoff" in result["reason"]

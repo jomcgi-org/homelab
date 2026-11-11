@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/unixsock"
 	"github.com/jomcgi/homelab/projects/embervm/noded/vsockproto"
 )
 
@@ -28,8 +29,7 @@ var _ Dialer = VsockDialer{}
 // OK line are preserved by wrapping the conn (a clock response can, in principle,
 // arrive coalesced with the OK line on the same read).
 func (VsockDialer) DialClockAgent(ctx context.Context, udsPath string) (net.Conn, error) {
-	d := &net.Dialer{}
-	conn, err := d.DialContext(ctx, "unix", udsPath)
+	conn, err := unixsock.Dial(ctx, udsPath)
 	if err != nil {
 		return nil, fmt.Errorf("groupclock: dial uds %s: %w", udsPath, err)
 	}

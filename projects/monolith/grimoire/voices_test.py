@@ -2,6 +2,8 @@
 
 from uuid import UUID, uuid4
 
+from datetime import datetime, timezone
+
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -14,7 +16,6 @@ from grimoire.voices import speaker_ref, validate_speaker_key
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     with sqlite_harness(tmp_path / "voices.db") as h:
         h.prepare("play")
         with TestClient(h.app()) as client:
@@ -224,10 +225,8 @@ def test_delete_entity_preset_finds_original_uuid_spelling(setup):
 def test_retracted_narration_does_not_expose_speaker_key(setup):
     client, h = setup
     event_id = h.rows["event_table"].id
-    retracted = client.post(
-        f"{events_path(h)}/{event_id}/retract", headers=h.headers("dm")
-    )
-    assert retracted.status_code == 200, retracted.text
+    h.rows["event_table"].retracted_at = datetime.now(timezone.utc)
+    h.session.commit()
     response = client.get(events_path(h), headers=h.headers("player_a"))
     assert response.status_code == 200
     h.assert_no_leak(response, "player_a")
@@ -249,6 +248,44 @@ def test_members_can_get_voices_with_viewer_specific_keys(setup, viewer):
     ) in keys
     if viewer != "dm":
         assert raw_key.casefold() not in response.text.casefold()
+        assert all("speaker_name" not in row for row in response.json())
+    else:
+        names = {row["speaker_key"]: row["speaker_name"] for row in response.json()}
+        assert names == {"narrator": None, raw_key: h.rows["private"].name}
+
+
+def test_dm_voice_names_skip_npcs_outside_the_campaign(setup):
+    client, h = setup
+    # A stale row keyed to another campaign's NPC: the key is already stored,
+    # but its name must not reach this campaign's DM.
+    foreign = h.rows["foreign"]
+    h.session.add(
+        CampaignVoice(campaign_id=h.rows["campaign"].id, speaker_key=foreign.id)
+    )
+    h.session.commit()
+    response = client.get(path(h), headers=h.headers("dm"))
+    assert response.status_code == 200, response.text
+    assert foreign.name.casefold() not in response.text.casefold()
+    row = next(row for row in response.json() if row["speaker_key"] == foreign.id)
+    assert row["speaker_name"] is None
+
+
+def test_dm_can_delete_a_preset_whose_npc_left_the_campaign(setup):
+    client, h = setup
+    foreign = h.rows["foreign"]
+    row = CampaignVoice(campaign_id=h.rows["campaign"].id, speaker_key=foreign.id)
+    h.session.add(row)
+    h.session.commit()
+    row_id = row.id
+    # Saving it still needs the NPC in the campaign; removing it does not.
+    response = client.put(path(h, foreign.id), headers=h.headers("dm"), json={})
+    assert response.status_code == 404, response.text
+    response = client.delete(path(h, foreign.id), headers=h.headers("dm"))
+    assert response.status_code == 204, response.text
+    h.session.expire_all()
+    assert h.session.get(CampaignVoice, row_id) is None
+    response = client.delete(path(h, str(uuid4())), headers=h.headers("dm"))
+    assert response.status_code == 404, response.text
 
 
 @pytest.mark.parametrize("viewer", ["player_a", "player_b", "no_character"])

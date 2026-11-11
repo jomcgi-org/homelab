@@ -219,7 +219,6 @@ defmodule Embervm.GroupSweeper do
       # dials the real NodeService stub.
       evict_artifact_fun: Keyword.get(opts, :evict_artifact_fun, &default_evict_artifact/2),
       # ADR embervm/014 decision 5: node-confirmed destroy config plumbing.
-      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
       destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
       orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
       # status.group {state, members{live,degraded}, setId, subnetCidr} + groupSummary
@@ -1015,52 +1014,13 @@ defmodule Embervm.GroupSweeper do
 
   # -- destroy / evict RPCs + durable ops --------------------------------------
 
-  # Destroy a LIVE group: unpublish the entry endpoint (if running), StopGroupMember
-  # DESTROY every live member, DeleteGroupNetwork, then the durable
-  # group_destroyed{reason}. The publisher re-derive is batched by the caller for the
-  # forced-roll path; a lifetime destroy re-derives here (a single instance) so the
-  # activator swap lands.
+  # Destroy a LIVE group (ADR embervm/014 decision 5): persist the destroying
+  # intent before contacting the node, StopGroupMember DESTROY every live member,
+  # DeleteGroupNetwork, then record group_destroyed{reason} only after every
+  # reachable member confirms its teardown. The terminal group_destroyed clears the
+  # entry endpoint, and the re-publish swaps in the activator, so a racing
+  # connection parks rather than hitting a dead socket.
   defp destroy_live_group(state, instance, reason) do
-    if state.node_confirmed_destroy do
-      destroy_live_group_node_confirmed(state, instance, reason)
-    else
-      destroy_live_group_legacy(state, instance, reason)
-    end
-  end
-
-  # Gate-off path: preserve the existing member teardown, network delete, then
-  # record-destroyed ordering exactly.
-  defp destroy_live_group_legacy(state, instance, reason) do
-    # The terminal group_destroyed clears the entry endpoint (the store's
-    # post_transition_endpoint nils it on a terminal), and the re-publish below swaps
-    # in the activator, so a racing connection parks rather than hitting a dead socket.
-    _ = destroy_all_members(state, instance)
-    _ = delete_network(state, instance)
-
-    _ =
-      GroupStore.transition(
-        state.store,
-        instance.instance_id,
-        :destroy,
-        :group_destroyed,
-        %{reason: reason},
-        %{}
-      )
-
-    Embervm.EndpointPublisher.publish(state.publisher)
-
-    Logger.info("embervm group destroyed",
-      workload: instance.workload,
-      instance_id: instance.instance_id,
-      reason: reason
-    )
-
-    state
-  end
-
-  # Gate-on path: persist the destroying intent before contacting the node, then
-  # record destroyed only after every reachable member confirms its teardown.
-  defp destroy_live_group_node_confirmed(state, instance, reason) do
     intent =
       GroupStore.transition(
         state.store,
@@ -1140,14 +1100,6 @@ defmodule Embervm.GroupSweeper do
     state
   end
 
-  defp destroy_all_members(state, instance) do
-    GroupStore.members(state.store, instance.instance_id)
-    |> Enum.filter(fn m -> is_binary(m.vm_id) and m.vm_id != "" end)
-    |> Enum.each(fn m -> _ = stop_group_member_destroy(state, instance, m) end)
-
-    :ok
-  end
-
   defp destroy_all_members_node_confirmed(state, instance) do
     confirmations =
       state.store
@@ -1164,31 +1116,8 @@ defmodule Embervm.GroupSweeper do
   end
 
   # StopGroupMember DESTROY dials the INSTANCE's node (a composite group is anchored to
-  # one node; members carry no per-member node_id).
-  defp stop_group_member_destroy(state, instance, member) do
-    req = %StopGroupMemberRequest{
-      trace: %Trace{workload: nil},
-      vm_id: member.vm_id,
-      mode: :STOP_GROUP_MEMBER_MODE_DESTROY,
-      set_id: "",
-      member_name: member.member_name
-    }
-
-    with {:ok, channel} <- safe_channel(state, dial_for_group(state, instance)) do
-      try do
-        state.stop_group_member_fun.(channel, req)
-      rescue
-        _ -> :error
-      catch
-        _, _ -> :error
-      end
-    end
-
-    :ok
-  end
-
-  # The node-confirmed path issues the same real StopGroupMember(DESTROY) RPC as
-  # the legacy path and accepts only teardown_confirmed=true from the daemon.
+  # one node; members carry no per-member node_id) and accepts only
+  # teardown_confirmed=true from the daemon.
   defp stop_group_member_destroy_confirmed(state, instance, member) do
     req = %StopGroupMemberRequest{
       trace: %Trace{workload: nil},
@@ -1200,7 +1129,7 @@ defmodule Embervm.GroupSweeper do
 
     dial_id = dial_for_group(state, instance)
 
-    with {:ok, channel} <- safe_channel(state, dial_id) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_id) do
       try do
         case state.stop_group_member_fun.(channel, req) do
           {:ok, %{teardown_confirmed: true}} ->
@@ -1237,7 +1166,7 @@ defmodule Embervm.GroupSweeper do
   defp delete_network(state, instance) do
     req = %DeleteGroupNetworkRequest{trace: %Trace{workload: nil}, group_instance_id: instance.instance_id}
 
-    with {:ok, channel} <- safe_channel(state, dial_for_group(state, instance)) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_for_group(state, instance)) do
       try do
         state.delete_group_network_fun.(channel, req)
       rescue
@@ -1253,7 +1182,7 @@ defmodule Embervm.GroupSweeper do
   defp evict_snapshot(state, instance, ref) do
     req = %EvictSnapshotRequest{trace: %Trace{workload: nil}, snapshot_ref: ref}
 
-    with {:ok, channel} <- safe_channel(state, dial_for_group(state, instance)) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_for_group(state, instance)) do
       try do
         state.evict_snapshot_fun.(channel, req)
       rescue
@@ -1275,7 +1204,7 @@ defmodule Embervm.GroupSweeper do
     artifact = %ArtifactRef{kind: :ARTIFACT_KIND_GROUP_SET, workload: workload, ref: set_id}
     req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
 
-    with {:ok, channel} <- safe_channel(state, dial_for_group(state, instance)) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_for_group(state, instance)) do
       try do
         state.evict_artifact_fun.(channel, req)
       rescue
@@ -1356,14 +1285,6 @@ defmodule Embervm.GroupSweeper do
 
   # -- daemon + bank seams -------------------------------------------------
 
-  defp safe_channel(state, node_id) do
-    state.channel_fun.(node_id)
-  rescue
-    e -> {:error, {:channel_raised, e}}
-  catch
-    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
-  end
-
   # The channel key for a group teardown dial (StopGroupMember / DeleteGroupNetwork /
   # EvictSnapshot / EvictArtifact): the OWNING instance on the group's node reporting
   # this group_instance_id (live group_member_vms or banked group_bundle_sets), else
@@ -1396,71 +1317,18 @@ defmodule Embervm.GroupSweeper do
     Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req, timeout: 15_000)
   end
 
-  # Production scrape: identical to StatefulSweeper's (GET /stats?format=json over the
-  # shared Finch pool, parse tcp.<prefix>.downstream_cx_{active,total}). Composite
-  # entry listeners are named group-<port> but share the tcp.* stat namespace, so the
-  # SAME parser keeps both stateful (state-<port>) and group (group-<port>) prefixes.
-  defp default_scrape(url) do
-    req = Finch.build(:get, url)
-
-    case Finch.request(req, Embervm.Finch, receive_timeout: 3_000) do
-      {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
-        parse_stats(body)
-
-      {:ok, %Finch.Response{status: status}} ->
-        {:error, {:stats_status, status}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @tcp_stat_prefix "tcp."
-  @cx_active_suffix ".downstream_cx_active"
-  @cx_total_suffix ".downstream_cx_total"
+  # Production scrape: the same GET /stats?format=json and tcp.* parse as
+  # StatefulSweeper's. Composite entry listeners are named group-<port> but share the
+  # tcp.* stat namespace, so the parser keeps both state-<port> and group-<port>.
+  defp default_scrape(url), do: Embervm.EnvoyStats.scrape(url, &parse_stats/1)
 
   @doc """
-  Parse an Envoy `/stats?format=json` body into `%{stat_prefix => %{active: n, total:
-  n}}`, keeping only `tcp.<prefix>.downstream_cx_{active,total}` counters (identical
-  to `StatefulSweeper.parse_stats/1`; the group entry listener shares the tcp.* stat
-  namespace). `@doc false` so the parse path is exercised directly in tests.
+  Parse an Envoy `/stats?format=json` body (`Embervm.EnvoyStats.parse_tcp_stats/1`).
+  `@doc false` so the parse path is exercised directly in tests.
   """
   @doc false
   @spec parse_stats(binary()) :: {:ok, %{optional(String.t()) => %{active: integer(), total: integer()}}} | {:error, term()}
-  def parse_stats(body) do
-    case Jason.decode(body) do
-      {:ok, %{"stats" => stats}} when is_list(stats) ->
-        reading = Enum.reduce(stats, %{}, fn stat, acc -> fold_tcp_stat(stat, acc) end)
-        {:ok, reading}
-
-      _ ->
-        {:error, :unparseable_stats}
-    end
-  rescue
-    e -> {:error, {:stats_parse_raised, e}}
-  end
-
-  defp fold_tcp_stat(%{"name" => @tcp_stat_prefix <> rest, "value" => value}, acc) when is_integer(value) do
-    cond do
-      String.ends_with?(rest, @cx_active_suffix) ->
-        prefix = String.replace_suffix(rest, @cx_active_suffix, "")
-        put_field(acc, prefix, :active, value)
-
-      String.ends_with?(rest, @cx_total_suffix) ->
-        prefix = String.replace_suffix(rest, @cx_total_suffix, "")
-        put_field(acc, prefix, :total, value)
-
-      true ->
-        acc
-    end
-  end
-
-  defp fold_tcp_stat(_stat, acc), do: acc
-
-  defp put_field(acc, prefix, field, value) do
-    entry = Map.get(acc, prefix, %{active: 0, total: 0})
-    Map.put(acc, prefix, Map.put(entry, field, value))
-  end
+  def parse_stats(body), do: Embervm.EnvoyStats.parse_tcp_stats(body)
 
   defp schedule(msg, interval_ms) when interval_ms > 0 do
     Process.send_after(self(), msg, interval_ms)

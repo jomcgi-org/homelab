@@ -17,13 +17,13 @@ Locally you edit `apko.yaml` and BUILD files, regenerate locks when they change,
 
 ## Architecture
 
-Images are amd64. `apko_image` defaults `arm64 = True` and 24 of its 25 callers
+Images are amd64. `apko_image` defaults `arm64 = True` and all callers
 pass `arm64 = False`: the hub nodes and the RBE executor are amd64, no chart
-pins an arch, and the aarch64 half of an index had no consumer. The one
-exception is `projects/embervm/noded/image`, which still builds an amd64 plus
-arm64 index through `multiarch_tars`. Leave `aarch64` in `archs`: the lock
-checksums the whole config, and apko ignores a declared arch nobody builds, so
-`arm64 = False` needs no `archs` edit and no lock regeneration.
+pins an arch, and the aarch64 half of an index had no consumer.
+`projects/embervm/noded/image` uses explicit amd64 `tars`. Most configs declare
+only `x86_64` in `archs`. Building arm64 also requires declaring `aarch64` and
+regenerating the lock, which checksums the whole config. apko ignores a
+declared arch nobody builds.
 
 ## apko.yaml Structure
 
@@ -39,7 +39,6 @@ contents:
 
 archs:
   - x86_64 # The nodes and the RBE executor
-  - aarch64 # Declared in every config; built only when arm64 = True
 
 entrypoint:
   command: /opt/app # Use for Go binaries

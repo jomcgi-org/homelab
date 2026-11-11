@@ -37,6 +37,9 @@ defmodule Embervm.Application do
     # Quota + usage-admin config into app-env BEFORE the supervisor starts, so the
     # Dispatcher (reads the quota budgets at init) and the Router (reads them and
     # the usage-admin list per request) see them. Empty budgets = quota off.
+    Application.put_env(:embervm, :async_residency_enabled, trimmed_env("EMBERVM_ASYNC_RESIDENCY_ENABLED") in ["1", "true"])
+    Application.put_env(:embervm, :residency_queue_limit, residency_positive_limit("EMBERVM_RESIDENCY_QUEUE_LIMIT", 1024))
+    Application.put_env(:embervm, :residency_principal_limit, residency_positive_limit("EMBERVM_RESIDENCY_PRINCIPAL_LIMIT", 128))
     Application.put_env(:embervm, :quota, quota_config())
     Application.put_env(:embervm, :usage_admins, usage_admins())
     Embervm.SpecTrace.configure()
@@ -124,15 +127,6 @@ defmodule Embervm.Application do
       # with the other dependency-free ETS owners at the head of the chain.
       Embervm.LineageFence,
       op_log_child_spec(),
-      # The async lifecycle-write queue (ADR embervm/014 decision 2), gated by
-      # EMBERVM_ASYNC_LIFECYCLE_WRITES. Placed AFTER the op-log (it appends through
-      # it) and BEFORE TaskStore/SessionStore/SessionManager (they enqueue their
-      # off-hot-path :assigned/:started and session_relit appends
-      # here). Owns no ETS and effectively never crashes, so leading the stores in
-      # the rest_for_one chain costs nothing; it drains on graceful shutdown so a CP
-      # roll loses no pending append. Started unconditionally: with the gate OFF it
-      # receives no work (the stores keep write-through ordering), so it is inert.
-      Embervm.AsyncWriter,
       # Platform KEK custodian (ADR embervm/036). It depends only on the op-log,
       # loads its two small durable epoch facts at boot, and remains inert when no
       # root is configured.
@@ -153,14 +147,10 @@ defmodule Embervm.Application do
        ttl_ms: spec_trace_ttl_ms()},
       # TaskStore fires on_metered after a :succeeded/:failed op with usage lands,
       # so Embervm.Metering charges the quota cache off the same durable write.
-      # async_writer + async_lifecycle_writes wire the gated off-hot-path append of
-      # :assigned/:started (dispatch); OFF (default) keeps write-through ordering.
       {Embervm.TaskStore,
        [
          op_log_mod: op_log_mod(),
-         on_metered: &Embervm.Metering.on_metered/1,
-         async_writer: Embervm.AsyncWriter,
-         async_lifecycle_writes: async_lifecycle_writes_enabled()
+         on_metered: &Embervm.Metering.on_metered/1
        ]},
       # Finch (the shared HTTP pool, TLS-pinned to the K8s CA in-cluster) before
       # Embervm.Auth, whose TokenReview reviewer dials the API server over it.
@@ -225,10 +215,7 @@ defmodule Embervm.Application do
       # AFTER NodeRegistry (whose live address set it reads to form the keep-set) and
       # AFTER NodeChannel (which reads the same node config). Duplicates on live
       # addresses are kept (expected when multiple components dial independently); the
-      # predicate is "target not in live set", never "more than one per address". Gate
-      # OFF by default (EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED): the sweep runs and logs
-      # but does not terminate, so merging is inert and arming is a separate values
-      # change after observing the logs.
+      # predicate is "target not in live set", never "more than one per address".
       {Embervm.GrpcConnectionSweeper, grpc_connection_sweeper_opts()},
 
       # Metering, audit, and quotas (Task 12). Owns the public per-principal daily
@@ -247,9 +234,7 @@ defmodule Embervm.Application do
       {Embervm.SessionStore,
        [
          op_log_mod: op_log_mod(),
-         on_metered: &Embervm.Metering.on_metered/1,
-         async_writer: Embervm.AsyncWriter,
-         async_lifecycle_writes: async_lifecycle_writes_enabled()
+         on_metered: &Embervm.Metering.on_metered/1
        ]},
       # The dispatcher (Task 11): the heart of R0. Owns the per-workload fair
       # queues, the primed-VM inventory, the enforcement caps, and drives queued
@@ -478,18 +463,8 @@ defmodule Embervm.Application do
       # S3Client/Finch path as restores, at boot and on a bounded interval. It
       # never gates readiness or lifecycle actions; its current result is an
       # additive signal on /healthz and /v1/health/store. Placed after Finch and
-      # immediately before the other read-only health evaluator and Bandit.
+      # before the op-log compactor and Bandit.
       {Embervm.StoreProbe, store_probe_opts()},
-      # The durability health detector (#4338, ADR embervm/031): Tier 1
-      # aggregates per-kind artifact-export failure streaks from the
-      # NodeCapacity projections; Tier 2 measures the age of the newest
-      # gc-manifests object against 24h + sweep interval. Both tiers end in
-      # GET /v1/health/durability. Placed AFTER NodeRegistry/S3WarmthGc (it
-      # reads their state) and BEFORE Bandit (which serves its surface). It is
-      # a measurement process: it writes nothing and holds no durable state,
-      # so under :rest_for_one a crash restarts only the HTTP surface behind
-      # it, and it lands DARK (enabled defaults false) until live verification.
-      {Embervm.Durability, durability_opts()},
       # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
       # the durable projection tables + ops-journal prefix. Placed LATE, right before
       # Bandit: it depends ONLY on the op-log (which starts early), so under
@@ -916,6 +891,7 @@ defmodule Embervm.Application do
   defp s3_warmth_gc_opts do
     [
       enabled: warmth_s3_gc_enabled(),
+      capture_evidence_enabled: boolean_env("EMBERVM_CAPTURE_EVIDENCE_GC"),
       endpoint: trimmed_env("EMBERVM_STORE_ENDPOINT"),
       bucket: store_bucket(),
       access_key_id: trimmed_env("EMBERVM_STORE_ACCESS_KEY_ID"),
@@ -979,47 +955,6 @@ defmodule Embervm.Application do
     }
     |> Enum.reject(fn {_kind, ttl} -> is_nil(ttl) end)
     |> Map.new()
-  end
-
-  # The durability health detector (#4338, ADR embervm/031). The gate defaults
-  # DARK (suspend:true): EMBERVM_DURABILITY_HEALTH unset means the supervised
-  # process holds no timer, evaluates nothing, and /v1/health/durability 404s.
-  # The store credentials are the shared noded/S3WarmthGc source of truth (tier
-  # 2 reads gc-manifests from the same bucket); an empty endpoint leaves the
-  # tier-2 seam nil and the tier reads unknown (never green). expected_nodes is
-  # the same fleet-contract idea as the GC's: EMPTY means tier 1 always reads
-  # unknown, so arming requires naming the fleet.
-  defp durability_opts do
-    [
-      enabled: durability_health_enabled(),
-      endpoint: trimmed_env("EMBERVM_STORE_ENDPOINT"),
-      bucket: store_bucket(),
-      access_key_id: trimmed_env("EMBERVM_STORE_ACCESS_KEY_ID"),
-      secret_access_key: trimmed_env("EMBERVM_STORE_SECRET_ACCESS_KEY"),
-      expected_nodes: durability_expected_nodes(),
-      round_interval_ms: int_env_or_nil("EMBERVM_DURABILITY_ROUND_INTERVAL_MS"),
-      streak_threshold: int_env_or_nil("EMBERVM_DURABILITY_STREAK_THRESHOLD"),
-      sweep_interval_ms: int_env_or_nil("EMBERVM_DURABILITY_GC_SWEEP_INTERVAL_MS")
-    ]
-    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
-  end
-
-  @doc false
-  def durability_health_enabled do
-    case trimmed_env("EMBERVM_DURABILITY_HEALTH") do
-      v when v in ["1", "true", "TRUE", "True"] -> true
-      _ -> false
-    end
-  end
-
-  # Comma-separated fleet contract for the durability detector. The S3 warmth
-  # GC independently derives its fleet from NodeRegistry at check time.
-  @doc false
-  def durability_expected_nodes do
-    trimmed_env("EMBERVM_DURABILITY_EXPECTED_NODES")
-    |> String.split(",", trim: true)
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == ""))
   end
 
   @doc false
@@ -1155,22 +1090,25 @@ defmodule Embervm.Application do
       reconcile_interval_ms: session_reconcile_interval_ms(),
       sweep_interval_ms: session_sweep_interval_ms(),
       disk_low_watermark_bytes: session_disk_low_watermark_bytes(),
-      node_confirmed_destroy: node_confirmed_destroy_enabled(),
-      drain_instance_scoped: drain_instance_scoped_sessions_enabled(),
-      cross_node_rejoin: cross_node_rejoin_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       orphan_grace_ms: orphan_grace_ms(),
       create_concurrency: session_create_concurrency(),
       # #4355 pressure-parked wake retry cadence and bound.
       pressure_retry_interval_ms: session_pressure_retry_interval_ms(),
       pressure_wait_bound_ms: session_pressure_wait_bound_ms(),
-      # The Direction-2 adopt-and-backfill discriminator asks AsyncWriter whether a
-      # rowless reported VM has a write in flight (ADR embervm/014 decision 2), so it
-      # needs both the gate and the writer reference.
-      async_lifecycle_writes: async_lifecycle_writes_enabled(),
-      restart_flush_inflight_invokes: restart_flush_inflight_invokes_enabled(),
-      async_writer: Embervm.AsyncWriter
+      residency_restore_limit: residency_positive_limit("EMBERVM_RESIDENCY_RESTORE_LIMIT", 2)
     ] ++ wake_opts()
+  end
+
+  defp residency_positive_limit(name, default) do
+    case trimmed_env(name) do
+      "" -> default
+      raw ->
+        case Integer.parse(raw) do
+          {value, ""} when value > 0 -> value
+          _ -> raise ArgumentError, "#{name} must be a finite positive integer"
+        end
+    end
   end
 
   defp session_create_concurrency do
@@ -1196,62 +1134,6 @@ defmodule Embervm.Application do
       "" -> Embervm.SessionManager.default_pressure_wait_bound_ms()
       raw -> String.to_integer(raw)
     end
-  end
-
-  # EMBERVM_NODE_CONFIRMED_DESTROY (ADR embervm/014 decision 5). UNSET or
-  # "0"/"false"/"" (the default, and what this PR ships) => destruction records
-  # destroyed first and tears the VM down asynchronously (today's behaviour).
-  # "1"/"true" => destruction records a destroying intent, runs the node-confirmed
-  # teardown RPC, and records destroyed ONLY on node confirmation, with fail-closed
-  # reconciliation toward destruction. Wired here so it flips via a deploy values env
-  # change, no code change. Nothing sets it on in this PR.
-  defp node_confirmed_destroy_enabled do
-    case trimmed_env("EMBERVM_NODE_CONFIRMED_DESTROY") do
-      v when v in ["1", "true", "TRUE", "True"] -> true
-      _ -> false
-    end
-  end
-
-  # EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS. UNSET or "0"/"false"/"" (the chart
-  # default) => a brick drain edge interrupts and banks every running session on
-  # the NODE. "1"/"true" => only sessions placed on the draining brick instance
-  # (node + pod_uid) are drained, so an autoscaler idle drain of an empty brick
-  # no longer interrupts live turns on a co-located sibling brick.
-  defp drain_instance_scoped_sessions_enabled do
-    case trimmed_env("EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS") do
-      v when v in ["1", "true", "TRUE", "True"] -> true
-      _ -> false
-    end
-  end
-
-  defp cross_node_rejoin_enabled do
-    case trimmed_env("EMBERVM_CROSS_NODE_REJOIN") do
-      v when v in ["1", "true", "TRUE", "True"] -> true
-      _ -> false
-    end
-  end
-
-  # EMBERVM_ASYNC_LIFECYCLE_WRITES (ADR embervm/014 decision 2). UNSET or
-  # "0"/"false"/"" (the chart and reference-deployment setting) => the
-  # boot/wake lifecycle appends (:assigned/:started on dispatch and
-  # session_relit on session wake) stay write-through: the
-  # durable oplog append blocks the hot-path caller
-  # before the instance is handed back. "1"/"true" => those three
-  # appends are deferred to Embervm.AsyncWriter AFTER the in-memory state is advanced
-  # (RPC already succeeded), taking the durable write off the hot path; a lost write
-  # (CP crash before the async append) is repaired by the adoption backfill. Metering,
-  # :submitted, session_created, destruction, and bank ops are NEVER deferred. Wired here so it flips
-  # via a deploy values env change, no code change: the chart's `asyncLifecycleWrites`
-  # key (chart/values.yaml) renders this variable in deployment.yaml.
-  defp async_lifecycle_writes_enabled do
-    case trimmed_env("EMBERVM_ASYNC_LIFECYCLE_WRITES") do
-      v when v in ["1", "true", "TRUE", "True"] -> true
-      _ -> false
-    end
-  end
-
-  defp restart_flush_inflight_invokes_enabled do
-    System.get_env("EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES") == "true"
   end
 
   # Alarm threshold for an instance stuck in destroying (EMBERVM_DESTROYING_ALARM_MS);
@@ -1348,27 +1230,10 @@ defmodule Embervm.Application do
     ]
   end
 
-  # GrpcConnectionSweeper config: the destructive gate and sweep cadence from env.
-  # Default is gate OFF (the sweep runs but only logs, leaving connections untouched).
+  # GrpcConnectionSweeper config: the sweep cadence from env.
   defp grpc_connection_sweeper_opts do
-    [
-      sweep_enabled: grpc_connection_sweep_enabled(),
-      sweep_interval_ms: int_env_or_nil("EMBERVM_GRPC_CONNECTION_SWEEP_INTERVAL_MS")
-    ]
+    [sweep_interval_ms: int_env_or_nil("EMBERVM_GRPC_CONNECTION_SWEEP_INTERVAL_MS")]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
-  end
-
-  # The destructive gate for the GrpcConnectionSweeper, from
-  # EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED. UNSET or "0"/"false"/"" (the default,
-  # and what the chart defaults to) => the sweep runs but only logs a dry-run plan,
-  # leaving no children terminated. "1"/"true" => the sweep terminates orchestrators
-  # holding dead addresses or wedged in init. Wired here so it flips via a deploy
-  # values env change, no code change.
-  defp grpc_connection_sweep_enabled do
-    case trimmed_env("EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED") do
-      v when v in ["1", "true", "TRUE", "True"] -> true
-      _ -> false
-    end
   end
 
   # The activator endpoint the node Envoy routes to when a serving workload has no
@@ -1421,7 +1286,6 @@ defmodule Embervm.Application do
     [
       op_log_mod: op_log_mod(),
       reconcile_interval_ms: serving_reconcile_interval_ms(),
-      node_confirmed_destroy: node_confirmed_destroy_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       orphan_grace_ms: orphan_grace_ms()
     ] ++ serving_wake_opts()
@@ -1463,18 +1327,6 @@ defmodule Embervm.Application do
     end
   end
 
-  # Public only so a test can pin the empty-value fall-through: an env var that
-  # renders empty must take the caller's default, and which default that is
-  # decides whether a lane lands armed.
-  @doc false
-  def boolean_env(name, default) do
-    case trimmed_env(name) do
-      "" -> default
-      value when value in ["1", "true", "TRUE", "True"] -> true
-      _ -> false
-    end
-  end
-
   defp float_env(name, default) do
     case Float.parse(trimmed_env(name)) do
       {value, ""} -> value
@@ -1491,7 +1343,6 @@ defmodule Embervm.Application do
   defp serving_sweeper_opts do
     [
       op_log_mod: op_log_mod(),
-      node_confirmed_destroy: node_confirmed_destroy_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       orphan_grace_ms: orphan_grace_ms(),
       sweep_interval_ms: serving_sweep_interval_ms(),
@@ -1538,7 +1389,6 @@ defmodule Embervm.Application do
       stats_base: sweeper_stats_base(),
       bank_concurrency: int_env_or_nil("EMBERVM_STATEFUL_BANK_CONCURRENCY"),
       lifetime_drain_max_ms: int_env_or_nil("EMBERVM_STATEFUL_LIFETIME_DRAIN_MAX_MS"),
-      pressure_banking_enabled: boolean_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", false),
       high_water_fraction: float_env("EMBERVM_STATEFUL_PRESSURE_HIGH_WATER_FRACTION", 0.85),
       low_water_fraction: float_env("EMBERVM_STATEFUL_PRESSURE_LOW_WATER_FRACTION", 0.70),
       pressure_idle_floor_ms: int_env_or_nil("EMBERVM_STATEFUL_PRESSURE_IDLE_FLOOR_MS"),
@@ -1564,7 +1414,6 @@ defmodule Embervm.Application do
   defp group_sweeper_opts do
     [
       op_log_mod: op_log_mod(),
-      node_confirmed_destroy: node_confirmed_destroy_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       orphan_grace_ms: orphan_grace_ms(),
       sweep_interval_ms: group_sweep_interval_ms(),
@@ -1591,7 +1440,6 @@ defmodule Embervm.Application do
     [
       op_log_mod: op_log_mod(),
       reconcile_interval_ms: stateful_reconcile_interval_ms(),
-      node_confirmed_destroy: node_confirmed_destroy_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       destroying_escape_ms: stateful_destroying_escape_ms(),
       orphan_grace_ms: orphan_grace_ms()
@@ -1915,7 +1763,6 @@ defmodule Embervm.Application do
   # run still allocates from a sane /16.
   defp group_manager_supervisor_opts do
     [
-      node_confirmed_destroy: node_confirmed_destroy_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       orphan_grace_ms: orphan_grace_ms(),
       defaults: [
@@ -1934,7 +1781,6 @@ defmodule Embervm.Application do
   defp group_wake_manager_opts do
     [
       op_log_mod: op_log_mod(),
-      node_confirmed_destroy: node_confirmed_destroy_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       orphan_grace_ms: orphan_grace_ms(),
       reconcile_interval_ms: group_reconcile_interval_ms(),

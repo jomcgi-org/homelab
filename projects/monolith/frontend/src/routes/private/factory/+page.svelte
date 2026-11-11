@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
-  import "$lib/private/dashboard-theme.css";
+  import FactorySheet from "./FactorySheet.svelte";
   import { relativeTime } from "./execution/run-history.js";
   import {
     NODE_STATE_WORD,
@@ -14,19 +14,13 @@
     money,
     phaseLabel,
     planRanks,
+    prLabel,
     turnShare,
   } from "./factory-view.js";
 
   let { data } = $props();
 
   const POLL_MS = 20000;
-
-  // Document register: day or night only, from the system scheme, corrected
-  // on hydrate the same way the updates page does it.
-  let dark = $state(
-    typeof window !== "undefined" &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches,
-  );
 
   // The load result seeds mutable state on purpose: the page then owns the
   // board through its own polling, and a later navigation remounts it.
@@ -45,6 +39,8 @@
   const policy = $derived(board?.policy ?? null);
   const intake = $derived(board?.intake ?? null);
   const problemIssues = $derived(board?.problem_issues ?? null);
+  const backlogRefill = $derived(board?.backlog_refill ?? null);
+  const intakeBacklog = $derived(board?.intake_backlog ?? null);
   const lanes = $derived(board?.lanes ?? null);
   const routing = $derived(board?.review_routing ?? null);
   // Only worth a word when review is not on the model the policy asked for,
@@ -98,16 +94,11 @@
   }
 
   onMount(() => {
-    const scheme = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => (dark = scheme.matches);
-    apply();
-    scheme.addEventListener("change", apply);
     timer = setInterval(() => {
       if (document.visibilityState === "visible") refresh();
     }, POLL_MS);
     const tick = setInterval(() => (now = Date.now()), 30000);
     return () => {
-      scheme.removeEventListener("change", apply);
       clearInterval(timer);
       clearInterval(tick);
     };
@@ -155,22 +146,30 @@
   <title>Factory</title>
 </svelte:head>
 
-<main class="factory-page shell {dark ? 'night' : 'day'}">
-  <div class="frame">
-    <h1 class="sr-only">Factory</h1>
+<FactorySheet className="factory-page" view="factory" {waiting}>
+  <h1 class="sr-only">Factory</h1>
 
-    <header class="masthead">
-      <nav class="view-tabs" aria-label="Factory views">
-        <a class="here" href="/factory" aria-current="page">factory</a>
-        <a href="/factory/escalations"
-          >escalations{waiting ? ` (${waiting})` : ""}</a
-        >
-        <a href="/factory/execution">work</a>
-        <a href="/factory/execution/drain">knowledge extraction queue</a>
-      </nav>
-    </header>
+  <section class="edition next-step" aria-label="Next action">
+    <div class="ed-lead">
+      <h2>
+        {unavailable
+          ? "Board unavailable"
+          : waiting
+            ? `${waiting} decisions need you`
+            : "Factory delivery"}
+      </h2>
+      <p>
+        {unavailable
+          ? "Showing the last read. Current work may have changed."
+          : "Choose a task for its context, owner and next step."}
+      </p>
+      <a href="/factory/escalations">Review decisions</a>
+    </div>
+  </section>
 
-    <section class="stats" aria-label="Factory state">
+  <details class="diagnostics">
+    <summary>Factory status and limits</summary>
+    <section class="stats edition" aria-label="Factory state">
       <div>
         <span class="k">state</span>
         <span class={`v state-${stateWord}`}>{stateWord}</span>
@@ -209,6 +208,15 @@
           >{problemIssues?.status === "on"
             ? `${problemIssues.writes_started_today}/${problemIssues.max_per_24_hours} writes / 24h`
             : "off"}</span
+        >
+      </div>
+      <div>
+        <span class="k">backlog refill</span>
+        <span class="v"
+          >{backlogRefill?.status ?? "off"}{#if backlogRefill?.enabled}
+            · {backlogRefill.starts_last_24_hours}/{backlogRefill.max_per_24_hours}
+            starts / 24h
+          {/if}</span
         >
       </div>
     </section>
@@ -252,49 +260,88 @@
         >Talk to the conductor ({conductorModel(null, board)})</a
       >
     </p>
+  </details>
 
-    <section>
-      <p class="sec-label">
-        / In flight <span class="num">{active.length}</span>
+  <section>
+    <p class="sec-label">
+      / In flight <span class="num">{active.length}</span>
+    </p>
+    {#if active.length === 0 && !unavailable}
+      <p class="none">Nothing in flight.</p>
+    {/if}
+    {#each active as receipt (receipt.id)}
+      {@render card(receipt, true)}
+    {/each}
+  </section>
+
+  <section>
+    <p class="sec-label">/ Queue <span class="num">{queued.length}</span></p>
+    {#if queued.length === 0 && !unavailable}
+      <p class="none">Queue is empty. The next issue in the policy feeds it.</p>
+    {/if}
+    {#each queued as receipt (receipt.id)}
+      {@render card(receipt, false)}
+    {/each}
+  </section>
+
+  <section aria-label="Agent-ready backlog">
+    <p class="sec-label">/ Agent-ready backlog</p>
+    {#if unavailable || !intakeBacklog?.available}
+      <p class="none">
+        Intake evidence unavailable. This is not an empty backlog.
       </p>
-      {#if active.length === 0}
-        <p class="none">Nothing in flight.</p>
-      {/if}
-      {#each active as receipt (receipt.id)}
-        {@render card(receipt, true)}
+    {:else}
+      <p>
+        Observed {intakeBacklog.observed_at ?? "never"}.
+        {#if intakeBacklog.stale}Stale observations.{/if}
+        {#if intakeBacklog.unfinished}Latest sweep unfinished.{/if}
+        {#each Object.entries(intakeBacklog.coverage ?? {}) as [repo, coverage]}
+          {repo}: {coverage}.
+        {/each}
+      </p>
+      {#each intakeBacklog.issues ?? [] as issue (`${issue.repo}#${issue.issue_number}`)}
+        <p>
+          <a
+            href={`https://github.com/${issue.repo}/issues/${issue.issue_number}`}
+          >
+            {issue.repo}#{issue.issue_number}: {issue.title}
+          </a>
+          · {issue.age_days == null
+            ? "age unknown"
+            : `${issue.age_days} days old`}
+          · {issue.subsequently_admitted
+            ? "admitted since observation"
+            : (issue.decision ?? "never considered")}
+          · {issue.reason} · {issue.observed_at ?? "never observed"}
+          {#if issue.stale}
+            · stale{/if}
+        </p>
       {/each}
-    </section>
-
-    <section>
-      <p class="sec-label">/ Queue <span class="num">{queued.length}</span></p>
-      {#if queued.length === 0}
+      {#if intakeBacklog.issues?.length === 0}
         <p class="none">
-          Queue is empty. The next issue in the policy feeds it.
+          No open agent-ready issues in the observed inventory.
         </p>
       {/if}
-      {#each queued as receipt (receipt.id)}
-        {@render card(receipt, false)}
-      {/each}
-    </section>
+    {/if}
+  </section>
 
-    <section>
-      <p class="sec-label">/ Recent <span class="num">{recent.length}</span></p>
-      {#if recent.length === 0}
-        <p class="none">No finished tasks yet.</p>
-      {/if}
-      {#each recent as receipt (receipt.id)}
-        {@render card(receipt, false)}
-      {/each}
-    </section>
-  </div>
-</main>
+  <section>
+    <p class="sec-label">/ Recent <span class="num">{recent.length}</span></p>
+    {#if recent.length === 0 && !unavailable}
+      <p class="none">No finished tasks yet.</p>
+    {/if}
+    {#each recent as receipt (receipt.id)}
+      {@render card(receipt, false)}
+    {/each}
+  </section>
+</FactorySheet>
 
 {#snippet card(receipt, inFlight)}
   {@const open = Boolean(receipt.task_id) && openTask === receipt.task_id}
-  <article class={`panel ${receipt.state}`} class:open>
+  <article class={`panel edition ${receipt.state}`} class:open>
     <button
       type="button"
-      class="panel-head"
+      class="panel-head ed-head"
       aria-expanded={open}
       disabled={!receipt.task_id}
       onclick={() => toggle(receipt)}
@@ -305,10 +352,35 @@
         >{receiptWord(receipt)}</span
       >
     </button>
-    <div class="spec">
+    <dl class="spec">
       <div class="row">
-        <span class="label">phase</span>
-        <span class="value">
+        <dt class="label">owner</dt>
+        <dd class="value">
+          {receipt.escalation_open
+            ? "You: review the decision"
+            : receipt.task_id
+              ? "Factory"
+              : "Not assigned"}
+        </dd>
+      </div>
+      <div class="row">
+        <dt class="label">next</dt>
+        <dd class="value">
+          {#if receipt.escalation_open}<a href="/factory/escalations"
+              >Review decision</a
+            >
+          {:else if receipt.work_item_id}<a
+              href="/factory/work-items/{receipt.work_item_id}"
+              >Open task context</a
+            >
+          {:else if inFlight}Open this task for progress
+          {:else if receipt.task_id}Open this task for its outcome
+          {:else}Waiting for a factory slot{/if}
+        </dd>
+      </div>
+      <div class="row">
+        <dt class="label">phase</dt>
+        <dd class="value">
           <span
             class={`dot ${inFlight && !receipt.task_paused ? "running" : ""}`}
           ></span>
@@ -316,12 +388,12 @@
           {#if inFlight}<span class="soft">
               · {deadlineLabel(receipt, now)}</span
             >{/if}
-        </span>
+        </dd>
       </div>
-      {#if receipt.task_id}
+      {#if receipt.task_id && open}
         <div class="row">
-          <span class="label">starts</span>
-          <span class="value meter">
+          <dt class="label">starts</dt>
+          <dd class="value meter">
             <span class="bar"
               ><i style={`width:${pct(turnShare(receipt))}`}></i></span
             >
@@ -331,11 +403,11 @@
                   .max_task_turns_hard}{#if receipt.planner_turns_used}
                 + {receipt.planner_turns_used} planning{/if}</span
             >
-          </span>
+          </dd>
         </div>
         <div class="row">
-          <span class="label">spend</span>
-          <span class="value meter">
+          <dt class="label">spend</dt>
+          <dd class="value meter">
             <span class="bar"
               ><i style={`width:${pct(budgetShare(receipt))}`}></i></span
             >
@@ -344,20 +416,21 @@
                 receipt.policy.task_budget_usd,
               )}</span
             >
-          </span>
+          </dd>
         </div>
       {/if}
       {#if receipt.evidence?.pr_url}
         <div class="row">
-          <span class="label">pr</span>
-          <span class="value"
-            ><a href={receipt.evidence.pr_url}>{receipt.evidence.pr_url}</a
-            ></span
-          >
+          <dt class="label">pr</dt>
+          <dd class="value">
+            <a href={receipt.evidence.pr_url}
+              >{prLabel(receipt.evidence.pr_url)}</a
+            >
+          </dd>
         </div>
       {/if}
-    </div>
-    {#if receipt.nodes?.length}
+    </dl>
+    {#if receipt.nodes?.length && open}
       {@render dag(receipt)}
     {/if}
     {#if open}
@@ -474,54 +547,8 @@
 {/snippet}
 
 <style>
-  :global(body) {
-    margin: 0;
-  }
-
-  /* One bright sheet, fixed root basis: the tier scales the root font with
-     the viewport (global.css clamp), and every rem here assumes 16px. The
-     literal day and night sheet values mirror the updates page. */
-  :global(html:has(.factory-page)) {
-    background: #ffffff; /* nosemgrep: svelte-hardcoded-color-in-style */
-    font-size: 16px;
-  }
-  @media (prefers-color-scheme: dark) {
-    :global(html:has(.factory-page)) {
-      background: #181a20; /* nosemgrep: svelte-hardcoded-color-in-style */
-    }
-  }
-
-  .factory-page {
-    --band: color-mix(in srgb, var(--ink) 5%, var(--sheet));
-    --accent-ink: color-mix(in srgb, var(--accent) 85%, var(--ink));
-    --stroke: color-mix(in srgb, var(--ink) 28%, transparent);
-    min-height: 100vh;
-    box-sizing: border-box;
-    padding: clamp(3.25rem, 5vh, 3.75rem) clamp(1rem, 4vw, 4.5em) 6em;
-    color: var(--ink);
-    background: var(--sheet);
-    font-family: var(--font-ui);
-    font-size: 16px;
-    line-height: 1.45;
-  }
-  .frame {
-    max-width: 69em;
-    margin: 0 auto;
-  }
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
   .code {
     font-family: var(--font-code);
-  }
-  .num {
-    font-variant-numeric: tabular-nums;
   }
   .soft {
     color: var(--ink-2);
@@ -535,67 +562,30 @@
     outline-offset: 3px;
   }
 
-  /* Masthead: the app chrome the slop/factory page wears, one boxed strip
-     of crumbs and one of view tabs, both partitioned by --stroke. */
-  .masthead {
+  /* Eight values form complete rows on both phone and desktop. */
+  .diagnostics > summary,
+  .next-step a {
+    min-height: 44px;
     display: flex;
-    flex-wrap: wrap;
-    align-items: stretch;
-    gap: 0.75rem;
-    margin-bottom: 1rem;
-  }
-  /* Every inline link that is a control keeps the phone's 44px floor. */
-  .target {
-    display: inline-flex;
     align-items: center;
-    min-height: 2.75rem;
-  }
-  .view-tabs {
-    display: flex;
-    border: 1px solid var(--stroke);
-    font-family: var(--font-code);
-    font-size: 0.72rem;
-    letter-spacing: 0.04em;
-  }
-  .view-tabs > a {
-    display: inline-flex;
-    align-items: center;
-    min-height: 2.75rem;
-    padding: 0 0.9em;
-    border-bottom: 2px solid transparent;
-    color: var(--ink-2);
-    text-decoration: none;
-  }
-  .view-tabs > a + a {
-    border-left: 1px solid var(--stroke);
-  }
-  .view-tabs a:hover {
-    color: var(--ink);
-  }
-  /* The selection marker in a horizontal strip is a bottom underline, drawn
-     as a border like the blog's tabs, never a shadow. */
-  .view-tabs .here {
-    border-bottom-color: var(--accent-ink);
-    color: var(--accent-ink);
   }
 
-  /* State strip: the stats box from the slop page, six cells on a desk and
-     three per row on a phone. */
   .stats {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     border: 1px solid var(--ink);
   }
   .stats > div {
     min-width: 0;
     padding: 0.55rem 0.8rem 0.6rem;
     border-right: 1px solid var(--stroke);
+    border-bottom: 1px solid var(--stroke);
   }
-  .stats > div:nth-child(3n) {
+  .stats > div:nth-child(2n) {
     border-right: 0;
   }
-  .stats > div:nth-child(-n + 3) {
-    border-bottom: 1px solid var(--stroke);
+  .stats > div:nth-last-child(-n + 2) {
+    border-bottom: 0;
   }
   .stats .k {
     display: block;
@@ -608,13 +598,11 @@
   .stats .v {
     display: block;
     margin-top: 0.3em;
-    overflow: hidden;
-    font-size: 1.25rem;
+    font-size: 1.1rem;
     font-weight: 700;
     letter-spacing: -0.02em;
     line-height: 1.1;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
   }
   .stats .v.state-enabled {
     color: var(--ok);
@@ -625,7 +613,7 @@
   }
   .stats .v.state-stopped,
   .stats .v.state-disabled {
-    color: var(--bad);
+    color: var(--ds-err);
   }
 
   .policy-line {
@@ -661,20 +649,6 @@
     background: var(--band);
   }
 
-  .sec-label {
-    display: flex;
-    align-items: baseline;
-    gap: 0.6em;
-    margin: 0 0 0.8em;
-    padding-bottom: 0.5em;
-    border-bottom: 1px solid var(--stroke);
-    color: var(--ink-2);
-    font-family: var(--font-code);
-    font-size: 0.68rem;
-    font-weight: 500;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
   section {
     margin-bottom: 2.25rem;
   }
@@ -687,22 +661,13 @@
   /* Panels: one 1px ink outline per task, partitioned edge to edge. */
   .panel {
     margin-bottom: 0.9rem;
-    border: 1px solid var(--ink);
   }
   .panel-head {
     width: 100%;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.4rem 0.8rem;
     min-height: 2.75rem;
-    margin: 0;
-    padding: 0.55rem 0.8rem;
-    border: 0;
-    border-bottom: 1px solid var(--stroke);
-    background: var(--band);
-    color: var(--ink);
-    font: inherit;
+    border-top: 0;
+    border-left: 0;
+    border-right: 0;
     text-align: left;
     cursor: pointer;
   }
@@ -739,44 +704,16 @@
   }
   .badge.state-failed,
   .badge.state-cancelled {
-    border-color: var(--bad);
-    color: var(--bad);
+    border-color: var(--ds-err);
+    color: var(--ds-err);
   }
 
-  /* Spec rows: mono label column with its own rule, value flowing left. */
-  .spec {
-    padding: 0 0.8rem;
-  }
-  .row {
-    display: grid;
-    grid-template-columns: 4.5em minmax(0, 1fr);
-    align-items: center;
-    gap: 0.8rem;
-    min-height: 2rem;
-    border-bottom: 1px solid var(--line);
-    font-size: 0.85rem;
-  }
-  .row:last-child {
-    border-bottom: 0;
-  }
-  .row .label {
-    align-self: stretch;
-    display: flex;
-    align-items: center;
-    border-right: 1px solid var(--stroke);
-    color: var(--ink-2);
-    font-family: var(--font-code);
-    font-size: 0.68rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-  .row .value {
+  .value {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 0.4rem;
     min-width: 0;
-    overflow-wrap: anywhere;
   }
   .meter .bar {
     flex: 1 1 6em;
@@ -809,8 +746,8 @@
   }
   .dot.failed,
   .dot.cancelled {
-    border-color: var(--bad);
-    background: var(--bad);
+    border-color: var(--ds-err);
+    background: var(--ds-err);
   }
   .dot.uncertain {
     border-color: var(--warn);
@@ -847,7 +784,6 @@
     width: 1rem;
     height: 1rem;
     border: 1px solid var(--ink);
-    border-radius: 50%;
     color: var(--ink-2);
     font: 0.6rem / 1rem var(--font-code);
     text-align: center;
@@ -889,7 +825,7 @@
   }
   .node.failed .nh,
   .node.cancelled .nh {
-    color: var(--bad);
+    color: var(--ds-err);
   }
   .node.uncertain .nh {
     color: var(--warn);
@@ -901,16 +837,23 @@
   }
 
   @media (min-width: 900px) {
-    .stats {
-      grid-template-columns: repeat(6, minmax(0, 1fr));
+    .diagnostics > summary,
+    .next-step a {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
     }
-    .stats > div:nth-child(3n) {
+
+    .stats {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+    .stats > div:nth-child(2n) {
       border-right: 1px solid var(--stroke);
     }
-    .stats > div:last-child {
+    .stats > div:nth-child(4n) {
       border-right: 0;
     }
-    .stats > div:nth-child(-n + 3) {
+    .stats > div:nth-last-child(-n + 4) {
       border-bottom: 0;
     }
     .stats .v {
@@ -1016,7 +959,7 @@
   }
   .ledger li {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 0.7rem;
     padding: 0.35rem 0;
     border-bottom: 1px solid var(--line);
@@ -1027,7 +970,7 @@
     color: var(--ok);
   }
   .state-failed {
-    color: var(--bad);
+    color: var(--ds-err);
   }
   .state-uncertain,
   .state-reserved {

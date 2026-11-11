@@ -1,0 +1,1075 @@
+/* Route structure only. Palette, type, panels and focus come from the sheet;
+   shared controls consume its --ds-* bridge. Timeline dimensions match the
+   constants in +page.svelte and the packing logic in moving.js. */
+.moving .journal.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+.moving .trail-dock {
+  width: fit-content;
+}
+.moving .app,
+.moving .grid > *,
+.moving .manage-section {
+  min-width: 0;
+}
+.moving .grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(20rem, 0.9fr) minmax(0, 2fr);
+  grid-template-areas: "head head" "hero prog" "today plot" "agenda plot" "agenda collide" "dock dock";
+}
+.moving .c-head {
+  grid-area: head;
+  align-items: center;
+}
+.moving .c-head .r,
+.moving .c-head .manage-toggle {
+  margin-left: auto;
+}
+.moving .c-head b,
+.moving .manage-title {
+  color: var(--ink);
+}
+.moving .manage-title {
+  font: inherit;
+  font-weight: 700;
+  margin: 0;
+}
+.moving .c-hero {
+  grid-area: hero;
+}
+.moving .c-hero h1 {
+  font-size: clamp(1.6rem, 4vw, 3rem);
+}
+.moving .hero-empty h1 {
+  font-size: 1.4rem;
+}
+.moving .hero-empty span {
+  display: block;
+  margin-top: 0.6rem;
+}
+.moving .c-today {
+  grid-area: today;
+  display: flex;
+  flex-direction: column;
+}
+.moving .c-today .ed-head {
+  align-items: center;
+  gap: 0.5rem;
+}
+.moving .ed-head h2 {
+  margin: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink);
+}
+.moving .seg-mini {
+  display: inline-flex;
+}
+.moving .seg-mini button + button {
+  margin-left: -1px;
+}
+.moving .seg-mini button[aria-pressed="true"] {
+  background: var(--ds-accent);
+  color: var(--ds-on-accent);
+}
+.moving .badge {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.moving .cta-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0 1rem 1rem;
+  overflow-y: auto;
+}
+.moving .nsec-h,
+.moving .amonth {
+  margin: 1rem 0 0.2rem;
+  color: var(--ink-2);
+  font: 0.72rem var(--font-code);
+}
+.moving .amonth {
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--stroke);
+}
+.moving .nrow {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.65rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.moving input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  align-self: center;
+  accent-color: var(--accent-ink);
+  cursor: pointer;
+}
+.moving .t {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.moving .w,
+.moving .who,
+.moving .due,
+.moving .d,
+.moving .mono {
+  font: 0.72rem var(--font-code);
+  font-variant-numeric: tabular-nums;
+}
+.moving .w {
+  margin-left: 0.4rem;
+  color: var(--ink-2);
+}
+.moving .due.overdue {
+  color: var(--ds-err);
+  font-weight: 600;
+}
+.moving .ncalm,
+.moving .quiet-empty,
+.moving .plot-empty {
+  padding: 0.8rem 0;
+  color: var(--ink-2);
+}
+.moving .task-error,
+.moving .manage-error,
+.moving .chat-error {
+  margin: 0.6rem 0;
+  padding: 0.6rem;
+  border: 1px solid var(--ds-err);
+  color: var(--ink);
+  background: var(--sheet);
+}
+.moving .allbtn {
+  margin-top: auto;
+  padding: 0.6rem;
+  width: 100%;
+}
+.moving .allbtn,
+.moving .dockbtn,
+.moving .tabbar button,
+.moving .x {
+  min-height: 44px;
+  border: 1px solid var(--stroke);
+  border-radius: 0;
+  background: var(--sheet);
+  color: var(--ink);
+  font: 0.75rem var(--font-code);
+  cursor: pointer;
+}
+.moving .allbtn:hover,
+.moving .dockbtn:hover,
+.moving .tabbar button:hover,
+.moving .x:hover {
+  color: var(--accent-ink);
+  background: var(--band);
+}
+.moving .c-agenda {
+  grid-area: agenda;
+}
+.moving .agenda-body {
+  padding: 0 1rem 1rem;
+}
+/* The chart defines the desktop grid height. A long agenda must scroll
+   inside that height instead of stretching the plot and collisions apart. */
+@media (min-width: 1081px) {
+  .moving .c-agenda {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .moving .agenda-body {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    contain: size;
+  }
+}
+.moving .arow {
+  display: grid;
+  grid-template-columns: 45px 18px minmax(0, 1fr);
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+.moving .arow .sub,
+.moving .cal-owner,
+.moving .rrow .loc {
+  display: block;
+  color: var(--ink-2);
+  font-size: 0.75rem;
+}
+.moving .arow .ic {
+  text-align: center;
+}
+.moving .arow.held .ic,
+.moving .arow.col .ic,
+.moving .collision-mark {
+  color: var(--ds-err);
+}
+.moving .c-legsmini,
+.moving .tabbar {
+  display: none;
+}
+.moving .lm {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--line);
+}
+.moving .sw,
+.moving .tdot,
+.moving .dot {
+  display: inline-block;
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--stroke);
+  background: var(--hue, var(--sheet));
+}
+
+/* Timeline geometry. Both the scale and rows use the same gutter and right
+   padding. Keep these pixel relationships with the JS layout constants. */
+.moving .card-plot {
+  position: relative;
+  grid-area: plot;
+  overflow-x: auto;
+}
+.moving .plot {
+  --gutter: 104px;
+  --pad-r: 22px;
+  --pad-top: 62px;
+  --pad-btm: 46px;
+  position: relative;
+  min-height: 430px;
+  min-width: 760px;
+}
+.moving .plot-scale {
+  position: absolute;
+  inset: 0 var(--pad-r) 0 var(--gutter);
+}
+.moving .vline {
+  position: absolute;
+  top: 10px;
+  bottom: 40px;
+  width: 1px;
+  background: var(--line);
+}
+.moving .legtag {
+  position: absolute;
+  top: calc(12px + var(--stagger, 0) * 38px);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  white-space: nowrap;
+}
+.moving .legtag b {
+  align-self: flex-start;
+  border-bottom: 1px solid var(--hue);
+  font-size: 12.5px;
+}
+.moving .legtag span {
+  color: var(--ink-2);
+  font: 10px var(--font-code);
+}
+.moving .baseline {
+  position: absolute;
+  right: 0;
+  bottom: 40px;
+  left: 0;
+  height: 1px;
+  background: var(--stroke);
+}
+.moving .today {
+  position: absolute;
+  z-index: 4;
+  top: var(--pad-top);
+  bottom: 40px;
+  width: 1px;
+  background: var(--accent-ink);
+}
+.moving .today i {
+  position: absolute;
+  top: -6px;
+  left: -4px;
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--accent-ink);
+  background: var(--sheet);
+}
+.moving .tlbl {
+  position: absolute;
+  bottom: -26px;
+  left: 50%;
+  padding: 0 5px;
+  transform: translateX(-50%);
+  border: 1px solid var(--accent-ink);
+  background: var(--sheet);
+  color: var(--accent-ink);
+  font: 10px var(--font-code);
+}
+.moving .rows {
+  position: absolute;
+  z-index: 3;
+  inset: var(--pad-top) 0 var(--pad-btm) 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.moving .rows .row {
+  display: grid;
+  grid-template-columns: var(--gutter) minmax(0, 1fr);
+  align-items: center;
+}
+.moving .row .name {
+  padding-right: 16px;
+  color: var(--ink-2);
+  font: 10px var(--font-code);
+  text-align: right;
+  white-space: nowrap;
+}
+.moving .track {
+  position: relative;
+  height: calc(var(--sub-rows, 1) * 34px);
+  margin-right: var(--pad-r);
+}
+.moving .row.slim .track {
+  height: 34px;
+}
+.moving .bar {
+  position: absolute;
+  top: calc(var(--sub-row, 0) * 34px + 3px);
+  min-width: 13px;
+  height: 13px;
+  padding: 0;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  cursor: default;
+}
+.moving .bar.collides {
+  border-color: var(--ds-err);
+  background: var(--ds-err);
+}
+.moving .bar::after {
+  position: absolute;
+  content: "";
+  inset: -7px 0;
+}
+.moving .bar:hover,
+.moving .bar:focus-visible {
+  z-index: 5;
+  background: var(--accent-ink);
+}
+.moving .blbl {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.moving .dia-wrap {
+  position: absolute;
+  top: 50%;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  transform: translate(-50%, -50%);
+}
+.moving .dia-marker {
+  position: relative;
+  display: inline-flex;
+}
+.moving .dia {
+  position: relative;
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  transform: rotate(45deg);
+  border: 1px solid var(--ink);
+  background: var(--sheet);
+  cursor: pointer;
+}
+.moving .dia::after {
+  position: absolute;
+  content: "";
+  inset: -8px;
+}
+.moving .dia.fill {
+  background: var(--ink);
+}
+.moving .dia.held {
+  background: var(--ds-warn);
+}
+.moving .dia-count {
+  position: absolute;
+  top: -5px;
+  left: 100%;
+  margin-left: 3px;
+  padding: 0 3px;
+  border: 1px solid var(--stroke);
+  background: var(--sheet);
+  color: var(--ink);
+  font: 9px var(--font-code);
+  pointer-events: none;
+}
+.moving .dia-date {
+  color: var(--ink-2);
+  font: 10px var(--font-code);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.moving .axis {
+  position: absolute;
+  right: 0;
+  bottom: 12px;
+  left: 0;
+  z-index: 3;
+  height: 16px;
+}
+.moving .axis .m {
+  position: absolute;
+  color: var(--ink-2);
+  font: 10px var(--font-code);
+}
+.moving .plot-empty {
+  margin: auto;
+  padding-left: var(--gutter);
+}
+.moving .tip {
+  position: absolute;
+  z-index: 30;
+  max-width: 300px;
+  padding: 0.6rem;
+  transform: translate(-50%, calc(-100% - 12px));
+  border: 1px solid var(--stroke);
+  background: var(--sheet);
+  pointer-events: none;
+  overflow-wrap: anywhere;
+}
+.moving .tip b,
+.moving .tip span,
+.moving .tip em {
+  display: block;
+  font-size: 0.75rem;
+}
+.moving .tip span,
+.moving .tip em {
+  color: var(--ink-2);
+  font-style: normal;
+  white-space: pre-line;
+}
+
+.moving .c-prog {
+  grid-area: prog;
+  display: flex;
+  flex-direction: column;
+}
+.moving .prog-body {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+}
+.moving .prog-pct {
+  font-size: 2.5rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.moving .prog-right {
+  flex: 1;
+  min-width: 0;
+}
+.moving .prog-bar {
+  height: 18px;
+  border: 1px solid var(--stroke);
+}
+.moving .prog-bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent-ink);
+}
+.moving .prog-lbl {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--ink-2);
+}
+.moving .c-collide {
+  grid-area: collide;
+}
+.moving .collide-body {
+  padding: 0 1rem 0.6rem;
+}
+.moving .crow {
+  display: grid;
+  grid-template-columns: 18px 74px minmax(0, 1fr);
+  gap: 0.6rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+.moving .crow .ic,
+.moving .c-collide .ic {
+  color: var(--ds-err);
+}
+.moving .ack-chip {
+  margin-left: 0.5rem;
+  font: 0.7rem var(--font-code);
+  color: var(--ds-accent);
+}
+.moving .ack-note {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--ink-2);
+}
+.moving .c-dock {
+  grid-area: dock;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.moving .dockbtn {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.7rem;
+  border: 0;
+}
+.moving .dockbtn + .dockbtn {
+  border-left: 1px solid var(--stroke);
+}
+.moving .dockbtn .v {
+  color: var(--ink-2);
+  font-size: 0.7rem;
+}
+.moving .dot.ok {
+  background: var(--ds-ok);
+}
+
+/* Native modal focus, Escape and close events are retained. The dialog is
+   the outer viewport; only its body scrolls, keeping Close reachable. */
+.moving dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(80dvh, 740px);
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  background: var(--sheet);
+  color: var(--ink);
+}
+.moving dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.moving dialog::backdrop {
+  background: var(
+    --ds-overlay,
+    color-mix(in srgb, var(--ink) 45%, transparent)
+  );
+}
+.moving .dlg-head {
+  flex: none;
+  align-items: center;
+  gap: 0.6rem;
+}
+.moving .dlg-head h2 {
+  font-family: var(--font-ui);
+  font-size: 1.15rem;
+}
+.moving .dlg-head .sub {
+  color: var(--ink-2);
+}
+.moving .x {
+  flex: none;
+  width: 44px;
+  margin-left: auto;
+  font-size: 1rem;
+}
+.moving .dlg-body {
+  min-height: 0;
+  padding: 0.6rem 1rem 1rem;
+  overflow-y: auto;
+}
+.moving .chat-dialog .dlg-body {
+  overflow: hidden;
+}
+.moving .chat {
+  display: flex;
+  height: min(56dvh, 480px);
+  min-height: 0;
+  max-height: calc(80dvh - 100px);
+  flex-direction: column;
+}
+.moving .chat-messages {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-height: 0;
+  padding: 0.3rem 0 0.8rem;
+  overflow-y: auto;
+}
+.moving .chat-empty {
+  margin: auto;
+  text-align: center;
+}
+.moving .chat-empty,
+.moving .chat-hint {
+  color: var(--ink-2);
+  font: 0.75rem var(--font-code);
+}
+.moving .chat-message {
+  max-width: 90%;
+  margin: 0;
+  padding: 0.6rem;
+  border-left: 1px solid var(--stroke);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+}
+.moving .chat-message.viewer {
+  align-self: flex-end;
+  border: 1px solid var(--stroke);
+  background: var(--band);
+}
+.moving .chat-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--stroke);
+}
+.moving .chat-hint {
+  margin-top: 0.5rem;
+}
+.moving .chat-form input,
+.moving .manage input,
+.moving .manage select {
+  min-width: 0;
+  width: 100%;
+  min-height: 44px;
+  padding: 0.45rem;
+  border: 1px solid var(--ds-line-strong);
+  border-radius: 0;
+  background: var(--ds-surface);
+  color: var(--ds-ink);
+  font: 0.8rem var(--font-ui);
+}
+.moving input::placeholder {
+  color: var(--ds-ink-muted);
+  opacity: 1;
+}
+.moving .tsec {
+  margin-top: 0.6rem;
+}
+.moving .th {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--stroke);
+  font: 0.75rem var(--font-code);
+}
+.moving .tasks,
+.moving .cal {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.moving .task {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto auto;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+.moving .task .t {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
+}
+.moving .task .note {
+  width: 100%;
+  color: var(--ink-2);
+  font-size: 0.75rem;
+}
+.moving .task.done .t {
+  color: var(--ink-2);
+  text-decoration: line-through;
+}
+.moving .task .due {
+  text-align: right;
+}
+.moving .sell-total {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 0.8rem;
+  font: 0.8rem var(--font-code);
+}
+.moving .cal li {
+  display: grid;
+  grid-template-columns: 65px minmax(0, 1fr) auto;
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+.moving .st {
+  font: 0.7rem var(--font-code);
+}
+.moving .st.warn {
+  color: var(--ds-warn);
+}
+.moving .dialog-empty {
+  margin: 0.6rem 0;
+}
+.moving .roles-note {
+  margin-top: 0.8rem;
+  padding: 0.8rem;
+  border: 1px solid var(--stroke);
+  background: var(--band);
+}
+.moving .rrow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.6rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+.moving .watch {
+  color: var(--ink-2);
+  font: 0.7rem var(--font-code);
+}
+.moving .hue-sell,
+.moving .hue-visitor {
+  --hue: var(--ds-series-1);
+}
+.moving .hue-admin,
+.moving .hue-trip {
+  --hue: var(--ds-series-4);
+}
+.moving .hue-ship,
+.moving .hue-move {
+  --hue: var(--ds-warn);
+}
+.moving .hue-people,
+.moving .hue-work {
+  --hue: var(--ds-series-2);
+}
+.moving .hue-none {
+  --hue: var(--sheet);
+}
+
+.moving .manage {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding-top: 1.5rem;
+}
+.moving .manage-table {
+  overflow-x: auto;
+  padding: 0 1rem;
+}
+.moving .manage-row {
+  display: grid;
+  gap: 0.6rem;
+  align-items: center;
+  min-width: 1030px;
+  padding: 0.65rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.8rem;
+}
+.moving .spans .manage-row {
+  grid-template-columns: 100px minmax(150px, 1fr) 100px 100px 70px 160px;
+}
+.moving .milestones .manage-row {
+  grid-template-columns: minmax(180px, 1fr) 100px 70px 100px 110px 160px;
+}
+.moving .tasks-manage .manage-row {
+  grid-template-columns:
+    85px minmax(150px, 1.2fr) minmax(110px, 1fr)
+    65px 100px 80px 50px 160px;
+}
+.moving .roles-manage .manage-row {
+  grid-template-columns:
+    minmax(110px, 1fr) minmax(130px, 1fr)
+    65px 95px 100px minmax(100px, 1fr) 160px;
+}
+.moving .manage-row.column-head {
+  font: 0.7rem var(--font-code);
+  color: var(--ink-2);
+}
+.moving .manage-row > *,
+.moving .manage-row label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.moving .manage-row .sw {
+  margin-right: 0.4rem;
+}
+.moving .row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
+.moving .add-row {
+  background: var(--band);
+}
+.moving .sync-state,
+.moving .task-state,
+.moving .ack-copy {
+  color: var(--ink-2);
+  font: 0.7rem var(--font-code);
+}
+.moving .sync-state small {
+  display: block;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+.moving .undo-strip {
+  position: sticky;
+  z-index: 5;
+  top: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.6rem;
+  border: 1px solid var(--ink);
+  background: var(--band);
+}
+.moving .collision-list {
+  padding: 0 1rem;
+}
+.moving .collision-manage-row {
+  display: grid;
+  grid-template-columns: 18px 75px minmax(0, 1fr) minmax(200px, auto);
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.8rem;
+}
+.moving .ack-form {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) auto;
+  gap: 0.4rem;
+}
+.moving .manage-empty {
+  padding: 1rem 0;
+}
+.moving.access-shell .frame {
+  max-width: 34rem;
+}
+
+@media (max-width: 1080px) and (min-width: 701px) {
+  .moving .grid {
+    grid-template-columns: minmax(17rem, 1fr) minmax(0, 1.5fr);
+    grid-template-areas: "head head" "hero prog" "today plot" "today collide" "dock dock";
+  }
+  .moving .c-agenda {
+    display: none;
+  }
+}
+@media (max-width: 700px) {
+  .moving .manage-row,
+  .moving .spans .manage-row,
+  .moving .milestones .manage-row,
+  .moving .tasks-manage .manage-row,
+  .moving .roles-manage .manage-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    min-width: 0;
+    padding-block: 1rem;
+  }
+  .moving .manage-table {
+    overflow: visible;
+  }
+  .moving .manage-row.column-head {
+    display: none;
+  }
+  .moving .manage-row > :not(.row-actions)::before {
+    display: block;
+    margin-bottom: 0.3rem;
+    color: var(--ink-2);
+    font: 0.7rem var(--font-code);
+  }
+  .moving .spans .manage-row > :nth-child(1)::before {
+    content: "Kind";
+  }
+  .moving .spans .manage-row > :nth-child(2)::before {
+    content: "Label";
+  }
+  .moving .spans .manage-row > :nth-child(3)::before {
+    content: "Starts";
+  }
+  .moving .spans .manage-row > :nth-child(4)::before {
+    content: "Ends";
+  }
+  .moving .spans .manage-row > :nth-child(5)::before {
+    content: "Owner";
+  }
+  .moving .milestones .manage-row > :nth-child(1)::before {
+    content: "Title";
+  }
+  .moving .milestones .manage-row > :nth-child(2)::before {
+    content: "Date";
+  }
+  .moving .milestones .manage-row > :nth-child(3)::before {
+    content: "Owner";
+  }
+  .moving .milestones .manage-row > :nth-child(4)::before {
+    content: "Calendar";
+  }
+  .moving .milestones .manage-row > :nth-child(5)::before {
+    content: "Sync";
+  }
+  .moving .tasks-manage .manage-row > :nth-child(1)::before {
+    content: "Track";
+  }
+  .moving .tasks-manage .manage-row > :nth-child(2)::before {
+    content: "Task";
+  }
+  .moving .tasks-manage .manage-row > :nth-child(3)::before {
+    content: "Note";
+  }
+  .moving .tasks-manage .manage-row > :nth-child(4)::before {
+    content: "Owner";
+  }
+  .moving .tasks-manage .manage-row > :nth-child(5)::before {
+    content: "Due";
+  }
+  .moving .tasks-manage .manage-row > :nth-child(6)::before {
+    content: "Value";
+  }
+  .moving .tasks-manage .manage-row > :nth-child(7)::before {
+    content: "State";
+  }
+  .moving .roles-manage .manage-row > :nth-child(1)::before {
+    content: "Company";
+  }
+  .moving .roles-manage .manage-row > :nth-child(2)::before {
+    content: "Title";
+  }
+  .moving .roles-manage .manage-row > :nth-child(3)::before {
+    content: "Owner";
+  }
+  .moving .roles-manage .manage-row > :nth-child(4)::before {
+    content: "Stage";
+  }
+  .moving .roles-manage .manage-row > :nth-child(5)::before {
+    content: "Next";
+  }
+  .moving .roles-manage .manage-row > :nth-child(6)::before {
+    content: "Span";
+  }
+  .moving .row-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+  .moving .collision-manage-row {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+  .moving .collision-manage-row > strong,
+  .moving .collision-manage-row > .ack-copy,
+  .moving .collision-manage-row > button,
+  .moving .collision-manage-row > form {
+    grid-column: 2;
+  }
+  .moving .ack-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .moving .task {
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+  }
+  .moving .task .who {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .moving .task .due {
+    grid-column: 3;
+    grid-row: 1 / 3;
+  }
+}
+/* The matchMedia listener updates this state on resize as well as mount. */
+.moving .app.phone .grid {
+  display: flex;
+  flex-direction: column;
+}
+.moving .app.phone .card-plot,
+.moving .app.phone .c-collide,
+.moving .app.phone .c-today,
+.moving .app.phone .c-agenda,
+.moving .app.phone .c-prog,
+.moving .app.phone .c-dock,
+.moving .app.phone .c-legsmini {
+  display: none;
+}
+.moving .app.phone[data-mtab="today"] .c-today {
+  display: flex;
+}
+.moving .app.phone[data-mtab="plan"] .c-agenda {
+  display: block;
+}
+.moving .app.phone[data-mtab="more"] .c-prog {
+  display: flex;
+}
+.moving .app.phone[data-mtab="more"] .c-dock {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.moving .app.phone[data-mtab="more"] .c-legsmini {
+  display: block;
+}
+.moving .app.phone .dockbtn {
+  border: 1px solid var(--line);
+}
+.moving .app.phone .cta-body {
+  overflow-y: visible;
+}
+.moving .app.phone .tabbar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.moving .tabbar button {
+  padding: 0.7rem 0.2rem;
+  border: 0;
+}
+.moving .tabbar button + button {
+  border-left: 1px solid var(--stroke);
+}
+.moving .tabbar button[aria-pressed="true"] {
+  color: var(--accent-ink);
+  background: var(--band);
+  text-decoration: underline;
+  text-underline-offset: 0.4em;
+}
+.moving .tabbar .tb-n {
+  font-size: 0.65rem;
+}
+.moving .grid.manage-hidden,
+.moving .app.phone .grid.manage-hidden {
+  display: none;
+}

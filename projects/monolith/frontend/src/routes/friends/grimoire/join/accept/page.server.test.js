@@ -40,17 +40,13 @@ function event(
 }
 beforeEach(() => {
   process.env.API_BASE = "http://backend.test";
-  process.env.GRIMOIRE_INVITATION_LINKS_ENABLED = "true";
 });
 
 describe("authenticated invitation acceptance", () => {
   it("loads only safe metadata and matches the signed-in recipient", async () => {
     const fetch = vi.fn().mockImplementation(async (url) =>
       url.endsWith("/lobby")
-        ? response({
-            user: { email: "FRIEND@example.test" },
-            invitation_links_enabled: true,
-          })
+        ? response({ user: { email: "FRIEND@example.test" } })
         : response({
             ...invitation,
             token,
@@ -80,14 +76,6 @@ describe("authenticated invitation acceptance", () => {
     const data = await load(request);
     expect(data.error).toContain("session has expired");
     expect(request.cookies.delete).not.toHaveBeenCalled();
-  });
-
-  it("does not redeem without the frontend flag", async () => {
-    delete process.env.GRIMOIRE_INVITATION_LINKS_ENABLED;
-    const request = event(vi.fn());
-    const result = await actions.accept(request);
-    expect(result.data.error).toContain("unavailable");
-    expect(request.fetch).not.toHaveBeenCalled();
   });
 
   it("requires explicit accept, forwards only the signed identity, then clears the resume cookie", async () => {

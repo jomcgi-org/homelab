@@ -81,10 +81,6 @@ const server = createServer(async (req, res) => {
       collisions: [],
       progress: 0,
     });
-  if (path === "/otel/v1/traces") {
-    res.statusCode = 204;
-    return res.end();
-  }
   if (path === "/_app" || path.startsWith("/_app/")) {
     if (negativeCache.has(req.url)) {
       res.statusCode = 404;

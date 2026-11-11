@@ -227,23 +227,6 @@ def _context(prompt):
     return json.loads(prompt.rsplit("\n", 1)[1])
 
 
-def test_flag_off_keeps_legacy_planner_input(planner_db, monkeypatch):
-    _engine, task_id, _policy = planner_db
-    monkeypatch.delenv("CONDUCTOR_CONTINUITY_ENABLED", raising=False)
-    task = _task(task_id)
-    assert conductor._load_planner_factory_context(task["id"]) is None
-    context = _context(conductor.planner_prompt(task, [], []))
-    assert context["task"] == "STALE ADMISSION ACCEPTANCE"
-    assert "factory" not in context
-    assert "knowledge" not in context
-    assert set(context["omitted"]) == {
-        "task_characters",
-        "graph_records",
-        "run_records",
-        "decision_feedback_records",
-    }
-
-
 def test_planner_context_uses_exact_receipt_scope_without_private_chat(
     planner_db, monkeypatch
 ):
@@ -719,7 +702,6 @@ def test_operator_exchange_writer_retains_private_scope_and_receipt_provenance(
         "knowledge.api.ingest_raw_with_status", persist_without_external_storage
     )
     monkeypatch.setattr("core.db.get_engine", lambda: engine)
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     result = conductor_context.maintain_request_knowledge("operator", "request-1")
     assert result["status"] == "queued"
     with Session(engine) as db:
@@ -799,7 +781,6 @@ def test_prompt_pressure_drops_knowledge_before_required_evidence(
 
 def test_request_context_is_schema_bounded_and_durably_linked(planner_db, monkeypatch):
     engine, task_id, _policy = planner_db
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
 
     async def current_context(selected_task_id, query=None, limit=5):
         assert selected_task_id == task_id
@@ -852,7 +833,6 @@ def test_request_context_is_schema_bounded_and_durably_linked(planner_db, monkey
 
 def test_request_context_records_authorization_failure(planner_db, monkeypatch):
     engine, task_id, _policy = planner_db
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
 
     async def refused(_task_id, query=None, limit=5):
         return {"ok": False, "reason": "invalid_receipt_authorization"}
@@ -879,7 +859,6 @@ def test_request_context_records_authorization_failure(planner_db, monkeypatch):
 
 def test_request_context_records_bounded_retrieval_failure(planner_db, monkeypatch):
     engine, task_id, _policy = planner_db
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
 
     async def failed(_task_id, query=None, limit=5):
         raise RuntimeError("database unavailable")
@@ -904,7 +883,6 @@ def test_request_context_records_bounded_retrieval_failure(planner_db, monkeypat
 
 def test_request_context_enforces_and_records_timeout(planner_db, monkeypatch):
     engine, task_id, _policy = planner_db
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     monkeypatch.setattr(conductor, "PLANNER_CONTEXT_REQUEST_TIMEOUT_SECONDS", 0.001)
 
     async def slow(_task_id, query=None, limit=5):
@@ -1127,3 +1105,153 @@ def test_followup_invalidated_or_disputed_is_distinct_from_review_due(
     assert note["stale"] is True
     assert note["freshness"] == expected
     assert note["review_after"] == (now + timedelta(hours=1)).isoformat()
+
+
+def _approved_refinement(engine):
+    with Session(engine) as db:
+        current = db.get(FactoryReceipt, 1)
+        current.direction_json = json.dumps(
+            {"landing_hold": {"reason": "exact-head release required"}}
+        )
+        brief = {
+            "kind": "advisory",
+            "question": "Nowcast or multi-day forecast?",
+            "issue_body_sha256": controls.issue_body_hash(current.body),
+            "comment_url": "https://github.com/owner/repo/issues/7#issuecomment-1",
+            "options": [
+                {
+                    "key": "nowcast",
+                    "label": "Near-term",
+                    "effect": "agent-ready",
+                    "detail": {"scope": "near-term only"},
+                }
+            ],
+            "chat": [
+                {"actor": "other-operator", "text": "PRIVATE CHAT MUST NOT PROPAGATE"}
+            ],
+        }
+        prior = FactoryReceipt(
+            id=0,
+            repo=current.repo,
+            issue_number=current.issue_number,
+            generation=current.generation,
+            title=current.title,
+            body=current.body,
+            url=current.url,
+            actor="factory:intake",
+            task_class="refine",
+            state="succeeded",
+        )
+        identity = controls.decision_identity(
+            {
+                "id": prior.id,
+                "repo": prior.repo,
+                "generation": prior.generation,
+                "escalation": brief,
+            }
+        )
+        brief["resolved"] = {
+            "option_key": "nowcast",
+            "label": "Near-term",
+            "effect": "agent-ready",
+            "actor": "operator",
+            "note": "Use actual source validity. Public release approved after review.",
+            "decided_at": "2026-09-22T22:00:00+00:00",
+            "decision_id": identity,
+        }
+        prior.escalation_json = json.dumps(brief)
+        db.add_all([current, prior])
+        db.commit()
+    return identity
+
+
+def test_delivery_planner_receives_bound_refinement_answer_without_private_chat(
+    planner_db,
+):
+    engine, task_id, _policy = planner_db
+    identity = _approved_refinement(engine)
+    current = conductor_context._planner_factory_context(task_id)
+    direction = current["operator_direction"]
+    assert (
+        direction["note"]
+        == "Use actual source validity. Public release approved after review."
+    )
+    assert direction["detail"]["refinement_decision_id"] == identity
+    assert direction["detail"]["refinement_receipt_id"] == 0
+    assert direction["landing_hold"] == {"reason": "exact-head release required"}
+    assert "PRIVATE CHAT" not in json.dumps(current)
+    assert controls.operator_direction(task_id) == direction
+    operator = conductor_context._factory_context(1, actor="operator")
+    assert operator["direction"] == direction
+    assert "PRIVATE CHAT" not in json.dumps(operator)
+    with Session(engine) as db:
+        assert json.loads(db.get(FactoryReceipt, 1).direction_json) == {
+            "landing_hold": {"reason": "exact-head release required"}
+        }
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "body",
+        "decision",
+        "effect",
+        "cancelled",
+        "generation",
+        "issue",
+        "repo",
+        "later",
+        "pending",
+        "future_answer",
+    ],
+)
+def test_refinement_answer_does_not_cross_stale_or_uncertain_scope(
+    planner_db, monkeypatch, change
+):
+    engine, task_id, _policy = planner_db
+    _approved_refinement(engine)
+    with Session(engine) as db:
+        prior = db.get(FactoryReceipt, 0)
+        brief = json.loads(prior.escalation_json)
+        if change == "body":
+            brief["issue_body_sha256"] = controls.issue_body_hash("Changed acceptance")
+        elif change == "decision":
+            brief["resolved"]["decision_id"] = "decision:wrong"
+        elif change == "effect":
+            brief["resolved"]["effect"] = "defer"
+        elif change == "cancelled":
+            prior.state = "cancelled"
+        elif change == "generation":
+            prior.generation = 2
+        elif change == "issue":
+            prior.issue_number = 8
+        elif change == "repo":
+            prior.repo = "another/repo"
+        elif change == "later":
+            prior.id = 2
+        elif change == "future_answer":
+            brief["resolved"]["decided_at"] = "2099-01-01T00:00:00+00:00"
+        elif change == "pending":
+            monkeypatch.setattr(controls, "_pending_request", lambda _db, _id: True)
+        prior.escalation_json = json.dumps(brief)
+        db.add(prior)
+        db.commit()
+    direction = conductor_context._planner_factory_context(task_id)[
+        "operator_direction"
+    ]
+    assert direction == {"landing_hold": {"reason": "exact-head release required"}}
+
+
+def test_current_delivery_direction_wins_over_prior_refinement(planner_db):
+    engine, task_id, _policy = planner_db
+    _approved_refinement(engine)
+    with Session(engine) as db:
+        row = db.get(FactoryReceipt, 1)
+        row.direction_json = json.dumps(
+            {"note": "Newer explicit delivery scope", "landing_hold": {}}
+        )
+        db.add(row)
+        db.commit()
+    assert conductor_context._planner_factory_context(task_id)[
+        "operator_direction"
+    ] == {"note": "Newer explicit delivery scope", "landing_hold": {}}

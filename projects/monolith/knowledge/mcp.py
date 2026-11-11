@@ -24,11 +24,9 @@ from core.db import get_engine
 from shared.embedding import EmbeddingClient
 from sqlmodel import Session
 
-from knowledge.atoms import index_atom
 from knowledge.board import mirror_distress
 from knowledge.burst import create_kg_burst_grant, validate_kg_burst_grant
 from knowledge.disputes import create_dispute
-from knowledge.indexing import index_note_from_raw
 from knowledge.interventions import create_intervention
 from knowledge.models import SCOPE_PATTERN, AgentReportWriteFailure
 from knowledge.notes import resolve_note_body
@@ -43,22 +41,6 @@ from knowledge.retrieval_policy import (
 from knowledge.store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
-
-
-async def _index_atom(session: Session, **kwargs) -> str:
-    """Compatibility seam around the shared atom core for existing callers.
-
-    Retained after the MCP CRUD tools were retired: knowledge/gaps.py imports
-    it for the gap-answer endpoint, so it is shared production code rather
-    than tool-only scaffolding.
-    """
-    return await index_atom(
-        session,
-        **kwargs,
-        _store_factory=KnowledgeStore,
-        _embedding_client_factory=EmbeddingClient,
-        _indexer=index_note_from_raw,
-    )
 
 
 DEFAULT_REPO_SCOPE = os.getenv(
@@ -364,7 +346,11 @@ async def search_knowledge(
 
 
 @_knowledge_tool
-async def get_note(note_id: str) -> dict:
+async def get_note(
+    note_id: str,
+    include_review_history: bool = False,
+    review_history_limit: int = 10,
+) -> dict:
     """Retrieve a knowledge note by its stable ID.
 
     Returns note metadata (title, type, tags), the full markdown
@@ -373,10 +359,31 @@ async def get_note(note_id: str) -> dict:
 
     Args:
         note_id: The stable note identifier (e.g. "attention-is-all-you-need").
+        include_review_history: Include stored review outcomes, newest first.
+            This is a private read and does not start or retry a review.
+        review_history_limit: Number of outcomes, 1 to 25 (default 10).
     """
+    if not 1 <= review_history_limit <= 25:
+        return {"error": "review_history_limit must be between 1 and 25"}
+    return await asyncio.to_thread(
+        _get_note_sync, note_id, include_review_history, review_history_limit
+    )
+
+
+def _get_note_sync(
+    note_id: str, include_review_history: bool, review_history_limit: int
+) -> dict:
     with Session(get_engine()) as session:
         store = KnowledgeStore(session)
-        note = store.get_note_by_id(note_id)
+        note = (
+            store.get_note_by_id(
+                note_id,
+                include_review_history=True,
+                review_history_limit=review_history_limit,
+            )
+            if include_review_history
+            else store.get_note_by_id(note_id)
+        )
         if note is None:
             return {"error": f"note not found: {note_id}"}
 

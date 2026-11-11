@@ -174,7 +174,9 @@ def test_resource_audit_remains_independently_optional():
     "values", [("values.yaml",), ("values.yaml", "values-gke.yaml")]
 )
 @pytest.mark.parametrize("server_enabled", [True, False])
-def test_argo_annotations_preserve_metrics_and_disabled_server(values, server_enabled):
+def test_argo_annotations_drop_marker_and_scrape_with_disabled_server(
+    values, server_enabled
+):
     docs = _render(
         "argo-workflows",
         values=values,
@@ -190,10 +192,11 @@ def test_argo_annotations_preserve_metrics_and_disabled_server(values, server_en
     assert set(deployments) == expected
     _assert_no_marker(docs)
     for deployment in deployments.values():
-        annotations = deployment["spec"]["template"]["metadata"]["annotations"]
-        assert annotations["prometheus.io/scrape"] == "true"
-        assert annotations["prometheus.io/port"] == "9090"
-        assert annotations["prometheus.io/path"] == "/metrics"
+        # The hub has no Prometheus scraper, so the scrape annotations stay
+        # removed alongside the Kyverno marker.
+        metadata = deployment["spec"]["template"]["metadata"]
+        annotations = metadata.get("annotations") or {}
+        assert not any(key.startswith("prometheus.io/") for key in annotations)
 
 
 @pytest.mark.parametrize(

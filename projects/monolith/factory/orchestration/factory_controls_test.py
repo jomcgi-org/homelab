@@ -9,6 +9,8 @@ import pytest
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from core.clock import iso_or_str
+from core.jsonio import dumps
 import factory.orchestration.factory_controls as controls
 from factory.orchestration.factory_intake import admit_next, receive_issue
 from factory.orchestration.factory_models import (
@@ -22,7 +24,12 @@ from factory.orchestration.factory_models import (
     WorkItemEdge,
     WorkItemEvent,
 )
-from factory.orchestration.models import SwarmNodeRun, SwarmTask
+from factory.orchestration.models import (
+    SwarmNodeRun,
+    SwarmPlanNode,
+    SwarmPlanVersion,
+    SwarmTask,
+)
 
 
 @pytest.fixture
@@ -44,6 +51,8 @@ def db(tmp_path, monkeypatch):
             for m in (
                 SwarmTask,
                 SwarmNodeRun,
+                SwarmPlanNode,
+                SwarmPlanVersion,
                 FactoryClassTier,
                 FactoryControl,
                 FactoryReceipt,
@@ -62,6 +71,48 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setattr(controls, "get_engine", lambda: engine)
     yield engine
     engine.dispose()
+
+
+@pytest.mark.parametrize("has_evidence", [False, True])
+def test_recovery_deadline_preserves_historical_status_read_budget(
+    db, monkeypatch, has_evidence
+):
+    from factory.orchestration.evidence_continuation import RECOVERY
+
+    deadline = datetime.now(timezone.utc) + timedelta(minutes=30)
+    monkeypatch.setattr(controls, "_landing_recovery_deadline", lambda *_: None)
+    with Session(db) as session:
+        session.add(SwarmTask(id="deadline", task_text="test", conductor_model="astra"))
+        session.commit()
+        if has_evidence:
+            session.add_all(
+                [
+                    FactoryAudit(
+                        task_id="deadline",
+                        actor="test",
+                        action=RECOVERY,
+                        detail_json=dumps(
+                            {"proposal": {"deadline_at": value.isoformat()}}
+                        ),
+                    )
+                    for value in (deadline - timedelta(minutes=10), deadline)
+                ]
+            )
+            session.commit()
+        reads = []
+        connection = session.connection()
+
+        def count(_connection, _cursor, statement, _parameters, _context, _many):
+            reads.append(statement)
+
+        event.listen(connection, "before_cursor_execute", count)
+        try:
+            assert controls._recovery_deadline(session, "deadline") == (
+                deadline if has_evidence else None
+            )
+        finally:
+            event.remove(connection, "before_cursor_execute", count)
+        assert len(reads) == 1
 
 
 @pytest.fixture
@@ -106,6 +157,973 @@ def grant(task_id, key="one", **kwargs):
         model=kwargs.get("model", "luna"),
         max_cost_usd=kwargs.get("cost", 2.0),
     )
+
+
+@pytest.mark.parametrize("path", ["allocation", "nonrenewable"])
+@pytest.mark.parametrize("prior", ["missing", "dismissed", "valid"])
+def test_automatic_pause_repairs_only_missing_questions(db, policy, path, prior):
+    from factory.orchestration import factory_funding, factory_pause
+
+    task_id = admitted(policy)
+    controls.set_control("pause_task", "operator", task_id=task_id)
+    if prior == "valid":
+        factory_pause.pause(task_id, "test:original", "original reason")
+    with controls._locked_session() as (session, _control):
+        row = controls._receipt(session, task_id)
+        row.direction_json = json.dumps(
+            {"nonrenewable_recovery": True, "landing_hold": True}
+        )
+        if prior == "dismissed":
+            row.escalation_json = json.dumps(
+                {
+                    "task_id": task_id,
+                    "question": "Old question",
+                    "resolved": {"effect": "escape-dismiss"},
+                }
+            )
+    before = controls.task_snapshot(task_id)
+    assert bool(before["pause_warning"]) is (prior != "valid")
+
+    def invoke():
+        if path == "nonrenewable":
+            controls.pause_nonrenewable_recovery(task_id, "work_turns exhausted")
+        else:
+            with controls._locked_session() as (session, _control):
+                factory_funding.pause_allocation(
+                    session,
+                    task_id,
+                    {"code": "funding_without_progress", "grant_id": 12},
+                )
+
+    invoke()
+    after = controls.task_snapshot(task_id)
+    view = controls.escalation_view(after)
+    assert after["task_paused"] and after["pause_warning"] is None
+    assert (
+        after["policy"] == before["policy"]
+        and after["direction"] == before["direction"]
+    )
+    assert view["open"] and not view["briefing"] and view["options"]
+    assert view["escape"] == []
+    if prior == "valid":
+        assert after["escalation"] == before["escalation"]
+    else:
+        assert f"factory:{path}-recovery" in view["question"]
+        assert (
+            "funding_without_progress"
+            if path == "allocation"
+            else "work_turns exhausted"
+        ) in view["reason"]
+    invoke()
+    assert controls.task_snapshot(task_id)["escalation"] == after["escalation"]
+
+
+def _invoke_pause_path(task_id, path):
+    from factory.orchestration import factory_funding, factory_pause
+
+    if path == "nonrenewable":
+        controls.pause_nonrenewable_recovery(task_id, "work_turns exhausted")
+    elif path == "allocation":
+        with controls._locked_session() as (session, _control):
+            factory_funding.pause_allocation(
+                session, task_id, {"code": "funding_without_progress", "grant_id": 12}
+            )
+    else:
+        factory_pause.pause(task_id, "factory:reconciler", "planner insertion refused")
+
+
+@pytest.mark.parametrize("path", ["allocation", "nonrenewable"])
+@pytest.mark.parametrize("state", ["accepted", "outcome_unknown", "legacy_claim"])
+def test_automatic_pause_fences_resumed_task_with_in_flight_decision(
+    db, policy, path, state
+):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    task_id = admitted(policy)
+    factory_pause.pause(task_id, "test:original", "original reason")
+    before = controls.task_snapshot(task_id)
+    with controls._locked_session() as (session, _control):
+        controls._receipt(session, task_id).direction_json = json.dumps(
+            {"nonrenewable_recovery": True, "landing_hold": True}
+        )
+        if state == "legacy_claim":
+            decisions._claim(before["id"], "stop", "operator", session=session)
+        else:
+            decisions._request_event(
+                session,
+                "operator",
+                {"receipt_id": before["id"], "request_key": "pending"},
+                {"state": state},
+            )
+    assert controls.set_control("resume_task", "operator", task_id=task_id)["ok"]
+    assert not controls.task_snapshot(task_id)["task_paused"]
+
+    _invoke_pause_path(task_id, path)
+
+    after = controls.task_snapshot(task_id)
+    assert after["task_paused"]
+    assert after["escalation"] == before["escalation"]
+    assert after["pause_warning"] == "active_paused_without_actionable_question"
+    assert not after["paused_card_actionable"]
+    assert grant(task_id)["reason"] == "task_paused"
+    with Session(db) as session:
+        pause = session.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action == "pause_task", FactoryAudit.task_id == task_id)
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+        assert pause.actor == f"factory:{path}-recovery"
+
+
+@pytest.mark.parametrize("path", ["allocation", "nonrenewable", "refusal"])
+@pytest.mark.parametrize(
+    "watchdog_state", ["owns_pause", "resumed", "repaused", "resolved"]
+)
+def test_automatic_pause_only_reuses_current_watchdog_hold(
+    db, policy, path, watchdog_state
+):
+    from factory.orchestration import factory_progress_watchdog as watchdog
+
+    task_id = admitted(policy)
+    controls.set_control("pause_task", watchdog.ACTOR, task_id=task_id)
+    prior = {
+        "kind": "watchdog",
+        "task_id": task_id,
+        "question": "No progress. Resume, stop or rescope?",
+        # Persisted cards outlive the retired watchdog card writer.
+        "options": [
+            {
+                "key": "resume",
+                "label": "Resume",
+                "effect": "agent-ready",
+                "detail": {},
+            },
+            {"key": "stop", "label": "Stop", "effect": "hold", "detail": {}},
+            {
+                "key": "rescope",
+                "label": "Rescope",
+                "effect": "defer",
+                "detail": {"comment": "Rewrite issue"},
+            },
+        ],
+        "resolved": None,
+    }
+    with controls._locked_session() as (session, _control):
+        row = controls._receipt(session, task_id)
+        row.direction_json = json.dumps({"nonrenewable_recovery": True})
+        row.escalation_json = json.dumps(prior)
+    if watchdog_state != "owns_pause":
+        controls.set_control("resume_task", "operator", task_id=task_id)
+    if watchdog_state in ("repaused", "resolved"):
+        controls.set_control("pause_task", "operator", task_id=task_id)
+        assert controls.task_snapshot(task_id)["pause_warning"]
+    if watchdog_state == "resolved":
+        watchdog._resolve_card(task_id, "operator", "Resumed with resume_task.")
+
+    _invoke_pause_path(task_id, path)
+
+    after = controls.task_snapshot(task_id)
+    assert after["task_paused"] and after["pause_warning"] is None
+    if watchdog_state == "owns_pause":
+        assert after["escalation"] == prior
+    else:
+        card = after["escalation"]
+        assert card["kind"] == "automatic_pause"
+        actor = (
+            f"factory:{path}-recovery" if path != "refusal" else "factory:reconciler"
+        )
+        assert card["actor"] == actor and card["reason"]
+        watchdog._resolve_card(task_id, "operator", "Resumed with resume_task.")
+        _invoke_pause_path(task_id, path)
+        assert controls.task_snapshot(task_id)["escalation"] == card
+        assert controls.task_snapshot(task_id)["pause_warning"] is None
+
+
+def test_automatic_pause_version_fence_skip_is_audited(db, policy):
+    from factory.orchestration import factory_pause
+
+    task_id = admitted(policy)
+    with Session(db) as session:
+        version = session.get(FactoryControl, "factory").version
+    controls.set_control("enable", "operator")
+    assert not factory_pause.pause(
+        task_id, "factory:reconciler", "planner refused", expected_version=version
+    )
+    assert not controls.task_snapshot(task_id)["task_paused"]
+    with Session(db) as session:
+        audit = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "automatic_pause_skipped")
+        ).one()
+        assert audit.task_id == task_id and audit.actor == "factory:reconciler"
+        assert json.loads(audit.detail_json) == {
+            "reason": "control_version_changed",
+            "pause_reason": "planner refused",
+            "expected_version": version,
+            "actual_version": version + 1,
+        }
+
+
+def test_automatic_pause_and_question_roll_back_together(db, policy):
+    from factory.orchestration import factory_pause
+
+    task_id = admitted(policy)
+    with Session(db) as session:
+        with controls._locked_session(session):
+            assert factory_pause.pause_locked(
+                session, controls._receipt(session, task_id), "test", "refused"
+            )
+        session.rollback()
+    after = controls.task_snapshot(task_id)
+    assert not after["task_paused"] and after["escalation"] is None
+    with Session(db) as session:
+        assert not session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "paused_card_created")
+        ).all()
+
+
+@pytest.mark.parametrize(
+    "state",
+    ["succeeded", "cancelled", "escalated", "human", "cancelling", "review_hold"],
+)
+def test_automatic_pause_does_not_take_terminal_or_human_ownership(db, policy, state):
+    from factory.orchestration import factory_pause
+
+    task_id = admitted(policy)
+    with controls._locked_session() as (session, _control):
+        row = controls._receipt(session, task_id)
+        if state == "human":
+            item = WorkItem(
+                title="human",
+                state="active",
+                source_kind="github",
+                trust="untrusted",
+                labels=["human"],
+            )
+            session.add(item)
+            session.flush()
+            row.work_item_id = item.id
+        elif state == "cancelling":
+            row.cancellation_requested = True
+        elif state == "review_hold":
+            controls._audit(
+                session, "operator", "review_recovery_authorized", task_id=task_id
+            )
+        else:
+            row.state = state
+    assert not factory_pause.pause(task_id, "test", "must not replace ownership")
+    after = controls.task_snapshot(task_id)
+    assert not after["task_paused"] and after["escalation"] is None
+
+
+def test_automatic_pause_stop_is_local_and_keeps_unknown_reservations(
+    db, policy, monkeypatch
+):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    task_id = admitted(policy)
+    assert grant(task_id)["ok"]
+    assert factory_pause.pause(task_id, "test:actor", "exact reason")
+    before = controls.task_snapshot(task_id)
+    card = controls.escalation_view(before)
+    monkeypatch.setattr(decisions, "_github", lambda: pytest.fail("stop must be local"))
+    with pytest.raises(decisions.DecisionError, match="only offers stopping"):
+        decisions.apply_decision(
+            before["id"],
+            "escape:dismiss",
+            "operator",
+            expected_decision_id=card["decision_id"],
+        )
+    result = decisions.apply_decision(
+        before["id"], "stop", "operator", expected_decision_id=card["decision_id"]
+    )
+    assert result["resolution"]["effects"]["cancellation_requested"]
+    after = controls.task_snapshot(task_id)
+    assert after["task_paused"] and after["cancellation_requested"]
+    assert after["state"] == "admitted" and after["starts"] == before["starts"]
+    evidence = controls.cancellation_evidence(task_id)
+    assert evidence and evidence["state"] == "operator_cancelled"
+    assert not controls.finish_task(
+        task_id, "cancelled", "reconciler", evidence=evidence
+    )["ok"]
+    assert controls.task_snapshot(task_id)["starts"] == before["starts"]
+    assert after["policy"] == before["policy"]
+    assert not decisions.apply_decision(
+        before["id"], "stop", "operator", expected_decision_id=card["decision_id"]
+    )["applied"]
+
+
+@pytest.mark.parametrize("transition", ["resume", "terminal", "stale_generation"])
+def test_pause_view_never_offers_a_refused_stop(db, policy, transition):
+    from factory.orchestration import factory_pause
+
+    task_id = admitted(policy)
+    factory_pause.pause(task_id, "test", "blocked")
+    if transition == "resume":
+        controls.set_control("resume_task", "operator", task_id=task_id)
+    else:
+        with controls._locked_session() as (session, control):
+            if transition == "terminal":
+                controls._receipt(session, task_id).state = "cancelled"
+            else:
+                control.policy_json = json.dumps({**policy, "generation": 1})
+    snapshot = controls.task_snapshot(task_id)
+    card = controls.escalation_view(snapshot)
+    assert not card["open"] and card["options"] == [] and card["escape"] == []
+    assert bool(snapshot["pause_warning"]) is (transition == "stale_generation")
+
+
+@pytest.mark.parametrize("durable", [False, True])
+def test_automatic_stop_claim_and_resolution_share_control_lock(
+    db, policy, monkeypatch, durable
+):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    task_id = admitted(policy)
+    factory_pause.pause(task_id, "test", "blocked")
+    before = controls.task_snapshot(task_id)
+    identity = controls.decision_identity(before)
+    claimed, release, resuming = Event(), Event(), Event()
+    original = decisions._resolve
+
+    def resolve(*args, **kwargs):
+        claimed.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+
+    def answer():
+        if durable:
+            return decisions.request_decision(
+                before["id"], identity, "stop", "operator", request_key="stop-race"
+            )
+        return decisions.apply_decision(
+            before["id"], "stop", "operator", expected_decision_id=identity
+        )
+
+    def resume():
+        resuming.set()
+        return controls.set_control("resume_task", "operator", task_id=task_id)
+
+    monkeypatch.setattr(decisions, "_resolve", resolve)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        stopping = pool.submit(answer)
+        assert claimed.wait(5)
+        competing = pool.submit(resume)
+        try:
+            assert resuming.wait(5)
+            with pytest.raises(TimeoutError):
+                competing.result(timeout=0.1)
+        finally:
+            release.set()
+        assert stopping.result(timeout=5)["ok"]
+        assert competing.result(timeout=5)["reason"] == "cancellation_pending"
+    after = controls.task_snapshot(task_id)
+    assert after["task_paused"] and after["cancellation_requested"]
+    assert after["escalation"]["resolved"]["decision_id"] == identity
+    with Session(db) as session:
+        assert not decisions.decision_in_flight(session, before["id"])
+
+
+@pytest.mark.parametrize("state", ["accepted", "outcome_unknown", "legacy_claim"])
+def test_pending_pause_decision_is_flagged_and_has_no_enabled_options(
+    db, policy, state
+):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    task_id = admitted(policy)
+    factory_pause.pause(task_id, "test", "blocked")
+    before = controls.task_snapshot(task_id)
+    with controls._locked_session() as (session, _control):
+        if state == "legacy_claim":
+            decisions._claim(before["id"], "stop", "operator", session=session)
+        else:
+            decisions._request_event(
+                session,
+                "operator",
+                {"receipt_id": before["id"], "request_key": "unknown"},
+                {"state": state},
+            )
+    after = controls.task_snapshot(task_id)
+    card = controls.escalation_view(after)
+    assert not after["paused_card_actionable"]
+    assert after["pause_warning"] == "active_paused_without_actionable_question"
+    assert not card["open"] and card["options"] == []
+    assert not factory_pause.pause(task_id, "test", "must preserve pending claim")
+    assert controls.task_snapshot(task_id)["escalation"] == before["escalation"]
+
+
+@pytest.mark.parametrize("durable", [False, True])
+def test_automatic_stop_failure_rolls_back_claim_and_resolution(
+    db, policy, monkeypatch, durable
+):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    task_id = admitted(policy)
+    factory_pause.pause(task_id, "test", "blocked")
+    before = controls.task_snapshot(task_id)
+    identity = controls.decision_identity(before)
+    original = decisions._resolve
+
+    def fail_after_write(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("interrupted local answer")
+
+    monkeypatch.setattr(decisions, "_resolve", fail_after_write)
+    with pytest.raises(RuntimeError, match="interrupted local answer"):
+        if durable:
+            decisions.request_decision(
+                before["id"], identity, "stop", "operator", request_key="interrupted"
+            )
+        else:
+            decisions.apply_decision(
+                before["id"], "stop", "operator", expected_decision_id=identity
+            )
+    after = controls.task_snapshot(task_id)
+    assert after["escalation"] == before["escalation"]
+    assert after["task_paused"] and not after["cancellation_requested"]
+    assert after["paused_card_actionable"]
+    with Session(db) as session:
+        assert not decisions.decision_in_flight(session, before["id"])
+        assert not decisions._request_records(session)
+
+
+def test_resume_winning_before_stop_is_refused_without_unknown_outcome(db, policy):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    task_id = admitted(policy)
+    factory_pause.pause(task_id, "test", "blocked")
+    before = controls.task_snapshot(task_id)
+    controls.set_control("resume_task", "operator", task_id=task_id)
+    result = decisions.request_decision(
+        before["id"],
+        controls.decision_identity(before),
+        "stop",
+        "operator",
+        request_key="after-resume",
+    )
+    assert result["state"] == "refused"
+    after = controls.task_snapshot(task_id)
+    assert not after["task_paused"] and not after["cancellation_requested"]
+    with Session(db) as session:
+        assert not decisions.decision_in_flight(session, before["id"])
+    assert factory_pause.pause(task_id, "test", "new safety refusal")
+
+
+@pytest.mark.parametrize("state", ["admitted", "uncertain"])
+@pytest.mark.parametrize("paused,held", [(True, False), (False, True), (True, True)])
+@pytest.mark.parametrize(
+    "start_state", [None, "succeeded", "failed", "cancelled", "reserved", "uncertain"]
+)
+def test_waiting_capacity_requires_unresolved_start_evidence(
+    db, policy, state, paused, held, start_state
+):
+    task = admitted(policy)
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, task)
+        row.state, row.task_paused = state, paused
+        row.direction_json = json.dumps({"landing_hold": None} if held else {})
+        if start_state:
+            session.add(
+                FactoryStart(
+                    task_id=task,
+                    start_key="work",
+                    actor="test",
+                    model="luna",
+                    max_cost_usd=1,
+                    status=start_state,
+                )
+            )
+    snapshot = controls.status()
+    assert snapshot["lanes"]["delivery"]["active"] == int(
+        start_state in ("reserved", "uncertain")
+    )
+    assert [r["task_id"] for r in snapshot["active_tasks"]] == [task]
+    with Session(db) as session:
+        assert (
+            controls.delivery_branch_owner(session, "owner/repo", f"factory/{task}")
+            == task
+        )
+        row = controls._receipt(session, task)
+        unresolved = controls.unresolved_start_task_ids(session)
+        for candidate in (row, snapshot["active_tasks"][0]):
+            assert bool(
+                controls.execution_slot_holders(
+                    policy, [candidate], unresolved_task_ids=unresolved
+                )
+            ) == (start_state in ("reserved", "uncertain"))
+            # An omitted batch is unknown, even if a snapshot claims zero.
+            assert controls.execution_slot_holders(policy, [candidate]) == [candidate]
+
+
+@pytest.mark.parametrize("paused", [False, True])
+def test_landing_hold_refuses_merge_conflict_recovery(db, policy, paused):
+    task = admitted(policy)
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, task)
+        row.task_paused = paused
+        row.direction_json = '{"landing_hold":null}'
+    before = controls.task_snapshot(task)
+    with Session(db) as session:
+        audits_before = len(session.exec(select(FactoryAudit)).all())
+
+    assert controls.request_landing_recovery(
+        task, 3, "a" * 40, "delivered_pr", "factory:reconciler"
+    ) == {"ok": False, "reason": "receipt_landing_held"}
+
+    after = controls.task_snapshot(task)
+    for field in (
+        "state",
+        "task_paused",
+        "direction",
+        "deadline_at",
+        "policy",
+        "starts",
+    ):
+        assert after[field] == before[field]
+    with Session(db) as session:
+        assert len(session.exec(select(FactoryAudit)).all()) == audits_before
+
+
+def _capacity_pair(db, policy, monkeypatch, constraint, *, held=False):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    first = admitted(policy)
+    receive_issue(
+        "owner/repo",
+        2,
+        "second",
+        "body",
+        "https://github.com/owner/repo/issues/2",
+        "poller",
+    )
+    second = admit_next("scheduler")["task_id"]
+    if held:
+        with Session(db) as session, session.begin():
+            controls._receipt(session, first).direction_json = '{"landing_hold":null}'
+    else:
+        controls.set_control("pause_task", "operator", task_id=first)
+    if constraint == "chart":
+        monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "1")
+    elif constraint == "repo":
+        assert controls.set_control(
+            "configure",
+            "operator",
+            policy={
+                **policy,
+                "generation": 1,
+                "repos": {"owner/repo": {"max_tasks": 1}},
+            },
+        )["ok"]
+    else:
+        assert controls.set_control(
+            "configure", "operator", policy={**policy, "generation": 1, "max_tasks": 1}
+        )["ok"]
+    return first, second
+
+
+@pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
+def test_resume_waits_durably_then_retries_without_another_decision(
+    db, policy, monkeypatch, constraint
+):
+    first, second = _capacity_pair(db, policy, monkeypatch, constraint)
+    args = dict(
+        task_id=first,
+        request_key="resume-once",
+        expected_version=controls.status()["version"],
+    )
+    result = controls.request_control("resume_task", "operator", **args)
+    assert result["ok"] and result["pending"] and result["reason"] == "capacity_waiting"
+    assert controls.request_control("resume_task", "operator", **args) == result
+    assert controls.retry_capacity_releases() == 0
+    assert not controls.can_start(first)["ok"]
+    assert controls.finish_task(second, "failed", "test")["ok"]
+    assert controls.retry_capacity_releases() == 1
+    assert controls.can_start(first)["ok"]
+    assert controls.retry_capacity_releases() == 0
+    # A replay acknowledges the old request and cannot undo a newer pause.
+    controls.set_control("pause_task", "operator", task_id=first)
+    assert controls.request_control("resume_task", "operator", **args) == result
+    assert controls.retry_capacity_releases() == 0
+    assert not controls.can_start(first)["ok"]
+
+
+@pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
+def test_hold_release_waits_durably_then_retries(db, policy, monkeypatch, constraint):
+    first, second = _capacity_pair(db, policy, monkeypatch, constraint, held=True)
+    with controls._locked_session() as (session, control):
+        row = controls._receipt(session, first)
+        result = controls.request_capacity_release(
+            session, control, row, "operator", release_hold=True
+        )
+        assert result["pending"] and controls.landing_held(row)
+    assert controls.can_start(first, start_key="one")["reason"] == "capacity_waiting"
+    assert grant(first)["reason"] == "capacity_waiting"
+    assert controls.retry_capacity_releases() == 0
+    assert controls.finish_task(second, "failed", "test")["ok"]
+    assert controls.retry_capacity_releases() == 1
+    with Session(db) as session:
+        assert not controls.landing_held(controls._receipt(session, first))
+    assert grant(first)["ok"]
+
+
+@pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
+@pytest.mark.parametrize("outcome", ["succeeded", "failed", "escalated"])
+@pytest.mark.parametrize("resume", [False, True])
+def test_settlement_applies_pending_hold_release_without_capacity(
+    db, policy, monkeypatch, constraint, outcome, resume
+):
+    first, second = _capacity_pair(db, policy, monkeypatch, constraint, held=True)
+    with controls._locked_session() as (session, control):
+        row = controls._receipt(session, first)
+        assert controls.request_capacity_release(
+            session, control, row, "operator", resume=resume, release_hold=True
+        )["pending"]
+        intent = json.loads(row.direction_json)["pending_capacity_release"]
+    evidence = {"state": "ready_for_review"}
+    assert controls.finish_task(first, outcome, "test", evidence=evidence) == {
+        "ok": True,
+        "state": outcome,
+    }
+    assert controls.finish_task(first, outcome, "test", evidence=evidence)["ok"]
+    assert controls.retry_capacity_releases() == 0
+    with Session(db) as session:
+        row = controls._receipt(session, first)
+        assert not controls.landing_held(row)
+        assert "pending_capacity_release" not in json.loads(row.direction_json)
+        assert controls._receipt(session, second).state == "admitted"
+        applied = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "settled_landing_hold_released"
+            )
+        ).all()
+        assert len(applied) == 1
+        assert applied[0].task_id == first and applied[0].actor == "operator"
+        assert json.loads(applied[0].detail_json)["intent"] == intent
+        revoked = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "execution_capacity_release_revoked"
+            )
+        ).all()
+        assert len(revoked) == int(resume)
+        if resume:
+            assert json.loads(revoked[0].detail_json) == {
+                "reason": "task_settled",
+                "intent": {
+                    key: value for key, value in intent.items() if key != "landing_hold"
+                },
+            }
+    assert controls.status()["lanes"]["delivery"]["active"] == 1
+
+
+@pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
+def test_held_reconciliation_needs_no_slot_but_new_starts_wait(
+    db, policy, monkeypatch, constraint
+):
+    first, second = _capacity_pair(db, policy, monkeypatch, constraint, held=True)
+    before = controls.task_snapshot(first)
+    assert controls.can_start(first) == {"ok": True, "reason": None}
+    assert controls.can_start(first, start_key="one") == {
+        "ok": False,
+        "reason": "capacity_waiting",
+    }
+    with controls.start_guard(first, start_key="one") as permission:
+        assert permission == {"ok": False, "reason": "capacity_waiting"}
+    assert grant(first)["reason"] == "capacity_waiting"
+    after = controls.task_snapshot(first)
+    for field in ("state", "task_paused", "direction", "starts", "turns_used"):
+        assert after[field] == before[field]
+    assert controls.finish_task(second, "failed", "test")["ok"]
+    assert grant(first)["ok"]
+    # An already-reserved start owns its slot, even when the lane is now full.
+    with controls.start_guard(first, start_key="one") as permission:
+        assert permission["ok"]
+
+
+@pytest.mark.parametrize("fence", ["pause", "cancelled", "stop"])
+def test_settlement_keeps_fenced_pending_hold(db, policy, monkeypatch, fence):
+    first, _second = _capacity_pair(db, policy, monkeypatch, "chart", held=True)
+    with controls._locked_session() as (session, control):
+        row = controls._receipt(session, first)
+        assert controls.request_capacity_release(
+            session, control, row, "operator", release_hold=True
+        )["pending"]
+    if fence == "pause":
+        assert controls.set_control("pause_task", "operator", task_id=first)["ok"]
+    elif fence == "stop":
+        assert controls.set_control("stop", "operator")["ok"]
+    outcome = "cancelled" if fence == "cancelled" else "failed"
+    assert controls.finish_task(first, outcome, "test")["ok"]
+    with Session(db) as session:
+        row = controls._receipt(session, first)
+        assert controls.landing_held(row)
+        assert "pending_capacity_release" not in json.loads(row.direction_json)
+        assert not session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "settled_landing_hold_released"
+            )
+        ).all()
+
+
+@pytest.mark.parametrize("fence", ["pause", "cancel", "stop", "human", "settle"])
+def test_pending_resume_does_not_override_new_fences(db, policy, monkeypatch, fence):
+    first, second = _capacity_pair(db, policy, monkeypatch, "chart")
+    assert controls.set_control("resume_task", "operator", task_id=first)["pending"]
+    if fence == "pause":
+        controls.set_control("pause_task", "operator", task_id=first)
+    elif fence == "stop":
+        controls.set_control("stop", "operator")
+    elif fence == "human":
+        assert controls.human_handoff(first, "operator", observed=True)
+    elif fence == "settle":
+        assert controls.finish_task(first, "cancelled", "operator")["ok"]
+    else:
+        with Session(db) as session, session.begin():
+            controls._receipt(session, first).cancellation_requested = True
+    assert controls.finish_task(second, "failed", "test")["ok"]
+    assert controls.retry_capacity_releases() == 0
+    assert not controls.can_start(first)["ok"]
+
+
+def test_hold_only_release_on_paused_receipt_needs_no_capacity(db, policy, monkeypatch):
+    first, _second = _capacity_pair(db, policy, monkeypatch, "chart", held=True)
+    controls.set_control("pause_task", "operator", task_id=first)
+    with controls._locked_session() as (session, control):
+        row = controls._receipt(session, first)
+        result = controls.request_capacity_release(
+            session, control, row, "operator", release_hold=True
+        )
+        assert result == {"ok": True, "pending": False, "reason": None}
+        assert row.task_paused and not controls.landing_held(row)
+    assert controls.status()["lanes"]["delivery"]["active"] == 1
+    assert controls.set_control("resume_task", "operator", task_id=first)["pending"]
+
+
+@pytest.mark.parametrize("recovery", ["nonrenewable", "allocation"])
+def test_recovery_fences_pending_resume_on_already_paused_receipt(
+    db, policy, monkeypatch, recovery
+):
+    from factory.orchestration import factory_funding as allocation
+
+    first, second = _capacity_pair(db, policy, monkeypatch, "chart")
+    with Session(db) as session, session.begin():
+        controls._receipt(session, first).direction_json = json.dumps(
+            {"nonrenewable_recovery": {"actor": "operator"}}
+        )
+    assert controls.set_control("resume_task", "operator", task_id=first)["pending"]
+    if recovery == "nonrenewable":
+        assert controls.pause_nonrenewable_recovery(first, "spent allowance")
+    else:
+        with controls._locked_session() as (session, _control):
+            allocation.pause_allocation(
+                session, first, {"code": "funding_without_progress"}
+            )
+    assert controls.finish_task(second, "failed", "test")["ok"]
+    assert controls.retry_capacity_releases() == 0
+    with Session(db) as session:
+        row = controls._receipt(session, first)
+        assert row.task_paused
+        assert "pending_capacity_release" not in json.loads(row.direction_json)
+        revoked = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "execution_capacity_release_revoked"
+            )
+        ).one()
+        assert revoked.actor == f"factory:{recovery}-recovery"
+        assert json.loads(revoked.detail_json)["reason"] == "pause_task"
+
+
+def test_repository_capacity_does_not_double_count_existing_holder(
+    db, policy, monkeypatch
+):
+    first, second = _capacity_pair(db, policy, monkeypatch, "repo", held=True)
+    with controls._locked_session() as (session, control):
+        assert controls.execution_capacity_available(
+            session, control, controls._receipt(session, second)
+        )
+        assert not controls.execution_capacity_available(
+            session, control, controls._receipt(session, first)
+        )
+
+
+@pytest.mark.parametrize(
+    "fence,reason",
+    [
+        ("cancel", "cancellation_pending"),
+        ("human", "human_owned"),
+        ("hold", "landing_hold_changed"),
+        ("task", "task_changed"),
+    ],
+)
+@pytest.mark.parametrize("settle", [False, True])
+def test_revoked_release_intent_is_audited_once(
+    db, policy, monkeypatch, fence, reason, settle
+):
+    first, _second = _capacity_pair(db, policy, monkeypatch, "chart", held=True)
+    with controls._locked_session() as (session, control):
+        row = controls._receipt(session, first)
+        assert controls.request_capacity_release(
+            session, control, row, "operator", release_hold=True
+        )["pending"]
+        intent = json.loads(row.direction_json)["pending_capacity_release"]
+        if fence == "cancel":
+            row.cancellation_requested = True
+        elif fence == "human":
+            item = WorkItem(
+                github_repo=row.repo,
+                github_issue_number=row.issue_number,
+                title="owned",
+                state="open",
+                labels=["human"],
+                source_kind="github",
+                trust="untrusted",
+            )
+            session.add(item)
+            session.flush()
+            row.work_item_id = item.id
+        elif fence == "hold":
+            direction = json.loads(row.direction_json)
+            direction["landing_hold"] = {"actor": "new-owner"}
+            row.direction_json = json.dumps(direction)
+        else:
+            intent["task_id"] = "previous-task"
+            direction = json.loads(row.direction_json)
+            direction["pending_capacity_release"] = intent
+            row.direction_json = json.dumps(direction)
+        if settle:
+            assert controls.finish_task(first, "failed", "test", session=session)["ok"]
+            assert controls.landing_held(row)
+        else:
+            assert not controls._apply_capacity_release(session, control, row)
+        assert not controls._apply_capacity_release(session, control, row)
+        assert "pending_capacity_release" not in json.loads(row.direction_json)
+        events = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "execution_capacity_release_revoked"
+            )
+        ).all()
+        assert len(events) == 1
+        assert events[0].task_id == first
+        assert json.loads(events[0].detail_json) == {"reason": reason, "intent": intent}
+
+
+def test_pending_resumes_and_admission_contend_for_one_slot(db, policy, monkeypatch):
+    first, second = _capacity_pair(db, policy, monkeypatch, "chart")
+    controls.set_control("pause_task", "operator", task_id=second)
+    # Both tasks retain ownership, while another repository can contend.
+    with Session(db) as session, session.begin():
+        current = session.get(FactoryControl, "factory")
+        configured = json.loads(current.policy_json)
+        configured["repos"] = {"owner/repo": {}, "owner/other": {"enabled": True}}
+        current.policy_json = json.dumps(configured)
+    receive_issue(
+        "owner/other",
+        1,
+        "third",
+        "body",
+        "https://github.com/owner/other/issues/1",
+        "poller",
+    )
+    from threading import Barrier
+
+    barrier = Barrier(3)
+
+    def contend(task):
+        barrier.wait(timeout=5)
+        if task:
+            return controls.set_control("resume_task", "operator", task_id=task)
+        return admit_next("scheduler")
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(contend, [first, second, None]))
+    assert sum(bool(r["ok"] and not r.get("pending")) for r in results) == 1
+    assert controls.status()["lanes"]["delivery"]["active"] == 1
+    assert controls.retry_capacity_releases() == 0
+
+
+def test_resume_with_unresolved_start_does_not_count_self_twice(
+    db, policy, monkeypatch
+):
+    first = admitted(policy)
+    assert grant(first)["ok"]
+    controls.set_control("pause_task", "operator", task_id=first)
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "1")
+    result = controls.set_control("resume_task", "operator", task_id=first)
+    assert result["ok"] and not result["pending"]
+
+
+def test_unrequested_pause_stays_paused_when_capacity_opens(db, policy, monkeypatch):
+    first, second = _capacity_pair(db, policy, monkeypatch, "chart")
+    assert controls.finish_task(second, "failed", "test")["ok"]
+    assert controls.retry_capacity_releases() == 0
+    assert controls.can_start(first)["reason"] == "task_paused"
+
+
+@pytest.mark.parametrize("direction", [None, "{}", '{"note": "keep spacing"}'])
+@pytest.mark.parametrize("transition", ["pause", "settle"])
+def test_no_pending_intent_leaves_direction_unchanged(
+    db, policy, direction, transition
+):
+    task = admitted(policy)
+    with Session(db) as session, session.begin():
+        controls._receipt(session, task).direction_json = direction
+    if transition == "pause":
+        assert controls.set_control("pause_task", "operator", task_id=task)["ok"]
+    else:
+        assert controls.finish_task(task, "cancelled", "operator")["ok"]
+    with Session(db) as session:
+        assert controls._receipt(session, task).direction_json == direction
+
+
+@pytest.mark.parametrize("change", ["new_hold", "pause", "cancel"])
+def test_pending_hold_release_preserves_replacement_fences(
+    db, policy, monkeypatch, change
+):
+    first, second = _capacity_pair(db, policy, monkeypatch, "chart", held=True)
+    with controls._locked_session() as (session, control):
+        assert controls.request_capacity_release(
+            session,
+            control,
+            controls._receipt(session, first),
+            "operator",
+            release_hold=True,
+        )["pending"]
+    if change == "pause":
+        controls.set_control("pause_task", "operator", task_id=first)
+    else:
+        with Session(db) as session, session.begin():
+            row = controls._receipt(session, first)
+            if change == "cancel":
+                row.cancellation_requested = True
+            else:
+                direction = json.loads(row.direction_json)
+                direction["landing_hold"] = {"actor": "operator", "reason": "new hold"}
+                row.direction_json = json.dumps(direction)
+    assert controls.finish_task(second, "failed", "test")["ok"]
+    assert controls.retry_capacity_releases() == 0
+    with Session(db) as session:
+        row = controls._receipt(session, first)
+        assert controls.landing_held(row)
+        assert "pending_capacity_release" not in json.loads(row.direction_json)
+
+
+@pytest.mark.parametrize("constraint", ["chart", "repo"])
+def test_held_start_reservations_contend_under_admission_lock(
+    db, policy, monkeypatch, constraint
+):
+    first, second = _capacity_pair(db, policy, monkeypatch, constraint, held=True)
+    with Session(db) as session, session.begin():
+        controls._receipt(session, second).direction_json = '{"landing_hold":null}'
+    from threading import Barrier
+
+    barrier = Barrier(2)
+
+    def start(task):
+        barrier.wait(timeout=5)
+        return grant(task)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(start, [first, second]))
+    assert sum(r["ok"] for r in results) == 1
+    assert [r["reason"] for r in results if not r["ok"]] == ["capacity_waiting"]
+    assert controls.status()["lanes"]["delivery"]["active"] == 1
 
 
 @pytest.mark.parametrize(
@@ -1039,9 +2057,27 @@ def test_policy_without_intake_gains_disabled_defaults(policy):
     normalized = controls.validate_policy(policy)
     assert normalized["intake"] == {
         **controls.DEFAULT_INTAKE,
-        "exclude_labels": ["needs-human", "security-finding", "wontfix"],
+        "exclude_labels": ["needs-human", "wontfix"],
     }
     assert normalized["intake"] is not controls.DEFAULT_INTAKE
+
+
+def test_security_exclusions_remain_explicit_global_and_repository_policy(policy):
+    legacy = ["needs-human", "security-finding", "wontfix"]
+    policy["intake"] = {"exclude_labels": legacy}
+    policy["repos"] = {policy["repo"]: {"exclude_labels": ["operator-only"]}}
+    normalized = controls.validate_policy(policy)
+    assert normalized["intake"]["exclude_labels"] == legacy
+    assert controls.repo_entry(normalized, policy["repo"])["exclude_labels"] == [
+        "operator-only"
+    ]
+    del policy["repos"][policy["repo"]]["exclude_labels"]
+    assert (
+        controls.repo_entry(controls.validate_policy(policy), policy["repo"])[
+            "exclude_labels"
+        ]
+        == legacy
+    )
 
 
 @pytest.mark.parametrize("task_class", controls.TASK_CLASSES)
@@ -1119,7 +2155,7 @@ def test_status_defaults_intake_for_empty_control_policy(db):
     assert controls.status()["intake"] == {
         "policy": {
             **controls.DEFAULT_INTAKE,
-            "exclude_labels": ["needs-human", "security-finding", "wontfix"],
+            "exclude_labels": ["needs-human", "wontfix"],
         },
         "admitted_today": 0,
         "max_per_day": 5,
@@ -1128,6 +2164,7 @@ def test_status_defaults_intake_for_empty_control_policy(db):
         "last_swept": None,
         "last_evaluated": None,
         "last_error": None,
+        "owner_pr_backlog": None,
     }
 
 
@@ -1936,6 +2973,23 @@ def test_active_reconfiguration_requires_a_new_generation(db, policy, generation
     assert result["reason"] == "generation_not_advanced"
     assert controls.task_snapshot(task) == before
     assert controls.status()["version"] == 3
+
+
+@pytest.mark.parametrize("real_change", [False, True])
+def test_legacy_intake_defaults_do_not_advance_generation(db, policy, real_change):
+    admitted(policy)
+    with Session(db) as session, session.begin():
+        control = session.get(FactoryControl, "factory")
+        legacy = json.loads(control.policy_json)
+        legacy["intake"].pop("refinement_batch")
+        control.policy_json = json.dumps(legacy)
+    proposed = json.loads(json.dumps(legacy))
+    if real_change:
+        proposed["intake"]["refinement_batch"] = [3]
+    result = controls.set_control("configure", "operator", policy=proposed)
+    assert result["ok"] is not real_change
+    if real_change:
+        assert result["reason"] == "generation_not_advanced"
 
 
 def test_identical_configure_retry_does_not_require_a_new_generation(db, policy):
@@ -2890,7 +3944,7 @@ def test_cancel_task_accepted_reason_fits_settlement_evidence(
     assert getattr(controls, control)("cancel_task", "operator-subject", **kwargs)["ok"]
     evidence = controls.cancellation_evidence(task)
     assert evidence == {"state": "operator_cancelled", "reason": reason}
-    assert len(controls._json(evidence)) == encoded_length
+    assert len(dumps(evidence)) == encoded_length
     assert controls.finish_task(task, "cancelled", "reconciler", evidence=evidence)[
         "ok"
     ]
@@ -3390,7 +4444,7 @@ def test_single_repo_admission_pins_the_global_policy_json(db, policy, monkeypat
     # the repo-effective envelope inherits every value unchanged, so the
     # pinned JSON must equal what main pinned, built main's way.
     enable(policy, monkeypatch)
-    expected = controls._json(controls.validate_policy(controls.status()["policy"]))
+    expected = dumps(controls.validate_policy(controls.status()["policy"]))
     receive("owner/repo", 1)
     admission = admit_next("scheduler")
     assert admission["ok"]
@@ -3801,7 +4855,7 @@ def test_bounded_review_deficits_are_turns_only(db, recovery_case, monkeypatch):
     assert result["reason"] == "recovery_allowance_deficit"
     assert result["turn_deficit"] == 1 and "usd_deficit" not in result
     assert not calls
-    assert not recovery.held(task_id)
+    assert not controls.review_recovery_held(task_id)
     assert controls.task_snapshot(task_id)["turns_used"] == 16
     # A review whose reservation passes the dollar figures, the task budget
     # included, is recorded for accounting and never refused (#7161).
@@ -3873,7 +4927,7 @@ def test_bounded_review_head_change_invalidates_approval(
     monkeypatch.setattr(recovery.Reviewer, "review", review)
     result = recovery.run(**args)
     assert result["state"] == "review_head_or_ci_invalidated"
-    assert not result["ok"] and recovery.held(task_id)
+    assert not result["ok"] and controls.review_recovery_held(task_id)
     with pytest.raises(ValueError, match="head_or_state_changed"):
         recovery.run(**args)
     assert calls == ["post"]
@@ -3895,7 +4949,7 @@ def test_bounded_review_bad_inputs_no_spend(db, recovery_case, field, value, rea
     recovery, args, task_id, calls, _pr = recovery_case
     with pytest.raises(ValueError, match=reason):
         recovery.run(**{**args, field: value})
-    assert not calls and not recovery.held(task_id)
+    assert not calls and not controls.review_recovery_held(task_id)
 
 
 def test_bounded_review_gate_blocks_landing_and_requeue(db, recovery_case, monkeypatch):
@@ -4049,7 +5103,7 @@ def test_bounded_review_counts_historical_tasks_and_reservations(db, recovery_ca
         session.commit()
     with pytest.raises(ValueError, match="unresolved_execution"):
         recovery.run(**args)
-    assert not calls and not recovery.held(task_id)
+    assert not calls and not controls.review_recovery_held(task_id)
 
 
 def test_bounded_review_stop_before_post_releases_money_without_resuming(
@@ -4105,7 +5159,7 @@ def test_bounded_review_refuses_incomplete_or_stale_evidence(
         monkeypatch.setattr(landing, "_queued_ids", lambda _: {"PR_6953"})
     with pytest.raises(ValueError):
         recovery.run(**args)
-    assert not calls and not recovery.held(task_id)
+    assert not calls and not controls.review_recovery_held(task_id)
 
 
 def test_bounded_review_changed_base_invalidates_replay(db, recovery_case):
@@ -4114,7 +5168,7 @@ def test_bounded_review_changed_base_invalidates_replay(db, recovery_case):
     pr["base"]["sha"] = "f" * 40
     with pytest.raises(ValueError, match="head_or_state_changed"):
         recovery.run(**args)
-    assert len(calls) == 1 and recovery.held(task_id)
+    assert len(calls) == 1 and controls.review_recovery_held(task_id)
 
 
 def test_bounded_review_needs_work_retry_is_new_explicit_paid_attempt(
@@ -4208,7 +5262,7 @@ def test_bounded_review_rechecks_receipt_identity_after_evidence(
     monkeypatch.setattr(recovery, "_evidence", evidence)
     with pytest.raises(ValueError, match="receipt_changed_during_evidence"):
         recovery.run(**args)
-    assert not calls and not recovery.held(task_id)
+    assert not calls and not controls.review_recovery_held(task_id)
     assert controls.task_snapshot(task_id)["committed_cost_usd"] == pytest.approx(
         48.2402535
     )
@@ -4240,3 +5294,1245 @@ def test_receipt_landing_hold_finishes_without_entering_global_merge_lane(
         assert not session.exec(
             select(FactoryAudit).where(FactoryAudit.action == "delivery_ready")
         ).all()
+
+
+@pytest.mark.parametrize("wrong_action", [None, "control_configure"])
+def test_improvement_review_reference_rejected_before_configure(
+    db, policy, wrong_action
+):
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    with Session(db) as session:
+        before = session.get(FactoryControl, "factory").policy_json
+        if wrong_action:
+            row = FactoryAudit(actor="operator", action=wrong_action, detail_json="{}")
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            reviewed_id = row.id
+        else:
+            reviewed_id = 999999
+    policy["problem_issues"] = {
+        "improvement_review": {"through_audit_id": reviewed_id, "reason": "reviewed"}
+    }
+    with pytest.raises(
+        ValueError, match="improvement_review_requires_exact_attempt_audit"
+    ):
+        controls.set_control("configure", "operator", policy=policy)
+    with Session(db) as session:
+        assert session.get(FactoryControl, "factory").policy_json == before
+
+
+def test_improvement_review_exact_attempt_can_be_configured(db, policy):
+    with Session(db) as session:
+        row = FactoryAudit(
+            actor="operator", action="improvement_attempt", detail_json="{}"
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        reviewed_id = row.id
+    policy["problem_issues"] = {
+        "improvement_review": {
+            "through_audit_id": reviewed_id,
+            "reason": "reviewed trial",
+        }
+    }
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    with Session(db) as session:
+        stored = json.loads(session.get(FactoryControl, "factory").policy_json)
+        assert (
+            stored["problem_issues"]["improvement_review"]["through_audit_id"]
+            == reviewed_id
+        )
+
+
+def stopped_pause(policy):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    task = admitted(policy)
+    assert factory_pause.pause(task, "test", "bounded work stopped")
+    snapshot = controls.task_snapshot(task)
+    card = controls.escalation_view(snapshot)
+    decisions.apply_decision(
+        snapshot["id"], "stop", "operator", expected_decision_id=card["decision_id"]
+    )
+    return task
+
+
+def test_committed_automatic_stop_reconciles_without_new_command(db, policy):
+    task = stopped_pause(policy)
+    before = controls.task_snapshot(task)
+    evidence = controls.cancellation_evidence(task)
+    assert evidence and evidence["state"] == "operator_cancelled"
+    assert controls.finish_task(task, "cancelled", "reconciler", evidence=evidence)[
+        "ok"
+    ]
+    after = controls.task_snapshot(task)
+    assert after["state"] == "cancelled"
+    assert after["policy"] == before["policy"]
+    assert after["direction"] == before["direction"]
+    assert after["escalation"] == before["escalation"]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "actor",
+        "receipt_id",
+        "issue_number",
+        "decision_id",
+        "option_key",
+        "effect",
+        "effects",
+        "card_kind",
+        "card_task",
+        "card_question",
+        "card_options",
+    ],
+)
+def test_automatic_stop_requires_exact_audit_and_card(db, policy, field):
+    task = stopped_pause(policy)
+    with controls._locked_session() as (session, _):
+        row = controls._receipt(session, task)
+        if field.startswith("card_"):
+            card = json.loads(row.escalation_json)
+            key = {
+                "card_kind": "kind",
+                "card_task": "task_id",
+                "card_question": "question",
+                "card_options": "options",
+            }[field]
+            card[key] = [] if field == "card_options" else "other"
+            row.escalation_json = json.dumps(card)
+        else:
+            event = session.exec(
+                select(controls.FactoryAudit).where(
+                    controls.FactoryAudit.task_id == task,
+                    controls.FactoryAudit.action == "decision_applied",
+                )
+            ).one()
+            if field == "actor":
+                event.actor = "other"
+            else:
+                detail = json.loads(event.detail_json)
+                detail[field] = {} if field == "effects" else "other"
+                event.detail_json = json.dumps(detail)
+    assert controls.cancellation_evidence(task) is None
+
+
+def test_scout_configuration_is_default_off_and_explicit(policy):
+    configured = controls.validate_policy(policy)
+    assert configured["problem_issues"]["improvement_scout"]["enabled"] is False
+    policy["problem_issues"] = {"improvement_scout": {"enabled": True}}
+    with pytest.raises(ValueError, match="scout requires"):
+        controls.validate_policy(policy)
+
+
+def test_scout_admission_sql_and_python_match(db, policy):
+    from factory.orchestration.factory_intake import _eligible_clause
+
+    policy["problem_issues"] = {
+        "enabled": True,
+        "sources": {"quota_improvement": True},
+        "improvement_scout": {
+            "enabled": True,
+            "issue_number": 900,
+            "subscription_caps": {
+                "codex": {
+                    "subscription_only": True,
+                    "overage_disabled": True,
+                    "evidence": "verified",
+                }
+            },
+        },
+    }
+    configured = controls.validate_policy(policy)
+    with Session(db) as session:
+        rows = [
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=n,
+                title="charter",
+                body="",
+                url=f"https://github.com/owner/repo/issues/{n}",
+                actor=actor,
+            )
+            for n, actor in [
+                (900, "factory:improvement-scout"),
+                (901, "factory:improvement-scout"),
+                (902, "operator"),
+            ]
+        ]
+        session.add_all(rows)
+        session.commit()
+        found = session.exec(
+            select(FactoryReceipt).where(_eligible_clause(configured))
+        ).all()
+        assert [row.issue_number for row in found] == [900]
+        for row in rows:
+            assert controls.admission_eligible(
+                configured, row.issue_number, row.actor
+            ) == (row.issue_number == 900)
+
+
+def test_conductor_snapshot_preserves_active_evidence_without_expanding_history(
+    db, policy, monkeypatch
+):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    first = admitted(policy)
+    assert grant(first)["ok"]
+    receive_issue(
+        "owner/repo",
+        2,
+        "second",
+        "body",
+        "https://github.com/owner/repo/issues/2",
+        "operator",
+    )
+    second = admit_next("scheduler")["task_id"]
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, first)
+        row.state = "uncertain"
+        row.generation = 99
+        row.task_paused = True
+        row.cancellation_requested = True
+        row.direction_json = json.dumps(
+            {
+                "landing_hold": {"reason": "held"},
+                "pending_capacity_release": {"reason": "pending"},
+            }
+        )
+        session.add_all(
+            [
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=1000 + i,
+                    generation=0,
+                    task_class="bug-fix",
+                    title="history",
+                    body="body",
+                    url=f"https://github.com/owner/repo/issues/{1000 + i}",
+                    actor="test",
+                    state=(
+                        "succeeded",
+                        "failed",
+                        "cancelled",
+                        "escalated",
+                        "queued",
+                        "landing",
+                    )[i % 6],
+                )
+                for i in range(240)
+            ]
+        )
+    full = controls.status()
+    expanded = []
+    snapshot = controls._snapshot
+
+    def track(session, row, **kwargs):
+        expanded.append(row.task_id)
+        assert row.state in ("admitted", "uncertain")
+        return snapshot(session, row, **kwargs)
+
+    monkeypatch.setattr(controls, "_snapshot", track)
+
+    def no_history(*args, **kwargs):
+        pytest.fail("conductor expanded an operator/history view")
+
+    monkeypatch.setattr(controls, "intake_state", no_history)
+    monkeypatch.setattr(controls, "problem_issues_state", no_history)
+    import factory.orchestration.factory_landing as landing
+
+    monkeypatch.setattr(landing, "rollout_waits", no_history)
+    current = controls.conductor_status()
+    assert current == {key: full[key] for key in ("state", "policy", "active_tasks")}
+    assert expanded == [first, second]
+    assert current["active_tasks"][0]["unresolved_starts"] == 1
+    assert current["active_tasks"][0]["cancellation_requested"] is True
+    assert current["active_tasks"][0]["direction"]["landing_hold"] == {"reason": "held"}
+    controls.set_control("pause_admissions", "operator")
+    assert controls.conductor_status()["state"] == "paused"
+
+
+def test_conductor_snapshot_without_control_is_disabled(db):
+    with Session(db) as session, session.begin():
+        session.delete(session.get(FactoryControl, "factory"))
+    assert controls.conductor_status() == {
+        "state": "disabled",
+        "policy": {},
+        "active_tasks": [],
+    }
+
+
+@pytest.fixture
+def operator_population(db, policy):
+    """Real tasks, ties, off-page capacity and old decisions in every state."""
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    when = datetime(2026, 9, 12, 10, tzinfo=timezone.utc)
+    rows = []
+    for index, state in enumerate(
+        [
+            "admitted",
+            "uncertain",
+            "landing",
+            "admitted",
+            "uncertain",
+            "admitted",
+            *(["queued"] * 8),
+            *(["succeeded", "failed", "cancelled"] * 6),
+        ]
+    ):
+        document = None
+        if index in (0, 1, 14, 15, 16, 17):
+            document = {
+                "question": f"question {index}",
+                "recommendation": "one",
+                "options": [
+                    {
+                        "key": "one",
+                        "label": "First",
+                        "effect": "hold",
+                        "detail": {"reason": "keep"},
+                    }
+                ],
+                "chat": [
+                    {
+                        "note": "more",
+                        "asked_at": "2026-09-01",
+                        "requeued": False,
+                        "blocked_by": "ownership",
+                    }
+                ],
+                "branch": "factory/old",
+                "pr_url": "https://github.com/owner/repo/pull/1",
+                "comment_url": "https://example.test/evidence",
+                "summary": "context",
+            }
+            if index in (15, 17):
+                document["resolved"] = {
+                    "effect": "escape-dismiss" if index == 15 else "hold"
+                }
+        rows.append(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=index + 1,
+                title=f"receipt {index}",
+                body="x" * 8192,
+                url="https://example.test/issue",
+                actor="operator",
+                state=state,
+                task_id=f"selected-{index}" if state != "queued" else None,
+                generation=99 if index in (1, 13, 14, 16) else 0,
+                task_paused=index in (1, 3, 4),
+                cancellation_requested=index in (1, 16),
+                direction_json='{"landing_hold":{}}' if index == 4 else None,
+                escalation_json=json.dumps(document) if document else None,
+                policy_json=json.dumps(policy) if state != "queued" else None,
+                created_at=when,
+                updated_at=when,
+            )
+        )
+    # Same issue numbers across generations retain id order for decision ties.
+    rows[14].issue_number = rows[16].issue_number
+    rows[16].task_class = "docs"
+    rows[6].actor = controls.INTAKE_ACTOR
+    rows[7].issue_number = 1  # explicit allowlist qualifies an operator queue
+    rows[7].task_class = "docs"
+    with Session(db) as session, session.begin():
+        session.add_all(
+            [
+                SwarmTask(
+                    id=row.task_id,
+                    task_text=row.body,
+                    conductor_model="opus",
+                    created_at=when,
+                )
+                for row in rows
+                if row.task_id
+            ]
+        )
+        session.flush()
+        session.add_all(rows)
+        session.flush()
+        session.add_all(
+            [
+                FactoryStart(
+                    task_id="selected-1",
+                    start_key="unknown",
+                    actor="scheduler",
+                    model="opus",
+                    max_cost_usd=1,
+                    status="uncertain",
+                ),
+                FactoryStart(
+                    task_id="selected-4",
+                    start_key="reserved",
+                    actor="scheduler",
+                    model="opus",
+                    max_cost_usd=1,
+                    status="reserved",
+                ),
+            ]
+        )
+    return db
+
+
+def test_operator_reader_excludes_terminal_history(
+    operator_population, policy, monkeypatch
+):
+    from factory.orchestration import mcp
+    from sqlalchemy import inspect
+
+    db = operator_population
+    snapshots = []
+    loaded = []
+    plans = []
+    original = controls._snapshot
+    from factory.orchestration import graph
+
+    load_graph = graph.load_graph
+
+    def plan(task_id, **kwargs):
+        plans.append(task_id)
+        return load_graph(task_id, **kwargs)
+
+    monkeypatch.setattr(graph, "load_graph", plan)
+
+    def snapshot(session, row, **kwargs):
+        snapshots.append(row.id)
+        return original(session, row, **kwargs)
+
+    monkeypatch.setattr(controls, "_snapshot", snapshot)
+
+    def measured(reader):
+        queries = []
+        snapshots.clear()
+        loaded.clear()
+        plans.clear()
+
+        def count(*args):
+            queries.append(args[2])
+
+        def load(row, context):
+            if "body" not in inspect(row).unloaded:
+                loaded.append(row.id)
+
+        event.listen(db, "before_cursor_execute", count)
+        event.listen(FactoryReceipt, "load", load)
+        try:
+            with Session(db) as session:
+                result = reader(session)
+            return len(queries), list(snapshots), list(loaded), list(plans), result
+        finally:
+            event.remove(db, "before_cursor_execute", count)
+            event.remove(FactoryReceipt, "load", load)
+
+    readers = [
+        lambda session: mcp._status_payload(False, limit=2, session=session),
+        lambda session: mcp._status_payload(False, offset=2, limit=2, session=session),
+        lambda session: mcp._status_payload(
+            False, offset=100, limit=2, session=session
+        ),
+        lambda session: mcp._escalations_payload(False, limit=2, session=session),
+        lambda session: mcp._escalations_payload(
+            True, offset=2, limit=2, session=session
+        ),
+        lambda session: mcp._status_payload(True, limit=2, session=session),
+    ]
+    before = [measured(reader) for reader in readers]
+    # Setup is outside the measured sessions and SQL listener.
+    with Session(db) as session, session.begin():
+        session.add_all(
+            [
+                SwarmTask(
+                    id=f"history-{i}", task_text="x" * 8192, conductor_model="opus"
+                )
+                for i in range(950)
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=1000 + i,
+                    title="history",
+                    body="x" * 8192,
+                    url="https://example.test/history",
+                    actor="test",
+                    state="succeeded",
+                    task_id=f"history-{i}",
+                    policy_json=json.dumps(policy),
+                )
+                for i in range(950)
+            ]
+        )
+    after = [measured(reader) for reader in readers]
+    print(
+        "operator history SQL/hydration:",
+        [((a[0], len(a[1])), (b[0], len(b[1]))) for a, b in zip(before, after)],
+    )
+    for small, large in zip(before[:-1], after[:-1]):
+        assert large[0] == small[0]
+        assert large[1:4] == small[1:4]
+        assert all(receipt_id <= 32 for receipt_id in large[2])
+    assert len(after[0][1]) == 4  # two selected active and two queued snapshots
+    assert len(after[0][3]) == 2
+    assert after[3][1:4] == ([], [], [])  # escalation pages load no bodies/graphs
+    # Newer history replaces the recent cards. Only the selected two hydrate,
+    # and the original 12-card window still bounds the reported total.
+    assert before[-1][0] == after[-1][0]
+    assert len(before[-1][1]) == len(after[-1][1]) == 6
+    assert len(before[-1][2]) == len(after[-1][2]) == 6
+    assert after[-1][1][-2:] == after[-1][2][-2:] == [982, 981]
+    assert after[-1][4]["pagination"]["recent"]["total"] == 12
+
+
+def _page(items: list[dict], offset: int, limit: int) -> tuple[list[dict], dict]:
+    page = items[offset : offset + limit]
+    next_offset = offset + limit if offset + limit < len(items) else None
+    return page, {
+        "offset": offset,
+        "limit": limit,
+        "returned": len(page),
+        "total": len(items),
+        "next_offset": next_offset,
+        "truncated": next_offset is not None,
+    }
+
+
+@pytest.mark.parametrize("offset", [0, 2, 6, 11, 12, 100])
+@pytest.mark.parametrize("include_recent", [False, True])
+def test_operator_pages_match_browser_contract(
+    operator_population, monkeypatch, offset, include_recent
+):
+    from factory.orchestration import graph, mcp
+    from factory.private_view import build_factory_view
+
+    db = operator_population
+    with Session(db) as session:
+        board = build_factory_view(session=session)
+    expected_active = [mcp._task_row(r) for r in board["active"]]
+    expected_queued = [
+        mcp._task_row(r, queue_position=i)
+        for i, r in enumerate(
+            sorted(
+                (
+                    r
+                    for r in board["queued"]
+                    if controls.is_current_generation_queue(board["policy"], r)
+                ),
+                key=lambda r: (iso_or_str(r["created_at"]), r["id"]),
+            ),
+            start=1,
+        )
+    ]
+    expected_needs = [
+        {key: card.get(key) for key in ("issue_number", "title", "kind", "question")}
+        for card in board["escalations"]
+        if card["open"]
+    ]
+    expanded, plans = [], []
+    original, load_graph = controls._snapshot, graph.load_graph
+
+    def snapshot(session, row, **kwargs):
+        expanded.append(row.id)
+        return original(session, row, **kwargs)
+
+    def plan(task_id, **kwargs):
+        plans.append(task_id)
+        return load_graph(task_id, **kwargs)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("operator MCP expanded full status/board")
+
+    monkeypatch.setattr(controls, "_snapshot", snapshot)
+    monkeypatch.setattr(graph, "load_graph", plan)
+    monkeypatch.setattr(controls, "status", forbidden)
+    monkeypatch.setattr("factory.private_view.build_factory_view", forbidden)
+    with Session(db) as session:
+        result = mcp._status_payload(
+            include_recent, offset=offset, limit=2, session=session
+        )
+    for name, expected in (
+        ("active", expected_active),
+        ("queued", expected_queued),
+        ("needs_operator", expected_needs),
+    ):
+        page, pagination = _page(expected, offset, 2)
+        assert result[name] == page
+        assert result["pagination"][name] == pagination
+    for key in (
+        "state",
+        "version",
+        "actor",
+        "admitted_count",
+        "policy",
+        "intake",
+        "lanes",
+        "review_routing",
+    ):
+        assert result[key] == (
+            {**board[key], "auto_merge": False} if key == "policy" else board[key]
+        )
+    assert (
+        result["source_timestamps"]["control_updated_at"] == board["control_updated_at"]
+    )
+    assert (
+        result["coverage"] == mcp.COVERAGE
+        and result["capabilities"] == mcp.CAPABILITIES
+    )
+    selected = (
+        board["active"][offset : offset + 2]
+        + sorted(
+            (
+                r
+                for r in board["queued"]
+                if controls.is_current_generation_queue(board["policy"], r)
+            ),
+            key=lambda r: (iso_or_str(r["created_at"]), r["id"]),
+        )[offset : offset + 2]
+    )
+    if include_recent:
+        page, pagination = _page([mcp._task_row(r) for r in board["recent"]], offset, 2)
+        assert result["recent"] == page
+        assert result["pagination"]["recent"] == pagination
+        selected += board["recent"][offset : offset + 2]
+    else:
+        assert "recent" not in result and "recent" not in result["pagination"]
+    assert expanded == [r["id"] for r in selected]
+    assert plans == [r["task_id"] for r in board["active"][offset : offset + 2]]
+    expanded.clear()
+    plans.clear()
+    monkeypatch.setattr(graph, "load_graph", forbidden)
+    for include_resolved in (False, True):
+        with Session(db) as session:
+            result = mcp._escalations_payload(
+                include_resolved, offset=offset, limit=2, session=session
+            )
+        expected = [r for r in board["escalations"] if include_resolved or r["open"]]
+        page, pagination = _page(expected, offset, 2)
+        assert result["escalations"] == page
+        assert result["pagination"] == pagination
+        assert result["open_count"] == len(expected_needs)
+    assert expanded == plans == []
+
+
+def test_operator_capacity_and_control_are_fresh_off_page(operator_population):
+    from factory.orchestration import mcp
+
+    db = operator_population
+    with Session(db) as session:
+        before = mcp._status_payload(False, offset=100, limit=1, session=session)
+        assert before["active"] == before["queued"] == []
+        assert before["pagination"]["active"]["total"] == 6
+        assert before["pagination"]["queued"]["total"] == 7
+        assert before["pagination"]["needs_operator"]["total"] == 4
+        assert before["lanes"]["delivery"]["active"] == 4
+        assert before["lanes"]["delivery"]["queued"] == 1
+        # A second connection changes the ledger, beyond every requested page.
+        with Session(db) as writer, writer.begin():
+            control = writer.get(FactoryControl, "factory")
+            policy = json.loads(control.policy_json)
+            policy["generation"] = 99
+            control.policy_json = json.dumps(policy)
+            control.version += 1
+            control.actor = "another-operator"
+            control.state = "paused"
+            for start in writer.exec(select(FactoryStart)).all():
+                start.status = "cancelled"
+        after = mcp._status_payload(False, offset=100, limit=1, session=session)
+    assert after["state"] == "paused"
+    assert after["version"] == before["version"] + 1
+    assert after["actor"] == "another-operator"
+    assert after["lanes"]["delivery"]["active"] == 2
+    assert after["pagination"]["queued"]["total"] == 1
+    assert after["lanes"]["delivery"]["queued"] == 0
+
+
+@pytest.mark.parametrize("request_state", ["accepted", "outcome_unknown"])
+def test_operator_old_cancelled_decision_survives_pending_request(
+    operator_population, request_state
+):
+    from factory.orchestration import factory_decisions as decisions, mcp
+
+    db = operator_population
+    with Session(db) as session, session.begin():
+        row = session.get(FactoryReceipt, 17)
+        assert row.state == "cancelled" and row.generation == 99
+        expected = controls.escalation_view(controls._snapshot(session, row))
+        decisions._request_event(
+            session,
+            "operator",
+            {"receipt_id": row.id, "request_key": "old-pending"},
+            {"state": request_state},
+        )
+    with Session(db) as session:
+        result = mcp._escalations_payload(False, session=session)
+        status = mcp._status_payload(True, session=session)
+    assert expected in result["escalations"]
+    assert expected["receipt_id"] not in {row["receipt_id"] for row in status["recent"]}
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "open",
+        "resolved",
+        "cancelled",
+        "prior-generation",
+        "accepted",
+        "outcome_unknown",
+        "legacy_claim",
+        "human",
+        "watchdog",
+        "watchdog-replaced",
+    ],
+)
+def test_operator_decisions_reuse_pause_ownership(db, policy, monkeypatch, variant):
+    from factory.orchestration import factory_decisions as decisions, factory_pause, mcp
+
+    task_id = admitted(policy)
+    assert factory_pause.pause(
+        task_id,
+        "factory:watchdog" if variant.startswith("watchdog") else "operator",
+        "needs attention",
+    )
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, task_id)
+        document = json.loads(row.escalation_json)
+        if variant == "resolved":
+            document["resolved"] = {"effect": "hold"}
+        elif variant == "cancelled":
+            row.state = "cancelled"
+            row.cancellation_requested = True
+        elif variant == "prior-generation":
+            row.generation = 99
+        elif variant in ("accepted", "outcome_unknown"):
+            decisions._request_event(
+                session,
+                "operator",
+                {"receipt_id": row.id, "request_key": "pending"},
+                {"state": variant},
+            )
+        elif variant == "legacy_claim":
+            decisions._claim(row.id, "stop", "operator", session=session)
+        elif variant == "human":
+            item = WorkItem(
+                github_repo=row.repo,
+                github_issue_number=row.issue_number,
+                title=row.title,
+                state="active",
+                source_kind="github",
+                trust="untrusted",
+                labels=["human"],
+            )
+            session.add(item)
+            session.flush()
+            row.work_item_id = item.id
+        elif variant.startswith("watchdog"):
+            document["kind"] = "watchdog"
+            if variant == "watchdog-replaced":
+                controls._audit(
+                    session, "operator", "pause_task", task_id=task_id, ok=True
+                )
+        row.escalation_json = json.dumps(document)
+    # Compare the complete decision contract before forbidding expensive paths.
+    expected = controls.escalations(controls.status()["receipts"])
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("escalation reader expanded a snapshot, graph or full status")
+
+    monkeypatch.setattr(controls, "_snapshot", forbidden)
+    monkeypatch.setattr(controls, "status", forbidden)
+    monkeypatch.setattr("factory.private_view.build_factory_view", forbidden)
+    monkeypatch.setattr("factory.orchestration.graph.load_graph", forbidden)
+    for include_resolved in (False, True):
+        with Session(db) as session:
+            result = mcp._escalations_payload(include_resolved, session=session)
+        assert result["escalations"] == [
+            r for r in expected if include_resolved or r["open"]
+        ]
+        assert result["open_count"] == sum(r["open"] for r in expected)
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        None,
+        "",
+        "null",
+        "{}",
+        " { } ",
+        "[]",
+        "false",
+        "0",
+        '""',
+        '{"question":"q"}',
+        '{"resolved":null}',
+        '{"resolved":false}',
+        '{"resolved":{}}',
+    ],
+)
+def test_operator_decision_json_null_semantics(db, document):
+    from factory.orchestration import mcp
+
+    with Session(db) as session, session.begin():
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=1,
+                title="card",
+                body="body",
+                url="https://example.test",
+                actor="operator",
+                state="cancelled",
+                escalation_json=document,
+            )
+        )
+    expected = controls.escalations(controls.status()["receipts"])
+    for include_resolved in (False, True):
+        with Session(db) as session:
+            result = mcp._escalations_payload(include_resolved, session=session)
+        assert result["escalations"] == [
+            r for r in expected if include_resolved or r["open"]
+        ]
+
+
+def test_operator_decision_postgresql_and_sqlite_extraction():
+    from sqlalchemy.dialects import postgresql, sqlite
+    from factory.orchestration import mcp
+
+    for name, dialect in (
+        ("postgresql", postgresql.dialect()),
+        ("sqlite", sqlite.dialect()),
+    ):
+        present, kind, resolved = mcp._decision_expressions(name)
+        query = (
+            select(FactoryReceipt.id)
+            .where(present, resolved.is_(None), kind == "automatic_pause")
+            .order_by(FactoryReceipt.id)
+            .offset(2)
+            .limit(3)
+        )
+        sql = str(
+            query.compile(dialect=dialect, compile_kwargs={"literal_binds": True})
+        )
+        assert "LIMIT 3 OFFSET 2" in " ".join(sql.split())
+        assert "IS NULL" in sql and "nullif" in sql
+        if name == "postgresql":
+            assert "JSONB" in sql and "->>" in sql
+        else:
+            assert "json_extract" in sql and "CAST" not in sql
+        for ownership_query in mcp._decision_ownership_queries({1, 2}, name):
+            ownership_sql = str(
+                ownership_query.compile(
+                    dialect=dialect, compile_kwargs={"literal_binds": True}
+                )
+            )
+            assert "row_number() OVER" in ownership_sql
+            assert "detail_json AS" not in ownership_sql.split("FROM")[0]
+
+
+def test_operator_ownership_projection_matches_actor_key_and_claim_folds(db):
+    from factory.orchestration import mcp
+
+    def request(receipt_id, key, state):
+        return {
+            "request": {"receipt_id": receipt_id, "request_key": key},
+            "result": {"state": state},
+        }
+
+    events = [
+        ("a", "decision_request", request(1, "same", "accepted")),
+        ("b", "decision_request", request(1, "same", "completed")),
+        # The globally latest actor/key record can change its receipt. Applying
+        # a receipt filter before ranking would resurrect the old pending one.
+        ("a", "decision_request", request(2, "same", "completed")),
+        ("a", "decision_request", request(2, "unknown", "outcome_unknown")),
+        ("a", "decision_request", request(2, "unknown", "completed")),
+        ("a", "decision_claimed", {"receipt_id": 1, "option_key": "one"}),
+        ("b", "decision_claimed", {"receipt_id": 1, "option_key": "two"}),
+        ("a", "decision_failed", {"receipt_id": 1, "option_key": "one"}),
+        ("a", "decision_applied", {"receipt_id": 1, "option_key": "two"}),
+        (
+            "a",
+            "decision_claimed",
+            {"receipt_id": 2, "option_key": "one", "decision_id": "old"},
+        ),
+        ("a", "decision_failed", {"receipt_id": 1, "option_key": "one"}),
+        (
+            "a",
+            "decision_applied",
+            {"receipt_id": 2, "option_key": "one", "decision_id": "new"},
+        ),
+        ("a", "decision_request", request(3, "separate", "accepted")),
+    ]
+    for actor, action, detail in events:
+        with Session(db) as writer, writer.begin():
+            controls._audit(writer, actor, action, **detail)
+        with Session(db) as session:
+            expected = {
+                receipt_id
+                for receipt_id in (1, 2, 3)
+                if controls.decision_in_flight(session, receipt_id)
+            }
+            assert mcp._decisions_in_flight(session, {1, 2, 3}) == expected
+            for receipt_id in (1, 2, 3):
+                assert mcp._decisions_in_flight(session, {receipt_id}) == expected & {
+                    receipt_id
+                }
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "decision_request",
+        "decision_claimed",
+        "intake_idle",
+        "reviewer_fallback",
+        "quota_guard_unknown",
+    ],
+)
+def test_operator_audit_history_hydration_is_bounded(db, policy, monkeypatch, action):
+    from factory.orchestration import factory_pause, mcp
+
+    task_id = admitted(policy)
+    assert factory_pause.pause(task_id, "operator", "paused")
+    readers = [
+        lambda session: mcp._status_payload(
+            False, offset=100, limit=1, session=session
+        ),
+        lambda session: mcp._status_payload(False, limit=1, session=session),
+    ]
+    if action.startswith("decision_"):
+        readers.append(
+            lambda session: mcp._escalations_payload(
+                False, offset=100, limit=1, session=session
+            )
+        )
+        readers.append(
+            lambda session: mcp._escalations_payload(False, limit=1, session=session)
+        )
+
+    def add_history(start, stop):
+        with Session(db) as session, session.begin():
+            session.add_all(
+                [
+                    FactoryAudit(
+                        actor="operator",
+                        action=action,
+                        detail_json=json.dumps(
+                            {
+                                "receipt_id": 10000 + i,
+                                "option_key": "one",
+                                "request": {
+                                    "receipt_id": 10000 + i,
+                                    "request_key": f"unrelated-{i}",
+                                },
+                                "result": {"state": "completed"},
+                                "context": "x" * 8192,
+                            }
+                        ),
+                    )
+                    for i in range(start, stop)
+                ]
+            )
+
+    def measured(reader):
+        statements, audits = [], []
+
+        def count(_connection, _cursor, statement, *_rest):
+            statements.append(statement)
+
+        def load(row, _context):
+            audits.append(row.id)
+
+        event.listen(db, "before_cursor_execute", count)
+        event.listen(FactoryAudit, "load", load)
+        try:
+            with Session(db) as session:
+                result = reader(session)
+            return len(statements), len(audits), result
+        finally:
+            event.remove(db, "before_cursor_execute", count)
+            event.remove(FactoryAudit, "load", load)
+
+    add_history(0, 1)
+    before = [measured(reader) for reader in readers]
+    add_history(1, 951)
+    after = [measured(reader) for reader in readers]
+    print(
+        "operator audit SQL/hydration",
+        action,
+        [(a[:2], b[:2]) for a, b in zip(before, after)],
+    )
+    for small, large in zip(before, after):
+        assert large[:2] == small[:2]
+        if action.startswith("decision_"):
+            assert large[2]["pagination"] == small[2]["pagination"]
+
+
+@pytest.mark.parametrize(
+    "receipt_state",
+    ["admitted", "uncertain", "queued", "escalated", "landing", "succeeded"],
+)
+def test_merge_control_changes_only_flag_and_control_metadata(
+    db, policy, receipt_state, monkeypatch
+):
+    from factory.orchestration import backlog_refill
+
+    task = admitted(policy)
+    grant(task)
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, task)
+        row.state = receipt_state
+        row.task_paused = True
+        row.direction_json = dumps({"landing_hold": {"reason": "security"}})
+    monkeypatch.setattr(
+        backlog_refill, "reset", lambda *_: pytest.fail("merge control reset refill")
+    )
+    models = (
+        FactoryReceipt,
+        FactoryStart,
+        SwarmTask,
+        FactoryReviewVerdict,
+        WorkItem,
+        WorkItemEdge,
+        WorkItemEvent,
+    )
+
+    def snapshot():
+        with Session(db) as session:
+            return {
+                model.__name__: [
+                    row.model_dump() for row in session.exec(select(model)).all()
+                ]
+                for model in models
+            }
+
+    before_work = snapshot()
+    with Session(db) as session:
+        row = session.get(FactoryControl, "factory")
+        before = row.model_dump()
+        before_policy = json.loads(row.policy_json)
+        audit_count = len(session.exec(select(FactoryAudit)).all())
+    result = controls.request_control(
+        "enable_auto_merge",
+        "operator",
+        request_key="merge-on",
+        expected_version=before["version"],
+    )
+    assert result["ok"] and result["auto_merge"] is True
+    assert snapshot() == before_work
+    with Session(db) as session:
+        row = session.get(FactoryControl, "factory")
+        assert json.loads(row.policy_json) == {**before_policy, "auto_merge": True}
+        assert (
+            row.state == before["state"]
+            and row.admitted_count == before["admitted_count"]
+        )
+        assert row.version == before["version"] + 1
+        audits = session.exec(select(FactoryAudit).order_by(FactoryAudit.id)).all()[
+            audit_count:
+        ]
+        assert [item.action for item in audits] == ["set_auto_merge", "control_request"]
+    off = controls.request_control(
+        "disable_auto_merge",
+        "operator",
+        request_key="merge-off",
+        expected_version=result["version"],
+    )
+    assert off["ok"] and off["auto_merge"] is False
+    assert snapshot() == before_work
+    # A lost response replay never restores the old setting after a later command.
+    assert (
+        controls.request_control(
+            "enable_auto_merge",
+            "operator",
+            request_key="merge-on",
+            expected_version=before["version"],
+        )
+        == result
+    )
+    with Session(db) as session:
+        assert (
+            json.loads(session.get(FactoryControl, "factory").policy_json)["auto_merge"]
+            is False
+        )
+
+
+def test_merge_control_stale_version_and_key_conflict(db, policy):
+    admitted(policy)
+    version = controls.status()["version"]
+    controls.set_control("pause_admissions", "other-operator")
+    result = controls.request_control(
+        "enable_auto_merge", "operator", request_key="stale", expected_version=version
+    )
+    assert result["reason"] == "control_version_changed"
+    conflict = controls.request_control(
+        "enable_auto_merge",
+        "operator",
+        request_key="stale",
+        expected_version=version + 1,
+    )
+    assert conflict["reason"] == "conflicting_control_request"
+    with Session(db) as session:
+        assert (
+            json.loads(session.get(FactoryControl, "factory").policy_json)["auto_merge"]
+            is False
+        )
+
+
+def test_merge_control_concurrent_duplicate_applies_once(db, policy):
+    admitted(policy)
+    version = controls.status()["version"]
+
+    def enable():
+        return controls.request_control(
+            "enable_auto_merge", "operator", request_key="one", expected_version=version
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: enable(), range(2)))
+    assert results[0] == results[1] and results[0]["ok"]
+    with Session(db) as session:
+        assert session.get(FactoryControl, "factory").version == version + 1
+        assert (
+            len(
+                session.exec(
+                    select(FactoryAudit).where(FactoryAudit.action == "set_auto_merge")
+                ).all()
+            )
+            == 1
+        )
+    unchanged = controls.request_control(
+        "enable_auto_merge",
+        "operator",
+        request_key="already-on",
+        expected_version=version + 1,
+    )
+    assert unchanged["ok"] and not unchanged["changed"]
+    assert unchanged["version"] == version + 1
+
+
+def test_merge_control_concurrent_policy_change_is_not_overwritten(db, policy):
+    controls.set_control("configure", "operator", policy=policy)
+    version = controls.status()["version"]
+    entered, release, attempting = Event(), Event(), Event()
+
+    def policy_writer():
+        with controls._locked_session() as (session, control):
+            updated = json.loads(control.policy_json)
+            updated["max_parallel_nodes"] = 2
+            control.policy_json = dumps(updated)
+            control.version += 1
+            entered.set()
+            assert release.wait(5)
+
+    def enable():
+        attempting.set()
+        return controls.request_control(
+            "enable_auto_merge",
+            "operator",
+            request_key="concurrent",
+            expected_version=version,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        writer = pool.submit(policy_writer)
+        assert entered.wait(5)
+        reader = pool.submit(enable)
+        assert attempting.wait(5)
+        release.set()
+        writer.result()
+        result = reader.result()
+    assert result["reason"] == "control_version_changed"
+    with Session(db) as session:
+        stored = json.loads(session.get(FactoryControl, "factory").policy_json)
+        assert stored["max_parallel_nodes"] == 2 and stored["auto_merge"] is False
+
+
+@pytest.mark.parametrize("action", ["enable_auto_merge", "disable_auto_merge"])
+@pytest.mark.parametrize("state", ["disabled", "paused", "stopped"])
+def test_merge_control_preserves_admissions_state(db, policy, action, state):
+    controls.set_control("configure", "operator", policy=policy)
+    with Session(db) as session, session.begin():
+        session.get(FactoryControl, "factory").state = state
+    version = controls.status()["version"]
+    result = controls.request_control(
+        action, "operator", request_key="state", expected_version=version
+    )
+    assert result["state"] == state
+    assert result["ok"] == (state != "stopped")
+    if state == "stopped":
+        assert result["reason"] == "stopped" and result["version"] == version
+
+
+@pytest.mark.parametrize("landing_mode", ["none", "merge_queue", None])
+def test_merge_control_validates_inherited_repo_landing(db, policy, landing_mode):
+    entry = {} if landing_mode is None else {"landing": landing_mode}
+    controls.set_control(
+        "configure", "operator", policy={**policy, "repos": {"owner/repo": entry}}
+    )
+    with Session(db) as session:
+        row = session.get(FactoryControl, "factory")
+        before, version = row.policy_json, row.version
+    result = controls.request_control(
+        "enable_auto_merge",
+        "operator",
+        request_key="repo-mode",
+        expected_version=version,
+    )
+    with Session(db) as session:
+        row = session.get(FactoryControl, "factory")
+        if landing_mode == "none":
+            assert result["reason"] == "incompatible_repo_landing_policy"
+            assert row.policy_json == before and row.version == version
+        else:
+            assert result["ok"] and result["auto_merge"]
+            assert json.loads(row.policy_json) == {
+                **json.loads(before),
+                "auto_merge": True,
+            }
+            assert (
+                controls.repos_map(json.loads(row.policy_json))["owner/repo"]["landing"]
+                == "merge_queue"
+            )
+
+
+def test_issue_body_hash_ignores_the_factorys_own_gate_contracts():
+    from factory.orchestration import factory_gate_blocks as blocks
+
+    contract = (
+        "Conductor rescope: staged. Deliver repository changes default-off or "
+        "staged. Operational acceptance remains on the issue; do not close it.\n"
+        "- [ ] Verify the rollout"
+    )
+    prose = "Acceptance written by a person"
+    first = prose + "\n\n" + blocks.render("t-1", "a" * 20, contract)
+    rewritten = (
+        prose + "\n\n" + blocks.render("t-1", "b" * 20, contract + "\n- [ ] Second")
+    )
+    assert controls.issue_body_hash(prose) == controls.issue_body_hash(first)
+    assert controls.issue_body_hash(first) == controls.issue_body_hash(rewritten)
+    assert controls.issue_body_hash(first) != controls.issue_body_hash(
+        "Acceptance rewritten by a person\n\n"
+        + blocks.render("t-1", "a" * 20, contract)
+    )
+
+
+@pytest.mark.parametrize(
+    "owner",
+    [
+        {},
+        {"login": "joe"},
+        {"login": "joe", "id": True},
+        {"login": "joe", "id": 0},
+        {"login": "bot[bot]", "id": 42},
+        {"login": "joe", "id": 42, "scope": "all"},
+    ],
+)
+def test_owner_pr_intake_identity_rejects_incomplete_or_ambiguous_grants(owner):
+    with pytest.raises(ValueError, match="invalid owner_pr_author"):
+        controls.intake_policy({"intake": {"owner_pr_author": owner}})

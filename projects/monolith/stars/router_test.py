@@ -19,17 +19,279 @@ from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
 
 from core.db import get_session
 from shared.forecast_freshness import top_of_hour
 import stars.router as stars_router
 from stars.models import Site, SiteHour, SiteMonthClimatology
 from stars.router import _HISTORY_CACHE_CONTROL, _SITES_CACHE_CONTROL, router
+from shared.testing.sqlite import sqlite_session
 
 CUTOFF = top_of_hour(datetime.now(timezone.utc))
 FETCHED = CUTOFF - timedelta(minutes=10)
+
+
+def test_uncapped_materialization_preserves_public_bytes_and_two_queries(monkeypatch):
+    from stars.tests.snapshot_fixture import run
+
+    public, enabled = {}, {}
+    run(sites=3, edge_cases=True, sink=lambda kw: public.update({kw["Key"]: kw}))
+    run(
+        sites=3,
+        enabled=True,
+        edge_cases=True,
+        sink=lambda kw: enabled.update({kw["Key"]: kw}),
+    )
+    for key, value in public.items():
+        assert value == enabled[key]
+    payload = json.loads(enabled["connector-sites.json"]["Body"])
+    for site in payload["sites"]:
+        if site["id"].startswith("site-"):
+            hours = site["best_hours"]
+            assert len(hours) == site["clear_twilight_hours"] > 25
+            assert [h["time"] for h in hours] == sorted(h["time"] for h in hours)
+            assert all(h["time"] >= "2026-10-19T00:00:00+00:00" for h in hours)
+            assert any(h["dark"] for h in hours)
+            assert any(not h["dark"] for h in hours)
+        else:
+            assert site["best_hours"] == []
+    assert len(json.loads(public["sites.json"]["Body"])["sites"][0]["best_hours"]) == 25
+
+
+@pytest.mark.parametrize("failure_kind", ["plain", "chained", "request_state"])
+def test_connector_upload_failure_still_publishes_public_snapshots(
+    caplog, failure_kind
+):
+    import gc
+    import weakref
+
+    from botocore.awsrequest import AWSPreparedRequest
+    from botocore.exceptions import ConnectionClosedError
+
+    from stars.tests.snapshot_fixture import run
+
+    expected, published, attempts = {}, {}, []
+    failed_frames = []
+
+    class UploadFrame:
+        pass
+
+    run(sites=3, edge_cases=True, sink=lambda kw: expected.update({kw["Key"]: kw}))
+
+    def upload(kw):
+        attempts.append(kw["Key"])
+        if kw["Key"] == "connector-sites.json":
+            frame = UploadFrame()
+            frame.body = kw["Body"]
+            failed_frames.append(weakref.ref(frame))
+            if failure_kind == "request_state":
+                request = AWSPreparedRequest(
+                    method="PUT",
+                    url="https://offline.invalid",
+                    headers={},
+                    body=kw["Body"],
+                    stream_output=False,
+                )
+                failed_frames.append(weakref.ref(request))
+                raise ConnectionClosedError(request=request, endpoint_url=request.url)
+            if failure_kind == "chained":
+                try:
+                    raise TimeoutError("transport timed out")
+                except TimeoutError as cause:
+                    raise RuntimeError("connector upload timed out") from cause
+            raise TimeoutError("connector upload timed out")
+        # Original exceptions can retain the body through chains, SDK request
+        # attributes or log records even after their direct traceback is cleared.
+        gc.collect()
+        assert all(ref() is None for ref in failed_frames)
+        published[kw["Key"]] = kw
+
+    with pytest.raises(
+        RuntimeError, match="stars connector publication failed"
+    ) as caught:
+        run(sites=3, enabled=True, edge_cases=True, sink=upload)
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert published == expected
+    assert attempts == [
+        "connector-sites.json",
+        "sites.json",
+        "history-map.json",
+        "map.json",
+    ]
+    assert "stars connector publication failed" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "sites.json",
+        "map.json",
+        "history-map.json",
+        "grid.json",
+        "climatology.json",
+        "walks.json",
+        "custom-public",
+    ],
+)
+def test_connector_key_collision_fails_before_io(monkeypatch, key):
+    from stars import materialize
+
+    monkeypatch.setenv(
+        "STARS_SITES_S3_KEY",
+        "custom-public" if key == "custom-public" else "sites.json",
+    )
+    monkeypatch.setenv("STARS_CONNECTOR_SITES_S3_KEY", " " + key + " ")
+    monkeypatch.setattr(
+        materialize, "get_engine", lambda: pytest.fail("opened database")
+    )
+    monkeypatch.setattr(
+        materialize, "_s3_client", lambda: pytest.fail("opened storage")
+    )
+    with pytest.raises(ValueError, match="separate object"):
+        materialize._materialize_sync()
+
+
+def test_connector_fixture_is_actual_producer_bytes():
+    import os
+    from pathlib import Path
+    from stars.tests.snapshot_fixture import run
+
+    fixture = Path(
+        os.environ.get(
+            "CONNECTOR_SNAPSHOT_FIXTURE",
+            Path(__file__).resolve().parents[2]
+            / "scotland-connector/internal/store/testdata/connector-sites.json",
+        )
+    )
+    writes = {}
+    run(
+        enabled=True,
+        edge_cases=True,
+        sink=lambda kw: writes.update({kw["Key"]: kw["Body"]}),
+    )
+    # CI formats JSON fixtures. Compare the canonical serialized bytes, which
+    # the Go contract test also compacts before passing them to the store.
+    canonical = json.dumps(
+        json.loads(fixture.read_bytes()), separators=(",", ":")
+    ).encode()
+    assert canonical == writes["connector-sites.json"]
+
+
+@pytest.mark.parametrize("setting", [None, "", "   "])
+def test_disabled_producer_never_builds_uncapped_or_writes_connector(
+    monkeypatch, setting
+):
+    from unittest.mock import MagicMock, Mock
+    from stars import materialize
+
+    if setting is None:
+        monkeypatch.delenv("STARS_CONNECTOR_SITES_S3_KEY", raising=False)
+    else:
+        monkeypatch.setenv("STARS_CONNECTOR_SITES_S3_KEY", setting)
+    builder = Mock(return_value={"sites": [], "count": 0})
+    storage = Mock()
+    monkeypatch.setattr(materialize, "Session", MagicMock())
+    monkeypatch.setattr(materialize, "get_engine", lambda: None)
+    monkeypatch.setattr(materialize, "_build_sites_from_db", builder)
+    monkeypatch.setattr(materialize, "get_history", lambda *args: {"sites": []})
+    monkeypatch.setattr(materialize, "_s3_client", lambda: storage)
+    materialize._materialize_sync()
+    assert builder.call_count == 1
+    assert builder.call_args.kwargs == {"hour_limit": 25}
+    assert {call.kwargs["Key"] for call in storage.put_object.call_args_list} == {
+        "sites.json",
+        "map.json",
+        "history-map.json",
+    }
+
+
+def test_uncapped_real_database_load_has_same_metadata_and_query_count(
+    session, monkeypatch
+):
+    from sqlalchemy import event
+    from stars.tests.snapshot_fixture import Clock, NOW, hours, metadata
+
+    monkeypatch.setattr(stars_router, "datetime", Clock)
+    session.add_all([Site(**vars(metadata())), Site(**vars(metadata("zero", None)))])
+    session.add_all(
+        [
+            SiteHour(
+                site_id=r[0],
+                hour_time=r[1],
+                cloud_area_fraction=r[2],
+                sun_elevation_deg=r[3],
+                fetched_at=r[4],
+                air_temperature=5,
+                dew_spread=2,
+            )
+            for r in hours("covered")
+        ]
+    )
+    session.commit()
+    queries = []
+
+    def record(*args):
+        queries.append(args[2])
+
+    event.listen(session.get_bind(), "before_cursor_execute", record)
+    try:
+        full = stars_router._build_sites_from_db(
+            SimpleNamespace(headers={}), Response(), session, hour_limit=None
+        )
+        assert len(queries) == 2
+        assert "site_hours.hour_time >=" in queries[1]
+        capped = stars_router._build_sites_from_db(
+            SimpleNamespace(headers={}), Response(), session
+        )
+        assert len(queries) == 4
+    finally:
+        event.remove(session.get_bind(), "before_cursor_execute", record)
+    assert len(full["sites"][0]["best_hours"]) > 25
+    for site in full["sites"]:
+        del site["best_hours"][25:]
+    assert full == capped
+    assert full["fetched_at"] == NOW.isoformat()
+
+    # Exercise materialization with real scalar queries and nonempty history,
+    # then compare every original object, including its cache metadata.
+    from stars import materialize
+
+    session.add(
+        SiteMonthClimatology(
+            site_id="covered", month=1, dark_hours=100, clear_dark_hours=30
+        )
+    )
+    session.commit()
+    monkeypatch.setattr(materialize, "get_engine", session.get_bind)
+    writes = {}
+    monkeypatch.setattr(
+        materialize,
+        "_s3_client",
+        lambda: SimpleNamespace(put_object=lambda **kw: writes.update({kw["Key"]: kw})),
+    )
+    monkeypatch.setenv("STARS_CONNECTOR_SITES_S3_KEY", "")
+    baseline_len = materialize._materialize_sync()
+    public = writes.copy()
+    assert json.loads(public["history-map.json"]["Body"])["sites"][0]["clear"][0] == 30
+    queries.clear()
+    event.listen(session.get_bind(), "before_cursor_execute", record)
+    monkeypatch.setenv("STARS_CONNECTOR_SITES_S3_KEY", "connector-sites.json")
+    try:
+        assert materialize._materialize_sync() == baseline_len
+    finally:
+        event.remove(session.get_bind(), "before_cursor_execute", record)
+    assert sum("FROM site_hours" in query for query in queries) == 1
+    for key, value in public.items():
+        assert writes[key] == value
+    assert (
+        len(
+            json.loads(writes["connector-sites.json"]["Body"])["sites"][0]["best_hours"]
+        )
+        > 25
+    )
+
 
 # Site metadata the router joins in from stars.sites, keyed by id.
 _SITE_META = {
@@ -49,32 +311,37 @@ def _seed_site(session, site_id):
             altitude_m=alt,
             lp_zone=lp,
             source="grid",
+            forecast_fetched_at=FETCHED,
         )
     )
 
 
+def test_serialized_sites_keep_empty_success_and_legacy_visibility(client, session):
+    old = FETCHED - timedelta(days=1)
+    session.add_all(
+        [
+            Site(id="fresh", lat=57, lon=-4, forecast_fetched_at=FETCHED),
+            Site(id="stale", lat=57, lon=-4, forecast_fetched_at=old),
+            Site(id="never", lat=57, lon=-4),
+        ]
+    )
+    session.commit()
+    response = client.get("/api/stars/sites")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == body["total_sites"] == 3
+    assert body["fetched_at"] == FETCHED.isoformat()
+    sites = {s["id"]: s for s in body["sites"]}
+    assert sites["fresh"]["forecast_fetched_at"] == FETCHED.isoformat()
+    assert sites["stale"]["forecast_fetched_at"] == old.isoformat()
+    assert sites["never"]["forecast_fetched_at"] is None
+    assert all(s["best_hours"] == [] for s in sites.values())
+
+
 @pytest.fixture(name="session")
 def session_fixture():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    # SQLite can't span schemas, so strip the Postgres-only schema= overrides so
-    # SQLModel.metadata.create_all() lands every table in the default schema.
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
+    with sqlite_session() as session:
+        yield session
 
 
 @pytest.fixture(name="client")
@@ -157,8 +424,9 @@ class TestSites:
         r = client.get("/api/stars/sites")
         assert r.status_code == 200
         body = r.json()
-        assert body["count"] == 1
-        assert [s["id"] for s in body["sites"]] == ["tomintoul"]
+        assert body["count"] == 2
+        assert [s["id"] for s in body["sites"]] == ["tomintoul", "galloway-forest"]
+        assert body["sites"][1]["best_hours"] == []
         tomintoul = body["sites"][0]
         # Only the two future hours; the past clear-dark hour is gone.
         assert len(tomintoul["best_hours"]) == 2
@@ -229,7 +497,7 @@ class TestSites:
 
         r = client.get("/api/stars/sites")
         body = r.json()
-        assert body["count"] == 1
+        assert body["count"] == 2
         assert body["total_sites"] == 2
 
     def test_best_hours_capped_at_display_limit(self, client, session):
@@ -363,7 +631,7 @@ class TestSites:
         r = client.get("/api/stars/sites")
         assert r.status_code == 200
         body = r.json()
-        assert body["count"] == 0
+        assert body["count"] == 1
         assert body["darkness"] == "none"
 
 

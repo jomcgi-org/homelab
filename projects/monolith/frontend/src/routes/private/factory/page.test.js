@@ -147,6 +147,66 @@ function renderPage(data) {
   return target;
 }
 
+test("private backlog renders age, latest reason and incomplete coverage", async () => {
+  const target = renderPage({
+    board: board({
+      intake_backlog: {
+        available: true,
+        stale: true,
+        unfinished: true,
+        observed_at: "2026-10-30T12:00:00Z",
+        coverage: { "owner/repo": "partial" },
+        issues: [
+          {
+            repo: "owner/repo",
+            issue_number: 17,
+            title: "older",
+            age_days: 40,
+            decision: "skipped",
+            reason: "blocked_by:#9",
+            observed_at: "2026-10-30T12:00:00Z",
+          },
+          {
+            repo: "owner/repo",
+            issue_number: 18,
+            title: "newer",
+            age_days: 3,
+            decision: null,
+            reason: "never_considered",
+            observed_at: null,
+          },
+        ],
+      },
+    }),
+    error: null,
+    task: null,
+  });
+  await tick();
+  const backlog = target.querySelector('[aria-label="Agent-ready backlog"]');
+  expect(backlog.textContent).toContain("40 days old");
+  expect(backlog.textContent).toContain("blocked_by:#9");
+  expect(backlog.textContent).toContain("never considered");
+  expect(backlog.textContent).toContain("Stale observations");
+  expect(backlog.textContent).toContain("unfinished");
+  expect(backlog.textContent).toContain("partial");
+  expect([...backlog.querySelectorAll("a")].map((a) => a.textContent)).toEqual([
+    expect.stringContaining("#17"),
+    expect.stringContaining("#18"),
+  ]);
+});
+
+test("private backlog failure cannot look like an empty inventory", async () => {
+  const target = renderPage({
+    board: board({ intake_backlog: { available: false, issues: [] } }),
+    error: null,
+    task: null,
+  });
+  await tick();
+  const backlog = target.querySelector('[aria-label="Agent-ready backlog"]');
+  expect(backlog.textContent).toContain("evidence unavailable");
+  expect(backlog.textContent).not.toContain("No open agent-ready");
+});
+
 afterEach(() => {
   while (mounted.length) {
     const { component, target } = mounted.pop();
@@ -158,6 +218,36 @@ afterEach(() => {
 });
 
 describe("factory board page", () => {
+  test("keeps the empty sheet, visibility gate and timer cleanup", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => board(),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const target = renderPage({
+      board: board({ active: [], queued: [], recent: [] }),
+      task: null,
+    });
+    await tick();
+    expect(target.textContent).toContain("Nothing in flight.");
+    expect(target.textContent).toContain("Queue is empty.");
+    expect(target.textContent).toContain("No finished tasks yet.");
+    const visibility = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("hidden");
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(fetchMock).not.toHaveBeenCalled();
+    visibility.mockReturnValue("visible");
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await unmount(mounted.pop().component);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    target.remove();
+    visibility.mockRestore();
+  });
+
   test("polls the canonical factory board endpoint", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn(async () => ({
@@ -171,8 +261,13 @@ describe("factory board page", () => {
     expect(fetchMock).toHaveBeenCalledWith("/factory");
   });
 
-  test("renders the state strip, the three sections, and the plan", () => {
+  test("keeps diagnostics collapsed until a task is opened", async () => {
     const target = renderPage({ board: board(), task: null, error: false });
+
+    expect(target.querySelector("main.td.sheet.factory-page")).not.toBeNull();
+    expect(target.querySelectorAll(".scheme")).toHaveLength(1);
+    expect(target.querySelectorAll(".edition.panel")).toHaveLength(3);
+    expect(target.querySelector(".shell")).toBeNull();
 
     const stats = target.querySelector(".stats");
     expect(stats.textContent).toContain("enabled");
@@ -182,12 +277,17 @@ describe("factory board page", () => {
     );
     expect(labels[0]).toMatch(/^\/ In flight/);
     expect(labels[1]).toMatch(/^\/ Queue/);
-    expect(labels[2]).toMatch(/^\/ Recent/);
+    expect(labels[2]).toMatch(/^\/ Agent-ready backlog/);
+    expect(labels[3]).toMatch(/^\/ Recent/);
     expect(target.querySelectorAll(".panel")).toHaveLength(3);
     expect(target.querySelector(".policy-line").textContent).toContain(
       "1/1 delivery \u00b7 0/2 advisory",
     );
 
+    expect(target.querySelector(".diagnostics").open).toBe(false);
+    expect(target.querySelector(".panel.admitted .dag")).toBeNull();
+    target.querySelector(".panel.admitted .panel-head").click();
+    await tick();
     const ranks = target.querySelectorAll(".panel.admitted .dag .rank");
     expect(ranks).toHaveLength(3);
     expect(target.querySelector(".node.running").textContent).toContain(
@@ -254,7 +354,7 @@ describe("factory board page", () => {
     const planning = receipt({ turns_used: 2, planner_turns_used: 5 });
     const target = renderPage({
       board: board({ active: [planning] }),
-      task: null,
+      task: "t-1",
       error: false,
     });
     expect(target.querySelector(".panel.admitted .spec").textContent).toContain(
@@ -269,7 +369,7 @@ describe("factory board page", () => {
     const fresh = receipt({ committed_cost_usd: 0, turns_used: 0 });
     const target = renderPage({
       board: board({ active: [fresh] }),
-      task: null,
+      task: "t-1",
       error: false,
     });
     expect(target.querySelector(".panel.admitted .spec").textContent).toContain(

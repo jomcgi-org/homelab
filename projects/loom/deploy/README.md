@@ -2,7 +2,7 @@
 
 Loom source lives in `weave-hand/loom`. This directory holds the cluster
 wiring for loom and its Postgres control plane: the `loom` namespace, `loom-pg`
-CNPG cluster, daily backup, 1Password references and metrics Service.
+CNPG cluster, daily backup and 1Password references.
 Loom runs its own sqlx migrations and needs no Postgres extensions. CNPG creates
 the `loom-pg-app` Secret for application access.
 
@@ -95,9 +95,8 @@ from `metadata.creationTimestamp` and carries
 The flag requires `httpcheck.enabled` and a non-empty `allowedServices` so both
 probe and OTLP paths exist; the GKE overlay already supplies these.
 
-The 9187 metrics Services are not scraped by this collector, which has no
-Prometheus receiver. Probe and backup-age telemetry can be inspected in
-Honeycomb after enablement. There are no Loom probe, backup-age or
+The collector has no Prometheus receiver. Probe and backup-age telemetry can be
+inspected in Honeycomb after enablement. There are no Loom probe, backup-age or
 checker-absence trigger specs. The
 [Honeycomb one-trigger policy](../../platform/honeycomb/README.md) reserves the
 only trigger for the public health composite.
@@ -153,7 +152,7 @@ Keep the restored cluster's backup configuration, but set its
 `backup.barmanObjectStore.serverName` to a new archive name such as `loom-pg-r1`.
 The recovery source stays `loom-pg`. Never write into the archive being restored:
 CNPG refuses a non-empty destination archive. Use a fresh archive name for each
-restore attempt. Update the ScheduledBackup target and metrics selector to the
+restore attempt. Update the ScheduledBackup target to the
 restored Cluster name, and use its CNPG-generated application Secret.
 
 After rollout, verify recovery completed, loom's migrations and queue work, and

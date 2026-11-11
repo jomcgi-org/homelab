@@ -149,8 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--base-url",
         default=None,
         help=(
-            "OpenAI-compatible /v1 base URL (a kubectl port-forward to in-cluster "
-            "llama.cpp, or https://private.jomcgi.dev/llm/v1 from off-cluster). "
+            "Explicitly supplied OpenAI-compatible /v1 base URL. "
             "Skips OpenRouter pricing and the API key."
         ),
     )
@@ -344,9 +343,9 @@ async def _run(args) -> None:
 
     tasks = load_tasks(Path(args.tasks))
     reg = load_registry(Path(args.models))
-    # An explicit --model substring can name an experimental entry (the in-cluster
-    # Qwen3.8 row) without also passing --include-experimental. A bare run still
-    # skips experimental models so they are not accidentally sent to OpenRouter.
+    # An explicit --model substring can name an experimental entry without also
+    # passing --include-experimental. A bare run still skips experimental models so
+    # they are not accidentally sent to OpenRouter.
     if getattr(args, "model_filter", None):
         models = [m for m in reg if m.status != "retired"]
     else:
@@ -790,7 +789,6 @@ def _aggregate_agentic_group(
 
 def _load_newest_cells(results_root: Path) -> tuple[list[ResultCell], int, int]:
     """Current-harness cells, newest per (model, task), plus stale/superseded counts."""
-    cells: list[ResultCell] = []
     stale = 0
     superseded = 0
     # Keep only the NEWEST cell per (model, task). A cell's cache key includes the fixture

@@ -127,18 +127,3 @@ def get_game_creator_email(
     if platform_enforcement_enabled():
         require_application_permission(session, principal, "grimoire.create_game")
     return email
-
-
-async def get_grimoire_operator_email(
-    principal: Annotated[Principal, Depends(get_authenticated_identity)],
-) -> str:
-    """Require the existing standing operators-group authorization rule."""
-    if principal.authority is not Authority.STANDING or not principal.has_group(
-        "operators"
-    ):
-        raise HTTPException(status_code=403, detail="operator role required")
-    email = principal.email
-    if email is None:
-        raise HTTPException(status_code=403, detail="verified email required")
-    email = email.strip().lower()
-    return email

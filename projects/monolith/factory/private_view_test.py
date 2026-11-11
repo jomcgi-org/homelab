@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from factory.private_view import (
     first_line,
     node_label,
@@ -278,12 +280,48 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
         )
         db.commit()
         view = build_factory_view(session=db)
+        assert view["intake_backlog"]["available"] is False
+        assert view["intake_backlog"]["issues"] == []
+        public_input = build_factory_view(session=db, include_backlog=False)
+        assert "intake_backlog" not in public_input
         control = db.get(FactoryControl, "factory")
         policy = json.loads(control.policy_json)
         policy["issue_numbers"] = [5983]
         control.policy_json = json.dumps(policy)
         db.commit()
         eligible_view = build_factory_view(session=db)
+
+        # This Bazel target deliberately lacks the decision executor. Read-only
+        # pause visibility must work for real cards and pending requests here.
+        from factory.orchestration import factory_controls as controls, factory_pause
+
+        task_id = "paused-status-only"
+        db.add(SwarmTask(id=task_id, task_text="paused", conductor_model="astra"))
+        db.flush()
+        receipt = db.get(FactoryReceipt, view["queued"][0]["id"])
+        receipt.task_id, receipt.state, receipt.task_paused = task_id, "admitted", True
+        receipt.policy_json = json.dumps({**policy, "task_timeout_seconds": 3600})
+        receipt.escalation_json = json.dumps(
+            {
+                "kind": "automatic_pause",
+                "task_id": task_id,
+                "options": [factory_pause.STOP],
+            }
+        )
+        db.commit()
+        visible = controls.escalation_view(controls._snapshot(db, receipt))
+        assert visible["open"] and visible["options"]
+        controls._audit(
+            db,
+            "operator",
+            "decision_request",
+            request={"receipt_id": receipt.id, "request_key": "unknown"},
+            result={"state": "outcome_unknown"},
+        )
+        db.commit()
+        blocked = controls.escalation_view(controls._snapshot(db, receipt))
+        assert not blocked["open"] and blocked["options"] == []
+        assert blocked["pause_warning"] == "active_paused_without_actionable_question"
     assert view["ok"] is True
     assert view["state"] == "enabled"
     assert view["policy"]["conductor_model"] == "astra"
@@ -325,3 +363,102 @@ def test_a_policy_pinned_before_the_envelope_still_shows_its_turn_bound():
     )
     shaped = shape_receipt({"policy": legacy, "id": 1, "issue_number": 7})
     assert shaped["policy"]["max_task_turns_hard"] == 9
+
+
+@pytest.mark.parametrize("receipt_state", [None, "admitted", "escalated"])
+def test_terminal_escalated_attempt_is_not_unknown_execution(receipt_state):
+    from factory.publication import task_summary
+
+    run = {
+        **_run("correct_5", 1, "escalated", 7),
+        "finished_at": "2026-09-10T05:01:00+00:00",
+    }
+    node = shape_node(
+        _node("correct_5"),
+        [run],
+        {7: {"status": "completed", "executing": False}},
+        receipt_state=receipt_state,
+    )
+    assert node["state"] == "escalated"
+    assert node["attempts"][0]["status"] == "escalated"
+    summary = task_summary(
+        {"state": receipt_state or "admitted", "task_paused": True, "nodes": [node]}
+    )
+    assert summary["nodes"] == [{"node_key": "correct_5", "state": "escalated"}]
+    assert summary["state"] == (
+        "escalated" if receipt_state == "escalated" else "paused"
+    )
+
+
+@pytest.mark.parametrize("receipt_state", [None, "admitted", "escalated"])
+def test_unknown_run_and_terminal_parent_never_claim_running(receipt_state):
+    assert (
+        shape_node(
+            _node("review"),
+            [_run("review", 1, "unrecognized")],
+            {},
+            receipt_state=receipt_state,
+        )["state"]
+        == "uncertain"
+    )
+    assert (
+        shape_node(
+            _node("review"),
+            [_run("review", 1, "admitted")],
+            {},
+            receipt_state="escalated",
+        )["state"]
+        == "uncertain"
+    )
+
+
+def test_execution_requires_fresh_exact_dispatch_without_result_or_cleanup():
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    from factory.private_view import current_execution
+
+    now = datetime.now(timezone.utc)
+    row = SimpleNamespace(
+        id=7,
+        local_session_id="local",
+        status="running",
+        ember_session_id="guest",
+        result_receipt_fence_id=None,
+        guest_cleanup_id=None,
+    )
+    pending = SimpleNamespace(
+        seq=2, dispatch_count=1, claimed_by_replica="owner", claimed_at=now
+    )
+    receipt = SimpleNamespace(
+        session_id=7,
+        local_session_id="local",
+        seq=2,
+        dispatch_count=1,
+        claim_owner="owner",
+        guest_id="guest",
+        superseded_at=None,
+        received_at=None,
+        response_observed_at=None,
+        response_observer_released_at=None,
+    )
+    turn = SimpleNamespace(seq=1)
+    assert current_execution(row, pending, receipt, turn, now)
+    assert not current_execution(row, None, receipt, turn, now)
+    assert not current_execution(row, pending, None, turn, now)
+    for obj, key, value in [
+        (pending, "claimed_at", now - timedelta(seconds=31)),
+        (pending, "claimed_by_replica", "different"),
+        (pending, "dispatch_count", 2),
+        (receipt, "guest_id", "old-guest"),
+        (receipt, "seq", 1),
+        (receipt, "received_at", now),
+        (receipt, "response_observer_released_at", now),
+        (receipt, "superseded_at", now),
+        (row, "result_receipt_fence_id", "fence"),
+        (row, "guest_cleanup_id", "cleanup"),
+        (turn, "seq", 2),
+    ]:
+        original = getattr(obj, key)
+        setattr(obj, key, value)
+        assert not current_execution(row, pending, receipt, turn, now), key
+        setattr(obj, key, original)

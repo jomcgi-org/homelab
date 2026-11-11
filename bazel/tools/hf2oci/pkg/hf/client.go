@@ -46,11 +46,6 @@ func WithBaseURL(u string) Option {
 	return func(c *Client) { c.baseURL = u }
 }
 
-// WithHTTPClient sets a custom HTTP client.
-func WithHTTPClient(hc *http.Client) Option {
-	return func(c *Client) { c.httpClient = hc }
-}
-
 // WithCacheTTL enables in-memory caching of Tree and ModelInfo responses.
 // Cached entries expire after the given duration. Zero disables caching.
 func WithCacheTTL(ttl time.Duration) Option {

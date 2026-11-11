@@ -47,6 +47,115 @@ afterEach(async () => {
 });
 
 describe("Codex authorization", () => {
+  test("starts dev login only after a click and keeps its environment explicit", async () => {
+    vi.stubGlobal("navigator", {});
+    globalThis.fetch = vi.fn(async () =>
+      Response.json({
+        verification_url: "https://example.test/device",
+        user_code: "DEV-123",
+        environment: "dev",
+        grant: "codex-cluster",
+      }),
+    );
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const { target } = await render(vi.fn(), { environment: "dev" });
+
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    target.querySelector("button").click();
+    await vi.waitFor(() =>
+      expect(target.querySelector("code")?.textContent).toBe("DEV-123"),
+    );
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/private/factory/execution/codex-login/start?grant=codex-cluster&environment=dev",
+      { method: "POST" },
+    );
+    expect(open).toHaveBeenCalledOnce();
+  });
+
+  test.each([
+    {},
+    { environment: "prod", grant: "codex-cluster" },
+    { environment: "dev", grant: "another-account" },
+  ])("rejects a dev code without matching broker scope", async (scope) => {
+    vi.stubGlobal("navigator", {});
+    globalThis.fetch = vi.fn(async () =>
+      Response.json({
+        verification_url: "https://example.test/device",
+        user_code: "WRONG-SCOPE",
+        ...scope,
+      }),
+    );
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const { target, onError } = await render(vi.fn(), { environment: "dev" });
+
+    target.querySelector("button").click();
+    await vi.waitFor(() =>
+      expect(onError).toHaveBeenLastCalledWith(
+        P.labels.codexLoginInvalidResponse,
+      ),
+    );
+
+    expect(target.querySelector("code")).toBeNull();
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  test("does not fall back to production for an invalid environment", async () => {
+    globalThis.fetch = vi.fn();
+    const { target, onError } = await render(vi.fn(), {
+      environment: "staging",
+    });
+
+    target.querySelector("button").click();
+    await tick();
+
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenLastCalledWith(
+      "Codex login environment must be prod or dev",
+    );
+  });
+
+  test("ignores a login response after the control is removed", async () => {
+    let resolveResponse;
+    globalThis.fetch = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveResponse = resolve;
+        }),
+    );
+    const writeText = vi.fn();
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const { component, target } = await render(
+      vi.fn(),
+      { environment: "dev" },
+      true,
+    );
+
+    target.querySelector("button").click();
+    component.$destroy();
+    mounted.splice(
+      mounted.findIndex((entry) => entry.component === component),
+      1,
+    );
+    target.remove();
+    const response = {
+      ok: true,
+      json: vi.fn(async () => ({
+        verification_url: "https://example.test/device",
+        user_code: "OLD-DEV",
+        environment: "dev",
+        grant: "codex-cluster",
+      })),
+    };
+    resolveResponse(response);
+    await vi.waitFor(() => expect(response.json).toHaveBeenCalledOnce());
+    await tick();
+
+    expect(writeText).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+  });
+
   test("renders authorize as the only control before a code exists", async () => {
     const { target } = await render();
 

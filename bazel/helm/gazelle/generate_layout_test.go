@@ -130,8 +130,71 @@ spec:
 			if app.AttrString("namespace") != "widgets" || app.AttrString("release_name") != "widget" {
 				t.Fatal("Application namespace or default release name changed")
 			}
-			if app.Attr("generate_manifests") != nil || app.Attr("generate_diff") != nil {
+			if app.Attr("generate_manifests") != nil {
 				t.Fatal("ordinary Application generation defaults changed")
+			}
+			for _, attr := range []string{"generate_diff", "application_name", "kubectl_context"} {
+				if app.Attr(attr) != nil {
+					t.Errorf("generated obsolete diff-only attribute %q", attr)
+				}
+			}
+		})
+	}
+}
+
+func TestGenerateRulesDirectives(t *testing.T) {
+	root := t.TempDir()
+	const pkg = "projects/widget/deploy"
+	writeLayoutFile(t, root, "projects/widget/chart/Chart.yaml", "apiVersion: v2\nname: widget\nversion: 1.0.0\n")
+	writeLayoutFile(t, root, "projects/widget/chart/values.yaml", "replicaCount: 1\n")
+	writeLayoutFile(t, root, pkg+"/application.yaml", `apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: widget
+spec:
+  source:
+    path: projects/widget/chart
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    namespace: widgets
+`)
+	for _, tc := range []struct {
+		name       string
+		directives []rule.Directive
+		enabled    bool
+		manifests  bool
+	}{
+		{"defaults", nil, true, true},
+		{"disabled", []rule.Directive{{Key: "argocd", Value: "disabled"}}, false, true},
+		{"re-enabled", []rule.Directive{{Key: "argocd", Value: "disabled"}, {Key: "argocd_enabled"}}, true, true},
+		{"manifest opt-out", []rule.Directive{{Key: "argocd_generate_manifests", Value: "false"}}, true, false},
+		{"manifest opt-in", []rule.Directive{{Key: "argocd_generate_manifests", Value: "false"}, {Key: "argocd_generate_manifests", Value: "true"}}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			generated := generateLayout(t, root, pkg, &rule.File{Directives: tc.directives})
+			if !tc.enabled {
+				if len(generated.Gen) != 0 {
+					t.Fatalf("disabled generation emitted %v", generated.Gen)
+				}
+				return
+			}
+			if len(generated.Gen) != 1 || generated.Gen[0].Kind() != "argocd_app" {
+				t.Fatalf("generation = %v, want one argocd_app", generated.Gen)
+			}
+			app := generated.Gen[0]
+			if tc.manifests {
+				if app.Attr("generate_manifests") != nil {
+					t.Fatal("enabled manifests must use the macro default")
+				}
+			} else if !reflect.DeepEqual(app.Attr("generate_manifests"), rule.ExprFromValue(false)) {
+				t.Fatal("manifest opt-out was lost")
+			}
+			for _, attr := range []string{"generate_diff", "application_name", "kubectl_context"} {
+				if app.Attr(attr) != nil {
+					t.Errorf("generated obsolete diff-only attribute %q", attr)
+				}
 			}
 		})
 	}

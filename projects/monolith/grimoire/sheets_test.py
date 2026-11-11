@@ -9,7 +9,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from grimoire.access import get_authenticated_identity, get_grimoire_operator_email
+from grimoire.access import get_authenticated_identity
+from grimoire.models import AppUser, CampaignMember
 from grimoire.models import CharacterSheetVersion, Entity, PlayerCharacter
 from grimoire.router import router
 
@@ -90,23 +91,20 @@ def _character(client: TestClient, email: str, campaign_id: str, name: str) -> d
     return response.json()
 
 
-def _member(
-    client: TestClient,
-    dm: str,
-    campaign_id: str,
-    player: str,
-    character_id: str,
-) -> dict:
-    client.app.dependency_overrides[get_grimoire_operator_email] = lambda: dm
-    response = _post(
-        client,
-        f"/api/grimoire/campaigns/{campaign_id}/members",
-        dm,
-        {"email": player, "player_character_id": character_id},
+def _member(client, dm, campaign_id, player, character_id):
+    session = client.app.dependency_overrides[get_session]()
+    user = AppUser(email=player)
+    session.add(user)
+    session.flush()
+    member = CampaignMember(
+        campaign_id=campaign_id,
+        app_user_id=user.id,
+        role="player",
+        player_character_id=character_id,
     )
-    del client.app.dependency_overrides[get_grimoire_operator_email]
-    assert response.status_code == 200
-    return response.json()
+    session.add(member)
+    session.commit()
+    return {"id": member.id, "player_character_id": character_id}
 
 
 def _sheet(level: int = 5) -> dict:

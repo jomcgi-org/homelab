@@ -5,10 +5,10 @@ The job kind (`qwen-drain`), PR label (`qwen-agent-for-review`), git identity
 was built on. The default worker is Luna: `DRAIN_MODEL = "luna"` in
 `projects/monolith/factory/orchestration/drainer.py`, a Codex-family model on
 claude-runtime. A `qwen-drain` job may name another model from `DRAIN_MODELS`
-(`luna`, `sol`) in `payload.model`; KG jobs always run on Luna.
+(`luna`, `sol`, `astra`) in `payload.model`; KG jobs always run on Luna.
 
 The drainer runs `claude_agent.routine_jobs` rows of kind `qwen-drain` as one
-fresh Luna session each, strictly serially, claimed by a `*/15` CronWorkflow
+fresh session each, strictly serially, claimed by a `*/15` CronWorkflow
 tick. The lane spends subscription quota rather than per-token billing, so it
 exists to turn idle capacity into audits, reports, and small PRs. The same
 drainer claims `kg-drain` jobs for knowledge extraction, and `docfix:` jobs are
@@ -28,21 +28,21 @@ issue filing have separate default-off switches.
 
 ## Queueing work
 
-Register with the MCP tool `monolith-agent-register-routine-job`:
+Register with the MCP tool `monolith-agent-routine-job`, `action: "register"`:
 
 - `kind: "qwen-drain"`, `payload: {"prompt": ...}` (optional `repo`, `branch`,
   `reasoning`, `model`, `digest`).
-- `model` picks the worker: `luna` (default) or `sol`. Any other value fails the
-  job before a session starts. The claim reservation, the session and the
-  quota check all use the job's model: the lane-wide gate judges Luna, and a
-  Sol job is also deferred when Sol's own provider is walled (Sol and Luna
-  share the Codex grants, so in practice the two readings agree).
+- `model` picks the worker: `luna` (default), `sol` or `astra`. Any other value
+  fails the job before a session starts. The claim reservation, the session
+  and the quota check all use the job's model: the lane-wide gate judges Luna,
+  and a Sol or Astra job is also deferred when its own provider is walled.
+  All three share the Codex grants. There is no cross-model spill.
 - `digest` appends a server-built evidence block to the prompt at claim time.
   The only value is `factory-retro` (see below).
 - One-shot jobs: `interval_secs` null, `next_run_at` now. On completion
-  `next_run_at` goes NULL and the job leaves the queue; `trigger-routine-job`
+  `next_run_at` goes NULL and the job leaves the queue; `action: "trigger"`
   re-arms it.
-- Recurring jobs: set `interval_secs`. To edit a prompt, `deregister-routine-job`
+- Recurring jobs: set `interval_secs`. To edit a prompt, `action: "deregister"`
   then re-register with the original schedule.
 - `next_run_at` is a priority field: `claim_job` orders by it ascending, so a
   past timestamp jumps the queue.
@@ -74,7 +74,8 @@ sweeps do not. Split "audit all runbooks" into one job per runbook.
 
 `agents.drainer.reasoning` and `payload.reasoning` become the invoke's
 `thinking` field, which only pi sessions read. Codex effort is pinned per model
-in the EmberVM shim's `CODEX_MODELS` table (`luna`: `medium`, `sol`: `high`),
+in the EmberVM shim's `CODEX_MODELS` table (`luna`: `medium`, `sol`: `high`,
+`astra`: `high`),
 so choosing `payload.model` also chooses the depth; change that table to change
 it. There is no per-job effort. Nothing ends a looping Luna turn short of the timeouts, so
 fix a looping job's search space or prompt.
@@ -251,9 +252,9 @@ finding.
 | Symptom in `last_summary` | Cause | Fix |
 |---|---|---|
 | `502 :invoke_timeout` after ~12 hours | the 43200s EmberVM invoke backstop | a non-converging job: check the tool-call count in `usage_json`, then narrow its search space |
-| `502 {:session_down, ...}`, `503 workspace does not exist`, `All connection attempts failed`, `Server disconnected` | a bad guest; the job was fine | `trigger-routine-job`; it usually passes on a fresh guest. These are terminal, so a one-shot stays dead until requeued by hand |
+| `502 {:session_down, ...}`, `503 workspace does not exist`, `All connection attempts failed`, `Server disconnected` | a bad guest; the job was fine | `routine-job` `action: "trigger"`; it usually passes on a fresh guest. These are terminal, so a one-shot stays dead until requeued by hand |
 | jobs due but nothing claimed for hours, ticks firing | a wedged drain cycle holding the concurrency-1 slot | open the drain console. A pod roll does not clear it (DBOS recovery re-enqueues into a PENDING row). The reaper cancels a cycle with no step checkpoint for 1800s; to clear one sooner, `POST /api/swarm/runs/{workflow_id}/cancel` in-pod |
-| `next_run_at` NULL, job gone from the due list | the one-shot completed | `trigger-routine-job` to re-run |
+| `next_run_at` NULL, job gone from the due list | the one-shot completed | `routine-job` `action: "trigger"` to re-run |
 
 ### Harness knobs
 
@@ -312,10 +313,21 @@ The observation records revision provenance, not historical application health.
 The first matching revision observation is the measurement boundary; current
 sync and health must also verify. Compare the immediately preceding 72h with
 `[boundary, boundary + 72h)`, never the overlapping rolling daily digest.
+The reader finds that exact deployment first, then counts the distinct
+revisions deployed inside the fixed post-deployment window, one row per
+revision however many polls observed it. `observation_coverage` states the
+UTC bounds, revisions observed, limit and completeness. An extra sentinel row
+detects truncation; more than 500 distinct revisions inside that window holds
+UNKNOWN. Polls after the window cannot exhaust its coverage budget.
+
 Attempt cohorts use their creation window; terminal outcomes are read as of
-digest collection, allowing attempts near the window's end to finish before
-acceptance. Further deployments during observation make attribution UNKNOWN. Missing
-traffic, classification coverage or a traffic criterion also holds the choice.
+digest collection. Attempts still unresolved when the window ends hold the
+verdict at WAIT for 24 more hours so they can settle. After that the verdict
+is final: ACCEPTED, REGRESSED, or INCONCLUSIVE for missing traffic,
+classification coverage, an unmet traffic criterion or an unknown metric.
+Other deployments inside the window are reported as confounders beside the
+verdict and never hold it. A final verdict releases the selection; UNKNOWN,
+for evidence that was unavailable this run, holds it until the next run.
 A worse target rate reports REGRESSED; a met observation criterion reports
 ACCEPTED as a descriptive association, without a causal savings claim.
 
@@ -325,3 +337,43 @@ ledger amounts are observed as of digest collection, not reconstructed historica
 balances. These operational measurements do not establish the seven-day CI and
 revert evidence required for mature outcomes. No verdict writes factory policy,
 merges a PR, bypasses review or creates a second scheduler.
+
+## Report-only factory learning handoff
+
+`agents.drainer.learningHandoffEnabled` defaults off and adds no scheduler.
+After reading `learning_configuration.payload_sha256` on the existing routine
+list, pin that reviewed value in `agents.drainer.learningDailyPayloadSha256`.
+An empty pin or changed payload defers reconciliation; never guess the hash.
+When enabled and the pin matches, the drainer reconciles the idle `factory-retro-daily`
+job from Sol to `model: luna` and `learning_stage: evidence` under its normal
+admission lock. The existing repository and digest must match; its identity,
+86400-second interval, next run, history and #6781 owner remain unchanged.
+The previous payload hash and replaced fields are retained in
+`learning_activation`. Missing, customized, locked, unknown, active-permit or
+pending-turn states defer conversion. No job is created or triggered.
+Do not reset the inconclusive historical experiment or enable public writers.
+
+The existing digest supplies source session and turn identities. A successful
+Luna result can propose one finding with at most three recent source turns. The
+completion transaction verifies the original turns and pins their hashes, then
+registers at most one outstanding one-shot Astra evaluation in the existing
+queue. Source turn identities and hashes form the retained dedupe identity; model
+wording and claimed code revisions do not count as new evidence. Bounded original
+excerpts with explicit truncation metadata accompany the evaluator packet. Repeated identical evidence never re-arms that job; unresolved
+or unknown evaluations block new candidates. Both stages use existing subscription
+admission and drain model limits without new quota allowances.
+
+Astra corroborates and deduplicates, then records a recommendation and exact
+existing issue/PR numbers. These links remain explicitly model-reported until a
+human verifies them. The prompt requests report-only behavior; this flag does
+not create a new tool-capability sandbox. No automatic issue posting, factory
+admission, fix execution, release or experimental acceptance follows. The human
+owner reviews the lineage, assigns bounded work to its existing issue/PR, and
+uses independent review, CI and subsequent measured outcome before closing it.
+
+Activation acceptance: one ordinary daily pass must retain its source hashes,
+queue no more than one evaluator, retain the evaluation session/verdict, and
+suppress the same evidence on replay. Empty evidence produces no evaluator.
+Malformed, missing, stale or foreign sources fail closed. Roll back by disabling
+the flag; do not trigger or unlock retained unknown jobs. A pending evaluation
+encountering the disabled flag is rejected before a guest session starts.

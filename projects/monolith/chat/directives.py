@@ -66,7 +66,7 @@ def _seed_ref() -> str:
     return hashlib.sha256(_seed_text().encode()).hexdigest()[:16]
 
 
-def _active_row(session: Session, channel_id: str) -> ChannelDirective | None:
+def active_row(session: Session, channel_id: str) -> ChannelDirective | None:
     return session.exec(
         select(ChannelDirective)
         .where(ChannelDirective.channel_id == channel_id)
@@ -81,7 +81,7 @@ def get_active(channel_id: str) -> str:
     row (falling back to the seed text itself in the vanishingly unlikely
     case the winner's row isn't visible yet)."""
     with Session(get_engine()) as session:
-        row = _active_row(session, channel_id)
+        row = active_row(session, channel_id)
         if row is not None:
             return row.directive
 
@@ -100,7 +100,7 @@ def get_active(channel_id: str) -> str:
             session.commit()
         except IntegrityError:
             session.rollback()
-            row = _active_row(session, channel_id)
+            row = active_row(session, channel_id)
             return row.directive if row is not None else text
     return text
 
@@ -108,7 +108,7 @@ def get_active(channel_id: str) -> str:
 def get_active_version(channel_id: str) -> int:
     """The active row's version for a channel, 0 if none exists yet."""
     with Session(get_engine()) as session:
-        row = _active_row(session, channel_id)
+        row = active_row(session, channel_id)
         return row.version if row is not None else 0
 
 
@@ -148,7 +148,7 @@ def propose_update(
     if not ok:
         return False, reason
     with Session(get_engine()) as session:
-        current = _active_row(session, channel_id)
+        current = active_row(session, channel_id)
         session.add(
             ChannelDirective(
                 channel_id=channel_id,
@@ -212,7 +212,7 @@ def reset(channel_id: str, user_id: str, motivating_message_id: str = "") -> Non
     """Create a new active row from the seed, deactivating the current one.
     History is never deleted."""
     with Session(get_engine()) as session:
-        current = _active_row(session, channel_id)
+        current = active_row(session, channel_id)
         if current is not None:
             current.active = False
         session.add(
@@ -251,7 +251,7 @@ def insert_active_directive(
     atomically in one session (monolith async/session rule: the caller runs it in
     a ``to_thread`` worker with its own session). Returns the new version.
     """
-    current = _active_row(session, channel_id)
+    current = active_row(session, channel_id)
     new_version = (current.version if current is not None else 0) + 1
     if current is not None:
         current.active = False
@@ -305,7 +305,7 @@ def set_channel_directive(
             # Lost a race with a concurrent apply/reset for this channel; the
             # other writer's active row stands. Report the current version.
             session.rollback()
-            row = _active_row(session, channel_id)
+            row = active_row(session, channel_id)
             return row.version if row is not None else 0
     return new_version
 
@@ -316,7 +316,7 @@ def pin_channel_directive(channel_id: str) -> bool:
     is not a versioned change (no new row). Returns False if the channel has no
     active row yet."""
     with Session(get_engine()) as session:
-        row = _active_row(session, channel_id)
+        row = active_row(session, channel_id)
         if row is None:
             return False
         row.source = "manual"

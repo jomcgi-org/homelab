@@ -35,6 +35,10 @@ export RELEASE_DISTRIBUTION=none
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 export EMBERVM_HTTP_PORT=8080
+# #7058 removed the detector. Legacy enablement must not prevent a release
+# from booting its surviving supervision tree and serving readiness.
+export EMBERVM_DURABILITY_HEALTH=1
+export EMBERVM_DURABILITY_EXPECTED_NODES=retired-detector-test-node
 # Exercise the endpoint-enabled runtime configuration in Linux CI. The metric
 # reader initializes its gRPC channel asynchronously, so this unreachable local
 # endpoint needs no collector. If its configured exporter module is absent, the

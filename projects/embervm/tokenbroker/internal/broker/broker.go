@@ -258,6 +258,25 @@ func (b *Broker) retryGrantPersistence(name string, grant store.Grant) {
 	}
 }
 
+// CachedAccessToken is the read-only token path for usage observation. It never
+// mints or rotates credentials; ordinary token serving owns OAuth refresh.
+func (b *Broker) CachedAccessToken(grantName string, ctx context.Context) (string, time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return "", time.Time{}, err
+	}
+	if _, err := b.state(grantName); err != nil {
+		return "", time.Time{}, err
+	}
+	grant, err := b.store.LoadGrant(grantName)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if grant.TokenBundle.AccessToken == "" || time.Until(grant.TokenBundle.ExpiresAt) <= time.Minute {
+		return "", time.Time{}, ErrNoGrant
+	}
+	return grant.TokenBundle.AccessToken, grant.TokenBundle.ExpiresAt, nil
+}
+
 func (b *Broker) GetAccessToken(grantName string, ctx context.Context) (string, time.Time, error) {
 	if _, err := b.state(grantName); err != nil {
 		return "", time.Time{}, err

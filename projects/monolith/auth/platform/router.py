@@ -2,6 +2,7 @@
 
 from typing import Annotated, Literal
 
+from core.clock import as_utc
 from core.db import get_engine, get_session
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.exceptions import RequestValidationError
@@ -186,7 +187,7 @@ def validate(
     )
     return {
         "invitation_id": row.id,
-        "expires_at": service.utc(row.expires_at).isoformat(),
+        "expires_at": as_utc(row.expires_at).isoformat(),
         "status": row.status,
         "accepted_subject": row.accepted_subject,
         "activation_pending": not row.identity_activated,

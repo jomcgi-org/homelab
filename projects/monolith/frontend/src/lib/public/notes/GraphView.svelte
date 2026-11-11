@@ -13,6 +13,8 @@
   // accent halo + label on each; clicking any node expands its body via the
   // browser-direct /app/notes/body/[id] proxy (NotePanel's `apiBase`).
   import { onMount } from "svelte";
+  import { Button } from "@homelab/design-system/components";
+  import "./sheet.css";
   import KnowledgeGraph from "$lib/components/notes/KnowledgeGraph.svelte";
   import NotePanel from "$lib/components/notes/NotePanel.svelte";
   import GraphLegend from "$lib/components/notes/GraphLegend.svelte";
@@ -65,20 +67,36 @@
     if (sel != null) selectedId = sel;
   });
 
+  let expiryTimer;
+  let stopped = false;
+  let pending = false;
+
+  function expireAt(expiresAt) {
+    clearTimeout(expiryTimer);
+    expiryTimer = setTimeout(
+      () => {
+        nodes = [];
+        edges = [];
+        status = "loading";
+        if (!document.hidden) void loadGraph();
+      },
+      Math.max(0, expiresAt - Date.now()),
+    );
+  }
+
   async function loadGraph() {
-    // Client-side navigation back to /app/notes remounts this component.
-    // Reuse the parsed graph from a prior open in this page session instead of
-    // re-fetching and re-parsing ~3.4 MB every time (the HTTP layer's
-    // s-maxage/ETag still governs freshness across full page loads, when the
-    // module cache resets).
+    if (pending || stopped) return;
+    // Reuse only a still-fresh parsed snapshot; HTTP age survives remounts.
     const cached = getCachedGraph();
     if (cached) {
       nodes = cached.nodes;
       edges = cached.edges;
       status = "ready";
+      expireAt(cached.expiresAt);
       return;
     }
     status = "loading";
+    pending = true;
     try {
       const res = await fetch("/app/notes/graph", {
         signal: AbortSignal.timeout(10_000),
@@ -90,14 +108,33 @@
       const graph = await res.json();
       nodes = graph.nodes ?? [];
       edges = graph.edges ?? [];
-      setCachedGraph({ nodes, edges });
+      const expiresAt = setCachedGraph({ nodes, edges }, res.headers);
+      if (stopped) return;
       status = "ready";
+      if (expiresAt <= Date.now()) {
+        nodes = [];
+        edges = [];
+        status = graph.nodes?.length ? "error" : "ready";
+      } else expireAt(expiresAt);
     } catch {
-      status = "error";
+      if (!stopped) status = "error";
+    } finally {
+      pending = false;
     }
   }
 
-  onMount(loadGraph);
+  onMount(() => {
+    void loadGraph();
+    const visible = () => {
+      if (!document.hidden && !getCachedGraph()) void loadGraph();
+    };
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      stopped = true;
+      clearTimeout(expiryTimer);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  });
 
   function toggleCluster(type) {
     const next = new Set(activeClusters);
@@ -106,9 +143,13 @@
   }
 </script>
 
-<div class="graph-view">
+<div class="graph-view sheet-graph">
   <header class="graph-bar">
-    <span class="graph-chip graph-chip--touched">{touched.length} TOUCHED</span>
+    {#if touched.length}
+      <span class="graph-chip graph-chip--touched"
+        >{touched.length} TOUCHED</span
+      >
+    {/if}
     <span class="graph-chip">{nodes.length} NODES</span>
     <span class="graph-chip">×{zoom.toFixed(1)}</span>
     <span class="graph-hover" title={hoverTitle}>
@@ -128,12 +169,11 @@
     {:else if status === "error"}
       <div class="graph-state">
         <p class="graph-error-copy">The graph is unavailable right now.</p>
-        <button type="button" class="graph-retry" onclick={loadGraph}>
-          TRY AGAIN
-        </button>
+        <Button variant="secondary" onclick={loadGraph}>TRY AGAIN</Button>
       </div>
     {:else}
       <KnowledgeGraph
+        sheet
         {nodes}
         {edges}
         {selectedId}
@@ -146,8 +186,9 @@
       />
 
       <GraphSearch value={searchTerm} onChange={(v) => (searchTerm = v)} />
-      <GraphLegend {nodes} {activeClusters} onToggle={toggleCluster} />
+      <GraphLegend sheet {nodes} {activeClusters} onToggle={toggleCluster} />
       <NotePanel
+        sheet
         {selectedId}
         {nodes}
         {edges}
@@ -165,17 +206,15 @@
 
 <style>
   .graph-view {
-    border: 2px solid var(--ink);
-    background: var(--paper);
+    background: var(--sheet);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    /* Fills the full-screen view-area on /app/notes (the parent makes this a
-       flex:1 item); the height:100% resolves against that flex height. */
+    /* The page supplies an explicit graph height inside its edition. */
     flex: 1;
     min-height: 0;
     height: 100%;
-    font-family: var(--mono);
+    font-family: var(--font-code);
     color: var(--ink);
   }
   .graph-bar {
@@ -183,24 +222,24 @@
     align-items: center;
     gap: 8px;
     padding: 10px 14px;
-    background: var(--paper);
-    border-bottom: 2px solid var(--ink);
+    background: var(--band);
+    border-bottom: 1px solid var(--stroke);
     flex-shrink: 0;
   }
   .graph-chip {
     font-size: 10px;
     letter-spacing: 0.08em;
     padding: 3px 7px;
-    border: 1.5px solid var(--ink);
-    background: var(--paper);
+    border: 1px solid var(--stroke);
+    background: var(--sheet);
     white-space: nowrap;
   }
   .graph-chip--touched {
-    background: var(--accent);
+    color: var(--accent-ink);
   }
   .graph-hover {
     font-size: 11px;
-    color: var(--ink-3);
+    color: var(--ink-2);
     margin-left: auto;
     max-width: 240px;
     overflow: hidden;
@@ -226,14 +265,13 @@
     align-items: center;
     gap: 6px;
     font-size: 12px;
-    color: var(--ink-3);
+    color: var(--ink-2);
   }
   .graph-thinking .dot {
     width: 5px;
     height: 5px;
-    background: var(--ink-3);
+    background: var(--ink-2);
     display: inline-block;
-    animation: graph-dot-pulse 1s ease-in-out infinite;
   }
   .graph-thinking .dot:nth-child(2) {
     animation-delay: 0.15s;
@@ -254,30 +292,10 @@
     font-size: 13px;
     color: var(--ink-2);
   }
-  .graph-retry {
-    font-family: var(--mono);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    padding: 7px 12px;
-    border: 2px solid var(--ink);
-    background: var(--accent);
-    cursor: pointer;
-  }
-
-  /* Flatten the reused graph chrome within this view (the shared components
-     carry a hard 4px offset shadow); scoped here so the private notes graph is
-     untouched and NotePanel does not need editing. */
-  .graph-view :global(.search),
-  .graph-view :global(.legend),
-  .graph-view :global(.panel) {
-    box-shadow: none;
-  }
-  /* Whiten the graph canvas: the shared stage is a cream parchment that reads as
-     cream-on-cream against the page. Scoped so the private notes graph keeps its
-     parchment. */
-  .graph-view :global(.stage) {
-    background: var(--paper);
+  @media (prefers-reduced-motion: no-preference) {
+    .graph-thinking .dot {
+      animation: graph-dot-pulse 1s ease-in-out infinite;
+    }
   }
 
   @media (max-width: 640px) {

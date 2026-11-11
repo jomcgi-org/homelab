@@ -264,7 +264,7 @@ func TestChartHasDependencies_FileNotFound(t *testing.T) {
 	}
 }
 
-func TestGenerateArgoCDAppRuleEnablesLiveDiff(t *testing.T) {
+func TestGenerateArgoCDAppRuleOmitsDiffAttributes(t *testing.T) {
 	app := &ArgoCDApplication{
 		Metadata: struct {
 			Name      string `yaml:"name"`
@@ -303,7 +303,6 @@ func TestGenerateArgoCDAppRuleEnablesLiveDiff(t *testing.T) {
 
 	cfg := &argoCDConfig{
 		generateManifests: true,
-		generateDiff:      true,
 	}
 	rule := generateArgoCDAppRule(app, "projects/test/deploy", tmpDir, cfg)
 
@@ -319,11 +318,10 @@ func TestGenerateArgoCDAppRuleEnablesLiveDiff(t *testing.T) {
 		t.Errorf("rule name = %q, want %q", rule.Name(), "test-app")
 	}
 
-	if got := rule.Attr("generate_diff"); got == nil {
-		t.Error("generate_diff is not set")
-	}
-	if got := rule.AttrString("application_name"); got != "test-app" {
-		t.Errorf("application_name = %q, want %q", got, "test-app")
+	for _, attr := range []string{"generate_diff", "application_name", "kubectl_context"} {
+		if rule.Attr(attr) != nil {
+			t.Errorf("generated obsolete diff-only attribute %q", attr)
+		}
 	}
 
 	values := rule.AttrStrings("values_files")

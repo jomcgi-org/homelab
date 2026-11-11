@@ -154,6 +154,7 @@ def github(monkeypatch):
 @pytest.fixture
 def notices(monkeypatch):
     from agent import api as notify_module
+    from factory.orchestration import factory_notify_policy
 
     sent = []
 
@@ -161,6 +162,9 @@ def notices(monkeypatch):
         sent.append((text, level))
 
     monkeypatch.setattr(notify_module, "notify", notify)
+    # These cases cover the per-task notification fence. Which kinds page and
+    # which digest is factory_notify_policy's, tested in the watchdog tests.
+    monkeypatch.setattr(factory_notify_policy, "pages", lambda _kind: True)
     return sent
 
 
@@ -264,6 +268,13 @@ def receipt_of(db, task_id=None, receipt_id=None):
         return session.exec(
             select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)
         ).one()
+
+
+def durable_chat(db, receipt_id, note, actor="joe@x.test", *, key="chat-1"):
+    identity = decisions._fields(receipt_of(db, receipt_id=receipt_id))["decision_id"]
+    return decisions.request_decision(
+        receipt_id, identity, "chat", actor, request_key=key, note=note, action="chat"
+    )
 
 
 def set_escalation_surface(db, receipt_id, branch, pr_number=21):
@@ -500,14 +511,6 @@ def test_delivery_escalation_hashes_the_live_body_when_the_card_is_raised(
     )
 
 
-def test_revalidation_flag_defaults_off_and_toggles_independently(monkeypatch):
-    monkeypatch.delenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", raising=False)
-    monkeypatch.setenv("FACTORY_ENABLED", "false")
-    assert conductor.escalation_revalidation_enabled() is False
-    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
-    assert conductor.escalation_revalidation_enabled() is True
-
-
 def test_closed_issue_cards_are_dismissed_together_with_close_times(
     db, github, notices, monkeypatch
 ):
@@ -525,7 +528,6 @@ def test_closed_issue_cards_are_dismissed_together_with_close_times(
         },
     }
     calls = github_batch(monkeypatch, closed)
-    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
 
     result = conductor.revalidate_escalations()
 
@@ -573,7 +575,6 @@ def test_open_issue_with_unchanged_or_whitespace_only_body_stays_open(
             },
         },
     )
-    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
 
     result = conductor.revalidate_escalations()
 
@@ -597,7 +598,6 @@ def test_changed_issue_body_supersedes_card_without_inferring_an_answer(
             }
         },
     )
-    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
 
     result = conductor.revalidate_escalations()
 
@@ -608,6 +608,226 @@ def test_changed_issue_body_supersedes_card_without_inferring_an_answer(
     assert "body changed" in resolution["note"]
     assert "superseded" in resolution["note"]
     assert resolution["effects"] == {"dismissed": True}
+
+
+def _store_hash(task_id, digest):
+    """Overwrite the card's recorded body hash, as an older writer left it."""
+    with controls._locked_session() as (session, _control):
+        row = controls._receipt(session, task_id)
+        document = json.loads(row.escalation_json)
+        document["issue_body_sha256"] = digest
+        row.escalation_json = json.dumps(document)
+
+
+def _gate_body(prose, identity="a" * 20, extra=""):
+    from factory.orchestration import factory_gate_blocks as blocks
+
+    contract = (
+        "Conductor rescope: staged. Deliver repository changes default-off or "
+        "staged. Operational acceptance remains on the issue; do not close it.\n"
+        "- [ ] Verify the rollout" + extra
+    )
+    return prose + "\n\n" + blocks.render("t-1", identity, contract)
+
+
+@pytest.mark.parametrize("stored_rule", ["legacy", "current"])
+def test_factory_gate_rewrite_does_not_supersede_a_paused_card(
+    db, github, notices, monkeypatch, stored_rule
+):
+    """The factory's own rescope changes the body; a person's words do not."""
+    import hashlib
+
+    task_id, _policy = admitted(ISSUE)
+    controls.set_control("pause_task", "test:pause", task_id=task_id)
+    prose = "Acceptance written by a person"
+    body = _gate_body(prose)
+    with controls._locked_session() as (session, _control):
+        controls._receipt(session, task_id).body = body
+    conductor._record_escalation(
+        task_id,
+        {**pause(), "task_id": task_id, "options": pause_options(), "resolved": None},
+    )
+    if stored_rule == "legacy":
+        # A card raised before gate blocks were excluded from the hash.
+        _store_hash(
+            task_id, hashlib.sha256(" ".join(body.split()).encode()).hexdigest()
+        )
+    before = controls.task_snapshot(task_id)
+    old_id = controls.decision_identity(before)
+    rewritten = _gate_body(prose, identity="b" * 20, extra="\n- [ ] Second check")
+    github_batch(monkeypatch, {ISSUE: {"state": "OPEN", "body": rewritten}})
+
+    conductor.revalidate_escalations()
+
+    after = controls.task_snapshot(task_id)
+    assert controls.decision_identity(after) == old_id
+    assert after["escalation"]["resolved"] is None
+    assert audits(db, "paused_card_superseded") == []
+
+    github_batch(
+        monkeypatch,
+        {ISSUE: {"state": "OPEN", "body": _gate_body("A person rewrote this")}},
+    )
+    conductor._last_escalation_revalidation = None
+    conductor.revalidate_escalations()
+    assert controls.decision_identity(controls.task_snapshot(task_id)) != old_id
+    assert len(audits(db, "paused_card_superseded")) == 1
+
+
+def test_body_edited_back_to_the_admission_text_still_counts_as_changed(
+    db, github, notices, monkeypatch
+):
+    """The recorded copy stands in for a missing or migrated hash, nothing more."""
+    task_id, _policy = admitted(ISSUE)
+    controls.set_control("pause_task", "test:pause", task_id=task_id)
+    with controls._locked_session() as (session, _control):
+        controls._receipt(session, task_id).body = "Admission text"
+    conductor._record_escalation(
+        task_id,
+        {**pause(), "task_id": task_id, "options": pause_options(), "resolved": None},
+    )
+    _store_hash(task_id, controls.issue_body_hash("Edited after admission"))
+    old_id = controls.decision_identity(controls.task_snapshot(task_id))
+    github_batch(monkeypatch, {ISSUE: {"state": "OPEN", "body": "Admission text"}})
+
+    conductor.revalidate_escalations()
+
+    assert controls.decision_identity(controls.task_snapshot(task_id)) != old_id
+    assert len(audits(db, "paused_card_superseded")) == 1
+
+
+@pytest.mark.parametrize("pinned_generation", [False, True])
+def test_active_paused_body_rewrite_replaces_card_without_answer(
+    db, github, notices, monkeypatch, pinned_generation
+):
+    task_id, _policy = admitted(ISSUE)
+    controls.set_control("pause_task", "test:pause", task_id=task_id)
+    conductor._record_escalation(
+        task_id,
+        {**pause(), "task_id": task_id, "options": pause_options(), "resolved": None},
+    )
+    before = controls.task_snapshot(task_id)
+    old_id = controls.decision_identity(before)
+    if pinned_generation:
+        monkeypatch.setenv("FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED", "true")
+        with controls._locked_session() as (session, control):
+            current = json.loads(control.policy_json)
+            control.policy_json = json.dumps(
+                {**current, "generation": current["generation"] + 1}
+            )
+    body = "Decision: only deliver the API path."
+    github_batch(monkeypatch, {ISSUE: {"state": "OPEN", "body": body}})
+
+    conductor.revalidate_escalations()
+
+    after = controls.task_snapshot(task_id)
+    view = controls.escalation_view(after)
+    assert after["task_paused"] and after["state"] == "admitted"
+    assert after["escalation"]["issue_body_sha256"] == controls.issue_body_hash(body)
+    assert view["open"] and not view["briefing"] and view["options"]
+    assert view["decision_id"] != old_id
+    assert after["escalation"]["resolved"] is None
+    assert audits(db, "paused_card_superseded")[0]["prior_decision_id"] == old_id
+    with pytest.raises(decisions.DecisionError, match="brief changed"):
+        decisions.apply_decision(
+            after["id"], "stop", "operator", expected_decision_id=old_id
+        )
+    conductor._last_escalation_revalidation = None
+    conductor.revalidate_escalations()
+    assert (
+        controls.decision_identity(controls.task_snapshot(task_id))
+        == view["decision_id"]
+    )
+    assert len(audits(db, "paused_card_superseded")) == 1
+    assert github.writes == []
+
+
+@pytest.mark.parametrize(
+    "transition",
+    [
+        "resume",
+        "resume_pause",
+        "answer",
+        "claimed",
+        "handoff",
+        "terminal",
+        "generation",
+        "replacement",
+    ],
+)
+def test_revalidation_cannot_overwrite_concurrent_pause_owner(
+    db, monkeypatch, transition
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from factory.orchestration import factory_pause
+
+    task_id, _policy = admitted(ISSUE)
+    factory_pause.pause(task_id, "test:pause", "blocked")
+    before = controls.task_snapshot(task_id)
+    decision_id = controls.decision_identity(before)
+    reading, release = Event(), Event()
+
+    def read(*_args):
+        reading.set()
+        assert release.wait(5)
+        return {ISSUE: {"state": "OPEN", "body": "Changed scope"}}
+
+    monkeypatch.setattr(conductor, "_github_issue_batch", read)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(conductor.revalidate_escalations)
+        try:
+            assert reading.wait(5)
+            if transition in ("resume", "resume_pause"):
+                controls.set_control("resume_task", "operator", task_id=task_id)
+                if transition == "resume_pause":
+                    controls.set_control("pause_task", "operator", task_id=task_id)
+            elif transition == "answer":
+                decisions.apply_decision(
+                    before["id"], "stop", "operator", expected_decision_id=decision_id
+                )
+            elif transition == "claimed":
+                decisions._claim(
+                    before["id"], "stop", "operator", expected_decision_id=decision_id
+                )
+            elif transition == "handoff":
+                controls.human_handoff(task_id, "operator", observed=True)
+            else:
+                with controls._locked_session() as (session, control):
+                    row = controls._receipt(session, task_id)
+                    if transition == "terminal":
+                        row.state = "cancelled"
+                    elif transition == "replacement":
+                        row.task_id = None
+                        row.state = "queued"
+                    else:
+                        current = json.loads(control.policy_json)
+                        control.policy_json = json.dumps(
+                            {**current, "generation": current["generation"] + 1}
+                        )
+            expected = receipt_of(db, receipt_id=before["id"]).model_dump()
+        finally:
+            release.set()
+        pending.result(timeout=5)
+    assert receipt_of(db, receipt_id=before["id"]).model_dump() == expected
+    assert audits(db, "paused_card_superseded") == []
+
+
+@pytest.mark.parametrize(
+    "body", ["Untrusted issue body.", "  Untrusted\n\nissue\tbody.  "]
+)
+def test_active_pause_unchanged_body_is_identity_stable(db, monkeypatch, body):
+    from factory.orchestration import factory_pause
+
+    task_id, _policy = admitted(ISSUE)
+    factory_pause.pause(task_id, "test", "blocked")
+    before = controls.task_snapshot(task_id)
+    github_batch(monkeypatch, {ISSUE: {"state": "OPEN", "body": body}})
+    for _ in range(2):
+        conductor._last_escalation_revalidation = None
+        conductor.revalidate_escalations()
+    assert controls.task_snapshot(task_id)["escalation"] == before["escalation"]
+    assert audits(db, "paused_card_superseded") == []
 
 
 def test_revalidation_repairs_preexisting_stale_terminal_cards_locally(
@@ -633,7 +853,6 @@ def test_revalidation_repairs_preexisting_stale_terminal_cards_locally(
         pytest.fail("generation-stale cards need no GitHub read or write")
 
     monkeypatch.setattr(landing, "github_graphql", unexpected)
-    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
     writes = list(github.writes)
 
     result = conductor.revalidate_escalations()
@@ -698,26 +917,6 @@ def test_generation_reconciliation_is_bounded_and_idempotent(db, github, notices
         assert all(row.state == "cancelled" for row in rows)
         assert all(json.loads(row.escalation_json)["resolved"] for row in rows)
     assert github.writes == writes
-
-
-def test_revalidation_off_does_not_read_github(db, github, notices, monkeypatch):
-    task_id, _policy = escalate(db, github, notices)
-
-    def unexpected(*_args):
-        pytest.fail("revalidation is disabled")
-
-    monkeypatch.delenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", raising=False)
-    monkeypatch.setattr(landing, "github_graphql", unexpected)
-    assert conductor.revalidate_escalations() == {
-        "cards": 0,
-        "checked": 0,
-        "resolved": 0,
-        "retired": 0,
-        "generation_candidates": 0,
-        "generation_blocked": 0,
-        "batches": 0,
-    }
-    assert json.loads(receipt_of(db, task_id).escalation_json)["resolved"] is None
 
 
 def test_intervention_required_notifies_once_per_task(db, github, notices):
@@ -982,7 +1181,7 @@ def test_a_decision_re_admits_the_work_with_the_operator_direction(db, github, n
     assert context["operator_direction"]["note"].startswith("Console is #6100")
     assert context["operator_direction"]["previous_branch"] == f"factory/{task_id}"
     assert context["operator_direction"]["answering"] == "Which surface is in scope?"
-    assert "operator_direction, when it is present" in node["prompt"]
+    assert "operator_direction, when present" in node["prompt"]
     assert audits(db, "operator_direction_read")[0]["previous_task_id"] == task_id
 
 
@@ -1122,12 +1321,12 @@ def test_the_chat_action_asks_on_the_issue_and_re_admits_with_the_note(
 ):
     task_id, _policy = escalate(db, github, notices)
     receipt_id = receipt_of(db, task_id).id
-    result = decisions.request_chat(
-        receipt_id, "Use the existing client, do not write a second one.", "joe@x.test"
+    result = durable_chat(
+        db, receipt_id, "Use the existing client, do not write a second one."
     )
     assert result["requeued"] is True
     assert "Operator asks: Use the existing client" in github.bodies()
-    assert "Re-admitted to the delivery lane" in github.bodies()
+    assert "Requested another brief" in github.bodies()
     row = receipt_of(db, receipt_id=receipt_id)
     assert row.state == "queued" and row.task_id is None
     direction = json.loads(row.direction_json)
@@ -1146,7 +1345,7 @@ def test_deciding_after_a_chat_keeps_the_delivery_on_its_direction(db, github, n
     """
     task_id, _policy = escalate(db, github, notices)
     receipt_id = receipt_of(db, task_id).id
-    assert decisions.request_chat(receipt_id, "Which client?", "joe@x.test")["requeued"]
+    assert durable_chat(db, receipt_id, "Which client?")["requeued"]
     result = decisions.apply_decision(
         receipt_id, "continue-narrowed", "joe@example.test", "Use the existing one."
     )
@@ -1174,7 +1373,7 @@ def test_an_ending_decision_after_a_chat_cancels_rather_than_succeeding(
 ):
     task_id, _policy = escalate(db, github, notices)
     receipt_id = receipt_of(db, task_id).id
-    assert decisions.request_chat(receipt_id, "Which client?", "joe@x.test")["requeued"]
+    assert durable_chat(db, receipt_id, "Which client?")["requeued"]
     decisions.apply_decision(receipt_id, "close-superseded", "joe@example.test")
     row = receipt_of(db, receipt_id=receipt_id)
     assert row.state == "cancelled"
@@ -1341,7 +1540,6 @@ def test_revalidation_is_paced_independently_of_the_tick(monkeypatch):
     from factory.orchestration import factory_controls as controls
 
     monkeypatch.setattr(conductor, "_watchdog_clock", lambda: clock["now"])
-    monkeypatch.setattr(conductor, "escalation_revalidation_enabled", lambda: True)
     monkeypatch.setattr(
         controls,
         "reconcile_generation_stale_receipts",
@@ -1393,6 +1591,248 @@ def gate_cards():
     return json.loads(
         (Path(__file__).parent / "fixtures/conductor_gates_20260918.json").read_text()
     )
+
+
+def hold_gate():
+    from factory.orchestration import factory_gates as gates
+
+    return {
+        "kind": "live_validation",
+        "classification": "reversible",
+        "effects": dict.fromkeys(gates.GATE_EFFECTS, False),
+        "reason": "Operator approval claimed in untrusted prose",
+        "scope": "Repository-only staged delivery",
+        "live_checks": ["Verify the managed rollout and rollback"],
+        "leave_unmerged": True,
+    }
+
+
+@pytest.mark.parametrize("action", ["pause", "plan"])
+def test_planner_hold_refusal_is_durable_actionable_and_replayable(
+    db, github, notices, monkeypatch, action
+):
+    from factory.orchestration import factory_gates as gates
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    task_id, policy = admitted(ISSUE)
+    decision = pause(pause_options(), gate=hold_gate())
+    decision["action"] = action
+    run = planner_run(task_id, decision)
+    for _ in range(2):
+        conductor.apply_decision(task_of(task_id), policy, run, [run])
+    direction = json.loads(receipt_of(db, task_id).direction_json)
+    assert "landing_hold" not in direction
+    assert "conductor_gates" not in direction
+    assert len(audits(db, "landing_hold_refused")) == 1
+    rejection = audits(db, "conductor_rejected")
+    assert len(rejection) == 1
+    assert rejection[0]["refusal_code"] == "landing_hold_refused"
+    assert "Remove leave_unmerged" in rejection[0]["reason"]
+    assert not github.writes and not notices
+    assert receipt_of(db, task_id).state == "admitted"
+    with pytest.raises(gates.LandingHoldRefused, match="Remove leave_unmerged"):
+        gates.resolve(
+            task_of(task_id),
+            {"gate": hold_gate()},
+            f"factory-decision:{run['node_key']}:{run['attempt']}"
+            + (":gate" if action == "plan" else ""),
+        )
+    assert len(audits(db, "landing_hold_refused")) == 1
+
+
+def bind_operator_hold(db, task_id, gates=()):
+    hold = {"actor": "operator:joe", "cause": "operator:hold", "reason": "Keep open"}
+    with Session(db) as session, session.begin():
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)
+        ).one()
+        row.direction_json = json.dumps(
+            {"landing_hold": hold, "conductor_gates": list(gates)}
+        )
+    return hold
+
+
+@pytest.mark.parametrize("scope", ["same", "new"])
+def test_planner_restating_bound_gate_under_operator_hold(
+    db, github, monkeypatch, scope
+):
+    """A restatement creates nothing; a new scope is still refused."""
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration import factory_gates as gates
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    task_id, _ = admitted(ISSUE)
+    hold = bind_operator_hold(db, task_id, [hold_gate()])
+    before = json.loads(receipt_of(db, task_id).direction_json)
+    gate = {**hold_gate(), "reason": "Reaffirm the existing hold"}
+    if scope == "new":
+        gate["scope"] = "A wider scope the operator never bound"
+        with pytest.raises(gates.LandingHoldRefused):
+            gates.resolve(task_of(task_id), {"gate": gate}, "planner:test")
+        assert len(audits(db, "landing_hold_refused")) == 1
+        return
+    assert gates.resolve(task_of(task_id), {"gate": gate}, "planner:test")
+    after = json.loads(receipt_of(db, task_id).direction_json)
+    assert after["landing_hold"] == hold
+    assert "landing_hold_refusals" not in after
+    assert "landing_hold_provenance" not in after
+    assert controls.landing_held(receipt_of(db, task_id))
+    assert not audits(db, "landing_hold_refused")
+    assert funding._compatible_direction(before, after)
+
+
+def test_hold_released_before_write_is_not_created_by_planner(db, github, monkeypatch):
+    from factory.orchestration import factory_gates as gates
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    task_id, _ = admitted(ISSUE)
+    bind_operator_hold(db, task_id, [hold_gate()])
+    real = gates.enforce_hold_origin
+
+    def release_after_check(task, gate, cause):
+        origin = real(task, gate, cause)
+        with Session(db) as session, session.begin():
+            row = session.exec(
+                select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)
+            ).one()
+            row.direction_json = json.dumps({"conductor_gates": [hold_gate()]})
+        return origin
+
+    monkeypatch.setattr(gates, "enforce_hold_origin", release_after_check)
+    with pytest.raises(gates.LandingHoldRefused):
+        gates.resolve(task_of(task_id), {"gate": hold_gate()}, "planner:test")
+    assert not controls.landing_held(receipt_of(db, task_id))
+    assert "landing_hold" not in json.loads(receipt_of(db, task_id).direction_json)
+
+
+def test_worker_hold_refusal_reaches_next_planner(db, github, monkeypatch):
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    task_id, policy = admitted(ISSUE)
+    run = planner_run(task_id, {"gate": hold_gate()}, node_key="implement_hold")
+    run["pin"] = {"workflow_id": "worker:test"}
+    run["accounted_cost_usd"] = 0.0
+    monkeypatch.setattr(graph, "node_runs", lambda *_a, **_kw: [run])
+    monkeypatch.setattr(
+        controls, "record_start_outcome", lambda *_a, **_kw: {"ok": True}
+    )
+    conductor.reconcile_task(task_id, policy, object())
+    refusal = audits(db, "conductor_rejected")
+    assert refusal[0]["refusal_code"] == "landing_hold_refused"
+    node = next(n for n in graph.load_graph(task_id) if n["node_key"] == "conductor_1")
+    assert "Remove leave_unmerged" in node["prompt"]
+    assert len(audits(db, "landing_hold_refused")) == 1
+
+
+@pytest.mark.parametrize(
+    "authority", ["operator", "human_issue", "human_handoff", "none"]
+)
+def test_hold_origin_comes_from_server_evidence(db, github, monkeypatch, authority):
+    from factory.orchestration import factory_gates as gates
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    task_id, _ = admitted(ISSUE)
+    if authority == "human_issue":
+        with Session(db) as session, session.begin():
+            session.add(
+                WorkItem(
+                    title="human-owned issue",
+                    state="open",
+                    source_kind="github",
+                    trust="trusted",
+                    github_repo=REPO,
+                    github_issue_number=ISSUE,
+                    labels=["human"],
+                )
+            )
+    elif authority == "human_handoff":
+        assert controls.human_handoff(task_id, "operator:joe", observed=True)
+    task = task_of(task_id)
+    task["human"] = True  # This caller field establishes no authority.
+    cause = "operator:joe" if authority == "operator" else "planner:test"
+    if authority == "none":
+        with pytest.raises(gates.LandingHoldRefused):
+            gates.resolve(task, {"gate": hold_gate()}, cause)
+    else:
+        assert gates.resolve(task, {"gate": hold_gate()}, cause)
+        assert controls.landing_held(receipt_of(db, task_id))
+        assert not audits(db, "landing_hold_refused")
+
+
+@pytest.mark.parametrize(
+    "effect",
+    [
+        None,
+        *[
+            "spends_money",
+            "deletes_data",
+            "touches_external_account",
+            "uses_credentials",
+        ],
+    ],
+)
+def test_enabled_gates_keep_restricted_path_and_no_hold_acceptance(
+    db, github, monkeypatch, effect
+):
+    from factory.orchestration import factory_gates as gates
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    task_id, _ = admitted(ISSUE)
+    gate = hold_gate()
+    if effect:
+        gate["effects"][effect] = True
+        assert not gates.resolve(task_of(task_id), {"gate": gate}, "operator:joe")
+        assert not audits(db, "landing_hold_refused")
+    else:
+        gate.pop("leave_unmerged")
+        assert gates.resolve(task_of(task_id), {"gate": gate}, "planner:test")
+        assert gates.live_checks(task_of(task_id)) == gate["live_checks"]
+        assert "Conductor rescope:" in github.issue_bodies[ISSUE]
+    assert not controls.landing_held(receipt_of(db, task_id))
+
+
+def test_disabled_hold_and_exact_refusal_projection(db, github, monkeypatch):
+    from factory.orchestration import factory_gates as gates
+
+    monkeypatch.delenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", raising=False)
+    task_id, _ = admitted(ISSUE)
+    assert gates.resolve(task_of(task_id), {"gate": hold_gate()}, "planner:test")
+    assert controls.landing_held(receipt_of(db, task_id))
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    task = task_of(task_id)
+    assert task["landing_hold"]
+    with pytest.raises(gates.LandingHoldRefused):
+        gates.resolve(task, {"gate": hold_gate()}, "planner:test")
+    assert not task["landing_hold"]
+    direction = json.loads(receipt_of(db, task_id).direction_json)
+    assert not controls.landing_held({"direction": direction})
+    assert not conductor._planner_direction(direction)["landing_hold"]
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "false")
+    assert controls.landing_held({"direction": direction})
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    direction.pop("landing_hold_provenance")
+    assert controls.landing_held({"direction": direction})
+
+
+def test_shared_prompt_preserves_operator_schema_without_planner_hold_guidance():
+    from factory.orchestration import factory_gates as gates
+
+    assert "leave_unmerged" not in gates.GATE_PROMPT
+    assert "leave_unmerged" in gates.GATE_SCHEMA["properties"]
+
+
+def test_operator_gate_reasserts_exact_previously_refused_hold(db, github, monkeypatch):
+    from factory.orchestration import factory_gates as gates
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "false")
+    task_id, _ = admitted(ISSUE)
+    assert gates.resolve(task_of(task_id), {"gate": hold_gate()}, "planner:test")
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    with pytest.raises(gates.LandingHoldRefused):
+        gates.resolve(task_of(task_id), {"gate": hold_gate()}, "planner:test")
+    assert not controls.landing_held(receipt_of(db, task_id))
+    assert gates.resolve(task_of(task_id), {"gate": hold_gate()}, "operator:joe")
+    assert controls.landing_held(receipt_of(db, task_id))
+    assert audits(db, "landing_hold_refused")
 
 
 def existing_pull(task, *, number=6070, branch="factory/earlier-task"):
@@ -1748,10 +2188,8 @@ def test_effects_contract_is_in_every_artifact_schema_and_prompt():
     ):
         assert schema["properties"]["gate"] is gates.GATE_SCHEMA
     assert "effects" in gates.GATE_SCHEMA["required"]
-    for effect in gates.GATE_EFFECTS:
-        assert effect in gates.GATE_PROMPT
     assert "Any true effect sends the gate to a person" in gates.GATE_PROMPT
-    assert "`reason` is free prose and may explain safety" in gates.GATE_PROMPT
+    assert "`reason` cannot override effects" in gates.GATE_PROMPT
 
 
 def test_adoption_at_first_step_pins_existing_branch(db, github, monkeypatch):
@@ -1996,7 +2434,11 @@ def test_notification_fence_is_per_task_and_kind(db, github, notices):
 def test_failed_notification_does_not_consume_kind_fence(db, github, monkeypatch, kind):
     from types import SimpleNamespace
     from agent import api as notify_module
+    from factory.orchestration import factory_notify_policy
     from factory.orchestration import factory_refine as refine
+
+    # The fence is per kind whether or not the kind digests by policy.
+    monkeypatch.setattr(factory_notify_policy, "pages", lambda _kind: True)
 
     task_id, _policy = admitted(ISSUE)
     attempts = []

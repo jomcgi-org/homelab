@@ -14,7 +14,6 @@ from sqlmodel.pool import StaticPool
 
 from chat.jobs import _drain_reminders_core
 from chat.models import DiscordOutbox, Reminder
-from chat.reminders import create_reminder
 
 
 @pytest.fixture(name="session")
@@ -73,7 +72,14 @@ class TestDrainRemindersCore:
             due_at=datetime.now(timezone.utc) - timedelta(minutes=1),
         )
         session.add(due)
-        create_reminder(session, "chan-1", "user-1", "later", _future(hours=1))
+        session.add(
+            Reminder(
+                channel_id="chan-1",
+                author_id="user-1",
+                content="later",
+                due_at=_future(hours=1),
+            )
+        )
         session.commit()
 
         result = _drain_reminders_core(session, datetime.now(timezone.utc))
@@ -99,7 +105,14 @@ class TestDrainRemindersCore:
         assert result is None
 
     def test_nothing_due_leaves_pending_rows_untouched(self, session):
-        create_reminder(session, "chan-1", "user-1", "later", _future(hours=1))
+        session.add(
+            Reminder(
+                channel_id="chan-1",
+                author_id="user-1",
+                content="later",
+                due_at=_future(hours=1),
+            )
+        )
         session.commit()
 
         result = _drain_reminders_core(session, datetime.now(timezone.utc))

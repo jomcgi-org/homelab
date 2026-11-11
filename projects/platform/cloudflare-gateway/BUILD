@@ -1,5 +1,10 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 
+exports_files(
+    ["values-gke.yaml"],
+    visibility = ["//projects/platform-gke/cloudflare-gateway:__pkg__"],
+)
+
 # Render and version pins for focused consumers that verify the gateway's
 # trusted-origin boundary against the exact chart and CRD bundles deployed.
 filegroup(
@@ -14,7 +19,11 @@ filegroup(
         "charts/**/*",
         "templates/**/*",
     ]),
-    visibility = ["//projects/monolith:__pkg__"],
+    visibility = [
+        "//projects/monolith:__pkg__",
+        # The connector's chart test checks its route has a descriptor-cap entry.
+        "//projects/scotland-connector/chart:__pkg__",
+    ],
 )
 
 helm_chart(

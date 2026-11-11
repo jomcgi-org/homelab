@@ -7,8 +7,10 @@ import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from contextlib import nullcontext
 
 import httpx
+from core.env import flag
 from core.github import GITHUB_API
 from sqlmodel import select
 
@@ -64,7 +66,7 @@ class Refusal:
 
 def enabled() -> bool:
     """Only an explicit true enables publication."""
-    return os.environ.get(PUBLISH_ENABLED_ENV, "").lower() == "true"
+    return flag(PUBLISH_ENABLED_ENV)
 
 
 def _default_token_provider() -> str | None:
@@ -129,12 +131,12 @@ def _refusal(task_id: str, reason: str) -> Refusal:
     return Refusal(task_id=task_id, reason=reason)
 
 
-def collect(task_id: str) -> ReviewEvidence | Refusal:
+def collect(task_id: str, *, session=None) -> ReviewEvidence | Refusal:
     """Collect an exact-head approval using only durable trusted assignments."""
     from factory.orchestration import factory_landing as landing
     from factory.orchestration.factory_controls import granted_delivery_surface
 
-    with _read_session() as db:
+    with _read_session() if session is None else nullcontext(session) as db:
         task = db.get(SwarmTask, task_id)
         receipt = db.exec(
             select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)

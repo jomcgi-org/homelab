@@ -58,6 +58,7 @@
   h3 {
     font-family: var(--grim-serif, Georgia, serif);
     margin: 0 0 0.5rem;
+    overflow-wrap: anywhere;
   }
   img {
     display: block;
@@ -69,8 +70,20 @@
     font-weight: 700;
     margin: 0;
   }
+  /* Matches the session page's secondary buttons: a 44px touch target. */
   button {
+    min-height: 44px;
+    padding: 10px 20px;
     margin-top: 0.5rem;
     margin-right: 0.5rem;
+    font: inherit;
+    border: 1px solid var(--grim-accent);
+    background: transparent;
+    color: var(--grim-accent);
+    cursor: pointer;
+  }
+  button:disabled {
+    opacity: 0.55;
+    cursor: default;
   }
 </style>

@@ -4,7 +4,6 @@ import base64
 import binascii
 import json
 import logging
-import os
 import secrets
 from datetime import UTC, datetime, timedelta, timezone
 
@@ -13,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
+from core.clock import as_utc
 from factory.execution.constants import (
     CLEAN_TERMINAL_REASONS,
     DRAINER_NODE_KEY,
@@ -92,20 +92,6 @@ def _lock_session_row(session: Session, session_id: int) -> AgentSession | None:
         .values(last_turn_at=AgentSession.last_turn_at)
     )
     return session.get(AgentSession, session_id, populate_existing=True)
-
-
-def claim_heartbeat_session_lock_enabled() -> bool:
-    """Whether claim heartbeats skip the global capacity-pool lock.
-
-    Off, every heartbeat queues on the single capacity_pool row behind every
-    admission, settlement and receipt transaction in the fleet. Under factory
-    load that queue delays a heartbeat past the 30 second lease, and the stale
-    sweep then settles a healthy invoke as lease_expired (2026-10-01).
-    """
-    return (
-        os.getenv("AGENT_CLAIM_HEARTBEAT_SESSION_LOCK_ENABLED", "false").lower()
-        == "true"
-    )
 
 
 def _assert_sendable(session: Session, session_id: int) -> None:
@@ -295,8 +281,7 @@ def guest_cleanup_hold(session: Session, session_id: int, guest_id: str) -> str 
             AgentSession.result_receipt_fence_id,
             _unknown_outcome_exists(session_id),
             # Only a dispatch with a minted receipt can hand off to a receipt
-            # fence. Preserve ordinary workflow-stop behavior when capture is
-            # off, while retaining existing fences after a flag is disabled.
+            # fence; any other dispatch keeps ordinary workflow-stop behavior.
             exists().where(
                 PendingMessage.session_id == session_id,
                 AgentResultReceipt.session_id == session_id,
@@ -382,8 +367,6 @@ def begin_guest_cleanup(
     A retry resumes the same claim without extending or replacing its identity.
     There is deliberately no timeout-based release of uncertain remote work.
     """
-    from factory.execution import result_receipts
-
     row = _lock_session(session, session_id)
     if (
         row is None
@@ -424,7 +407,6 @@ def begin_guest_cleanup(
         .where(AgentSession.ember_session_id == guest_id)
         .execution_options(populate_existing=True)
     ).all()
-    capture_enabled = result_receipts.enabled()
     for alias in aliases:
         if alias.result_receipt_fence_id is not None:
             return {"hold": "observer_pending"}
@@ -435,7 +417,7 @@ def begin_guest_cleanup(
             resuming and alias.id == session_id and hold == "unknown"
         ):
             return {"hold": hold}
-        if not resuming and (capture_enabled or alias.id != session_id):
+        if not resuming:
             if any(item["session_id"] == alias.id for item in dispatches):
                 return {"hold": "invocation_pending"}
 
@@ -559,21 +541,13 @@ def turn_observation(
     runtime_duration_ms: object = None,
 ) -> dict:
     """Snapshot server queue identity and the clocks of one physical dispatch."""
-
-    def utc(value: datetime | None) -> datetime | None:
-        if value is None:
-            return None
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
-
     # queued_at is stamped by a Python default_factory on the monolith pod, while
     # dispatched_at (last_dispatch_at) is set with func.now(), which on
     # Postgres is the database server's transaction-start time. Queue wait
     # therefore subtracts two hosts' clocks; when skew inverts the order the
     # difference is reported as null rather than a negative wait.
-    queued = utc(pending.created_at) if pending is not None else None
-    dispatched = utc(pending.last_dispatch_at) if pending is not None else None
+    queued = as_utc(pending.created_at) if pending is not None else None
+    dispatched = as_utc(pending.last_dispatch_at) if pending is not None else None
     queue_wait_ms = None
     if queued is not None and dispatched is not None and dispatched >= queued:
         queue_wait_ms = (dispatched - queued) // timedelta(milliseconds=1)
@@ -651,21 +625,6 @@ def _retry_permission(turn: AgentTurn | None, pending: PendingMessage) -> bool:
         turn.stop_reason == "brick_preempted"
         or turn.terminal_reason == "interrupted_for_drain"
     ) and pending.dispatch_count < MAX_PENDING_DISPATCHES
-
-
-def response_lost_recovery_enabled() -> bool:
-    """The one read of the response-loss control, shared by every owner.
-
-    Every path that writes, finishes or ends a hold consults this, so the flag
-    off is byte-for-byte the behaviour this repository had before response-loss
-    recovery existed, whatever the receipt flags say.
-    """
-    return os.getenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "false").lower() == "true"
-
-
-def rollout_handoff_enabled() -> bool:
-    """Keep rollout admission and early receipt handoff behind one control."""
-    return os.getenv("AGENT_ROLLOUT_HANDOFF_ENABLED", "false").lower() == "true"
 
 
 RESPONSE_LOST_MESSAGE = (
@@ -847,7 +806,7 @@ def mark_turn_response_lost_sync(
     ):
         return False
     bound = min(float(hold_seconds), float(RESPONSE_LOST_BACKSTOP_SECONDS))
-    if not response_lost_recovery_enabled() or not bound > 0:
+    if not bound > 0:
         return False
     with Session(get_engine()) as session:
         if lock_timeout_seconds is not None and (
@@ -1008,8 +967,7 @@ def _hold_lease_expired_response(
     the lease rather than being held again until the receipt's own retention.
     """
     if (
-        not response_lost_recovery_enabled()
-        or sess.ember_session_id is None
+        sess.ember_session_id is None
         or sess.result_receipt_fence_id is not None
         or (
             existing is not None
@@ -1086,32 +1044,55 @@ def read_response_lost_hold_sync(session_id: int) -> dict | None:
         return _response_lost_hold(get_turn(session, session_id, pending.seq), pending)
 
 
-def find_response_lost_session_ids(limit: int = 5) -> list[int]:
-    """A bounded batch of sessions carrying a response-loss marker.
+def _response_lost_session_query():
+    return (
+        select(PendingMessage.session_id)
+        .join(
+            AgentTurn,
+            and_(
+                AgentTurn.session_id == PendingMessage.session_id,
+                AgentTurn.seq == PendingMessage.seq,
+            ),
+        )
+        .where(
+            PendingMessage.claimed_by_replica.isnot(None),
+            AgentTurn.stop_reason == RESPONSE_LOST,
+            AgentTurn.terminal_reason.in_(INTERRUPTED_TERMINAL_REASONS),
+        )
+        .distinct()
+    )
 
-    The bound is checked per session when the hold is read, so this predicate
-    deliberately selects expired markers too: an expired one simply reads as no
-    hold and is left to the ordinary lease path.
+
+def response_lost_session_ceiling() -> int:
+    """Freeze a finite pass so new arrivals cannot prevent revisiting old holds."""
+    with Session(get_engine()) as session:
+        return (
+            session.exec(
+                _response_lost_session_query()
+                .order_by(PendingMessage.session_id.desc())
+                .limit(1)
+            ).first()
+            or 0
+        )
+
+
+def find_response_lost_session_ids(
+    limit: int = 5, *, after_session_id: int = 0, through_session_id: int | None = None
+) -> list[int]:
+    """A bounded identity page of sessions carrying a response-loss marker.
+
+    Callers freeze through_session_id for one pass, then start a new pass to
+    revisit earlier holds and eligibility changes. Expired markers are included:
+    they read as no hold and remain owned by the ordinary lease path.
     """
+    query = _response_lost_session_query().where(
+        PendingMessage.session_id > after_session_id
+    )
+    if through_session_id is not None:
+        query = query.where(PendingMessage.session_id <= through_session_id)
     with Session(get_engine()) as session:
         return list(
-            session.exec(
-                select(PendingMessage.session_id)
-                .join(
-                    AgentTurn,
-                    and_(
-                        AgentTurn.session_id == PendingMessage.session_id,
-                        AgentTurn.seq == PendingMessage.seq,
-                    ),
-                )
-                .where(
-                    PendingMessage.claimed_by_replica.isnot(None),
-                    AgentTurn.stop_reason == RESPONSE_LOST,
-                    AgentTurn.terminal_reason.in_(INTERRUPTED_TERMINAL_REASONS),
-                )
-                .order_by(PendingMessage.session_id)
-                .limit(limit)
-            ).all()
+            session.exec(query.order_by(PendingMessage.session_id).limit(limit)).all()
         )
 
 
@@ -1157,15 +1138,6 @@ def settle_response_lost_hold(
         _finish_unknown_locked(session, row, pending, reason)
         session.commit()
         return True
-
-
-def response_lost_drain_relay_enabled() -> bool:
-    """Staged control for resuming a held turn a drain interrupted (default off)."""
-    return (
-        response_lost_recovery_enabled()
-        and os.getenv("AGENT_RESPONSE_LOST_DRAIN_RELAY_ENABLED", "false").lower()
-        == "true"
-    )
 
 
 def response_lost_drain_evidence(hold: dict, view: object) -> dict | None:
@@ -1254,13 +1226,11 @@ def relay_response_lost_drain_sync(
 
     The drained physical invoke's cost is unknown (its result never reached
     this database), so the turn records none and the continuation's total stays
-    unknown rather than understated. Refuses, writing nothing, when the gate is
-    off, the hold changed, the guest binding moved, a result committed in the
+    unknown rather than understated. Refuses, writing nothing, when the hold
+    changed, the guest binding moved, a result committed in the
     meantime (adoption then wins), the invoke predates this dispatch, or the
     relay budget is spent; the caller then keeps today's settlement path.
     """
-    if not response_lost_drain_relay_enabled():
-        return False
     with Session(get_engine()) as session:
         row = _lock_session(session, session_id)
         pending = session.exec(
@@ -1376,8 +1346,6 @@ def adopt_response_lost_result(
     """
     from factory.execution import result_receipts, voice
 
-    if not response_lost_recovery_enabled():
-        return None
     hold = read_response_lost_hold_sync(session_id)
     if hold is None:
         return None
@@ -1554,29 +1522,6 @@ def finish_unknown_pending_in_session(
     return True
 
 
-def finish_unknown_pending_sync(
-    session_id: int,
-    turn_seq: int,
-    claim_owner: str,
-    dispatch_count: int,
-    cause: str,
-) -> bool:
-    with Session(get_engine()) as session:
-        row = _lock_session(session, session_id)
-        pending = get_pending_message(session, session_id, turn_seq)
-        if (
-            row is None
-            or _bound_zero_turn_cleanup_pending(row)
-            or pending is None
-            or pending.claimed_by_replica != claim_owner
-            or pending.dispatch_count != dispatch_count
-        ):
-            return False
-        _finish_unknown_locked(session, row, pending, cause)
-        session.commit()
-        return True
-
-
 def create_voice_ui_companion(
     session: Session,
     companion_id: str,
@@ -1719,6 +1664,8 @@ def create_session(
     admission_tier: str = "interactive",
     commit: bool = True,
     recall_pending: bool = False,
+    workspace_handoff_json: str | None = None,
+    capture_evidence_ttl_seconds: int | None = None,
 ) -> AgentSession:
     if admission_tier not in admission.TIERS:
         raise ValueError("Invalid server admission tier")
@@ -1734,6 +1681,8 @@ def create_session(
         progress_token=secrets.token_urlsafe(32),
         system_prompt=system_prompt,
         recall_pending=recall_pending,
+        workspace_handoff_json=workspace_handoff_json,
+        capture_evidence_ttl_seconds=capture_evidence_ttl_seconds,
         reasoning=reasoning,
         effort=effort,
         workflow_id=workflow_id,
@@ -2045,6 +1994,14 @@ def _recovery_candidate_predicate(cutoff: datetime, now: datetime):
     old_lane_head_exists = exists().where(
         head.id == _lane_head_id(AgentSession.id),
         head.created_at <= cutoff,
+        # Durable capacity demand can outlive the zombie threshold without
+        # ever starting an invocation. A stale claimed attempt still requires
+        # the existing conservative recovery path.
+        or_(
+            head.capacity_intent_json.is_(None),
+            head.capacity_state == "legacy_unsupported",
+            head.claimed_by_replica.isnot(None),
+        ),
     )
     return and_(
         AgentSession.status == "running",
@@ -2070,7 +2027,16 @@ def _hung_claim_candidate_predicate(
         head.claimed_at.isnot(None),
         head.claimed_at > live_claim_cutoff,
         head.last_dispatch_at.isnot(None),
-        head.last_dispatch_at < cutoff,
+        or_(
+            and_(
+                or_(
+                    head.capacity_intent_json.is_(None),
+                    head.capacity_state == "legacy_unsupported",
+                ),
+                head.last_dispatch_at < cutoff,
+            ),
+            head.capacity_started_at < cutoff,
+        ),
     )
     clauses = [
         AgentSession.status == "running",
@@ -2592,6 +2558,35 @@ def claim_pending_message_for_session_sync(
         ).first()
         if pending is None or pending.claimed_by_replica is not None:
             return None
+        from factory.execution import capacity_wait
+
+        if pending.capacity_intent_json and pending.capacity_state not in {
+            "ready",
+            "legacy_unsupported",
+        }:
+            return None
+        capacity_context = capacity_wait.handoff_context(pending)
+        if capacity_context is not None:
+            from factory.execution.constants import exact_dispatch_id
+
+            capacity_context["claimed_dispatch_count"] = pending.dispatch_count + 1
+            capacity_context["claimed_dispatch_id"] = exact_dispatch_id(
+                session_id,
+                row.ember_session_id,
+                pending.seq,
+                replica_id,
+                pending.dispatch_count + 1,
+            )
+            capacity_context["claim_snapshot"] = {
+                "capacity_started_at": pending.capacity_started_at.isoformat()
+                if pending.capacity_started_at
+                else None,
+                "dispatch_count": pending.dispatch_count,
+                "last_dispatch_at": pending.last_dispatch_at.isoformat()
+                if pending.last_dispatch_at
+                else None,
+                "retry_usage": None,
+            }
         previous = get_turn(session, session_id, pending.seq)
         retry_usage = None
         if _attempted(pending):
@@ -2609,6 +2604,11 @@ def claim_pending_message_for_session_sync(
             # when the new start does not fit. No retry grant was consumed.
             session.commit()
             return None
+        if capacity_context is not None:
+            capacity_context["claim_snapshot"]["retry_usage"] = (
+                previous.usage_json if previous else None
+            )
+            pending.capacity_intent_json = json.dumps(capacity_context)
         if retry_usage is not None:
             retry_usage.pop("retry_dispatch_count")
             previous.usage_json = json.dumps(retry_usage)
@@ -2729,6 +2729,29 @@ def persist_turn_from_pending_sync(
                 )
             receipt_provenance = captured["provenance"]
         usage = {**turn.usage, "activities": turn.activities}
+        from factory.execution.push_format import record as record_push_format
+
+        record_push_format(session, sess_row, usage.get("push_format"))
+        # Capture identity is a server observation, never a guest usage claim.
+        # Commit it with the exact completed turn before cleanup clears bindings.
+        usage.pop("browser_capture_producer", None)
+        if (
+            turn_seq == 1
+            and sess_row.capture_evidence_ttl_seconds is not None
+            and (sess_row.node_key or "").startswith("implement_browser_capture_")
+        ):
+            if not sess_row.ember_session_id or not sess_row.ember_lineage_id:
+                raise PendingClaimLost(
+                    "capture completion has no authenticated guest binding"
+                )
+            usage["browser_capture_producer"] = {
+                "agent_session_id": session_id,
+                "session_id": sess_row.ember_session_id,
+                "lineage_id": sess_row.ember_lineage_id,
+                "node_id": sess_row.node_key,
+                "attempt": sess_row.node_attempt,
+                "turn": turn_seq,
+            }
         usage.pop("observation", None)
         usage["observation"] = turn_observation(
             pending,
@@ -2924,6 +2947,7 @@ def mark_turn_error_sync(
     invocation_not_attempted: bool = False,
     dispatch_count: int | None = None,
     lock_timeout_seconds: float | None = None,
+    preinvoke_database_failure: dict | None = None,
 ) -> bool:
     """Retain error progress and settle only with exact execution evidence.
 
@@ -2972,6 +2996,11 @@ def mark_turn_error_sync(
         usage = _progress_usage(row, error_msg)
         if invocation_not_attempted:
             usage["recovery"]["invocation_phase"] = "not_invoked"
+            from factory.execution.preinvoke_failure import database_failure
+
+            failure = database_failure(preinvoke_database_failure)
+            if dispatch_count == 1 and failure is not None:
+                usage["recovery"]["database_failure"] = failure
         create_turn(
             session,
             session_id,
@@ -3004,14 +3033,6 @@ def mark_turn_error_sync(
         session.delete(row)
         session.commit()
         return True
-
-
-def executor_not_invoked_record_enabled() -> bool:
-    """Staged control: a cancelled executor that never POSTed records not_invoked."""
-    return (
-        os.getenv("AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED", "false").lower()
-        == "true"
-    )
 
 
 def mark_turn_interrupted_sync(
@@ -3125,13 +3146,11 @@ def refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool:
     """
     with Session(get_engine()) as session:
         # The heartbeat writes only this session's pending row after the
-        # session lock, so it may skip the pool lock (see the flag's docstring).
-        lock = (
-            _lock_session_row
-            if claim_heartbeat_session_lock_enabled()
-            else _lock_session
-        )
-        row = lock(session, session_id)
+        # session lock, so it skips the global capacity-pool lock. Queued on
+        # that pool row behind every admission, settlement and receipt, a
+        # heartbeat outran the 30 second lease and the stale sweep settled a
+        # healthy invoke as lease_expired (2026-10-01).
+        row = _lock_session_row(session, session_id)
         if row is None or _bound_zero_turn_cleanup_pending(row):
             return False
         # Match the owner in the UPDATE itself. A recovery transaction that

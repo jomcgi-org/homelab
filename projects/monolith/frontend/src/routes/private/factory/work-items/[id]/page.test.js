@@ -83,8 +83,35 @@ afterEach(() => {
 });
 
 describe("work item page", () => {
+  test("polling marks stale data unavailable and clears the warning on recovery", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockRejectedValueOnce(new Error("offline"))
+        .mockResolvedValue({ ok: true, json: async () => fixture() }),
+    );
+    const target = renderPage({ itemId: "100001", document: fixture() });
+    await tick();
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(target.querySelector(".warn-line").textContent).toContain(
+      "unavailable",
+    );
+    expect(target.querySelector(".item-title")).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(target.querySelector(".warn-line")).toBeNull();
+  });
+
   test("renders identity, all edge directions, receipts, and the add control", () => {
     const target = renderPage({ itemId: "100001", document: fixture() });
+
+    expect(target.querySelector("main.td.sheet.work-item-page")).not.toBeNull();
+    expect(target.querySelectorAll(".scheme")).toHaveLength(1);
+    expect(target.querySelector(".item-meta.divided")).not.toBeNull();
+    expect(target.querySelector(".submit-btn").dataset.variant).toBe(
+      "secondary",
+    );
 
     expect(target.querySelector(".item-id").textContent).toContain("100001");
     expect(target.querySelector(".issue-link").getAttribute("href")).toBe(

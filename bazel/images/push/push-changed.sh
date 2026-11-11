@@ -200,7 +200,7 @@ UNCOVERED=$(_multirun_labels push_all |
 	grep -Fxv -f "$COVERED" || true)
 if [ -n "$UNCOVERED" ]; then
 	echo "  WARNING: these images are in push_all but not in the digest manifest;" >&2
-	echo "           pushing them unconditionally. Re-run 'format' to regenerate." >&2
+	echo "           pushing them unconditionally. Run './bazel/images/generate-push-all.sh' to regenerate." >&2
 	while IFS= read -r label; do
 		[ -n "$label" ] || continue
 		echo "  push  $label  (not in manifest)"
@@ -246,6 +246,18 @@ echo "==> $PUSH_COUNT image(s) to push, $SKIPPED already published"
 # The branch had never executed until 2026-08-11 (#4685). Every deploy for weeks
 # found all 24 images content-identical and took the skip path, so the first
 # commit that really needed a push turned main's deploy red.
+# Read every selected push's actual runfiles before any registry write. A
+# successful image build can leave an unreadable layer on a restored runner.
+# The wrapper inspects the generated script's image path but never executes it.
+# Only images already selected for publication are materialised here.
+while IFS= read -r image_row || [ -n "${image_row:-}" ]; do
+	_parse_image_row "$image_row"
+	[ -n "$label" ] || continue
+	echo "==> Checking push layout $label"
+	"$BAZEL" run "$label" "${BAZEL_ARGS[@]}" --build_runfile_links \
+		--run_under="python3 $WORKSPACE/bazel/tools/ci/oci_push_layout.py --push-script"
+done <"$TO_PUSH"
+
 while IFS= read -r image_row || [ -n "${image_row:-}" ]; do
 	_parse_image_row "$image_row"
 	[ -n "$label" ] || continue

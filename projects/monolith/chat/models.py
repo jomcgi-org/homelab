@@ -332,8 +332,9 @@ class OrchestratorBrief(SQLModel, table=True):
     thread exists, so the row is written with a null ``thread_id`` and
     ``orchestrator.link_thread`` backfills it once ``start_agent_flow`` creates
     the thread; it stays null for the chat route and for fail-opens that never
-    open a thread (ungranted/disabled). ``brief_json`` holds the compiled Brief
-    (goose) or the chat reply guidance, null on failopen. The route CHECK mirrors the migration so the
+    open a thread (ungranted/disabled). ``brief_json`` holds advisory repo metadata
+    (goose) or chat reply guidance, null on failopen. Historical rows may contain
+    retired plan fields. The route CHECK mirrors the migration so the
     SQLite test fixtures enforce it too (create_all does not see migration-only
     constraints). Token columns come from the provider response when present.
     """

@@ -2,8 +2,6 @@ import { error } from "@sveltejs/kit";
 import { grimoireJson } from "$lib/server/grimoire-auth.js";
 
 export async function load({ fetch, cookies, params, setHeaders }) {
-  if (process.env.GRIMOIRE_PLAY_ENABLED !== "true")
-    error(404, "Session play is not enabled.");
   setHeaders({ "cache-control": "private, no-store" });
   const lobby = await grimoireJson(fetch, cookies, "/lobby");
   const campaign = lobby.campaigns.find(

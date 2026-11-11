@@ -4,13 +4,14 @@ import asyncio
 import collections
 import json
 import logging
-import os
 import platform
 import re
 import secrets
+import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from sqlmodel import Session
@@ -97,11 +98,6 @@ INFLIGHT_DRAIN_SECONDS = 5.0
 # same way the response observer bounds its own write: three tries, two gaps.
 RECEIPT_FENCE_RELEASE_ATTEMPTS = 3
 RECEIPT_FENCE_RELEASE_GAP_SECONDS = 1.0
-
-
-def response_lost_recovery_enabled() -> bool:
-    # One definition, in the store that owns the hold.
-    return store.response_lost_recovery_enabled()
 
 
 def invoke_in_progress(view: object) -> bool:
@@ -437,6 +433,8 @@ def _persist_session(
     admission_tier: str = "interactive",
     task_id: str | None = None,
     first_message: str | None = None,
+    workspace_handoff_json: str | None = None,
+    capture_evidence_ttl_seconds: int | None = None,
 ) -> AgentSession:
     # A factory node session (task_id set) keeps recall out of its system
     # prompt: see _factory_first_message.
@@ -471,6 +469,16 @@ def _persist_session(
             node_attempt=node_attempt,
             admission_tier=admission_tier,
             recall_pending=recall_pending,
+            **(
+                {"workspace_handoff_json": workspace_handoff_json}
+                if workspace_handoff_json is not None
+                else {}
+            ),
+            **(
+                {"capture_evidence_ttl_seconds": capture_evidence_ttl_seconds}
+                if capture_evidence_ttl_seconds is not None
+                else {}
+            ),
             **({"commit": False} if first_message is not None else {}),
         )
         if first_message is not None:
@@ -570,10 +578,6 @@ async def _notify_terminal(
     )
 
 
-def _get_pending_message_sync(session_id: int, turn_seq: int):
-    return store.get_pending_message_sync(session_id, turn_seq)
-
-
 def _claim_pending_message_sync(
     session_id: int, claim_owner: str | None = None
 ) -> int | None:
@@ -644,13 +648,11 @@ def _delete_pending_message_sync(session_id: int, turn_seq: int) -> None:
 def _guest_answer_settles(session_row, exc: BaseException) -> bool:
     """Whether a failed invoke carries the guest's own answer as evidence.
 
-    Staged behind AGENT_GUEST_ANSWER_SETTLEMENT_ENABLED. Factory sessions are
-    excluded: their uncertain permit is the handle stop supervision settles
-    the graph attempt and start through, and settling it here would strand
-    that attempt (read_uncertain_factory_attempt requires it uncertain).
+    Factory sessions are excluded: their uncertain permit is the handle stop
+    supervision settles the graph attempt and start through, and settling it
+    here would strand that attempt (read_uncertain_factory_attempt requires it
+    uncertain).
     """
-    if os.getenv("AGENT_GUEST_ANSWER_SETTLEMENT_ENABLED", "false").lower() != "true":
-        return False
     local_session_id = getattr(session_row, "local_session_id", None) or ""
     if local_session_id.startswith("factory:"):
         return False
@@ -666,6 +668,7 @@ def _mark_turn_error_sync(
     cessation_confirmed: bool = False,
     invocation_not_attempted: bool = False,
     dispatch_count: int | None = None,
+    preinvoke_database_failure: dict | None = None,
 ) -> None:
     store.mark_turn_error_sync(
         session_id,
@@ -675,13 +678,8 @@ def _mark_turn_error_sync(
         cessation_confirmed=cessation_confirmed,
         invocation_not_attempted=invocation_not_attempted,
         dispatch_count=dispatch_count,
+        preinvoke_database_failure=preinvoke_database_failure,
     )
-
-
-def _mark_turn_interrupted_sync(
-    session_id: int, turn_seq: int, claim_owner: str | None = None
-) -> None:
-    store.mark_turn_interrupted_sync(session_id, turn_seq, claim_owner)
 
 
 def _clear_ember_session_sync(session_id: int) -> None:
@@ -771,12 +769,11 @@ _rollout_drain_started = False
 def begin_rollout_shutdown() -> None:
     """Fence admission at SIGTERM, before HTTP and leader teardown wait."""
     global _rollout_shutdown_started
-    if store.rollout_handoff_enabled():
-        _rollout_shutdown_started = True
+    _rollout_shutdown_started = True
 
 
 def rollout_shutdown_in_progress() -> bool:
-    return store.rollout_handoff_enabled() and _rollout_shutdown_started
+    return _rollout_shutdown_started
 
 
 def _schedule_next_message(session_id: int) -> None:
@@ -825,10 +822,17 @@ async def _execute_pending_message(session_id: int) -> None:
     from factory.orchestration.api import factory_session_allowed
 
     factory_row, _ = await asyncio.to_thread(_load_session, session_id)
-    if factory_row is not None and not await asyncio.to_thread(
+    allowed = factory_row is None or await asyncio.to_thread(
         factory_session_allowed, getattr(factory_row, "local_session_id", None)
+    )
+    from factory.execution import capacity_wait
+    from factory.execution.transport import EmberResidencyNotDispatched
+
+    if not allowed or str(getattr(factory_row, "local_session_id", "")).startswith(
+        "factory:"
     ):
-        return
+        if not await capacity_wait.poll(session_id, _transport, allowed=allowed):
+            return
     claim_owner = f"{_REPLICA_ID}:{uuid4()}"
     claimed_seq = await asyncio.to_thread(
         _claim_pending_message_sync, session_id, claim_owner
@@ -852,6 +856,9 @@ async def _execute_pending_message(session_id: int) -> None:
     # delivery made. It outlives the exception that loses the response, so this
     # executor can name the exact receipt the guest was told to publish to.
     invocation_record: dict = {}
+    from factory.execution.result_receipts import staged_preparation_enabled
+
+    invocation_guard = threading.Lock() if staged_preparation_enabled() else None
     response_lost_held = False
     executor_cancelled = False
     factory_owned = str(getattr(factory_row, "local_session_id", "")).startswith(
@@ -908,7 +915,7 @@ async def _execute_pending_message(session_id: int) -> None:
             )
             stolen_exit_logged = True
 
-    def _record_response_lost(
+    def _record_response_lost_locked(
         reason: str, state: dict, lock_timeout_seconds: float | None = None
     ) -> bool:
         """Hold this attempt rather than settling it unknown.
@@ -947,10 +954,21 @@ async def _execute_pending_message(session_id: int) -> None:
             )
         return response_lost_held
 
+    def _record_response_lost(
+        reason: str, state: dict, lock_timeout_seconds: float | None = None
+    ) -> bool:
+        if invocation_guard is None:
+            return _record_response_lost_locked(reason, state, lock_timeout_seconds)
+        if not invocation_guard.acquire(timeout=lock_timeout_seconds or 2.0):
+            return False
+        try:
+            return _record_response_lost_locked(reason, state, lock_timeout_seconds)
+        finally:
+            invocation_guard.release()
+
     def _response_lost_eligible() -> bool:
         return bool(
             not response_lost_held
-            and response_lost_recovery_enabled()
             and invocation_record.get("attempted")
             and invocation_record.get("receipt_id")
             and invocation_record.get("guest_id")
@@ -1016,13 +1034,13 @@ async def _execute_pending_message(session_id: int) -> None:
                 )
 
     async def _do_execute() -> None:
-        nonlocal release_cause, claimed_dispatch_count
+        nonlocal release_cause, claimed_dispatch_count, claim_released
         nonlocal probe_turn_persisted, probe_ember, probe_turn
         if _abort_stolen_executor("startup"):
             return
 
         row = await asyncio.to_thread(
-            _get_pending_message_sync, session_id, claimed_seq
+            store.get_pending_message_sync, session_id, claimed_seq
         )
         if not row:
             return
@@ -1100,12 +1118,31 @@ async def _execute_pending_message(session_id: int) -> None:
                 "dispatch_count": row.dispatch_count,
                 "invocation_record": invocation_record,
             }
-            from factory.execution import result_receipts
+            from factory.execution.push_format import contract as push_format_contract
 
-            if result_receipts.required(
-                session_row.local_session_id, session_row.model
-            ):
-                deliver_kwargs["receipt_claim_owner"] = claim_owner
+            push_contract = await asyncio.to_thread(push_format_contract, session_row)
+            if push_contract is not None:
+                deliver_kwargs["push_format"] = push_contract
+            from factory.execution.workspace_handoff import first_turn_handoff
+
+            handoff = first_turn_handoff(session_row, claimed_seq, existing_ember)
+            if handoff is not None:
+                cli_session_id = None
+                deliver_kwargs["restore_from"] = handoff.lineage_id
+                deliver_kwargs["expected_workspace_fingerprint"] = (
+                    handoff.expected_fingerprint
+                )
+                if handoff.preflight_json is not None:
+                    deliver_kwargs["workspace_handoff"] = json.loads(
+                        handoff.preflight_json
+                    )
+            capture_ttl = getattr(session_row, "capture_evidence_ttl_seconds", None)
+            if claimed_seq == 1 and capture_ttl is not None:
+                deliver_kwargs["capture_evidence_ttl_seconds"] = capture_ttl
+            residency = capacity_wait.handoff_context(row)
+            if residency is not None:
+                deliver_kwargs["residency"] = residency
+            deliver_kwargs["receipt_claim_owner"] = claim_owner
             if session_row.repo is not None:
                 deliver_kwargs["repo"] = session_row.repo
                 deliver_kwargs["branch"] = session_row.branch
@@ -1121,7 +1158,9 @@ async def _execute_pending_message(session_id: int) -> None:
                 if rollout_shutdown_in_progress():
                     raise asyncio.CancelledError
                 if not await asyncio.to_thread(
-                    factory_session_allowed, session_row.local_session_id
+                    factory_session_allowed,
+                    session_row.local_session_id,
+                    model=effective_model,
                 ):
                     raise EmberVMTransportError("Factory admission is fenced")
                 if not await asyncio.to_thread(
@@ -1138,6 +1177,8 @@ async def _execute_pending_message(session_id: int) -> None:
                     raise asyncio.CancelledError
 
             deliver_kwargs["admission_check"] = shared_admission_check
+            if invocation_guard is not None:
+                deliver_kwargs["invocation_guard"] = invocation_guard
             from factory.orchestration.api import declared_artifact_path
 
             artifact_path = await asyncio.to_thread(
@@ -1150,9 +1191,48 @@ async def _execute_pending_message(session_id: int) -> None:
             )
             if artifact_path is not None:
                 deliver_kwargs["artifact_path"] = artifact_path
+            from factory.orchestration.funding_profile import session_profile
+
+            try:
+                execution_profile = await asyncio.to_thread(
+                    session_profile,
+                    session_row.local_session_id,
+                    model=effective_model,
+                    message=row.message_text,
+                    session_id=session_id,
+                )
+            except ValueError as exc:
+                raise EmberTurnNotInvoked("funding profile identity mismatch") from exc
+            if execution_profile is not None:
+                if claimed_seq != 1 or row.dispatch_count != 1 or cli_session_id:
+                    raise EmberTurnNotInvoked("funding profile is one-shot")
+                deliver_kwargs["execution_profile"] = execution_profile
+                for key in (
+                    "repo",
+                    "branch",
+                    "system_prompt",
+                    "push_format",
+                    "workspace_handoff",
+                ):
+                    deliver_kwargs.pop(key, None)
             if not await asyncio.to_thread(
-                factory_session_allowed, getattr(session_row, "local_session_id", None)
+                factory_session_allowed,
+                getattr(session_row, "local_session_id", None),
+                model=effective_model,
             ):
+                if residency is not None:
+                    claim_released = await capacity_wait.return_before_post(
+                        session_id,
+                        claimed_seq,
+                        claim_owner,
+                        row.dispatch_count,
+                        existing_ember.session_id,
+                        existing_ember.session_token,
+                        residency,
+                        _transport,
+                        invocation_record,
+                    )
+                    return
                 await asyncio.to_thread(
                     _mark_turn_error_sync,
                     session_id,
@@ -1176,10 +1256,20 @@ async def _execute_pending_message(session_id: int) -> None:
             if ember != existing_ember:
                 # Safety: re-persist for transports without on_create support
                 await asyncio.to_thread(_persist_ember_session, session_id, ember)
+        except EmberResidencyNotDispatched as exc:
+            claim_released = await asyncio.to_thread(
+                capacity_wait.resolve_not_dispatched,
+                session_id,
+                claimed_seq,
+                claim_owner,
+                claimed_dispatch_count,
+                exc.proof,
+                exc.receipt_id,
+            )
+            return
         except _ClaimStolen:
             return
         except EmberBrickGone as exc:
-            nonlocal claim_released
             if await _abort_stolen_executor_confirmed("brick_gone recovery"):
                 return
             # The retry grant below is only honoured while dispatch_count is
@@ -1199,7 +1289,10 @@ async def _execute_pending_message(session_id: int) -> None:
                 )
             else:
                 await asyncio.to_thread(
-                    _mark_turn_interrupted_sync, session_id, claimed_seq, claim_owner
+                    store.mark_turn_interrupted_sync,
+                    session_id,
+                    claimed_seq,
+                    claim_owner,
                 )
                 await asyncio.to_thread(
                     _release_pending_message_claim_sync,
@@ -1229,6 +1322,32 @@ async def _execute_pending_message(session_id: int) -> None:
         except EmberTurnNotInvoked as exc:
             if await _abort_stolen_executor_confirmed("not-invoked delivery error"):
                 return
+            from factory.execution.preinvoke_failure import database_failure
+            from factory.orchestration.backlog_refill_repair import (
+                execution_failure_eligible,
+            )
+
+            failure = database_failure(invocation_record.get("database_failure"))
+            repair_failure = failure is not None and await asyncio.to_thread(
+                execution_failure_eligible, session_row.local_session_id
+            )
+            if (
+                not repair_failure
+                and row.capacity_intent_json
+                and row.capacity_state != "legacy_unsupported"
+            ):
+                claim_released = await capacity_wait.return_before_post(
+                    session_id,
+                    claimed_seq,
+                    claim_owner,
+                    row.dispatch_count,
+                    existing_ember.session_id,
+                    existing_ember.session_token,
+                    capacity_wait.handoff_context(row),
+                    _transport,
+                    invocation_record,
+                )
+                return
             await asyncio.to_thread(
                 _mark_turn_error_sync,
                 session_id,
@@ -1237,6 +1356,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 claim_owner,
                 invocation_not_attempted=True,
                 dispatch_count=row.dispatch_count,
+                preinvoke_database_failure=failure,
             )
             _clear_negative_oracle_verdict(session_id)
             return
@@ -1359,8 +1479,7 @@ async def _execute_pending_message(session_id: int) -> None:
             return False
         return _record_response_lost("replica_shutdown", {}, lock_timeout_seconds)
 
-    if store.rollout_handoff_enabled():
-        _rollout_handoffs[executor_task] = handoff
+    _rollout_handoffs[executor_task] = handoff
     try:
         # Start the heartbeat refresh task
         refresh_task = asyncio.create_task(_refresh_heartbeat())
@@ -1402,7 +1521,7 @@ async def _execute_pending_message(session_id: int) -> None:
             and not response_lost_held
             and claimed_dispatch_count is not None
             and not invocation_record.get("attempted")
-            and store.executor_not_invoked_record_enabled()
+            and not invocation_record.get("attempt_pending")
         ):
             try:
                 claim_released = store.mark_turn_error_sync(
@@ -1636,6 +1755,10 @@ def _recover_terminal_response_lost(session_id: int, outcome: dict) -> dict | No
     return retried
 
 
+_response_lost_sweep_cursor = 0
+_response_lost_sweep_ceiling = 0
+
+
 def _adopt_response_lost_results() -> list[int]:
     """Adopt committed results and reconcile holds over confirmed ceased guests.
 
@@ -1646,10 +1769,24 @@ def _adopt_response_lost_results() -> list[int]:
     that knows it. A turn that declared no artifact, which is every lane
     outside the factory, has nothing to lose and is finished here.
     """
-    if not response_lost_recovery_enabled():
-        return []
     adopted = []
-    for session_id in store.find_response_lost_session_ids(5):
+    global _response_lost_sweep_cursor, _response_lost_sweep_ceiling
+    if _response_lost_sweep_ceiling == 0:
+        _response_lost_sweep_ceiling = store.response_lost_session_ceiling()
+    candidates = store.find_response_lost_session_ids(
+        5,
+        after_session_id=_response_lost_sweep_cursor,
+        through_session_id=_response_lost_sweep_ceiling,
+    )
+    if not candidates:
+        _response_lost_sweep_cursor = 0
+        _response_lost_sweep_ceiling = 0
+        return []
+    for session_id in candidates:
+        # Advance even on refusal or failure. This is scheduling only: every
+        # adoption still checks its durable identity, hold and receipt. A new
+        # replica starts at zero and safely revisits earlier holds.
+        _response_lost_sweep_cursor = session_id
         try:
             outcome = store.adopt_response_lost_result(session_id)
             if outcome is not None and outcome.get("status") == "waiting":
@@ -2200,8 +2337,99 @@ async def _broker_request(method: str, path: str) -> dict:
     return resp.json()
 
 
+def _login_environment_or_raise(environment: str, grant: str) -> str:
+    if environment not in ("prod", "dev"):
+        raise ValueError("environment must be prod or dev")
+    if environment == "dev" and grant != _DEFAULT_GRANT:
+        raise ValueError("dev login supports only codex-cluster")
+    return environment
+
+
+def _dev_login_payload(data: object, method: str, status: int) -> dict:
+    """Keep device approval fields; never forward provider error detail or tokens."""
+    if not isinstance(data, dict):
+        raise ValueError("invalid dev login response")
+    if method == "GET":
+        details = {
+            "none": "Device login required",
+            "pending": "Device approval pending",
+            "granted": "Stored dev grant present",
+            "failed": "Device login failed; start a new login",
+        }
+        state = data.get("state")
+        if not isinstance(state, str) or state not in details:
+            raise ValueError("invalid dev login state")
+        return {"state": state, "detail": details[state]}
+    if status == 409:
+        reason = data.get("reason")
+        if (
+            reason == "login_starting"
+            and not data.get("user_code")
+            and not data.get("verification_url")
+        ):
+            return {
+                "retry_after": 10,
+                "message": "Device flow is starting, try again shortly.",
+                "pending": False,
+            }
+        if reason not in (None, "login_pending"):
+            raise ValueError("invalid dev login conflict")
+    url, code, expiry = (
+        data.get("verification_url"),
+        data.get("user_code"),
+        data.get("expires_in"),
+    )
+    if not isinstance(url, str) or len(url) > 2048:
+        raise ValueError("invalid dev verification URL")
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or any(character.isspace() for character in url)
+    ):
+        raise ValueError("invalid dev verification URL")
+    if not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", code):
+        raise ValueError("invalid dev device code")
+    # The broker emits zero when the provider omits its optional expiry.
+    if type(expiry) is not int or not 0 <= expiry <= 86400:
+        raise ValueError("invalid dev device code expiry")
+    return {
+        "verification_url": url,
+        "user_code": code,
+        "expires_in": expiry,
+        "pending": status == 409,
+    }
+
+
+async def _broker_login_request(
+    method: str, grant: str, *, environment: str = "prod"
+) -> dict:
+    grant = _grant_or_raise(grant)
+    _login_environment_or_raise(environment, grant)
+    paths = {"POST": "start", "GET": "status"}
+    path = f"/grants/{grant}/login/{paths[method]}"
+    if environment == "prod":
+        return await _broker_request(method, path)
+    try:
+        response = await broker_client.dev_login_request(method, path, timeout=30)
+        if not (method == "POST" and response.status_code == 409):
+            response.raise_for_status()
+        data = _dev_login_payload(response.json(), method, response.status_code)
+    except broker_client.DevBrokerLoginUnavailable:
+        raise RuntimeError("Dev Codex login broker is not configured") from None
+    except (httpx.HTTPError, ValueError):
+        raise RuntimeError("Dev Codex login broker unavailable") from None
+    return {**data, "environment": "dev", "grant": grant}
+
+
 @mcp.tool
-async def monolith_codex_broker_login_start(grant: str = _DEFAULT_GRANT) -> dict:
+async def monolith_codex_broker_login_start(
+    grant: str = _DEFAULT_GRANT, *, environment: str = "prod"
+) -> dict:
     """Begin the token broker device-code login for an OAuth grant.
 
     Returns the verification URL and one-time user code to approve in any
@@ -2210,14 +2438,21 @@ async def monolith_codex_broker_login_start(grant: str = _DEFAULT_GRANT) -> dict
 
     Args:
         grant: Grant name registered in the broker. Defaults to codex-cluster.
+        environment: prod (default), or the configured dev codex-cluster broker.
     """
     grant = _grant_or_raise(grant)
-    data = await _broker_request("POST", f"/grants/{grant}/login/start")
-    await agent_api.notify(
-        "codex broker login pending for grant %s. Approve code %s at %s"
-        % (grant, data.get("user_code", "?"), data.get("verification_url", "?")),
-        level="warn",
-    )
+    data = await _broker_login_request("POST", grant, environment=environment)
+    if data.get("user_code"):
+        await agent_api.notify(
+            "codex broker login pending for %s grant %s. Approve code %s at %s"
+            % (
+                environment,
+                grant,
+                data["user_code"],
+                data.get("verification_url", "?"),
+            ),
+            level="warn",
+        )
     return data
 
 
@@ -2262,18 +2497,21 @@ async def monolith_provider_quota(*, force: bool = False) -> dict:
 
 
 @mcp.tool
-async def monolith_codex_broker_login_status(grant: str = _DEFAULT_GRANT) -> dict:
+async def monolith_codex_broker_login_status(
+    grant: str = _DEFAULT_GRANT, *, environment: str = "prod"
+) -> dict:
     """Report the token broker login state for an OAuth grant.
 
     Args:
         grant: Grant name registered in the broker. Defaults to codex-cluster.
+        environment: prod (default), or the configured dev codex-cluster broker.
     """
     grant = _grant_or_raise(grant)
-    data = await _broker_request("GET", f"/grants/{grant}/login/status")
+    data = await _broker_login_request("GET", grant, environment=environment)
     if data.get("state") == "granted":
         await agent_api.notify(
-            "codex broker grant %s is active. The lane refreshes itself from here."
-            % grant,
+            "codex broker %s grant %s is active. The lane refreshes itself from here."
+            % (environment, grant),
             level="info",
         )
     return data

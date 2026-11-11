@@ -1,25 +1,18 @@
-import { error, json } from "@sveltejs/kit";
-import {
-  boundedCacheHeaders,
-  NOTES_PAGE_CACHE_CONTROL,
-  versionedEtag,
-} from "../../../../../lib/cache-headers.js";
+import { error } from "@sveltejs/kit";
+import { readPublicSnapshot } from "../../../../../lib/server/public-snapshots.js";
 
-// nosemgrep: sveltekit-server-hardcoded-api-base-fallback
-const API_BASE = process.env.API_BASE || "http://localhost:8000";
-
-export async function GET({ fetch, setHeaders }) {
-  const res = await fetch(`${API_BASE}/api/knowledge/public/facts/daily`, {
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!res.ok) throw error(503, "fact history unavailable");
-
-  const headers = boundedCacheHeaders(NOTES_PAGE_CACHE_CONTROL, res.headers);
-  const etag = versionedEtag(res.headers?.get?.("etag"));
-  if (etag) headers.etag = etag;
-  const lastModified = res.headers?.get?.("last-modified");
-  if (lastModified) headers["last-modified"] = lastModified;
-  setHeaders(headers);
-
-  return json(await res.json());
+export async function GET({ setHeaders }) {
+  try {
+    const snapshot = await readPublicSnapshot("facts");
+    setHeaders(snapshot.headers);
+    return new Response(snapshot.body, {
+      headers: { "content-type": "application/json" },
+    });
+  } catch {
+    setHeaders({
+      "cache-control": "no-store",
+      "cloudflare-cdn-cache-control": "no-store",
+    });
+    throw error(503, "facts snapshot unavailable");
+  }
 }

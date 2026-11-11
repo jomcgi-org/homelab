@@ -33,6 +33,7 @@ from sqlalchemy import delete
 from sqlalchemy.exc import DBAPIError
 from sqlmodel import Session, select
 
+from core.db import retryable_conflict
 from grimoire.models import Campaign, Embedding, KnowledgeChunk, SessionEvent
 import shared.inference
 
@@ -53,11 +54,6 @@ TRANSCRIPT_REDACTION_BATCH_SIZE = 500
 # rows instead of failing the run.
 TRANSCRIPT_REDACTION_RETRY_DELAY_SECONDS = 0.2
 TRANSCRIPT_REDACTION_MAX_RETRIES = 50
-
-
-def _is_redaction_conflict(exc: DBAPIError) -> bool:
-    code = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
-    return code in {"40001", "40P01"}
 
 
 def _expired_utterances(campaign_id: str, cutoff: datetime):
@@ -106,7 +102,7 @@ def redact_transcripts(session: Session, *, now: datetime | None = None) -> int:
             except DBAPIError as exc:
                 session.rollback()
                 if (
-                    _is_redaction_conflict(exc)
+                    retryable_conflict(exc)
                     and conflict_retries < TRANSCRIPT_REDACTION_MAX_RETRIES
                 ):
                     conflict_retries += 1
@@ -160,7 +156,7 @@ def redact_transcripts(session: Session, *, now: datetime | None = None) -> int:
             except DBAPIError as exc:
                 session.rollback()
                 if (
-                    _is_redaction_conflict(exc)
+                    retryable_conflict(exc)
                     and conflict_retries < TRANSCRIPT_REDACTION_MAX_RETRIES
                 ):
                     conflict_retries += 1

@@ -1,4 +1,5 @@
 <script>
+  import TripSheet from "$lib/public/components/trips/TripSheet.svelte";
   import DayNav from "$lib/public/components/trips/DayNav.svelte";
   import DayMap from "$lib/public/components/trips/DayMap.svelte";
   import DayElevationProfile from "$lib/public/components/trips/DayElevationProfile.svelte";
@@ -68,7 +69,7 @@
 
   // Smooth scrubbing: keep the CURRENT frame on screen until the next image has
   // actually decoded (instant when preloaded), so the photo never flashes its
-  // black cell between shots while an arrow is held. Only the latest target wins.
+  // empty cell between shots while an arrow is held. Only the latest target wins.
   let displayedSrc = $state(photos[current]?.imgDisplay ?? null);
   $effect(() => {
     const target = photo?.imgDisplay ?? null;
@@ -212,8 +213,8 @@
   >
 </svelte:head>
 
-<div class="root">
-  <div class="inner">
+<TripSheet {trip} current={label}>
+  <div class="day-content">
     {#if !day}
       <p class="missing">
         Day {dayNumber} not found.
@@ -230,8 +231,7 @@
       />
 
       <div class="stack">
-        <!-- MAP: full width, 280px, light Positron basemap with the layered
-             route line + start/end/square-current markers. -->
+        <!-- The map keeps its route selection and photo-time hillshade. -->
         <DayMap
           points={day.points}
           dayColor={color}
@@ -241,7 +241,7 @@
           onLocationClick={handleMapLocationClick}
         />
 
-        <!-- TRIPTYCH: 520px photo + the 5-column data panel. -->
+        <!-- Photo and per-photo telemetry share one ruled panel. -->
         <div class="triptych">
           {#if photo}
             <button
@@ -263,8 +263,11 @@
             {#if telemetry}
               {@const t = telemetry}
               <!-- ROW 1: TIME | SOLAR | LIGHT | EV | ELEV -->
-              <!-- TIME is the hero readout: a solid day-colour block. -->
-              <div class="cell r1 c-time" style={`background:${color}`}>
+              <!-- Day colour marks the time cell without changing text contrast. -->
+              <div
+                class="cell r1 c-time"
+                style={`border-bottom:1px solid ${color}`}
+              >
                 <div class="label">TIME</div>
                 <div class="time-big">
                   {t.time}<span class="period">{t.period}</span>
@@ -346,7 +349,10 @@
                       >
                     </button>
                   </div>
-                  <div class="counter" style={`background:${color}`}>
+                  <div
+                    class="counter"
+                    style={`border-bottom:1px solid ${color}`}
+                  >
                     {photos.length ? current + 1 : 0} / {photos.length}
                   </div>
                 </div>
@@ -416,38 +422,24 @@
       </div>
     {/if}
   </div>
-</div>
 
-{#if showFullscreen && photo}
-  <button
-    class="fs"
-    aria-label="Close fullscreen photo"
-    onclick={() => (showFullscreen = false)}
-  >
-    <img
-      src={photo.imgGallery ?? displayedSrc}
-      alt={`Photo ${current + 1} of ${photos.length}`}
-    />
-  </button>
-{/if}
+  {#if showFullscreen && photo}
+    <button
+      class="fs"
+      aria-label="Close fullscreen photo"
+      onclick={() => (showFullscreen = false)}
+    >
+      <img
+        src={photo.imgGallery ?? displayedSrc}
+        alt={`Photo ${current + 1} of ${photos.length}`}
+      />
+    </button>
+  {/if}
+</TripSheet>
 
 <style>
-  .root {
-    min-height: 100vh;
-    background: white;
-    font-family:
-      system-ui,
-      -apple-system,
-      sans-serif;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
-  }
-  .inner {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 24px 32px;
-  }
   .missing {
-    font-family: monospace;
+    font-family: var(--font-code);
     font-size: 13px;
   }
   .stack {
@@ -456,37 +448,36 @@
     gap: 24px;
   }
 
-  /* TRIPTYCH: photo + data panel framed as one neo-brutalist card: a chunky
-     ink border all around plus a hard offset drop-shadow (no blur). */
+  /* Photo and data share the sheet outline. */
   .triptych {
     display: flex;
     align-items: stretch;
-    border: 3px solid #1a1a1a;
-    box-shadow: 5px 5px 0 0 #1a1a1a;
-    background: white;
+    border: 1px solid var(--ink);
+    background: var(--sheet);
   }
   .photo {
     flex: 0 0 auto;
-    width: 520px;
-    height: 520px;
+    width: 40%;
+    min-width: 0;
+    align-self: stretch;
     cursor: pointer;
     display: block;
     padding: 0;
     border: none;
-    background: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    background: var(--ink);
   }
   .photo img {
     width: 100%;
     height: 100%;
-    object-fit: cover;
+    object-fit: contain;
     display: block;
   }
   .photo.empty {
     display: flex;
     align-items: center;
     justify-content: center;
-    color: white;
-    font-family: monospace;
+    color: var(--sheet);
+    font-family: var(--font-code);
     font-size: 12px;
     cursor: default;
   }
@@ -495,98 +486,89 @@
   .panel {
     flex: 1;
     display: grid;
-    grid-template-columns: 150px 1fr 1fr 1fr 1fr;
+    grid-template-columns: minmax(6rem, 1.5fr) repeat(4, minmax(0, 1fr));
     grid-template-rows: auto 1fr auto;
-    border-left: 3px solid #1a1a1a;
-    font-family: monospace;
+    border-left: 1px solid var(--ink);
+    font-family: var(--font-code);
     min-width: 0;
   }
 
   .label {
     font-size: 9px;
     font-weight: 700;
-    color: #6b7280; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--ink-2);
     letter-spacing: 0.08em;
     margin-bottom: 4px;
   }
   .val {
     font-size: 18px;
     font-weight: 700;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--ink);
   }
   .val.sm {
     font-size: 14px;
   }
   .unit {
     font-size: 10px;
-    color: #9ca3af; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--ink-2);
   }
   .sub {
     font-size: 9px;
-    color: #9ca3af; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--ink-2);
     font-weight: 600;
   }
 
   /* Row 1 cells. */
   .r1 {
-    padding: 12px;
-    border-bottom: 2px solid #1a1a1a;
-    background: white;
+    padding: 0.7rem;
+    border-bottom: 1px solid var(--ink);
+    background: var(--sheet);
   }
   .div-thin {
-    border-right: 1px solid #e5e7eb;
+    border-right: 1px solid var(--stroke);
   }
   .c-time {
-    border-right: 2px solid #1a1a1a;
+    border-right: 1px solid var(--ink);
   }
   .time-big {
     font-size: 24px;
     font-weight: 900;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--ink);
     line-height: 1;
   }
   .period {
     font-size: 11px;
     font-weight: 700;
-    color: #6b7280; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--ink-2);
     margin-left: 4px;
   }
-  /* TIME hero: white readout on the solid day-colour block (set inline). */
-  .c-time .label,
-  .c-time .period {
-    color: rgba(255, 255, 255, 0.82);
-  }
-  .c-time .time-big {
-    color: white;
-  }
-
   /* Row 2, column 1: optics / nav / bearing stack. */
   .col1 {
     display: flex;
     flex-direction: column;
-    border-right: 2px solid #1a1a1a;
-    border-bottom: 2px solid #1a1a1a;
-    background: #fafafa; /* nosemgrep: svelte-hardcoded-color-in-style */
+    border-right: 1px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
+    background: var(--band);
   }
   .optics {
     padding: 12px;
-    border-bottom: 2px solid #1a1a1a;
-    background: #f5f5f5; /* nosemgrep: svelte-hardcoded-color-in-style */
+    border-bottom: 1px solid var(--ink);
+    background: var(--band);
   }
   .optics-line {
     font-size: 14px;
     font-weight: 700;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--ink);
   }
   .optics-sub {
     font-size: 11px;
     font-weight: 600;
-    color: #6b7280; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--ink-2);
     margin-top: 2px;
   }
   .nav {
-    border-bottom: 2px solid #1a1a1a;
-    background: white;
+    border-bottom: 1px solid var(--ink);
+    background: var(--sheet);
   }
   .navrow {
     display: flex;
@@ -597,42 +579,34 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: white;
+    background: var(--sheet);
     border: none;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--ink);
     cursor: pointer;
-    transition:
-      background 0.15s,
-      color 0.15s,
-      transform 0.1s;
   }
   .navstep.border-r {
-    border-right: 2px solid #1a1a1a;
+    border-right: 1px solid var(--ink);
   }
   .navstep svg {
     width: 24px;
     height: 24px;
   }
   .navstep:hover:not(:disabled) {
-    background: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
-    color: white;
-  }
-  /* Tactile press to match the day-nav buttons. */
-  .navstep:active:not(:disabled) {
-    transform: translate(1px, 1px);
+    background: var(--ink);
+    color: var(--sheet);
   }
   .navstep:disabled {
     opacity: 0.3;
     cursor: not-allowed;
   }
-  /* Photo counter: a solid day-colour accent block (set inline) with white text. */
+  /* Counter shares the panel ground and keeps its day-colour rule. */
   .counter {
     font-size: 11px;
     font-weight: 700;
-    color: white;
+    color: var(--ink);
     text-align: center;
     padding: 8px;
-    border-top: 2px solid #1a1a1a;
+    border-top: 1px solid var(--ink);
   }
   .bearing {
     flex-grow: 1;
@@ -641,17 +615,17 @@
     justify-content: center;
     align-items: center;
     padding: 12px;
-    background: white;
+    background: var(--sheet);
   }
   .bearing .arrow {
     font-size: 36px;
     line-height: 1;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--ink);
   }
   .bearing-deg {
     font-size: 11px;
     font-weight: 700;
-    color: #6b7280; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--ink-2);
     margin-top: 4px;
   }
 
@@ -659,10 +633,10 @@
   .elev-profile {
     grid-column: span 4;
     padding: 12px 16px;
-    border-bottom: 2px solid #1a1a1a;
+    border-bottom: 1px solid var(--ink);
     display: flex;
     flex-direction: column;
-    background: white;
+    background: var(--sheet);
   }
   .elev-profile .label {
     margin-bottom: 8px;
@@ -673,52 +647,58 @@
     min-height: 120px;
   }
 
+  .panel > * {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
   /* Row 3 cells. */
   .cell-position {
     padding: 10px 12px;
-    border-right: 2px solid #1a1a1a;
-    background: white;
+    border-right: 1px solid var(--ink);
+    background: var(--sheet);
   }
   .coords {
     font-size: 10px;
     font-weight: 600;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--ink);
     line-height: 1.6;
   }
   .cell-stat {
     padding: 10px;
-    background: #fafafa; /* nosemgrep: svelte-hardcoded-color-in-style */
+    background: var(--band);
+    border-bottom: 1px solid var(--stroke);
   }
   .km-val {
     font-size: 16px;
     font-weight: 900;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--ink);
   }
   .small {
     font-size: 10px;
-    color: #9ca3af; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--ink-2);
   }
   .stat-val {
     font-size: 14px;
     font-weight: 900;
-    color: #1a1a1a; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--ink);
   }
   .stat-val.up {
-    color: #059669; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--tone-ram);
   }
   .stat-val.down {
-    color: #dc2626; /* nosemgrep: svelte-hardcoded-color-in-style */
+    color: var(--tone-disk);
   }
 
   /* Fullscreen photo overlay. */
   .fs {
     position: fixed;
     inset: 0;
-    z-index: 1000;
+    z-index: 1100;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(0, 0, 0, 0.92);
+    background: var(--sheet);
     border: none;
     padding: 24px;
     cursor: zoom-out;
@@ -730,10 +710,7 @@
   }
 
   /* Responsive: stack the triptych and reflow the panel to two columns. */
-  @media (max-width: 768px) {
-    .inner {
-      padding: 16px;
-    }
+  @media (max-width: 1200px) {
     .triptych {
       flex-direction: column;
     }
@@ -741,14 +718,14 @@
       width: 100%;
       height: auto;
       max-height: 60vh;
+      aspect-ratio: 1;
     }
     .photo img {
       max-height: 60vh;
-      object-fit: contain;
     }
     .panel {
       border-left: none;
-      border-top: 2px solid #1a1a1a;
+      border-top: 1px solid var(--ink);
       grid-template-columns: 1fr 1fr;
       grid-template-rows: none;
     }

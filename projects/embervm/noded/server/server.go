@@ -47,6 +47,7 @@ import (
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
 	"github.com/jomcgi/homelab/projects/embervm/noded/egress"
+	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/driver"
 	"github.com/jomcgi/homelab/projects/embervm/noded/guestmem"
 	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 	"github.com/jomcgi/homelab/projects/embervm/noded/snapshotmeta"
@@ -149,9 +150,8 @@ type sessionDriver interface {
 	// bundle (memfile + snapfile, the base-bundle format) under sessions/<ref>. It
 	// does NOT resume: the caller Releases the VM immediately after (Bank destroys).
 	SnapshotSession(ctx context.Context, h substrate.Handle, snapshotRef string) (substrate.SnapshotRef, error)
-	// RestoreSession launches a fresh VM from a banked session bundle, optionally
-	// re-arms dirty tracking, and resumes it.
-	RestoreSession(ctx context.Context, workload, snapshotRef string, trackDirtyPages bool) (substrate.Handle, error)
+	// RestoreSession launches a fresh VM from a banked session bundle and resumes it.
+	RestoreSession(ctx context.Context, workload, snapshotRef string) (substrate.Handle, error)
 	// RemoveSessionBundle deletes a banked session bundle from disk (idempotent).
 	RemoveSessionBundle(snapshotRef string) error
 	// SessionsDir is the directory holding banked session bundles, rescanned on start.
@@ -687,14 +687,6 @@ func (s *Server) refuseIfSilenced(what string) error {
 	return status.Errorf(codes.FailedPrecondition, "noded: brick silent past silence timeout, refusing %s", what)
 }
 
-// setLastContactForTest pins the contact instant so tests can age past the
-// silence bound without sleeping.
-func (s *Server) setLastContactForTest(t time.Time) {
-	s.contactMu.Lock()
-	s.lastContact = t
-	s.contactMu.Unlock()
-}
-
 // hasPrimedForWorkload reports whether the task pool already holds at least one
 // primed VM for a workload. A Prime for a workload with existing warmth is a
 // refill (allowed while stale); a Prime for a workload with none is cold
@@ -771,7 +763,7 @@ func (s *Server) buildBaseImage(ctx context.Context, req *nodev1.BuildBaseReques
 	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: image %q (workload %q) not provisioned on this node", imageRef, workload)
 	}
-	rootfsID, err := ext4UUID(img.RootfsPath)
+	rootfsID, err := driver.Ext4UUID(img.RootfsPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			if pendingErr := s.refuseIfRootfsPending(img.RootfsPath); pendingErr != nil {
@@ -820,7 +812,7 @@ func (s *Server) buildBaseZip(ctx context.Context, req *nodev1.BuildBaseRequest)
 	// the digest for R0 (deploys are digest-pinned upstream), mirroring the image
 	// lane where image_ref IS the identity.
 	imageDigest := runtimeRef
-	rootfsID, err := ext4UUID(img.RootfsPath)
+	rootfsID, err := driver.Ext4UUID(img.RootfsPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			if pendingErr := s.refuseIfRootfsPending(img.RootfsPath); pendingErr != nil {
@@ -1147,7 +1139,7 @@ func (s *Server) verifyReadyBaseBundle(baseKey, rootfsPath string) (bool, error)
 	if wantRootfsID == "" {
 		return false, nil
 	}
-	gotRootfsID, err := ext4UUID(rootfsPath)
+	gotRootfsID, err := driver.Ext4UUID(rootfsPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
@@ -1468,7 +1460,7 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	if readyPath == "" {
 		readyPath = defaultReadyPath
 	}
-	volumeDiskPath := req.GetVolumeDiskPath()
+	var volumeDiskPath string
 	if req.GetLineageId() != "" {
 		// Guard like every other volume RPC does: a nil manager here would be a
 		// nil-pointer panic inside the handler, which reaches the caller as an
@@ -1505,10 +1497,9 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	readyTimeout := primeReadyTimeout(s.cfg, volumeDiskPath)
 
 	spec := substrate.ClaimSpec{
-		Workload:        base.workload,
-		Arch:            s.cfg.Arch,
-		ThreadID:        newID("vm"),
-		TrackDirtyPages: s.cfg.DiffBanking && diffBankingWorkload(s.cfg.DiffBankingWorkloads, base.workload),
+		Workload: base.workload,
+		Arch:     s.cfg.Arch,
+		ThreadID: newID("vm"),
 		BaseSnapshotRef: substrate.SnapshotRef{
 			ID:             ref,
 			Node:           s.cfg.Node,
@@ -1607,15 +1598,6 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	return &nodev1.PrimeResponse{VmId: h.ID}, nil
 }
 
-func diffBankingWorkload(workloads []string, workload string) bool {
-	for _, candidate := range workloads {
-		if candidate == workload {
-			return true
-		}
-	}
-	return false
-}
-
 func primeReadyTimeout(cfg config.Config, volumeDiskPath string) time.Duration {
 	if volumeDiskPath != "" {
 		return cfg.BootReadyTimeout
@@ -1639,29 +1621,12 @@ func (s *Server) Assign(ctx context.Context, req *nodev1.AssignRequest) (*nodev1
 	// Assign and explicit Destroy share the same retained teardown entry.
 	defer func() { _, _ = s.destroyTaskVM(vmID) }()
 
-	gr := req.GetRequest()
-	method := gr.GetMethod()
-	if method == "" {
-		method = http.MethodPost
-	}
-	path := gr.GetPath()
-	if path == "" {
-		path = defaultInvokePath
-	}
-	timeout := time.Duration(req.GetTimeoutMs()) * time.Millisecond
-	if timeout <= 0 {
-		timeout = defaultAssignTimeout
-	}
-	rtCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	httpReq, err := http.NewRequestWithContext(rtCtx, method, "http://vsock"+path, bytes.NewReader(gr.GetBody()))
+	httpReq, cancel, timeout, err := newGuestRequest(ctx, req.GetRequest(), req.GetTimeoutMs())
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "noded: build guest request: %v", err)
+		return nil, err
 	}
-	for k, v := range gr.GetHeaders() {
-		httpReq.Header.Set(k, v)
-	}
+	defer cancel()
+	rtCtx := httpReq.Context()
 
 	uds := s.driver.VsockUDSPath(e.handle.ThreadID)
 	t0 := time.Now()
@@ -1697,6 +1662,34 @@ func (s *Server) Assign(ctx context.Context, req *nodev1.AssignRequest) (*nodev1
 		},
 		Usage: usage,
 	}, nil
+}
+
+// newGuestRequest builds the vsock HTTP request an Assign or SessionAssign
+// delivers, with the method, path and timeout defaults applied. The request's
+// context carries the timeout; the caller must call cancel.
+func newGuestRequest(ctx context.Context, gr *nodev1.GuestRequest, timeoutMs uint32) (*http.Request, context.CancelFunc, time.Duration, error) {
+	method := gr.GetMethod()
+	if method == "" {
+		method = http.MethodPost
+	}
+	path := gr.GetPath()
+	if path == "" {
+		path = defaultInvokePath
+	}
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	if timeout <= 0 {
+		timeout = defaultAssignTimeout
+	}
+	rtCtx, cancel := context.WithTimeout(ctx, timeout)
+	httpReq, err := http.NewRequestWithContext(rtCtx, method, "http://vsock"+path, bytes.NewReader(gr.GetBody()))
+	if err != nil {
+		cancel()
+		return nil, nil, 0, status.Errorf(codes.InvalidArgument, "noded: build guest request: %v", err)
+	}
+	for k, v := range gr.GetHeaders() {
+		httpReq.Header.Set(k, v)
+	}
+	return httpReq, cancel, timeout, nil
 }
 
 // ---- Destroy ---------------------------------------------------------------
@@ -1915,29 +1908,12 @@ func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignReq
 	abandoned := false
 	defer func() { e.endSessionAssign(req.GetDispatchId(), abandoned) }()
 
-	gr := req.GetRequest()
-	method := gr.GetMethod()
-	if method == "" {
-		method = http.MethodPost
-	}
-	path := gr.GetPath()
-	if path == "" {
-		path = defaultInvokePath
-	}
-	timeout := time.Duration(req.GetTimeoutMs()) * time.Millisecond
-	if timeout <= 0 {
-		timeout = defaultAssignTimeout
-	}
-	rtCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	httpReq, err := http.NewRequestWithContext(rtCtx, method, "http://vsock"+path, bytes.NewReader(gr.GetBody()))
+	httpReq, cancel, timeout, err := newGuestRequest(ctx, req.GetRequest(), req.GetTimeoutMs())
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "noded: build guest request: %v", err)
+		return nil, err
 	}
-	for k, v := range gr.GetHeaders() {
-		httpReq.Header.Set(k, v)
-	}
+	defer cancel()
+	rtCtx := httpReq.Context()
 
 	uds := s.driver.VsockUDSPath(e.handle.ThreadID)
 	t0 := time.Now()
@@ -2199,8 +2175,7 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 		return nil, err
 	}
 	defer ticket.release()
-	trackDirtyPages := s.cfg.DiffBanking && diffBankingWorkload(s.cfg.DiffBankingWorkloads, workload)
-	h, err := s.sessionDriver.RestoreSession(ctx, workload, ref, trackDirtyPages)
+	h, err := s.sessionDriver.RestoreSession(ctx, workload, ref)
 	ticket.release()
 	if err != nil {
 		// The snapshot is left on disk (never deleted on a failed restore).
@@ -2401,8 +2376,7 @@ func (s *Server) evictGroupMemberSnapshot(ref string) (*nodev1.EvictSnapshotResp
 // pushed set (entries absent are dropped, entries present are added-or-updated),
 // marks the registry synced (clearing the readiness gate), and clears any stale
 // boot-cache mark. Idempotent under replay. The control plane calls this once per
-// (re)connect after the adoption handshake so a daemon that missed incremental
-// pushes while disconnected re-converges to truth.
+// (re)connect and periodically so a disconnected daemon re-converges to truth.
 func (s *Server) SyncRegistry(_ context.Context, req *nodev1.SyncRegistryRequest) (*nodev1.SyncRegistryResponse, error) {
 	entries := make([]workloadEntry, 0, len(req.GetEntries()))
 	for _, e := range req.GetEntries() {
@@ -2428,31 +2402,8 @@ func (s *Server) SyncRegistry(_ context.Context, req *nodev1.SyncRegistryRequest
 	return &nodev1.SyncRegistryResponse{EntryCount: uint32(n)}, nil
 }
 
-// RegisterWorkload adds-or-updates one registry entry incrementally. It does not
-// clear the readiness gate (only a full SyncRegistry is the authoritative replay
-// the gate waits for). Idempotent.
-func (s *Server) RegisterWorkload(_ context.Context, req *nodev1.RegisterWorkloadRequest) (*nodev1.RegisterWorkloadResponse, error) {
-	entry := req.GetEntry()
-	if entry == nil || entry.GetWorkload() == "" {
-		return nil, status.Error(codes.InvalidArgument, "noded: entry.workload required")
-	}
-	n := s.registry.register(entryFromProto(entry))
-	s.reconcileServingImagesFromDisk()
-	s.signalChange()
-	return &nodev1.RegisterWorkloadResponse{EntryCount: uint32(n)}, nil
-}
-
-// DeregisterWorkload removes one registry entry by workload name. Idempotent on
-// an absent workload.
-func (s *Server) DeregisterWorkload(_ context.Context, req *nodev1.DeregisterWorkloadRequest) (*nodev1.DeregisterWorkloadResponse, error) {
-	n := s.registry.deregister(req.GetWorkload())
-	s.reconcileServingImagesFromDisk()
-	s.signalChange()
-	return &nodev1.DeregisterWorkloadResponse{EntryCount: uint32(n)}, nil
-}
-
 // RegistrySynced reports whether the daemon has received its registry replay
-// (the readiness gate: traffic never reaches a pod with an empty registry). The
+// (the readiness gate: traffic never reaches a pod before its first live sync). The
 // daemon entrypoint's /readyz probe reads it.
 func (s *Server) RegistrySynced() bool {
 	return s.registry.isSynced()
@@ -2472,7 +2423,7 @@ func (s *Server) SlotCeiling() int {
 
 // ---- Node status -----------------------------------------------------------
 
-// GetNodeStatus is the unary snapshot of the capacity facts WatchNode streams.
+// GetNodeStatus is a test-only unary snapshot of the facts WatchNode streams.
 func (s *Server) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusRequest) (*nodev1.NodeStatus, error) {
 	ns := s.nodeStatus()
 	// Echo the caller's node_id when it set one, for its own correlation.
@@ -3379,29 +3330,6 @@ func (s *Server) drainSessionExports(exports *drainExports) int {
 			exports.pending["workspace inventory unavailable"] = true
 			return pending + 1
 		}
-		if !complete {
-			// A partial scan still queues the workspaces it did read, but the
-			// drain stays blocked: unknown inventory is never treated as done.
-			// Unlike a hard error this never exhausts: a persistent skip (for
-			// example unreadable session dirs) must hold the drain, not age
-			// out of it.
-			for _, volume := range inventory {
-				if s.lineageAttached(volume.Workload, volume.LineageID) {
-					continue
-				}
-				ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: volume.Workload, Ref: volume.LineageID}
-				key := artifactPrefix(ref, s.cfg.CpuVendor)
-				if !exports.workspaces[key] {
-					s.exported.clear(key)
-					exports.workspaces[key] = true
-				}
-				queue(ref)
-			}
-			s.logger.Warn("drain workspace scan incomplete")
-			exports.nextScanRetry = time.Now().Add(500 * time.Millisecond)
-			exports.pending["workspace inventory unavailable"] = true
-			return pending + 1
-		}
 		for _, volume := range inventory {
 			if s.lineageAttached(volume.Workload, volume.LineageID) {
 				continue
@@ -3413,6 +3341,17 @@ func (s *Server) drainSessionExports(exports *drainExports) int {
 				exports.workspaces[key] = true
 			}
 			queue(ref)
+		}
+		if !complete {
+			// A partial scan still queues the workspaces it did read, but the
+			// drain stays blocked: unknown inventory is never treated as done.
+			// Unlike a hard error this never exhausts: a persistent skip (for
+			// example unreadable session dirs) must hold the drain, not age
+			// out of it.
+			s.logger.Warn("drain workspace scan incomplete")
+			exports.nextScanRetry = time.Now().Add(500 * time.Millisecond)
+			exports.pending["workspace inventory unavailable"] = true
+			return pending + 1
 		}
 	}
 	return pending
@@ -4364,7 +4303,7 @@ func (s *Server) readBaseRootfsPath(baseKey string) string {
 // A UUID read failure leaves the sidecar absent, which makes the base fail every
 // restore and adoption identity gate.
 func (s *Server) writeBaseRootfsID(baseKey, rootfsPath string) error {
-	id, err := ext4UUID(rootfsPath)
+	id, err := driver.Ext4UUID(rootfsPath)
 	if err != nil {
 		s.logger.Warn("noded: persist base rootfs identity skipped", "base", baseKey, "rootfs", rootfsPath, "err", err)
 		return fmt.Errorf("read base rootfs identity: %w", err)

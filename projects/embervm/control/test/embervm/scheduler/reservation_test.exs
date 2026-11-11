@@ -114,7 +114,8 @@ defmodule Embervm.Scheduler.ReservationTest do
   test "drop_instance removes instances and pool targets", %{server: server, table: table} do
     claim(server, "n/a", "vm")
     Reservation.set_pool_target(server, "n/a", "wl", 2, 512)
-    assert :ok = Reservation.drop_instance(server, "n/a")
+    assert :ok = Reservation.drop_instance_shadow("n/a", server: server)
+    _ = :sys.get_state(server)
     assert Reservation.entries("n/a", table) == []
   end
 
@@ -131,11 +132,11 @@ defmodule Embervm.Scheduler.ReservationTest do
     server: server,
     table: table
   } do
-    assert {:ok, %{adopted: 2, skipped: 1}} =
-             Reservation.adopt(
+    assert {:ok, %{adopted: 2, skipped: 1, released: []}} =
+             Reservation.observe(
+               server,
                "n/a",
                [{"vm-1", "known-a"}, {"vm-2", "missing"}, {"vm-3", "known-b"}],
-               server: server,
                catalog: %{"known-a" => 128, "known-b" => 256}
              )
 

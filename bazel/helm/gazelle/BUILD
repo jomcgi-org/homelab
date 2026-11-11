@@ -1,5 +1,22 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+filegroup(
+    name = "smoke_sources",
+    srcs = glob(["*.go"]) + ["BUILD"],
+    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
+)
+
+filegroup(
+    name = "runtime_inputs",
+    srcs = [
+        "BUILD",
+        "config.go",
+        "generate.go",
+        "language.go",
+    ],
+    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
+)
+
 go_library(
     name = "gazelle",
     srcs = [

@@ -1,5 +1,6 @@
 """Tests for channel-level summary generation."""
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -31,7 +32,15 @@ def session_fixture():
 
 
 def _make_message(
-    session, channel_id, user_id, username, content, msg_id, is_bot=False
+    session,
+    channel_id,
+    user_id,
+    username,
+    content,
+    msg_id,
+    is_bot=False,
+    *,
+    created_at=None,
 ):
     msg = Message(
         id=msg_id,
@@ -43,6 +52,8 @@ def _make_message(
         is_bot=is_bot,
         embedding=[0.0] * 1024,
     )
+    if created_at is not None:
+        msg.created_at = created_at
     session.add(msg)
     session.commit()
     session.refresh(msg)
@@ -115,18 +126,96 @@ class TestGenerateChannelSummaries:
         assert summary.message_count == 2
 
     @pytest.mark.asyncio
-    async def test_prompt_mentions_rolling_window(self, session):
-        _make_message(session, "ch1", "u1", "Alice", "hello", 1)
-        captured_prompt = None
+    async def test_new_channel_prompt_includes_message_inputs(self, session):
+        _make_message(
+            session,
+            "ch1",
+            "u1",
+            "new-channel-author-amber",
+            "new-channel-content-cobalt",
+            1,
+            created_at=datetime(2025, 2, 3, 4, 5, tzinfo=timezone.utc),
+        )
+        prompts = []
 
         async def capture_llm(prompt):
-            nonlocal captured_prompt
-            captured_prompt = prompt
+            prompts.append(prompt)
             return "Summary."
 
         await generate_channel_summaries(session, capture_llm)
-        assert captured_prompt is not None
-        assert "most recent 20 messages" in captured_prompt
+        assert len(prompts) == 1
+        assert "new-channel-content-cobalt" in prompts[0]
+        assert "new-channel-author-amber" in prompts[0]
+        # SQLite round-trips created_at without tzinfo; the prompt uses minutes.
+        assert "2025-02-03 04:05" in prompts[0]
+
+    @pytest.mark.asyncio
+    async def test_existing_channel_prompt_includes_only_new_channel_inputs(
+        self, session
+    ):
+        _make_message(session, "ch1", "u1", "below-author", "below-water-content", 1)
+        _make_message(session, "ch1", "u1", "boundary-author", "at-water-content", 2)
+        session.add(
+            ChannelSummary(
+                channel_id="ch1",
+                summary="prior-summary-jade",
+                message_count=2,
+                last_message_id=2,
+            )
+        )
+        session.commit()
+        _make_message(
+            session,
+            "ch1",
+            "u2",
+            "incremental-author-violet",
+            "incremental-content-silver",
+            3,
+            created_at=datetime(2025, 6, 7, 8, 9, tzinfo=timezone.utc),
+        )
+        _make_message(
+            session,
+            "ch2",
+            "u3",
+            "foreign-author-bronze",
+            "foreign-content-copper",
+            4,
+            created_at=datetime(2025, 10, 11, 12, 13, tzinfo=timezone.utc),
+        )
+        prompts = []
+
+        async def capture_llm(prompt):
+            prompts.append(prompt)
+            return "Summary."
+
+        await generate_channel_summaries(session, capture_llm)
+
+        assert len(prompts) == 2
+        channel_prompts = [p for p in prompts if "prior-summary-jade" in p]
+        assert len(channel_prompts) == 1
+        channel_prompt = channel_prompts[0]
+        assert "incremental-content-silver" in channel_prompt
+        assert "incremental-author-violet" in channel_prompt
+        assert "2025-06-07 08:09" in channel_prompt
+        for excluded in (
+            "below-water-content",
+            "below-author",
+            "at-water-content",
+            "boundary-author",
+            "foreign-content-copper",
+            "foreign-author-bronze",
+            "2025-10-11 12:13",
+        ):
+            assert excluded not in channel_prompt
+
+        foreign_prompts = [p for p in prompts if "foreign-content-copper" in p]
+        assert len(foreign_prompts) == 1
+        foreign_prompt = foreign_prompts[0]
+        assert foreign_prompt != channel_prompt
+        assert "foreign-author-bronze" in foreign_prompt
+        assert "2025-10-11 12:13" in foreign_prompt
+        assert "prior-summary-jade" not in foreign_prompt
+        assert "incremental-content-silver" not in foreign_prompt
 
     @pytest.mark.asyncio
     async def test_handles_multiple_channels(self, session):

@@ -8,15 +8,21 @@ export default defineConfig({
   plugins: [svelte({ configFile: false })],
   resolve: {
     conditions: ["browser"],
-    alias: {
-      $lib: here("../src/lib"),
-      "$app/state": here("../test/profile-page.svelte.js"),
-      "$app/stores": here("../test/profile-stores.js"),
-      "$app/navigation": here("../test/app-navigation-stub.js"),
-      "$app/environment": here("../test/app-environment-stub.js"),
-    },
+    alias: [
+      { find: /^maplibre-gl$/, replacement: here("./maplibre-probe.js") },
+      ...Object.entries({
+        $lib: here("../src/lib"),
+        "$app/state": here("../test/profile-page.svelte.js"),
+        "$app/stores": here("../test/profile-stores.js"),
+        "$app/navigation": here("./navigation.js"),
+        "$app/environment": here("./environment.js"),
+      }).map(([find, replacement]) => ({ find, replacement })),
+    ],
   },
   server: { host: "127.0.0.1" },
-  optimizeDeps: { esbuildOptions: { target: "es2022" } },
+  optimizeDeps: {
+    exclude: ["maplibre-gl/dist/maplibre-gl.mjs"],
+    esbuildOptions: { target: "es2022" },
+  },
   build: { target: "es2022", outDir: here("../profile-fixture-dist") },
 });

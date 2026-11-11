@@ -1,11 +1,9 @@
 import pytest
 
 from factory.orchestration.policy import (
-    implementer_prompt,
     implementer_prompt_parts,
     next_action,
     parse_review_verdict,
-    reviewer_prompt,
     reviewer_prompt_parts,
     verdict_trailer_instruction,
     work_branch,
@@ -53,14 +51,14 @@ def test_next_action_routes_new_head_to_review(prior, head):
 
 
 def test_prompt_builders():
-    prompt = implementer_prompt("fix bug", "claude/swarm-wf-123", None)
+    prompt = "\n".join(implementer_prompt_parts("fix bug", "claude/swarm-wf-123"))
     assert "claude/swarm-wf-123" in prompt
     assert "Do not open a pull request" in prompt
     assert "Do not push to main" in prompt
-    assert "Previous attempt failed: tests failed" in implementer_prompt(
-        "fix bug", "claude/swarm-wf-123", "tests failed"
+    assert "Previous attempt failed: tests failed" in "\n".join(
+        implementer_prompt_parts("fix bug", "claude/swarm-wf-123", "tests failed")
     )
-    prompt = reviewer_prompt("fix bug", "feature", "abc123")
+    prompt = "\n".join(reviewer_prompt_parts("fix bug", "feature", "abc123"))
     assert "fix bug" in prompt
     assert "feature" in prompt
     assert "abc123" in prompt
@@ -70,18 +68,18 @@ def test_prompt_builders():
 
 
 def test_implementer_prompt_contains_rationale_trailer_instruction():
-    prompt = implementer_prompt("t", "b", None)
+    prompt = "\n".join(implementer_prompt_parts("t", "b"))
     assert "RATIONALE" in prompt
     assert "- deviation:" in prompt
 
 
 def test_implementer_retry_appends_previous_failure_after_rationale():
-    prompt = implementer_prompt("t", "b", "x")
+    prompt = "\n".join(implementer_prompt_parts("t", "b", "x"))
     assert prompt.index("RATIONALE") < prompt.index("Previous attempt failed")
 
 
 def test_reviewer_prompt_does_not_contain_rationale_trailer_instruction():
-    assert "RATIONALE" not in reviewer_prompt("t", "b", "sha")
+    assert "RATIONALE" not in "\n".join(reviewer_prompt_parts("t", "b", "sha"))
 
 
 def test_verdict_trailer_instruction_exists():
@@ -104,16 +102,6 @@ def test_reviewer_prompt_parts_returns_tuple():
     assert isinstance(parts, tuple)
     assert len(parts) == 2
     assert all(isinstance(part, str) for part in parts)
-
-
-def test_sent_prompt_is_byte_identical_implementer():
-    args = ("t", "b", "failed", "please fix")
-    assert implementer_prompt(*args) == "\n".join(implementer_prompt_parts(*args))
-
-
-def test_sent_prompt_is_byte_identical_reviewer():
-    args = ("t", "b", "sha")
-    assert reviewer_prompt(*args) == "\n".join(reviewer_prompt_parts(*args))
 
 
 @pytest.mark.parametrize(

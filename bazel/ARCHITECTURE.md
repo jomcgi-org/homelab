@@ -8,7 +8,7 @@ What happens after publish (chart versions, the write-back commit, Kargo, ArgoCD
 
 ## 1. Developer tools
 
-No Bazel runs on a Mac. `bootstrap.sh` pulls the host's slice of the tools image named in `.tools-version` (`ghcr.io/jomcgi/homelab/bazel/tools/image:main`, built by `bazel/tools/image/BUILD` as a `rules_oci` index over linux/amd64, linux/arm64 and darwin/arm64) with `crane export` into `~/.cache/homelab-tools`, keyed by manifest digest so a re-run is a no-op until the image moves. That tag is floating: every push carries only the stamped build tag, so main's publish (`bazel/images/push/push-changed.sh`) points `:main` at the digest it found published on each run, whether it pushed the image or skipped it, after the charts are published and verified (a retag error warns, it never blocks a deploy; the last main run wins, not the newest commit). Without that step the tag froze when the branch-name tag left `remote_tags`, and fresh bootstraps failed the `REQUIRED_TOOLS` check. `.envrc` puts `bazel/tools/ci` and that cache's `usr/bin` on PATH and checks for a newer digest in the background. The image carries pinned per-platform binaries (argocd, bb, buildifier, buildozer, claude, crane, gh, gofumpt, helm, kind, op, ruff, shellcheck, shfmt), cross-built repository tools (agent-run, hf2oci), node, eslint, pnpm, prettier with the Svelte plugin, a Python 3.13 runtime with the CLI's pip closure, and the hand-written `homelab` CLI from `tools/cli/`. Bootstrap validates the issue #3915 commands before recording a digest, so a partial extraction is never accepted as current. The image deliberately carries no `gazelle`: the only gazelle the multitool lockfile can supply is aspect-gazelle, a different program from `//:gazelle_binary`, and the correct one links a cgo tree-sitter that the amd64 executors cannot cross-build for darwin.
+No Bazel runs on a Mac. `bootstrap.sh` pulls the host's slice of the tools image named in `.tools-version` (`ghcr.io/jomcgi/homelab/bazel/tools/image:main`, built by `bazel/tools/image/BUILD` as a `rules_oci` index over linux/amd64, linux/arm64 and darwin/arm64) with `crane export` into `~/.cache/homelab-tools`, keyed by manifest digest so a re-run is a no-op until the image moves. That tag is floating: every push carries only the stamped build tag, so main's publish (`bazel/images/push/push-changed.sh`) points `:main` at the digest it found published on each run, whether it pushed the image or skipped it, after the charts are published and verified (a retag error warns, it never blocks a deploy; the last main run wins, not the newest commit). Without that step the tag froze when the branch-name tag left `remote_tags`, and fresh bootstraps failed the `REQUIRED_TOOLS` check. `.envrc` puts `bazel/tools/ci` and that cache's `usr/bin` on PATH and checks for a newer digest in the background. The image carries pinned per-platform binaries (argocd, bb, buildifier, buildozer, claude, crane, gh, gofumpt, helm, kind, op, ruff, shellcheck, shfmt), the cross-built repository tool hf2oci, node, pnpm, prettier with the Svelte plugin, a Python 3.13 runtime with the CLI's pip closure, and the hand-written `homelab` CLI from `tools/cli/`. Bootstrap validates the issue #3915 commands before recording a digest, so a partial extraction is never accepted as current. The image deliberately carries no `gazelle`: the only gazelle the multitool lockfile can supply is aspect-gazelle, a different program from `//:gazelle_binary`, and the correct one links a cgo tree-sitter that the amd64 executors cannot cross-build for darwin.
 
 Direct `bazel` on the Mac is blocked by a Claude hook (`bazel/tools/hooks/prefer-bb-remote.sh`). darwin has no executors, so the loop is `ci` (section 5).
 
@@ -20,13 +20,13 @@ Direct `bazel` on the Mac is blocked by a Claude hook (`bazel/tools/hooks/prefer
 
 ## 2. The Bazel graph
 
-bzlmod only (`MODULE.bazel`, no WORKSPACE). Language rulesets: `rules_go` with Gazelle and a `nogo` set (`bazel/tools/lint`), `aspect_rules_py` over a `rules_python` 3.13.9 toolchain (the stripped python-build-standalone tarballs, about a fifth of the size in every test's runfiles), `aspect_rules_js` on pnpm 10 (`rules_ts` and `rules_esbuild` were dropped in #6913 once no target loaded them), `rules_oci` and `rules_apko`, `rules_multitool`, `rules_multirun`, `aspect_rules_lint`, `rules_shell`, and `toolchains_buildbuddy` for the RBE C++ toolchain. Three in-repo rulesets: `bazel/helm`, `bazel/erlang`, `bazel/tla`. Binaries no ruleset provides (firecracker, k3s, the claude, codex and pi CLIs, `bb`) are vendored by the `multiarch_http_archive` and `multiarch_http_file` repo rules in `bazel/tools/http`, sha256-pinned per arch, with the comment on each `MODULE.bazel` entry recording why that pin and that arch set.
+bzlmod only (`MODULE.bazel`, no WORKSPACE). Language rulesets: `rules_go` with Gazelle and a `nogo` set (`bazel/tools/lint`), `aspect_rules_py` over a `rules_python` 3.13.9 toolchain (the stripped python-build-standalone tarballs, about a fifth of the size in every test's runfiles), `aspect_rules_js` on pnpm 10 (`rules_ts` and `rules_esbuild` were dropped in #6913 once no target loaded them), `rules_oci` and `rules_apko`, `rules_multitool`, `rules_multirun`, `aspect_rules_lint`, `rules_shell`, and `toolchains_buildbuddy` for the RBE C++ toolchain. Three in-repo rulesets: `bazel/helm`, `bazel/erlang`, `bazel/tla`. Binaries no ruleset provides (firecracker, k3s, the claude, codex and pi CLIs) are vendored by the `multiarch_http_archive` and `multiarch_http_file` repo rules in `bazel/tools/http`, sha256-pinned per arch, with the comment on each `MODULE.bazel` entry recording why that pin and that arch set.
 
-Python dependencies are `@pip//<package>` from the pip hub over `bazel/requirements/all.txt`; `requirement()` syntax is wrong here. The lock is layered: `pyproject.toml` compiles to `runtime.txt`, which constrains `test.in` and `tools.in`; `bazel run //bazel/requirements:runtime` and `:requirements.all` regenerate them (`bazel/tools/format/update-python-requirements.sh`).
+Python dependencies are `@pip//<package>` from the pip hub over `bazel/requirements/all.txt`; `requirement()` syntax is wrong here. The lock is layered: `pyproject.toml` compiles to `runtime.txt`, which constrains `test.in`; `bazel run //bazel/requirements:runtime` and `:requirements.all` regenerate them (`bazel/tools/format/update-python-requirements.sh`).
 
 `rules_apko` is patched (`bazel/patches/rules_apko_no_range.patch` under a `single_version_override`) so each apk is fetched whole: upstream's three ranged requests collide with Bazel's own resume `Range` header on a flaky link and abort analysis (#4849; dropping the patch is #5399). Under `--config=ci` every `rctx.download` goes through BuildBuddy's Remote Asset API with local fallback, so a cold queue candidate no longer depends on Wolfi or PyPI being healthy.
 
-**BUILD generation is CI-only.** `//:gazelle` is a custom `gazelle_binary` carrying the `argocd` (helm), `bzl`, `go`, `proto` and `python` languages, with `# gazelle:go_naming_convention_external import` so external Go deps resolve to the labels the `go_deps` extension actually creates. It runs inside `bazel run //bazel/tools/format:format` in CI's format stage, which auto-commits the result on PR branches as `ci-format-bot`: a BUILD change lands as a `style: auto-format` commit after yours, and your next push is non-fast-forward until you fetch and rebase. `ci regen` prints a reminder and runs nothing. The Python gazelle manifest lives in `bazel/tools/python`, which every CI command passes as `--deleted_packages` so analysis never fetches every wheel.
+**BUILD generation is CI-only.** `//:gazelle` is a custom `gazelle_binary` carrying the `argocd` (helm), `bzl`, `go`, `proto` and `python` languages, with `# gazelle:go_naming_convention_external import` so external Go deps resolve to the labels the `go_deps` extension actually creates. It runs inside `bazel run //bazel/tools/format:format` in CI's format stage, which auto-commits the result on PR branches as `ci-format-bot`: a BUILD change lands as a `style: auto-format` commit after yours, and your next push is non-fast-forward until you fetch and rebase. When BUILD inputs change, `ci regen` prints a reminder that Gazelle runs in CI; its local generators, Helm dependency sync and migration checks still run when their inputs change (section 5). The Python gazelle manifest lives in `bazel/tools/python`, which every CI command passes as `--deleted_packages` so analysis never fetches every wheel.
 
 (see: `MODULE.bazel`, `.bazelrc`, `bazel/remote.bazelrc`, root `BUILD`, `bazel/requirements/README.md`, `bazel/tools/http/`, `bazel/patches/`)
 
@@ -58,11 +58,32 @@ passing through the autoformat author guard.
 
 ## 3. Images
 
-Application images are apko (`bazel/tools/oci/apko_image.bzl`) over Wolfi packages, non-root uid 65532, from an `apko.yaml` plus a committed `apko.lock.json`; 25 targets today. Two older shapes remain: `go_image` (four targets, distroless base) and one `py3_image` (ubuntu base). Every macro emits `{name}.push` (collected into the generated `//bazel/images:push_all` multirun), `{name}.info` (an `OciImageInfo` that `helm_images_values` deep-merges into the chart's `values.yaml` at package time, which is why no values file ever hand-pins a `@sha256:` digest), and for apko a `{name}_lock_test` that fails when the lock's config checksum no longer matches the YAML.
+Application images use apko (`bazel/tools/oci/apko_image.bzl`) over Wolfi packages, non-root uid 65532, from an `apko.yaml` plus a committed `apko.lock.json`. Two other shapes remain: `go_image` with a distroless base and `py3_image` with an Ubuntu or custom base. Every macro emits `{name}.push` (collected into the generated `//bazel/images:push_all` multirun), `{name}.info` (an `OciImageInfo` that `helm_images_values` deep-merges into the chart's `values.yaml` at package time, which is why no values file ever hand-pins a `@sha256:` digest), and for apko a `{name}_lock_test` that fails when the lock's config checksum no longer matches the YAML.
 
-**amd64, with one exception.** `apko_image` defaults `arm64 = True` and 24 of its 25 call sites pass `False`: all nodes and the RBE executor are amd64, no chart pins an arch, and the aarch64 half of a manifest had no consumer. The exception is `projects/embervm/noded/image`, which still builds an amd64 plus arm64 index through `multiarch_tars`. `go_image` and `py3_image` default to single-platform (`multi_platform = False`) and no caller overrides it. Re-adding an arch is `arm64 = True` plus per-arch `tars`; `arm64 = False` with `multiarch_tars` fails to push a layer blob at push time, so PR CI stays green and main's deploy is what breaks.
+**Image architectures.** `apko_image` defaults `arm64 = True`; all callers pass `False`. Noded's unused arm64 cross-build and index were retired under #7065 (Joe's 2026-10-28 decision). `go_image` and `py3_image` build one image, selecting Linux for the caller's CPU through their existing platform transitions. Linux CI selects amd64. The default distroless base contains only amd64; another CPU requires a matching custom base. The Ubuntu `python_base` retains its existing amd64 and arm64 registrations. Re-adding an apko arch is `arm64 = True` plus `multiarch_tars`; `arm64 = False` needs concrete per-arch `tars`. Combining `arm64 = False` with `multiarch_tars` fails to push a layer blob at push time, so PR CI stays green and main's deploy is what breaks.
+
+**Why.** No caller used the Go or Python multi-platform branches (#7081).
+Removing them preserves the single-platform image, load, push and digest
+targets. Python's unused `multiarch_tars` argument is removed; concrete layers
+belong in `tars`. The build-only per-domain image scaffold was retired under
+#7026; shared Python base platform registrations are unchanged.
 
 Digests are reproducible: `.bazelrc` pins `SOURCE_DATE_EPOCH` to a constant so apko stops stamping a wall-clock `created` time, and `--stamp` is applied only by the push job, never by `--config=ci`, because a stamped graph turns every image's digest rule into a cache miss. On main, `bazel/images/push/push-changed.sh` builds everything, reads each image's content digest from `//bazel/images/digests:manifest`, and pushes only what the registry does not already hold; PR branches `bazel build` the images and push nothing.
+
+Before the first selected image is pushed, the publisher checks every selected
+push target's real runfiles with `bazel run --run_under` and the same CI flags.
+The read-only wrapper takes the actual image path from the generated push script,
+walks index/manifest/config/layer descriptors, and checks readable files and sizes.
+It logs digests and broken-link paths without executing the push. Images already
+proven present remain skipped. OCI and Claude-runtime changes also exercise this
+check on the Claude push target in PR and queue CI.
+
+**Why.** After #7681, main's tests and image builds passed but publication failed
+opening a Claude image layer blob. A later runner could read all 17 referenced
+blobs; the original failure was not reproduced. Checking the runner's actual push
+closure catches this class of failure before registry writes, without changing
+cache policy or downloading images that would otherwise be skipped. Successful
+publication and verified rollout remain separate requirements.
 
 Lock maintenance: `update-apko-locks.sh` re-resolves a lock (needs Bazel, and pins the host's execution platform so a registered foreign execution platform cannot hand it the wrong apko binary, as the aarch64 OCaml platform once did), `fix-apko-checksum.sh` re-hashes a config-only edit without Bazel, and the Renovate apko-lock CronWorkflow refreshes every lock weekly on its own PR. The lock checksums the whole YAML file, so a comment edit invalidates it.
 
@@ -76,15 +97,25 @@ Lock maintenance: `update-apko-locks.sh` re-resolves a lock (needs Bazel, and pi
 
 One action in `buildbuddy.yaml`, `pr-checks`, handles pull requests, merge-queue candidates (`gh-readonly-queue/*`, which arrive as push events), and pushes to `main`. Its exact name remains the GitHub ruleset's required status check. Every run clones full history (`git_fetch_depth: 0`) and uses the same runner and snapshot namespace. A gate requires `GIT_BRANCH` to equal `GIT_REPO_DEFAULT_BRANCH` and `GIT_PR_NUMBER` to be zero before routing into publishing or chart-version write-back. The PR-number condition keeps a pull request from a fork branch named `main` out of that route: PR events set `GIT_BRANCH` to the head ref and `GIT_PR_NUMBER` non-zero, push events never set a PR number, and a fork's push fires the fork's webhooks. Credential isolation is unchanged by the gate: BuildBuddy injects secrets for every trusted event, including same-repo events and collaborator fork PRs, executes the YAML from the pushed branch, and already supplied `GHCR_TOKEN` to `pr-checks`; `ON_MAIN` is a routing guard inside a PR-controlled script.
 
-Tests run before the main-only publish, so a failing suite cannot ship images or charts. PR and merge-queue runs prove the image build and render the manifest diff but never publish. A normal main run calls `push-changed.sh`, writes published chart versions back as the repository owner through the ruleset's existing bypass, then runs formatting and generators read-only. Publishing stays before formatting so a formatter tool failure cannot prevent tested images from shipping, while format drift still makes the action fail. A main push whose head is the `chore(charts): publish` write-back still runs the tests to refresh the shared snapshot but skips publishing, write-back and formatting: `push.sh.tpl` finds nothing to publish for that head and the commit touches only version lines. A push whose head is a `style: auto-format` commit publishes normally, because rebase merges routinely land the format bot's commit as the head of a PR that changed a chart. A write-back head skips the read-only format check, so generator drift from a write-back surfaces on the next author's commit. PR and merge-queue runs now have a two-hour ceiling, as do main runs, for a wide cold image rebuild.
+Tests run before the main-only publish, so a failing suite cannot ship images or charts. PR and merge-queue runs prove the image build and render the manifest diff but never publish. A normal main run calls `push-changed.sh`, writes published chart versions back as the repository owner through the ruleset's existing bypass, then runs formatting and generators read-only. Publishing stays before formatting so a formatter tool failure cannot prevent tested images from shipping, while format drift still makes the action fail. A main head with subject `chore(charts): publish*` retains the existing skip of images, publishing, write-back and formatting, even when the version-only classifier below rejects it. A push whose head is a `style: auto-format` commit publishes normally, because rebase merges routinely land the format bot's commit as the head of a PR that changed a chart. PR and merge-queue runs have a two-hour ceiling, as do main runs, for a wide cold image rebuild.
 
 Chart versions advance for conventional commits that change effective release inputs, not every file in a Bazel package. `chart-version.sh` queries the concrete source and build-file closure of `chart.package`, including pinned-image and shared sources, and adds the active deploy render targets plus their Application and kustomization inputs. A documentation or test file outside that closure does not publish merely because it shares a package with an input. A documentation-looking file that is packaged or otherwise selected by the graph remains an input. Deletions and renames get a conservative package-level guard because a removed file cannot appear in the current closure. A missing Bazel command, a query error, partial output, an empty closure or an unsupported label falls back to a repo-wide commit walk. This can over-publish, but cannot silently suppress a real release. Git-walk or version-computation failures stop the caller rather than reusing the current published version.
 
-The format stage runs `bazel run //bazel/tools/format:format` plus the format-stage guards in section 6, then `git diff --exit-code`. Drift on a PR branch is committed and pushed as `ci-format-bot`, and the run that pushed it exits red so a green status on the superseded head cannot enqueue a merge without the fix (#5089). Drift on a queue candidate fails the run, which ejects the PR.
+PR and merge-queue runs execute the repository-pinned Go/proto Gazelle pass before graph analysis, so new Go imports and packages receive their CI-generated BUILD graph before compilation. The shared writeback guard includes new BUILD files from this pass, excludes other untracked runner files, and fails the superseded head. Main skips this preparation and retains its tests, publication, then read-only formatting order. A Go-graph writeback does not skip the later full formatter: only an exact `style: auto-format` commit by ci-format-bot does.
+
+The full format stage still runs `bazel run //bazel/tools/format:format` plus the format-stage guards in section 6 after image validation, then checks tracked drift. Both generation paths share the same PR writeback and main/queue refusal. Drift on a PR branch is committed and pushed as ci-format-bot, and the run exits red so the generated head must pass fresh required checks. Drift on main or a queue candidate fails without committing or pushing.
 
 **Why.** Helm proves that templates render, but it does not enforce the API server's required fields or reject unknown fields. `//bazel/helm:chart_admissibility_test` validates every first-party and platform chart render, including admissible GKE value overlays, with kubeconform strict mode against the hub's pinned Kubernetes 1.36.3 schemas and CRD schemas derived from pinned charts. GKE auto-upgrades the control plane, so the pin is hand-maintained against `kubectl version` on the hub and drifts silently otherwise. The offline schemas and an invalid `secretKeyRef` negative control keep the result reproducible and fail closed without giving CI cluster credentials.
 
-Runner cost is dominated by cold snapshot restores, so the action keeps one shared workspace, removes Bazel's sandbox stash before the runner snapshots the VM, and disables the stash under `--config=ci`. `resource_requests` are part of the snapshot key, so changing them invalidates every snapshot and they change rarely. One further action (BDD future features) has been commented out since 2026-08-09 to cut runner spin-ups; nothing required depends on it. The Buck2 rules action that was disabled at the same time went with the `buck2/` tree (#6913). `gh run` sees none of this: PR and queue checks live on BuildBuddy, and a red one is re-triggered from there.
+Runner cost is dominated by cold snapshot restores, so the action keeps one shared workspace, removes Bazel's sandbox stash before the runner snapshots the VM, and disables the stash under `--config=ci`. `resource_requests` are part of the snapshot key, so changing them invalidates every snapshot and they change rarely. The Buck2 rules action that was disabled in August went with the `buck2/` tree (#6913). `gh run` sees none of this: PR and queue checks live on BuildBuddy, and a red one is re-triggered from there.
+
+`WRITE_BACK_ONLY` defaults to false. Only an `ON_MAIN` head already recognized by the write-back subject can enable it, after a successful, nonempty `git diff --no-renames --name-only -z HEAD~1 HEAD --`. Every path must be exactly `projects/<project>/chart/Chart.yaml` or `projects/<project>/deploy/application.yaml`, with one project component containing only ASCII letters, digits, underscores or hyphens. Multiple projects may occur. NUL records preserve filenames; disabling rename detection exposes both sides of renames. A missing parent, failed or empty diff, an outside path or an unsupported project name leaves the flag false. Ordinary main commits, PRs (including a head branch named main), queue candidates and formatter-bot heads retain their test and generated-source gates.
+
+Verified version-only heads skip stage 2 and the post-format Go-stub build, Gazelle test and stub comparison. No `bazel test` command runs on that path. The central BUILD, verification-genrule, chart-version and source ratchets and `test_source_reachability.py` remain fatal on the head; reachability still queries the Bazel graph. Later checks and the EXIT snapshot-cleanup trap remain active. The snapshot premise is that the publishing run already tested and warmed the same source tree before writing version metadata. The action name and resources stay unchanged. Warm restore on the next PR still needs live evidence.
+
+Stage skipping leaves the workflow invocation in place. The seven-day acceptance target remains about 2 to about 1 total main invocations per merged PR. Measure total invocations separately from full-suite and fast-path runs; unchanged triggers alone cannot establish that target. Repository regression fixtures establish routing behavior. Post-landing BuildBuddy invocations, warm snapshot restore and seven-day counts remain operational acceptance for #7457.
+
+**Why.** Joe's 2026-10-28 decision retired the unused BDD future lane (#7088). Its commented action, CI tag exclusions and macro parameter were removed: no active target carried either excluded tag and no caller supplied the parameter. Ordinary `bdd_test` targets keep the `bdd` tag and run through the standard test selection.
 
 The repository remains rebase-only, the merge queue remains the authoritative pre-merge gate, and a PR is never rebased by hand merely for BEHIND. The details are in `AGENTS.md`, "Git and PRs".
 
@@ -98,7 +129,7 @@ The repository remains rebase-only, the merge queue remains the authoritative pr
 
 ## 5. The local loop: `ci`
 
-`ci` (`bazel/tools/ci/ci`) runs lint, regen, ratchet, then test. `CI_BASE_REF` selects the base ref (default `origin/main`). Lint and regen select changed files against that base plus working-tree changes. `ci lint` formats only changed files with the PATH tools (buildifier is skipped if absent; CI covers BUILD files). `ci regen` runs `run-generators.sh` only when a generator input changed and the migration-ordering check only when a migration changed. `ci test` ships the local diff (committed, staged, unstaged and untracked) to one hosted Linux runner with `bb remote`, whose exec properties mirror the `pr-checks` `resource_requests` (`ci_test.sh` asserts the parity), and runs `local-affected-test.sh` there with the PR test flags. `ci test -- //...` is the explicit full-suite escape hatch.
+`ci` (`bazel/tools/ci/ci`) runs lint, regen, ratchet, then test. `CI_BASE_REF` selects the base ref (default `origin/main`). Lint and regen select changed files against that base plus working-tree changes. `ci lint` formats only changed files with the PATH tools (buildifier is skipped if absent; CI covers BUILD files). `ci regen` runs `run-generators.sh` only when a generator input changed, syncs Helm dependencies when Chart.yaml, Chart.lock or charts/*.tgz changes, and runs the migration-ordering check only when a migration changed. Helm sync requires the bootstrapped `helm` on PATH and fails with a `./bootstrap.sh` hint if it is missing. `ci test` ships the local diff (committed, staged, unstaged and untracked) to one hosted Linux runner with `bb remote`, whose exec properties mirror the `pr-checks` `resource_requests` (`ci_test.sh` asserts the parity), and runs `local-affected-test.sh` there with the PR test flags. `ci test -- //...` is the explicit full-suite escape hatch.
 
 Bare `ci` runs all four pure-Python PR guards before remote tests, including with `SKIP_REMOTE=1`. It resolves one merge base between `CI_BASE_REF` and `HEAD`, failing if unavailable. In PR order, `verification_genrule_guard.py .` scans BUILD files in the working tree; `central_build_ratchet.py`, `chart_version_guard.py` and `source_ratchet.py` each compare that merge base with committed `HEAD`. The revision-based guards do not check staged or unstaged edits. Any guard error stops `ci` before `bb remote`. There is no standalone `ci ratchet` subcommand, and `ci test` alone does not run these guards.
 
@@ -116,7 +147,7 @@ The pre-push hook runs `ci test` only under `RUN_CI_TEST=1`: every push is teste
 
 ## 6. Formatting, generators and guards
 
-`//bazel/tools/format:format` is a multirun of four commands: `run_generators`, `format_code` (gofumpt, prettier, ruff, shfmt, buildifier through `aspect_rules_lint`), `format_svelte` (the same hermetic prettier with `prettier-plugin-svelte`, since rules_lint has no Svelte dialect), and `//:gazelle`. `run-generators.sh` is the single list of committed-artifact generators, run by both CI and the local paths so they cannot drift: the `push_all` BUILD, the monolith routes, the posts manifest, the orchestrator bundle, and the per-guest `environment.md` files. `sync-helm-deps.sh` and the Atlas checksum update are deliberately not in that list: they need `helm` and `atlas`, which the CI runner lacks, so they run only from `fast-format.sh` locally and CI enforces the same invariants read-only.
+`//bazel/tools/format:format` is a multirun of four commands: `run_generators`, `format_code` (gofumpt, prettier, ruff, shfmt, buildifier through `aspect_rules_lint`), `format_svelte` (the same hermetic prettier with `prettier-plugin-svelte`, since rules_lint has no Svelte dialect), and `//:gazelle`. `run-generators.sh` is the single list of committed-artifact generators, run by both CI and `ci regen`: the `push_all` BUILD, the monolith routes, the posts manifest, the orchestrator bundle, and the per-guest `environment.md` files. `sync-helm-deps.sh` and the Atlas checksum update need `helm` and `atlas`, which the CI runner lacks. Local `ci regen` syncs vendored Helm dependencies when Chart.yaml, Chart.lock or charts/*.tgz changes; for library-template-only changes, run `./bazel/tools/format/sync-helm-deps.sh` directly. The migration pre-commit hook runs `update-atlas-sum.sh`. CI enforces both invariants read-only. BUILD generation through Gazelle stays in CI's Format stage.
 
 **Why.** Rust formatting belongs to `cargo fmt --all -- --check` from `projects/oom-inference`, using its `rust-toolchain.toml`. The removed direct `rules_rust` dependency and Rust 1.75 extension served only `format_code` (#7082). Omitting `rust` from `format_multirun` disables that language; `.bazelignore` alone does not exclude tracked Rust files from the formatter's Git selection. `format_code_test` exercises the generated runner with invalid tracked Rust and checks that the remaining configured formatters accept formatted files and reject drift.
 
@@ -134,7 +165,7 @@ The repo-docs and public docs manifests are genrule outputs, not committed files
 
 Claude PreToolUse hooks (`bazel/tools/hooks/`, wired in `.claude/settings.json`, each with an `sh_test`). Blocking: `prefer-bb-remote.sh`, `check-ci-pipe-mask.sh`, `block-kubectl-mutate.sh` (kubectl write verbs, `--dry-run` aside), `pretooluse-write-edit.sh` (writes under `docs/plans/` are refused; plans live in GitHub Issues), and `check-public-reader-grant.sh` (a `CREATE TABLE` in a public-served schema must carry a `public_reader` grant or an explicit override comment). Advisory: `check-em-dash.sh`, `check-large-migration-sql.sh` (the migrations ConfigMap's 256 KiB annotation cap), `check-constant-change-test-grep.sh` (grep the tests before changing a numeric constant), and `check-adr-architecture-sync.sh` (editing a covered config or build tree reminds you that the domain's `ARCHITECTURE.md` is the source of truth).
 
-Git hooks (`bazel/tools/git/`, installed by pre-commit): `protect-main.sh` refuses commits on main, `check-commit-msg-ascii.sh` is the commit-msg check, `check-stale-pr.sh` blocks pushes to a branch whose PR is closed or merged, `post-rewrite-format.sh` runs selective lint after a rebase, and `pre-push-ci-test.sh` as above.
+Git hooks (`bazel/tools/git/`, installed by pre-commit): `protect-main.sh` refuses commits on main, `check-commit-msg-ascii.sh` is the commit-msg check, `post-rewrite-format.sh` runs selective lint after a rebase, and `pre-push-ci-test.sh` as above. `check-stale-pr.sh` lives in the same directory but is a Claude Bash hook registered in `.claude/settings.json`; it blocks pushes to a branch whose PR is closed or merged.
 
 (see: `bazel/tools/hooks/`, `bazel/tools/git/`, `.claude/settings.json`)
 
@@ -156,13 +187,66 @@ The repo used to carry its own layer: `semgrep_test` / `semgrep_target_test` / `
 
 Both are build-time-only toolchains for EmberVM, vendored prebuilt rather than built. `bazel/erlang` fetches the hex.pm OTP build compiled for the executor's Ubuntu 22.04 (so crypto links the executor's libssl with no provisioning), Elixir, and the hex dependency tarballs as `http_file`s that the `mix_*.sh` drivers unpack into `deps/` as path deps, so mix never contacts hex.pm; the deployed control plane gets its OTP from Wolfi. `bazel/tla` fetches `tla2tools.jar` (v1.7.4, the last tag whose asset is immutable) and a Temurin 21 JRE for the TLC checks over `projects/embervm/specs`, with `tlc.sh` reporting INCOMPLETE rather than PASS when `stopAfter` truncates a run.
 
-Their suites are genrules, not test rules, tagged `verification` so `affected-targets.sh` selects them by tag (#5538); they never appear in the `Executed N out of M` count, and a failure surfaces as a build failure. Nothing stops the next such genrule being added untagged (#5626).
+Their suites are genrules, not test rules, tagged `verification` so `affected-targets.sh` selects them by tag (#5538); they never appear in the `Executed N out of M` count, and a failure surfaces as a build failure. `verification_genrule_guard.py` rejects untagged suite-shaped names (`tlc_*`, `*_smoke`, `*_test`) before selection, including in new packages. Other names remain outside its heuristic.
 
 (see: `bazel/erlang/repositories.bzl`, `bazel/tla/repositories.bzl`, `projects/embervm/control/BUILD`, `projects/embervm/specs/BUILD`)
 
 **Why.** Prebuilt OTP and a vendored JRE were chosen over hermetic rules_erlang and rules_java toolchains because the executor is a known Ubuntu 22.04 image and nothing deployed depends on either artifact; the cost is a pin that moves by hand. The suites stayed genrules rather than test rules because the mix and TLC drivers own their own process lifecycle, and a tag is the cheapest way to make the affected-target walk see them.
 
 ---
+
+## CI runner history
+
+These measurements were recorded in `buildbuddy.yaml` before the shared-runner
+extraction for #7455, at baseline `c7bdbb11bce5d6d10b131e0f948d9c3aa43a2b01`.
+They explain earlier decisions; they are not measurements of today's runner.
+
+- In the seven days through 2026-08-09, the separate Format check, Test and Push
+  images actions each ran about 747 times, with cold rates of 20%, 56% and 62%.
+  The comments attributed 99% of CI_RUNNER downloads to cold snapshot restores.
+  Consolidating into `pr-checks` reused one workspace. #4824 recorded that action
+  names partition snapshot keys even with identical images and resources; a
+  separate deploy action had required a second main test run to seed snapshots.
+- Invocation `e687c0c6` executed 75 of 21,988 actions; 68 were local apko actions,
+  spanning 04:10:49 to 04:16:13 in an execution phase from 04:10:45 to 04:16:15.
+  This supported eight runner CPUs for `no-remote-exec` image builds. Resource
+  platform properties also affect snapshot keys. The shared local values and
+  warning now live in `tools/ci/runner-resources.env`; YAML remains static and
+  parity-tested, including the emitted local `bb remote` arguments.
+- Unlimited history replaced deploy's manual unshallow fetch. Chart versions
+  walk conventional commits since the last version change; a shallow graft can
+  make that range empty. The recorded cold-fetch increase was about 152 MB
+  (12 MB to 164 MB for 12,000 commits with `blob:none`). This was a historical
+  cost estimate, not a current clone-size assertion.
+- Main deploy `1e63fee7` reached the former one-hour limit after all 14 image
+  push children succeeded, before chart publication and version writeback.
+  The recorded wide-rebuild estimate was 10 minutes of tests, 55 minutes of
+  image work and 15 minutes of publication/formatting. The shared two-hour
+  ceiling avoids splitting stages into separate snapshot namespaces.
+- The 120 GB reservation originated at `db9ea2ce0` in July 2026 for earlier
+  action shapes. Between-stage `df` samples understate peak use inside builds;
+  snapshot transfer cost follows stored contents, not reserved capacity.
+  Through 2026-08-28, cold restores accounted for 2.7 TB of 4.5 TB over six
+  days (61%), with 161 restores of 15 to 20 GB. A cold VM reported 38 GB used
+  before steps. Candidate `76ac21dd` refuted #5397's download-cache hypothesis:
+  runner HOME was `/home/buildbuddy/workspace/.home`, its Bazel cache was
+  187 MB and `/var/lib/docker` was 4 KB; 19 GB was in the workspace.
+- Candidate `9e29fc49` (#5401) measured 15 GB in `output-base/external`, 7.8 GB
+  in `execroot/_main`, 6.8 GB in `sandbox/sandbox_stash`, and 30 GB in the
+  workspace, unchanged between start and finish. The then-estimated benefit
+  of removing the stash was 23% of workspace contents, about 100 GB/day.
+  `--noreuse_sandbox_directories` stops new stash accumulation; the EXIT trap
+  removes only the old stash, never active sandbox directories. Cleanup errors
+  are deliberately non-fatal. `workspace_breakdown` remains diagnostic.
+
+The current shared interfaces preserve caller base resolution. Workflow stage 1
+fetches once and freezes a merge-base SHA, then passes it to `ratchets.sh base
+head` and `local-affected-test.sh resolved-base`. A positional affected-test base
+disables ref fetching. Local `ci ratchet` resolves its own merge base; local
+`ci test` embeds the same affected-test script, retains BuildBuddy patch cleanup
+and fetches an `origin/*` base. Explicit targets bypass selection. Both guards
+and selectors fail closed. Reachability remains a separate workflow stage.
+Hook-versus-CI duplication remains intentional for fast feedback.
 
 ## Direction
 
@@ -176,14 +260,14 @@ has the full text.
 
 | ADR | Decision | Status | Disposition |
 |---|---|---|---|
-| tooling/001 | Distribute developer tools as a multi-arch OCI image pulled by `crane export`; no local Bazel; all execution remote | Implemented. `bazel/helm/render.sh`, `bazel/helm/lint.sh`, and the live ArgoCD diff are built; Claude-in-cluster convergence is unbuilt (#3914, #3915, #3916) | deleted |
+| tooling/001 | Distribute developer tools as a multi-arch OCI image pulled by `crane export`; no local Bazel; all execution remote | Implemented. `bazel/helm/render.sh` and `bazel/helm/lint.sh` remain; the unused per-Application live diff was removed in #7081. `check-application-drift.sh` remains the operational drift check. #3915 (remaining image tools) and #3916 (live diff) completed; #3914 closed not planned because EmberVM guests superseded Claude agent pods from the tools image | deleted |
 | tooling/002 | Copier template that scaffolds a new service | Draft, never executed; the current recipe is to copy `projects/monolith/deploy/` (#3918) | deleted |
 | tooling/003 | Generate the `homelab` CLI and Claude skills from the FastAPI OpenAPI spec | Deprecated; `tools/cli` stays hand-written | deleted |
 | tooling/004 | Scale the custom `bazel/ocaml` ruleset rather than adopt obazl: ppx first, a locked opam universe, dune translation, per-arch native toolchains | Superseded; the ruleset was removed in #6913 after #4777 left it purposeless | deleted |
 | tooling/005 | tOyCaml as the engine-shaped acceptance target | Superseded; removed with the ruleset in #6913 | deleted |
 | tooling/006 | Data-driven arch registry; per-arch toolchain registration gated on a verified executor pool | Superseded; the arch registry and its arm64 toolchain went with the ruleset in #6913 | deleted |
 | tooling/007 | A Gazelle extension generates first-party OCaml BUILD files | Superseded; nothing to generate once the ruleset was removed in #6913 | deleted |
-| tooling/008 | One graph, native execution platforms (cloud arm64, self-hosted darwin) for CLI releases; no cross-compilation, QEMU or wasm | Accepted, partly executed; the native arm64 CI shard was removed with the OCaml ruleset in #6913, release work remains (#3926, #3928, #3929) | deleted |
+| tooling/008 | One graph, native execution platforms (cloud arm64, self-hosted darwin) for CLI releases; no cross-compilation, QEMU or wasm | Accepted, partly executed; the native arm64 CI shard was removed with the OCaml ruleset in #6913, and the release work closed not planned (#3926, #3928, #3929) | deleted |
 | tooling/009 | Per-package visibility and tags classify monolith packages; lint out central `gazelle:exclude` | Superseded 2026-09-14: the per-package migration and its follow-on ratchet closed not planned (#3930, #3931, #3932); the central-enumeration ratchet from PR #6030 remains the only control and grandfathers existing excludes | deleted |
 | tooling/010 | Hermetic Bazel-native visual regression on an apko chromium image | Deprecated; the suite was removed 2026-08-09 | deleted |
 | tooling/011 | Two Semgrep scan tiers: a warm single-file `mcp --pro` server for MCP and PR, and a scheduled interfile full scan on main | Superseded; the full-scan tier was removed with fc-invoke on 2026-07-28 and the EmberVM warm tier in #4777 | deleted |

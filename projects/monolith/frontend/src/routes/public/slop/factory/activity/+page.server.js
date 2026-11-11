@@ -30,6 +30,7 @@ export async function load({ fetch, setHeaders }) {
   setHeaders(headers);
 
   return {
+    evaluatedAt: new Date().toISOString(),
     title: "Factory activity",
     board,
     unavailable: !ok,

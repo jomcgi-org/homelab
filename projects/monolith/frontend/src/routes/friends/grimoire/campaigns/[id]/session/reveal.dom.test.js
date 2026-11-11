@@ -155,7 +155,6 @@ describe("player reveal cards", () => {
 describe("player view", () => {
   beforeEach(() => {
     process.env.API_BASE = "http://backend.test";
-    process.env.GRIMOIRE_PLAY_ENABLED = "true";
   });
 
   it("never requests a DM-only route", async () => {
@@ -310,7 +309,6 @@ describe("player view", () => {
 describe("initiative operations", () => {
   beforeEach(() => {
     process.env.API_BASE = "http://backend.test";
-    process.env.GRIMOIRE_PLAY_ENABLED = "true";
   });
 
   for (const [operation, extra] of Object.entries(

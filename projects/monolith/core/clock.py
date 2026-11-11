@@ -22,3 +22,18 @@ def aware(value: datetime) -> datetime:
 
 def aware_iso(value: datetime | None) -> str | None:
     return aware(value).isoformat() if value is not None else None
+
+
+def iso_z(value: datetime | None) -> str | None:
+    stamp = iso(value)
+    return None if stamp is None else stamp.replace("+00:00", "Z")
+
+
+def iso_or_str(value: object) -> str | None:
+    if isinstance(value, datetime):
+        return aware_iso(value)
+    return None if value is None else str(value)
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)

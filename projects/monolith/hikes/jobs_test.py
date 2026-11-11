@@ -6,20 +6,21 @@ The async handlers delegate their DB work to synchronous cores
 session; the cores take an explicit session so they are testable against the
 in-memory fixture. The thin async wrappers are not unit tested here.
 
-Window tuples are [ts_unix_seconds, temp_c, precip_mm, wind_kmh, cloud_pct],
-exactly what hikes.forecast.compute_windows emits and what _write_walk_hours
-maps into typed WalkHour rows.
+Production compute_hours rows contain the seven HOUR_FIELDS values, including
+fog and low cloud. _write_walk_hours also intentionally supports five-field
+fixtures [ts_unix_seconds, temp_c, precip_mm, wind_kmh, cloud_pct], mapping
+missing extras to None in typed WalkHour rows.
 """
 
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlmodel import Session, SQLModel, create_engine, select
-from sqlmodel.pool import StaticPool
+from sqlmodel import select
 
 import hikes.jobs as jobs
 from hikes.models import Walk, WalkHour
 from shared.forecast_freshness import top_of_hour
+from shared.testing.sqlite import sqlite_session
 
 
 def _scraped(uuid, **over):
@@ -41,29 +42,42 @@ def _scraped(uuid, **over):
 
 @pytest.fixture(name="session")
 def session_fixture():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
+    with sqlite_session() as session:
+        yield session
 
 
 def _utc(dt):
     """Coerce a loaded datetime to UTC-aware (SQLite returns naive values)."""
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def test_entity_success_time_includes_empty_and_survives_scrape_prune(
+    session, monkeypatch
+):
+    now = datetime(2026, 10, 23, 14, tzinfo=timezone(timedelta(hours=2)))
+    old = now.astimezone(timezone.utc) - timedelta(days=1)
+    session.add_all(
+        [_scraped(key, forecast_fetched_at=old) for key in ("full", "empty", "failed")]
+    )
+    session.add(_scraped("never"))
+    session.commit()
+    windows = {"full": [[int(now.timestamp()), 8, 0, 10, 20]], "empty": []}
+    assert jobs._write_walk_hours(session, windows, now) == 1
+    session.commit()
+    session.expire_all()
+    for key in ("full", "empty"):
+        assert _utc(session.get(Walk, key).forecast_fetched_at) == now
+    assert _utc(session.get(Walk, "failed").forecast_fetched_at) == old
+    assert session.get(Walk, "never").forecast_fetched_at is None
+    assert jobs._write_walk_hours(session, {}, now + timedelta(hours=1)) == 0
+    jobs._upsert_walks(session, [_scraped("full", name="Renamed")])
+    monkeypatch.setattr(jobs, "top_of_hour", lambda: now + timedelta(hours=2))
+    assert jobs._prune_elapsed(session) == 1
+    session.commit()
+    session.expire_all()
+    assert session.get(Walk, "full").name == "Renamed"
+    assert _utc(session.get(Walk, "full").forecast_fetched_at) == now
+    assert _utc(session.get(Walk, "empty").forecast_fetched_at) == now
 
 
 def _ts(dt: datetime) -> int:
@@ -105,6 +119,21 @@ def test_write_walk_hours_inserts_rows_for_each_walk(session):
     assert a.wind_kmh == 14
     # A single shared fetched_at is stamped across the whole run.
     assert len({r.fetched_at for r in rows}) == 1
+
+
+def test_write_walk_hours_stores_the_complete_forecast_columns(session):
+    h1 = datetime(2026, 6, 13, 12, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 13, 11, tzinfo=timezone.utc)
+    row = [_ts(h1), 7.4, 3.4, 80.28, 90, None, 62]
+    jobs._write_walk_hours(session, {"walk-a": [row]}, now)
+    session.commit()
+    a = session.get(WalkHour, ("walk-a", h1))
+    assert (a.precip_mm, a.wind_kmh, a.fog_pct, a.low_cloud_pct) == (
+        3.4,
+        80.28,
+        None,
+        62,
+    )
 
 
 def test_write_walk_hours_leaves_unfetched_walks_untouched(session):

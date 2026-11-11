@@ -1,0 +1,320 @@
+package walks
+
+import (
+	"fmt"
+	"math"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/astro"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
+)
+
+// windyKmh is the sustained wind at the start above which a day that fits is
+// marginal rather than go: around Beaufort 7, unpleasant low down and
+// serious on any ridge.
+const windyKmh = 50
+
+// Assessment is a verdict with its reason and, when the walk fits, the
+// window to start in.
+type Assessment struct {
+	Verdict verdict.Verdict
+	Why     string
+	// StartFrom and StartBy bound the start time that keeps the walk inside
+	// the best slot; zero unless the walk fits. A walk longer than its slot
+	// gets one start: before the slot so it finishes at the slot's end, or at
+	// sunrise when that would be dark, running past the slot's end.
+	StartFrom, StartBy time.Time
+}
+
+func local(t time.Time) string { return t.In(london).Format("15:04") }
+
+func localDay(t time.Time) string { return t.In(london).Format("Mon 15:04") }
+
+// outcome is which verdict rule decided a day.
+type outcome int
+
+const (
+	beyondForecast outcome = iota
+	forecastEnds
+	noGoodHour
+	tooShort
+	darkShoulder
+	badHourInside
+	windyStart
+	fits
+)
+
+func (o outcome) verdict() verdict.Verdict {
+	switch o {
+	case beyondForecast, forecastEnds:
+		return verdict.Unknown
+	case noGoodHour, tooShort:
+		return verdict.No
+	case darkShoulder, badHourInside, windyStart:
+		return verdict.Marginal
+	}
+	return verdict.Go
+}
+
+func (w *Walk) outcome(d Day) outcome {
+	switch {
+	case !d.Decided && d.Coverage == CoverageNone:
+		return beyondForecast
+	case !d.Decided:
+		return forecastEnds
+	case !d.Doable && d.GoodHours == 0:
+		return noGoodHour
+	case !d.Doable:
+		return tooShort
+	}
+	b := d.Best
+	switch {
+	case float64(b.GoodHours) < w.required-requirementEpsilon, d.NeedsDark:
+		return darkShoulder
+	case int(b.End.Sub(b.Start)/time.Hour) > b.GoodHours:
+		return badHourInside
+	case b.MaxWindKmh > windyKmh:
+		return windyStart
+	}
+	return fits
+}
+
+// Verdict is Assess's verdict alone, without building its reason: what a
+// ranking over many walks needs.
+func (w *Walk) Verdict(d Day) verdict.Verdict { return w.outcome(d).verdict() }
+
+// Assess turns one assessed day into a verdict. hourlyUntil is the dataset's
+// forecast horizon, quoted when the day cannot be decided.
+func (w *Walk) Assess(d Day, hourlyUntil time.Time) (a Assessment) {
+	hourlyUntil = w.Horizon(hourlyUntil)
+	o := w.outcome(d)
+	a = Assessment{Verdict: o.verdict()}
+	defer func() {
+		if d.Best != nil && d.Decided {
+			a.Why += w.cloudAdvice(d, a)
+		}
+	}()
+	switch o {
+	case beyondForecast:
+		if hourlyUntil.IsZero() {
+			a.Why = "No successful forecast fetch is recorded for this walk."
+			return a
+		}
+		a.Why = "Beyond the hourly forecast, which reaches " + localDay(hourlyUntil) + "."
+		return a
+	case forecastEnds:
+		a.Why = "The hourly forecast reaches only " + localDay(hourlyUntil) + ", with no slot long enough before then."
+		return a
+	case noGoodHour:
+		hour, left := "No dry, calm daylight hour", ""
+		// The words follow the test the caller asked for, looser or
+		// stricter; Limited (stricter only) is for the dark-credit rule.
+		if d.Test != DefaultTest {
+			hour = "No daylight hour within the limits"
+		}
+		if d.Started {
+			left = " left today"
+		}
+		a.Why = hour + left + " at the start."
+		return a
+	case tooShort:
+		spell, left := "good spell", ""
+		if d.Test != DefaultTest {
+			spell = "spell within the limits"
+		}
+		if d.Started {
+			left = " left today"
+		}
+		a.Why = fmt.Sprintf("The longest %s%s is %d h; the walk takes about %.1f h.", spell, left, d.Best.GoodHours, w.DurationH)
+		return a
+	}
+	b := d.Best
+	a.StartFrom = b.Start
+	a.StartBy = b.End.Add(-time.Duration(w.DurationH * float64(time.Hour))).Truncate(time.Minute)
+	if a.StartBy.Before(a.StartFrom) {
+		// It needs more than the slot: start early, unless its dark credit
+		// can only be spent after the slot (see limitedEdges).
+		a.StartFrom = a.StartBy
+		if o == darkShoulder && d.DarkLateOnly {
+			a.StartFrom, a.StartBy = b.Start, b.Start
+		}
+		// A walk that fits in daylight starts at sunrise rather than in the
+		// dark, and spends its tolerance after the slot instead.
+		if o != darkShoulder && !d.Rise.IsZero() && a.StartFrom.Before(d.Rise) {
+			rise := d.Rise.Truncate(time.Minute)
+			if rise.Before(d.Rise) {
+				rise = rise.Add(time.Minute)
+			}
+			a.StartFrom, a.StartBy = rise, rise
+		}
+	}
+	// A walk that needs more than the slot starts before it, but never
+	// before the first hour that counts.
+	if a.StartFrom.Before(d.From) {
+		a.StartFrom = d.From
+	}
+	if a.StartBy.Before(a.StartFrom) {
+		a.StartBy = a.StartFrom
+	}
+	weather := fmt.Sprintf("wind up to %.0f km/h", b.MaxWindKmh)
+	if b.TotalPrecipMM >= WetMM {
+		weather += fmt.Sprintf(", %.1f mm of rain", b.TotalPrecipMM)
+	} else {
+		weather += ", dry"
+	}
+	weather += fmt.Sprintf(", rain in %d of %d qualifying hours (at least 0.1 mm/h)", b.WetHours, b.GoodHours)
+	switch o {
+	case darkShoulder:
+		// The slot can also hold its one bad hour (badHourInside comes
+		// after this rule), and that hour is named here too.
+		dark := "Fits only by starting or finishing in the dark"
+		if int(b.End.Sub(b.Start)/time.Hour) > b.GoodHours {
+			bad := "one wet or windy hour"
+			if len(d.GapFails) > 0 {
+				bad = "one " + failWords(d.GapFails) + " hour"
+			}
+			dark += ", with " + bad + " mid-walk"
+			if Known(d.GapRainMM) && d.GapRainMM >= WetMM {
+				weather = strings.Replace(weather, ", dry", ", otherwise dry", 1)
+			}
+		}
+		a.Why = fmt.Sprintf("%s: %s %s to %s, %s.", dark, goodHours(b.GoodHours), local(b.Start), local(b.End), weather)
+	case badHourInside:
+		bad := "one wet or windy hour"
+		if len(d.GapFails) > 0 {
+			bad = "one " + failWords(d.GapFails) + " hour"
+		}
+		// The weather sums cover the good hours, not the bad one: when that
+		// hour is known to be wet, "dry" holds only for the rest.
+		if Known(d.GapRainMM) && d.GapRainMM >= WetMM {
+			weather = strings.Replace(weather, ", dry", ", otherwise dry", 1)
+		}
+		a.Why = fmt.Sprintf("Fits with %s mid-walk: %s to %s, %s.", bad, local(b.Start), local(b.End), weather)
+	case windyStart:
+		a.Why = fmt.Sprintf("Fits, but windy at the start: %s to %s, %s.", local(b.Start), local(b.End), weather)
+	default:
+		a.Why = fmt.Sprintf("%s %s to %s, %s.", goodHours(b.GoodHours), local(b.Start), local(b.End), weather)
+	}
+	return a
+}
+
+// failWords reads Test.Fails codes as an adjective: "wet", "wet and windy".
+func failWords(fails []string) string {
+	words := map[string]string{"rain": "wet", "wind": "windy", "cold": "cold"}
+	var out []string
+	for _, f := range fails {
+		if w, ok := words[f]; ok && !slices.Contains(out, w) {
+			out = append(out, w)
+		}
+	}
+	return strings.Join(out, " and ")
+}
+
+func goodHours(n int) string {
+	if n == 1 {
+		return "1 good hour"
+	}
+	return fmt.Sprintf("%d good hours", n)
+}
+
+// cloudAdvice describes only known start-point forecasts. A later suggestion
+// must fit the entire duration in contiguous qualifying daylight hours inside
+// the already feasible start window. It does not change viability or #7275.
+func (w *Walk) cloudAdvice(d Day, a Assessment) string {
+	b := d.Best
+	low, fog := float32(-1), float32(-1)
+	knownLow, knownFog := 0, 0
+	byTime := map[int64]Hour{}
+	for _, h := range d.Hours {
+		byTime[h.Unix] = h
+		if h.Unix < b.Start.Unix() || h.Unix >= b.End.Unix() {
+			continue
+		}
+		if Known(h.LowCloudPct) {
+			low = max(low, h.LowCloudPct)
+			knownLow++
+		}
+		if Known(h.FogPct) {
+			fog = max(fog, h.FogPct)
+			knownFog++
+		}
+	}
+	parts := []string{}
+	if knownLow > 0 {
+		parts = append(parts, cloudCover("low cloud", low, knownLow, b.GoodHours))
+	}
+	if knownFog > 0 {
+		parts = append(parts, cloudCover("fog", fog, knownFog, b.GoodHours))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	advice := " At the start point: " + strings.Join(parts, ", ") + "."
+	if a.StartFrom.IsZero() || w.DurationH <= 0 {
+		return advice
+	}
+	rise, set, ok := astro.SunTimes(b.Start, w.Lat, w.Lon)
+	if !ok {
+		return advice
+	}
+	hill := w.SubstantialClimb()
+	score := func(start time.Time) (float64, bool) {
+		if start.Before(rise) || start.Add(time.Duration(w.DurationH*float64(time.Hour))).After(set) {
+			return 0, false
+		}
+		total := 0.0
+		count := int(math.Ceil(w.DurationH))
+		for i := 0; i < count; i++ {
+			h, exists := byTime[start.Add(time.Duration(i)*time.Hour).Unix()]
+			if !exists || !Known(h.FogPct) || hill && !Known(h.LowCloudPct) {
+				return 0, false
+			}
+			cover := h.FogPct
+			if hill {
+				cover = max(cover, h.LowCloudPct)
+			}
+			total += float64(cover)
+		}
+		return total / float64(count), true
+	}
+	first := a.StartFrom.Truncate(time.Hour)
+	if first.Before(a.StartFrom) {
+		first = first.Add(time.Hour)
+	}
+	initial, ok := score(first)
+	if !ok || initial < 50 {
+		return advice
+	}
+	best, bestScore := first, initial
+	for t := first.Add(time.Hour); !t.After(a.StartBy); t = t.Add(time.Hour) {
+		if v, ok := score(t); ok && v < bestScore {
+			best, bestScore = t, v
+		}
+	}
+	if initial-bestScore >= 20 {
+		reason := "fog"
+		if hill {
+			reason = "low cloud/fog"
+		}
+		advice += fmt.Sprintf(" Prefer %s for less %s over the %.1f h walk; clearing is not guaranteed.", local(best), reason, w.DurationH)
+	}
+	return advice
+}
+
+// SubstantialClimb is a conservative route-profile proxy, not a terrain label
+// or summit elevation. Requiring both 500 m total ascent and 40 m per km
+// avoids treating long gently rolling urban routes as hill days. The snapshot
+// has neither terrain categories nor maximum elevation.
+func (w *Walk) SubstantialClimb() bool {
+	return w.AscentM >= 500 && w.LengthKm > 0 && float64(w.AscentM)/w.LengthKm >= 40
+}
+
+func cloudCover(kind string, cover float32, known, total int) string {
+	phrase := fmt.Sprintf("%s up to %.0f%%", kind, cover)
+	if known < total {
+		phrase += fmt.Sprintf(" (%d of %d qualifying hours known)", known, total)
+	}
+	return phrase
+}

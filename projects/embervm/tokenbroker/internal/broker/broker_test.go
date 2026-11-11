@@ -270,3 +270,31 @@ func TestGetAccessTokenCachesMintedToken(t *testing.T) {
 		t.Fatalf("Mint calls = %d, want 1", minter.calls)
 	}
 }
+
+func TestCachedAccessTokenNeverRefreshesOrMints(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		token   string
+		expires time.Duration
+		wantOK  bool
+	}{
+		{"valid", "cached", time.Hour, true},
+		{"near-expiry", "cached", 30 * time.Second, false},
+		{"expired", "cached", -time.Hour, false},
+		{"missing", "", time.Hour, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now()
+			st := &testStore{grants: map[string]store.Grant{"one": {Name: "one", ProviderName: "test", LastRefresh: now.Add(-8 * 24 * time.Hour), TokenBundle: store.TokenBundle{AccessToken: tc.token, RefreshToken: "existing", ExpiresAt: now.Add(tc.expires)}}}}
+			adapter := &testDualAdapter{testAdapter: &testAdapter{}}
+			b := New(st, map[string]provider.Adapter{"test": adapter}, map[string]provider.Minter{"test": adapter}, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+			token, _, err := b.CachedAccessToken("one", context.Background())
+			if (err == nil) != tc.wantOK || (tc.wantOK && token != tc.token) {
+				t.Fatalf("cached token: success=%t want=%t", err == nil, tc.wantOK)
+			}
+			if adapter.calls != 0 || adapter.mintCalls != 0 {
+				t.Fatal("cached token path performed OAuth refresh or mint")
+			}
+		})
+	}
+}

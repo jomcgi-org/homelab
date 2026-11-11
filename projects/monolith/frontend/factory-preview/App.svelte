@@ -3,11 +3,14 @@
   import Activity from "../src/routes/public/slop/factory/activity/+page.svelte";
   import Context from "../src/routes/public/slop/factory/context/+page.svelte";
   import { fixture, page } from "./state.svelte.js";
+  import ExecutionHarness from "./ExecutionHarness.svelte";
 </script>
 
 <div class="public-theme" hidden></div>
 {#key `${fixture.scenario}/${fixture.view}`}
-  {#if fixture.view === "overview"}
+  {#if ["execution", "drain"].includes(fixture.view)}
+    <ExecutionHarness view={fixture.view} />
+  {:else if fixture.view === "overview"}
     <Overview data={page.data} />
   {:else if fixture.view === "activity"}
     <Activity data={page.data} />
@@ -15,6 +18,10 @@
     <Context data={page.data} />
   {/if}
 {/key}
-<p id="preview-scope" tabindex="-1">
+<p
+  id="preview-scope"
+  tabindex="-1"
+  hidden={["execution", "drain"].includes(fixture.view)}
+>
   Synthetic fixture preview. All records and measurements are invented.
 </p>

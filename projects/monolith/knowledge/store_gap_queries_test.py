@@ -1,37 +1,21 @@
-"""Tests for KnowledgeStore.list_gaps() and KnowledgeStore.get_gap_by_id()."""
+"""Tests for KnowledgeStore.list_gaps()."""
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
+from sqlmodel import Session
 
 from knowledge.models import Gap, Note
 from knowledge.store import KnowledgeStore
+from shared.testing.sqlite import sqlite_session
 
 
 @pytest.fixture(name="session")
 def session_fixture():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
+    with sqlite_session() as session:
+        yield session
 
 
 def _make_note(session: Session, note_id: str = "n") -> Note:
@@ -71,7 +55,7 @@ def _add_gap(
 
 
 def test_list_gaps_returns_most_recent_first(session):
-    note = _make_note(session)
+    _make_note(session)
     now = datetime.now(timezone.utc)
     _add_gap(session, term="old", created_at=now - timedelta(hours=1))
     _add_gap(session, term="new", created_at=now)
@@ -84,7 +68,7 @@ def test_list_gaps_returns_most_recent_first(session):
 
 
 def test_list_gaps_filters_by_state(session):
-    note = _make_note(session)
+    _make_note(session)
     _add_gap(session, term="a", state="discovered")
     _add_gap(
         session,
@@ -106,7 +90,7 @@ def test_list_gaps_filters_by_state(session):
 
 
 def test_list_gaps_filters_by_class(session):
-    note = _make_note(session)
+    _make_note(session)
     _add_gap(
         session,
         term="int",
@@ -133,7 +117,7 @@ def test_list_gaps_filters_by_class(session):
 
 
 def test_list_gaps_respects_limit(session):
-    note = _make_note(session)
+    _make_note(session)
     now = datetime.now(timezone.utc)
     for i in range(5):
         _add_gap(
@@ -148,28 +132,3 @@ def test_list_gaps_respects_limit(session):
     assert len(rows) == 3
     # Most-recent first.
     assert [r["term"] for r in rows] == ["g-4", "g-3", "g-2"]
-
-
-def test_get_gap_by_id_returns_dict(session):
-    note = _make_note(session)
-    gap = _add_gap(
-        session,
-        term="t",
-        state="in_review",
-        gap_class="internal",
-    )
-
-    store = KnowledgeStore(session)
-    result = store.get_gap_by_id(gap.id)
-
-    assert result is not None
-    assert result["id"] == gap.id
-    assert result["term"] == "t"
-    assert result["state"] == "in_review"
-    assert result["gap_class"] == "internal"
-    assert result["pipeline_version"] == "gaps@v1"
-
-
-def test_get_gap_by_id_returns_none_for_missing(session):
-    store = KnowledgeStore(session)
-    assert store.get_gap_by_id(9999) is None

@@ -232,22 +232,7 @@ def test_recorder_writes_the_streak_start_only_on_the_flip(engine):
         assert not ops_health.evaluate_create_streak(latest, since, NOW)[0]
 
 
-def test_recorder_is_off_unless_enabled(monkeypatch):
-    monkeypatch.delenv(create_outcome.ENABLED_ENV, raising=False)
-    calls = []
-    monkeypatch.setattr(create_outcome, "_record_sync", lambda *a: calls.append(a))
-
-    async def run():
-        create_outcome.record(False, "x")
-        await asyncio.sleep(0)
-
-    asyncio.run(run())
-    assert calls == []
-
-
 def test_recorder_never_raises_when_the_write_fails(monkeypatch):
-    monkeypatch.setenv(create_outcome.ENABLED_ENV, "true")
-
     def boom(*_):
         raise RuntimeError("db down")
 
@@ -487,10 +472,26 @@ def test_factory_stuck_flags_old_uncertain_and_ineligible_queued(engine, monkeyp
 
 def test_factory_intake_off_is_a_pause_not_stuck():
     policy = dict(POLICY, intake={"enabled": False})
-    queued = [(685, 6001, "factory:intake", "jomcgi-org/homelab", 13)]
+    queued = [(685, 6001, "factory:intake", "jomcgi-org/homelab", 13, "refine")]
     result = ops_health.evaluate_factory(json.dumps(policy), [], queued, NOW)
     assert result["ok"]
     assert result["detail"] == "0 uncertain (none over 120m), 1 queued"
+
+
+def test_factory_batch_health_matches_class_scoped_admission():
+    policy = dict(
+        POLICY,
+        intake={"enabled": True, "refine_enabled": True, "refinement_batch": [7249]},
+    )
+    queued = [
+        (685, 7249, "factory:intake", "jomcgi-org/homelab", 13, "refine"),
+        (686, 7249, "factory:intake", "jomcgi-org/homelab", 13, "bug-fix"),
+        (687, 7251, "factory:intake", "jomcgi-org/homelab", 13, "refine"),
+    ]
+    result = ops_health.evaluate_factory(json.dumps(policy), [], queued, NOW)
+    assert not result["ok"]
+    assert "2 queued receipt(s) not admission-eligible" in result["detail"]
+    assert "receipt 685" not in result["detail"]
 
 
 def test_factory_without_policy_checks_uncertain_only():

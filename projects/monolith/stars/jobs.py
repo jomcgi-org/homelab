@@ -18,11 +18,12 @@ import os
 from collections.abc import Iterator
 from datetime import datetime, timezone
 
-from sqlmodel import Session, delete, select
+from sqlmodel import Session, delete, select, update
 
 from shared.forecast_freshness import top_of_hour
 from stars.forecast import fetch_all
 from stars.models import Site, SiteHour
+from core.clock import as_utc
 
 logger = logging.getLogger("monolith.stars.jobs")
 
@@ -67,6 +68,13 @@ def _write_sites(session: Session, scored: dict[str, list[dict]], now: datetime)
     Sites absent from ``scored`` (failed fetch) are untouched: stale beats empty.
     """
     site_ids = list(scored.keys())
+    now = as_utc(now)
+    session.execute(
+        update(Site)
+        .where(Site.id.in_(site_ids))
+        .values(forecast_fetched_at=now)
+        .execution_options(synchronize_session=False)
+    )
     cutoff = top_of_hour(now)
     # synchronize_session=False: issue the DELETE as SQL rather than evaluating
     # the predicate in Python, which would compare the aware cutoff against
@@ -79,7 +87,7 @@ def _write_sites(session: Session, scored: dict[str, list[dict]], now: datetime)
     new_rows = [
         SiteHour(
             site_id=site_id,
-            hour_time=datetime.fromisoformat(h["time"].replace("Z", "+00:00")),
+            hour_time=as_utc(datetime.fromisoformat(h["time"].replace("Z", "+00:00"))),
             cloud_area_fraction=h["cloud_area_fraction"],
             air_temperature=h["air_temperature"],
             dew_spread=h["dew_spread"],
@@ -169,7 +177,7 @@ async def refresh_handler(session: Session) -> datetime | None:
             continue
         total_scored += len(scored)
         total_written += await asyncio.to_thread(_persist_sites, scored)
-    if total_written == 0:
+    if total_scored == 0:
         logger.warning("stars.refresh: empty fetch, keeping existing rows")
         return None
     logger.info(

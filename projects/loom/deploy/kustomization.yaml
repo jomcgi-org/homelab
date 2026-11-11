@@ -7,7 +7,6 @@ resources:
   - cnpg-cluster.yaml
   - cnpg-scheduledbackup.yaml
   - onepassworditem-cnpg-backup-gcs.yaml
-  - cnpg-metrics-service.yaml
   - httproute.yaml
   - image-pull-secret.yaml
   - onepassworditem-r2.yaml
