@@ -2,6 +2,7 @@
 packages:
   - projects/design-system
   - projects/monolith/frontend
+  - projects/monolith/web/grimoire
 
 # Dependency admission policy for new resolutions:
 # - Delay new registry releases for three days, matching Renovate's default.

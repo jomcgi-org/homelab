@@ -1,0 +1,16 @@
+/*
+ * App-level CSS. Astryx components and the sheet theme own all component
+ * styling; this file only sets the page ground. Use theme tokens, never raw
+ * colours or sizes.
+ */
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-background-body);
+  color: var(--color-text-primary);
+}
