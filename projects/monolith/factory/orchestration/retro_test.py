@@ -415,7 +415,7 @@ def test_optimizer_loader_bounds_windows_at_proven_deployment(monkeypatch):
             ]
         return [{"unknown_reservation_usd": 12.0, "settled_cost_usd": 3.0}]
 
-    monkeypatch.setattr(retro, "_rows", rows)
+    monkeypatch.setattr(retro, "query_rows", rows)
     loaded = retro._load_optimizer(object(), NOW)
     assert loaded["baseline"]["end"] == loaded["post"]["start"] == boundary.isoformat()
     assert loaded["post"]["end"] == NOW.isoformat()
@@ -456,7 +456,7 @@ def test_optimizer_merge_without_provenance_never_loads_windows(monkeypatch):
     )
     monkeypatch.setattr(
         retro,
-        "_rows",
+        "query_rows",
         lambda *_: (_ for _ in ()).throw(AssertionError("unproven window")),
     )
     loaded = retro._load_optimizer(object(), NOW)
@@ -485,7 +485,7 @@ def test_optimizer_loader_holds_saturated_history(monkeypatch):
         assert params["limit"] == retro._OPTIMIZER_OBSERVATION_LIMIT + 1
         return [{}] * (retro._OPTIMIZER_OBSERVATION_LIMIT + 1)
 
-    monkeypatch.setattr(retro, "_rows", rows)
+    monkeypatch.setattr(retro, "query_rows", rows)
     loaded = retro._load_optimizer(object(), NOW)
     assert retro.optimizer_evidence(loaded, NOW)["status"] == "UNKNOWN"
     assert "saturated" in loaded["error"]
@@ -533,7 +533,7 @@ def test_optimizer_loader_ignores_deployments_after_completed_window(monkeypatch
             ]
         return [{"attempts": 10}]
 
-    monkeypatch.setattr(retro, "_rows", rows)
+    monkeypatch.setattr(retro, "query_rows", rows)
     loaded = retro._load_optimizer(object(), NOW)
     assert loaded["overlapping_revisions"] == []
     assert loaded["post"]["end"] == (boundary + retro.timedelta(hours=72)).isoformat()
@@ -557,7 +557,7 @@ def test_optimizer_missing_boundary_does_not_scan_poll_history(monkeypatch):
         assert sql == retro._OPTIMIZER_BOUNDARY
         return []
 
-    monkeypatch.setattr(retro, "_rows", rows)
+    monkeypatch.setattr(retro, "query_rows", rows)
     loaded = retro._load_optimizer(object(), NOW)
     assert "post" not in loaded
     assert retro.optimizer_evidence(loaded, NOW)["status"] == "WAIT"
@@ -598,7 +598,7 @@ def test_optimizer_old_window_coverage_is_independent_of_later_polls(monkeypatch
             ]
         return [{"attempts": 10, "dispatch_failure": 2, "unknown": 0}]
 
-    monkeypatch.setattr(retro, "_rows", rows)
+    monkeypatch.setattr(retro, "query_rows", rows)
     loaded = retro._load_optimizer(object(), NOW)
     assert loaded["observation_coverage"]["complete"] is True
     assert loaded["observation_coverage"]["revisions_observed"] == 2

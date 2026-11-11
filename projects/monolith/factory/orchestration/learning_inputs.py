@@ -14,7 +14,7 @@ import re
 from sqlalchemy import text
 from sqlmodel import Session, select
 
-from core.db import get_engine
+from core.db import get_engine, query_rows
 from core.jsonio import dumps
 from factory.orchestration import learning, retro
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
@@ -178,7 +178,7 @@ def prepare(db, name, holder, data, head):
     if not enabled() or name != JOB or not holder or not lock_claim(db, name, holder):
         raise ValueError("learning_input_owner_changed_or_disabled")
     table = learning._table(db, "claude_agent", "routine_jobs")
-    rows = learning._rows(
+    rows = query_rows(
         db, f"SELECT payload FROM {table} WHERE name=:name", {"name": name}
     )
     payload = learning._json(rows[0]["payload"])

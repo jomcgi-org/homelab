@@ -2,11 +2,11 @@
 
 Other domains must import from ``chat_public.api`` (enforced by
 ``import_boundaries_test``), never from ``chat_public`` internals such as
-``chat_public.sse``.
+``chat_public.retention``.
 """
 
 from __future__ import annotations
 
-from chat_public.sse import format_sse  # re-exported
+from shared.sse import format_sse  # re-exported
 
 __all__ = ["format_sse"]
