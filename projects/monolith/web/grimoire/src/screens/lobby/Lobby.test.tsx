@@ -25,6 +25,21 @@ describe("Lobby", () => {
     expect(screen.getByText("Embers of the Old Court")).toBeTruthy();
   });
 
+  it("offers the accounts page only to an account administrator", async () => {
+    openApp({
+      ...dmRoutes,
+      "GET /lobby": lobby({ can_administer_accounts: true }),
+    });
+    const link = await screen.findByRole("link", { name: "Accounts" });
+    expect(link.getAttribute("href")).toBe("/platform");
+  });
+
+  it("hides the accounts page from everyone else", async () => {
+    openApp(dmRoutes);
+    await screen.findByRole("heading", { name: "The Sunless Citadel" });
+    expect(screen.queryByRole("link", { name: "Accounts" })).toBeNull();
+  });
+
   it("links each campaign to its session", async () => {
     openApp(dmRoutes);
     const owned = await screen.findByRole("article", {
