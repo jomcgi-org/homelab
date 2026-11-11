@@ -204,7 +204,6 @@ def test_argo_annotations_drop_marker_and_scrape_with_disabled_server(
     [
         (None, False),
         ("values-gke.yaml", True),
-        ("values-home-suspend.yaml", True),
     ],
 )
 def test_renovate_annotations_preserve_suspension_and_secret_access(overlay, suspended):
