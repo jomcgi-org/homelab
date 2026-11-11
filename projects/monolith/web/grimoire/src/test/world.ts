@@ -6,6 +6,14 @@
  */
 import type { Routes } from "./backend";
 import { characters, invitation, lobby, members } from "./fixtures";
+import { sessionRoutes } from "./fixtures/session";
+import { handoutsRoutes } from "./fixtures/handouts";
+import { inventoryRoutes } from "./fixtures/inventory";
+import { journalRoutes } from "./fixtures/journal";
+import { knowledgeRoutes } from "./fixtures/knowledge";
+import { notesRoutes } from "./fixtures/notes";
+import { sheetsRoutes } from "./fixtures/sheets";
+import { turnsRoutes } from "./fixtures/turns";
 
 export const world: Routes = {
   "GET /lobby": lobby(),
@@ -15,4 +23,12 @@ export const world: Routes = {
     { ...invitation, invitee_email: "wren@example.test" },
   ],
   "GET /campaigns/{campaign_id}/join-links": { status: 503 },
+  ...sessionRoutes,
+  ...handoutsRoutes,
+  ...inventoryRoutes,
+  ...journalRoutes,
+  ...knowledgeRoutes,
+  ...notesRoutes,
+  ...sheetsRoutes,
+  ...turnsRoutes,
 };

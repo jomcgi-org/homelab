@@ -304,7 +304,15 @@ export interface RollRequest {
 }
 
 export interface SessionEventRequest {
-  kind: "narration" | "action" | "roll" | "reveal" | "handout" | "turn" | "system" | "utterance";
+  kind:
+    | "narration"
+    | "action"
+    | "roll"
+    | "reveal"
+    | "handout"
+    | "turn"
+    | "system"
+    | "utterance";
   audience: "table" | "dm" | "pcs";
   audience_pc_ids?: Array<string>;
   body: Record<string, unknown>;
@@ -316,7 +324,15 @@ export interface SessionEventView {
   campaign_id: string;
   session_id: string;
   seq: number;
-  kind: "narration" | "action" | "roll" | "reveal" | "handout" | "turn" | "system" | "utterance";
+  kind:
+    | "narration"
+    | "action"
+    | "roll"
+    | "reveal"
+    | "handout"
+    | "turn"
+    | "system"
+    | "utterance";
   audience: "table" | "dm" | "pcs";
   audience_pc_ids: Array<string>;
   author_member_id: string | null;
@@ -446,7 +462,33 @@ export interface Operations {
     response: CharacterSheetView;
   };
   "GET /campaigns/{campaign_id}/entities": {
-    query: {type?: "creature" | "spell" | "location" | "npc" | "faction" | "deity" | "item" | "event" | "quest" | "condition" | "feat" | "race" | "background" | "class" | "subclass" | "class_feature" | "action" | "rule" | "table" | null; q?: string | null; limit?: number; cursor?: string | null; not_granted_to?: string | null;};
+    query: {
+      type?:
+        | "creature"
+        | "spell"
+        | "location"
+        | "npc"
+        | "faction"
+        | "deity"
+        | "item"
+        | "event"
+        | "quest"
+        | "condition"
+        | "feat"
+        | "race"
+        | "background"
+        | "class"
+        | "subclass"
+        | "class_feature"
+        | "action"
+        | "rule"
+        | "table"
+        | null;
+      q?: string | null;
+      limit?: number;
+      cursor?: string | null;
+      not_granted_to?: string | null;
+    };
     body: undefined;
     response: Record<string, unknown>;
   };
@@ -481,7 +523,7 @@ export interface Operations {
     response: GrantView;
   };
   "DELETE /campaigns/{campaign_id}/grants/{grant_id}": {
-    query: {silent?: boolean;};
+    query: { silent?: boolean };
     body: undefined;
     response: undefined;
   };
@@ -501,7 +543,7 @@ export interface Operations {
     response: Record<string, unknown>;
   };
   "GET /campaigns/{campaign_id}/inventory/changes": {
-    query: {item_id?: string | null; limit?: number;};
+    query: { item_id?: string | null; limit?: number };
     body: undefined;
     response: Array<Record<string, unknown>>;
   };
@@ -551,12 +593,12 @@ export interface Operations {
     response: undefined;
   };
   "GET /campaigns/{campaign_id}/journal": {
-    query: {view?: "mine" | "party"; limit?: number; cursor?: string | null;};
+    query: { view?: "mine" | "party"; limit?: number; cursor?: string | null };
     body: undefined;
     response: CampaignJournalView;
   };
   "GET /campaigns/{campaign_id}/knowledge/search": {
-    query: {q: string; k?: number;};
+    query: { q: string; k?: number };
     body: undefined;
     response: Array<Record<string, unknown>>;
   };
@@ -576,7 +618,7 @@ export interface Operations {
     response: MemberView;
   };
   "GET /campaigns/{campaign_id}/notes": {
-    query: {kind?: "character" | "party" | null; q?: string; limit?: number;};
+    query: { kind?: "character" | "party" | null; q?: string; limit?: number };
     body: undefined;
     response: Array<Record<string, unknown>>;
   };
@@ -616,7 +658,7 @@ export interface Operations {
     response: GameSessionView;
   };
   "GET /campaigns/{campaign_id}/sessions/{session_id}/events": {
-    query: {after?: number; limit?: number;};
+    query: { after?: number; limit?: number };
     body: undefined;
     response: Array<SessionEventView>;
   };
@@ -651,7 +693,7 @@ export interface Operations {
     response: Record<string, unknown>;
   };
   "GET /campaigns/{campaign_id}/sessions/{session_id}/journal": {
-    query: {view?: "mine" | "party";};
+    query: { view?: "mine" | "party" };
     body: undefined;
     response: Journal;
   };
