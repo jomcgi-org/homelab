@@ -1006,18 +1006,18 @@ were classed `explicit_hold`, most because their descriptions said "leave
 unmerged". Joe approved landing about 29 of them, and the only way to say so was
 to rewrite each description, because discovery deliberately does not interpret
 hold prose. `factory_release_owner_pr_hold` records the decision for one PR and
-waives the exact description read at release, its earlier comments and holds
-it only inherits from items it mentions: on 2026-11-11, 13 of the approved PRs
-were held solely by a mention, such as #7587 by its note about #7392. An edited
-description, labels, assignees, later comments, the closing objective issue and
-all review, CI and landing gates still bind. Standing landing delegations do
-not read a release, so a released PR still lands on a per-head grant and the
-control cannot land anything. Landing status also gains `landing_wait`,
-the current reason an approved delivery lacks authority, which was invisible
-for 22 receipts. Measure over 72 hours either side of rollout: owner PRs
-classed `explicit_hold` (baseline 42) and approved receipts in `landing` with
-no visible reason (baseline 22, expected zero). Revert the release control if
-a released PR lands while it carries a hold label.
+waives the exact description read at release, its earlier comments and holds it
+only inherits from items it mentions, except a security label: on 2026-11-11, 13
+of the approved PRs were held solely by a mention, such as #7587 by its note
+about #7392. An edited description, labels, assignees, later comments, the
+closing objective issue and all review, CI and landing gates still bind.
+Standing landing delegations do not read a release, so a released PR still lands
+on a per-head grant and the control cannot land anything. Landing status also
+gains `landing_wait`, the current reason an approved delivery lacks authority,
+which was invisible for 22 receipts. Measure over 72 hours either side of
+rollout: owner PRs classed `explicit_hold` (baseline 42) and approved receipts
+in `landing` with no visible reason (baseline 22, expected zero). Revert the
+release control if a released PR lands while it carries a hold label.
 
 **Why a standing delivery owner:** on 2026-11-09, 23 intake-admitted deliveries
 sat in `landing` with independent exact-head approval and passing CI, most for
