@@ -39,6 +39,14 @@ for a in "$@"; do
 			echo "1234 states generated, 567 distinct states found, 89 states left on queue."
 			exit 12
 			;;
+		action_violation)
+			echo "Error: Action property DestroyConformance is violated."
+			exit 12
+			;;
+		parse_error)
+			echo "Error: Parsing or semantic analysis failed."
+			exit 1
+			;;
 		wrong_violation)
 			echo "Error: Invariant DifferentInvariant is violated."
 			echo "1234 states generated, 567 distinct states found, 89 states left on queue."
@@ -95,4 +103,6 @@ grep -q "NEGATIVE MODE REGRESSED" "$work/err" || fail "clean fail-mode run shoul
 [ "$(run wrong_violation fail NoDoubleDispatch)" -ne 0 ] || fail "different invariant must not satisfy exact fail mode"
 grep -q "found the wrong violation" "$work/err" || fail "wrong invariant should be reported explicitly"
 
+[ "$(run action_violation fail)" -eq 0 ] || fail "action conformance violation should satisfy fail mode"
+[ "$(run parse_error fail)" -ne 0 ] || fail "parse failure must not satisfy fail mode"
 echo "tlc_test: all cases OK"

@@ -283,7 +283,7 @@ export function needsConfirm(option) {
 
 /** The one line a close confirmation puts in front of the operator. */
 export function confirmLine(item) {
-  return `Close #${item?.issue_number} as not planned and drop needs-human? Press x again, or Esc to cancel.`;
+  return `Close #${item?.issue_number} as not planned and drop needs-human? Choose Confirm close to proceed or Cancel close to go back.`;
 }
 
 /** Clamp an index into a list, returning -1 for an empty one. */

@@ -4,6 +4,7 @@ const MODEL_LANES = new Map([
   ["luna", "luna"],
   ["terra", "codex"],
   ["sol", "codex"],
+  ["astra", "codex"],
   ["opus", "claude"],
   ["sonnet", "claude"],
   ["fable", "claude"],
@@ -51,6 +52,9 @@ export function modelLane(modelName) {
     model === "gpt-5.6-terra" ||
     model === "gpt-5.6-sol" ||
     model === "gpt-6-sol" ||
+    model === "gpt-6.1-sol" ||
+    model === "gpt-6.1-terra" ||
+    model === "gpt-6-astra" ||
     model === "codex-auto-review"
   )
     return "codex";

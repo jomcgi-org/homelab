@@ -94,6 +94,9 @@ func (s *Server) DeleteGroupNetwork(ctx context.Context, req *nodev1.DeleteGroup
 		return nil, err
 	}
 
+	if s.failedLaunchGroupPending(groupInstanceID, "") {
+		return nil, status.Error(codes.FailedPrecondition, "noded: group member launch teardown pending")
+	}
 	// Idempotent no-op on an unknown group (never held or already deleted).
 	if !s.groupNet.Has(groupInstanceID) {
 		// Still remove any stray record so a half-deleted group cannot be re-adopted.

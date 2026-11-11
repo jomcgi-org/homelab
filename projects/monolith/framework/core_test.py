@@ -1287,7 +1287,14 @@ async def test_private_lifespan_true_enables_leader_singletons(monkeypatch):
 
 
 @pytest.mark.parametrize("raises", [False, True])
-def test_private_liveness_reports_failed_domain_and_recovers(raises):
+@pytest.mark.parametrize("revision", [None, "1.2.3"])
+def test_private_liveness_reports_failed_domain_and_recovers(
+    raises, revision, monkeypatch
+):
+    if revision is None:
+        monkeypatch.delenv("MONOLITH_CHART_VERSION", raising=False)
+    else:
+        monkeypatch.setenv("MONOLITH_CHART_VERSION", revision)
     healthy = False
 
     def progress():
@@ -1301,10 +1308,11 @@ def test_private_liveness_reports_failed_domain_and_recovers(raises):
     client = TestClient(app)
     response = client.get("/healthz")
     assert response.status_code == 503
+    assert response.json()["chart_version"] == revision
     assert response.json()["components"]["worker"]["ok"] is False
     assert "internal details" not in response.text
     healthy = True
-    assert client.get("/healthz").json() == {"status": "ok", "chart_version": None}
+    assert client.get("/healthz").json() == {"status": "ok", "chart_version": revision}
     assert client.get("/healthz").status_code == 200
 
 

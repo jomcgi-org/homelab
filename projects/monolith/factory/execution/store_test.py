@@ -294,6 +294,44 @@ def test_create_turn_records_reported_and_list_costs_side_by_side(
         _restore_schemas(schemas)
 
 
+@pytest.mark.parametrize(
+    ("provider_model", "expected"),
+    [("gpt-6.1-terra", 1.0), ("gpt-5.6-terra", 4.0), ("gpt-unknown", None)],
+)
+def test_create_turn_prices_selected_id_and_preserves_requested_label(
+    monkeypatch, tmp_path, provider_model, expected
+):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    usage = {"provider_model": provider_model, "input_tokens": 1_000_000}
+    try:
+        with Session(engine) as session:
+            agent = store.create_session(session, "terra", "<guest>", "main")
+            turn = store.create_turn(
+                session,
+                session_id=agent.id,
+                seq=1,
+                prompt="price selected model",
+                voice_summary=None,
+                result_text="done",
+                terminal_reason="completed",
+                stop_reason=None,
+                permission_denials=None,
+                commit_sha=None,
+                usage=usage,
+                cost_usd=None,
+                model="terra",
+            )
+            assert turn.model == "terra"
+            assert json.loads(turn.usage_json) == usage
+            assert turn.cost_usd is None
+            if expected is None:
+                assert turn.list_cost_usd is None
+            else:
+                assert turn.list_cost_usd == pytest.approx(expected)
+    finally:
+        _restore_schemas(schemas)
+
+
 def test_create_turn_persists_real_muse_shape_without_promoting_list_cost(
     monkeypatch, tmp_path
 ):
@@ -1629,6 +1667,40 @@ def test_observation_without_pending_identity_is_unavailable():
     assert observation["queue_wait_ms"] is None
     assert observation["dispatch_count"] is None
     assert observation["requested_model"] is None
+
+
+@pytest.mark.parametrize(
+    "change", [None, "not_positive", "attempted", "sqlstate", "phase", "version"]
+)
+def test_typed_preinvoke_metadata_requires_positive_closed_vocabulary(
+    uncertain_lane, change
+):
+    engine, sid = uncertain_lane
+    failure = {
+        "version": 1,
+        "phase": "receipt_prepare",
+        "sqlstate": "42703",
+        "attempted": False,
+    }
+    if change in {"attempted", "sqlstate", "phase", "version"}:
+        failure[change] = {
+            "attempted": True,
+            "sqlstate": "42501",
+            "phase": "response_wait",
+            "version": 2,
+        }[change]
+    store.mark_turn_error_sync(
+        sid,
+        1,
+        "text is not authority",
+        "owner-1",
+        dispatch_count=1,
+        invocation_not_attempted=change != "not_positive",
+        preinvoke_database_failure=failure,
+    )
+    with Session(engine) as db:
+        recovery = json.loads(store.get_turn(db, sid, 1).usage_json).get("recovery", {})
+        assert ("database_failure" in recovery) is (change is None)
 
 
 @pytest.mark.parametrize("model", ["opus", "luna", "spark"])

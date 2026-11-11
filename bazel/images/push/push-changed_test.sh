@@ -68,9 +68,28 @@ BUILD
 	# widening run.log would break them, while the flags are what case 9 needs.
 	cat >"$WORK/bin/bazel" <<'STUB'
 #!/usr/bin/env bash
+# `query` answers with STUB_LAYERS (one label per line) only for the image
+# named in STUB_LAYERED_IMAGE, and `build` records what it was asked to fetch.
+if [ "${1:-}" = "query" ]; then
+	if [ -n "${STUB_LAYERED_IMAGE:-}" ] && [[ "$2" == *"deps(${STUB_LAYERED_IMAGE%.push},"* ]]; then
+		printf '%s\n' "$STUB_LAYERS"
+	fi
+	exit 0
+fi
+if [ "${1:-}" = "build" ] && [[ "$*" == *"--remote_download_toplevel"* ]]; then
+	echo "$*" >>"$STUB_ORDER_LOG"
+	exit 0
+fi
 if [ "${1:-}" = "run" ]; then
+	if [[ "$*" == *"--run_under="* ]]; then
+		echo "$2" >>"$STUB_PREFLIGHT_LOG"
+		echo "check $2" >>"$STUB_ORDER_LOG"
+		[ "$2" != "${STUB_PREFLIGHT_FAIL:-}" ] || exit 1
+		exit 0
+	fi
 	echo "$2" >>"$STUB_RUN_LOG"
 	echo "$*" >>"$STUB_ARGV_LOG"
+	echo "push $2" >>"$STUB_ORDER_LOG"
 fi
 exit 0
 STUB
@@ -116,12 +135,16 @@ STUB
 	chmod +x "$WORK/bin/bazel" "$WORK/bin/crane" "$WORK/bin/verifier"
 	export STUB_RUN_LOG="$WORK/run.log"
 	export STUB_ARGV_LOG="$WORK/argv.log"
+	export STUB_PREFLIGHT_LOG="$WORK/preflight.log"
+	export STUB_ORDER_LOG="$WORK/order.log"
 	export STUB_VERIFY_ARGV="$WORK/verifier-argv.log"
 	export STUB_VERIFY_RESULTS="$WORK/verifier-results.log"
 	export STUB_TAG_LOG="$WORK/tag.log"
 	: >"$STUB_TAG_LOG"
 	: >"$STUB_RUN_LOG"
 	: >"$STUB_ARGV_LOG"
+	: >"$STUB_PREFLIGHT_LOG"
+	: >"$STUB_ORDER_LOG"
 	: >"$STUB_VERIFY_ARGV"
 	: >"$STUB_VERIFY_RESULTS"
 }
@@ -391,6 +414,62 @@ if grep -qE 'beta|gamma' "$STUB_TAG_LOG"; then
 else
 	pass "only the tools image is retagged"
 fi
+teardown
+
+# 17. Check only selected image runfiles, and finish all checks before the first
+#     image or chart push. Registry-proven images retain the cheap skip path.
+setup "$MANIFEST_3" "ghcr.io/jomcgi/homelab/alpha@sha256:aaa"
+OUT=$(run_script)
+EXPECTED=$(printf '%s\n' \
+	"check //projects/beta:image.push" \
+	"check //projects/gamma:image.push" \
+	"push //projects/beta:image.push" \
+	"push //projects/gamma:image.push" \
+	"push //bazel/images:push_charts")
+if [ "$(cat "$STUB_ORDER_LOG")" = "$EXPECTED" ]; then
+	pass "all selected layouts are checked before any push"
+else
+	fail "all selected layouts are checked before any push" "$(cat "$STUB_ORDER_LOG")"
+fi
+teardown
+
+# 18. An unreadable later image cannot leave earlier images or charts published.
+setup "$MANIFEST_3" ""
+export STUB_PREFLIGHT_FAIL="//projects/beta:image.push"
+if OUT=$(run_script); then
+	fail "unreadable layout stops publication" "$OUT"
+elif [ -s "$STUB_RUN_LOG" ] || [ -s "$STUB_VERIFY_RESULTS" ] || [ -s "$STUB_TAG_LOG" ]; then
+	fail "unreadable layout stops publication" "$(cat "$STUB_ORDER_LOG")"
+else
+	pass "unreadable layout stops publication before registry writes"
+fi
+unset STUB_PREFLIGHT_FAIL
+teardown
+
+# 19. A layered image downloads its own layer tars, top-level, before its layout
+#     check. Under --remote_download_minimal a layer blob otherwise dangles.
+setup "$MANIFEST_3" "ghcr.io/jomcgi/homelab/alpha@sha256:aaa
+ghcr.io/jomcgi/homelab/gamma@sha256:ccc"
+export STUB_LAYERED_IMAGE="//projects/beta:image.push"
+export STUB_LAYERS="//bazel/tools/image:prettier_tar"
+OUT=$(run_script)
+EXPECTED=$(printf '%s\n' \
+	"build --config=ci --stamp --experimental_check_output_files --remote_download_toplevel //bazel/tools/image:prettier_tar" \
+	"check //projects/beta:image.push" \
+	"push //projects/beta:image.push" \
+	"push //bazel/images:push_charts")
+if [ "$(cat "$STUB_ORDER_LOG")" = "$EXPECTED" ]; then
+	pass "layer tars are downloaded before the layout check"
+else
+	fail "layer tars are downloaded before the layout check" "$(cat "$STUB_ORDER_LOG")"
+fi
+# The push itself must also re-check outputs, or its runfiles stay remote.
+if grep -q -- "--experimental_check_output_files" "$STUB_ARGV_LOG"; then
+	pass "image push re-checks remote outputs"
+else
+	fail "image push re-checks remote outputs" "$(cat "$STUB_ARGV_LOG")"
+fi
+unset STUB_LAYERED_IMAGE STUB_LAYERS
 teardown
 
 echo ""

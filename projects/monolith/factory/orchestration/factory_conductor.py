@@ -11,6 +11,7 @@ from __future__ import annotations
 from core.env import flag
 from factory.orchestration.runtime import running_app_version
 from factory.orchestration import dependency_prs
+from factory.orchestration.repair_landing_delegation import SCOPE_SCHEMA
 
 import asyncio
 from contextlib import nullcontext
@@ -190,6 +191,7 @@ REVIEW_SCHEMA = {
         "summary": {"type": "string", "maxLength": 8000},
         "pr_number": {"type": "integer", "minimum": 1},
         "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "landing_scope": SCOPE_SCHEMA,
     },
 }
 IMPLEMENTATION_EXCEPTION_SCHEMA = {
@@ -660,6 +662,7 @@ def _task(task_id: str, *, session: Session | None = None) -> dict:
                 else receipt.issue_number
             ),
             "dependency_review": (direction or {}).get("dependency_review"),
+            "owner_pr": (direction or {}).get("owner_pr"),
             "landing_hold": landing_held(receipt),
             "task_paused": bool(receipt and receipt.task_paused),
             "cancellation_requested": bool(receipt and receipt.cancellation_requested),
@@ -1099,6 +1102,11 @@ def _schema(node_key: str, task_id: str | None = None) -> dict:
     if node_key.startswith("conductor_funding_"):
         from factory.orchestration.factory_funding import SCHEMA
 
+        if task_id:
+            from factory.orchestration.funding_profile import schema
+
+            return schema(task_id, node_key)
+
         return SCHEMA
     if node_key.startswith("conductor_"):
         return DECISION_SCHEMA
@@ -1348,6 +1356,8 @@ def _closing_instruction(task: dict, *, review: bool = False) -> str:
 
 
 def _issue_closing_instruction(task: dict, *, review: bool = False) -> str:
+    if (task.get("owner_pr") or {}).get("direct"):
+        return "Keep the existing PR; do not add a closing keyword for the PR itself."
     issue = task.get("issue_number")
     if not isinstance(issue, int):
         return ""
@@ -1437,6 +1447,13 @@ def _boundary(
         + (
             "You are an independent reviewer. Inspect the exact pushed PR head, "
             "report its SHA and verdict, and do not modify source. "
+            "Also report landing_scope with the PR's exact merge-base commit as base_sha "
+            "and complete changed paths, "
+            "classification private_internal_reversible or requires_operator, boolean "
+            "public_facing, security_sensitive, authentication_or_credentials and destructive, "
+            "and evidence explaining the scope. Authority, permission, credential, safety-gate "
+            "or public exposure changes require an operator; ambiguity is requires_operator. "
+            "This assessment never authorizes landing by itself. "
             if review
             else ""
         )
@@ -2565,6 +2582,9 @@ def verify_delivery(
     if granted_pr is not None and number != granted_pr:
         raise ValueError("delivery PR does not match the operator-granted PR")
     pr = github_get(task["repo"], f"pulls/{number}")
+    from factory.orchestration.owner_prs import assert_unheld
+
+    assert_unheld(task, pr)
     merged = allow_merged and pr.get("merged") is True
     if merged and task.get("landing_hold"):
         raise DeliveryRefused(
@@ -2647,8 +2667,10 @@ def verify_delivery(
             raise DeliveryRefused(
                 "pr_missing_rescope", "state the conductor rescope in the PR body"
             )
-    elif issue_number is not None and not closes_issue(
-        pr.get("body"), task["repo"], issue_number
+    elif (
+        issue_number is not None
+        and not (task.get("owner_pr") or {}).get("direct")
+        and not closes_issue(pr.get("body"), task["repo"], issue_number)
     ):
         raise DeliveryRefused(
             "pr_missing_close_keyword",
@@ -4436,6 +4458,21 @@ def _apply_decision(
                 "factory task settlement refused",
             )
     else:
+        from factory.orchestration import factory_funding
+
+        if not evidence_recovery and factory_funding.routine_pause(
+            task, decision, cause
+        ):
+            # The same task keeps its receipt, graph, PR and accounting; the
+            # judge's grant or its escalation card answers the pause.
+            _reject_decision(
+                task["id"],
+                cause,
+                action,
+                "routine_pause_funding_requested",
+                decision["reason"],
+            )
+            return
         _escalate_task(task, decision, cause, runs)
 
 
@@ -5866,6 +5903,8 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
             detail = {
                 "workflow_version": workflow_version,
                 "running_version": running_version,
+                "node_key": run["node_key"],
+                "source_run_id": run["id"],
             }
             audit_action, notify = "workflow_stranded", None
             reason = "node workflow stranded by application version change"
@@ -6517,6 +6556,23 @@ def _audit_once(task_id: str, key: str, action: str, detail: dict) -> bool:
     return True
 
 
+def _machine_paused(task_id: str) -> bool:
+    """Whether the factory, not an operator, took the task's current pause."""
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_funding_limits import _latest_pause
+
+    from factory.orchestration import factory_funding as funding
+
+    with controls._read_session() as db:
+        pause = _latest_pause(db, task_id)
+        # A funding pause that waits for an operator's approval or answer is
+        # that person's decision, whoever took the pause.
+        awaited = funding._awaiting_operator(
+            db, task_id, funding.latest(db, task_id, "funding_review_settled")
+        )
+    return pause is not None and pause.actor.startswith("factory:") and not awaited
+
+
 def _settle_paused_task(
     task: dict, policy: dict, runs: list[dict], *, merge_unknown: bool = False
 ) -> bool:
@@ -6590,12 +6646,36 @@ def _settle_paused_task(
             factory_pause.STOP
         ]:
             # This typed stop-only card is already an actionable restriction,
-            # not a planner's two-to-four-option escalation. Keep it and its
-            # pause owner; expiry is not authority to invent a continue choice.
+            # not a planner's two-to-four-option escalation. Expiry is not
+            # authority to invent a continue choice, but a machine pause's
+            # single option needs no person: apply it after its grace period.
+            factory_pause.expire_stop_card(task["id"])
+            return True
+        open_question = previous.get("resolved") is None and previous.get("question")
+        if (
+            not open_question
+            and not landing_held(snapshot)
+            and _machine_paused(task["id"])
+        ):
+            # A factory-owned pause with no question left to answer has nothing
+            # for a person to decide. Stop it and release the slot; the issue
+            # stays open. A new task is never started here, so attempts are
+            # not reset. An operator's own pause, a retained question and a
+            # landing hold (whose delivery may have merged) still ask.
+            controls.finish_task(
+                task["id"],
+                "cancelled",
+                ACTOR,
+                evidence={
+                    "state": "task_deadline",
+                    "reason": "Absolute task deadline elapsed while paused by the factory; all starts and runs are terminal.",
+                },
+                paused_trigger="deadline",
+            )
             return True
         decision = (
             previous
-            if previous.get("resolved") is None and previous.get("question")
+            if open_question
             else {
                 "reason": "Absolute task deadline elapsed while paused; all starts and runs are terminal.",
                 "question": "The paused task reached its deadline without a verified delivery. Continue with a new task or keep it on hold?",
@@ -6905,6 +6985,10 @@ def reconcile_task(
         # Outcome/issue reconciliation remains reachable while admissions are
         # paused or refill is disabled. Physical dispatch has its own fence.
         permission = can_start(task_id)
+        from factory.orchestration import backlog_refill_repair
+
+        if backlog_refill_repair.reconcile(task, policy, runs, permission):
+            return
         paused = not permission["ok"] and permission["reason"] == "task_paused"
         if paused:
             from factory.orchestration.factory_controls import (
@@ -7706,6 +7790,15 @@ def _dispatch_ready(
     ready = _ready_nodes(nodes, runs, funding_review=funding_review)
     if not ready or slots <= 0:
         return False
+    if task.get("owner_pr"):
+        from factory.orchestration.owner_prs import assert_unheld
+        from factory.orchestration import factory_pause
+
+        try:
+            assert_unheld(task)
+        except ValueError as exc:
+            factory_pause.pause(task["id"], ACTOR, str(exc))
+            return False
     budget = _slot_budget()
     solo = 0 if fan_out else 1
     extra = max(0, slots - solo)
@@ -7736,11 +7829,12 @@ def _dispatch_ready(
         if dispatched >= limit:
             break
         node_key = node["node_key"]
+        attempt = sum(r["node_key"] == node_key for r in runs) + 1
         refilling = node_key in {"backlog_refill_collect_1", "backlog_refill_review_1"}
         if refilling:
             from factory.orchestration.backlog_refill import dispatch_allowed
 
-            if not dispatch_allowed(task_id, node_key):
+            if not dispatch_allowed(task_id, node_key, attempt):
                 continue
         scouting = node_key in {"scout_collect_1", "scout_review_1"}
         if scouting:
@@ -7776,7 +7870,13 @@ def _dispatch_ready(
         )
         attempt = sum(r["node_key"] == node_key for r in runs) + 1
         key = f"factory-node:{task_id}:{node_key}:{attempt}"
-        artifact_schema = _schema(node_key, task_id) if refilling else _schema(node_key)
+        artifact_schema = (
+            _schema(node_key, task_id)
+            if refilling or node_key.startswith("conductor_funding_")
+            else _schema(node_key)
+        )
+        if "x-factory-funding-decision" in artifact_schema:
+            branch = task["base_branch"]
         from factory.orchestration import evidence_continuation
 
         try:
@@ -9023,6 +9123,16 @@ def _tick(checkpoint) -> None:
             generation=snapshot["policy"].get("generation", 0),
             observe_only=True,
         )
+        # The scout only queues an advisory receipt and admits nothing, so a
+        # full or stalled lane is exactly when repair discovery must still run.
+        try:
+            from factory.orchestration.factory_improvement_scout import (
+                tick as scout_tick,
+            )
+
+            scout_tick(snapshot["policy"])
+        except Exception:  # noqa: BLE001 - discovery cannot stall the lane
+            logger.exception("factory scout failed with a full lane")
         return
     checkpoint("intake")
     staged_sweeps = []

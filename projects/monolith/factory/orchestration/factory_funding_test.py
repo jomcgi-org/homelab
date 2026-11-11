@@ -20,10 +20,10 @@ def decision(**changes):
     }
 
 
-def resolve(value, *, spent=4, budget=50, merit=None, deficit=None):
+def resolve(value, *, spent=4, budget=50, merit=None, deficit=None, binding=False):
     inputs = {
         "spent": {"turns_used": spent},
-        "policy": {"task_budget_usd": budget},
+        "policy": {"task_budget_usd": budget, "task_budget_binding": binding},
         "merit": merit,
         "deficit": deficit,
     }
@@ -78,10 +78,11 @@ def test_unfundable_turn_deficit_steers_without_authorizing_work(ceiling):
 @pytest.mark.parametrize(
     "proposal,deficit", [(75, None), (50, {"usd": {"needed": 75}})]
 )
-def test_budget_proposals_retain_the_explicit_approval_boundary(proposal, deficit):
+def test_budget_proposals_retain_an_explicit_human_restriction(proposal, deficit):
     result = resolve(
         decision(task_budget_usd=proposal),
         deficit=deficit,
+        binding=True,
         merit={"ceiling": {"turn_ceiling": 20}},
     )
     assert result["action"] == "steer"
@@ -91,6 +92,21 @@ def test_budget_proposals_retain_the_explicit_approval_boundary(proposal, defici
         "approved_task_budget_usd": 50,
         "proposed_task_budget_usd": 75,
     }
+
+
+@pytest.mark.parametrize(
+    "proposal,deficit", [(75, None), (50, {"usd": {"needed": 75}})]
+)
+def test_budget_proposals_are_accounting_without_a_human_restriction(proposal, deficit):
+    result = resolve(
+        decision(task_budget_usd=proposal),
+        deficit=deficit,
+        merit={"ceiling": {"turn_ceiling": 20}},
+    )
+    assert result["action"] == "continue"
+    assert result["work_turns"] == 2
+    assert result["task_budget_usd"] == 75
+    assert result["budget_approval"] is None
 
 
 def test_merit_doubt_is_a_steer_to_the_operator_without_a_grant():

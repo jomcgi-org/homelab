@@ -506,6 +506,71 @@ defmodule Embervm.SessionBankRelightTest do
 
   # -- adoption matrix -------------------------------------------------------
 
+  test "first bank timeout followed by late snapshot completion recovers a relightable durable session" do
+    test_pid = self()
+    bank = fn _ch, req ->
+      send(test_pid, {:bank_waiting, self(), req.session_id})
+      receive do
+        :timeout -> {:error, :timeout}
+      end
+    end
+    relight = fn _ch, req ->
+      send(test_pid, {:relighting_snapshot, req.snapshot_ref})
+      default_relight(nil, req)
+    end
+    ctx = start_stack(bank_fun: bank, relight_fun: relight)
+    put_workload(ctx, "wl")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
+    id = created.session_id
+    assert {:ok, %{snapshot_ref: nil, generation: 0} = initial} = SessionStore.get(ctx.store, id)
+    [{pid, _}] = Registry.lookup(ctx.registry, id)
+    send(pid, :maybe_bank)
+    assert_receive {:bank_waiting, worker, ^id}
+    send(worker, :timeout)
+    wait_until(fn ->
+      match?({:ok, %{state: :running}}, SessionStore.get(ctx.store, id)) and
+        Map.get(:sys.get_state(ctx.mgr).bank_failures, id) == 1 and
+        Registry.lookup(ctx.registry, id) != []
+    end)
+
+    # The daemon completes after the callback's abort, with no live VM left.
+    NodeCapacity.put(ctx.cap_table, "node-4", node_fact("wl", session_snapshots: [snap_fact(id)]))
+    :ok = SessionManager.reconcile(ctx.mgr)
+    assert {:ok, recovered} = SessionStore.get(ctx.store, id)
+    assert recovered.state == :banked
+    assert recovered.snapshot_ref == "snap-#{id}"
+    assert recovered.snapshot_size_bytes == 2_000
+    # NodeStatus has no generation or parent-base provenance to infer.
+    assert recovered.generation == 0
+    assert recovered.base_snapshot_ref == initial.base_snapshot_ref
+    assert recovered.vm_id == nil
+    assert SessionStore.residency(ctx.store, id) == :error
+    assert %{live: 0, banked: 1} = SessionStore.counts(ctx.store, "wl")
+    wait_until(fn -> Registry.lookup(ctx.registry, id) == [] end)
+    assert {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    assert [banked] = Enum.filter(ops, &(&1.kind == :session_banked))
+    assert banked.payload["adopted"] == true
+    assert banked.payload["snapshot_ref"] == recovered.snapshot_ref
+    assert banked.payload["size_bytes"] == 2_000
+    assert banked.payload["generation"] == 0
+
+    :ok = SessionManager.reconcile(ctx.mgr)
+    assert {:ok, ^recovered} = SessionStore.get(ctx.store, id)
+    assert {:ok, ^ops} = SQLite.read_from(ctx.op_log, 0)
+    # Rebuild a new hot store from the real durable session projection.
+    {:ok, replayed_store} = SessionStore.start_link(name: nil, op_log: ctx.op_log)
+    assert {:ok, replayed} = SessionStore.get(replayed_store, id)
+    assert Map.take(replayed, [:state, :snapshot_ref, :snapshot_size_bytes, :generation, :node_id, :vm_id]) ==
+      Map.take(recovered, [:state, :snapshot_ref, :snapshot_size_bytes, :generation, :node_id, :vm_id])
+    GenServer.stop(replayed_store)
+
+    assert {:ok, %{status_code: 200}} = SessionManager.invoke(ctx.mgr, id, %{body: "after timeout"})
+    expected_ref = recovered.snapshot_ref
+    assert_receive {:relighting_snapshot, ^expected_ref}
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, id)
+    assert %{live: 1, banked: 0} = SessionStore.counts(ctx.store, "wl")
+  end
+
   test "adoption rebinds a running session VM to a fresh process after a restart" do
     ctx = start_stack()
     put_workload(ctx, "wl")
@@ -544,6 +609,95 @@ defmodule Embervm.SessionBankRelightTest do
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.state == :banked
     assert Registry.lookup(ctx.registry, created.session_id) == []
+  end
+
+  test "reconciliation repairs metadata missing from an already banked row" do
+    ctx = start_stack()
+    put_workload(ctx, "wl")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
+    id = created.session_id
+    :ok = SessionStore.adopt_state(ctx.store, id, :banked)
+    NodeCapacity.put(ctx.cap_table, "node-4", node_fact("wl", session_snapshots: [snap_fact(id)]))
+    :ok = SessionManager.reconcile(ctx.mgr)
+    assert {:ok, %{state: :banked, snapshot_ref: ref, snapshot_size_bytes: 2_000, vm_id: nil}} = SessionStore.get(ctx.store, id)
+    assert ref == "snap-#{id}"
+    wait_until(fn -> Registry.lookup(ctx.registry, id) == [] end)
+    assert SessionStore.counts(ctx.store, "wl") == %{live: 0, banked: 1}
+    assert {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    assert [%{payload: %{"adopted" => true}}] = Enum.filter(ops, &(&1.kind == :session_banked))
+  end
+
+  test "reconciliation rejects mismatched or ambiguous snapshot inventory" do
+    ctx = start_stack()
+    put_workload(ctx, "wl")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
+    id = created.session_id
+    {:ok, before} = SessionStore.get(ctx.store, id)
+    snap = snap_fact(id)
+    for snapshots <- [[%{snap | workload: "other"}], [%{snap | snapshot_ref: ""}],
+      [snap, %{snap | snapshot_ref: "another-ref"}]] do
+      NodeCapacity.put(ctx.cap_table, "node-4", node_fact("wl", session_snapshots: snapshots))
+      :ok = SessionManager.reconcile(ctx.mgr)
+      assert {:ok, ^before} = SessionStore.get(ctx.store, id)
+    end
+    assert {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    refute Enum.any?(ops, &(&1.kind == :session_banked))
+  end
+
+  test "snapshot inventory cannot override an in-flight bank owner" do
+    test_pid = self()
+    bank = fn _ch, req ->
+      send(test_pid, {:bank_owned, self()})
+      receive do
+        :complete -> default_bank(nil, req)
+      end
+    end
+    ctx = start_stack(bank_fun: bank)
+    put_workload(ctx, "wl")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
+    id = created.session_id
+    [{pid, _}] = Registry.lookup(ctx.registry, id)
+    send(pid, :maybe_bank)
+    assert_receive {:bank_owned, worker}
+    {:ok, before} = SessionStore.get(ctx.store, id)
+    assert before.state == :banking
+    NodeCapacity.put(ctx.cap_table, "node-4", node_fact("wl", session_snapshots: [snap_fact(id)]))
+    :ok = SessionManager.reconcile(ctx.mgr)
+    assert {:ok, ^before} = SessionStore.get(ctx.store, id)
+    assert {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    refute Enum.any?(ops, &(&1.kind == :session_banked))
+    send(worker, :complete)
+    wait_state(ctx, id, :banked)
+    assert {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    assert [normal_bank] = Enum.filter(ops, &(&1.kind == :session_banked))
+    refute Map.get(normal_bank.payload, "adopted", false)
+  end
+
+  test "snapshot inventory cannot override an in-flight relight owner" do
+    test_pid = self()
+    relight = fn _ch, req ->
+      send(test_pid, {:relight_owned, self()})
+      receive do
+        :complete -> default_relight(nil, req)
+      end
+    end
+    ctx = start_stack(relight_fun: relight)
+    put_workload(ctx, "wl")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
+    id = created.session_id
+    :ok = force_idle_bank(ctx, id)
+    NodeCapacity.put(ctx.cap_table, "node-4", node_fact("wl", session_snapshots: [snap_fact(id)]))
+    invoke = Task.async(fn -> SessionManager.invoke(ctx.mgr, id, %{body: "owned wake"}) end)
+    assert_receive {:relight_owned, worker}
+    {:ok, before} = SessionStore.get(ctx.store, id)
+    assert before.state == :relighting
+    assert {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    :ok = SessionManager.reconcile(ctx.mgr)
+    assert {:ok, ^before} = SessionStore.get(ctx.store, id)
+    assert {:ok, ^ops} = SQLite.read_from(ctx.op_log, 0)
+    send(worker, :complete)
+    assert {:ok, %{status_code: 200}} = Task.await(invoke)
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, id)
   end
 
   test "adoption evicts a session whose VM AND snapshot both vanished (node reporting)" do

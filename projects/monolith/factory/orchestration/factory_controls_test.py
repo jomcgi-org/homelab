@@ -149,6 +149,28 @@ def admitted(policy):
     return admit_next("scheduler")["task_id"]
 
 
+def test_rollback_policy_is_optional_and_default_off(policy):
+    parsed = controls.validate_policy(policy)
+    assert parsed["rollback"] == {
+        "enabled": False,
+        "window_minutes": 15,
+        "max_per_hour": 2,
+        "charts": {},
+    }
+    policy["rollback"] = {"charts": {"demo": {"window_minutes": 3}}}
+    assert controls.validate_policy(policy)["rollback"]["charts"]["demo"] == {
+        "window_minutes": 3,
+    }
+
+
+@pytest.mark.parametrize(
+    "config", [{"enabled": "false"}, {"max_per_hour": 3}, {"window_minutes": 0}]
+)
+def test_validate_policy_rejects_unsafe_rollback_blocks(policy, config):
+    with pytest.raises(ValueError):
+        controls.validate_policy({**policy, "rollback": config})
+
+
 def grant(task_id, key="one", **kwargs):
     return controls.authorize_start(
         task_id,
@@ -2164,6 +2186,7 @@ def test_status_defaults_intake_for_empty_control_policy(db):
         "last_swept": None,
         "last_evaluated": None,
         "last_error": None,
+        "owner_pr_backlog": None,
     }
 
 
@@ -6519,3 +6542,19 @@ def test_issue_body_hash_ignores_the_factorys_own_gate_contracts():
         "Acceptance rewritten by a person\n\n"
         + blocks.render("t-1", "a" * 20, contract)
     )
+
+
+@pytest.mark.parametrize(
+    "owner",
+    [
+        {},
+        {"login": "joe"},
+        {"login": "joe", "id": True},
+        {"login": "joe", "id": 0},
+        {"login": "bot[bot]", "id": 42},
+        {"login": "joe", "id": 42, "scope": "all"},
+    ],
+)
+def test_owner_pr_intake_identity_rejects_incomplete_or_ambiguous_grants(owner):
+    with pytest.raises(ValueError, match="invalid owner_pr_author"):
+        controls.intake_policy({"intake": {"owner_pr_author": owner}})

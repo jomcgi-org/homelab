@@ -22,12 +22,11 @@ class PricedUsage:
 
 
 _MODEL_ALIASES = {
-    # GPT-6 Luna, Sol and Astra and Claude Opus and Sonnet 5.5 have no
-    # genai-prices 0.1.6 entry, so they settle through the fixed table. GPT-6
-    # has no Terra. These targets match the guest's CLAUDE_MODELS pins
+    # These current aliases have no genai-prices 0.1.6 entry and settle
+    # through the fixed table. Targets match the guest's model pins
     # (projects/embervm/runtimes/claude/shim.py).
     "luna": ("gpt-6-luna", "fixed"),
-    "terra": ("gpt-5.6-terra", "openai"),
+    "terra": ("gpt-6.1-terra", "fixed"),
     "sol": ("gpt-6.1-sol", "fixed"),
     "astra": ("gpt-6-astra", "fixed"),
     "opus": ("claude-opus-5-5", "fixed"),
@@ -65,6 +64,12 @@ FIXED_PRICES = {
         "cache_read_per_million": 0.10,
         "output_per_million": 10.00,
         "note": "OpenAI list price, 2026-09-29 (above 272K input: 4.00/0.20/15.00)",
+    },
+    "gpt-6.1-terra": {
+        "input_per_million": 1.00,
+        "cache_read_per_million": 0.05,
+        "output_per_million": 5.00,
+        "note": "OpenAI list price, 2026-11-06",
     },
     "claude-opus-5-5": {
         "input_per_million": 4.00,
@@ -123,8 +128,8 @@ def _token_count(usage: Mapping[str, Any], key: str) -> int | float:
     return int(value)
 
 
-def _model_ref(model: str) -> tuple[str, str | None]:
-    if model in _MODEL_ALIASES:
+def _model_ref(model: str, *, allow_alias: bool = True) -> tuple[str, str | None]:
+    if allow_alias and model in _MODEL_ALIASES:
         return _MODEL_ALIASES[model]
     # Fixed prices win over the provider prefixes: genai-prices would match
     # claude-opus-5-5 as claude-opus-5 and price it at Opus 5 rates.
@@ -206,11 +211,21 @@ def _normalized_usage(
 def price_usage(
     model: str | None, usage: Mapping[str, Any] | None
 ) -> PricedUsage | None:
-    """Return the list price for supported usage, or None when it cannot price."""
-    if not model or not usage or not isinstance(usage, Mapping):
+    """Price the selected full ID when recorded, else the requested model.
+
+    Codex's provider_model is the shim-selected turn/start ID. It does not
+    independently attest the model served upstream. Unknown selected IDs stay
+    unpriced; alias changes must not reprice recorded historical model IDs.
+    """
+    if not usage or not isinstance(usage, Mapping):
         return None
 
-    model_ref, provider_id = _model_ref(model)
+    provider_model = usage.get("provider_model")
+    exact_model = isinstance(provider_model, str) and bool(provider_model)
+    selected_model = provider_model if exact_model else model
+    if not isinstance(selected_model, str) or not selected_model:
+        return None
+    model_ref, provider_id = _model_ref(selected_model, allow_alias=not exact_model)
     try:
         # Fixed-price Claude models keep Anthropic's exclusive input semantics.
         usage_provider = "anthropic" if model_ref.startswith("claude-") else provider_id
@@ -250,10 +265,17 @@ def price_usage(
         try:
             calculation = calc_price(normalized, model_ref, provider_id=provider_id)
         except LookupError:
+            if exact_model:
+                raise
             retry_ref = _DATE_SUFFIX.sub("", model_ref)
             if retry_ref == model_ref:
                 raise
             calculation = calc_price(normalized, retry_ref, provider_id=provider_id)
+        # genai-prices can match an unknown version by prefix, including
+        # claude-opus-5-5-unknown as claude-opus-5. Recorded IDs require an exact
+        # canonical match; requested aliases keep the historical fallback.
+        if exact_model and calculation.model.id != model_ref:
+            return None
         return PricedUsage(float(calculation.total_price), "list", calculation.model.id)
     except LookupError:
         logger.debug("No list price for model %r", model, exc_info=True)

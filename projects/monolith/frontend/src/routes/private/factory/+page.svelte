@@ -263,9 +263,9 @@
   </details>
 
   <section>
-    <p class="sec-label">
+    <h2 class="sec-label">
       / In flight <span class="num">{active.length}</span>
-    </p>
+    </h2>
     {#if active.length === 0 && !unavailable}
       <p class="none">Nothing in flight.</p>
     {/if}
@@ -275,7 +275,7 @@
   </section>
 
   <section>
-    <p class="sec-label">/ Queue <span class="num">{queued.length}</span></p>
+    <h2 class="sec-label">/ Queue <span class="num">{queued.length}</span></h2>
     {#if queued.length === 0 && !unavailable}
       <p class="none">Queue is empty. The next issue in the policy feeds it.</p>
     {/if}
@@ -285,7 +285,7 @@
   </section>
 
   <section aria-label="Agent-ready backlog">
-    <p class="sec-label">/ Agent-ready backlog</p>
+    <h2 class="sec-label">/ Agent-ready backlog</h2>
     {#if unavailable || !intakeBacklog?.available}
       <p class="none">
         Intake evidence unavailable. This is not an empty backlog.
@@ -326,7 +326,7 @@
   </section>
 
   <section>
-    <p class="sec-label">/ Recent <span class="num">{recent.length}</span></p>
+    <h2 class="sec-label">/ Recent <span class="num">{recent.length}</span></h2>
     {#if recent.length === 0 && !unavailable}
       <p class="none">No finished tasks yet.</p>
     {/if}
@@ -339,19 +339,21 @@
 {#snippet card(receipt, inFlight)}
   {@const open = Boolean(receipt.task_id) && openTask === receipt.task_id}
   <article class={`panel edition ${receipt.state}`} class:open>
-    <button
-      type="button"
-      class="panel-head ed-head"
-      aria-expanded={open}
-      disabled={!receipt.task_id}
-      onclick={() => toggle(receipt)}
-    >
-      <span class="issue code">#{receipt.issue_number}</span>
-      <span class="title">{receipt.title}</span>
-      <span class={`badge code state-${receipt.state}`}
-        >{receiptWord(receipt)}</span
+    <h3 class="card-heading">
+      <button
+        type="button"
+        class="panel-head ed-head"
+        aria-expanded={open}
+        disabled={!receipt.task_id}
+        onclick={() => toggle(receipt)}
       >
-    </button>
+        <span class="issue code">#{receipt.issue_number}</span>
+        <span class="title">{receipt.title}</span>
+        <span class={`badge code state-${receipt.state}`}
+          >{receiptWord(receipt)}</span
+        >
+      </button>
+    </h3>
     <dl class="spec">
       <div class="row">
         <dt class="label">owner</dt>
@@ -366,7 +368,8 @@
       <div class="row">
         <dt class="label">next</dt>
         <dd class="value">
-          {#if receipt.escalation_open}<a href="/factory/escalations"
+          {#if receipt.escalation_open}<a
+              href="/factory/escalations#receipt-{receipt.id}"
               >Review decision</a
             >
           {:else if receipt.work_item_id}<a
@@ -469,7 +472,7 @@
       <a href={receipt.url}>issue on GitHub</a>
     </p>
 
-    <p class="sec-label">/ Nodes</p>
+    <h4 class="sec-label">/ Nodes</h4>
     <ol class="nodes">
       {#each receipt.nodes as node (node.node_key)}
         <li>
@@ -508,7 +511,7 @@
     </ol>
 
     {#if receipt.starts?.length}
-      <p class="sec-label">/ Starts</p>
+      <h4 class="sec-label">/ Starts</h4>
       <ol class="ledger code">
         {#each receipt.starts as start (start.start_key)}
           <li>
@@ -524,7 +527,7 @@
     {/if}
 
     {#if receipt.stop_events?.length}
-      <p class="sec-label">/ Stop events</p>
+      <h4 class="sec-label">/ Stop events</h4>
       <ol class="ledger code">
         {#each receipt.stop_events as event, index (index)}
           <li>
@@ -540,7 +543,7 @@
     {/if}
 
     {#if receipt.evidence?.reason}
-      <p class="sec-label">/ Evidence</p>
+      <h4 class="sec-label">/ Evidence</h4>
       <p class="code soft evidence">{receipt.evidence.reason}</p>
     {/if}
   </div>
@@ -679,11 +682,16 @@
     font-size: 0.78rem;
   }
   .title {
+    margin: 0;
     flex: 1 1 14em;
     min-width: 0;
     font-size: 0.95rem;
     font-weight: 700;
     letter-spacing: -0.01em;
+  }
+  .card-heading {
+    margin: 0;
+    font: inherit;
   }
   .badge {
     padding: 0.1em 0.55em;

@@ -37,7 +37,50 @@ spec:
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.cfIngress.friends.servicePort | int }}
-    # Only the Svelte BFF is reachable. Never expose the private API wholesale.
+    {{- if .Values.cfIngress.grimoire.browserUi.enabled }}
+    # The client-only UI (projects/monolith/web/grimoire). It is static files
+    # served by the API port, and its browser code calls the API directly.
+    #
+    # These rules sit on THIS route so the SecurityPolicy below gates every
+    # byte: the OIDC filter decrypts the session cookie and the JWT check
+    # verifies it before anything is forwarded.
+    #
+    # The API is routed by an explicit list, never as /api/grimoire wholesale.
+    # Library reads such as /api/grimoire/books carry no identity check of
+    # their own, so they must stay unreachable here. The list is pinned to
+    # grimoire/browser_lane.py by chart/grimoire_browser_lane_test.py, and
+    # grimoire/browser_lane_test.py proves every listed route enforces the
+    # Grimoire identity.
+    {{- range .Values.cfIngress.grimoire.browserUi.apiPrefixes }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ . | quote }}
+      filters:
+        # Campaign data is per viewer. No cache, shared or private, may keep it.
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Cloudflare-CDN-Cache-Control
+                value: no-store
+              - name: Cache-Control
+                value: private, no-store
+      backendRefs:
+        - name: {{ include "monolith.fullname" $ }}
+          port: {{ $.Values.service.apiPort | int }}
+    {{- end }}
+    # The app shell and its hashed assets. The API port sets their cache and
+    # security headers itself (grimoire/web.py). A longer prefix outranks the
+    # /grimoire rule below, so the Svelte UI keeps every other path.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ .Values.cfIngress.grimoire.browserUi.path | quote }}
+      backendRefs:
+        - name: {{ include "monolith.fullname" . }}
+          port: {{ .Values.service.apiPort | int }}
+    {{- end }}
+    # The Svelte BFF serves every other page on this lane.
     - matches:
         - path:
             type: PathPrefix

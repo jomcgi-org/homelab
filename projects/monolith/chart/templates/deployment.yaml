@@ -16,6 +16,17 @@
 {{- fail "tokenBroker.spiffe.serverId is required when SPIFFE is enabled" }}
 {{- end }}
 {{- end }}
+{{- if .Values.tokenBroker.devLoginUrl }}
+{{- if not .Values.tokenBroker.spiffe.enabled }}
+{{- fail "tokenBroker.devLoginUrl requires tokenBroker.spiffe.enabled" }}
+{{- end }}
+{{- if not (hasPrefix "https://" .Values.tokenBroker.devLoginUrl) }}
+{{- fail "tokenBroker.devLoginUrl must use https" }}
+{{- end }}
+{{- if not (hasPrefix "spiffe://" .Values.tokenBroker.devLoginServerId) }}
+{{- fail "tokenBroker.devLoginServerId is required for dev login" }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -60,6 +71,8 @@ spec:
               containerPort: 8000
               protocol: TCP
           env:
+            - name: MONOLITH_INTERNAL_URL
+              value: "http://{{ include "monolith.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.apiPort }}"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -140,6 +153,12 @@ spec:
               value: /run/tokenbroker-svid/svid_bundle.pem
             {{- end }}
             {{- end }}
+            {{- if .Values.tokenBroker.devLoginUrl }}
+            - name: EMBER_DEV_TOKENBROKER_LOGIN_URL
+              value: {{ .Values.tokenBroker.devLoginUrl | quote }}
+            - name: EMBER_DEV_TOKENBROKER_LOGIN_SPIFFE_ID
+              value: {{ .Values.tokenBroker.devLoginServerId | quote }}
+            {{- end }}
             {{- if .Values.faas }}
             # FaaS zip-lane function registry (ADR 045 / embervm R1). The read
             # base is the R2 S3 host noded GETs archives from;
@@ -170,6 +189,8 @@ spec:
             - name: AGENT_PI_WORKLOAD
               value: {{ .Values.agentSessions.piWorkload | quote }}
             {{- end }}
+            - name: AGENT_STAGED_RECEIPTS_ENABLED
+              value: {{ (.Values.agentSessions | default dict).stagedReceiptsEnabled | default false | quote }}
             {{- with (.Values.agentSessions | default dict).admission }}
             # Shared execution permits. Read per check in admission.py, so
             # these are the live bounds on the next pod rather than values
@@ -256,8 +277,6 @@ spec:
               value: {{ .Values.swarm.factoryWorkItemBaseUrl | default "https://jomcgi.dev/slop" | quote }}
             - name: FACTORY_CONDUCTOR_FUNDING_ENABLED
               value: {{ .Values.swarm.factoryConductorFundingEnabled | default false | quote }}
-            - name: FACTORY_MERIT_JUDGE_ENABLED
-              value: {{ .Values.swarm.factoryMeritJudgeEnabled | default false | quote }}
             - name: FACTORY_MERIT_JUDGE_MAX_EXTENSION_MULTIPLE
               value: {{ .Values.swarm.factoryMeritJudgeMaxExtensionMultiple | default 1 | quote }}
             - name: FACTORY_MERIT_JUDGE_MAX_EXTENSION_USD
@@ -280,6 +299,8 @@ spec:
               value: {{ .Values.swarm.factoryPlannerHoldRefusalEnabled | default false | quote }}
             - name: FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED
               value: {{ .Values.swarm.factoryActiveReceiptDecisionsEnabled | default false | quote }}
+            - name: FACTORY_ROUTINE_PAUSE_FUNDING_ENABLED
+              value: {{ .Values.swarm.factoryRoutinePauseFundingEnabled | default false | quote }}
             - name: FACTORY_MAX_CONCURRENT_TASKS
               value: {{ .Values.swarm.factoryMaxConcurrentTasks | default 1 | quote }}
             - name: FACTORY_BACKGROUND_RESERVE
@@ -735,6 +756,12 @@ spec:
               value: {{ .Values.cfIngress.grimoire.clientID | quote }}
             - name: GRIMOIRE_AUTH_JWKS_URL
               value: {{ printf "%s/application/o/grimoire/jwks/" .Values.grimoire.authentikBaseUrl | quote }}
+            {{- if .Values.cfIngress.grimoire.browserUi.enabled }}
+            # The one origin whose pages may present the session cookie. Unset,
+            # the backend never treats the cookie as a credential.
+            - name: GRIMOIRE_BROWSER_ORIGIN
+              value: {{ printf "https://%s" .Values.cfIngress.friends.hostname | quote }}
+            {{- end }}
             {{- end }}
             - name: AUTH_AUTHENTIK_JWKS_URL
               value: {{ .Values.auth.authentik.jwksUrl | quote }}

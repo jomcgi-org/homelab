@@ -83,7 +83,7 @@
 <article class="decision" aria-labelledby="decision-{item.receipt_id}">
   <p class="ref">
     <a
-      href={item.url ?? "/factory/escalations"}
+      href={item.url ?? `/factory/escalations#receipt-${item.receipt_id}`}
       target={item.url ? "_blank" : undefined}
       rel="noopener">#{item.issue_number}</a
     >
@@ -125,12 +125,17 @@
   {#if message}
     <p class="message {tone}" role={tone === "warn" ? "alert" : "status"}>
       {message}
-      {#if unsettled}<a href="/factory/escalations">Open in escalations</a>{/if}
+      {#if unsettled}<a href="/factory/escalations#receipt-{item.receipt_id}"
+          >Open in escalations</a
+        >{/if}
     </p>
   {/if}
 
   <details class="more">
     <summary>Other ways out</summary>
+    <a href="/factory/escalations#receipt-{item.receipt_id}"
+      >Task context and decision</a
+    >
     <label class="note">
       <span>Note (sent with any answer)</span>
       <textarea bind:value={note} rows="2" placeholder="What is missing, or why"

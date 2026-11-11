@@ -12,8 +12,10 @@ from fastapi import FastAPI
 def register(app: FastAPI) -> None:
     """Register the grimoire router with the app (private tier only)."""
     from grimoire.router import router
+    from grimoire.web import mount_web
 
     app.include_router(router)
+    mount_web(app)
 
 
 def register_public(app: FastAPI) -> None:

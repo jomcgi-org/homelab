@@ -1073,7 +1073,7 @@ jobs:
       # room to finish; a fully-blocked run still bails early via
       # MAX_CONSECUTIVE_FAILURES. Safe under the hourly schedule + Forbid.
       activeDeadlineSeconds: 1500
-      suspend: false
+      suspend: true
       resources:
         requests:
           cpu: 250m
@@ -1256,6 +1256,10 @@ jobs:
 # code surfaced in the tool response. Empty disables the tools.
 tokenBroker:
   url: "http://embervm-embervm-tokenbroker.embervm.svc.cluster.local:8080"
+  # Private-tier dev login bridge only; no token, refresh or quota proxy.
+  # Requires the existing SPIFFE helper. Empty leaves the dev bridge disabled.
+  devLoginUrl: ""
+  devLoginServerId: ""
   spiffe:
     # Staged plaintext-retirement client. Keep false until the broker listener
     # and its exact monolith allowlist are live and verified separately.
@@ -1582,6 +1586,9 @@ sandbox:
   workloadPrefix: "sandbox-"
 
 agentSessions:
+  # Enable only after the additive receipt phase migration and compatible
+  # executors/readers have rolled out. False retains legacy preparation.
+  stagedReceiptsEnabled: false
   # EmberVM workload the pi-spark family creates its guest sessions on.
   # Empty means "use the code default" (pi-runtime). This is the REVERT
   # LEVER for routing pi-spark back to the claude-runtime lane: set it to
@@ -1730,7 +1737,6 @@ swarm:
   # Every judge grant is capped at the pinned task_budget_usd plus
   # min(MaxExtensionMultiple x task_budget_usd, MaxExtensionUsd). A grant the
   # cap cannot hold goes to a person. Needs factoryConductorFundingEnabled.
-  factoryMeritJudgeEnabled: false
   factoryMeritJudgeMaxExtensionMultiple: 1
   factoryMeritJudgeMaxExtensionUsd: 50
   # Issue numbers the judge reads as roadmap or factory-unblocking work,
@@ -1756,6 +1762,10 @@ swarm:
   # whatever the current policy generation: active work keeps its pinned
   # policy, so its card (a watchdog pause, most often) is not stale.
   factoryActiveReceiptDecisionsEnabled: false
+  # Send an ungated planner pause that recommends continuing to the funding
+  # judge on the same task instead of a person; see factory/orchestration/
+  # FACTORY.md "Routine planner pauses".
+  factoryRoutinePauseFundingEnabled: false
   # Hard ceiling on factory tasks in flight at once, over BOTH lanes together.
   # The policy's per-lane max_tasks is what sizes each lane; this only stops a
   # posted policy opening more than the platform is sized for, and delivery
@@ -2107,6 +2117,21 @@ cfIngress:
     clientID: grimoire-friends
     clientSecretName: grimoire-oidc-client
     onepasswordItemPath: vaults/k8s-homelab/items/grimoire-oidc
+    # The client-only React UI (projects/monolith/web/grimoire). Enabling it
+    # routes its static files and the listed API prefixes to the API port on
+    # the Grimoire route, and lets the backend accept the session cookie from
+    # that one origin. Off, the Svelte BFF remains the only thing reachable.
+    browserUi:
+      enabled: false
+      # Must equal the base the bundle was built with (GRIMOIRE_BASE in
+      # web/grimoire/vite.config.ts): /grimoire/next until cutover.
+      path: /grimoire/next
+      # Must equal BROWSER_API_PREFIXES in grimoire/browser_lane.py. Never add
+      # a prefix whose routes do not all enforce the Grimoire identity.
+      apiPrefixes:
+        - /api/grimoire/lobby
+        - /api/grimoire/campaigns
+        - /api/grimoire/invitations
   # The moving planner's lane on friends.jomcgi.dev (ADR security/006), gated to
   # the authentik `family` group. See templates/httproute-friends.yaml.
   #

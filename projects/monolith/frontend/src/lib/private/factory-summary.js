@@ -1,6 +1,6 @@
 // The dashboard's view of the factory board: what is waiting on Joe, what is
 // moving, and the one link into a conductor conversation. Computed on the
-// server from /api/agents/factory and refreshed with the rest of the
+// server from /api/agents/factory/summary and refreshed with the rest of the
 // dashboard, so the root page never carries the whole board.
 import {
   conductorHref,
@@ -67,5 +67,26 @@ export function summarizeBoard(board) {
       href: conductorHref(null, board),
       model: conductorModel(null, board),
     },
+  };
+}
+
+/** Validate the complete bounded backend reading before presenting counts. */
+export function summarizeFactoryReading(reading) {
+  if (!reading || typeof reading !== "object") return null;
+  if (reading.ok === false) return summarizeBoard(reading);
+  if (
+    reading.ok !== true ||
+    !Array.isArray(reading.escalations) ||
+    ![reading.active_count, reading.queued_count, reading.paused_count].every(
+      (n) => Number.isSafeInteger(n) && n >= 0,
+    ) ||
+    reading.paused_count > reading.active_count
+  )
+    return null;
+  return {
+    ...summarizeBoard({ ...reading, active: [], queued: [] }),
+    inFlight: reading.active_count,
+    queued: reading.queued_count,
+    paused: reading.paused_count,
   };
 }

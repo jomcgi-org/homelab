@@ -14,10 +14,10 @@
 # dev claim identities production owns, which chart_env_identity_test exists to
 # forbid. Every hub fact dev needs is restated here instead.
 #
-# SIZE. One unpinned 2gi brick plus at most one demand-opened 4gi canary on the
-# shared ember-bricks Spot pool, three workloads (the ones the conformance
-# suite drives: sandbox-python for S1,
-# pi-runtime for S2 and S3, sandbox-elixir for S5), SQLite op-log, no object
+# SIZE. Fixed unpinned 2gi and 8gi bricks plus at most one demand-opened 4gi
+# canary on the shared ember-bricks Spot pool. Four workloads cover the suite:
+# sandbox-python for S1, pi-runtime for S2/S3, sandbox-elixir for S5 and the
+# bounded 4096 MiB claude-runtime session for S9. SQLite op-log, no object
 # store. The recovery (values-recovery-gke.yaml) and store-validation
 # (values-store-validation-gke.yaml) presets target the same embervm-dev
 # release; activating either one means replacing this Application's value
@@ -38,7 +38,7 @@ opLog:
   storageClass: standard-rwo
 
 bricks:
-  # ONE unpinned 2gi brick. The home values pin via nodeFloors to node-4 and
+  # Fixed unpinned 2gi and 8gi bricks. The home values pin via nodeFloors to node-4 and
   # keep desiredReplicas at zero because an unpinned brick there could land on
   # an etcd master (#4290). The hub has no masters to protect: bricks select
   # homelab.io/firecracker and tolerate embervm.jomcgi.dev/node, which only the
@@ -48,7 +48,7 @@ bricks:
     1gi: 0
     2gi: 1
     4gi: 0
-    8gi: 0
+    8gi: 1
     16gi: 0
   nodeFloors: []
   # The BrickController's static target is max(desiredReplicas, minReplicas)
@@ -59,8 +59,9 @@ bricks:
   # Production's hub overlay zeroes the same floor. The hub dev canary grants
   # 4gi ceilingBound 1 with bootstrap max 0 in full mode, so it can open on
   # sustained attributed denials, drain safely, then retire its ceiling after
-  # one quiet hour at zero replicas. min=max=1 for 2gi preserves the conformance
-  # brick in full mode. Only needs above 2gi's usable memory minus its reject
+  # one quiet hour at zero replicas. min=max=1 for 2gi and 8gi preserves the
+  # conformance bricks in full mode; 8gi admits the 4096 MiB Claude workload.
+  # Only needs above 2gi's usable memory minus its reject
   # floor, and fitting 4gi, attribute denials to 4gi; small-workload saturation
   # on 2gi does not open it. Revert by deleting the 4gi bound (or setting it to
   # 0), or return mode to observe. Production overlays stay ceiling-disabled.
@@ -72,13 +73,13 @@ bricks:
       1gi: 0
       2gi: 1
       4gi: 0
-      8gi: 0
+      8gi: 1
       16gi: 0
     maxReplicas:
       1gi: 0
       2gi: 1
       4gi: 0
-      8gi: 0
+      8gi: 1
       16gi: 0
 
 noded:
@@ -164,3 +165,82 @@ baseRetention:
   remoteSweepEnabled: ""
 warmthS3Gc:
   enabled: ""
+
+# New charts opt into the stamped b3 cache; older charts ignore the flag and
+# continue baking b2. The builder ConfigMap has a distinct name for b3.
+rootfsBuilder:
+  bakeFormatVersion: b2
+  stampImageDigest: true
+
+# Keep the published guest digest/tag from the chart. The home dev base disables
+# this repository, so hub dev must restore it together with the Workload CR.
+runtimeClaude:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/claude
+
+claudeRuntimeWorkload:
+  enabled: true
+  persistenceEnabled: true
+  memMib: 4096
+  cap: 1
+  session:
+    idleBankSeconds: 20
+    maxLifetimeSeconds: 600
+    bankedTtlSeconds: 120
+    maxSessions: 1
+    invokeQueueCap: 1
+  invocation:
+    timeoutSeconds: 180
+
+# The runtime candidate must execute Terra at xhigh and resume its CLI thread
+# before Kargo promotes it. The review policy changes after that live gate.
+conformance:
+  codex:
+    enabled: true
+    model: terra
+    providerModel: gpt-6.1-terra
+    cliVersion: "0.167.0"
+
+# This broker owns a dev-only grant. No production grant is copied. The older
+# chart already understands plaintext retirement, so applying this HEAD overlay
+# before the strict-login chart (or rolling it back) keeps login off port 8080.
+tokenBroker:
+  enabled: true
+  plaintext:
+    retireProtectedRoutes: true
+  loginAuth:
+    required: true
+    clientSpiffeIds:
+      - spiffe://embervm.jomcgi.dev/ns/monolith/sa/monolith
+  spiffe:
+    enabled: true
+    clientSpiffeIds:
+      - spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-noded
+  grants:
+    - name: codex-cluster
+      provider: codex-chatgpt
+      fqdn: auth.openai.com
+
+egress:
+  enabled: true
+  workloads: [claude-runtime]
+  tokenBroker:
+    spiffe:
+      enabled: true
+  internal:
+    default: deny
+    allowlist: []
+  ca:
+    enabled: true
+  secrets:
+    - header: Authorization
+      valuePrefix: "Bearer "
+      egressTo: [chatgpt.com]
+      brokerGrant: codex-cluster
+      claimHeader: chatgpt-account-id
+      claimPath: https://api.openai.com/auth.chatgpt_account_id
+      # The current CLI's connector request omits Authorization. Only this
+      # exact path opts into injection when the header is absent.
+      injectAlwaysPaths:
+        - /backend-api/ps/mcp
+      quotaProvider: codex

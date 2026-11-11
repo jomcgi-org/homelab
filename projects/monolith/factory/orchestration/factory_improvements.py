@@ -13,6 +13,7 @@ from core.clock import aware
 from sqlmodel import select
 
 from factory.orchestration import factory_controls as controls
+from factory.orchestration import factory_improvement_fence as fence
 from factory.orchestration.factory_improvement_preview import (
     PreviewPolicy,
     digest,
@@ -137,6 +138,14 @@ def _database_context(db, control, *, scout_receipt_id=None):
         }
         for row in active
     ]
+    # Work that is waiting on a person, a pause or an unknown execution outcome
+    # is not delivery in progress. Repair preparation is read-only and must not
+    # wait on it; the work itself stays owned and untouched in `owners`.
+    progressing = [
+        row
+        for row in active
+        if row.state in fence.PROGRESSING_STATES and not row.task_paused
+    ]
     sweep = db.exec(
         select(FactoryAudit)
         .where(FactoryAudit.action == "intake_evaluated")
@@ -155,7 +164,7 @@ def _database_context(db, control, *, scout_receipt_id=None):
             and detail.get("generation") == policy.get("generation")
             and counts.get("delivery") == 0
             and counts.get("advisory") == 0
-            and not owners
+            and not progressing
         )
     return {
         "control_version": control.version,
@@ -187,6 +196,9 @@ def recovery_events(db):
                     "allocation_recovery_required",
                     "paused_card_created",
                     "paused_card_superseded",
+                    "recurring_blocker",
+                    "workflow_stranded",
+                    "problem_issue_recovery_observed",
                 )
             )
         )

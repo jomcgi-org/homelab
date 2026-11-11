@@ -144,6 +144,24 @@ export function boardStatus(cache = backendCache) {
 
 export function invalidateBoard(cache = backendCache) {
   cache.invalidate("board");
+  cache.invalidate("factory-summary");
+}
+
+// Kept separate from board: a summary can never satisfy a full-board read.
+export function readFactorySummary(apiBase, { cache = backendCache } = {}) {
+  return cache.read(
+    "factory-summary",
+    `${apiBase}/api/agents/factory/summary`,
+    {
+      freshMs: 60000,
+      staleMs: BOARD_STALE_MS,
+      timeoutMs: 90000,
+    },
+  );
+}
+
+export function factorySummaryStatus(cache = backendCache) {
+  return cache.status("factory-summary");
 }
 
 export function readHome(
@@ -197,7 +215,7 @@ export function startPrivatePrewarm({
 } = {}) {
   if (!enabled || !apiBase) return null;
   const tick = () => {
-    void readBoard(apiBase, { cache });
+    void readFactorySummary(apiBase, { cache });
     void readHome(apiBase, { coldWaitMs: 0, cache });
   };
   tick();

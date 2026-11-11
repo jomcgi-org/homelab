@@ -292,7 +292,11 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
 
             return JSONResponse(
                 status_code=503,
-                content={"status": "unhealthy", "components": failures},
+                content={
+                    "status": "unhealthy",
+                    "components": failures,
+                    "chart_version": os.environ.get("MONOLITH_CHART_VERSION") or None,
+                },
             )
         # chart_version is what the Kargo revision gate (#4745) compares
         # against the promoted chart: the chart sets MONOLITH_CHART_VERSION

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/bootenv"
 )
 
 // discardLogger returns a logger that drops all output, for tests that only care
@@ -25,7 +27,7 @@ func TestMmdsEnvFromCmdline(t *testing.T) {
 		"ember.env.BAD-KEY=" + enc("dropped") + " " + // invalid key, skipped
 		"ember.env.EMBER_BADB64=%%%notb64%%% " + // bad base64, skipped
 		"ember.serving_port=6443"
-	got := mmdsEnvFromCmdline(cmdline)
+	got := bootenv.Decode(cmdline)
 	want := map[string]string{
 		"EMBER_GROUP_ROLE":   "server",
 		"EMBER_GROUP_SECRET": "s3cr3t",
@@ -39,10 +41,10 @@ func TestMmdsEnvFromCmdline(t *testing.T) {
 func TestValueFromCmdline(t *testing.T) {
 	cmdline := "a=1 ember.serving_port=6443 b ember.serving_port=10250"
 	// last occurrence wins, matching the kernel
-	if got := valueFromCmdline(cmdline, servingPortCmdlineKey); got != "10250" {
+	if got := bootenv.Value(cmdline, servingPortCmdlineKey); got != "10250" {
 		t.Fatalf("serving port = %q, want 10250 (last wins)", got)
 	}
-	if got := valueFromCmdline(cmdline, "missing"); got != "" {
+	if got := bootenv.Value(cmdline, "missing"); got != "" {
 		t.Fatalf("missing key should be empty, got %q", got)
 	}
 }
@@ -184,8 +186,8 @@ func TestIsValidEnvKeyName(t *testing.T) {
 		"has.dot":            false,
 	}
 	for k, want := range cases {
-		if got := isValidEnvKeyName(k); got != want {
-			t.Fatalf("isValidEnvKeyName(%q) = %v, want %v", k, got, want)
+		if got := bootenv.ValidKey(k); got != want {
+			t.Fatalf("bootenv.ValidKey(%q) = %v, want %v", k, got, want)
 		}
 	}
 }

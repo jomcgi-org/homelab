@@ -33,6 +33,7 @@ defmodule Embervm.OpLog.Postgres do
   use GenServer
   require Logger
 
+  alias Embervm.OpLog.Codec
   alias Embervm.OpLog.Op
 
   # Retention and compaction key off the PROJECTION's state strings, which are
@@ -745,7 +746,7 @@ defmodule Embervm.OpLog.Postgres do
           end
         end
         with {:ok, _} <- query.("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY", []) do
-          Embervm.SessionCessationEvidence.read(query, :postgres, &decode_payload/1, id, expected, principal)
+          Embervm.SessionCessationEvidence.read(query, :postgres, &Codec.decode_payload/1, id, expected, principal)
         end
       end) do
         {:ok, result} -> result
@@ -775,7 +776,7 @@ defmodule Embervm.OpLog.Postgres do
           _ -> Postgrex.rollback(conn, {:error, :recovery_store_unavailable, %{}})
         end
         result = with {:ok, _} <- query.("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, #{access}", []) do
-          Embervm.SessionRecoveryFence.run(query, :postgres, &decode_payload/1, id, request, principal, now, append)
+          Embervm.SessionRecoveryFence.run(query, :postgres, &Codec.decode_payload/1, id, request, principal, now, append)
         end
         case result do
           {:ok, _} = ok -> ok
@@ -990,7 +991,7 @@ defmodule Embervm.OpLog.Postgres do
       op.stateful_instance_id,
       op.group_instance_id,
       Atom.to_string(op.kind),
-      encode_payload(op.payload)
+      Codec.encode_payload(op.payload)
     ]
 
     with {:ok, %Postgrex.Result{rows: [[seq]]}} <- Postgrex.query(conn, sql, params) do
@@ -1156,7 +1157,7 @@ defmodule Embervm.OpLog.Postgres do
                bool_to_int(Map.get(payload, :truncated, false)),
                op.ts,
                Map.get(payload, :expires_at),
-               encode_headers(Map.get(payload, :headers, %{}))
+               Codec.encode_headers(Map.get(payload, :headers, %{}))
              ]) do
         project_usage(conn, op)
       end
@@ -2255,7 +2256,7 @@ defmodule Embervm.OpLog.Postgres do
       stateful_instance_id: stateful_instance_id,
       group_instance_id: group_instance_id,
       kind: String.to_existing_atom(kind),
-      payload: decode_payload(payload_blob)
+      payload: Codec.decode_payload(payload_blob)
     }
   end
 
@@ -2722,7 +2723,7 @@ defmodule Embervm.OpLog.Postgres do
            truncated: truncated == 1,
            created_at: created_at,
            expires_at: expires_at,
-           headers: decode_headers(headers)
+           headers: Codec.decode_headers(headers)
          }}
 
       {:ok, %Postgrex.Result{rows: []}} ->
@@ -2741,7 +2742,7 @@ defmodule Embervm.OpLog.Postgres do
 
     case Postgrex.query(conn, sql, [task_id]) do
       {:ok, %Postgrex.Result{rows: [[payload_blob]]}} ->
-        {:ok, Map.get(decode_payload(payload_blob), "request")}
+        {:ok, Map.get(Codec.decode_payload(payload_blob), "request")}
 
       {:ok, %Postgrex.Result{rows: []}} ->
         {:ok, nil}
@@ -3075,50 +3076,4 @@ defmodule Embervm.OpLog.Postgres do
   defp bool_to_int(false), do: 0
   defp bool_to_int(nil), do: 0
 
-  # -- payload codec ----------------------------------------------------
-
-  # Mirrors Embervm.OpLog.SQLite's ETF codec exactly (see that module's
-  # comment): payloads are :erlang.term_to_binary/1'd into BYTEA so any term,
-  # including a non-UTF-8 binary body, round-trips byte-exact. Payloads are
-  # this node's own trusted data, so binary_to_term/1 on read is safe here.
-  defp encode_payload(payload) when is_map(payload) do
-    :erlang.term_to_binary(payload)
-  end
-
-  defp decode_payload(<<131, _::binary>> = term) do
-    term |> :erlang.binary_to_term() |> stringify()
-  end
-
-  defp decode_payload(json) when is_binary(json) do
-    :json.decode(json)
-  end
-
-  defp stringify(map) when is_map(map) do
-    for {k, v} <- map, not is_nil(v), into: %{}, do: {to_string(k), stringify(v)}
-  end
-
-  defp stringify(list) when is_list(list), do: Enum.map(list, &stringify/1)
-  defp stringify(v) when is_atom(v) and not is_boolean(v), do: Atom.to_string(v)
-  defp stringify(v), do: v
-
-  defp encode_headers(headers) when is_map(headers) and map_size(headers) == 0, do: nil
-
-  defp encode_headers(headers) when is_map(headers) do
-    headers |> :json.encode() |> :erlang.iolist_to_binary()
-  end
-
-  defp encode_headers(_), do: nil
-
-  defp decode_headers(nil), do: %{}
-
-  defp decode_headers(json) when is_binary(json) do
-    case :json.decode(json) do
-      map when is_map(map) -> map
-      _ -> %{}
-    end
-  rescue
-    _ -> %{}
-  end
-
-  defp decode_headers(_), do: %{}
 end

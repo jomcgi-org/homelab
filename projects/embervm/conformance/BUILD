@@ -20,6 +20,7 @@ go_library(
         "main.go",
         "s6_trace.go",
         "s7_jailer.go",
+        "s9_codex.go",
         "scenarios.go",
         "verdict.go",
     ],
@@ -38,6 +39,7 @@ go_test(
     srcs = [
         "s6_trace_test.go",
         "s7_jailer_test.go",
+        "s9_codex_test.go",
         "scenarios_test.go",
         "verdict_test.go",
     ],
@@ -60,6 +62,7 @@ go_test(
     ],
     data = [
         "//projects/embervm/specs:adoption_trace.tla",
+        "//projects/embervm/specs:destroy_contract.tla",
         "@temurin21_jre_linux_amd64//:bin/java",
         "@temurin21_jre_linux_amd64//:jre",
         "@tla2tools//file",
@@ -103,6 +106,7 @@ genrule(
     name = "tla_mtree",
     srcs = [
         "//projects/embervm/specs:adoption_trace.tla",
+        "//projects/embervm/specs:destroy_contract.tla",
         "@temurin21_jre_linux_amd64//:bin/java",
         "@temurin21_jre_linux_amd64//:jre",
         "@tla2tools//file",
@@ -112,6 +116,7 @@ genrule(
           "$(execpath @temurin21_jre_linux_amd64//:bin/java) " +
           "$(execpath @tla2tools//file) " +
           "$(execpath //projects/embervm/specs:adoption_trace.tla) " +
+          "$(execpath //projects/embervm/specs:destroy_contract.tla) " +
           "$(execpaths @temurin21_jre_linux_amd64//:jre) > $@",
     tools = ["tla_layer_mtree.sh"],
 )
@@ -120,6 +125,7 @@ tar(
     name = "tla_tar_amd64",
     srcs = [
         "//projects/embervm/specs:adoption_trace.tla",
+        "//projects/embervm/specs:destroy_contract.tla",
         "@temurin21_jre_linux_amd64//:jre",
         "@tla2tools//file",
     ],

@@ -1478,6 +1478,15 @@ def test_codex_synthetic_uses_release_derived_internal_api():
     assert container["resources"] == {"requests": {"cpu": "100m", "memory": "256Mi"}}
 
 
+def test_rollback_health_uses_release_derived_internal_api():
+    rendered = _render("alternate", [], namespace="another-namespace")
+    env = _env_by_name(_deployment_backend_env(rendered))
+    assert (
+        env["MONOLITH_INTERNAL_URL"]["value"]
+        == "http://alternate.another-namespace.svc:8000"
+    )
+
+
 @pytest.mark.parametrize("environment", ["prod", "gke"])
 def test_cd_health_renders_every_kargo_production_mapping(environment, renders):
     env = _env_by_name(_deployment_backend_env(renders[environment]))
@@ -2026,7 +2035,16 @@ def test_grimoire_friend_routes_are_isolated_and_backend_revalidates(renders):
         match["path"]["value"]
         for rule in route["spec"]["rules"]
         for match in rule["matches"]
-    ] == ["/grimoire/_app", "/grimoire"]
+    ] == [
+        "/grimoire/_app",
+        # The client-only UI calls these from the browser. The list is exact:
+        # grimoire/browser_lane_test.py proves each enforces Grimoire identity.
+        "/api/grimoire/lobby",
+        "/api/grimoire/campaigns",
+        "/api/grimoire/invitations",
+        "/grimoire/next",
+        "/grimoire",
+    ]
     assert policies[name]["spec"]["targetRefs"][0]["name"] == name
     provider = policies[name]["spec"]["jwt"]["providers"][0]
     assert provider["audiences"] == ["grimoire-friends"]
@@ -2039,6 +2057,8 @@ def test_grimoire_friend_routes_are_isolated_and_backend_revalidates(renders):
     assert "GRIMOIRE_AUTH_AUDIENCE" in renders["prod"]
     assert "GRIMOIRE_AUTH_JWKS_URL" in renders["prod"]
     assert "GRIMOIRE_AUTH_ISSUER" not in renders["dev"]
+    assert "GRIMOIRE_BROWSER_ORIGIN" in renders["prod"]
+    assert "GRIMOIRE_BROWSER_ORIGIN" not in renders["dev"]
 
 
 def test_dev_cannot_promote_production_kargo_stages(renders):

@@ -201,7 +201,7 @@ def test_shape_policy_keeps_the_board_keys_only():
     assert shape_policy(None) is None
 
 
-def test_build_factory_view_reads_a_real_control_row(tmp_path):
+def test_build_factory_view_reads_a_real_control_row(tmp_path, monkeypatch):
     """Drive the glue through sqlite so the status call signature and the
     board keys are exercised, not just the pure shaping."""
     import json
@@ -209,7 +209,7 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
     from sqlalchemy import event
     from sqlmodel import Session, SQLModel, create_engine
 
-    from factory.private_view import build_factory_view
+    from factory.private_view import build_factory_summary, build_factory_view
     from factory.orchestration.factory_models import (
         FactoryAudit,
         FactoryControl,
@@ -250,6 +250,11 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
     with Session(engine) as db:
         unavailable = build_factory_view(session=db)
         assert unavailable["ok"] is False and unavailable["lanes"] is None
+        assert build_factory_summary(session=db) == {
+            "ok": False,
+            "reason": "not_initialized",
+            "state": "disabled",
+        }
         assert unavailable["review_routing"] is None
         db.add(
             FactoryControl(
@@ -280,6 +285,10 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
         )
         db.commit()
         view = build_factory_view(session=db)
+        summary = build_factory_summary(session=db)
+        assert summary["queued_count"] == len(view["queued"]) == 1
+        assert summary["active_count"] == summary["paused_count"] == 0
+        assert summary["policy"]["conductor_model"] == view["policy"]["conductor_model"]
         assert view["intake_backlog"]["available"] is False
         assert view["intake_backlog"]["issues"] == []
         public_input = build_factory_view(session=db, include_backlog=False)
@@ -311,6 +320,10 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
         db.commit()
         visible = controls.escalation_view(controls._snapshot(db, receipt))
         assert visible["open"] and visible["options"]
+        summary = build_factory_summary(session=db)
+        assert summary["active_count"] == summary["paused_count"] == 1
+        # Same identity, options and pause eligibility as the board projection.
+        assert summary["escalations"] == [visible]
         controls._audit(
             db,
             "operator",
@@ -322,6 +335,89 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
         blocked = controls.escalation_view(controls._snapshot(db, receipt))
         assert not blocked["open"] and blocked["options"] == []
         assert blocked["pause_warning"] == "active_paused_without_actionable_question"
+        assert build_factory_summary(session=db)["escalations"] == []
+
+        def extra_receipt(number, **fields):
+            return FactoryReceipt(
+                repo="x/y",
+                issue_number=number,
+                title="synthetic",
+                body="private body",
+                url=f"https://example.test/issues/{number}",
+                actor="test",
+                **fields,
+            )
+
+        refine = extra_receipt(
+            5984,
+            task_class="refine",
+            state="succeeded",
+            escalation_json=json.dumps(
+                {
+                    "question": "Which scope?",
+                    "recommendation": "narrow",
+                    "options": [
+                        {
+                            "key": "narrow",
+                            "label": "Deliver narrow scope",
+                            "effect": "agent-ready",
+                            "detail": {"closes": [42]},
+                        },
+                        {"key": "hold", "label": "Hold", "effect": "hold"},
+                    ],
+                }
+            ),
+        )
+        archived = extra_receipt(
+            5985,
+            state="succeeded",
+            escalation_json=json.dumps({"resolved": {"effect": "close"}}),
+        )
+        landing = extra_receipt(5986, state="landing", task_paused=True)
+        db.add_all([refine, archived, landing])
+        db.commit()
+        monkeypatch.setattr("factory.private_view.SUMMARY_DECISION_LIMIT", 2)
+        summary = build_factory_summary(session=db)
+        assert summary["active_count"] == summary["paused_count"] == 2
+        assert summary["queued_count"] == 0
+        assert summary["escalations"] == [
+            controls.escalation_view(controls._snapshot(db, refine))
+        ]
+        assert "private body" not in json.dumps(summary)
+
+        # Stable same-issue ties match the board's oldest-receipt-first input.
+        later = extra_receipt(
+            5984,
+            generation=1,
+            task_class="refine",
+            state="admitted",
+            task_paused=True,
+            escalation_json=refine.escalation_json,
+        )
+        db.add(later)
+        db.commit()
+        # The unresolved but non-actionable pause still counts toward coverage.
+        with pytest.raises(ValueError, match="coverage"):
+            build_factory_summary(session=db)
+        monkeypatch.setattr("factory.private_view.SUMMARY_DECISION_LIMIT", 3)
+        expected = controls.escalations(
+            [controls._snapshot(db, row) for row in (refine, later)]
+        )
+        assert expected[1]["pause_warning"] == (
+            "active_paused_without_actionable_question"
+        )
+        assert build_factory_summary(session=db)["escalations"] == expected
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("dashboard must not enrich the board")
+
+        monkeypatch.setattr(controls, "status", forbidden)
+        monkeypatch.setattr(controls, "_snapshot", forbidden)
+        monkeypatch.setattr("factory.private_view.build_factory_view", forbidden)
+        assert build_factory_summary(session=db)["active_count"] == 3
+        monkeypatch.setattr("factory.private_view.SUMMARY_DECISION_LIMIT", 0)
+        with pytest.raises(ValueError, match="coverage"):
+            build_factory_summary(session=db)
     assert view["ok"] is True
     assert view["state"] == "enabled"
     assert view["policy"]["conductor_model"] == "astra"

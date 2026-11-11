@@ -2,7 +2,7 @@
 
 Session-class guest image that runs the Claude Code CLI headlessly under a shim
 speaking the frozen HTTP-over-vsock guest contract on port 1027. Part of issue
-[#4055](https://github.com/jomcgi/homelab/issues/4055).
+[#4055](https://github.com/jomcgi-org/homelab/issues/4055).
 
 ## Why the CLI and not the API
 
@@ -116,10 +116,24 @@ Two cautions when consuming it:
 
 ### Codex app-server acceptance map
 
-Issue #4361 was verified against the Codex app-server pinned in `MODULE.bazel`:
-release `rust-v0.146.0`, amd64 archive SHA256
-`5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a`, and
-tag commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`.
+`MODULE.bazel` pins the official `rust-v0.167.0` amd64 musl full package,
+archive SHA256
+`3bbf75e83de6b58aed28f2cf6e33ad423ec31fd4700a1457b94be557ea5a7c6e`.
+The image imports its complete tree under `/usr/local`: `bin/codex`, the code-mode
+and exec hosts, `codex-package.json`, `codex-path` and `codex-resources`, including
+the bundled licenses. The package manifest and sibling hosts are needed for tool
+execution. The generic Terra alias selects `gpt-6.1-terra` at `high`; an explicit
+review request retains `xhigh`.
+
+The custom provider sets `requires_openai_auth=true` so requests carry the inert
+subscription header for the egress sidecar to replace. Both API-key environment
+variables are removed from the child. The broker owns real credentials and refresh.
+`provider_model` records the full ID selected by the shim for `turn/start`; the
+protocol does not independently attest the model served upstream. Pricing prefers
+this recorded ID, preserving historical full IDs and leaving unknown ones unpriced.
+The fixed Terra price is a standard-rate accounting estimate. Aggregated turn
+totals cannot establish per-request long-context tiers, and subscription credit
+metering uses separate rates.
 
 - **Turn accounting:** the pinned protocol puts `threadId` and `turnId` on
   `thread/tokenUsage/updated`, and puts `threadId` plus `turn.id` on both
@@ -155,11 +169,20 @@ tag commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`.
   talking session selected at session creation. Codex retains its directory-only
   startup check for that supported use, with no new compatibility mechanism.
 
-Validation is repository-local: focused hermetic pytest exercises the adapter
-and the existing Linux `//projects/embervm/runtimes/claude:shim_test` target is
-the delivery gate. No deployment, credential operation, or production session
-was needed to establish the pinned producer ordering or the supported caller
-paths.
+Required Linux `codex_compat_test` runs the packaged producer against a local
+subscription fixture. It checks package entry/byte/mode parity, CLI version,
+Authorization on model discovery and responses, Terra/xhigh selection, positive
+usage, real shell output and exit status, and persisted thread resume after a
+fresh app-server. A negative control removes the code-mode host and requires
+tool proof to fail even when a text response completes. `shim_test` retains the
+protocol ordering and failure coverage above. Local permission restrictions must
+be reported rather than bypassed or converted into a passing compatibility test.
+
+The live S9 dev gate separately requires actual provider execution, a fresh shell
+proof, the published guest digest and CLI version, positive usage, park/resume of
+the same thread and cleanup before Kargo promotion. The ordinary factory reviewer
+policy changes only after the runtime passes that gate. Comparative model
+assessment remains deferred while operating evidence accumulates.
 
 ## Preemption
 
@@ -320,19 +343,15 @@ divergence is recorded in `EXPECTED_DIVERGENCE` in
   `ember.env.*` boot arguments, decoded by guest-init before the shim starts, and
   the shim configures Git when it spawns or resumes the CLI, so a session can
   carry its principal without an identity baked into the image. Note that the
-  identity is plumbed but nothing commits with it yet: per-session branches,
-  per-turn commits, and a diff endpoint are tracked in
-  [#4070](https://github.com/jomcgi/homelab/issues/4070). Until that lands there
-  is no record of what a session changed, which is the main gap in this runtime.
+  shim captures a per-turn workspace diff. Automatic per-session branches,
+  per-turn commits, and a dedicated diff endpoint were proposed in
+  [#4070](https://github.com/jomcgi-org/homelab/issues/4070), which closed as
+  not planned on 2026-09-14. The Git identity alone does not implement them.
 - **`HOME` must be writable** by uid 65532: the CLI writes `~/.claude.json` and
   session transcripts under `~/.claude/projects/`.
 
 ## Open items
 
-- **No record of what a session changed.** Per-session branches, per-turn
-  commits, and a diff endpoint are tracked in
-  [#4070](https://github.com/jomcgi/homelab/issues/4070). The git identity is
-  already plumbed; nothing uses it yet.
 - **Regenerating `apko.lock.json` needs Linux.** apko will not run on darwin
   (`cannot execute binary file`), so relocking is a podman job. There is also a
   bootstrap order to respect: the `apko.translate_lock` entry in `MODULE.bazel`

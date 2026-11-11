@@ -116,6 +116,110 @@ def fake_pages(monkeypatch, issues, pulls=()):
     return calls
 
 
+@pytest.mark.parametrize("refine", [False, True])
+def test_activated_repair_producer_reaches_ordinary_bug_intake(db, monkeypatch, refine):
+    from core.jsonio import dumps
+    from factory.orchestration import factory_problem_issues as producer
+    from factory.orchestration import factory_conductor
+
+    configured = multi_repo_policy(
+        repo=producer.RECOVERY_REPO,
+        repos={producer.RECOVERY_REPO: {}},
+        intake={
+            "enabled": True,
+            "labels": ["agent-ready"] if refine else ["bug"],
+            "refine_enabled": refine,
+            "exclude_labels": ["needs-human"],
+        },
+    )
+    controls.set_control("configure", "operator", policy=configured)
+    enabled = controls.set_control("enable", "operator")
+    args = dict(
+        enabled=True,
+        recurring_blocker=True,
+        workflow_stranded=True,
+        expected_version=enabled["version"],
+        reason="Enable reviewed recovery",
+        actor="operator",
+    )
+    preview = producer.configure("preview", **args)
+    producer.configure(
+        "apply",
+        **args,
+        request_key="activate",
+        expected_preview_sha256=preview["preview_sha256"],
+    )
+    with Session(db) as session:
+        configured = json.loads(session.get(FactoryControl, "factory").policy_json)
+    monkeypatch.setattr(producer, "_recovery_quota", lambda: True)
+    monkeypatch.setattr(producer, "_now", lambda: NOW)
+    monkeypatch.setattr(
+        factory_conductor, "github_get", lambda *args: issue(1, ["bug"])
+    )
+    produced = []
+    monkeypatch.setattr(producer, "github_list", lambda *args: list(produced))
+
+    def publish(repo, payload):
+        created = issue(
+            2,
+            payload["labels"],
+            body=payload["body"],
+            title=payload["title"],
+            html_url=f"https://github.com/{repo}/issues/2",
+        )
+        produced.append(created)
+        return created
+
+    monkeypatch.setattr(producer, "github_write", publish)
+    producer.problem_issues_tick(configured)
+    with Session(db) as session:
+        configured = json.loads(session.get(FactoryControl, "factory").policy_json)
+        session.add(
+            SwarmTask(
+                id="stalled",
+                task_text="source",
+                repo=producer.RECOVERY_REPO,
+                base_branch="main",
+                conductor_model="astra",
+            )
+        )
+        session.flush()
+        session.add(
+            FactoryReceipt(
+                repo=producer.RECOVERY_REPO,
+                issue_number=1,
+                title="source",
+                body="body",
+                url="url",
+                actor="test",
+                task_id="stalled",
+                state="admitted",
+                task_paused=True,
+            )
+        )
+        session.add(
+            FactoryAudit(
+                actor="factory:conductor",
+                task_id="stalled",
+                action="workflow_stranded",
+                detail_json=dumps({"workflow_id": "private"}),
+            )
+        )
+        session.commit()
+    producer.problem_issues_tick(configured)
+    assert len(produced) == 1
+    fake_pages(monkeypatch, produced)
+    received = intake_loop.intake_tick(configured, generation=configured["generation"])
+    assert len(received) == 1
+    assert received[0]["receipt"]["issue_number"] == 2
+    assert received[0]["receipt"]["task_class"] == ("refine" if refine else "bug-fix")
+    with Session(db) as session:
+        original = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == "stalled")
+        ).one()
+        assert original.task_paused and original.state == "admitted"
+
+
 def candidate_evidence(db):
     return [json.loads(row.detail_json) for row in audits(db, "intake_candidate")]
 
@@ -3395,3 +3499,1130 @@ def test_intake_capacity_matches_admission_across_generations(
         assert result["ok"], result
         with Session(db) as session:
             assert session.get(FactoryReceipt, result["receipt_id"]).issue_number == 1
+
+
+def owner_policy(**intake):
+    return {
+        **policy(owner_pr_author={"login": "joe", "id": 42}, **intake),
+        "base_branch": "main",
+        "generation": 1,
+        "issue_numbers": [],
+    }
+
+
+def owner_pull(**overrides):
+    return {
+        "number": 100,
+        "title": "Finish existing fix",
+        "body": "Closes #1",
+        "state": "open",
+        "draft": True,
+        "created_at": "2026-08-01T00:00:00Z",
+        "user": {"login": "joe", "id": 42, "type": "User"},
+        "labels": [],
+        "assignees": [],
+        "head": {
+            "ref": "fix/existing",
+            "sha": "a" * 40,
+            "repo": {"full_name": "owner/repo"},
+        },
+        "base": {"ref": "main", "sha": "b" * 40, "repo": {"full_name": "owner/repo"}},
+        **overrides,
+    }
+
+
+def owner_reads(monkeypatch, pull, objective, comments=()):
+    from factory.orchestration import factory_conductor as conductor
+
+    def read(_repo, suffix):
+        return pull if suffix.startswith("pulls/") else objective
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    monkeypatch.setattr(conductor, "github_list", lambda *_args: list(comments))
+
+
+def enable_owner_policy(db, value):
+    with Session(db) as session:
+        control = session.get(FactoryControl, "factory")
+        control.state = "enabled"
+        control.policy_json = json.dumps(value)
+        session.commit()
+
+
+def test_owner_pr_adopts_existing_draft_before_new_issue(db, monkeypatch):
+    value, pull, objective = owner_policy(), owner_pull(), issue(1, ["agent-ready"])
+    enable_owner_policy(db, value)
+    owner_reads(monkeypatch, pull, objective)
+    fake_pages(monkeypatch, [objective, issue(2, ["critical", "agent-ready"])], [pull])
+    received = intake_loop.intake_tick(value, generation=1)
+    assert len(received) == 1
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, received[0]["receipt"]["id"])
+        assert row.issue_number == 1
+        assert row.work_item_id is not None
+        direction = json.loads(row.direction_json)
+        assert direction["delivery_branch"] == "fix/existing"
+        assert direction["delivery_pr_number"] == 100
+        assert direction["delivery_target_checked"] is True
+        assert direction["owner_pr"]["observed_head_sha"] == "a" * 40
+        assert "review" not in direction  # discovery cannot import an approval
+    assert audits(db, "receive_owner_pr")
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ({"labels": [{"name": "human"}]}, "explicit_hold"),
+        ({"body": "Closes #1. Keep this PR draft and unmerged."}, "explicit_hold"),
+        ({"body": "Refs #1"}, "refine_disabled"),
+        ({"body": "Closes #1 and closes #2"}, "scope_ambiguous"),
+    ],
+)
+def test_owner_pr_author_never_grants_scope_or_clears_holds(db, change, reason):
+    from factory.orchestration import owner_prs
+
+    candidates = owner_prs.candidates(
+        "owner/repo",
+        [owner_pull(**change)],
+        [issue(1, ["agent-ready"]), issue(2, ["agent-ready"])],
+        owner_policy(),
+    )
+    assert candidates == []
+    observation = json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"][0]
+    assert observation["blocker"] == reason
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "queued",
+        "admitted",
+        "uncertain",
+        "landing",
+        "escalated",
+        "cancelled",
+        "succeeded",
+    ],
+)
+def test_owner_pr_preserves_receipt_history_across_generations(db, state):
+    from factory.orchestration import owner_prs
+
+    with Session(db) as session:
+        row = FactoryReceipt(
+            repo="owner/repo",
+            issue_number=1,
+            generation=0,
+            title="Existing",
+            body="",
+            url="https://github.com/owner/repo/issues/1",
+            actor=controls.INTAKE_ACTOR,
+            state=state,
+            direction_json=json.dumps(
+                {
+                    "delivery_branch": "fix/existing",
+                    "delivery_pr_number": 100,
+                    "delivery_adoption": True,
+                }
+            ),
+        )
+        session.add(row)
+        session.commit()
+    assert (
+        owner_prs.candidates(
+            "owner/repo", [owner_pull()], [issue(1, ["agent-ready"])], owner_policy()
+        )
+        == []
+    )
+
+
+def test_owner_pr_receive_is_idempotent_and_does_not_overwrite_direction(
+    db, monkeypatch
+):
+    from factory.orchestration import owner_prs
+
+    value, pull, objective = owner_policy(), owner_pull(), issue(1, ["agent-ready"])
+    enable_owner_policy(db, value)
+    owner_reads(monkeypatch, pull, objective)
+    chosen = {**value, "owner_pr_issue_number": 1}
+    first = owner_prs.receive("owner/repo", 100, chosen, generation=1)
+    pull["head"]["sha"] = "c" * 40
+    second = owner_prs.receive("owner/repo", 100, chosen, generation=1)
+    assert second == {
+        "ok": True,
+        "created": False,
+        "receipt": {"id": first["receipt"]["id"]},
+    }
+    with Session(db) as session:
+        rows = session.exec(select(FactoryReceipt)).all()
+        assert len(rows) == 1
+        assert (
+            json.loads(rows[0].direction_json)["owner_pr"]["observed_head_sha"]
+            == "a" * 40
+        )
+
+
+def test_owner_pr_fresh_discussion_hold_refuses_without_creating_work(db, monkeypatch):
+    from factory.orchestration import owner_prs
+
+    value, pull, objective = owner_policy(), owner_pull(), issue(1, ["agent-ready"])
+    enable_owner_policy(db, value)
+    owner_reads(
+        monkeypatch,
+        pull,
+        objective,
+        [{"body": "Leave unmerged until a supported release."}],
+    )
+    with pytest.raises(ValueError, match="explicit_discussion_hold"):
+        owner_prs.receive(
+            "owner/repo", 100, {**value, "owner_pr_issue_number": 1}, generation=1
+        )
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).all() == []
+
+
+def test_owner_pr_identity_needs_numeric_id_and_human_type(db):
+    from factory.orchestration import owner_prs
+
+    for author in (
+        {"login": "joe", "id": 43, "type": "User"},
+        {"login": "joe", "id": 42, "type": "Bot"},
+        {"login": "other", "id": 42, "type": "User"},
+    ):
+        assert not owner_prs.identity_matches(owner_pull(user=author), owner_policy())
+    assert not owner_prs.identity_matches(owner_pull(), policy())
+
+
+def test_unlinked_owner_pr_enters_existing_refine_then_verified_delivery(
+    db, monkeypatch
+):
+    from factory.orchestration import owner_prs
+
+    value = owner_policy(refine_enabled=True)
+    pull = owner_pull(body="Repair a broken test under standing maintenance policy")
+    objective = {
+        **pull,
+        "pull_request": {"url": "https://api.github.com/repos/owner/repo/pulls/100"},
+        "html_url": "https://github.com/owner/repo/pull/100",
+    }
+    enable_owner_policy(db, value)
+    owner_reads(monkeypatch, pull, objective)
+    first = owner_prs.candidates("owner/repo", [pull], [], value)
+    assert first[0]["lane"] == "advisory"
+    assert first[0]["task_class"] == "refine"
+    received = owner_prs.receive(
+        "owner/repo", 100, {**value, "owner_pr_issue_number": 100}, generation=1
+    )
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, received["receipt"]["id"])
+        assert row.task_class == "refine"
+        assert row.work_item_id is not None
+        assert session.get(WorkItem, row.work_item_id).source_ref.endswith("/pull/100")
+        # A label alone cannot replace the server's verified refine settlement.
+        row.state = "succeeded"
+        task = SwarmTask(
+            id="owner-refine",
+            task_text="scope",
+            repo="owner/repo",
+            base_branch="main",
+            conductor_model="astra",
+            budget_usd=1,
+            workflow_id="factory:owner-refine",
+        )
+        session.add(task)
+        session.flush()
+        row.task_id = task.id
+        session.commit()
+    pull["labels"] = [{"name": "agent-ready"}]
+    assert owner_prs.candidates("owner/repo", [pull], [], value) == []
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(
+                actor="factory:refine",
+                action="refine_settled",
+                task_id="owner-refine",
+                detail_json=json.dumps({"outcome": "agent-ready"}),
+            )
+        )
+        session.commit()
+    second = owner_prs.candidates("owner/repo", [pull], [], value)
+    assert second[0]["lane"] == "delivery"
+    assert second[0]["number"] == 100
+    assert second[0]["pr_number"] == 100
+
+
+def test_owner_pr_concurrent_receive_keeps_one_canonical_receipt(db, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from factory.orchestration import owner_prs
+
+    value, pull, objective = owner_policy(), owner_pull(), issue(1, ["agent-ready"])
+    enable_owner_policy(db, value)
+    owner_reads(monkeypatch, pull, objective)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(
+                lambda _: owner_prs.receive(
+                    "owner/repo",
+                    100,
+                    {**value, "owner_pr_issue_number": 1},
+                    generation=1,
+                ),
+                range(2),
+            )
+        )
+    assert sum(result["created"] for result in results) == 1
+    assert len({result["receipt"]["id"] for result in results}) == 1
+
+
+def test_owner_pr_activation_preview_cas_replay_preserves_other_policy(db):
+    from factory.orchestration import owner_pr_control
+
+    value = owner_policy(refine_enabled=True)
+    value["intake"].pop("owner_pr_author")
+    value["problem_issues"] = {"enabled": False}
+    enable_owner_policy(db, value)
+    owner = {"login": "joe", "id": 42}
+    proposal = owner_pr_control.preview(owner, 0, "Enable owner backlog")
+    digest = proposal["preview"]["preview_sha256"]
+    applied = owner_pr_control.apply(
+        "operator", owner, 0, "Enable owner backlog", "owner-enable", digest
+    )
+    assert applied["generation"] == 1
+    assert applied["dispatched"] is False
+    assert (
+        owner_pr_control.apply(
+            "operator", owner, 0, "Enable owner backlog", "owner-enable", digest
+        )
+        == applied
+    )
+    with pytest.raises(ValueError, match="owner_pr_request_conflict"):
+        owner_pr_control.apply(
+            "operator", None, 0, "Enable owner backlog", "owner-enable", digest
+        )
+    with pytest.raises(ValueError, match="version_conflict"):
+        owner_pr_control.apply("operator", None, 0, "Disable", "owner-disable", digest)
+    with Session(db) as session:
+        live = json.loads(session.get(FactoryControl, "factory").policy_json)
+        assert live == {
+            **value,
+            "intake": {**value["intake"], "owner_pr_author": owner},
+        }
+        assert session.exec(select(FactoryReceipt)).all() == []
+
+
+HELD_BODY = "Closes #1. Keep this PR draft and unmerged."
+
+
+def release_owner_hold(
+    monkeypatch, number=100, action="release", key="release-1", body=HELD_BODY
+):
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import owner_pr_hold_release as release
+
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda _repo, _suffix: owner_pull(number=number, body=body),
+    )
+    digest = release.preview("owner/repo", number, action, "Joe approved landing")[
+        "preview"
+    ]["preview_sha256"]
+    applied = release.apply(
+        "operator", "owner/repo", number, action, "Joe approved landing", key, digest
+    )
+    return applied, digest
+
+
+def test_owner_pr_hold_release_preview_replay_conflict_and_revoke(db, monkeypatch):
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import owner_pr_hold_release as release
+
+    enable_owner_policy(db, owner_policy())
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_: owner_pull(body=HELD_BODY, state="closed")
+    )
+    with pytest.raises(ValueError, match="owner_pr_hold_release_pr_not_open"):
+        release.preview("owner/repo", 100, "release", "reason")
+    with pytest.raises(ValueError, match="owner_pr_hold_release_repo_unknown"):
+        release.preview("other/repo", 100, "revoke", "reason")
+    with pytest.raises(ValueError, match="owner_pr_hold_not_released"):
+        release.preview("owner/repo", 100, "revoke", "reason")
+    applied, digest = release_owner_hold(monkeypatch)
+    assert applied["dispatched"] is False
+    replay = ("operator", "owner/repo", 100, "release", "Joe approved landing")
+    # The replay is answered from the audit, without reading GitHub again.
+    monkeypatch.setattr(conductor, "github_get", lambda *_: pytest.fail("reread"))
+    assert release.apply(*replay, "release-1", digest) == applied
+    with pytest.raises(ValueError, match="owner_pr_hold_release_request_conflict"):
+        release.apply("operator", "owner/repo", 101, *replay[3:], "release-1", digest)
+    monkeypatch.setattr(conductor, "github_get", lambda *_: owner_pull(body=HELD_BODY))
+    with pytest.raises(ValueError, match="owner_pr_hold_already_released"):
+        release.preview("owner/repo", 100, "release", "again")
+    # The old digest binds the earlier history, so a fresh key cannot reuse it.
+    with pytest.raises(ValueError, match="owner_pr_hold_already_released"):
+        release.apply(*replay, "release-2", digest)
+    assert release.read_release("owner/repo", 100) is not None
+    assert release.read_release("owner/repo", 101) is None
+    release_owner_hold(monkeypatch, action="revoke", key="revoke-1")
+    assert release.read_release("owner/repo", 100) is None
+    # A replayed release must not read as in force after the revoke.
+    with pytest.raises(ValueError, match="owner_pr_hold_release_superseded"):
+        release.apply(*replay, "release-1", digest)
+    with pytest.raises(ValueError, match="owner_pr_hold_release_preview_changed"):
+        release.apply(*replay, "release-3", digest)
+    assert len(audits(db, release.RELEASED)) == 1
+    assert len(audits(db, release.REVOKED)) == 1
+
+
+def test_owner_pr_hold_release_waives_exact_description_only(db, monkeypatch):
+    from factory.orchestration import owner_prs
+
+    enable_owner_policy(db, owner_policy())
+    issues = [issue(1, ["agent-ready"])]
+
+    def blocker(pull):
+        found = owner_prs.candidates("owner/repo", [pull], issues, owner_policy())
+        item = json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"][0]
+        return len(found), item["blocker"]
+
+    assert blocker(owner_pull(body=HELD_BODY)) == (0, "explicit_hold")
+    release_owner_hold(monkeypatch)
+    count, reason = blocker(owner_pull(body=HELD_BODY))
+    assert count == 1 and reason != "explicit_hold"
+    # New wording after the release is a new hold.
+    edited = owner_pull(body=HELD_BODY + " Do not merge.")
+    assert blocker(edited) == (0, "explicit_hold")
+    # A label is an explicit lever the release never touches.
+    labelled = owner_pull(body=HELD_BODY, labels=[{"name": "human"}])
+    assert blocker(labelled) == (0, "explicit_hold")
+    # Another PR's wording is not covered by this PR's release.
+    assert blocker(owner_pull(number=101, body=HELD_BODY)) == (0, "explicit_hold")
+    release_owner_hold(monkeypatch, action="revoke", key="revoke-1")
+    assert blocker(owner_pull(body=HELD_BODY)) == (0, "explicit_hold")
+
+
+def test_owner_pr_hold_release_keeps_later_discussion_binding(db, monkeypatch):
+    from factory.orchestration import owner_pr_hold_release as release
+    from factory.orchestration import owner_prs
+
+    enable_owner_policy(db, owner_policy())
+    pull = owner_pull(draft=False, body=HELD_BODY)
+    old = {
+        "body": "Leave unmerged for now.",
+        "created_at": "2026-08-01T00:00:00Z",
+        "updated_at": "2026-08-01T00:00:00Z",
+    }
+    task = {
+        "repo": "owner/repo",
+        "delivery_pr_number": 100,
+        "owner_pr": {"author_id": 42, "observed_head_sha": "b" * 40},
+    }
+    owner_reads(monkeypatch, pull, issue(1, ["agent-ready"]), [old])
+    with pytest.raises(ValueError, match="owner_pr_explicit_hold"):
+        owner_prs.assert_unheld(task, pull)
+    release_owner_hold(monkeypatch)
+    owner_reads(monkeypatch, pull, issue(1, ["agent-ready"]), [old])
+    assert owner_prs.assert_unheld(task, pull) is None
+    at = release.read_release("owner/repo", 100).at
+    same_second = at.replace(microsecond=0).isoformat()
+    later = (at + timedelta(seconds=1)).isoformat()
+    for comment in (
+        {"body": "Leave unmerged for now.", "created_at": later},
+        {"body": "Leave unmerged for now.", "created_at": same_second},
+        {**old, "updated_at": later},
+        {"body": "Leave unmerged for now."},
+        {"body": "Leave unmerged for now.", "created_at": "not a time"},
+        {"body": "Leave unmerged for now.", "created_at": 7},
+    ):
+        owner_reads(monkeypatch, pull, issue(1, ["agent-ready"]), [old, comment])
+        with pytest.raises(ValueError, match="owner_pr_explicit_discussion_hold"):
+            owner_prs.assert_unheld(task, pull)
+    # A naive stamp is read as UTC and still predates the release.
+    naive = {**old, "created_at": "2026-08-01T00:00:00", "updated_at": None}
+    owner_reads(monkeypatch, pull, issue(1, ["agent-ready"]), [naive])
+    assert owner_prs.assert_unheld(task, pull) is None
+
+
+def test_owner_pr_release_answers_inherited_holds_not_the_objective(db, monkeypatch):
+    from factory.orchestration import owner_prs
+
+    enable_owner_policy(db, owner_policy())
+    mentioned = issue(2, ["needs-human"])
+    body = "Closes #1. Refs #2"
+
+    def blocker(objective):
+        owner_prs.candidates(
+            "owner/repo",
+            [owner_pull(body=body)],
+            [objective, mentioned],
+            owner_policy(),
+        )
+        return json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"][0][
+            "blocker"
+        ]
+
+    ready = issue(1, ["agent-ready"])
+    assert blocker(ready) == "referenced_objective_held"
+    release_owner_hold(monkeypatch, body=body)
+    assert blocker(ready) not in ("referenced_objective_held", "explicit_hold")
+    # The closing objective is the scope, so its own hold still binds.
+    assert blocker(issue(1, ["agent-ready", "human"])) == "explicit_hold"
+
+    def blocker_for(pull_body, listed):
+        owner_prs.candidates(
+            "owner/repo", [owner_pull(body=pull_body)], listed, owner_policy()
+        )
+        return json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"][0][
+            "blocker"
+        ]
+
+    # A security label on a mentioned item is never answered by a release.
+    assert blocker_for(body, [ready, issue(2, ["security"])]) == (
+        "referenced_objective_held"
+    )
+    # An edited description is not the one released: new mentions bind again.
+    edited = blocker_for(body + ", #3", [ready, mentioned, issue(3, ["needs-human"])])
+    assert edited == "referenced_objective_held"
+    release_owner_hold(monkeypatch, action="revoke", key="revoke-1", body=body)
+    assert blocker(ready) == "referenced_objective_held"
+
+
+def test_owner_pr_missing_closing_objective_stays_unavailable_when_mentions_resolve(
+    db, monkeypatch
+):
+    from factory.orchestration import factory_conductor as conductor, owner_prs
+
+    reads = []
+
+    def read(_repo, suffix):
+        reads.append(suffix)
+        return issue(int(suffix.rsplit("/", 1)[1]), ["agent-ready"], state="closed")
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    owner_prs.candidates(
+        "owner/repo", [owner_pull(body="Closes #1. Refs #2")], [], owner_policy()
+    )
+    item = json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"][0]
+    assert item["blocker"] == "scope_reference_unavailable"
+    # The mention is read; the closing objective never is.
+    assert reads == ["issues/2"]
+
+
+def test_owner_pr_new_human_hold_fences_further_delivery(db, monkeypatch):
+    from factory.orchestration import owner_prs
+
+    pull = owner_pull(draft=False)
+    owner_reads(monkeypatch, pull, issue(1, ["agent-ready"]))
+    task = {
+        "repo": "owner/repo",
+        "delivery_pr_number": 100,
+        "owner_pr": {"author_id": 42, "observed_head_sha": "b" * 40},
+    }
+    assert owner_prs.assert_unheld(task, pull) is None
+    pull["labels"] = [{"name": "human"}]
+    with pytest.raises(ValueError, match="owner_pr_explicit_hold"):
+        owner_prs.assert_unheld(task, pull)
+
+
+def test_owner_pr_not_due_tick_retains_last_backlog(db, monkeypatch):
+    value = owner_policy()
+    fake_pages(
+        monkeypatch,
+        [issue(1, ["agent-ready"])],
+        [owner_pull(labels=[{"name": "human"}])],
+    )
+    intake_loop.intake_tick(value, generation=1)
+    before = controls.intake_state(value)["owner_pr_backlog"]
+    intake_loop.intake_tick(value, generation=1)
+    assert controls.intake_state(value)["owner_pr_backlog"] == before
+    assert before["detail"]["items"][0]["blocker"] == "explicit_hold"
+
+
+def test_owner_pr_reference_does_not_evade_assigned_objective(db):
+    from factory.orchestration import owner_prs
+
+    objective = issue(1, ["agent-ready"], assignees=[{"login": "joe"}])
+    assert (
+        owner_prs.candidates(
+            "owner/repo",
+            [owner_pull(body="Refs #1")],
+            [objective],
+            owner_policy(refine_enabled=True),
+        )
+        == []
+    )
+    assert (
+        json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"][0][
+            "blocker"
+        ]
+        == "referenced_objective_held"
+    )
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "Fixes #1",
+        "Closes owner/repo#1",
+        "Resolves https://github.com/owner/repo/issues/1",
+    ],
+)
+def test_owner_pr_missing_closing_objective_never_becomes_direct_refinement(
+    db, reference
+):
+    from factory.orchestration import owner_prs
+
+    value = owner_policy(refine_enabled=True)
+    assert (
+        owner_prs.candidates("owner/repo", [owner_pull(body=reference)], [], value)
+        == []
+    )
+    assert (
+        json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"][0][
+            "blocker"
+        ]
+        == "scope_reference_unavailable"
+    )
+
+
+@pytest.mark.parametrize(
+    "reference", ["Fixes other/repo#1", "Closes https://github.com/other/repo/issues/1"]
+)
+def test_owner_pr_cross_repo_reference_never_inherits_local_scope(db, reference):
+    from factory.orchestration import owner_prs
+
+    assert (
+        owner_prs.candidates(
+            "owner/repo",
+            [owner_pull(body=reference)],
+            [issue(1, ["agent-ready"])],
+            owner_policy(refine_enabled=True),
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "objective",
+    [issue(1, ["agent-ready"], state="closed"), issue(1, ["agent-ready", "human"])],
+)
+def test_owner_pr_receive_rechecks_closing_objective_after_selection(
+    db, monkeypatch, objective
+):
+    from factory.orchestration import owner_prs
+
+    value = owner_policy(refine_enabled=True)
+    enable_owner_policy(db, value)
+    owner_reads(monkeypatch, owner_pull(), objective)
+    with pytest.raises(ValueError, match="objective_not_open|explicit_hold"):
+        owner_prs.receive(
+            "owner/repo", 100, {**value, "owner_pr_issue_number": 1}, generation=1
+        )
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).all() == []
+
+
+@pytest.mark.parametrize("direct", [True, False])
+@pytest.mark.parametrize("state", ["closed", "deferred", "ready"])
+def test_owner_pr_never_overrides_local_work_item_authority(db, direct, state):
+    from factory.orchestration import owner_prs
+
+    with Session(db) as session:
+        session.add(
+            WorkItem(
+                title="Local objective",
+                state=state,
+                close_reason="superseded" if state == "closed" else None,
+                source_kind="factory",
+                authority="local",
+                trust="trusted",
+                github_repo="owner/repo",
+                github_issue_number=100 if direct else 1,
+            )
+        )
+        session.commit()
+    assert (
+        owner_prs.candidates(
+            "owner/repo",
+            [owner_pull(body="Routine repair" if direct else "Closes #1")],
+            [] if direct else [issue(1, ["agent-ready"])],
+            owner_policy(refine_enabled=True),
+        )
+        == []
+    )
+    assert (
+        json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"][0][
+            "blocker"
+        ]
+        == "local_authority"
+    )
+
+
+def test_owner_pr_discussion_hold_does_not_starve_later_candidate(db, monkeypatch):
+    from factory.orchestration import factory_conductor as conductor
+
+    value = owner_policy()
+    enable_owner_policy(db, value)
+    pulls = [
+        owner_pull(),
+        owner_pull(
+            number=101,
+            body="Closes #2",
+            head={
+                "ref": "fix/second",
+                "sha": "c" * 40,
+                "repo": {"full_name": "owner/repo"},
+            },
+        ),
+    ]
+    objectives = [issue(1, ["agent-ready"]), issue(2, ["agent-ready"])]
+    fake_pages(monkeypatch, objectives, pulls)
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda _repo, path: (
+            {pull["number"]: pull for pull in pulls}[int(path.split("/")[1])]
+            if path.startswith("pulls/")
+            else objectives[int(path.split("/")[1]) - 1]
+        ),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "github_list",
+        lambda _repo, path: (
+            [{"body": "Do not merge until the human releases this hold."}]
+            if path.startswith("issues/100/")
+            else []
+        ),
+    )
+    result = intake_loop.intake_tick(value, generation=1)
+    assert len(result) == 1
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, result[0]["receipt"]["id"]).issue_number == 2
+    assert audits(db, "owner_pr_discussion_held")
+
+
+def test_direct_pr_task_keeps_canonical_identity_for_funding(db, monkeypatch):
+    from factory.orchestration import factory_conductor as conductor, factory_funding
+
+    monkeypatch.setattr(conductor, "get_engine", lambda: db)
+    with Session(db) as session:
+        session.add(
+            SwarmTask(
+                id="direct-owner",
+                task_text="PR",
+                repo="owner/repo",
+                base_branch="main",
+                conductor_model="astra",
+                budget_usd=1,
+                workflow_id="factory:direct-owner",
+            )
+        )
+        session.flush()
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=100,
+                title="PR",
+                body="",
+                url="https://github.com/owner/repo/pull/100",
+                actor=controls.INTAKE_ACTOR,
+                task_id="direct-owner",
+                state="admitted",
+                direction_json=json.dumps(
+                    {
+                        "owner_pr": {"direct": True, "author_id": 42},
+                        "delivery_adoption": True,
+                        "delivery_branch": "fix/existing",
+                        "delivery_pr_number": 100,
+                    }
+                ),
+            )
+        )
+        session.commit()
+    task = conductor._task("direct-owner")
+    assert task["issue_number"] == 100
+    reads = []
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda repo, path: reads.append(path) or {"number": 100, "state": "open"},
+    )
+    assert factory_funding._issue(task)["number"] == 100
+    assert reads == ["issues/100"]
+    assert "closing keyword for the PR itself" in conductor._issue_closing_instruction(
+        task
+    )
+
+
+@pytest.mark.parametrize(
+    "reference",
+    ["Refs #1", "Refs owner/repo#1", "Refs https://github.com/owner/repo/issues/1"],
+)
+@pytest.mark.parametrize(
+    "objective",
+    [
+        issue(1, ["agent-ready", "human"]),
+        issue(1, ["agent-ready"], assignees=[{"login": "joe"}]),
+        issue(1, ["agent-ready", "human"], state="closed"),
+        issue(1, ["agent-ready"], body="Leave unmerged until authorized"),
+    ],
+)
+def test_owner_pr_missing_reference_preserves_objective_hold(
+    db, monkeypatch, reference, objective
+):
+    from factory.orchestration import owner_prs
+
+    pull = owner_pull(body=reference)
+    owner_reads(monkeypatch, pull, objective)
+    assert (
+        owner_prs.candidates(
+            "owner/repo", [pull], [], owner_policy(refine_enabled=True)
+        )
+        == []
+    )
+    blocker = json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"][0][
+        "blocker"
+    ]
+    assert blocker == "referenced_objective_held"
+
+
+@pytest.mark.parametrize("state", ["open", "closed"])
+def test_owner_pr_safe_missing_reference_refines_without_inheriting_scope(
+    db, monkeypatch, state
+):
+    from factory.orchestration import owner_prs
+
+    pull = owner_pull(body="Refs #1")
+    owner_reads(monkeypatch, pull, issue(1, ["agent-ready"], state=state))
+    candidates = owner_prs.candidates(
+        "owner/repo", [pull], [], owner_policy(refine_enabled=True)
+    )
+    assert len(candidates) == 1
+    assert candidates[0]["direct"] is True
+    assert candidates[0]["task_class"] == "refine"
+    assert candidates[0]["number"] == 100
+    from factory.orchestration import factory_conductor as conductor
+
+    value = owner_policy(refine_enabled=True)
+    enable_owner_policy(db, value)
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda _repo, suffix: (
+            issue(1, ["agent-ready"], state=state) if suffix == "issues/1" else pull
+        ),
+    )
+    result = owner_prs.receive(
+        "owner/repo", 100, {**value, "owner_pr_issue_number": 100}, generation=1
+    )
+    with Session(db) as session:
+        receipt = session.get(FactoryReceipt, result["receipt"]["id"])
+        assert receipt.issue_number == 100
+        assert receipt.task_class == "refine"
+
+
+def test_owner_pr_unavailable_reference_never_becomes_direct_scope(db, monkeypatch):
+    from factory.orchestration import factory_conductor as conductor, owner_prs
+
+    def read(*args):
+        raise ValueError("missing issue")
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    assert (
+        owner_prs.candidates(
+            "owner/repo",
+            [owner_pull(body="Refs #1")],
+            [],
+            owner_policy(refine_enabled=True),
+        )
+        == []
+    )
+    assert (
+        json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"][0][
+            "blocker"
+        ]
+        == "referenced_objective_unavailable"
+    )
+
+
+@pytest.mark.parametrize("hold", ["human", "closed", "discussion", "local"])
+def test_owner_pr_direct_receive_rechecks_referenced_objective(db, monkeypatch, hold):
+    from factory.orchestration import factory_conductor as conductor, owner_prs
+
+    pull = owner_pull(body="Refs #1")
+    objective = issue(
+        1,
+        ["agent-ready", "human"] if hold in {"human", "closed"} else ["agent-ready"],
+        state="closed" if hold == "closed" else "open",
+    )
+    value = owner_policy(refine_enabled=True)
+    enable_owner_policy(db, value)
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda _repo, suffix: objective if suffix == "issues/1" else pull,
+    )
+    monkeypatch.setattr(
+        conductor,
+        "github_list",
+        lambda _repo, suffix: (
+            [{"body": "do not merge"}]
+            if hold == "discussion" and suffix.startswith("issues/1/comments")
+            else []
+        ),
+    )
+    if hold == "local":
+        with Session(db) as session:
+            session.add(
+                WorkItem(
+                    title="Held local objective",
+                    source_kind="factory",
+                    source_ref="test",
+                    trust="trusted",
+                    authority="local",
+                    state="deferred",
+                    github_repo="owner/repo",
+                    github_issue_number=1,
+                )
+            )
+            session.commit()
+    with pytest.raises(
+        ValueError, match="referenced_objective|explicit_discussion_hold"
+    ):
+        owner_prs.receive(
+            "owner/repo", 100, {**value, "owner_pr_issue_number": 100}, generation=1
+        )
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).all() == []
+
+
+def test_owner_pr_reference_reads_are_bounded_even_when_unavailable(db, monkeypatch):
+    from factory.orchestration import factory_conductor as conductor, owner_prs
+
+    reads = []
+
+    def read(_repo, suffix):
+        reads.append(suffix)
+        raise ValueError("missing reference")
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    monkeypatch.setattr(owner_prs, "MAX_REFERENCE_READS", 20)
+    pulls = [owner_pull(number=100 + n, body=f"Refs #{n}") for n in range(1, 30)]
+    assert (
+        owner_prs.candidates("owner/repo", pulls, [], owner_policy(refine_enabled=True))
+        == []
+    )
+    assert len(reads) == 20
+
+
+def test_owner_pr_reference_budget_covers_a_large_owner_backlog(db, monkeypatch):
+    from factory.orchestration import factory_conductor as conductor, owner_prs
+
+    def read(_repo, suffix):
+        number = int(suffix.rsplit("/", 1)[1])
+        return issue(number, ["agent-ready"], state="closed")
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    # 45 PRs, each mentioning two distinct closed items outside the listing.
+    pulls = [
+        owner_pull(
+            number=1000 + n, body=f"Closes #1. Refs #{2 * n + 10}, #{2 * n + 11}"
+        )
+        for n in range(45)
+    ]
+    owner_prs.candidates(
+        "owner/repo", pulls, [issue(1, ["agent-ready"])], owner_policy()
+    )
+    items = json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"]
+    assert len(items) == 45
+    assert not [i for i in items if i["blocker"] == "referenced_objective_unavailable"]
+
+
+def test_intake_observations_keep_latest_history_with_bounded_status_reads(db):
+    actions = {
+        "last_admitted": "intake_admitted",
+        "last_idle": "intake_idle",
+        "last_swept": "intake_swept",
+        "last_evaluated": "intake_evaluated",
+        "last_error": "intake_error",
+        "owner_pr_backlog": "owner_pr_backlog",
+    }
+    with Session(db) as session:
+        session.add_all(
+            [
+                FactoryAudit(
+                    actor="test",
+                    action=action,
+                    detail_json=json.dumps({"revision": revision}),
+                )
+                for revision in range(4)
+                for action in (*actions.values(), "unrelated")
+            ]
+        )
+        session.commit()
+    reads = []
+
+    def counted(_connection, _cursor, statement, *_args):
+        reads.append(statement)
+
+    event.listen(db, "before_cursor_execute", counted)
+    try:
+        result = controls.intake_state(owner_policy())
+    finally:
+        event.remove(db, "before_cursor_execute", counted)
+    assert {key: result[key]["detail"] for key in actions} == {
+        key: {"revision": 3} for key in actions
+    }
+    assert len(reads) <= 2, (
+        "owner backlog visibility must not increase status read work"
+    )
+
+
+# Exact native briefs accepted by receipts 1107/1108; these assertions previously
+# became discussion holds. Keep complete comments to exercise surrounding prose.
+OWNER_ABSENCE_BRIEFS = (
+    # https://github.com/jomcgi-org/homelab/pull/7442
+    "## Agent brief\n\n### Outcome\n\nagent-ready. Adopt PR #7442 as the existing six-commit simplification batch. The current head is non-draft and mergeable with successful pr-checks; independent current-head review remains outstanding. No explicit human, security or leave-unmerged hold was found in the PR labels, discussion or reviews.\n\n### Acceptance\n\nProposed conductor default: retain the existing PR and branch claude/project-thread-tcefg1, and deliver the six behaviour-preserving refactors as one batch. Do not add further nightly changes to this scope. This brief proposes the next delivery work; it executes none of it.\n\n- Preserve naive-as-UTC coercion, existing timezone offsets and None handling. Keep isoformat_or_none distinct from helpers that add or normalize timezone information.\n- Preserve canonical-JSON digest bytes, SQL parameters and plain-dict row results. Keep the admission diagnostics helper that adapts schema prefixes for SQLite.\n- Preserve SSE frame bytes and the chat_public.api re-export consumed by moving.chat. Keep the explicit pkg_shared dependency and shared_sse_test target.\n- Validate clock/db/SSE helpers and affected reconciliation, refill, refinement, learning/retro, knowledge and chat consumers. Confirm tests execute, and investigate any baseline differences rather than inheriting the PR body’s test claims.\n- Obtain independent review of the final head and successful required CI, repair in-scope findings, then use the existing landing owner and merge queue. A changed head needs fresh review and checks. No new issue or replacement PR is needed.\n\n### Files\n\nAll changes are under projects/monolith: core/clock.py and core/db.py with tests; shared/sse.py and shared/sse_test.py; BUILD; datetime consumers in agent, chat, knowledge, grimoire and factory/execution; digest and SQL consumers in factory/orchestration with updated tests; chat_public/api.py and grimoire_chat/router.py, replacing their duplicate SSE modules.\n\n### Evidence\n\n- git: AGENTS.md, Merge authority and Evolution, provide standing maintenance authority for reversible simplification while preserving required CI, independent review and the merge queue. Author identity alone is not the authority.\n- git: projects/monolith/ARCHITECTURE.md sections 4 and 10, and factory/orchestration/FACTORY.md, separate repository delivery from operational acceptance and require independent exact-head review. No policy or authentication change is in this diff.\n- git: 3cd50f36683d67183c1bccbd0b4db909ccdd1310, PR #7442 current head and local checkout. The diff consolidates clock helpers, controls.digest, query_rows and format_sse; helper tests and the new Bazel SSE test target are present.\n- GitHub: fresh PR #7442 read shows OPEN, isDraft=false, MERGEABLE/CLEAN, no labels or milestone, no submitted reviews and no inline comments. pr-checks is SUCCESS on this head; Polylane is NEUTRAL. The manifest-diff comment reports no changes across 16 applications, but is older than the current head and is not rollout evidence.\n- GitHub: #7597 records Joe’s direction to complete existing owner PRs under existing authority and gates. The prior batch #7205 is merged. Related #7591 concerns frontend SSE parsing; it does not replace this backend formatter consolidation. The inspected title search and timeline yielded no superseding batch.\n- KG: Paused refill tasks can remain in flight past their deadline without settlement (unverified). The focused search returned no direct #7442 decision. That adjacent failure claim is not used as evidence that this refactor fixes recovery; current code and PR state establish this verdict.\n\n### Risks\n\nShared helpers affect many consumers. Review datetime boundary cases, digest compatibility, SQL result mappings, retained SQLite adaptation and SSE import/re-export compatibility. The PR body’s broad tzinfo truthiness claim should not replace tests of supported values.\n\nOutstanding live checklist for the delivery owner after landing: verify the resulting monolith and monolith-public rollouts; check representative factory timestamp/digest/row-loading paths and moving/grimoire SSE streams for regressions. This brief does not query or operate the cluster and makes no deployed-health claim. Existing unrelated operational acceptance and holds remain unchanged.",
+    # https://github.com/jomcgi-org/homelab/pull/7462
+    "## Agent brief\n\n### Outcome\n\nagent-ready. Adopt existing PR #7462 on `claude/funny-feynman-u3dqoz` for default-off repository delivery under Joe's November 2 decision on #7461. Independent review remains required. Discord provisioning, credential operations and enablement remain outside this scope and reserved for Joe.\n\n### Acceptance\n\n- Proposed conductor default: finish the existing PR, preserving `grimoireDiscordSource.enabled=false`. Repair in-scope test or review findings on its existing branch; do not create a replacement PR. The PR is already non-draft.\n- Preserve identifier-only Discord matching, verified-email and existing-email rejection, stable `discord-<id>` usernames, external users under `grimoire`, and no group or permission grants. Only Grimoire's provider selects the optional flow; shared login and other applications retain their behavior.\n- Validate the real Helm rendering and fixture policy tests through the declared Bazel target, including disabled/enabled output and `!KeyOf` creation order. Default-off means no active Discord source or OnePasswordItem, not byte-identical manifests: optional environment references and a blueprint comment are present with the flag off. Describe that distinction accurately.\n- Obtain independent review of the current head and preserve required CI and merge-queue gates. Keep campaign-creation restriction and owner-controlled activation tracked under #7461; neither blocks landing the disabled source. Record any changed architectural decision in the domain ARCHITECTURE.md with a **Why.** paragraph and a Direction row for remaining work.\n\n### Files\n\n- `projects/platform/authentik/`: `BUILD`, `values.yaml`, `README.md`, `grimoire_discord_source_test.py`, `blueprints/grimoire-auth.yaml`, `optional/grimoire-discord-source.yaml`, `templates/blueprints-configmap.yaml`, `templates/grimoire-discord-secret.yaml`.\n- Existing PR architecture note: `projects/monolith/grimoire/architecture.md`; domain decision context: `projects/monolith/ARCHITECTURE.md` and `projects/platform/ARCHITECTURE.md`.\n\n### Evidence\n\n- Accepted scope: #7461, Joe's November 2 decision, https://github.com/jomcgi-org/homelab/issues/7461#issuecomment-6571097129 explicitly says to land #7462 default-off after independent review. It reserves Discord registration, 1Password credentials, enablement approval and disposable-account testing for Joe. This later decision narrows the older issue-body hold on Authentik changes.\n- Fresh GitHub PR state: open, non-draft, MERGEABLE/CLEAN, head `5eab0acc9db9add35865b5589491d78764f40ff2`; `pr-checks` SUCCESS, Polylane NEUTRAL, no submitted reviews or inline review comments, no labels or milestone. Current discussion contains no explicit leave-unmerged hold. Related-PR search found no superseding Discord sign-in implementation.\n- git: `5eab0acc9db9add35865b5589491d78764f40ff2`, `AGENTS.md` authorizes accepted repository work while requiring independent review, CI, merge queue and preserved authentication boundaries. The local checkout matches the PR head.\n- git: `projects/platform/authentik/values.yaml`, `templates/blueprints-configmap.yaml`, `templates/grimoire-discord-secret.yaml`, `optional/grimoire-discord-source.yaml` confirm the disabled default, conditional source/secret rendering, Grimoire-only splice and enrollment safeguards. `BUILD` wires the test to the real Helm binary; the test runs Helm for both flag states. This briefing did not rerun tests or establish live behavior.\n- git: `projects/monolith/grimoire/architecture.md` separates identity enrollment from campaign membership and identifies campaign-creation gating before enablement. `projects/platform/ARCHITECTURE.md` records declarative Authentik blueprints and 1Password-managed credentials.\n- KG: Grimoire requires a verified standing human principal and treats X-Auth-Email only as a consistency check (verified). Confirmed against git: `projects/monolith/grimoire/access.py`; the identity boundary is not permission to grant campaign-creation or operator access.\n\n### Risks\n\nOutstanding activation checklist, outside this PR's default-off delivery: Joe registers the Discord callback and stores credentials; campaign creation is restricted; Joe approves a separate enablement GitOps PR; disposable-account testing checks actual `oauth_userinfo` context, verified and unverified emails, duplicate existing emails, repeat login, lack of group/privileged access, campaign admission and unaffected non-Grimoire sign-in. Existing invitation users cannot automatically link Discord by email. Verify the pinned Authentik behavior before activation. Optional environment references still change pod specifications with the flag off; do not claim there is no deployment-level diff. No live rollout or security acceptance is claimed here. These proposed defaults do not authorize provisioning, credential use or activation.\n",
+)
+
+
+@pytest.mark.parametrize("brief", OWNER_ABSENCE_BRIEFS, ids=["7442", "7462"])
+@pytest.mark.parametrize(
+    "later_hold",
+    [
+        " Do not merge; explicit human hold.",
+        "\n\n- That is wrong.",
+        "\n\n* Disregard the previous statement.",
+        "\n\n- Unless told otherwise.",
+        "\n\n- False.",
+    ],
+)
+def test_owner_pr_absence_brief_reaches_receive_and_late_hold_check(
+    db, monkeypatch, brief, later_hold
+):
+    from factory.orchestration import owner_prs
+
+    value, pull, objective = owner_policy(), owner_pull(), issue(1, ["agent-ready"])
+    enable_owner_policy(db, value)
+    comments = [{"body": brief}]
+    owner_reads(monkeypatch, pull, objective, comments)
+    assert owner_prs.HOLD.search(brief)  # Reproduces the former raw match.
+    assert owner_prs._hold({"body": brief}, set()) is None
+    chosen = {**value, "owner_pr_issue_number": 1}
+    received = owner_prs.receive("owner/repo", 100, chosen, generation=1)
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, received["receipt"]["id"])
+        direction = json.loads(row.direction_json)
+        assert row.state == "queued"
+        assert "landing_authorization" not in direction
+    task = {"repo": "owner/repo", **direction}
+    assert owner_prs.assert_unheld(task, pull) is None
+
+    # A later positive hold or list-separated retraction cannot be erased by
+    # the earlier absence assertion or rewrite canonical ownership.
+    if later_hold.startswith(" Do not merge"):
+        comments.append({"body": later_hold})
+    else:
+        comments[0]["body"] += later_hold
+    with pytest.raises(owner_prs.OwnerPRHold):
+        owner_prs.assert_unheld(task, pull)
+    with pytest.raises(owner_prs.OwnerPRHold):
+        owner_prs.receive("owner/repo", 100, chosen, generation=1)
+    with Session(db) as session:
+        rows = session.exec(select(FactoryReceipt)).all()
+        assert len(rows) == 1 and rows[0].direction_json == json.dumps(direction)
+        assert rows[0].state == "queued"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Leave unmerged.",
+        "Keep this PR draft.",
+        "Do not merge.",
+        "Don't merge.",
+        "Outside the merge queue.",
+        "Landing hold.",
+        "Deployment requires separate authorization.",
+        "No leave-unmerged hold was found.",
+        "Current discussion may contain no explicit leave-unmerged hold.",
+        "Current discussion contains no explicit leave-unmerged hold until review.",
+        "If approved, Current discussion contains no explicit leave-unmerged hold.",
+        "Current discussion contains no explicit leave-unmerged hold. Unless told otherwise.",
+        "Current discussion contains no explicit leave-unmerged hold. This is false.",
+        "Current discussion contains no explicit leave-unmerged hold. That is wrong.",
+        "Current discussion contains no explicit leave-unmerged hold. Disregard the previous statement.",
+        "Current discussion contains no explicit leave-unmerged hold.\n\nDisregard the previous statement.",
+        "Current discussion contains no explicit leave-unmerged hold.\n\n- That is wrong.",
+        "Current discussion contains no explicit leave-unmerged hold.\n\n* Disregard the previous statement.",
+        "- That is wrong.\n\nCurrent discussion contains no explicit leave-unmerged hold.",
+        "* Disregard the previous statement.\n\nCurrent discussion contains no explicit leave-unmerged hold.",
+        "Current discussion contains no explicit leave-unmerged hold.\n\n- Unless told otherwise.",
+        "Current discussion contains no explicit leave-unmerged hold.\n\n- False.",
+        "Current discussion contains no explicit leave-unmerged hold. That assessment is withdrawn.",
+        "Current discussion contains no explicit leave-unmerged hold. The observation is not current.",
+        "Current discussion contains no explicit leave-unmerged hold. The observation is not authoritative.",
+        "Current discussion contains no explicit leave-unmerged hold. That was a mistake.",
+        "Ignore this. Current discussion contains no explicit leave-unmerged hold.",
+        "Example: Current discussion contains no explicit leave-unmerged hold.",
+        "Example:\n\nCurrent discussion contains no explicit leave-unmerged hold.",
+        "If ready:\n\nCurrent discussion contains no explicit leave-unmerged hold.",
+        "The quote is:\n\nCurrent discussion contains no explicit leave-unmerged hold.",
+        "Current discussion contains no explicit leave-unmerged hold.\n\nThis statement is false.",
+        'Joe said: "Current discussion contains no explicit leave-unmerged hold."',
+        '"Current discussion contains no explicit leave-unmerged hold."',
+        "‘Current discussion contains no explicit leave-unmerged hold.’",
+        "> Current discussion contains no explicit leave-unmerged hold.",
+        "`Current discussion contains no explicit leave-unmerged hold.`",
+        "```\n\nCurrent discussion contains no explicit leave-unmerged hold.\n```",
+        "<blockquote>\n\nCurrent discussion contains no explicit leave-unmerged hold.</blockquote>",
+        "    Current discussion contains no explicit leave-unmerged hold.",
+        "Current discussion contains no explicit leave-unmerged hold. Do not merge.",
+        "Do not merge. Current discussion contains no explicit leave-unmerged hold.",
+        "Current discussion contains no explicit leave-unmerged hold.\n\nLeave unmerged.",
+        "No explicit human, security or leave-unmerged hold was found in the PR labels, discussion or reviews; keep this draft.",
+        "Current discussion contains no explicit leave-unmerged hold. " + "x" * 4096,
+    ],
+)
+def test_owner_pr_positive_or_ambiguous_hold_remains_a_veto(text):
+    from factory.orchestration import owner_prs
+
+    assert owner_prs.HOLD.search(text)
+    assert owner_prs.has_hold(text)
+
+
+def test_owner_pr_absence_does_not_clear_cached_discussion_hold(db):
+    from factory.orchestration import owner_prs
+
+    pull = owner_pull(
+        body="Closes #1.\n\nCurrent discussion contains no explicit leave-unmerged hold.",
+        updated_at="unchanged",
+    )
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(
+                actor=controls.INTAKE_ACTOR,
+                action="owner_pr_discussion_held",
+                created_at=NOW,
+                detail_json=json.dumps(
+                    {
+                        "repo": "owner/repo",
+                        "pr_number": 100,
+                        "pr_updated_at": "unchanged",
+                    }
+                ),
+            )
+        )
+        session.commit()
+    # Existing cached refusals expire/reobserve through their normal owner.
+    assert (
+        owner_prs.candidates(
+            "owner/repo", [pull], [issue(1, ["agent-ready"])], owner_policy()
+        )
+        == []
+    )
+    assert audits(db, "owner_pr_discussion_held")
+    observation = json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"][0]
+    assert observation["blocker"] == "explicit_discussion_hold"

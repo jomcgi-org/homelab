@@ -276,6 +276,88 @@ def _task_row(receipt: dict, *, queue_position: int | None = None) -> dict:
         "outcome_evidence": _evidence_summary(receipt.get("evidence")),
         "progress": _progress(receipt.get("nodes") or []),
         "stop": _stop_summary(receipt),
+        "landing_refusal": receipt.get("landing_refusal"),
+        "landing_wait": receipt.get("landing_wait"),
+    }
+
+
+def _landing_refusal(db, task_id):
+    """Latest recorded refusal, not a live queue or GitHub observation."""
+    from sqlmodel import select
+    from factory.orchestration.factory_models import FactoryAudit
+
+    if not task_id:
+        return None
+    event = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.task_id == task_id,
+            FactoryAudit.action.in_(
+                (
+                    "merge_arm_refused",
+                    "landing_recovery_requested",
+                    "merged",
+                )
+            ),
+        )
+        .order_by(FactoryAudit.id.desc())
+        .limit(1)
+    ).first()
+    if event is None or event.action != "merge_arm_refused":
+        return None
+    detail = json.loads(event.detail_json)
+    return {
+        "source": "recorded_landing_audit",
+        "audit_id": event.id,
+        "observed_at": iso_or_str(event.created_at),
+        "reason": str(detail.get("reason") or "unspecified")[:200],
+        "pr_number": detail.get("pr_number")
+        if type(detail.get("pr_number")) is int
+        else None,
+    }
+
+
+# A grant, recovery request or merge answers the wait recorded before it.
+_LANDING_WAIT_SUPERSEDED_BY = (
+    "delivery_landing_authorized",
+    "owner_pr_landing_authorized",
+    "repair_landing_authorized",
+    "operator_scoped_landing_authorized",
+    "landing_recovery_requested",
+    "merge_armed",
+    "merged",
+)
+
+
+def _landing_wait(db, task_id):
+    """Latest recorded authority wait, not a live queue or GitHub observation."""
+    from sqlmodel import select
+    from factory.orchestration.factory_models import FactoryAudit
+
+    if not task_id:
+        return None
+    event = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.task_id == task_id,
+            FactoryAudit.action.in_(
+                ("landing_authorization_wait", *_LANDING_WAIT_SUPERSEDED_BY)
+            ),
+        )
+        .order_by(FactoryAudit.id.desc())
+        .limit(1)
+    ).first()
+    if event is None or event.action != "landing_authorization_wait":
+        return None
+    detail = json.loads(event.detail_json)
+    return {
+        "source": "recorded_landing_audit",
+        "audit_id": event.id,
+        "observed_at": iso_or_str(event.created_at),
+        "reason": str(detail.get("reason") or "unspecified")[:200],
+        "pr_number": detail.get("pr_number")
+        if type(detail.get("pr_number")) is int
+        else None,
     }
 
 
@@ -333,6 +415,9 @@ def _status_payload(
         "lanes": view.get("lanes"),
         "review_routing": view.get("review_routing"),
         "refill": view.get("refill"),
+        "repair_landing": view.get("repair_landing"),
+        "owner_pr_landing": view.get("owner_pr_landing"),
+        "delivery_landing": view.get("delivery_landing"),
         "active": active,
         "queued": queued,
         "needs_operator": needs_operator,
@@ -704,6 +789,8 @@ def _operator_view(
                     )
                 else:
                     cards.append(shape_receipt(receipt))
+                cards[-1]["landing_refusal"] = _landing_refusal(db, row.task_id)
+                cards[-1]["landing_wait"] = _landing_wait(db, row.task_id)
             buckets[name] = cards
             pagination[name] = _pagination(total, offset, limit, len(cards))
         # Lane accounting needs all active/eligible queue identities, including
@@ -730,7 +817,12 @@ def _operator_view(
         ]
         decisions = _decision_page(db, False, offset, limit)
         generated = _now()
-        from factory.orchestration import refill_control
+        from factory.orchestration import (
+            delivery_landing_delegation,
+            owner_pr_landing_delegation,
+            refill_control,
+            repair_landing_delegation,
+        )
 
         refill_status = refill_control.status(db, control)
         return {
@@ -746,6 +838,9 @@ def _operator_view(
             "admitted_count": control.admitted_count,
             "generated_at": generated,
             "refill": refill_status,
+            "repair_landing": repair_landing_delegation.status(db),
+            "owner_pr_landing": owner_pr_landing_delegation.status(db),
+            "delivery_landing": delivery_landing_delegation.status(db),
             "intake": controls.intake_state(policy, session=db),
             "lanes": controls.lane_usage(
                 policy,
@@ -763,7 +858,11 @@ async def _control_catalog() -> dict:
     """Bounded native evidence, not a claim about gateway or client discovery."""
     tools = {}
     for name in (
+        "factory_status",
+        "factory_session_dispatch_diagnostics",
         "factory_configure_refill",
+        "factory_configure_problem_issues",
+        "factory_configure_owner_prs",
         "factory_amend_policy",
         "factory_reconcile",
         "factory_continue_evidence",
@@ -782,9 +881,12 @@ async def _control_catalog() -> dict:
             "description_sha256": hashlib.sha256(
                 (tool.description or "").encode()
             ).hexdigest(),
-            "arguments": list(properties)[:16],
+            "arguments": list(properties)[:24],
+            "arguments_complete": len(properties) <= 24,
             "operations": properties.get("operation", {}).get("enum", [])[:4],
         }
+        if "target" in properties:
+            tools[name]["targets"] = properties["target"].get("enum", [])[:8]
         if "model" in properties:
             tools[name]["models"] = properties["model"].get("enum", [])[:8]
     return {
@@ -800,6 +902,9 @@ async def factory_status(
     include_recent: bool = False,
     offset: Annotated[MCPInteger, Field(ge=0)] = 0,
     limit: Annotated[MCPInteger, Field(ge=1, le=STATUS_LIMIT_MAX)] = STATUS_LIMIT,
+    target: Literal["factory", "session_dispatch"] = "factory",
+    session_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)] | None = None,
+    seq: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)] | None = None,
 ) -> dict:
     """Read what the software factory is working on and what is blocked.
 
@@ -813,6 +918,11 @@ async def factory_status(
             now rather than what already finished.
         offset: Zero-based offset applied independently to each state bucket.
         limit: Maximum rows returned per bucket, from one to fifty.
+        target: Factory status by default. session_dispatch reads exact turn
+            metadata through the existing diagnostics owner for cached callers.
+        session_id: Required only for session_dispatch, together with seq.
+        seq: Exact positive turn sequence. Dispatch reads do not accept status
+            paging or include_recent and never authorize execution or recovery.
 
     Returns:
         The control state and policy, the intake block and lane usage that
@@ -822,12 +932,28 @@ async def factory_status(
         response carries ``observed_at`` and a ``coverage`` map. Cloud
         sessions hold no factory record, so an empty active list is not
         evidence that nothing is running anywhere.
-        ``control_catalog`` reports native refill and amendment registration.
+        ``landing_refusal`` is the latest recorded refusal in the current
+        landing attempt, not a live GitHub or queue check. A newer recovery
+        or accepted merge supersedes it. Arming or observing a merge does not.
+        ``landing_wait`` is the latest recorded reason an approved delivery
+        still lacks landing authority. A newer grant, recovery, arm or merge
+        answers it. Null does not prove the delivery is authorized.
+        ``control_catalog`` reports native controls and their supported targets.
         It cannot observe or refresh a gateway or caller's cached tool list.
     """
     refusal = _refuse(current_principal())
     if refusal is not None:
         return refusal
+    if target == "session_dispatch":
+        if session_id is None or seq is None:
+            return {"ok": False, "reason": "session_dispatch_requires_session_and_seq"}
+        if include_recent or offset or limit != STATUS_LIMIT:
+            return {"ok": False, "reason": "session_dispatch_does_not_accept_paging"}
+        return await factory_diagnostics(
+            "session_dispatch", session_id=session_id, seq=seq
+        )
+    if session_id is not None or seq is not None:
+        return {"ok": False, "reason": "session_identity_requires_dispatch_target"}
     result = await asyncio.to_thread(_status_payload, include_recent, offset, limit)
     if result.get("ok"):
         result["control_catalog"] = await _control_catalog()
@@ -1208,7 +1334,7 @@ def _detail_payload(
     receipt_id: int, node_offset: int, limit: int, history_limit: int = 10
 ) -> dict:
     from factory.orchestration import factory_controls as controls
-    from factory.orchestration import factory_funding, graph
+    from factory.orchestration import factory_funding, factory_start_diagnostics, graph
     from factory.orchestration.factory_models import FactoryReceipt
     from factory.private_view import shape_node
 
@@ -1250,6 +1376,9 @@ def _detail_payload(
             "progress_continuation": factory_funding.continuation_status(
                 db, row.task_id
             ),
+            "start_diagnostics": factory_start_diagnostics.receipt_diagnostics(
+                db, row, snapshot
+            ),
             "source_timestamps": {
                 "receipt_created_at": iso_or_str(getattr(row, "created_at", None)),
                 "receipt_updated_at": iso_or_str(getattr(row, "updated_at", None)),
@@ -1278,6 +1407,8 @@ async def factory_task_detail(
     Follow next_node_offset for more nodes. Node success alone is not evidence
     of accepted delivery or deployment. This read requires a human operator.
     history_limit bounds work-item edges and correction history independently.
+    start_diagnostics observes the control subgate and sanitized funding history.
+    Transport and capacity gates remain unevaluated and no recovery is authorized.
     """
     refusal = _refuse(current_principal())
     if refusal is not None:
@@ -1773,7 +1904,7 @@ async def factory_recover_expired_task(
 
 @mcp.tool
 async def factory_release_landing_hold(
-    operation: Literal["preview", "apply"],
+    operation: Literal["preview", "apply", "revoke"],
     receipt_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
     pr_number: Annotated[MCPInteger, Field(gt=0)],
     head_sha: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")],
@@ -1783,6 +1914,9 @@ async def factory_release_landing_hold(
         str | None, Field(pattern=r"^[0-9a-f]{64}$")
     ] = None,
     scope: dict | None = None,
+    authorization_audit_id: Annotated[
+        MCPInteger | None, Field(gt=0, le=2**63 - 1)
+    ] = None,
 ) -> dict:
     """Preview a hold release or head refresh as a standing human operator.
 
@@ -1826,6 +1960,24 @@ async def factory_release_landing_hold(
     changed heads, renewed holds or unknown execution. No other receipt qualifies.
     Independent exact-head review, required CI and the global merge switch still
     apply. Scope is an operator attestation, not an automatic code classifier.
+
+    For an unheld settled delivery whose typed native review requires an
+    operator, use classification="requires_operator", evidence, rollback_plan,
+    an absolute UTC expires_at no more than 24 hours ahead, and
+    acknowledged_effects containing strict booleans for public_facing,
+    security_sensitive, authentication_or_credentials and destructive. Every
+    effect reported by the native independent review must be acknowledged.
+    The server proves the exact base branch tip, merge base, head and complete
+    bounded text-file diff, and binds the review, current successful CI, policy,
+    ownership and execution state. The preview digest also binds your identity.
+    Apply grants one factory arming attempt, not standing authority. Expiry or
+    evidence drift requires a fresh preview and approval. This mode never
+    releases any hold, changes acceptance, or bypasses the protected queue.
+    Revoke with operation="revoke", the returned authorization_audit_id,
+    identical target, reason and a new request_key. Revocation records a durable
+    tombstone and cannot affect a later replacement grant. It does not require
+    GitHub availability. The asynchronous queue observer disarms stale grants.
+    it cannot make revocation atomic with an external GitHub merge.
     """
     principal = current_principal()
     refusal = _refuse(principal)
@@ -1837,9 +1989,41 @@ async def factory_release_landing_hold(
 
         try:
             scoped = {"scope": scope} if scope is not None else {}
+            if operation == "revoke":
+                from factory.orchestration import operator_landing_authorization
+
+                if (
+                    not request_key
+                    or authorization_audit_id is None
+                    or scope is not None
+                    or expected_preview_sha256 is not None
+                ):
+                    return {
+                        "ok": False,
+                        "reason": "landing_revoke_requires_exact_authorization_and_request_key",
+                    }
+                return operator_landing_authorization.revoke(
+                    receipt_id,
+                    pr_number,
+                    head_sha,
+                    reason,
+                    actor=principal.subject,
+                    request_key=request_key,
+                    authorization_audit_id=authorization_audit_id,
+                )
+            if authorization_audit_id is not None:
+                return {
+                    "ok": False,
+                    "reason": "landing_authorization_id_only_for_revoke",
+                }
             if operation == "preview":
                 return releases.preview(
-                    receipt_id, pr_number, head_sha, reason, **scoped
+                    receipt_id,
+                    pr_number,
+                    head_sha,
+                    reason,
+                    actor=principal.subject,
+                    **scoped,
                 )
             if not request_key or not expected_preview_sha256:
                 return {
@@ -2038,6 +2222,21 @@ async def factory_find_routine_permits(
     return await asyncio.to_thread(
         find_routine_permits, job_name, offset=offset, limit=limit
     )
+
+
+@mcp.tool
+async def factory_session_dispatch_diagnostics(
+    session_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+    seq: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
+) -> dict:
+    """Read exact session-turn metadata for callers with a cached tool catalog.
+
+    Compatibility name for factory_diagnostics kind session_dispatch. Requires
+    a standing human operator and uses the same bounded read owner. Does not
+    contact guests, retry, reconcile, change state or authorize recovery.
+    Missing records and old observations never establish current cessation.
+    """
+    return await factory_diagnostics("session_dispatch", session_id=session_id, seq=seq)
 
 
 @mcp.tool
@@ -2505,6 +2704,173 @@ async def factory_reconcile(
 
 
 @mcp.tool
+async def factory_configure_owner_prs(
+    operation: Literal["preview", "apply"],
+    expected_version: Annotated[MCPInteger, Field(ge=0)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    owner_login: str | None = None,
+    owner_id: Annotated[MCPInteger, Field(ge=1)] | None = None,
+    request_key: str | None = None,
+    expected_preview_sha256: str | None = None,
+) -> dict:
+    """Configure owner PR discovery on existing intake. Omit both owner fields to disable.
+
+    First verify the GitHub owner's login and numeric user ID. Preview using
+    current factory_status version, then apply its digest and a stable request
+    key. Changes only intake.owner_pr_author and preserves generation, all receipts,
+    holds, budgets, unrelated producers, review and merge controls. Starts no work.
+    Existing intake and refinement must already be enabled, without a batch hold.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from factory.orchestration import owner_pr_control
+
+    if (owner_login is None) != (owner_id is None):
+        return {"ok": False, "reason": "owner_identity_incomplete"}
+    owner = {"login": owner_login, "id": owner_id} if owner_login is not None else None
+    try:
+        if operation == "preview":
+            return await asyncio.to_thread(
+                owner_pr_control.preview, owner, expected_version, reason
+            )
+        if not request_key or not expected_preview_sha256:
+            return {"ok": False, "reason": "owner_pr_preview_required"}
+        return await asyncio.to_thread(
+            owner_pr_control.apply,
+            principal.subject,
+            owner,
+            expected_version,
+            reason,
+            request_key,
+            expected_preview_sha256,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
+async def factory_release_owner_pr_hold(
+    operation: Literal["preview", "apply"],
+    action: Literal["release", "revoke"],
+    pr_number: Annotated[MCPInteger, Field(ge=1)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    repo: str = "jomcgi-org/homelab",
+    request_key: str | None = None,
+    expected_preview_sha256: str | None = None,
+) -> dict:
+    """Release or restore the text holds on one owner PR. Standing operators only.
+
+    Owner PR discovery treats hold wording in a PR description or discussion
+    as an explicit hold. Use action release when the owner has decided that
+    wording no longer binds, with the decision as reason. Preview first, then
+    apply identical arguments with the preview digest and a new request_key.
+    Replay the same key after a lost response.
+
+    A release waives the exact description read at preview, the comments
+    written before it, and holds inherited from items the description only
+    mentions. An edited description needs a new release. Labels, assignees,
+    later comments, the closing objective issue and every review, CI, landing
+    and merge gate still bind. Standing landing delegations do not
+    read a release, so a released PR lands on a per-head grant. It starts no
+    work, changes no policy and lands nothing. Action revoke restores the wording.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from factory.orchestration import owner_pr_hold_release
+
+    try:
+        if operation == "preview":
+            return await asyncio.to_thread(
+                owner_pr_hold_release.preview, repo, pr_number, action, reason
+            )
+        if not request_key or not expected_preview_sha256:
+            return {"ok": False, "reason": "owner_pr_hold_release_preview_required"}
+        return await asyncio.to_thread(
+            owner_pr_hold_release.apply,
+            principal.subject,
+            repo,
+            pr_number,
+            action,
+            reason,
+            request_key,
+            expected_preview_sha256,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
+async def factory_configure_delivery_landing(
+    operation: Literal["preview", "apply"],
+    enabled: bool,
+    expected_version: Annotated[MCPInteger, Field(ge=0)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    max_landings: Annotated[MCPInteger | None, Field(ge=1, le=50)] = None,
+    request_key: str | None = None,
+    expected_preview_sha256: str | None = None,
+) -> dict:
+    """Preview or apply standing landing authority for ordinary deliveries.
+
+    Standing operators only. Default off. Read factory_status for version,
+    preview, review the deny rules and bounds, then apply identical arguments
+    with the preview digest and a new request_key. Replay the same key after a
+    lost response. Enabling requires max_landings from 1 to 50, the cap on new
+    derivations per rolling 24 hours. Disabling requires it omitted.
+
+    While enabled, the landing owner may derive exact-head authority for an
+    intake-admitted delivery on its own factory task branch. The independent
+    typed review must classify the complete diff as private, internal and
+    reversible with every public, security, credential and destructive flag
+    false. Every changed path must fall outside the previewed deny rules, with
+    at most forty regular files. The issue must be open, unassigned and unheld.
+    Required CI, receipt holds, unknown-execution fences and the protected merge
+    queue all still apply. Each task gets at most three derivations.
+
+    Repair tasks, owner PRs and explicit per-head operator grants keep their own
+    owners and never fall through to this one. The previewed deny rules exclude
+    the factory and its framework packages, deployment and schema, credential
+    and isolation code, public routes, agent instructions and
+    projects/monolith/ARCHITECTURE.md with its delivery measure and stop
+    condition. Other private project code is eligible, including
+    projects/monolith/BUILD. Review path_limitations: the deny-list is a second
+    check, not isolation. Eligible monolith code runs in the factory process,
+    and binary regular blobs remain eligible, so safety relies on the typed
+    review, required CI and the merge queue. Excluded paths need a per-head
+    grant. Joe set this boundary on 2026-11-10. Widening the exclusions to whole
+    projects or domains needs his decision.
+    Policy replacement or a deny-rule change invalidates authorization.
+    Disabling revokes future arming and
+    the landing observer fences queued grants on its next tick. Nothing is
+    dispatched, merged or resumed by this operation. Re-read
+    factory_status.delivery_landing afterwards.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from factory.orchestration import delivery_landing_delegation
+
+    try:
+        return await asyncio.to_thread(
+            delivery_landing_delegation.configure,
+            principal,
+            operation,
+            enabled,
+            expected_version,
+            reason,
+            max_landings=max_landings,
+            request_key=request_key,
+            expected_preview_sha256=expected_preview_sha256,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
 async def factory_configure_refill(
     operation: Literal["preview", "apply"],
     enabled: bool,
@@ -2516,6 +2882,17 @@ async def factory_configure_refill(
     expected_preview_sha256: str | None = None,
     reset_breaker: bool = False,
     min_new_issues: Annotated[MCPInteger, Field(ge=0, le=100)] | None = None,
+    target: Literal[
+        "refill", "problem_issues", "owner_prs", "repair_landing", "owner_pr_landing"
+    ] = "refill",
+    recurring_blocker: bool | None = None,
+    workflow_stranded: bool | None = None,
+    owner_login: str | None = None,
+    owner_id: Annotated[MCPInteger, Field(ge=1)] | None = None,
+    duration_minutes: Annotated[MCPInteger | None, Field(ge=1, le=1440)] = None,
+    max_repairs: Annotated[MCPInteger | None, Field(ge=1, le=10)] = None,
+    delegation_mode: Literal["trial", "ongoing"] | None = None,
+    path_profile: Literal["observation", "diagnostics"] | None = None,
 ) -> dict:
     """Preview or apply bounded refill and existing learning cadence as an operator.
 
@@ -2529,11 +2906,168 @@ async def factory_configure_refill(
     held/uncertain learning execution refuses changes. No task is dispatched
     by this operation. Inspect generated, eligible, admitted and executing
     evidence separately through ordinary factory status after activation.
+
+    For target problem_issues, enabled controls only that producer. Supply
+    both recurring_blocker and workflow_stranded switches, model astra and
+    hourly false as compatibility placeholders. Refill settings stay unchanged.
+    reset_breaker and min_new_issues are not permitted for that target. This
+    delegates to the same guarded preview/apply as factory_configure_problem_issues.
+    For target owner_prs, enabled true requires verified owner_login and owner_id.
+    Enabled false requires both omitted. Use model astra and hourly false.
+    All refill/problem-issue/delegation options must be omitted/default. This delegates to
+    factory_configure_owner_prs, preserving every unrelated producer setting.
+    Native factory_status.control_catalog advertises targets and argument names.
+    Target repair_landing configures only a default-off standing delegation:
+    use model astra and hourly false. Trial mode requires duration_minutes and
+    max_repairs (recommended 1440 and 3). Explicit delegation_mode ongoing omits
+    duration_minutes and caps max_repairs per rolling 24 hours plus three lifetime
+    derivations per repair task and source task. It remains effective until
+    revoked or policy drift. No trial upgrades automatically. Optional path_profile
+    diagnostics adds only private output parsers to the observation boundary.
+    Omit owner identity, producer switches and other refill options. Preview lists
+    exact paths and bounds. Disabling revokes future arming.
+    The native landing observer fences queued grants on its next tick. This
+    does not undo completed external actions or activate producer/intake.
+
+    Target owner_pr_landing configures a separate default-off standing decision.
+    Use model astra and hourly false, omitting all target-specific options.
+    Preview binds the configured numeric owner identity, intake policy and
+    configuration history. It explicitly covers pre-existing adopted PRs within
+    a frozen private diagnostics profile. Bounds are three new derivations per
+    rolling 24 hours and three per canonical PR across receipts and generations.
+    Independent exact-head review, CI, holds and the existing merge queue apply.
+    Disable revokes queued and future authority on the next landing observation.
     """
     principal = current_principal()
     refusal = _refuse(principal)
     if refusal is not None:
         return refusal
+    if target == "owner_pr_landing":
+        if (
+            model != "astra"
+            or hourly is not False
+            or reset_breaker
+            or any(
+                value is not None
+                for value in (
+                    min_new_issues,
+                    recurring_blocker,
+                    workflow_stranded,
+                    owner_login,
+                    owner_id,
+                    duration_minutes,
+                    max_repairs,
+                    delegation_mode,
+                    path_profile,
+                )
+            )
+        ):
+            return {"ok": False, "reason": "owner_pr_landing_target_arguments_invalid"}
+        from factory.orchestration import owner_pr_landing_delegation
+
+        try:
+            return await asyncio.to_thread(
+                owner_pr_landing_delegation.configure,
+                principal,
+                operation,
+                enabled,
+                expected_version,
+                reason,
+                request_key=request_key,
+                expected_preview_sha256=expected_preview_sha256,
+            )
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+    if target == "repair_landing":
+        if (
+            owner_login is not None
+            or owner_id is not None
+            or model != "astra"
+            or hourly is not False
+            or reset_breaker
+            or min_new_issues is not None
+            or recurring_blocker is not None
+            or workflow_stranded is not None
+            or (delegation_mode != "ongoing" and duration_minutes is None)
+            or (delegation_mode == "ongoing" and duration_minutes is not None)
+            or max_repairs is None
+        ):
+            return {"ok": False, "reason": "repair_landing_target_arguments_invalid"}
+        from factory.orchestration import repair_landing_delegation
+
+        try:
+            return await asyncio.to_thread(
+                repair_landing_delegation.configure,
+                principal,
+                operation,
+                enabled,
+                expected_version,
+                reason,
+                duration_minutes=duration_minutes,
+                max_repairs=max_repairs,
+                mode=delegation_mode or "trial",
+                path_profile=path_profile or "observation",
+                request_key=request_key,
+                expected_preview_sha256=expected_preview_sha256,
+            )
+        except ValueError as exc:
+            return {"ok": False, "reason": str(exc)}
+    if any(
+        value is not None
+        for value in (duration_minutes, max_repairs, delegation_mode, path_profile)
+    ):
+        return {"ok": False, "reason": "refill_target_arguments_invalid"}
+    if target == "owner_prs":
+        if (
+            model != "astra"
+            or hourly is not False
+            or reset_breaker
+            or min_new_issues is not None
+            or recurring_blocker is not None
+            or workflow_stranded is not None
+            or (enabled and (owner_login is None or owner_id is None))
+            or (not enabled and (owner_login is not None or owner_id is not None))
+        ):
+            return {"ok": False, "reason": "owner_pr_target_arguments_invalid"}
+        return await factory_configure_owner_prs(
+            operation=operation,
+            expected_version=expected_version,
+            reason=reason,
+            owner_login=owner_login,
+            owner_id=owner_id,
+            request_key=request_key,
+            expected_preview_sha256=expected_preview_sha256,
+        )
+    if target == "problem_issues":
+        if (
+            owner_login is not None
+            or owner_id is not None
+            or model != "astra"
+            or hourly is not False
+            or reset_breaker
+            or min_new_issues is not None
+            or type(recurring_blocker) is not bool
+            or type(workflow_stranded) is not bool
+        ):
+            return {"ok": False, "reason": "problem_issues_target_arguments_invalid"}
+        return await factory_configure_problem_issues(
+            operation=operation,
+            enabled=enabled,
+            recurring_blocker=recurring_blocker,
+            workflow_stranded=workflow_stranded,
+            expected_version=expected_version,
+            reason=reason,
+            request_key=request_key,
+            expected_preview_sha256=expected_preview_sha256,
+        )
+    if (
+        target != "refill"
+        or owner_login is not None
+        or owner_id is not None
+        or recurring_blocker is not None
+        or workflow_stranded is not None
+    ):
+        return {"ok": False, "reason": "refill_target_arguments_invalid"}
     from factory.orchestration import refill_control
 
     try:
@@ -2562,6 +3096,53 @@ async def factory_configure_refill(
             expected_preview_sha256,
             reset_breaker=reset_breaker,
             min_new_issues=min_new_issues,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
+async def factory_configure_problem_issues(
+    operation: Literal["preview", "apply"],
+    enabled: bool,
+    recurring_blocker: bool,
+    workflow_stranded: bool,
+    expected_version: Annotated[MCPInteger, Field(ge=0)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    request_key: Annotated[str | None, Field(min_length=1, max_length=256)] = None,
+    expected_preview_sha256: Annotated[
+        str | None, Field(pattern=r"^[0-9a-f]{64}$")
+    ] = None,
+) -> dict:
+    """Preview/apply problem-issue recovery sources as a standing operator.
+
+    Read factory_status for version, then preview the three exact switches.
+    Apply identical arguments with expected_preview_sha256 and a new request_key.
+    Retry the same key after an unknown outcome. Changes only enabled and
+    sources.recurring_blocker/workflow_stranded. Preserves all other policy,
+    generation, receipts, ownership, holds and uncertain starts. No dispatch.
+    Ordinary producer ticks watermark newly enabled sources, deduplicate and
+    file bounded bug issues. Ordinary intake/refinement owns future work.
+    """
+    refusal = _refuse(current_principal())
+    if refusal is not None:
+        return refusal
+    from factory.orchestration import factory_problem_issues
+
+    if operation == "apply" and (not request_key or not expected_preview_sha256):
+        return {"ok": False, "reason": "problem_issues_preview_required"}
+    try:
+        return await asyncio.to_thread(
+            factory_problem_issues.configure,
+            operation,
+            enabled,
+            recurring_blocker,
+            workflow_stranded,
+            expected_version,
+            reason,
+            actor=current_principal().subject,
+            request_key=request_key,
+            expected_preview_sha256=expected_preview_sha256,
         )
     except ValueError as exc:
         return {"ok": False, "reason": str(exc)}

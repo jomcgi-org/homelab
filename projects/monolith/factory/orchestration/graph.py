@@ -47,6 +47,7 @@ from factory.orchestration.models import (
 _NODE_KINDS = ("work", "gate", "merge", "fable_escalation")
 TERMINAL_RUN_STATUSES = ("succeeded", "failed", "escalated", "cancelled")
 MAX_ATTEMPTS = 10
+MAX_FUNDING_RETRIES = 2
 MAX_PLAN_EDITS = 20
 MAX_TURN_TIMEOUT_SECONDS = 43200
 _CONTEXT_FIELDS = frozenset(
@@ -275,6 +276,22 @@ def _historical_nodes(db: Session, task_id: str, version: int) -> list[dict]:
         if candidates:
             key = max(candidates, key=lambda item: item[1])
             incarnations[key]["discarded_in_version"] = change.version
+    # A funding renewal changes one bound in place. Earlier revisions retain
+    # the old bound, including when this incarnation was later discarded.
+    for change in reversed(changes):
+        if change.op == "renew_node_attempt" and change.version > version:
+            fields = json.loads(change.change_json)
+            key = (fields["node_key"], fields["created_in_version"])
+            if key in incarnations:
+                incarnations[key]["max_attempts"] = fields["before"]
+    # Re-added keys are reconstructed from add snapshots above. Replay the
+    # renewals visible at this revision on their original incarnation too.
+    for change in changes:
+        if change.op == "renew_node_attempt" and change.version <= version:
+            fields = json.loads(change.change_json)
+            key = (fields["node_key"], fields["created_in_version"])
+            if key in incarnations:
+                incarnations[key]["max_attempts"] = fields["after"]
     return [
         node
         for _, node in sorted(incarnations.items(), key=lambda item: item[0][1])
@@ -297,6 +314,78 @@ def _lock_task(db: Session, task_id: str) -> SwarmTask:
     if task is None:
         raise ValueError(f"Unknown swarm task {task_id}")
     return task
+
+
+def renew_funded_attempt(db, task_id, target, *, expected_version, request_id):
+    """Funding's exact-node amendment, within the caller's control transaction.
+
+    No run, admitted pin, identity or lifecycle marker is rewritten. Funding
+    owns hold/evidence/turn authority; graph owns history and attempt bounds.
+    """
+    task = _lock_task(db, task_id)
+    version = _current_version(db, task_id)
+    node = next(
+        (
+            n
+            for n in _visible_nodes(db, task_id, version)
+            if n.node_key == target["node_key"]
+        ),
+        None,
+    )
+    runs = _runs(db, task_id)
+    prior = [r for r in runs if r.node_key == target["node_key"]]
+    renewals = db.exec(
+        select(SwarmPlanVersion).where(
+            SwarmPlanVersion.task_id == task_id,
+            SwarmPlanVersion.op == "renew_node_attempt",
+        )
+    ).all()
+    if (
+        version != expected_version
+        or node is None
+        or _ledger_snapshot(_node_fields(node)) != target["node"]
+        or node.kind != "work"
+        or node.node_key.startswith("conductor_")
+        or not prior
+        or any(r.status != "failed" for r in prior)
+        or max(r.id for r in prior) != target["source_run_id"]
+        or _spent_attempts(prior) != node.max_attempts
+        or node.max_attempts >= MAX_ATTEMPTS
+        or len(renewals) >= MAX_FUNDING_RETRIES
+        or any(r.status not in TERMINAL_RUN_STATUSES for r in runs)
+    ):
+        raise ValueError("funding_retry_evidence_changed")
+    fields = dict(
+        node_key=node.node_key,
+        created_in_version=node.created_in_version,
+        before=node.max_attempts,
+        after=node.max_attempts + 1,
+        source_run_id=target["source_run_id"],
+        request_id=request_id,
+    )
+    node.max_attempts += 1
+    db.add(
+        SwarmPlanVersion(
+            task_id=task_id,
+            version=version + 1,
+            op="renew_node_attempt",
+            author_kind="engine",
+            author="factory:funding",
+            change_json=dumps(fields),
+            cause_kind="factory_conductor",
+            cause_ref=f"funding:{request_id}",
+            stated_reason="One evidence-bound funded retry of the same failed node",
+        )
+    )
+    _finish(
+        db,
+        task,
+        "renew_node_attempt",
+        fields,
+        version,
+        GraphOp(ok=True, version=version + 1),
+    )
+    return fields
 
 
 def _finish(
@@ -1476,6 +1565,12 @@ def admit_dispatch(
             "turn_timeout_seconds": node.turn_timeout_seconds,
             **stepped,
         }
+        from factory.orchestration import funding_profile
+
+        if funding_profile.KEY in (
+            pin.get("artifact_schema") or {}
+        ) and not funding_profile.allowed(db, task_id, node_key, attempt, pin=pin):
+            return refuse("invalid_funding_profile")
         db.add(
             SwarmNodeRun(
                 task_id=task_id,

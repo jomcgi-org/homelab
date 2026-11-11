@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createBackendCache } from "./backend-cache.js";
+import {
+  createBackendCache,
+  readBoard,
+  readFactorySummary,
+  BOARD_STALE_MS,
+} from "./backend-cache.js";
 import { loadDashboard } from "./dashboard-load.js";
 
 function jsonResponse(body, ok = true) {
@@ -12,6 +17,9 @@ const board = {
   state: "enabled",
   active: [{}],
   queued: [],
+  active_count: 1,
+  queued_count: 0,
+  paused_count: 0,
   escalations: [{ receipt_id: 1, open: true, title: "t" }],
 };
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -25,10 +33,44 @@ function cacheWith(routes) {
 }
 
 describe("loadDashboard", () => {
+  it("keeps stale summaries on failure, expires them, and cannot poison full boards", async () => {
+    let clock = 1_000,
+      fail = false;
+    const fetchImpl = vi.fn(async (url) => {
+      if (url.endsWith("/summary")) return jsonResponse(board, !fail);
+      if (url.endsWith("/api/agents/factory"))
+        return jsonResponse({ full: true, nodes: [1] });
+      return jsonResponse(home);
+    });
+    const cache = createBackendCache({ fetchImpl, now: () => clock });
+    await loadDashboard("http://b", { cache });
+    await tick();
+    expect(
+      fetchImpl.mock.calls.some(([url]) => url.endsWith("/api/agents/factory")),
+    ).toBe(false);
+    expect(await readBoard("http://b", { cache, coldWaitMs: 100 })).toEqual({
+      full: true,
+      nodes: [1],
+    });
+    expect(await readFactorySummary("http://b", { cache })).toEqual(board);
+    fail = true;
+    clock += 60_000;
+    await loadDashboard("http://b", { cache });
+    await tick();
+    expect(
+      (await loadDashboard("http://b", { cache })).dashboard.factory,
+    ).toMatchObject({ inFlight: 1, readAgoMs: 60_000 });
+    clock += BOARD_STALE_MS;
+    await loadDashboard("http://b", { cache });
+    await tick();
+    expect(
+      (await loadDashboard("http://b", { cache })).dashboard,
+    ).toMatchObject({ factory: null, factory_pending: false });
+  });
   it("merges the home aggregate with a factory summary from the cache", async () => {
     const { cache, fetchImpl } = cacheWith({
       "/api/home/dashboard": () => jsonResponse(home),
-      "/api/agents/factory": () => jsonResponse(board),
+      "/api/agents/factory/summary": () => jsonResponse(board),
     });
     await loadDashboard("http://b", { cache });
     await tick();
@@ -37,7 +79,7 @@ describe("loadDashboard", () => {
     expect(dashboard.factory).toMatchObject({ state: "enabled", inFlight: 1 });
     expect(dashboard.factory.waiting).toHaveLength(1);
     expect(fetchImpl.mock.calls.map(([url]) => url).sort()).toEqual([
-      "http://b/api/agents/factory",
+      "http://b/api/agents/factory/summary",
       "http://b/api/home/dashboard",
     ]);
   });
@@ -45,7 +87,7 @@ describe("loadDashboard", () => {
   it("never waits on the board", async () => {
     const { cache } = cacheWith({
       "/api/home/dashboard": () => jsonResponse(home),
-      "/api/agents/factory": () => new Promise(() => {}),
+      "/api/agents/factory/summary": () => new Promise(() => {}),
     });
     const { dashboard } = await loadDashboard("http://b", { cache });
     // The board is on its way: "reading", not "unavailable".
@@ -59,7 +101,7 @@ describe("loadDashboard", () => {
   it("is null only when neither source has a reading", async () => {
     const { cache } = cacheWith({
       "/api/home/dashboard": () => jsonResponse({ error: "broken" }),
-      "/api/agents/factory": () => jsonResponse({}, false),
+      "/api/agents/factory/summary": () => jsonResponse({}, false),
     });
     await loadDashboard("http://b", { cache });
     await tick();
@@ -71,7 +113,7 @@ describe("loadDashboard", () => {
   it("reads a malformed board as no factory reading", async () => {
     const { cache } = cacheWith({
       "/api/home/dashboard": () => jsonResponse(home),
-      "/api/agents/factory": () =>
+      "/api/agents/factory/summary": () =>
         jsonResponse({ ok: true, active: 5, escalations: "x" }),
     });
     await loadDashboard("http://b", { cache });
@@ -87,7 +129,7 @@ describe("loadDashboard", () => {
   it("says how old the held board is", async () => {
     let clock = 1_000;
     const fetchImpl = vi.fn(async (url) =>
-      url.endsWith("/api/agents/factory")
+      url.endsWith("/api/agents/factory/summary")
         ? jsonResponse(board)
         : jsonResponse(home),
     );
@@ -105,7 +147,8 @@ describe("loadDashboard", () => {
     let calls = 0;
     let failFirst;
     const fetchImpl = vi.fn(async (url) => {
-      if (!url.endsWith("/api/agents/factory")) return jsonResponse(home);
+      if (!url.endsWith("/api/agents/factory/summary"))
+        return jsonResponse(home);
       calls += 1;
       // The first read fails when told to; the retry never answers.
       return calls === 1

@@ -603,32 +603,16 @@ multiarch_http_file(
     package_dir = "/usr/local/bin",
 )
 
-# Codex CLI for the EmberVM claude runtime guest, the Luna/Terra/Sol adapter
-# (issue #4234). Vendored from the GitHub release rather than npm: the npm
-# @openai/codex package is a thin JS launcher that resolves a per-platform
-# package at runtime, and those platform packages are not on the public
-# registry. The release tarball holds a single statically linked musl binary,
-# so unlike the claude CLI it needs no glibc from the base image.
-#
-# amd64 only, matching claude_code_cli and the guest image (runtimes/claude
-# apko.yaml declares archs: [x86_64]): every cluster node and the RBE executor
-# are amd64. It is also forced here, because each release tarball holds a single
-# ARCH-NAMED file (codex-x86_64-unknown-linux-musl) and multiarch_http_file
-# takes ONE extract_path for both arches. Adding arm64 means teaching the rule
-# per-arch extract paths, not just adding a URL.
-#
-# Pinned, not floating: the shim's adapter depends on observed behaviour
-# (thread.started/thread_id, item.completed agent_message, turn.completed
-# usage, and the `exec resume <id> <prompt>` argument order, which differs from
-# plain `exec` in that it rejects --sandbox and -C). A silent upgrade could
-# change those.
-multiarch_http_file(
+# Codex app-server for the EmberVM claude runtime, amd64 like the guest image.
+# The official full package includes the code-mode and exec hosts, resource
+# manifest, bundled tools and their licenses. Import the entire archive under
+# /usr/local in the runtime BUILD; copying only bin/codex breaks tool execution.
+# The pinned producer is exercised by the runtime's codex_compat_test target.
+http_file(
     name = "codex_cli",
-    amd64_sha256 = "5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a",
-    amd64_url = "https://github.com/openai/codex/releases/download/rust-v0.146.0/codex-x86_64-unknown-linux-musl.tar.gz",
-    binary_name = "codex",
-    extract_path = "codex-x86_64-unknown-linux-musl",
-    package_dir = "/usr/local/bin",
+    downloaded_file_path = "codex-package.tar.gz",
+    sha256 = "3bbf75e83de6b58aed28f2cf6e33ad423ec31fd4700a1457b94be557ea5a7c6e",
+    urls = ["https://github.com/openai/codex/releases/download/rust-v0.167.0/codex-package-x86_64-unknown-linux-musl.tar.gz"],
 )
 
 multiarch_http_file(

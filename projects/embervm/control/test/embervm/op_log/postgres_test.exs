@@ -17,6 +17,30 @@ defmodule Embervm.OpLog.PostgresTest do
 
   @dsn "postgres://embervm:secret@monolith-pg-rw.monolith.svc.cluster.local:5432/embervm_oplog"
 
+  test "journal query seam decodes ETF bytes and historical JSON without a database" do
+    body = <<137, 0, 255>>
+    payload = %{body: body, nested: %{drop: nil, keep: :ready}, list: [nil, true, false]}
+    rows = [
+      [1, 100, "t1", nil, nil, nil, nil, nil, nil, nil, "denied", :erlang.term_to_binary(payload)],
+      [2, 101, "t1", nil, nil, nil, nil, nil, nil, nil, "denied", ~s({"legacy":null})]
+    ]
+
+    {:ok, server} = Postgres.start_link(name: nil, connection: self(), query_fun: fn _, sql, params ->
+      if sql =~ "SELECT value FROM meta" do
+        {:ok, %Postgrex.Result{rows: []}}
+      else
+        assert params == [0]
+        assert sql =~ "payload_blob"
+        {:ok, %Postgrex.Result{rows: rows}}
+      end
+    end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(server) end)
+
+    assert {:ok, [first, legacy]} = Postgres.read_from(server, 0)
+    assert first.payload == %{"body" => body, "nested" => %{"keep" => "ready"}, "list" => ["nil", true, false]}
+    assert legacy.payload == %{"legacy" => :null}
+  end
+
   for dispatch_id <- [nil, "exact-dispatch"] do
     test "session reader includes nullable dispatch identity #{inspect(dispatch_id)}" do
       row = ["s-read", "t1", "p1", "wl", "running", "node-4", "vm-1", nil,

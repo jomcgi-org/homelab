@@ -5436,9 +5436,10 @@ defmodule Embervm.SessionManager do
   end
 
   defp index_session_snapshots(facts) do
-    for f <- facts, s <- Map.get(f, :session_snapshots, []) || [], into: %{} do
-      {s.session_id, {f.configured_id, s.snapshot_ref}}
+    for f <- facts, s <- Map.get(f, :session_snapshots, []) || [] do
+      {s.session_id, {f.configured_id, s}}
     end
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
   end
 
 
@@ -5670,16 +5671,23 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  # A session the node reports only as a snapshot: it is banked. Force ETS to banked
-  # (idempotent) so a banking/relighting limbo whose bank/relight did not complete
-  # resolves to the truth (the snapshot exists, no VM), dropping residency so the
-  # next invoke routes as a relight miss.
-  defp heal_to_banked(state, %{state: :banked}, _snapshots), do: state
+  # Persist owned snapshot facts even if the row was already banked without its
+  # metadata. Conflicting inventory must not choose a snapshot by report order.
+  defp heal_to_banked(state, session, snapshots) do
+    candidates = snapshots[session.session_id]
+      |> Enum.filter(fn {node, snap} -> node == session.node_id and Map.get(snap, :workload) == session.workload end)
+      |> Enum.uniq()
 
-  defp heal_to_banked(state, session, _snapshots) do
-    SessionStore.adopt_state(state.session_store, session.session_id, :banked)
-    Logger.info("embervm session adopted (banked)", session_id: session.session_id)
-    state
+    with [{node_id, snapshot}] <- candidates,
+         {:ok, _} <- SessionStore.adopt_banked(state.session_store, session.session_id, node_id, snapshot) do
+      :ok = terminate_session_process(state, session.session_id)
+      if session.vm_id, do: Embervm.Dispatcher.drop_vm(state.dispatcher, session.vm_id)
+      state
+      |> clear_bank_failures(session.session_id)
+      |> clear_draining_session(session.session_id)
+    else
+      _ -> state
+    end
   end
 
   defp node_reporting?(state, node_id) when is_binary(node_id) do

@@ -176,6 +176,28 @@ def update(receipt, sequence, output=0, coverage="parent"):
     )
 
 
+def test_staged_receipt_binds_usage_only_at_attempt_and_never_twice(database):
+    body = b'{"model":"astra","dispatch_id":"exact-dispatch"}'
+    receipt = result_receipts.prepare_receipt(1, "owner", 1, "guest", body, staged=True)
+    assert "runtime_meter" not in receipt
+    with Session(database) as db:
+        assert not meter._records_for_receipt(db, receipt["id"], meter.BOUND)
+    additions = result_receipts.attempt_prepared_receipt(
+        receipt["id"], 1, "owner", 1, "guest", body, lambda: None
+    )
+    assert additions["runtime_meter"] is True
+    assert not update(receipt, 0)["stop"]
+    assert not update(receipt, 1, 100000)["stop"]
+    with pytest.raises(result_receipts.ReceiptRejected, match="receipt_not_prepared"):
+        result_receipts.attempt_prepared_receipt(
+            receipt["id"], 1, "owner", 1, "guest", body, lambda: None
+        )
+    with Session(database) as db:
+        assert len(meter._records_for_receipt(db, receipt["id"], meter.BOUND)) == 1
+        owner = db.get(FactoryReceipt, 838)
+        assert meter.objective_totals(db, owner)["known_list_usd"] == 5
+
+
 def test_native_binding_and_acknowledged_duplicates_are_durable(database):
     receipt = prepare()
     assert receipt["runtime_meter"] is True
@@ -4801,7 +4823,7 @@ def test_public_docs_atomic_release_grant_replay_and_queue(
     monkeypatch.setattr(
         review_publisher,
         "collect",
-        lambda task: review_publisher.ReviewEvidence(
+        lambda task, *, session=None: review_publisher.ReviewEvidence(
             task_id=task,
             repo="org/repo",
             pr_number=7170,
@@ -4831,7 +4853,9 @@ def test_public_docs_atomic_release_grant_replay_and_queue(
         monkeypatch.setattr(
             review_publisher,
             "collect",
-            lambda task: review_publisher.Refusal(task, "review_missing"),
+            lambda task, *, session=None: review_publisher.Refusal(
+                task, "review_missing"
+            ),
         )
     if queue_change == "head":
         pull["head"]["sha"] = "c" * 40
@@ -4841,7 +4865,9 @@ def test_public_docs_atomic_release_grant_replay_and_queue(
             direction = json.loads(row.direction_json)
             direction["landing_hold"] = {"actor": "operator", "reason": "new hold"}
             row.direction_json = json.dumps(direction)
-    queued = iter([{"PR_7170"}, set()])
+    # The fence observes membership before and again under the control lock,
+    # then verifies removal after the dequeue mutation.
+    queued = iter([{"PR_7170"}, {"PR_7170"}, set()])
     monkeypatch.setattr(landing, "_queued_ids", lambda *_: next(queued))
     assert landing._fence_ungranted_queue_entry("org/repo", item)
     assert len(actions) == 1

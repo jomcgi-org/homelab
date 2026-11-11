@@ -246,12 +246,49 @@ echo "==> $PUSH_COUNT image(s) to push, $SKIPPED already published"
 # The branch had never executed until 2026-08-11 (#4685). Every deploy for weeks
 # found all 24 images content-identical and took the skip path, so the first
 # commit that really needed a push turned main's deploy red.
+# Read every selected push's actual runfiles before any registry write. A
+# successful image build can leave an unreadable layer on a restored runner.
+# The wrapper inspects the generated script's image path but never executes it.
+# Only images already selected for publication are materialised here.
+#
+# Layered images (oci_push over oci_image tars) are different again. The layout
+# tree holds each layer blob as a symlink back to the tar that produced it. The
+# push of build //bazel/images:push_all above already evaluated those tar
+# actions and left their outputs remote, and with --noexperimental_check_output_files
+# (bazel/remote.bazelrc) a later invocation never re-dirties them, so neither a
+# runfile nor a top-level request downloads the file. The symlink dangles and
+# crane would fail on it. --experimental_check_output_files is not a
+# configuration option, so it keeps the analysis cache while letting bazel see
+# the missing files and fetch them. Multi-arch indexes return no runfiles, so
+# their tars are built as top-level targets as well. 2026-11-11: main stopped
+# publishing for a day on the claude runtime's bazel/tools/image/prettier.tar.
+CHECK_OUTPUTS=(--experimental_check_output_files)
+_materialise_layers() {
+	local base="${1%.push}" layers
+	if ! layers=$("$BAZEL" query "labels(tars, deps($base, 3))"); then
+		echo "  WARNING: could not list layer tars for $1; the layout check decides" >&2
+		return 0
+	fi
+	[ -n "$layers" ] || return 0
+	# shellcheck disable=SC2086 # one label per word
+	"$BAZEL" build "${BAZEL_ARGS[@]}" "${CHECK_OUTPUTS[@]}" --remote_download_toplevel $layers
+}
+
+while IFS= read -r image_row || [ -n "${image_row:-}" ]; do
+	_parse_image_row "$image_row"
+	[ -n "$label" ] || continue
+	echo "==> Checking push layout $label"
+	_materialise_layers "$label"
+	"$BAZEL" run "$label" "${BAZEL_ARGS[@]}" "${CHECK_OUTPUTS[@]}" --build_runfile_links \
+		--run_under="python3 $WORKSPACE/bazel/tools/ci/oci_push_layout.py --push-script"
+done <"$TO_PUSH"
+
 while IFS= read -r image_row || [ -n "${image_row:-}" ]; do
 	_parse_image_row "$image_row"
 	[ -n "$label" ] || continue
 	echo ""
 	echo "==> push $label"
-	"$BAZEL" run "$label" "${BAZEL_ARGS[@]}" --build_runfile_links
+	"$BAZEL" run "$label" "${BAZEL_ARGS[@]}" "${CHECK_OUTPUTS[@]}" --build_runfile_links
 
 	# Resolve the stamped tag written by this successful push. Unlike the
 	# manifest row, this is an independent registry result attributable to this

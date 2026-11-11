@@ -177,6 +177,7 @@ py_test(
         "//projects/embervm/deploy:store-validation/h0melab-ember-bases-dev-lifecycle.json",
         "//projects/embervm/dev/deploy:application",
         "//projects/embervm/dev/deploy:deploy_values",
+        "//projects/embervm/dev/deploy:gke_values",
         "//projects/embervm/dev/deploy:kustomization.yaml",
         "//projects/embervm/dev/deploy:store_validation_values",
         "//projects/gke-apps/embervm:application.yaml",
@@ -198,6 +199,7 @@ py_test(
         "DEV_GKE_KUSTOMIZATION": "$(rootpath //projects/gke-apps/embervm-dev:kustomization.yaml)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "PROD_GKE_VALUES": "$(rootpath //projects/embervm/deploy:gke_values)",
+        "DEV_GKE_VALUES": "$(rootpath //projects/embervm/dev/deploy:gke_values)",
         "STORE_BUDGET": "$(rootpath //projects/embervm/deploy:store-validation/cloud-storage-budget.json)",
         "STORE_LIFECYCLE": "$(rootpath //projects/embervm/deploy:store-validation/h0melab-ember-bases-dev-lifecycle.json)",
         "STORE_RUNBOOK": "$(rootpath //projects/embervm/deploy:store-validation/README.md)",
@@ -503,6 +505,37 @@ py_test(
         "RECOVERY_VALUES": "$(rootpath //projects/embervm/dev/deploy:recovery_values)",
         "S6_IMAGE_TEST": "$(rootpath //projects/embervm/conformance:s6_tlc_image_test.go)",
         "S6_LAYER_MTREE": "$(rootpath //projects/embervm/conformance:tla_layer_mtree.sh)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
+    name = "chart_conformance_codex_test",
+    srcs = ["chart_conformance_codex_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/embervm/deploy:deploy_values",
+        "//projects/embervm/deploy:gke_values",
+        "//projects/embervm/dev/deploy:deploy_values",
+        "//projects/embervm/dev/deploy:gke_values",
+        "//projects/embervm/dev/deploy:recovery_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "files/**/*",
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "DEV_GKE_VALUES": "$(rootpath //projects/embervm/dev/deploy:gke_values)",
+        "DEV_VALUES": "$(rootpath //projects/embervm/dev/deploy:deploy_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "PROD_GKE_VALUES": "$(rootpath //projects/embervm/deploy:gke_values)",
+        "PROD_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
+        "RECOVERY_VALUES": "$(rootpath //projects/embervm/dev/deploy:recovery_values)",
     },
     deps = [
         "@pip//pytest",

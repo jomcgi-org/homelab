@@ -1391,8 +1391,11 @@ def test_executor_passes_session_repo_to_transport(monkeypatch, session, repo):
         assert deliver_kwargs[0]["branch"] == "main"
 
 
-def test_pending_message_executed_in_background(monkeypatch, session):
+@pytest.mark.parametrize("block_delivery", [False, True], ids=["immediate", "blocked"])
+def test_pending_message_executed_in_background(monkeypatch, session, block_delivery):
     row = store.create_session(session, "sid-123", "/workspace", "main")
+    delivery_started = asyncio.Event()
+    release_delivery = asyncio.Event()
 
     async def mock_deliver(
         _ember,
@@ -1408,6 +1411,9 @@ def test_pending_message_executed_in_background(monkeypatch, session):
         reasoning=False,
         **_kwargs,
     ):
+        delivery_started.set()
+        if block_delivery:
+            await release_delivery.wait()
         return _completed_delivery(message)
 
     monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
@@ -1418,9 +1424,21 @@ def test_pending_message_executed_in_background(monkeypatch, session):
     monkeypatch.setattr(mcp.agent_api, "notify", notify)
 
     async def run():
-        result = await mcp.monolith_agent_session_send(row.id, "hello")
-        await asyncio.sleep(0.1)
-        return result
+        # This deadline only bounds a hang; completion is the executor's result.
+        async with asyncio.timeout(5):
+            existing_tasks = set(mcp._inflight_tasks)
+            result = await mcp.monolith_agent_session_send(row.id, "hello")
+            assert result["accepted"] is True
+            spawned_tasks = mcp._inflight_tasks - existing_tasks
+            assert len(spawned_tasks) == 1
+            task = spawned_tasks.pop()
+            if block_delivery:
+                await delivery_started.wait()
+                assert not task.done()
+                release_delivery.set()
+            # Include durable persistence before asyncio.run tears down the loop.
+            await task
+            return result
 
     result = asyncio.run(run())
     session.expire_all()
@@ -2415,6 +2433,138 @@ def test_broker_login_status_granted_notifies(monkeypatch):
     result = asyncio.run(mcp.monolith_codex_broker_login_status())
     assert result["state"] == "granted"
     assert notified and notified[0][1] == "info"
+
+
+@pytest.mark.parametrize(("status", "expiry"), [(200, 900), (200, 0), (409, 900)])
+def test_dev_broker_login_start_is_separate_and_allowlists_response(
+    monkeypatch, status, expiry
+):
+    calls, notified = [], []
+
+    async def dev_request(method, path, *, timeout):
+        calls.append((method, path, timeout))
+        return httpx.Response(
+            status,
+            request=httpx.Request(method, "https://dev-broker" + path),
+            json={
+                "reason": "login_pending",
+                "verification_url": "https://auth.example/device",
+                "user_code": "DEV-CODE",
+                "expires_in": expiry,
+                "access_token": "secret-access",
+                "refresh_token": "secret-refresh",
+                "detail": "secret-error-detail",
+                "environment": "prod",
+            },
+        )
+
+    async def unexpected(*_args, **_kwargs):
+        raise AssertionError("dev login must not use production broker")
+
+    async def notify(message, **_kwargs):
+        notified.append(message)
+
+    monkeypatch.setattr(mcp.broker_client, "dev_login_request", dev_request)
+    monkeypatch.setattr(mcp, "_broker_request", unexpected)
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+    result = asyncio.run(mcp.monolith_codex_broker_login_start(environment="dev"))
+
+    assert result == {
+        "verification_url": "https://auth.example/device",
+        "user_code": "DEV-CODE",
+        "expires_in": expiry,
+        "pending": status == 409,
+        "environment": "dev",
+        "grant": "codex-cluster",
+    }
+    assert calls == [("POST", "/grants/codex-cluster/login/start", 30)]
+    assert "dev grant codex-cluster" in notified[0]
+    assert "secret" not in notified[0]
+
+
+@pytest.mark.parametrize("state", ["none", "pending", "granted", "failed"])
+def test_dev_broker_status_never_returns_provider_error_detail(monkeypatch, state):
+    async def dev_request(method, path, *, timeout):
+        assert (method, path, timeout) == (
+            "GET",
+            "/grants/codex-cluster/login/status",
+            30,
+        )
+        return httpx.Response(
+            200,
+            request=httpx.Request(method, "https://dev-broker" + path),
+            json={
+                "state": state,
+                "detail": "secret-provider-error",
+                "id_token": "secret",
+            },
+        )
+
+    async def notify(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr(mcp.broker_client, "dev_login_request", dev_request)
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+    result = asyncio.run(mcp.monolith_codex_broker_login_status(environment="dev"))
+
+    assert result["state"] == state
+    assert result["environment"] == "dev"
+    assert result["grant"] == "codex-cluster"
+    assert set(result) == {"state", "detail", "environment", "grant"}
+    assert "secret" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("operation", ["start", "status"])
+@pytest.mark.parametrize(
+    ("environment", "grant"),
+    [("staging", "codex-cluster"), ("DEV", "codex-cluster"), ("dev", "codex-other")],
+)
+def test_broker_login_rejects_invalid_environment_before_io(
+    monkeypatch, operation, environment, grant
+):
+    async def unexpected(*_args, **_kwargs):
+        raise AssertionError("invalid target must not reach a broker")
+
+    monkeypatch.setattr(mcp.broker_client, "dev_login_request", unexpected)
+    monkeypatch.setattr(mcp, "_broker_request", unexpected)
+    tool = getattr(mcp, f"monolith_codex_broker_login_{operation}")
+    with pytest.raises(ValueError):
+        asyncio.run(tool(grant, environment=environment))
+
+
+@pytest.mark.parametrize(
+    "failure", ["unconfigured", "transport", "upstream", "malformed", "unsafe_url"]
+)
+def test_dev_login_failures_do_not_expose_upstream_or_configuration(
+    monkeypatch, failure
+):
+    async def dev_request(method, path, *, timeout):
+        if failure == "unconfigured":
+            raise mcp.broker_client.DevBrokerLoginUnavailable("secret-config")
+        if failure == "transport":
+            raise httpx.ConnectError("secret-provider-URL")
+        body = {"access_token": "secret"}
+        if failure == "unsafe_url":
+            body = {
+                "verification_url": "https://user:secret@auth.example/device",
+                "user_code": "CODE",
+                "expires_in": 900,
+            }
+        return httpx.Response(
+            503 if failure == "upstream" else 200,
+            request=httpx.Request(method, "https://dev-broker" + path),
+            json=body,
+        )
+
+    monkeypatch.setattr(mcp.broker_client, "dev_login_request", dev_request)
+    with pytest.raises(RuntimeError) as error:
+        asyncio.run(mcp.monolith_codex_broker_login_start(environment="dev"))
+    assert str(error.value) == (
+        "Dev Codex login broker is not configured"
+        if failure == "unconfigured"
+        else "Dev Codex login broker unavailable"
+    )
+    assert error.value.__suppress_context__
 
 
 def test_broker_refresh_cooldown_returns_noncredential_status(monkeypatch):

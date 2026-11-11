@@ -6,20 +6,22 @@ HTTP boundary is faked, so a recovered result has travelled the same parser,
 diff, artifact and permit path a synchronous response would have.
 """
 
-import asyncio
 import ast
+import asyncio
 import base64
+import json
+import signal
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-import json
 from pathlib import Path
-import signal
-from threading import BoundedSemaphore
+from threading import BoundedSemaphore, Event
 from types import SimpleNamespace
-import zlib
 
 import httpx
 import pytest
+from core import db as core_db
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from factory.execution import (
@@ -39,9 +41,8 @@ from factory.execution.models import (
     AgentTurn,
     PendingMessage,
 )
-from core import db as core_db
-from factory.orchestration.models import SwarmNodeRun
 from factory.orchestration.factory_models import FactoryAudit
+from factory.orchestration.models import SwarmNodeRun
 
 ARTIFACT_PATH = ".factory/result.json"
 _REAL_SCHEDULE_NEXT_MESSAGE = mcp._schedule_next_message
@@ -1828,6 +1829,450 @@ def test_shutdown_during_receipt_preparation_fences_the_physical_post(
     assert len(requests) == 0
     state = snapshot(database, sid)
     assert state["permits"][0]["outcome"] == "not_invoked"
+
+
+@pytest.mark.parametrize("prepared_before_handoff", [False, True])
+def test_rollout_preserves_last_attempted_receipt_during_retry_preparation(
+    database, monkeypatch, prepared_before_handoff
+):
+    """A cancelled prepare thread cannot retire the receipt the handoff awaits."""
+    monkeypatch.setenv("AGENT_STAGED_RECEIPTS_ENABLED", "true")
+    sid = queue(database)
+    prepare = result_receipts.prepare_receipt
+    entered, release, finished = Event(), Event(), Event()
+    prepared = []
+
+    def preparing(*args, **kwargs):
+        if not prepared:
+            receipt = prepare(*args, **kwargs)
+            prepared.append(receipt)
+            return receipt
+        try:
+            if prepared_before_handoff:
+                receipt = prepare(*args, **kwargs)
+                prepared.append(receipt)
+            entered.set()
+            assert release.wait(10), "test did not release receipt preparation"
+            if not prepared_before_handoff:
+                receipt = prepare(*args, **kwargs)
+                prepared.append(receipt)
+            return receipt
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(result_receipts, "prepare_receipt", preparing)
+
+    async def handler(request):
+        return httpx.Response(
+            503,
+            json={"error": "retryable preparation", "retryable": True},
+            request=request,
+        )
+
+    requests = fake_http(monkeypatch, handler, working_guest(sid))
+
+    async def scenario():
+        task = asyncio.create_task(mcp._execute_pending_message(sid))
+        try:
+            assert await asyncio.to_thread(entered.wait, 8)
+            await mcp.drain_inflight_executors()
+            held = hold_of(sid)
+            assert held["receipt_id"] == prepared[0]["id"]
+            release.set()
+            assert await asyncio.to_thread(finished.wait, 5)
+            await asyncio.gather(task, return_exceptions=True)
+            assert len(requests) == 1
+            assert hold_of(sid) == held
+            with Session(database) as db:
+                receipt = db.get(AgentResultReceipt, held["receipt_id"])
+                assert receipt.superseded_at is None
+            assert store.adopt_response_lost_result(sid)["status"] == "waiting"
+            # Duplicate lifecycle notifications do not replace or extend it.
+            assert store.mark_turn_response_lost_sync(
+                sid,
+                1,
+                held["claim_owner"],
+                held["dispatch_count"],
+                receipt_id="unposted-replacement",
+                guest_id=held["guest_id"],
+                reason="replica_shutdown",
+                hold_seconds=43200,
+            )
+            assert hold_of(sid) == held
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(asyncio.wait_for(scenario(), 20))
+
+
+def test_pre_handoff_retry_keeps_distinct_receipts_and_completes(database, monkeypatch):
+    monkeypatch.setenv("AGENT_STAGED_RECEIPTS_ENABLED", "true")
+    sid = queue(database)
+    attempted = []
+
+    async def handler(request):
+        attempted.append(json.loads(request.content)["result_receipt"]["id"])
+        if len(attempted) == 1:
+            return httpx.Response(
+                503,
+                json={"error": "retryable preparation", "retryable": True},
+                request=request,
+            )
+        return httpx.Response(200, json=native_record(artifact=False), request=request)
+
+    requests = fake_http(monkeypatch, handler)
+    asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
+    assert len(requests) == 2 and len(set(attempted)) == 2
+    with Session(database) as db:
+        assert db.get(AgentResultReceipt, attempted[0]).superseded_at is not None
+        assert db.get(AgentResultReceipt, attempted[1]).superseded_at is None
+    state = snapshot(database, sid)
+    assert state["pending"] == []
+    assert state["permits"][0]["state"] == "settled"
+    assert state["turns"][0]["terminal_reason"] == "end_turn"
+
+
+def test_staged_promotion_lock_collision_retries_before_one_post(database, monkeypatch):
+    monkeypatch.setenv("AGENT_STAGED_RECEIPTS_ENABLED", "true")
+    sid = queue(database)
+    real_attempt = result_receipts.attempt_prepared_receipt
+    attempts = []
+
+    class LockNotAvailable(Exception):
+        sqlstate = "55P03"
+
+    def temporarily_busy(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise OperationalError(
+                "UPDATE agent_sessions.agent_session", {}, LockNotAvailable()
+            )
+        return real_attempt(*args, **kwargs)
+
+    async def no_wait(_delay):
+        return None
+
+    async def handler(request):
+        return httpx.Response(200, json=native_record(artifact=False), request=request)
+
+    monkeypatch.setattr(result_receipts, "attempt_prepared_receipt", temporarily_busy)
+    monkeypatch.setattr(transport.asyncio, "sleep", no_wait)
+    requests = fake_http(monkeypatch, handler)
+    asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
+
+    assert len(attempts) == 3
+    assert len(requests) == 1
+    state = snapshot(database, sid)
+    assert state["pending"] == []
+    assert state["permits"][0]["state"] == "settled"
+    assert state["turns"][0]["terminal_reason"] == "end_turn"
+
+
+def test_staged_positive_database_failure_survives_executor_and_native_writer(
+    database, monkeypatch
+):
+    monkeypatch.setenv("AGENT_STAGED_RECEIPTS_ENABLED", "true")
+    sid = queue(database)
+
+    class UndefinedColumn(Exception):
+        sqlstate = "42703"
+
+    def fail_prepare(*_a, **_kw):
+        raise OperationalError(
+            "private statement", {"secret": "private"}, UndefinedColumn()
+        )
+
+    async def unexpected(_request):
+        pytest.fail("preinvoke failure must not post")
+
+    monkeypatch.setattr(result_receipts, "prepare_receipt", fail_prepare)
+    requests = fake_http(monkeypatch, unexpected)
+    asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
+    assert requests == []
+    state = snapshot(database, sid)
+    assert state["pending"] == []
+    assert state["permits"][0]["outcome"] == "not_invoked"
+    recovery = json.loads(state["turns"][0]["usage_json"])["recovery"]
+    assert recovery["database_failure"] == {
+        "version": 1,
+        "phase": "receipt_prepare",
+        "sqlstate": "42703",
+        "attempted": False,
+    }
+    assert "private" not in json.dumps(recovery)
+    assert state["turns"][0]["terminal_reason"] == "error"
+
+
+@pytest.mark.parametrize("failure", ["exhaustion", "retry_admission"])
+def test_staged_lock_failure_retains_phase_in_terminal_turn(
+    database, monkeypatch, failure
+):
+    monkeypatch.setenv("AGENT_STAGED_RECEIPTS_ENABLED", "true")
+    sid = queue(database)
+    attempts = []
+    check = transport._check_delivery_admission
+
+    class LockNotAvailable(Exception):
+        sqlstate = "55P03"
+
+    def busy(*_args):
+        attempts.append(1)
+        raise OperationalError("private statement", {}, LockNotAvailable())
+
+    async def admission():
+        if attempts and failure == "retry_admission":
+            raise OperationalError("private recheck", {}, LockNotAvailable())
+        await check()
+
+    async def no_wait(_delay):
+        pass
+
+    async def handler(_request):
+        pytest.fail("pre-intent database failure must never POST")
+
+    monkeypatch.setattr(result_receipts, "attempt_prepared_receipt", busy)
+    monkeypatch.setattr(transport, "_check_delivery_admission", admission)
+    monkeypatch.setattr(transport.asyncio, "sleep", no_wait)
+    requests = fake_http(monkeypatch, handler)
+    asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
+
+    assert len(attempts) == (5 if failure == "exhaustion" else 1)
+    assert requests == []
+    state = snapshot(database, sid)
+    assert state["pending"] == []
+    assert state["permits"][0]["state"] == "settled"
+    assert state["permits"][0]["outcome"] == "not_invoked"
+    assert state["turns"][0]["terminal_reason"] == "error"
+    assert state["turns"][0]["cost_usd"] is None
+    with Session(database) as db:
+        receipt = db.exec(select(AgentResultReceipt)).one()
+        assert receipt.attempt_phase == "prepared"
+        assert receipt.superseded_at == receipt.created_at
+        assert receipt.result_body is None
+    phase = "receipt_promotion" if failure == "exhaustion" else "promotion_admission"
+    assert phase in state["session"]["voice_summary"]
+    assert "55P03" in state["session"]["voice_summary"]
+    assert "private" not in state["session"]["voice_summary"]
+
+
+def test_old_callback_cannot_settle_the_next_attempt_or_its_first_hold(
+    database, monkeypatch
+):
+    monkeypatch.setenv("AGENT_STAGED_RECEIPTS_ENABLED", "true")
+    sid = queue(database)
+
+    async def scenario():
+        second_post = asyncio.Event()
+        credentials = []
+
+        async def handler(request):
+            credentials.append(json.loads(request.content)["result_receipt"])
+            if len(credentials) == 1:
+                return httpx.Response(503, json={"retryable": True}, request=request)
+            second_post.set()
+            await asyncio.Event().wait()
+
+        requests = fake_http(monkeypatch, handler, working_guest(sid))
+        task = asyncio.create_task(mcp._execute_pending_message(sid))
+        try:
+            await asyncio.wait_for(second_post.wait(), 8)
+            old, current = credentials
+            result_receipts.capture_result(
+                old["id"],
+                old["token"],
+                json.dumps(native_record(artifact=False)).encode(),
+            )
+            with Session(database) as db:
+                row = db.get(AgentResultReceipt, old["id"])
+                old_identity = {
+                    "receipt_id": row.id,
+                    "session_id": sid,
+                    "claim_owner": row.claim_owner,
+                    "dispatch_count": row.dispatch_count,
+                    "guest_id": row.guest_id,
+                    "request_sha256": row.request_sha256,
+                }
+            with pytest.raises(
+                result_receipts.ReceiptRejected, match="executor_ownership_changed"
+            ):
+                result_receipts.read_active_result(**old_identity)
+            await mcp.drain_inflight_executors()
+            await asyncio.gather(task, return_exceptions=True)
+            assert hold_of(sid)["receipt_id"] == current["id"]
+            assert store.adopt_response_lost_result(sid)["status"] == "waiting"
+            result_receipts.capture_result(
+                current["id"],
+                current["token"],
+                json.dumps(native_record(artifact=False)).encode(),
+            )
+            assert store.adopt_response_lost_result(sid)["status"] == "adopted"
+            assert len(requests) == 2
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(asyncio.wait_for(scenario(), 20))
+
+
+def test_cancelled_attempt_waiter_does_not_become_not_invoked_or_post_later(
+    database, monkeypatch
+):
+    monkeypatch.setenv("AGENT_STAGED_RECEIPTS_ENABLED", "true")
+    sid = queue(database)
+    attempt = result_receipts.attempt_prepared_receipt
+    entered, release, finished = Event(), Event(), Event()
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        try:
+            assert release.wait(20)
+            return attempt(*args, **kwargs)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(result_receipts, "attempt_prepared_receipt", blocked)
+
+    async def handler(request):
+        pytest.fail("cancelled staged attempt sent a POST")
+
+    requests = fake_http(monkeypatch, handler)
+
+    async def scenario():
+        task = asyncio.create_task(mcp._execute_pending_message(sid))
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            await mcp.drain_inflight_executors()
+            await asyncio.gather(task, return_exceptions=True)
+            state = snapshot(database, sid)
+            assert state["turns"][0]["stop_reason"] == UNKNOWN_INVOCATION
+            assert state["permits"][0]["state"] == "uncertain"
+            release.set()
+            assert await asyncio.to_thread(finished.wait, 5)
+            assert not requests
+            assert snapshot(database, sid) == state
+            with Session(database) as db:
+                row = db.exec(select(AgentResultReceipt)).one()
+                assert row.attempt_phase == "prepared" and row.superseded_at is not None
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(asyncio.wait_for(scenario(), 25))
+
+
+def test_indeterminate_attempt_commit_is_never_not_invoked(database, monkeypatch):
+    monkeypatch.setenv("AGENT_STAGED_RECEIPTS_ENABLED", "true")
+    sid = queue(database)
+    attempt = result_receipts.attempt_prepared_receipt
+
+    def lost_commit(*args, **kwargs):
+        # The transaction publishes conservative intent before its commit.
+        # Lose that response after the real commit; no second invocation is
+        # authorized and the caller must not report zero execution.
+        attempt(*args, **kwargs)
+        raise RuntimeError("attempt commit response lost")
+
+    monkeypatch.setattr(result_receipts, "attempt_prepared_receipt", lost_commit)
+
+    async def handler(request):
+        pytest.fail("indeterminate attempt commit sent a POST")
+
+    # A parked guest without invoke identity supplies no cessation proof.
+    requests = fake_http(monkeypatch, handler, lambda: {"state": "parked"})
+    asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
+    assert not requests
+    state = snapshot(database, sid)
+    assert (
+        json.loads(state["turns"][0]["usage_json"])["recovery"].get("invocation_phase")
+        != "not_invoked"
+    )
+    assert state["permits"][0]["state"] == "uncertain"
+    with Session(database) as db:
+        assert db.exec(select(AgentResultReceipt)).one().attempt_phase == "attempted"
+
+
+def test_staged_callback_wins_after_early_observation_while_post_is_hung(
+    database, monkeypatch
+):
+    monkeypatch.setenv("AGENT_STAGED_RECEIPTS_ENABLED", "true")
+    sid = queue(database)
+    promote = result_receipts.attempt_prepared_receipt
+    read = result_receipts.read_active_result
+    observe = transport._observe_native_result
+    allow_promotion, promotion_waiting = Event(), Event()
+
+    def paused_promotion(*args, **kwargs):
+        promotion_waiting.set()
+        assert allow_promotion.wait(10)
+        return promote(*args, **kwargs)
+
+    monkeypatch.setattr(result_receipts, "attempt_prepared_receipt", paused_promotion)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        observer_waiting, post_release = asyncio.Event(), asyncio.Event()
+        response_sent = False
+
+        def observed_read(**identity):
+            try:
+                return read(**identity)
+            finally:
+                # On the old path this is a definitive prepared-row refusal.
+                loop.call_soon_threadsafe(observer_waiting.set)
+
+        async def observed(*args, **kwargs):
+            ready = kwargs.get("ready")
+            if ready is not None:
+                wait = ready.wait
+
+                async def waiting():
+                    observer_waiting.set()
+                    return await wait()
+
+                ready.wait = waiting
+            return await observe(*args, **kwargs)
+
+        async def handler(request):
+            nonlocal response_sent
+            publish(native_record(artifact=False), request)
+            await post_release.wait()
+            response_sent = True
+            return httpx.Response(
+                200, json=native_record(artifact=False), request=request
+            )
+
+        monkeypatch.setattr(result_receipts, "read_active_result", observed_read)
+        monkeypatch.setattr(transport, "_observe_native_result", observed)
+        requests = fake_http(monkeypatch, handler)
+        task = asyncio.create_task(mcp._execute_pending_message(sid))
+        try:
+            assert await asyncio.to_thread(promotion_waiting.wait, 5)
+            await asyncio.wait_for(observer_waiting.wait(), 5)
+            allow_promotion.set()
+            await asyncio.wait_for(asyncio.shield(task), 3)
+            assert len(requests) == 1 and not response_sent
+            state = snapshot(database, sid)
+            assert state["pending"] == []
+            assert state["permits"][0]["state"] == "settled"
+            assert state["turns"][0]["terminal_reason"] == "end_turn"
+            assert (
+                state["session"]["result_receipt_fence_id"]
+                == json.loads(requests[0].content)["result_receipt"]["id"]
+            )
+        finally:
+            allow_promotion.set()
+            post_release.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await asyncio.gather(
+                *list(transport._receipt_observers), return_exceptions=True
+            )
+        assert snapshot(database, sid)["session"]["result_receipt_fence_id"] is None
+
+    asyncio.run(asyncio.wait_for(scenario(), 15))
 
 
 def test_shutdown_during_final_admission_recheck_fences_the_physical_post(

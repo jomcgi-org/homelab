@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/bootenv"
 )
 
 var shimCmd = []string{"/usr/local/bin/ember-claude-shim"}
@@ -26,7 +28,6 @@ const (
 	// every session boot) puts the writable volume on vdb.
 	volumeDevCmdlineKey   = "ember.volume_dev"
 	volumeMountCmdlineKey = "ember.volume_mount"
-	mmdsEnvCmdlinePrefix  = "ember.env."
 )
 
 func main() {
@@ -65,32 +66,6 @@ func run(logger *slog.Logger) error {
 	return execShim(logger)
 }
 
-// valueFromCmdline extracts the value of a key=value token. The last
-// occurrence wins, matching the kernel's handling of duplicate cmdline keys.
-func valueFromCmdline(cmdline, key string) string {
-	value := ""
-	for _, tok := range strings.Fields(cmdline) {
-		k, val, ok := strings.Cut(tok, "=")
-		if ok && k == key && val != "" {
-			value = val
-		}
-	}
-	return value
-}
-
-func isValidEnvKeyName(key string) bool {
-	if key == "" {
-		return false
-	}
-	for _, r := range key {
-		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
 // setMmdsEnv applies environment values supplied by noded as
 // ember.env.<KEY>=<base64url> kernel arguments. Individual malformed tokens are
 // skipped so one bad secret does not prevent other valid values from reaching
@@ -103,11 +78,11 @@ func setMmdsEnv(logger *slog.Logger) {
 	keys := make([]string, 0)
 	for _, tok := range strings.Fields(string(raw)) {
 		name, encoded, ok := strings.Cut(tok, "=")
-		if !ok || encoded == "" || !strings.HasPrefix(name, mmdsEnvCmdlinePrefix) {
+		if !ok || encoded == "" || !strings.HasPrefix(name, bootenv.Prefix) {
 			continue
 		}
-		key := strings.TrimPrefix(name, mmdsEnvCmdlinePrefix)
-		if !isValidEnvKeyName(key) {
+		key := strings.TrimPrefix(name, bootenv.Prefix)
+		if !bootenv.ValidKey(key) {
 			logger.Warn("skipping invalid mmds env key", "key", key)
 			continue
 		}

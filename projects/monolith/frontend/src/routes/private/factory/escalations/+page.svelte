@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import FactorySheet from "../FactorySheet.svelte";
   import { relativeTime } from "../execution/run-history.js";
   import {
@@ -40,10 +40,10 @@
   let contextErrors = $state({});
   let expanded = $state({});
   let busy = $state(null);
-  let failure = $state(null);
-  let notice = $state(null);
+  let feedback = $state({});
   let now = $state(Date.now());
-  let noteBox = $state(null);
+  let requestedReceipt = $state(null);
+  let appliedReceipt = $state(null);
   // The exact receipt and decision whose close is armed, or null. Closing is the one escape
   // another button cannot undo, so it is asked about once before it is sent.
   let confirming = $state(null);
@@ -56,6 +56,54 @@
 
   const pending = $derived(openOnes(escalations));
   const settled = $derived(resolvedOnes(escalations));
+  const departedFeedback = $derived(
+    Object.values(feedback).filter(
+      ({ item }) =>
+        !pending.some((row) => contextKey(row) === contextKey(item)),
+    ),
+  );
+
+  function report(item, message, error = false) {
+    feedback = { ...feedback, [contextKey(item)]: { item, message, error } };
+  }
+
+  function clearFeedback(item) {
+    const { [contextKey(item)]: _old, ...rest } = feedback;
+    feedback = rest;
+  }
+
+  function focusNote(item = current) {
+    if (item) document.getElementById(`note-${item.receipt_id}`)?.focus();
+  }
+
+  function readHash(event) {
+    const match = /^#receipt-([1-9]\d*)$/.exec(window.location.hash);
+    const next = match ? Number(match[1]) : null;
+    if (next !== requestedReceipt) {
+      requestedReceipt = next;
+      appliedReceipt = null;
+    }
+    if (event) confirming = null;
+  }
+
+  $effect(() => {
+    // Wait for a delayed card once, then preserve the operator's selection
+    // and scroll position across polls until the URL hash changes.
+    if (requestedReceipt === null || appliedReceipt === requestedReceipt)
+      return;
+    const index = pending.findIndex(
+      (row) => row.receipt_id === requestedReceipt,
+    );
+    if (index < 0) return;
+    appliedReceipt = requestedReceipt;
+    cursor = index;
+    const id = requestedReceipt;
+    tick().then(() => {
+      if (requestedReceipt === id && appliedReceipt === id) {
+        document.getElementById(`receipt-${id}`)?.scrollIntoView();
+      }
+    });
+  });
   // The card a keypress acts on. An armed close pins it to the card that was
   // armed rather than to the cursor: a poll can reorder the list under an
   // armed confirmation, and the second press must never land on a different
@@ -127,17 +175,19 @@
       unavailable ||
       !pending.some((row) => contextKey(row) === contextKey(item))
     ) {
-      failure = "Refresh this decision before acting.";
+      report(item, "Refresh this decision before acting.", true);
       return;
     }
     if (!body.decision_id) {
-      failure =
-        "the decision card has no exact identity; refresh before acting";
+      report(
+        item,
+        "the decision card has no exact identity; refresh before acting",
+        true,
+      );
       return;
     }
     busy = label;
-    failure = null;
-    notice = null;
+    clearFeedback(item);
     try {
       // Keep one immutable request across navigation and uncertain responses.
       // A changed note or action must never create a second effect while the
@@ -149,7 +199,10 @@
         (previous.body.action !== "chat" ||
           (body.action === "chat" && body.note === previous.body.note))
       ) {
-        notice = `Decision recorded for #${item.issue_number}. Waiting for the board to update.`;
+        report(
+          item,
+          `Decision recorded for #${item.issue_number}. Waiting for the board to update.`,
+        );
         await refresh();
         return;
       }
@@ -165,8 +218,11 @@
         previous?.status === "pending" &&
         JSON.stringify(previous.body) !== JSON.stringify(requestBody)
       ) {
-        failure =
-          "The previous response is uncertain. Restore the same action and note to check its result; do not send a different decision.";
+        report(
+          item,
+          "The previous response is uncertain. Restore the same action and note to check its result; do not send a different decision.",
+          true,
+        );
         return;
       }
       const record = (status) => {
@@ -185,10 +241,13 @@
       );
       const result = await response.json().catch(() => ({}));
       if (!response.ok) {
-        failure =
+        report(
+          item,
           result.detail ??
-          result.reason ??
-          `the decision failed (${response.status})`;
+            result.reason ??
+            `the decision failed (${response.status})`,
+          true,
+        );
         if (response.status >= 400 && response.status < 500) {
           record("refused");
           requestAttempts = {
@@ -199,32 +258,40 @@
         return;
       }
       if (result.ok !== true) {
-        failure = result.reason ?? "the decision outcome is unknown";
+        report(item, result.reason ?? "the decision outcome is unknown", true);
         // The durable result says external effects may have occurred. Re-read
         // the server-owned list before leaving that warning on screen.
         await refresh();
         return;
       }
       record("accepted");
-      notice = `Decision recorded for #${item.issue_number}.`;
+      report(item, `Decision recorded for #${item.issue_number}.`);
       // A chat the lane could not take still posted the question, so the
       // difference between "asked and scheduled" and "asked and nothing will
       // answer" has to reach the operator rather than reading as success.
       if (result.requeued === false) {
-        notice = `Asked on #${item.issue_number}, but no brief was queued: ${
-          result.blocked_by ?? "the lane would not admit it"
-        }`;
+        report(
+          item,
+          `Asked on #${item.issue_number}, but no brief was queued: ${
+            result.blocked_by ?? "the lane would not admit it"
+          }`,
+        );
       }
-      const { [item.receipt_id]: _spent, ...rest } = notes;
-      notes = rest;
+      if (noteFor(item).trim() === requestBody.note) {
+        const { [item.receipt_id]: _spent, ...rest } = notes;
+        notes = rest;
+      }
       // The list is re-read rather than patched in place: the effect happened
       // on GitHub and the receipt is the record of it, so what the server says
       // now is the only honest thing to render.
       await refresh();
       cursor = Math.min(cursor, Math.max(openOnes(escalations).length - 1, 0));
     } catch {
-      failure =
-        "the decision could not be sent or confirmed. Its outcome is unknown; retry only the same action and note to check it.";
+      report(
+        item,
+        "the decision could not be sent or confirmed. Its outcome is unknown; retry only the same action and note to check it.",
+        true,
+      );
     } finally {
       busy = null;
     }
@@ -245,7 +312,11 @@
   function decide(item, option) {
     focusOn(item);
     if (item.briefing) {
-      failure = "a brief is running on this issue; decide when it settles";
+      report(
+        item,
+        "a brief is running on this issue; decide when it settles",
+        true,
+      );
       return;
     }
     confirming = null;
@@ -264,13 +335,16 @@
   function escapeWith(item, option) {
     focusOn(item);
     if (item.briefing) {
-      failure = "a brief is running on this issue; decide when it settles";
+      report(
+        item,
+        "a brief is running on this issue; decide when it settles",
+        true,
+      );
       return;
     }
     if (needsConfirm(option) && confirming !== contextKey(item)) {
       confirming = contextKey(item);
-      failure = null;
-      notice = null;
+      clearFeedback(item);
       return;
     }
     confirming = null;
@@ -287,8 +361,8 @@
 
   function chat(item) {
     if (!noteFor(item).trim()) {
-      failure = "a chat request needs a note saying what is missing";
-      noteBox?.focus();
+      report(item, "a chat request needs a note saying what is missing", true);
+      focusNote(item);
       return;
     }
     return send(item, chatBody(noteFor(item), item.decision_id), "chat");
@@ -326,7 +400,7 @@
       return;
     }
     if (event.key === "c") {
-      noteBox?.focus();
+      focusNote();
       event.preventDefault();
       return;
     }
@@ -374,13 +448,17 @@
           notes[item.receipt_id] = saved.body.note ?? "";
         }
       } catch {
-        failure =
-          "Previous request state is unavailable. Refresh before acting.";
+        report(
+          item,
+          "Previous request state is unavailable. Refresh before acting.",
+          true,
+        );
       }
     }
   }
 
   onMount(() => {
+    readHash();
     restorePending(pending);
     const timer = setInterval(() => {
       if (document.visibilityState === "visible" && !busy) refresh();
@@ -397,7 +475,7 @@
   <title>Escalations</title>
 </svelte:head>
 
-<svelte:window on:keydown={onKey} />
+<svelte:window on:keydown={onKey} on:hashchange={readHash} />
 
 <FactorySheet className="escalations-page" view="escalations">
   <h1 class="sr-only">Factory escalations</h1>
@@ -422,20 +500,29 @@
       The board is unavailable. Retrying every 20 seconds.
     </p>
   {/if}
-  {#if failure}
-    <p class="warn-line" role="alert">{failure}</p>
-  {/if}
-  {#if notice}
-    <p class="warn-line" role="status">{notice}</p>
-  {/if}
+  {#each departedFeedback as result (contextKey(result.item))}
+    <section
+      class="edition"
+      aria-label="Decision result for issue {result.item.issue_number}"
+    >
+      <h2 class="sec-label">/ Decision result: #{result.item.issue_number}</h2>
+      <p class="warn-line" role={result.error ? "alert" : "status"}>
+        {result.message}
+      </p>
+    </section>
+  {/each}
 
   <section aria-label="Open escalations" aria-busy={busy !== null}>
-    <p class="sec-label">/ Waiting on you</p>
+    <h2 class="sec-label">/ Waiting on you</h2>
     {#if !pending.length && !unavailable}
       <p class="none">Nothing is waiting. The lane decides the rest itself.</p>
     {/if}
     {#each pending as item, index (item.receipt_id)}
-      <article class="panel edition" class:here={index === cursor}>
+      <article
+        id="receipt-{item.receipt_id}"
+        class="panel edition"
+        class:here={index === cursor}
+      >
         <header class="panel-head ed-head">
           <span class="issue code">#{item.issue_number}</span>
           {#if item.work_item_id}
@@ -446,7 +533,7 @@
               work item {item.work_item_id}
             </a>
           {/if}
-          <span class="title">{item.title}</span>
+          <h3 class="title">{item.title}</h3>
           <span class="badge">{item.task_class}</span>
           <span class="badge">recommend {item.recommendation}</span>
           {#if item.kind === "delivery"}
@@ -458,7 +545,7 @@
         </header>
 
         <div class="body ed-body">
-          <p class="code">Owner: you · Next: choose an option</p>
+          <p class="code owner-next">Owner: you · Next: choose an option</p>
           <p class="question">{item.question}</p>
           {#if item.summary}
             <details class="decision-context">
@@ -487,7 +574,7 @@
                 expanded = { ...expanded, [item.receipt_id]: true };
               }}
             >
-              Open context and note
+              Open context
             </button>
           {/if}
           {#if index === cursor || contexts[contextKey(item)]}
@@ -534,6 +621,12 @@
               onclick={() => checkPrevious(item)}>Check previous result</button
             >
           {/if}
+          {#if feedback[contextKey(item)]}
+            {@const result = feedback[contextKey(item)]}
+            <p class="warn-line" role={result.error ? "alert" : "status"}>
+              {result.message}
+            </p>
+          {/if}
           <div class="options">
             {#each item.options as option, i (option.key)}
               <button
@@ -578,32 +671,28 @@
             {/if}
           {/if}
 
-          {#if index === cursor}
-            <div class="chat">
-              <label class="sr-only" for={`note-${item.receipt_id}`}>
-                Note for issue {item.issue_number}
-              </label>
-              <textarea
-                id={`note-${item.receipt_id}`}
-                bind:this={noteBox}
-                value={noteFor(item)}
-                oninput={(event) => setNote(item, event.target.value)}
-                rows="2"
-                placeholder="What is missing, or a note to record with the decision"
-              ></textarea>
-              <button
-                class="option chat-button"
-                disabled={busy !== null || unavailable}
-                onclick={() => chat(item)}
+          <div class="chat">
+            <label for={`note-${item.receipt_id}`}>
+              Note for issue {item.issue_number}
+            </label>
+            <textarea
+              id={`note-${item.receipt_id}`}
+              value={noteFor(item)}
+              oninput={(event) => setNote(item, event.target.value)}
+              rows="2"
+              placeholder="What is missing, or a note to record with the decision"
+            ></textarea>
+            <button
+              class="option chat-button"
+              disabled={busy !== null || unavailable}
+              onclick={() => chat(item)}
+            >
+              <span class="hotkey code">c</span>
+              <span class="label">Needs more chat</span>
+              <span class="effect code">asks on the issue and re-briefs it</span
               >
-                <span class="hotkey code">c</span>
-                <span class="label">Needs more chat</span>
-                <span class="effect code"
-                  >asks on the issue and re-briefs it</span
-                >
-              </button>
-            </div>
-          {/if}
+            </button>
+          </div>
 
           <p class="links code">
             <a href={item.url}>issue on GitHub</a>
@@ -631,6 +720,7 @@
 
   {#if settled.length}
     <section aria-label="Decided escalations">
+      <h2 class="sr-only">Decided escalations</h2>
       <details>
         <summary class="sec-label">/ Decided ({settled.length})</summary>
         <ol class="ledger code">
@@ -734,6 +824,7 @@
   }
 
   .panel {
+    scroll-margin-top: 6rem;
     position: relative;
     margin-bottom: 0.9rem;
   }
@@ -765,6 +856,8 @@
     text-decoration: underline;
   }
   .title {
+    margin: 0;
+    font-size: inherit;
     flex: 1 1 14em;
     min-width: 0;
     font-size: 0.95rem;
@@ -1033,6 +1126,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  @media (max-width: 759px) {
+    .stats,
+    .owner-next {
+      display: none;
+    }
   }
 
   @media (max-width: 40em) {

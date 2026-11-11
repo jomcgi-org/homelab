@@ -8,6 +8,9 @@ from sqlmodel import Session, select
 from factory.orchestration import factory_conductor as conductor
 from factory.orchestration.factory_models import FactoryReceipt, WorkItem
 from factory.orchestration.turn_artifact import schema_errors
+from factory.orchestration.factory_funding import (
+    routine_labels_held as _REAL_ROUTINE_LABELS_HELD,
+)
 
 _REAL_OBSERVE_HUMAN_OWNERSHIP = conductor._observe_human_ownership
 
@@ -7380,6 +7383,8 @@ def test_a_version_stranded_never_dispatched_workflow_is_cancelled_and_failed(
             "workflow_id": s.key,
             "workflow_version": "deployed-version",
             "running_version": "running-version",
+            "node_key": s.run["node_key"],
+            "source_run_id": s.run["id"],
         }
     ]
     run = conductor.graph.node_runs(s.task["id"])[0]
@@ -17502,6 +17507,7 @@ def test_lost_before_guest_proof_reads_the_exact_dispatch_identity(
     from factory.execution.api import read_lost_before_guest_factory_attempt
 
     s = lost_before_guest_factory
+    native = s.native_snapshot()
     with Session(s.engine) as db:
         proof = read_lost_before_guest_factory_attempt(db, s.run["pin"], s.sid)
     assert proof["session_id"] == s.sid
@@ -17513,7 +17519,7 @@ def test_lost_before_guest_proof_reads_the_exact_dispatch_identity(
     assert proof["invocation_phase"] == "lost_before_guest"
     assert proof["cost_usd"] == 0.0
     # Reading proves nothing and settles nothing.
-    assert s.native_snapshot() == s.native_snapshot()
+    assert s.native_snapshot() == native
 
 
 @pytest.mark.parametrize("historical", [False, True])
@@ -17876,38 +17882,54 @@ def test_operator_settle_lost_attempt_names_the_failed_condition(
     assert s.native_snapshot() == native
 
 
+@pytest.mark.parametrize(
+    "pin_changes,identity,expected",
+    [
+        pytest.param({"attempt": 2}, None, None, id="missing-owner"),
+        pytest.param(
+            {"model": "luna"}, "owner", "ownership conflict", id="model-conflict"
+        ),
+        pytest.param(
+            {"workflow_id": "factory-node:another:conductor_1:1"},
+            "owner",
+            "ownership conflict",
+            id="workflow-conflict",
+        ),
+        pytest.param(
+            {"repo": "owner/other"}, "owner", "ownership conflict", id="repo-conflict"
+        ),
+        pytest.param({}, "wrong", "ownership conflict", id="wrong-session"),
+        pytest.param({}, 0, "invalid factory session identity", id="zero"),
+        pytest.param({}, -1, "invalid factory session identity", id="negative"),
+        pytest.param({}, "1", "invalid factory session identity", id="string"),
+        pytest.param({}, True, "invalid factory session identity", id="boolean"),
+    ],
+)
 def test_lost_before_guest_proof_refuses_or_raises_on_ownership(
-    lost_before_guest_factory,
+    lost_before_guest_factory, pin_changes, identity, expected
 ):
     from sqlmodel import Session
     from factory.execution.api import inspect_lost_before_guest_factory_attempt
 
     s = lost_before_guest_factory
-    pin = s.run["pin"]
+    pin = {**s.run["pin"], **pin_changes}
+    if identity == "owner":
+        identity = s.sid
+    elif identity == "wrong":
+        identity = s.sid + 1
+    native = s.native_snapshot()
     with Session(s.engine) as db:
-        # No session was ever created under that identity: nothing to settle,
-        # and an absent owner is never read as proof that nothing ran.
-        missing = {**pin, "attempt": 2}
-        assert inspect_lost_before_guest_factory_attempt(db, missing, None) == (
-            None,
-            "missing_factory_owner",
-        )
-        # The identity exists but the pin describes different work. Adopting it
-        # would settle another attempt's reservation, so this raises.
-        for conflicting in (
-            {**pin, "model": "luna"},
-            {**pin, "workflow_id": "factory-node:another:conductor_1:1"},
-            {**pin, "repo": "owner/other"},
-        ):
-            with pytest.raises(ValueError, match="ownership conflict"):
-                inspect_lost_before_guest_factory_attempt(db, conflicting, s.sid)
-        # A session id that is not this attempt's owner is refused outright.
-        with pytest.raises(ValueError, match="ownership conflict"):
-            inspect_lost_before_guest_factory_attempt(db, pin, s.sid + 1)
-        for invalid in (0, -1, "1", True):
-            with pytest.raises(ValueError, match="invalid factory session identity"):
-                inspect_lost_before_guest_factory_attempt(db, pin, invalid)
-    assert s.native_snapshot() == s.native_snapshot()
+        if expected is None:
+            # An absent owner is never proof that nothing ran.
+            assert inspect_lost_before_guest_factory_attempt(db, pin, identity) == (
+                None,
+                "missing_factory_owner",
+            )
+        else:
+            # Conflicting work or an invalid owner must never be adopted.
+            with pytest.raises(ValueError, match=expected):
+                inspect_lost_before_guest_factory_attempt(db, pin, identity)
+    assert s.native_snapshot() == native
 
 
 PROVIDER_ERROR_TEXT = (
@@ -18978,12 +19000,23 @@ def test_duplicate_continuation_tick_replays_grant_without_failing_task(
     )
 
 
-def funding_task(monkeypatch, *, judge_pool=None):
+def funding_task(monkeypatch, *, judge_pool=None, binding=False):
     from factory.orchestration import factory_funding as funding
     from factory.orchestration import factory_controls as controls
 
     monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
     task, policy = reviewed_after_three_turns(4)
+    if binding:
+        # An explicit operator monetary restriction pinned on this task.
+        from sqlmodel import Session
+
+        with Session(conductor.get_engine()) as db:
+            row = controls._receipt(db, task["id"])
+            pinned = json.loads(row.policy_json)
+            pinned["task_budget_binding"] = True
+            row.policy_json = json.dumps(pinned)
+            db.add(row)
+            db.commit()
     if judge_pool is not None:
         # Allow and configure the judge pool; preserve the fixture's models.
         from sqlmodel import Session
@@ -19020,6 +19053,11 @@ def funding_decision(**changes):
         "task_budget_usd": 20.0,
         "additional_work_turns": 4,
         "lease_minutes": 30,
+        "assessment": {
+            "progress": "Review identified a bounded retry correction.",
+            "proximity": "Correction and independent review remain.",
+            "value": "Repair the retry bug within the existing scope.",
+        },
         **changes,
     }
 
@@ -19871,6 +19909,306 @@ def test_spent_node_allocation_does_not_block_a_task_funding_request(
         assert funding.latest(db, task["id"], "allocation_recovery_required") is None
 
 
+def retry_exhausted_task(monkeypatch):
+    from factory.orchestration import (
+        factory_funding as funding,
+        factory_controls as controls,
+    )
+
+    task, policy = exhausted_allocation_task(monkeypatch, "implement_manifest", 4)
+    assert conductor.graph.admit_dispatch(task["id"], "implement_manifest").ok
+    assert conductor.graph.record_outcome(
+        task["id"],
+        "implement_manifest",
+        2,
+        "failed",
+        0.25,
+        None,
+        json.dumps(
+            {
+                "reason": "guest_cessation_confirmed",
+                "artifact": {"finding": "retryable failure"},
+            }
+        ),
+    ).ok
+    monkeypatch.setattr(funding, "routine_labels_held", lambda _: None)
+    with controls._locked_session() as (db, _):
+        item = WorkItem(
+            title="Recovery fixture",
+            state="active",
+            source_kind="github",
+            trust="untrusted",
+            authority="github",
+            github_repo=task["repo"],
+            github_issue_number=task["issue_number"],
+        )
+        db.add(item)
+        db.flush()
+        controls._receipt(db, task["id"]).work_item_id = item.id
+    return task, policy
+
+
+def test_funding_renews_exact_node_and_preserves_history(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, policy = retry_exhausted_task(monkeypatch)
+    history = conductor.graph.node_runs(task["id"])
+    original = conductor.graph.load_graph(task["id"])
+    revision = conductor.graph.current_version(task["id"])
+    assert not conductor._ready_nodes(original, history)
+    with controls._read_session() as db:
+        assert funding._retry_target(db, task["id"])
+        assert (
+            funding.routine_hold(db, controls._receipt(db, task["id"]), task["id"])
+            is None
+        )
+    # Ordinary reconciliation reaches the review without waiting for a planner.
+    assert funding.reconcile(task, policy, history, controls.can_start(task["id"]))
+    request = settle_funding(task, funding_decision())
+    with controls._read_session() as db:
+        grant = funding.amendment(db, task["id"])
+    assert grant["node_retry"]["before"] == 2
+    assert grant["node_retry"]["after"] == 3
+    assert grant["node_retry"]["source_run_id"] == history[-1]["id"]
+    assert conductor.graph.load_graph(task["id"], revision) == original
+    after = conductor.graph.node_runs(task["id"])
+    assert [r for r in after if r["node_key"] == "implement_manifest"] == history
+    ready = conductor._ready_nodes(conductor.graph.load_graph(task["id"]), after)
+    assert [n["node_key"] for n in ready] == ["implement_manifest"]
+    # A replay cannot grant another attempt.
+    funding.settle(
+        task, next(r for r in after if r["node_key"] == request["node_key"]), request
+    )
+    admitted = conductor.graph.admit_dispatch(task["id"], "implement_manifest")
+    assert admitted.ok and admitted.attempt == 3
+    assert admitted.pin["max_attempts"] == 3
+    assert "Funding judge direction" in admitted.pin["prompt"]
+
+
+@pytest.mark.parametrize("when", ["request", "settle"])
+@pytest.mark.parametrize(
+    "hold",
+    [
+        "landing",
+        "human",
+        "nonrenewable",
+        "pause",
+        "unknown",
+        "running",
+        "review",
+        "label",
+    ],
+)
+def test_funded_retry_never_crosses_a_hold(feedback_db, monkeypatch, when, hold):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+    from factory.orchestration.factory_models import FactoryStart
+
+    task, _ = retry_exhausted_task(monkeypatch)
+    if when == "settle":
+        assert funding.request(task, "Renew exact attempt", retry_only=True)
+        with controls._read_session() as db:
+            request = funding.pending(db, task["id"])
+        run = run_feedback_node(task, request["node_key"], funding_decision())
+    with controls._locked_session() as (db, _):
+        row = controls._receipt(db, task["id"])
+        if hold == "landing":
+            row.direction_json = json.dumps({"landing_hold": {"actor": "operator"}})
+        elif hold == "human":
+            controls._audit(db, "operator", "human_handoff", task_id=task["id"])
+        elif hold == "nonrenewable":
+            row.direction_json = json.dumps({"nonrenewable_recovery": True})
+        elif hold == "pause":
+            row.task_paused = True
+        elif hold in {"unknown", "running"}:
+            db.add(
+                FactoryStart(
+                    task_id=task["id"],
+                    start_key="unresolved",
+                    actor="test",
+                    model="opus",
+                    max_cost_usd=1,
+                    status="uncertain" if hold == "unknown" else "reserved",
+                )
+            )
+        elif hold == "label":
+            db.get(WorkItem, row.work_item_id).labels = ["human"]
+    if hold == "review":
+        monkeypatch.setattr(controls, "review_recovery_held", lambda *a, **kw: True)
+    if when == "request":
+        assert not funding.request(task, "Renew exact attempt", retry_only=True)
+    else:
+        funding.settle(task, run, request)
+    node = conductor.graph.load_graph(task["id"])[0]
+    assert node["max_attempts"] == 2
+    with controls._read_session() as db:
+        assert funding.amendment(db, task["id"]) is None
+
+
+@pytest.mark.parametrize(
+    "change", ["graph", "node", "runs", "policy", "labels", "ceiling", "direction"]
+)
+def test_funded_retry_revalidates_evidence(feedback_db, monkeypatch, change):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+    from factory.orchestration.models import SwarmPlanNode, SwarmNodeRun
+
+    task, _ = retry_exhausted_task(monkeypatch)
+    assert funding.request(task, "Renew exact attempt", retry_only=True)
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    run = run_feedback_node(task, request["node_key"], funding_decision())
+    if change == "graph":
+        conductor.graph.add_node(
+            task["id"],
+            author_kind="engine",
+            author="test",
+            cause_kind="test",
+            cause_ref="concurrent",
+            stated_reason="Changed graph",
+            expected_version=request["revision"],
+            node_key="other",
+            kind="work",
+            prompt="Other work",
+            model="opus",
+            deps=[],
+            max_cost_usd=1,
+            side_effects=False,
+            max_attempts=1,
+            turn_timeout_seconds=60,
+        )
+    elif change == "labels":
+        monkeypatch.setattr(funding, "routine_labels_held", lambda _: "held_label")
+    elif change == "ceiling":
+        monkeypatch.setattr(
+            funding.factory_judge, "ceiling", lambda _: {"turn_ceiling": 0}
+        )
+    else:
+        with controls._locked_session() as (db, _):
+            if change == "node":
+                db.exec(
+                    select(SwarmPlanNode).where(
+                        SwarmPlanNode.node_key == "implement_manifest"
+                    )
+                ).one().prompt += " changed"
+            elif change == "runs":
+                db.get(
+                    SwarmNodeRun, request["node_retry"]["source_run_id"]
+                ).outcome_json = "{}"
+            elif change == "direction":
+                controls._receipt(db, task["id"]).direction_json = json.dumps(
+                    {"operator_direction": "Different scope"}
+                )
+            else:
+                row = controls._receipt(db, task["id"])
+                row.policy_json = json.dumps(
+                    {**json.loads(row.policy_json), "max_planner_turns": 8}
+                )
+    funding.settle(task, run, request)
+    assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == 2
+    with controls._read_session() as db:
+        assert funding.amendment(db, task["id"]) is None
+        assert funding.latest(db, task["id"], "funding_review_settled")["refusal"]
+
+
+def test_funded_retry_history_survives_readded_key(feedback_db, monkeypatch):
+    from factory.orchestration import factory_funding as funding
+
+    task, _ = retry_exhausted_task(monkeypatch)
+    original = conductor.graph.load_graph(task["id"])
+    assert funding.request(task, "One exact retry", retry_only=True)
+    settle_funding(task, funding_decision())
+    version = conductor.graph.current_version(task["id"])
+    renewed = conductor.graph.load_graph(task["id"])
+    audit = dict(
+        author_kind="engine",
+        author="test",
+        cause_kind="test",
+        cause_ref="replace",
+        stated_reason="Replacement for history test",
+    )
+    assert conductor.graph.discard_node(
+        task["id"], "implement_manifest", expected_version=version, **audit
+    ).ok
+    assert conductor.graph.add_node(
+        task["id"],
+        expected_version=version + 1,
+        node_key="implement_manifest",
+        kind="work",
+        prompt="Replacement",
+        model="opus",
+        deps=[],
+        max_cost_usd=1,
+        side_effects=False,
+        max_attempts=1,
+        turn_timeout_seconds=60,
+        **audit,
+    ).ok
+    historical = conductor.graph.load_graph(task["id"], version)
+    assert historical[0]["max_attempts"] == renewed[0]["max_attempts"] == 3
+    assert (
+        conductor.graph.load_graph(task["id"], 1)[0]["max_attempts"]
+        == original[0]["max_attempts"]
+        == 2
+    )
+
+
+def test_funded_retry_cumulative_limit_and_no_progress(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, _ = retry_exhausted_task(monkeypatch)
+    for attempt in (3, 4):
+        assert funding.request(task, "New exact failure evidence", retry_only=True)
+        settle_funding(task, funding_decision())
+        admitted = conductor.graph.admit_dispatch(task["id"], "implement_manifest")
+        assert admitted.ok and admitted.attempt == attempt
+        assert conductor.graph.record_outcome(
+            task["id"],
+            "implement_manifest",
+            attempt,
+            "failed",
+            0.25,
+            str(attempt) * 40,
+            json.dumps({"artifact": {"finding": f"failure {attempt}"}}),
+        ).ok
+    with controls._read_session() as db:
+        assert funding._retry_target(db, task["id"]) is None
+    assert not conductor.graph.admit_dispatch(task["id"], "implement_manifest").ok
+
+
+def test_funded_retry_without_new_work_evidence_stays_bounded(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, _ = retry_exhausted_task(monkeypatch)
+    assert funding.request(task, "One recovery attempt", retry_only=True)
+    settle_funding(task, funding_decision())
+    assert conductor.graph.admit_dispatch(task["id"], "implement_manifest").ok
+    assert conductor.graph.record_outcome(
+        task["id"], "implement_manifest", 3, "failed", 0.25, None, "{}"
+    ).ok
+    assert not funding.request(task, "Repeat without progress", retry_only=True)
+    assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == 3
+    assert controls.task_snapshot(task["id"])["task_paused"]
+    with controls._read_session() as db:
+        assert (
+            funding.latest(db, task["id"], "recurring_blocker")["reason"]
+            == "funding_without_progress"
+        )
+
+
 def test_funding_settles_against_a_spent_node_allocation(feedback_db, monkeypatch):
     from factory.orchestration import (
         factory_controls as controls,
@@ -19888,6 +20226,1655 @@ def test_funding_settles_against_a_spent_node_allocation(feedback_db, monkeypatc
         assert funding.pending(db, task["id"]) is None
         settled = funding.latest(db, task["id"], "funding_review_settled")
         assert settled["refusal"] is None
+
+
+@pytest.mark.parametrize(
+    "restriction", ["needs-human", "no_mirror", "paused_lane", "closed"]
+)
+def test_retry_refusal_does_not_starve_ordinary_funding(
+    feedback_db, monkeypatch, restriction
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, policy = retry_exhausted_task(monkeypatch)
+    with controls._locked_session() as (db, control):
+        row = controls._receipt(db, task["id"])
+        if restriction == "needs-human":
+            db.get(WorkItem, row.work_item_id).labels = ["needs-human"]
+        elif restriction == "no_mirror":
+            row.work_item_id = None
+        elif restriction == "paused_lane":
+            control.state = "paused"
+    if restriction == "closed":
+        monkeypatch.setattr(
+            funding,
+            "_issue",
+            lambda _: {"number": task["issue_number"], "state": "closed"},
+        )
+        monkeypatch.setattr(funding, "routine_labels_held", lambda _: "issue_not_open")
+    assert funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        {"ok": False, "reason": "task_deadline"},
+    )
+    with controls._read_session() as db:
+        if restriction == "closed":
+            assert controls._receipt(db, task["id"]).state == "failed"
+            assert funding.pending(db, task["id"]) is None
+        else:
+            assert "node_retry" not in funding.pending(db, task["id"])
+    assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == 2
+
+
+def test_ordinary_funding_does_not_attach_exhausted_node(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, _ = retry_exhausted_task(monkeypatch)
+    assert funding.request(task, "Ordinary allocation reassessment")
+    with controls._read_session() as db:
+        assert "node_retry" not in funding.pending(db, task["id"])
+    settle_funding(task, funding_decision())
+    assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == 2
+
+
+def producer_repair_after_real_blocker(
+    monkeypatch, *, before_signal=None, complete=True
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+        factory_funding_limits as funding_limits,
+        factory_problem_issues as producer,
+        factory_intake as intake,
+        factory_landing as landing,
+    )
+
+    task, policy = retry_exhausted_task(monkeypatch)
+    monkeypatch.setattr(producer, "RECOVERY_REPO", task["repo"])
+    monkeypatch.setattr(funding_limits, "RECOVERY_REPO", task["repo"])
+    monkeypatch.setattr(producer, "_recovery_quota", lambda: True)
+    monkeypatch.setattr(producer, "github_list", lambda *_: [])
+    issues = {
+        task["issue_number"]: {
+            "number": task["issue_number"],
+            "state": "open",
+            "labels": [],
+            "body": "Fix source",
+            "assignees": [],
+        }
+    }
+    monkeypatch.setattr(
+        conductor, "github_get", lambda repo, path: issues[int(path.split("/")[-1])]
+    )
+    # Exercise fresh GitHub labels too, rather than the retry fixture's stub.
+    monkeypatch.setattr(funding, "routine_labels_held", _REAL_ROUTINE_LABELS_HELD)
+
+    def create(repo, payload):
+        issues[71] = {**payload, "number": 71, "state": "open", "assignees": []}
+        return issues[71]
+
+    monkeypatch.setattr(producer, "github_write", create)
+    with controls._locked_session() as (db, control):
+        live = json.loads(control.policy_json)
+        live["intake"] = {
+            "enabled": True,
+            "refine_enabled": True,
+            "labels": ["agent-ready"],
+        }
+        live["problem_issues"] = {
+            "enabled": True,
+            "sources": {"recurring_blocker": True},
+        }
+        control.policy_json = json.dumps(live)
+    if before_signal:
+        before_signal(task, live)
+    producer.problem_issues_tick(live)  # Watermark before the real new signal.
+    assert funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    settle_funding(task, funding_decision())
+    assert conductor.graph.admit_dispatch(task["id"], "implement_manifest").ok
+    assert conductor.graph.record_outcome(
+        task["id"], "implement_manifest", 3, "failed", 0.25, None, "{}"
+    ).ok
+    # Real caller records the signal, takes the pause and writes its stop-only card.
+    funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    assert controls.task_snapshot(task["id"])["task_paused"]
+    with controls._read_session() as db:
+        assert funding.latest(db, task["id"], "repair_allocation_wait")
+    producer.problem_issues_tick(live)
+    assert 71 in issues
+    # Ordinary intake admits the synthetic completed repair. Landing's existing
+    # accepted-merge and verified-rollout records are the external delivery boundary.
+    intake.receive_issue(
+        task["repo"],
+        71,
+        issues[71]["title"],
+        issues[71]["body"],
+        "https://github.com/owner/repo/issues/71",
+        intake.INTAKE_ACTOR,
+        task_class="bug-fix",
+        issue=issues[71],
+    )
+    admitted = intake.admit_next("scheduler")
+    assert admitted["ok"], admitted
+    repair_id = admitted["task_id"]
+    if not complete:
+        return task, live, issues, repair_id
+    landing._record(repair_id, "merged", pr_number=72, merge_commit_sha="a" * 40)
+    landing._record(
+        repair_id,
+        "rollout_verified",
+        pr_number=72,
+        merge_commit_sha="a" * 40,
+        approved_head_sha="b" * 40,
+        verified=True,
+    )
+    controls.finish_task(
+        repair_id,
+        "succeeded",
+        "factory:landing",
+        evidence={"state": "rollout_verified"},
+    )
+    return task, live, issues, repair_id
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        None,
+        "human",
+        "unknown",
+        "landing",
+        "nonrenewable",
+        "operator_pause",
+        "card",
+        "graph",
+        "policy",
+        "rollout",
+        "lane",
+        "decision",
+        "no_mirror",
+        "legacy",
+        "concurrent_pause",
+        "capacity_wait",
+    ],
+)
+def test_real_blocker_repair_rollout_requests_bounded_same_node_review(
+    feedback_db, monkeypatch, refusal
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+        factory_problem_issues as producer,
+    )
+    from factory.orchestration.factory_models import FactoryStart
+
+    task, live, issues, repair_id = producer_repair_after_real_blocker(monkeypatch)
+    history = conductor.graph.node_runs(task["id"])
+    with controls._locked_session() as (db, control):
+        row = controls._receipt(db, task["id"])
+        if refusal == "human":
+            db.get(WorkItem, row.work_item_id).labels = ["human"]
+            issues[task["issue_number"]]["labels"] = [{"name": "human"}]
+        elif refusal == "unknown":
+            db.add(
+                FactoryStart(
+                    task_id=task["id"],
+                    start_key="unknown",
+                    actor="test",
+                    model="opus",
+                    max_cost_usd=1,
+                    status="uncertain",
+                )
+            )
+        elif refusal in {"landing", "nonrenewable"}:
+            row.direction_json = json.dumps(
+                {
+                    "landing_hold"
+                    if refusal == "landing"
+                    else "nonrenewable_recovery": True
+                }
+            )
+        elif refusal == "operator_pause":
+            controls.set_control(
+                "pause_task", "operator:joe", task_id=task["id"], session=db
+            )
+        elif refusal == "card":
+            row.escalation_json = json.dumps({"kind": "human", "question": "Keep held"})
+        elif refusal == "policy":
+            row.policy_json = json.dumps(
+                {**json.loads(row.policy_json), "max_attempts": 5}
+            )
+        elif refusal == "lane":
+            control.state = "paused"
+        elif refusal == "rollout":
+            controls._receipt(db, repair_id).state = "landing"
+        elif refusal == "no_mirror":
+            row.work_item_id = None
+        elif refusal == "legacy":
+            from sqlalchemy import delete
+            from factory.orchestration.factory_models import FactoryAudit
+
+            db.exec(
+                delete(FactoryAudit).where(
+                    FactoryAudit.task_id == task["id"],
+                    FactoryAudit.action == "repair_allocation_wait",
+                )
+            )
+    if refusal == "decision":
+        monkeypatch.setattr(controls, "decision_in_flight", lambda *a: True)
+    if refusal == "capacity_wait":
+        original = controls.set_control
+
+        def pending_release(*args, **kwargs):
+            # Even a race after native mutation rolls back with preparation.
+            return {**original(*args, **kwargs), "pending": True}
+
+        monkeypatch.setattr(controls, "set_control", pending_release)
+    if refusal == "concurrent_pause":
+
+        def change_after_observation(task):
+            controls.set_control("pause_task", "operator:joe", task_id=task["id"])
+            return None
+
+        monkeypatch.setattr(funding, "routine_labels_held", change_after_observation)
+    if refusal == "graph":
+        conductor.graph.discard_node(
+            task["id"],
+            "implement_manifest",
+            author_kind="engine",
+            author="test",
+            cause_kind="test",
+            cause_ref="changed",
+            stated_reason="changed",
+            expected_version=conductor.graph.current_version(task["id"]),
+        )
+    producer.problem_issues_tick(live)
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+        if refusal:
+            assert controls._receipt(db, task["id"]).task_paused
+            assert request is None
+            assert funding.latest(db, task["id"], "repair_funding_requested") is None
+            return
+        assert request["repair_recovery"]["repair_task_id"] == repair_id
+        assert not controls._receipt(db, task["id"]).task_paused
+    producer.problem_issues_tick(live)  # No second review on replay.
+    settle_funding(task, funding_decision())
+    prior_ids = {run["id"] for run in history}
+    assert [
+        run for run in conductor.graph.node_runs(task["id"]) if run["id"] in prior_ids
+    ] == history
+    assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == 4
+    attempt = conductor.graph.admit_dispatch(task["id"], "implement_manifest")
+    assert attempt.ok and attempt.attempt == 4
+    assert conductor.graph.record_outcome(
+        task["id"],
+        "implement_manifest",
+        4,
+        "succeeded",
+        0.25,
+        "c" * 40,
+        json.dumps({"artifact": {"result": "useful repair work"}}),
+    ).ok
+    producer.problem_issues_tick(live)
+    with controls._read_session() as db:
+        assert funding.latest(db, task["id"], "problem_issue_recovery_observed")
+        assert funding._retry_target(db, task["id"]) is None
+
+
+def test_expired_machine_pause_keeps_repair_funding_path(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+        factory_merged_delivery as merged,
+        factory_problem_issues as producer,
+    )
+
+    task, live, _, _ = producer_repair_after_real_blocker(monkeypatch)
+    snapshot = controls.task_snapshot(task["id"])
+    now = datetime.fromisoformat(snapshot["deadline_at"]) + timedelta(seconds=1)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    monkeypatch.setattr(merged, "reconcile_merged_delivery", lambda *a: False)
+    assert conductor._settle_paused_task(
+        task, snapshot["policy"], conductor.graph.node_runs(task["id"])
+    )
+    producer.problem_issues_tick(live)
+    with controls._read_session() as db:
+        assert controls._receipt(db, task["id"]).state == "admitted"
+        assert funding.pending(db, task["id"])["repair_recovery"]
+    settle_funding(task, funding_decision())
+    assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == 4
+
+
+@pytest.mark.parametrize(
+    "change", ["stop", "human", "unknown", "repaused", "rollout_changed"]
+)
+def test_repair_review_rechecks_authority_before_node_renewal(
+    feedback_db, monkeypatch, change
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+        factory_problem_issues as producer,
+    )
+    from factory.orchestration.factory_models import FactoryStart
+
+    task, live, issues, repair_id = producer_repair_after_real_blocker(monkeypatch)
+    producer.problem_issues_tick(live)
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    decision = funding_decision()
+    if change == "stop":
+        decision.update(
+            action="stop", task_budget_usd=0, additional_work_turns=0, lease_minutes=0
+        )
+    run = run_feedback_node(task, request["node_key"], decision)
+    with controls._locked_session() as (db, _):
+        row = controls._receipt(db, task["id"])
+        if change == "human":
+            db.get(WorkItem, row.work_item_id).labels = ["human"]
+            issues[task["issue_number"]]["labels"] = [{"name": "human"}]
+        elif change == "unknown":
+            db.add(
+                FactoryStart(
+                    task_id=task["id"],
+                    start_key="unknown",
+                    actor="test",
+                    model="opus",
+                    max_cost_usd=1,
+                    status="uncertain",
+                )
+            )
+        elif change == "rollout_changed":
+            controls._receipt(db, repair_id).state = "landing"
+        elif change == "repaused":
+            controls.set_control(
+                "pause_task", "operator:joe", task_id=task["id"], session=db
+            )
+            controls.set_control(
+                "resume_task", "operator:joe", task_id=task["id"], session=db
+            )
+    funding.settle(task, run, request)
+    assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == 3
+    with controls._read_session() as db:
+        assert funding.latest(db, task["id"], "problem_issue_recovery_observed") is None
+
+
+def funding_retry_case(monkeypatch, repair):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+    from factory.orchestration import factory_problem_issues as producer
+
+    if repair:
+        task, live, _, repair_id = producer_repair_after_real_blocker(monkeypatch)
+        producer.problem_issues_tick(live)
+        return task, controls.task_snapshot(task["id"])["policy"], repair_id
+    task, policy = retry_exhausted_task(monkeypatch)
+    assert funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    return task, policy, None
+
+
+def fail_funding_review_and_wait(task, policy, monkeypatch, failure):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    with controls._read_session() as db:
+        prior = funding.pending(db, task["id"])
+    if failure == "failed":
+        run = run_feedback_node(
+            task,
+            prior["node_key"],
+            {},
+            status="failed",
+            reason="transient_provider_failure",
+        )
+        funding.settle(task, run, prior)
+    else:
+        expired = datetime.fromisoformat(prior["deadline_at"]) + timedelta(seconds=1)
+        monkeypatch.setattr(controls, "_now", lambda: expired)
+        assert funding.reconcile(
+            task,
+            policy,
+            conductor.graph.node_runs(task["id"]),
+            controls.can_start(task["id"]),
+        )
+    with controls._read_session() as db:
+        settled = funding.latest(db, task["id"], "funding_review_settled")
+        assert settled["request_id"] == prior["audit_id"] and settled["refusal"]
+        retry_at = datetime.fromisoformat(settled["retry_after"])
+    monkeypatch.setattr(controls, "_now", lambda: retry_at - timedelta(seconds=1))
+    assert funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    with controls._read_session() as db:
+        assert funding.pending(db, task["id"]) is None
+    monkeypatch.setattr(controls, "_now", lambda: retry_at + timedelta(seconds=1))
+    return prior
+
+
+@pytest.mark.parametrize("repair", [False, True])
+@pytest.mark.parametrize(
+    "failures", [("failed",), ("unstarted",), ("failed", "unstarted")]
+)
+def test_failed_node_review_retries_resume_original_node(
+    feedback_db, monkeypatch, repair, failures
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, policy, _ = funding_retry_case(monkeypatch, repair)
+    source_history = [
+        r
+        for r in conductor.graph.node_runs(task["id"])
+        if r["node_key"] == "implement_manifest"
+    ]
+    for failure in failures:
+        prior = fail_funding_review_and_wait(task, policy, monkeypatch, failure)
+        assert funding.reconcile(
+            task,
+            policy,
+            conductor.graph.node_runs(task["id"]),
+            controls.can_start(task["id"]),
+        )
+        with controls._read_session() as db:
+            retry = funding.pending(db, task["id"])
+            assert retry["node_retry"] == prior["node_retry"]
+            assert retry.get("repair_recovery") == prior.get("repair_recovery")
+            assert retry["retry_of_request_id"] == prior["audit_id"]
+            assert not controls._receipt(db, task["id"]).task_paused
+            if repair:
+                assert (
+                    funding.latest(db, task["id"], "repair_funding_requested")[
+                        "resume_id"
+                    ]
+                    == prior["repair_recovery"]["resume_id"]
+                )
+    settle_funding(task, funding_decision())
+    assert [
+        r
+        for r in conductor.graph.node_runs(task["id"])
+        if r["node_key"] == "implement_manifest"
+    ] == source_history
+    dispatch = conductor.graph.admit_dispatch(task["id"], "implement_manifest")
+    assert dispatch.ok and dispatch.attempt == (4 if repair else 3)
+    assert conductor.graph.record_outcome(
+        task["id"],
+        "implement_manifest",
+        dispatch.attempt,
+        "succeeded",
+        0.25,
+        "d" * 40,
+        json.dumps({"artifact": {"result": "useful original-node work"}}),
+    ).ok
+
+
+@pytest.mark.parametrize("repair", [False, True])
+@pytest.mark.parametrize("failure", ["failed", "unstarted"])
+@pytest.mark.parametrize(
+    "hold",
+    ["human", "unknown", "graph", "policy", "pause", "concurrent_graph", "rollout"],
+)
+def test_failed_node_review_retry_preserves_fences(
+    feedback_db, monkeypatch, repair, failure, hold
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+    from factory.orchestration.factory_models import FactoryStart
+
+    task, policy, repair_id = funding_retry_case(monkeypatch, repair)
+    prior = fail_funding_review_and_wait(task, policy, monkeypatch, failure)
+    with controls._locked_session() as (db, _):
+        row = controls._receipt(db, task["id"])
+        if hold == "human":
+            db.get(WorkItem, row.work_item_id).labels = ["human"]
+        elif hold == "unknown":
+            db.add(
+                FactoryStart(
+                    task_id=task["id"],
+                    start_key="unknown-review-retry",
+                    actor="test",
+                    model="opus",
+                    max_cost_usd=1,
+                    status="uncertain",
+                )
+            )
+        elif hold == "policy":
+            row.policy_json = json.dumps(
+                {**json.loads(row.policy_json), "max_attempts": 5}
+            )
+        elif hold == "pause":
+            controls.set_control(
+                "pause_task", "operator:joe", task_id=task["id"], session=db
+            )
+        elif hold == "rollout":
+            if repair:
+                controls._receipt(db, repair_id).state = "landing"
+            else:
+                row.direction_json = '{"landing_hold":true}'
+
+    def change_graph(*args):
+        assert conductor.graph.discard_node(
+            task["id"],
+            "implement_manifest",
+            author_kind="engine",
+            author="test",
+            cause_kind="test",
+            cause_ref="changed",
+            stated_reason="changed",
+            expected_version=conductor.graph.current_version(task["id"]),
+        ).ok
+        return None
+
+    if hold == "graph":
+        change_graph()
+    elif hold == "concurrent_graph":
+        monkeypatch.setattr(funding, "routine_labels_held", change_graph)
+    funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    with controls._read_session() as db:
+        assert funding.pending(db, task["id"]) is None
+        assert (
+            funding.latest(db, task["id"], "funding_review_requested")["audit_id"]
+            == prior["audit_id"]
+        )
+    assert not conductor.graph.admit_dispatch(task["id"], "implement_manifest").ok
+
+
+@pytest.mark.parametrize("repair", [False, True])
+def test_failed_node_review_retry_keeps_existing_refusal_limit(
+    feedback_db, monkeypatch, repair
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, policy, _ = funding_retry_case(monkeypatch, repair)
+    for index in range(funding.FUNDING_REFUSAL_LIMIT):
+        prior = fail_funding_review_and_wait(
+            task, policy, monkeypatch, "failed" if index % 2 else "unstarted"
+        )
+        assert funding.reconcile(
+            task,
+            policy,
+            conductor.graph.node_runs(task["id"]),
+            controls.can_start(task["id"]),
+        )
+        with controls._read_session() as db:
+            current = funding.pending(db, task["id"])
+            if index + 1 < funding.FUNDING_REFUSAL_LIMIT:
+                assert current["node_retry"] == prior["node_retry"]
+            else:
+                assert current is None
+                assert controls._receipt(db, task["id"]).state == "failed"
+                assert (
+                    funding.latest(db, task["id"], "funding_review_requested")[
+                        "audit_id"
+                    ]
+                    == prior["audit_id"]
+                )
+    assert conductor.graph.load_graph(task["id"])[0]["max_attempts"] == (
+        3 if repair else 2
+    )
+
+
+def native_repair_landing_case(
+    monkeypatch,
+    *,
+    enabled=True,
+    max_repairs=3,
+    mode="trial",
+    path_profile="observation",
+    path=None,
+):
+    """Real producer/intake/review/landing owners; only external I/O is synthetic."""
+    import base64
+    import hashlib
+    from sqlmodel import SQLModel
+    from factory import review_publisher
+    from factory.execution.models import AgentSession, PendingMessage
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+    from factory.orchestration.models import SwarmTask, SwarmNodeRun
+
+    engine = controls.get_engine()
+    engine.update_execution_options(
+        schema_translate_map={"swarm": None, "agent_sessions": None}
+    )
+    SQLModel.metadata.create_all(
+        engine, tables=[AgentSession.__table__, PendingMessage.__table__]
+    )
+
+    def activate(task, live):
+        monkeypatch.setattr(delegation, "REPO", task["repo"])
+        live["auto_merge"] = True
+        with controls._locked_session() as (db, control):
+            control.policy_json = json.dumps(live)
+            version = control.version
+        if enabled:
+            args = dict(
+                duration_minutes=1440 if mode == "trial" else None,
+                max_repairs=max_repairs,
+                mode=mode,
+                path_profile=path_profile,
+            )
+            preview = delegation.configure(
+                delegation_principal(),
+                "preview",
+                True,
+                version,
+                "Bounded internal repair trial",
+                **args,
+            )
+            delegation.configure(
+                delegation_principal(),
+                "apply",
+                True,
+                version,
+                "Bounded internal repair trial",
+                request_key="repair-trial",
+                expected_preview_sha256=preview["preview_sha256"],
+                **args,
+            )
+
+    source, live, issues, repair_id = producer_repair_after_real_blocker(
+        monkeypatch, before_signal=activate, complete=False
+    )
+    with controls._read_session() as db:
+        repair = db.get(SwarmTask, repair_id).model_dump()
+    policy = controls.task_snapshot(repair_id)["policy"]
+    head, base = "b" * 40, "a" * 40
+    path = path or "projects/monolith/factory/orchestration/factory_feedback.py"
+    issue_reader = conductor.github_get
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda repo, suffix: (
+            {"additions": 1, "deletions": 1}
+            if suffix == "pulls/72"
+            else issue_reader(repo, suffix)
+        ),
+    )
+    scope = dict(
+        classification="private_internal_reversible",
+        public_facing=False,
+        security_sensitive=False,
+        authentication_or_credentials=False,
+        destructive=False,
+        evidence="Only private observation formatting changes; no authority or storage mutation.",
+        base_sha=base,
+        paths=[path],
+    )
+    complete_feedback_node(
+        repair,
+        policy,
+        "implement_repair",
+        {"status": "complete", "summary": "repair", "pr_number": 72, "head_sha": head},
+        head=head,
+    )
+    review = complete_feedback_node(
+        repair,
+        policy,
+        "review_repair",
+        {
+            "verdict": "approve",
+            "summary": "independent review",
+            "pr_number": 72,
+            "head_sha": head,
+            "landing_scope": scope,
+        },
+        head=head,
+        deps=["implement_repair"],
+    )
+    # Model the validated worker artifact, including its validation diagnostics.
+    with controls._locked_session() as (db, _):
+        row = db.get(SwarmNodeRun, review["id"])
+        outcome = json.loads(row.outcome_json)
+        outcome["artifact"]["errors"] = []
+        row.outcome_json = json.dumps(outcome)
+    proof = dict(
+        pr_url=f"https://github.com/{repair['repo']}/pull/72",
+        head_sha=head,
+        review_session_id=review["session_id"],
+        state="ready_for_review",
+    )
+    assert (
+        controls.finish_task(
+            repair_id, "succeeded", "factory:conductor", evidence=proof
+        )["state"]
+        == "landing"
+    )
+    pull = dict(
+        number=72,
+        node_id="repair-pr",
+        state="open",
+        draft=False,
+        merged=False,
+        head={
+            "sha": head,
+            "ref": f"factory/{repair_id}",
+            "repo": {"full_name": repair["repo"]},
+        },
+        base={"sha": base, "ref": "main", "repo": {"full_name": repair["repo"]}},
+        changed_files=1,
+        auto_merge=None,
+    )
+    changed = dict(filename=path, status="modified", sha="c" * 40)
+    comparison = {"files": [changed], "merge_base_commit": {"sha": base}}
+    trees = {}
+    for revision in (base, head):
+        parts = path.split("/")
+        tree = revision
+        for i, part in enumerate(parts):
+            child = hashlib.sha1(
+                (revision + "/".join(parts[: i + 1])).encode()
+            ).hexdigest()
+            leaf = i == len(parts) - 1
+            trees[tree] = {
+                "truncated": False,
+                "tree": [
+                    dict(
+                        path=part,
+                        type="blob" if leaf else "tree",
+                        mode="100644" if leaf else "040000",
+                        sha=("c" if revision == head else "d") * 40 if leaf else child,
+                    )
+                ],
+            }
+            tree = child
+    checks = {"sha": head, "statuses": [{"context": "pr-checks", "state": "success"}]}
+
+    def github(repo, suffix):
+        assert repo == repair["repo"]
+        if suffix.startswith("issues/"):
+            return issues[int(suffix.split("/")[-1])]
+        if suffix == "pulls/72":
+            return pull
+        if suffix.startswith("compare/"):
+            return comparison
+        if suffix.startswith("git/commits/"):
+            return {"tree": {"sha": suffix.split("/")[-1]}}
+        if suffix.startswith("git/trees/"):
+            return trees[suffix.split("/")[-1]]
+        if suffix == "git/blobs/" + "c" * 40:
+            return {
+                "encoding": "base64",
+                "size": 5,
+                "content": base64.b64encode(b"pass\n").decode(),
+            }
+        if suffix == f"commits/{head}/status":
+            return checks
+        pytest.fail(f"unexpected GitHub read: {suffix}")
+
+    monkeypatch.setattr(conductor, "github_get", github)
+    mutations = []
+    queue = set()
+
+    def graphql(query, args):
+        if query == landing._QUEUE_ENTRIES:
+            return {
+                "nodes": [
+                    {
+                        "id": node,
+                        "mergeQueueEntry": {"id": "entry"} if node in queue else None,
+                    }
+                    for node in args["ids"]
+                ]
+            }
+        mutations.append((query, args))
+        if query == landing._ARM_AUTO_MERGE:
+            pull["auto_merge"] = {"enabledBy": {"login": "factory"}}
+            queue.add("repair-pr")
+        elif query == landing._DISARM_AUTO_MERGE:
+            pull["auto_merge"] = None
+        elif query == landing._DEQUEUE_PULL_REQUEST:
+            queue.discard("repair-pr")
+        return {}
+
+    monkeypatch.setattr(landing, "github_graphql", graphql)
+    evidence = review_publisher.collect(repair_id)
+    assert isinstance(evidence, review_publisher.ReviewEvidence), evidence
+    item = next(x for x in landing._deliveries(live) if x["task_id"] == repair_id)
+    return SimpleNamespace(
+        source=source,
+        repair=repair,
+        live=live,
+        issues=issues,
+        pull=pull,
+        changed=changed,
+        comparison=comparison,
+        trees=trees,
+        checks=checks,
+        review=review,
+        item=item,
+        mutations=mutations,
+        queue=queue,
+        proof=proof,
+    )
+
+
+@pytest.mark.parametrize("owner", ["factory_feedback", "factory_problem_issues"])
+def test_delegated_repair_lands_through_native_scope_and_queue(
+    feedback_db, monkeypatch, owner
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import (
+        factory_landing_release as releases,
+        repair_landing_delegation as delegation,
+    )
+    from factory.orchestration.factory_models import FactoryAudit
+
+    case = native_repair_landing_case(
+        monkeypatch, path="projects/monolith/factory/orchestration/" + owner + ".py"
+    )
+    landing._arm(case.repair["repo"], case.item)
+    assert case.mutations == [
+        (
+            landing._ARM_AUTO_MERGE,
+            {"pullRequestId": "repair-pr", "expectedHeadOid": case.pull["head"]["sha"]},
+        )
+    ]
+    assert delegation.prepare(case.repair["id"], 72, case.pull["head"]["sha"]) is None
+    with controls._read_session() as db:
+        row = controls._receipt(db, case.repair["id"])
+        assert "landing_authorization" not in json.loads(row.direction_json or "{}")
+        assert releases.scoped_refusal(db, row, 72, case.pull["head"]["sha"]) is None
+        grants = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == delegation.GRANT)
+        ).all()
+        assert len(grants) == 1 and grants[0].actor == delegation.ACTOR
+        assert (
+            db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == releases.SCOPE_ACTION)
+            ).first()
+            is None
+        )
+        proof = json.loads(grants[0].detail_json)
+        assert proof["standing_actor"] == delegation_principal().subject
+        assert proof["review"]["review_run_id"] == case.review["id"]
+        assert proof["provenance"]["source_task_id"] == case.source["id"]
+        assert controls._receipt(db, case.source["id"]).task_paused
+
+
+@pytest.mark.parametrize(
+    "stage", ["receipt_admission", "receipt_prepare", "receipt_promotion"]
+)
+@pytest.mark.parametrize("profile", ["observation", "diagnostics"])
+def test_native_preinvoke_owning_paths_require_operator_landing(
+    feedback_db, monkeypatch, stage, profile
+):
+    from factory.execution.preinvoke_failure import repair_context
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    context = repair_context(
+        {"phase": stage, "sqlstate": "42703", "attempted": False},
+        "backlog_refill_collect_1",
+    )
+    case = native_repair_landing_case(
+        monkeypatch, path=context["owning_paths"][0], path_profile=profile
+    )
+    # Use the actual standing authority, producer provenance, immutable file
+    # evidence, independent review and candidate checks. No merged/rollout audit
+    # or synthesized grant can make an excluded owner eligible.
+    with controls._locked_session() as (db, _):
+        row = controls._receipt(db, case.repair["id"])
+        with pytest.raises(ValueError, match="repair_landing_paths_require_operator"):
+            delegation._candidate(db, row, 72, case.pull["head"]["sha"])
+    assert case.mutations == []
+
+
+def test_delegated_repair_main_progress_keeps_reviewed_diff_authority(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    case = native_repair_landing_case(monkeypatch)
+    case.pull["base"]["sha"] = "e" * 40
+    landing._arm(case.repair["repo"], case.item)
+    assert case.queue == {"repair-pr"}
+    case.pull["base"]["sha"] = "f" * 40
+    assert not landing._fence_ungranted_queue_entry(case.repair["repo"], case.item)
+    with controls._read_session() as db:
+        proof = json.loads(delegation._latest(db, delegation.GRANT).detail_json)
+        assert proof["files"]["base_sha"] == "a" * 40
+
+
+@pytest.mark.parametrize(
+    "hold",
+    [
+        "disabled",
+        "revoked",
+        "expired",
+        "policy",
+        "head",
+        "merge_base",
+        "base_branch",
+        "paths",
+        "symlink",
+        "delete",
+        "scope",
+        "public_facing",
+        "authentication_or_credentials",
+        "destructive",
+        "ambiguous_scope",
+        "missing_scope",
+        "human",
+        "unknown",
+        "landing",
+        "nonrenewable",
+        "source_pause",
+        "source_graph",
+        "source_human",
+        "ci",
+        "review_identity",
+        "review_recovery",
+        "limit",
+        "provenance",
+        "source_unknown",
+        "legacy_pause",
+        "ownership",
+        "wrong_branch",
+        "malformed_pull",
+    ],
+)
+@pytest.mark.parametrize("mode", ["trial", "ongoing"])
+def test_delegated_repair_native_landing_refuses(feedback_db, monkeypatch, hold, mode):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+    from factory.orchestration.factory_models import FactoryAudit, FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    if mode == "ongoing" and hold == "expired":
+        pytest.skip(
+            "Ongoing authority has no time expiry, revocation and policy fences still apply"
+        )
+    case = native_repair_landing_case(
+        monkeypatch, enabled=hold != "disabled", mode=mode
+    )
+    with controls._locked_session() as (db, control):
+        row = controls._receipt(db, case.repair["id"])
+        if hold == "revoked":
+            control_version = control.version
+        elif hold == "policy":
+            control.policy_json = json.dumps({**case.live, "auto_merge": False})
+        elif hold == "human":
+            db.get(WorkItem, row.work_item_id).labels = ["human"]
+        elif hold == "source_human":
+            db.get(
+                WorkItem, controls._receipt(db, case.source["id"]).work_item_id
+            ).labels = ["human"]
+        elif hold in {"unknown", "source_unknown"}:
+            db.add(
+                FactoryStart(
+                    task_id=case.source["id"]
+                    if hold == "source_unknown"
+                    else row.task_id,
+                    start_key="unknown",
+                    actor="test",
+                    model="opus",
+                    max_cost_usd=1,
+                    status="uncertain",
+                )
+            )
+        elif hold in {"landing", "nonrenewable"}:
+            row.direction_json = json.dumps(
+                {"landing_hold" if hold == "landing" else "nonrenewable_recovery": True}
+            )
+        elif hold == "source_pause":
+            controls.set_control(
+                "pause_task", "operator:joe", task_id=case.source["id"], session=db
+            )
+        elif hold in {
+            "scope",
+            "missing_scope",
+            "review_identity",
+            "public_facing",
+            "authentication_or_credentials",
+            "destructive",
+            "ambiguous_scope",
+        }:
+            run = db.get(SwarmNodeRun, case.review["id"])
+            if hold == "review_identity":
+                run.session_id = 101
+            else:
+                outcome = json.loads(run.outcome_json)
+                for value in (outcome["value"], outcome["artifact"]["value"]):
+                    if hold == "scope":
+                        value["landing_scope"]["security_sensitive"] = True
+                    elif hold == "ambiguous_scope":
+                        value["landing_scope"]["classification"] = "requires_operator"
+                    elif hold != "missing_scope":
+                        value["landing_scope"][hold] = True
+                    else:
+                        value.pop("landing_scope", None)
+                run.outcome_json = json.dumps(outcome)
+        elif hold == "limit":
+            for _ in range(landing.MAX_EJECTIONS):
+                controls._audit(db, landing.ACTOR, "merge_ejected", task_id=row.task_id)
+        elif hold == "provenance":
+            row.body = "Unrelated work without the producer marker"
+        elif hold == "legacy_pause":
+            delegation._latest(
+                db, "repair_allocation_wait", case.source["id"]
+            ).action = "legacy_wait"
+        elif hold == "review_recovery":
+            controls._audit(
+                db, "operator:joe", "review_recovery_authorized", task_id=row.task_id
+            )
+    if hold == "revoked":
+        preview = delegation.configure(
+            delegation_principal(), "preview", False, control_version, "Revoke trial"
+        )
+        delegation.configure(
+            delegation_principal(),
+            "apply",
+            False,
+            control_version,
+            "Revoke trial",
+            request_key="revoke",
+            expected_preview_sha256=preview["preview_sha256"],
+        )
+    elif hold == "expired":
+        now = controls._now() + timedelta(days=2)
+        monkeypatch.setattr(controls, "_now", lambda: now)
+    elif hold == "head":
+        case.pull["head"]["sha"] = "f" * 40
+    elif hold == "wrong_branch":
+        case.pull["head"]["ref"] = "someone-else"
+    elif hold == "malformed_pull":
+        case.pull["base"] = None
+    elif hold == "ownership":
+        case.issues[71]["assignees"] = [{"login": "somebody"}]
+    elif hold == "merge_base":
+        case.comparison["merge_base_commit"]["sha"] = "e" * 40
+    elif hold == "base_branch":
+        case.pull["base"]["ref"] = "other-branch"
+    elif hold == "paths":
+        case.changed["filename"] = "projects/monolith/auth/api.py"
+    elif hold == "delete":
+        case.changed["status"] = "removed"
+    elif hold == "symlink":
+        for tree in case.trees.values():
+            if tree["tree"][0]["type"] == "blob":
+                tree["tree"][0]["mode"] = "120000"
+    elif hold == "ci":
+        case.checks["statuses"][0]["state"] = "pending"
+    elif hold == "source_graph":
+        assert conductor.graph.discard_node(
+            case.source["id"],
+            "implement_manifest",
+            author_kind="engine",
+            author="test",
+            cause_kind="test",
+            cause_ref="changed",
+            stated_reason="Changed source graph",
+            expected_version=conductor.graph.current_version(case.source["id"]),
+        ).ok
+    landing._arm(case.repair["repo"], case.item)
+    assert not case.mutations
+    with controls._read_session() as db:
+        assert (
+            db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == delegation.GRANT)
+            ).first()
+            is None
+        )
+
+
+@pytest.mark.parametrize("mode", ["trial", "ongoing"])
+@pytest.mark.parametrize("owner", ["repair", "source"])
+@pytest.mark.parametrize("phase", ["prepare", "arm", "queued"])
+def test_delegated_repair_native_claimed_execution_fence(
+    feedback_db, monkeypatch, mode, owner, phase
+):
+    from factory import review_publisher
+    from factory.execution.models import AgentSession, PendingMessage
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+        factory_landing_release as releases,
+        repair_landing_delegation as delegation,
+    )
+    from factory.orchestration.factory_models import FactoryAudit
+
+    case = native_repair_landing_case(monkeypatch, mode=mode)
+    task_id = getattr(case, owner)["id"]
+    claimed_at = controls._now() - timedelta(days=2)
+    message_id = None
+
+    def claim():
+        nonlocal message_id
+        with controls._locked_session() as (db, _):
+            # Terminal graph/start/session records do not prove that this
+            # later message has ceased, even when its claim looks expired.
+            assert controls._quiescence_refusal(db, task_id) is None
+            session = AgentSession(
+                local_session_id=f"factory:{task_id}:implement_repair:1",
+                workspace="/workspace/src",
+                branch=f"factory/{task_id}",
+                status="completed",
+            )
+            db.add(session)
+            db.flush()
+            message = PendingMessage(
+                session_id=session.id,
+                seq=2,
+                message_text="Continue existing execution",
+                claimed_by_replica="live-owner",
+                claimed_at=claimed_at,
+            )
+            db.add(message)
+            db.flush()
+            message_id = message.id
+            assert releases.execution_refusal(db, task_id) == "claimed_execution"
+
+    if phase == "prepare":
+        claim()
+        if owner == "repair":
+            with controls._read_session() as db:
+                receipt_id = controls._receipt(db, task_id).id
+            with pytest.raises(ValueError, match="^landing_release_claimed_execution$"):
+                releases.preview(
+                    receipt_id,
+                    72,
+                    case.pull["head"]["sha"],
+                    "Synthetic scope review",
+                    scope={
+                        "classification": "private_internal_reversible",
+                        "evidence": "Synthetic independent scope assessment",
+                    },
+                )
+    elif phase == "arm":
+        collect = review_publisher.collect
+
+        def raced(task_id, *, session=None):
+            result = collect(task_id, session=session)
+            if session is None:
+                with controls._read_session() as db:
+                    assert delegation._latest(db, delegation.GRANT) is not None
+                claim()
+            return result
+
+        monkeypatch.setattr(review_publisher, "collect", raced)
+
+    landing._arm(case.repair["repo"], case.item)
+    if phase == "queued":
+        assert case.queue == {"repair-pr"}
+        claim()
+        assert landing._fence_ungranted_queue_entry(case.repair["repo"], case.item)
+        assert [query for query, _ in case.mutations] == [
+            landing._ARM_AUTO_MERGE,
+            landing._DISARM_AUTO_MERGE,
+            landing._DEQUEUE_PULL_REQUEST,
+        ]
+    else:
+        assert not case.mutations
+    assert not case.queue and case.pull.get("auto_merge") is None
+    with controls._read_session() as db:
+        row = controls._receipt(db, case.repair["id"])
+        prefix = "source_" if owner == "source" else ""
+        assert releases.scoped_refusal(db, row, 72, case.pull["head"]["sha"]) == (
+            f"repair_landing_{prefix}claimed_execution"
+        )
+        message = db.get(PendingMessage, message_id)
+        assert message.claimed_by_replica == "live-owner"
+        assert message.claimed_at.replace(tzinfo=timezone.utc) == claimed_at
+        grants = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == delegation.GRANT)
+        ).all()
+        assert len(grants) == (0 if phase == "prepare" else 1)
+
+
+@pytest.mark.parametrize(
+    "change", ["revoked", "head", "review", "source_hold", "unknown"]
+)
+@pytest.mark.parametrize("mode", ["trial", "ongoing"])
+def test_delegated_repair_rechecks_between_prepare_and_arm(
+    feedback_db, monkeypatch, change, mode
+):
+    from factory import review_publisher
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmNodeRun
+
+    case = native_repair_landing_case(monkeypatch, mode=mode)
+    collect = review_publisher.collect
+
+    def raced(task_id, *, session=None):
+        result = collect(task_id, session=session)
+        if session is None:
+            with controls._locked_session() as (db, control):
+                assert delegation._latest(db, delegation.GRANT) is not None
+                version = control.version
+                if change == "source_hold":
+                    controls.set_control(
+                        "pause_task",
+                        "operator:joe",
+                        task_id=case.source["id"],
+                        session=db,
+                    )
+                elif change == "review":
+                    db.get(SwarmNodeRun, case.review["id"]).session_id = 101
+                elif change == "unknown":
+                    db.add(
+                        FactoryStart(
+                            task_id=task_id,
+                            start_key="raced",
+                            actor="test",
+                            model="opus",
+                            max_cost_usd=1,
+                            status="uncertain",
+                        )
+                    )
+            if change == "revoked":
+                preview = delegation.configure(
+                    delegation_principal(), "preview", False, version, "Stop trial"
+                )
+                delegation.configure(
+                    delegation_principal(),
+                    "apply",
+                    False,
+                    version,
+                    "Stop trial",
+                    request_key="revoke-raced",
+                    expected_preview_sha256=preview["preview_sha256"],
+                )
+            elif change == "head":
+                case.pull["head"]["sha"] = "f" * 40
+        return result
+
+    monkeypatch.setattr(review_publisher, "collect", raced)
+    landing._arm(case.repair["repo"], case.item)
+    assert not case.mutations
+
+
+@pytest.mark.parametrize(
+    "change", ["revoked", "expired", "policy", "source_hold", "head"]
+)
+@pytest.mark.parametrize("mode", ["trial", "ongoing"])
+def test_delegated_repair_native_queue_revocation(
+    feedback_db, monkeypatch, change, mode
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    if mode == "ongoing" and change == "expired":
+        pytest.skip("Ongoing authority has no time expiry")
+    case = native_repair_landing_case(monkeypatch, mode=mode)
+    landing._arm(case.repair["repo"], case.item)
+    assert case.queue == {"repair-pr"}
+    assert not landing._fence_ungranted_queue_entry(case.repair["repo"], case.item)
+    if change == "revoked":
+        with controls._read_session() as db:
+            version = db.get(controls.FactoryControl, "factory").version
+        preview = delegation.configure(
+            delegation_principal(), "preview", False, version, "Stop trial"
+        )
+        delegation.configure(
+            delegation_principal(),
+            "apply",
+            False,
+            version,
+            "Stop trial",
+            request_key="revoke-queued",
+            expected_preview_sha256=preview["preview_sha256"],
+        )
+    elif change == "expired":
+        now = controls._now() + timedelta(days=2)
+        monkeypatch.setattr(controls, "_now", lambda: now)
+    elif change == "policy":
+        with controls._locked_session() as (db, control):
+            controls._audit(db, "operator:joe", "configure")
+    elif change == "source_hold":
+        controls.set_control("pause_task", "operator:joe", task_id=case.source["id"])
+    elif change == "head":
+        case.pull["head"]["sha"] = "f" * 40
+    assert landing._fence_ungranted_queue_entry(case.repair["repo"], case.item)
+    assert not case.queue and case.pull["auto_merge"] is None
+    assert [query for query, _ in case.mutations] == [
+        landing._ARM_AUTO_MERGE,
+        landing._DISARM_AUTO_MERGE,
+        landing._DEQUEUE_PULL_REQUEST,
+    ]
+
+
+def test_delegated_repair_grants_are_finite_and_replay_does_not_spend(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import repair_landing_delegation as delegation
+    from factory.orchestration.factory_models import FactoryAudit
+
+    case = native_repair_landing_case(monkeypatch, max_repairs=1)
+    args = (case.repair["id"], 72, case.pull["head"]["sha"])
+    assert delegation.prepare(*args) is None
+    assert delegation.prepare(*args) is None
+    # A changed independent scope assessment needs a new exact derivation;
+    # exhausting the standing allowance cannot be evaded by changing evidence.
+    from factory.orchestration.models import SwarmNodeRun
+
+    with controls._locked_session() as (db, _):
+        run = db.get(SwarmNodeRun, case.review["id"])
+        outcome = json.loads(run.outcome_json)
+        for value in (outcome["value"], outcome["artifact"]["value"]):
+            value["landing_scope"]["evidence"] += " Additional independent analysis."
+        run.outcome_json = json.dumps(outcome)
+    assert delegation.prepare(*args) == "repair_landing_delegation_exhausted"
+    with controls._read_session() as db:
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(FactoryAudit.action == delegation.GRANT)
+                ).all()
+            )
+            == 1
+        )
+
+
+@pytest.mark.parametrize(
+    "classification", ["requires_operator", "private_internal_reversible", None]
+)
+def test_delegated_repair_file_limit_is_not_an_ordinary_review_schema_limit(
+    feedback_db, monkeypatch, classification
+):
+    from factory import review_publisher
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import repair_landing_delegation as delegation
+    from factory.orchestration.models import SwarmNodeRun
+
+    case = native_repair_landing_case(monkeypatch)
+    with controls._locked_session() as (db, _):
+        run = db.get(SwarmNodeRun, case.review["id"])
+        outcome = json.loads(run.outcome_json)
+        for value in (outcome["value"], outcome["artifact"]["value"]):
+            if classification is None:
+                value.pop("landing_scope")  # Legacy reviews remain valid.
+            else:
+                value["landing_scope"].update(
+                    classification=classification,
+                    paths=[f"existing/file-{i}.py" for i in range(20)],
+                )
+            assert not schema_errors(value, conductor.REVIEW_SCHEMA)
+        run.outcome_json = json.dumps(outcome)
+    assert isinstance(
+        review_publisher.collect(case.repair["id"]), review_publisher.ReviewEvidence
+    )
+    reason = delegation.prepare(case.repair["id"], 72, case.pull["head"]["sha"])
+    assert (
+        reason
+        == {
+            None: "repair_landing_scope_missing_or_invalid",
+            "requires_operator": "repair_landing_scope_requires_operator",
+            "private_internal_reversible": "repair_landing_file_limit",
+        }[classification]
+    )
+
+
+def change_delegated_scope(case):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.models import SwarmNodeRun
+
+    with controls._locked_session() as (db, _):
+        run = db.get(SwarmNodeRun, case.review["id"])
+        outcome = json.loads(run.outcome_json)
+        for value in (outcome["value"], outcome["artifact"]["value"]):
+            value["landing_scope"]["evidence"] += " More independent evidence."
+        run.outcome_json = json.dumps(outcome)
+
+
+def test_delegated_repair_ongoing_native_queue_survives_age_and_unrelated_history(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+    from factory.orchestration.factory_models import FactoryAudit
+
+    case = native_repair_landing_case(monkeypatch, mode="ongoing")
+    # More than the old lifetime scan bound must not strand this exact marker.
+    with controls._locked_session() as (db, _):
+        db.add_all(
+            [
+                FactoryAudit(
+                    actor="factory:problem-issues",
+                    action="problem_issue_created",
+                    detail_json=controls.dumps(
+                        {"fingerprint": f"{i:064x}", "issue_number": i + 1000}
+                    ),
+                )
+                for i in range(502)
+            ]
+        )
+    later = controls._now() + timedelta(days=31)
+    monkeypatch.setattr(controls, "_now", lambda: later)
+    landing._arm(case.repair["repo"], case.item)
+    assert case.queue == {"repair-pr"}
+    assert not landing._fence_ungranted_queue_entry(case.repair["repo"], case.item)
+    with controls._read_session() as db:
+        view = delegation.status(db)
+        assert view["enabled"] and view["mode"] == "ongoing"
+        assert view["expires_at"] is None
+        assert view["max_task_derivations"] == view["max_source_derivations"] == 3
+
+
+def test_delegated_repair_ongoing_rolling_limit_waits_without_invalidating_grant(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    case = native_repair_landing_case(monkeypatch, mode="ongoing", max_repairs=1)
+    args = (case.repair["id"], 72, case.pull["head"]["sha"])
+    # A prior authorization's grant also spends the rolling allowance.
+    with controls._locked_session() as (db, _):
+        controls._audit(db, delegation.ACTOR, delegation.GRANT, authorization_id=-1)
+        db.flush()
+        previous_id = delegation._latest(db, delegation.GRANT).id
+    landing._arm(case.repair["repo"], case.item)
+    assert not case.queue
+    with controls._read_session() as db:
+        wait = delegation._latest(db, "landing_authorization_wait", case.repair["id"])
+        assert json.loads(wait.detail_json)["reason"] == "repair_landing_rolling_limit"
+    assert any(
+        x["task_id"] == case.repair["id"] for x in landing._deliveries(case.live)
+    )
+    with controls._locked_session() as (db, _):
+        db.get(controls.FactoryAudit, previous_id).created_at = (
+            controls._now() - timedelta(hours=25)
+        )
+    landing._arm(case.repair["repo"], case.item)
+    assert case.queue == {"repair-pr"}
+    assert delegation.prepare(*args) is None  # Exact replay doesn't spend.
+    assert not landing._fence_ungranted_queue_entry(case.repair["repo"], case.item)
+    change_delegated_scope(case)
+    assert delegation.prepare(*args) == "repair_landing_rolling_limit"
+    # Time replenishes only the global rate allowance, not per-task bounds.
+    with controls._locked_session() as (db, _):
+        delegation._latest(db, delegation.GRANT).created_at = (
+            controls._now() - timedelta(hours=25)
+        )
+    assert delegation.prepare(*args) is None
+
+
+@pytest.mark.parametrize("bound", ["task", "source"])
+def test_delegated_repair_ongoing_cumulative_bounds_survive_window_and_authorization(
+    feedback_db, monkeypatch, bound
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    case = native_repair_landing_case(monkeypatch, mode="ongoing", max_repairs=10)
+    args = (case.repair["id"], 72, case.pull["head"]["sha"])
+    with controls._locked_session() as (db, _):
+        for _ in range(3):
+            controls._audit(
+                db,
+                delegation.ACTOR,
+                delegation.GRANT,
+                task_id=case.repair["id"] if bound == "task" else None,
+                authorization_id=-1,
+                provenance={"source_task_id": case.source["id"]},
+            )
+        db.flush()
+        for grant in db.exec(
+            select(controls.FactoryAudit).where(
+                controls.FactoryAudit.action == delegation.GRANT
+            )
+        ).all():
+            grant.created_at = controls._now() - timedelta(days=30)
+    assert delegation.prepare(*args) == f"repair_landing_{bound}_limit"
+
+
+def test_delegated_repair_ongoing_replays_old_task_after_many_other_grants(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    case = native_repair_landing_case(monkeypatch, mode="ongoing")
+    args = (case.repair["id"], 72, case.pull["head"]["sha"])
+    landing._arm(case.repair["repo"], case.item)
+    with controls._locked_session() as (db, _):
+        for i in range(20):
+            controls._audit(
+                db, delegation.ACTOR, delegation.GRANT, authorization_id=-1, other=i
+            )
+    assert delegation.prepare(*args) is None
+    assert not landing._fence_ungranted_queue_entry(case.repair["repo"], case.item)
+
+
+def test_delegated_repair_ongoing_future_repair_after_lifetime_trial_limit(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_landing as landing,
+    )
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    case = native_repair_landing_case(monkeypatch, mode="ongoing", max_repairs=1)
+    with controls._locked_session() as (db, _):
+        authorization = delegation._latest(db, delegation.CONTROL)
+        for i in range(20):
+            controls._audit(
+                db,
+                delegation.ACTOR,
+                delegation.GRANT,
+                authorization_id=authorization.id,
+                other=i,
+            )
+        db.flush()
+        for grant in db.exec(
+            select(controls.FactoryAudit).where(
+                controls.FactoryAudit.action == delegation.GRANT
+            )
+        ).all():
+            grant.created_at = controls._now() - timedelta(days=2)
+    # No renewed standing grant, scheduler, or synthetic merge acknowledgment.
+    landing._arm(case.repair["repo"], case.item)
+    assert case.queue == {"repair-pr"}
+    with controls._read_session() as db:
+        assert delegation.status(db)["derivations_used"] == 1
+
+
+def test_delegated_repair_concurrent_exact_prepare_spends_once(
+    feedback_db, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import repair_landing_delegation as delegation
+
+    case = native_repair_landing_case(monkeypatch, mode="ongoing", max_repairs=1)
+    args = (case.repair["id"], 72, case.pull["head"]["sha"])
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: delegation.prepare(*args), range(2)))
+    assert results == [None, None]
+    with controls._read_session() as db:
+        assert len(delegation._grants(db, task_id=case.repair["id"])) == 1
+
+
+@pytest.mark.parametrize(
+    "profile,eligible", [("observation", False), ("diagnostics", True)]
+)
+def test_delegated_repair_diagnostics_requires_explicit_profile(
+    feedback_db, monkeypatch, profile, eligible
+):
+    from factory.orchestration import factory_landing as landing
+
+    case = native_repair_landing_case(
+        monkeypatch,
+        mode="ongoing",
+        path_profile=profile,
+        path="projects/monolith/factory/execution/rationale.py",
+    )
+    landing._arm(case.repair["repo"], case.item)
+    assert bool(case.queue) is eligible
 
 
 def test_discard_and_rename_keep_spent_history_charged(feedback_db, monkeypatch):
@@ -20024,10 +22011,11 @@ def test_spent_allocation_needs_no_operator_recovery_and_keeps_its_charges(
 def test_funding_increase_requires_operator_amendment(
     feedback_db, monkeypatch, action, creation_enabled
 ):
+    """Under an explicit operator budget restriction an increase still waits."""
     from factory.orchestration import factory_controls as controls
     from factory.orchestration import factory_funding as funding
 
-    task, policy = funding_task(monkeypatch)
+    task, policy = funding_task(monkeypatch, binding=True)
     assert funding.request(task, "Assess the next tranche")
     monkeypatch.setenv(
         "FACTORY_CONDUCTOR_FUNDING_ENABLED", str(creation_enabled).lower()
@@ -20074,6 +22062,43 @@ def test_funding_increase_requires_operator_amendment(
             == settled_id
         )
         assert funding.amendment(db, task["id"]) is None
+
+
+@pytest.mark.parametrize("live", [False, True])
+def test_unrestricted_budget_proposal_is_accounting_not_an_approval(
+    feedback_db, monkeypatch, live
+):
+    """No standing dollar cap: a larger proposal grants on the same task,
+    unless the live policy now carries the explicit restriction."""
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration.factory_models import FactoryControl
+    from sqlmodel import Session
+
+    task, policy = funding_task(monkeypatch)
+    if live:
+        with Session(conductor.get_engine()) as db:
+            control = db.get(FactoryControl, "factory")
+            stored = json.loads(control.policy_json)
+            stored["task_budget_binding"] = True
+            control.policy_json = json.dumps(stored)
+            db.add(control)
+            db.commit()
+    assert funding.request(task, "Assess the next tranche")
+    proposed = policy["task_budget_usd"] + 10
+    settle_funding(task, funding_decision(task_budget_usd=proposed))
+    after = controls.task_snapshot(task["id"])
+    assert after["task_id"] == task["id"]
+    assert after["task_paused"] is live
+    with controls._read_session() as db:
+        grant = funding.amendment(db, task["id"])
+        approval = funding.latest(db, task["id"], "funding_budget_approval_required")
+    if live:
+        assert grant is None and approval is not None
+    else:
+        assert approval is None
+        assert grant["granted_task_budget_usd"] == proposed
+        assert after["policy"]["task_budget_usd"] == proposed
 
 
 @pytest.mark.parametrize("charged", [5.0, 100.0])
@@ -20126,7 +22151,7 @@ def test_operator_amendment_is_the_budget_increase_authority(
     SQLModel.metadata.create_all(
         feedback_db, tables=[AgentSession.__table__, PendingMessage.__table__]
     )
-    task, original_policy = funding_task(monkeypatch)
+    task, original_policy = funding_task(monkeypatch, binding=True)
     proposed = max(50.0, approved)
     assert funding.request(task, "Assess the next tranche")
     settle_funding(task, funding_decision(task_budget_usd=proposed))
@@ -20406,6 +22431,42 @@ def test_funding_review_outlives_only_its_exact_soft_deadline(feedback_db, monke
     assert not controls.can_start(task["id"], start_key=request["start_key"])["ok"]
 
 
+def test_expired_task_funding_dispatch_is_reachable(feedback_db, monkeypatch):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, policy = retry_exhausted_task(monkeypatch)
+    now = controls._now() + timedelta(seconds=policy["task_timeout_seconds"] + 1)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    monkeypatch.setattr(conductor, "_slot_budget", lambda: 1)
+    monkeypatch.setattr(conductor, "hydration_branch", lambda _: "main")
+    monkeypatch.setattr(conductor, "branch_hydration", lambda *a: "main")
+    monkeypatch.setattr(conductor, "_dispatch_branch", lambda *a: "factory/test")
+    assert controls.can_start(task["id"])["reason"] == "task_deadline"
+    assert funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    assert funding.reconcile(
+        task,
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    run = next(
+        r
+        for r in conductor.graph.node_runs(task["id"])
+        if r["node_key"] == request["node_key"]
+    )
+    assert run["pin"]["task_deadline_at"] == request["deadline_at"]
+
+
 @pytest.mark.parametrize("changed_issue", [False, True])
 def test_completed_funding_review_settles_after_admission_deadline(
     feedback_db, monkeypatch, changed_issue
@@ -20476,7 +22537,7 @@ def test_oversight_has_graph_and_start_headroom_after_task_budget_exhaustion(
     from sqlmodel import Session
     from factory.orchestration.models import SwarmTask
 
-    task, policy = funding_task(monkeypatch)
+    task, policy = funding_task(monkeypatch, binding=True)
     with Session(conductor.get_engine()) as db:
         row = controls._receipt(db, task["id"])
         policy["task_budget_usd"] = 0.75
@@ -26737,6 +28798,283 @@ def test_expired_typed_stop_card_is_not_a_planner_decision(paused_settlement):
     after = controls.task_snapshot(s.task["id"])
     assert after["escalation"] == document
     assert after["task_paused"] is True
+
+
+def _machine_stop_card(s, reason="funding_without_progress"):
+    """Replace the fixture's operator pause with a real machine pause and card."""
+    from factory.orchestration import factory_controls as controls, factory_pause
+
+    assert controls.set_control("resume_task", "operator", task_id=s.task["id"])["ok"]
+    assert factory_pause.pause(s.task["id"], "factory:allocation-recovery", reason)
+    card = controls.task_snapshot(s.task["id"])["escalation"]
+    assert card["options"] == [factory_pause.STOP]
+    return card
+
+
+def _card_written_at(s):
+    """Audit rows carry wall-clock time, so read the card's own write time."""
+    from core.clock import aware
+    from factory.orchestration.factory_models import FactoryAudit
+
+    with Session(s.engine) as db:
+        row = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action.in_(
+                    ("paused_card_created", "paused_card_superseded")
+                ),
+            )
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+    return aware(row.created_at)
+
+
+def test_expired_machine_stop_card_is_stopped_after_its_grace(paused_settlement):
+    from datetime import timedelta
+
+    from factory.orchestration import factory_controls as controls, factory_pause
+
+    s = paused_settlement
+    card = _machine_stop_card(s)
+    grace_ends = _card_written_at(s) + factory_pause.STOP_CARD_GRACE
+    pause_trigger(s, "deadline")
+    assert s.clock[0] < grace_ends
+    # Past the deadline but inside the grace: the card and pause are kept.
+    assert conductor._settle_paused_task(s.task, s.policy, [])
+    kept = controls.task_snapshot(s.task["id"])
+    assert kept["escalation"] == card
+    assert kept["task_paused"] is True and not kept["cancellation_requested"]
+    s.clock[0] = grace_ends + timedelta(seconds=1)
+    assert conductor._settle_paused_task(s.task, s.policy, [])
+    after = controls.task_snapshot(s.task["id"])
+    resolved = after["escalation"]["resolved"]
+    assert resolved["option_key"] == "stop"
+    assert resolved["actor"] == factory_pause.EXPIRY_ACTOR
+    assert after["cancellation_requested"] is True
+    # A replay applies nothing further.
+    assert factory_pause.expire_stop_card(s.task["id"]) is False
+
+
+@pytest.mark.parametrize(
+    "keeper", ["before_deadline", "superseded", "in_flight", "repair_wait"]
+)
+def test_machine_stop_card_is_kept_when_expiry_has_no_authority(
+    paused_settlement, monkeypatch, keeper
+):
+    from datetime import timedelta
+
+    from factory.orchestration import factory_controls as controls, factory_pause
+
+    s = paused_settlement
+    card = _machine_stop_card(s)
+    late = _card_written_at(s) + factory_pause.STOP_CARD_GRACE + timedelta(hours=1)
+    if keeper == "before_deadline":
+        # Settlement only reaches the card once the task deadline has passed,
+        # however old the card is.
+        conductor._settle_paused_task(s.task, s.policy, [])
+    elif keeper == "superseded":
+        # A newer card restarts the grace from its own write time.
+        before = controls.task_snapshot(s.task["id"])
+        assert factory_pause.refresh(
+            {
+                "receipt_id": before["id"],
+                "task_id": s.task["id"],
+                "generation": before["generation"],
+                "control_version": _control_version(s),
+                "decision_id": controls.decision_identity(before),
+            },
+            "Edited acceptance",
+            "factory:escalation-revalidation",
+        )
+        card = controls.task_snapshot(s.task["id"])["escalation"]
+        s.clock[0] = (
+            _card_written_at(s) + factory_pause.STOP_CARD_GRACE - timedelta(minutes=1)
+        )
+        assert s.clock[0] > s.deadline
+        assert conductor._settle_paused_task(s.task, s.policy, [])
+    elif keeper == "in_flight":
+        s.clock[0] = late
+        monkeypatch.setattr(
+            "factory.orchestration.factory_decisions.decision_in_flight",
+            lambda *_a: True,
+        )
+        assert factory_pause.expire_stop_card(s.task["id"]) is False
+    else:
+        # A repair of the paused node is pending. The fixture has admissions
+        # paused, which must not let expiry destroy the recorded repair wait.
+        from factory.orchestration import factory_funding as funding
+
+        with controls._locked_session() as (db, _):
+            pause = funding._latest_pause(db, s.task["id"])
+            funding.record_audit(
+                db,
+                funding.ACTOR,
+                "repair_allocation_wait",
+                task_id=s.task["id"],
+                pause_id=pause.id,
+            )
+        s.clock[0] = late
+        assert conductor._settle_paused_task(s.task, s.policy, [])
+    after = controls.task_snapshot(s.task["id"])
+    assert after["escalation"]["resolved"] is None
+    assert after["escalation"]["options"] == card["options"]
+    assert not after["cancellation_requested"]
+
+
+def _machine_pause(s, actor="factory:funding"):
+    """Replace the fixture's operator pause with a card-less factory pause."""
+    from factory.orchestration import factory_controls as controls
+
+    assert controls.set_control("resume_task", "operator", task_id=s.task["id"])["ok"]
+    assert controls.set_control("pause_task", actor, task_id=s.task["id"])["ok"]
+
+
+def test_expired_machine_pause_stops_without_asking(paused_settlement):
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    _machine_pause(s)
+    pause_trigger(s, "deadline")
+    assert conductor._settle_paused_task(s.task, s.policy, [])
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == "cancelled"
+    assert after["escalation"] is None
+
+
+@pytest.mark.parametrize("keeper", ["operator", "question", "landing_hold"])
+def test_expired_pause_still_asks_when_a_person_owns_the_decision(
+    paused_settlement, keeper
+):
+    from factory.orchestration import factory_controls as controls
+
+    s = paused_settlement
+    if keeper != "operator":
+        _machine_pause(s)
+    with Session(s.engine) as db, db.begin():
+        row = controls._receipt(db, s.task["id"])
+        if keeper == "question":
+            row.escalation_json = json.dumps(
+                {
+                    "resolved": None,
+                    "question": "Which storage destination?",
+                    "reason": "Planner needs a choice",
+                    "options": [
+                        {
+                            "key": "a",
+                            "label": "A",
+                            "effect": conductor.CONTINUE_EFFECT,
+                            "detail": {"scope": "Use destination A."},
+                        },
+                        {"key": "b", "label": "B", "effect": "hold", "detail": {}},
+                    ],
+                }
+            )
+        elif keeper == "landing_hold":
+            direction = json.loads(row.direction_json or "{}")
+            direction["landing_hold"] = {
+                "actor": "factory:conductor",
+                "cause": "test",
+                "reason": "Leave unmerged",
+            }
+            row.direction_json = json.dumps(direction)
+    pause_trigger(s, "deadline")
+    assert conductor._settle_paused_task(s.task, s.policy, [])
+    after = controls.task_snapshot(s.task["id"])
+    assert after["state"] == "escalated"
+    assert after["escalation"]["resolved"] is None
+
+
+def test_consumed_repair_wait_no_longer_keeps_the_stop_card(paused_settlement):
+    from datetime import timedelta
+
+    from factory.orchestration import factory_controls as controls, factory_pause
+    from factory.orchestration import factory_funding as funding
+
+    s = paused_settlement
+    _machine_stop_card(s)
+    with controls._locked_session() as (db, _):
+        pause = funding._latest_pause(db, s.task["id"])
+        funding.record_audit(
+            db,
+            funding.ACTOR,
+            "repair_allocation_wait",
+            task_id=s.task["id"],
+            pause_id=pause.id,
+        )
+        wait = funding.latest(db, s.task["id"], "repair_allocation_wait")
+        funding.record_audit(
+            db,
+            funding.ACTOR,
+            "repair_funding_requested",
+            task_id=s.task["id"],
+            wait_id=wait["audit_id"],
+        )
+    s.clock[0] = (
+        _card_written_at(s) + factory_pause.STOP_CARD_GRACE + timedelta(hours=1)
+    )
+    assert s.clock[0] > s.deadline
+    assert factory_pause.expire_stop_card(s.task["id"]) is True
+
+
+def test_a_fresh_pause_reusing_an_old_stop_card_keeps_a_full_grace(paused_settlement):
+    from datetime import datetime, timedelta, timezone
+
+    from core.clock import aware
+    from factory.orchestration import factory_controls as controls, factory_pause
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = paused_settlement
+    card = _machine_stop_card(s)
+    # The card was written three days ago and an operator resumed the task.
+    with Session(s.engine) as db, db.begin():
+        written = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "paused_card_created",
+            )
+        ).one()
+        written.created_at = datetime.now(timezone.utc).replace(
+            tzinfo=None
+        ) - timedelta(days=3)
+    assert controls.set_control("resume_task", "operator", task_id=s.task["id"])["ok"]
+    # The factory pauses again for another reason and reuses the old card.
+    assert factory_pause.pause(s.task["id"], "factory:funding", "second reason")
+    assert controls.task_snapshot(s.task["id"])["escalation"] == card
+    with Session(s.engine) as db:
+        repaused_at = aware(funding._latest_pause(db, s.task["id"]).created_at)
+    pause_trigger(s, "deadline")
+    assert s.clock[0] > _card_written_at(s) + factory_pause.STOP_CARD_GRACE
+    assert s.clock[0] < repaused_at + factory_pause.STOP_CARD_GRACE
+    assert conductor._settle_paused_task(s.task, s.policy, [])
+    kept = controls.task_snapshot(s.task["id"])
+    assert kept["escalation"]["resolved"] is None
+    assert not kept["cancellation_requested"]
+    s.clock[0] = repaused_at + factory_pause.STOP_CARD_GRACE + timedelta(seconds=1)
+    assert conductor._settle_paused_task(s.task, s.policy, [])
+    assert controls.task_snapshot(s.task["id"])["cancellation_requested"] is True
+
+
+def test_expired_funding_pause_awaiting_an_operator_still_asks(
+    paused_settlement, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_funding as funding
+
+    s = paused_settlement
+    _machine_pause(s)
+    monkeypatch.setattr(funding, "_awaiting_operator", lambda *_a: True)
+    pause_trigger(s, "deadline")
+    assert conductor._settle_paused_task(s.task, s.policy, [])
+    assert controls.task_snapshot(s.task["id"])["state"] == "escalated"
+
+
+def _control_version(s):
+    from factory.orchestration.factory_models import FactoryControl
+
+    with Session(s.engine) as db:
+        return db.get(FactoryControl, "factory").version
 
 
 @pytest.fixture

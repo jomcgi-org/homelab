@@ -15,11 +15,15 @@ go_library(
     ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/runtimes/claude/guest-init/cmd",
     visibility = ["//visibility:private"],
-    deps = select({
+    deps = [
+        "//projects/firecracker/substrate/bootenv",
+    ] + select({
         "@rules_go//go/platform:android": [
+            "//projects/firecracker/substrate/guestvolume",
             "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:linux": [
+            "//projects/firecracker/substrate/guestvolume",
             "@org_golang_x_sys//unix",
         ],
         "//conditions:default": [],
@@ -34,13 +38,21 @@ go_binary(
 
 go_test(
     name = "cmd_test",
-    srcs = ["main_test.go"],
+    srcs = [
+        "main_test.go",
+        "mmds_test.go",
+        "volume_linux_test.go",
+    ],
     embed = [":cmd_lib"],
     deps = select({
         "@rules_go//go/platform:android": [
+            "//projects/firecracker/substrate/bootenv",
+            "//projects/firecracker/substrate/guestvolume",
             "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:linux": [
+            "//projects/firecracker/substrate/bootenv",
+            "//projects/firecracker/substrate/guestvolume",
             "@org_golang_x_sys//unix",
         ],
         "//conditions:default": [],

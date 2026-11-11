@@ -164,7 +164,7 @@ func TestEntityFreshnessFromSnapshot(t *testing.T) {
 		{end.Add(-time.Nanosecond), CoveragePartial},
 		{localHour(day, daylightStartHour), CoverageNone},
 	} {
-		ds.HourlyUntil = tc.until // Cached global coverage must not be consulted.
+		ds.HourlyUntil = tc.until // Coverage follows the current dataset/entity horizon.
 		if got := ds.DayFor(fresh, day, now).Coverage; got != tc.want {
 			t.Fatalf("until %v: %s want %s", tc.until, got, tc.want)
 		}
@@ -276,7 +276,7 @@ func TestCoverageFollowsTheHourlyHorizon(t *testing.T) {
 	}
 	first := LocalDay(base)
 	for i, want := range []Coverage{CoverageFull, CoverageFull, CoveragePartial, CoverageNone} {
-		if got := ds.CoverageOf(first + int32(i)); got != want {
+		if got := ds.DayWithin(&ds.Walks[0], first+int32(i), base, Limits{}).Coverage; got != want {
 			t.Errorf("day %d coverage %s, want %s", i, got, want)
 		}
 	}
@@ -350,20 +350,6 @@ func TestSlotStats(t *testing.T) {
 	if best.Day != tomorrow || !best.Doable || best.Best.GoodHours != 4 || best.Best.MaxWindKmh != 18 || best.Best.MinTempC != 9.5 ||
 		best.Best.TotalPrecipMM < 0.79 || best.Best.TotalPrecipMM > 0.81 {
 		t.Fatalf("best = %+v", best.Best)
-	}
-}
-
-// The CoverageOf index agrees with the rule it caches, for horizons at every
-// hour of a day.
-func TestCoverageIndexMatchesTheRule(t *testing.T) {
-	for h := 0; h < 48; h++ {
-		ds := &Dataset{HourlyUntil: base.Add(time.Duration(h) * time.Hour)}
-		ds.indexCoverage()
-		for day := LocalDay(base) - 3; day <= LocalDay(base)+5; day++ {
-			if got, want := ds.CoverageOf(day), ds.coverage(day); got != want {
-				t.Errorf("horizon +%dh day %s: index %s, rule %s", h, dayName(day), got, want)
-			}
-		}
 	}
 }
 

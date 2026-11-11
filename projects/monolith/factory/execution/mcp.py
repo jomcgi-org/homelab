@@ -7,9 +7,11 @@ import logging
 import platform
 import re
 import secrets
+import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from sqlmodel import Session
@@ -666,6 +668,7 @@ def _mark_turn_error_sync(
     cessation_confirmed: bool = False,
     invocation_not_attempted: bool = False,
     dispatch_count: int | None = None,
+    preinvoke_database_failure: dict | None = None,
 ) -> None:
     store.mark_turn_error_sync(
         session_id,
@@ -675,6 +678,7 @@ def _mark_turn_error_sync(
         cessation_confirmed=cessation_confirmed,
         invocation_not_attempted=invocation_not_attempted,
         dispatch_count=dispatch_count,
+        preinvoke_database_failure=preinvoke_database_failure,
     )
 
 
@@ -852,6 +856,9 @@ async def _execute_pending_message(session_id: int) -> None:
     # delivery made. It outlives the exception that loses the response, so this
     # executor can name the exact receipt the guest was told to publish to.
     invocation_record: dict = {}
+    from factory.execution.result_receipts import staged_preparation_enabled
+
+    invocation_guard = threading.Lock() if staged_preparation_enabled() else None
     response_lost_held = False
     executor_cancelled = False
     factory_owned = str(getattr(factory_row, "local_session_id", "")).startswith(
@@ -908,7 +915,7 @@ async def _execute_pending_message(session_id: int) -> None:
             )
             stolen_exit_logged = True
 
-    def _record_response_lost(
+    def _record_response_lost_locked(
         reason: str, state: dict, lock_timeout_seconds: float | None = None
     ) -> bool:
         """Hold this attempt rather than settling it unknown.
@@ -946,6 +953,18 @@ async def _execute_pending_message(session_id: int) -> None:
                 invocation_record["receipt_id"],
             )
         return response_lost_held
+
+    def _record_response_lost(
+        reason: str, state: dict, lock_timeout_seconds: float | None = None
+    ) -> bool:
+        if invocation_guard is None:
+            return _record_response_lost_locked(reason, state, lock_timeout_seconds)
+        if not invocation_guard.acquire(timeout=lock_timeout_seconds or 2.0):
+            return False
+        try:
+            return _record_response_lost_locked(reason, state, lock_timeout_seconds)
+        finally:
+            invocation_guard.release()
 
     def _response_lost_eligible() -> bool:
         return bool(
@@ -1158,6 +1177,8 @@ async def _execute_pending_message(session_id: int) -> None:
                     raise asyncio.CancelledError
 
             deliver_kwargs["admission_check"] = shared_admission_check
+            if invocation_guard is not None:
+                deliver_kwargs["invocation_guard"] = invocation_guard
             from factory.orchestration.api import declared_artifact_path
 
             artifact_path = await asyncio.to_thread(
@@ -1170,6 +1191,30 @@ async def _execute_pending_message(session_id: int) -> None:
             )
             if artifact_path is not None:
                 deliver_kwargs["artifact_path"] = artifact_path
+            from factory.orchestration.funding_profile import session_profile
+
+            try:
+                execution_profile = await asyncio.to_thread(
+                    session_profile,
+                    session_row.local_session_id,
+                    model=effective_model,
+                    message=row.message_text,
+                    session_id=session_id,
+                )
+            except ValueError as exc:
+                raise EmberTurnNotInvoked("funding profile identity mismatch") from exc
+            if execution_profile is not None:
+                if claimed_seq != 1 or row.dispatch_count != 1 or cli_session_id:
+                    raise EmberTurnNotInvoked("funding profile is one-shot")
+                deliver_kwargs["execution_profile"] = execution_profile
+                for key in (
+                    "repo",
+                    "branch",
+                    "system_prompt",
+                    "push_format",
+                    "workspace_handoff",
+                ):
+                    deliver_kwargs.pop(key, None)
             if not await asyncio.to_thread(
                 factory_session_allowed,
                 getattr(session_row, "local_session_id", None),
@@ -1277,7 +1322,20 @@ async def _execute_pending_message(session_id: int) -> None:
         except EmberTurnNotInvoked as exc:
             if await _abort_stolen_executor_confirmed("not-invoked delivery error"):
                 return
-            if row.capacity_intent_json and row.capacity_state != "legacy_unsupported":
+            from factory.execution.preinvoke_failure import database_failure
+            from factory.orchestration.backlog_refill_repair import (
+                execution_failure_eligible,
+            )
+
+            failure = database_failure(invocation_record.get("database_failure"))
+            repair_failure = failure is not None and await asyncio.to_thread(
+                execution_failure_eligible, session_row.local_session_id
+            )
+            if (
+                not repair_failure
+                and row.capacity_intent_json
+                and row.capacity_state != "legacy_unsupported"
+            ):
                 claim_released = await capacity_wait.return_before_post(
                     session_id,
                     claimed_seq,
@@ -1298,6 +1356,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 claim_owner,
                 invocation_not_attempted=True,
                 dispatch_count=row.dispatch_count,
+                preinvoke_database_failure=failure,
             )
             _clear_negative_oracle_verdict(session_id)
             return
@@ -1462,6 +1521,7 @@ async def _execute_pending_message(session_id: int) -> None:
             and not response_lost_held
             and claimed_dispatch_count is not None
             and not invocation_record.get("attempted")
+            and not invocation_record.get("attempt_pending")
         ):
             try:
                 claim_released = store.mark_turn_error_sync(
@@ -2277,8 +2337,99 @@ async def _broker_request(method: str, path: str) -> dict:
     return resp.json()
 
 
+def _login_environment_or_raise(environment: str, grant: str) -> str:
+    if environment not in ("prod", "dev"):
+        raise ValueError("environment must be prod or dev")
+    if environment == "dev" and grant != _DEFAULT_GRANT:
+        raise ValueError("dev login supports only codex-cluster")
+    return environment
+
+
+def _dev_login_payload(data: object, method: str, status: int) -> dict:
+    """Keep device approval fields; never forward provider error detail or tokens."""
+    if not isinstance(data, dict):
+        raise ValueError("invalid dev login response")
+    if method == "GET":
+        details = {
+            "none": "Device login required",
+            "pending": "Device approval pending",
+            "granted": "Stored dev grant present",
+            "failed": "Device login failed; start a new login",
+        }
+        state = data.get("state")
+        if not isinstance(state, str) or state not in details:
+            raise ValueError("invalid dev login state")
+        return {"state": state, "detail": details[state]}
+    if status == 409:
+        reason = data.get("reason")
+        if (
+            reason == "login_starting"
+            and not data.get("user_code")
+            and not data.get("verification_url")
+        ):
+            return {
+                "retry_after": 10,
+                "message": "Device flow is starting, try again shortly.",
+                "pending": False,
+            }
+        if reason not in (None, "login_pending"):
+            raise ValueError("invalid dev login conflict")
+    url, code, expiry = (
+        data.get("verification_url"),
+        data.get("user_code"),
+        data.get("expires_in"),
+    )
+    if not isinstance(url, str) or len(url) > 2048:
+        raise ValueError("invalid dev verification URL")
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or any(character.isspace() for character in url)
+    ):
+        raise ValueError("invalid dev verification URL")
+    if not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", code):
+        raise ValueError("invalid dev device code")
+    # The broker emits zero when the provider omits its optional expiry.
+    if type(expiry) is not int or not 0 <= expiry <= 86400:
+        raise ValueError("invalid dev device code expiry")
+    return {
+        "verification_url": url,
+        "user_code": code,
+        "expires_in": expiry,
+        "pending": status == 409,
+    }
+
+
+async def _broker_login_request(
+    method: str, grant: str, *, environment: str = "prod"
+) -> dict:
+    grant = _grant_or_raise(grant)
+    _login_environment_or_raise(environment, grant)
+    paths = {"POST": "start", "GET": "status"}
+    path = f"/grants/{grant}/login/{paths[method]}"
+    if environment == "prod":
+        return await _broker_request(method, path)
+    try:
+        response = await broker_client.dev_login_request(method, path, timeout=30)
+        if not (method == "POST" and response.status_code == 409):
+            response.raise_for_status()
+        data = _dev_login_payload(response.json(), method, response.status_code)
+    except broker_client.DevBrokerLoginUnavailable:
+        raise RuntimeError("Dev Codex login broker is not configured") from None
+    except (httpx.HTTPError, ValueError):
+        raise RuntimeError("Dev Codex login broker unavailable") from None
+    return {**data, "environment": "dev", "grant": grant}
+
+
 @mcp.tool
-async def monolith_codex_broker_login_start(grant: str = _DEFAULT_GRANT) -> dict:
+async def monolith_codex_broker_login_start(
+    grant: str = _DEFAULT_GRANT, *, environment: str = "prod"
+) -> dict:
     """Begin the token broker device-code login for an OAuth grant.
 
     Returns the verification URL and one-time user code to approve in any
@@ -2287,14 +2438,21 @@ async def monolith_codex_broker_login_start(grant: str = _DEFAULT_GRANT) -> dict
 
     Args:
         grant: Grant name registered in the broker. Defaults to codex-cluster.
+        environment: prod (default), or the configured dev codex-cluster broker.
     """
     grant = _grant_or_raise(grant)
-    data = await _broker_request("POST", f"/grants/{grant}/login/start")
-    await agent_api.notify(
-        "codex broker login pending for grant %s. Approve code %s at %s"
-        % (grant, data.get("user_code", "?"), data.get("verification_url", "?")),
-        level="warn",
-    )
+    data = await _broker_login_request("POST", grant, environment=environment)
+    if data.get("user_code"):
+        await agent_api.notify(
+            "codex broker login pending for %s grant %s. Approve code %s at %s"
+            % (
+                environment,
+                grant,
+                data["user_code"],
+                data.get("verification_url", "?"),
+            ),
+            level="warn",
+        )
     return data
 
 
@@ -2339,18 +2497,21 @@ async def monolith_provider_quota(*, force: bool = False) -> dict:
 
 
 @mcp.tool
-async def monolith_codex_broker_login_status(grant: str = _DEFAULT_GRANT) -> dict:
+async def monolith_codex_broker_login_status(
+    grant: str = _DEFAULT_GRANT, *, environment: str = "prod"
+) -> dict:
     """Report the token broker login state for an OAuth grant.
 
     Args:
         grant: Grant name registered in the broker. Defaults to codex-cluster.
+        environment: prod (default), or the configured dev codex-cluster broker.
     """
     grant = _grant_or_raise(grant)
-    data = await _broker_request("GET", f"/grants/{grant}/login/status")
+    data = await _broker_login_request("GET", grant, environment=environment)
     if data.get("state") == "granted":
         await agent_api.notify(
-            "codex broker grant %s is active. The lane refreshes itself from here."
-            % grant,
+            "codex broker %s grant %s is active. The lane refreshes itself from here."
+            % (environment, grant),
             level="info",
         )
     return data

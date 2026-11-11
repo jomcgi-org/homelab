@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/bootenv"
 )
 
 // TestServingPortFromCmdline covers extracting the ember.serving_port= value from
@@ -116,7 +118,7 @@ func TestSetHandlerDiskEnv(t *testing.T) {
 // TestMmdsEnvFromCmdline covers the R4 D-R4.PR-7.1 boot-arg decoder: multiple
 // ember.env.<KEY>= tokens, base64url decoding, an invalid key skipped, a
 // malformed base64 value skipped, an absent prefix ignored, and duplicate keys
-// (last wins, matching valueFromCmdline's convention).
+// (last wins, matching bootenv.Value's convention).
 func TestMmdsEnvFromCmdline(t *testing.T) {
 	pw := base64.RawURLEncoding.EncodeToString([]byte("hunter2"))
 	user := base64.RawURLEncoding.EncodeToString([]byte("app"))
@@ -142,13 +144,13 @@ func TestMmdsEnvFromCmdline(t *testing.T) {
 		{"empty value skipped", "ember.env.POSTGRES_PASSWORD=", map[string]string{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mmdsEnvFromCmdline(tc.cmdline)
+			got := bootenv.Decode(tc.cmdline)
 			if len(got) != len(tc.want) {
-				t.Fatalf("mmdsEnvFromCmdline(%q) = %v, want %v", tc.cmdline, got, tc.want)
+				t.Fatalf("bootenv.Decode(%q) = %v, want %v", tc.cmdline, got, tc.want)
 			}
 			for k, v := range tc.want {
 				if got[k] != v {
-					t.Fatalf("mmdsEnvFromCmdline(%q)[%q] = %q, want %q", tc.cmdline, k, got[k], v)
+					t.Fatalf("bootenv.Decode(%q)[%q] = %q, want %q", tc.cmdline, k, got[k], v)
 				}
 			}
 		})
