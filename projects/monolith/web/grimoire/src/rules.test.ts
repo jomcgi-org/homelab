@@ -53,8 +53,7 @@ const rules: Rule[] = [
     name: "no raw HTML injection",
     pattern: /dangerouslySetInnerHTML|\.innerHTML\s*=/,
     instead:
-      "render text as text; the one escaping renderer is src/handouts/HandoutText.tsx",
-    allow: ["src/handouts/HandoutText.tsx"],
+      "render text as text; src/handouts/HandoutText.tsx turns handout markup into elements without injecting any",
   },
   {
     name: "no raw interactive elements",

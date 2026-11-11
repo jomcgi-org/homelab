@@ -48,8 +48,8 @@ recalling an API.
 - No raw `<button>`, `<input>`, `<a>` or similar. Navigation uses `Link` or
   `Button href` with a path from `src/app/paths.ts`.
 - `fetch` appears only in `src/api/client.ts`.
-- Text renders as text. `src/handouts/HandoutText.tsx` is the only place that
-  may inject HTML.
+- Text renders as text. Nothing injects HTML: `src/handouts/HandoutText.tsx`
+  parses handout markup into React elements.
 - Colours, spacing and radius come from theme tokens. No inline styles.
 
 ## Layout
