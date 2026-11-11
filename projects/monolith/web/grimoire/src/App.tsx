@@ -28,6 +28,16 @@ const Entity = lazy(() =>
   import("./screens/entity/Entity").then((m) => ({ default: m.Entity })),
 );
 
+const JoinAccept = lazy(() =>
+  import("./screens/join/JoinAccept").then((m) => ({ default: m.JoinAccept })),
+);
+const Platform = lazy(() =>
+  import("./screens/platform/Platform").then((m) => ({ default: m.Platform })),
+);
+const Profile = lazy(() =>
+  import("./screens/platform/Profile").then((m) => ({ default: m.Profile })),
+);
+
 function Loading() {
   return (
     <Page title="Grimoire">
@@ -44,6 +54,9 @@ export function App() {
         <Routes>
           <Route index element={<Lobby />} />
           <Route path="sheets" element={<Sheets />} />
+          <Route path="join/accept" element={<JoinAccept />} />
+          <Route path="platform" element={<Platform />} />
+          <Route path="platform/profile" element={<Profile />} />
           <Route path="campaigns/:campaignId">
             <Route path="session" element={<Session />} />
             <Route path="notes" element={<Notes />} />

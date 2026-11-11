@@ -1,10 +1,10 @@
 import { defineConfig } from "vite";
 
 // The app is static files served under one path prefix on the friends lane.
-// GRIMOIRE_BASE moves it: /grimoire/next/ while the Svelte UI still owns
-// /grimoire, then /grimoire/ at cutover. Assets live under the same prefix,
-// so they stay on the route whose SecurityPolicy gates every byte.
-export const base = process.env.GRIMOIRE_BASE || "/grimoire/next/";
+// Assets live under the same prefix, so they stay on the route whose
+// SecurityPolicy gates every byte. grimoire/web.py reads the prefix back out
+// of the built index.html, so only this value sets where the app lives.
+export const base = process.env.GRIMOIRE_BASE || "/grimoire/";
 
 export default defineConfig({
   base,

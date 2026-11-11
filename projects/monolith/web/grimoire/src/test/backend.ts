@@ -21,6 +21,13 @@ type Reply<K extends Operation> =
 
 export type Routes = { [K in Operation]?: Reply<K> };
 
+/**
+ * Routes outside the Grimoire API, keyed `METHOD /full/path/{param}`: the
+ * join landing and the account API. Untyped, because the generated schema
+ * covers only the Grimoire API.
+ */
+export type OtherRoutes = Record<string, unknown | ((call: Call) => unknown)>;
+
 const isStatus = (
   value: unknown,
 ): value is { status: number; detail?: string } =>
@@ -46,21 +53,29 @@ export interface Backend {
   /** Every call made, oldest first. */
   calls: Call[];
   /** Calls to one operation. */
-  callsTo: (operation: Operation) => Call[];
+  callsTo: (operation: Operation | (string & {})) => Call[];
   /** Replace or add routes mid-test. */
   set: (routes: Routes) => void;
   restore: () => void;
 }
 
-export function installBackend(initial: Routes): Backend {
+export function installBackend(
+  initial: Routes,
+  other: OtherRoutes = {},
+): Backend {
   const original = globalThis.fetch;
   let routes: Routes = { ...initial };
   const calls: Call[] = [];
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input), "https://friends.example.test");
     const method = (init?.method ?? "GET").toUpperCase();
-    const path = url.pathname.replace(/^\/api\/grimoire/, "");
-    for (const [operation, reply] of Object.entries(routes)) {
+    const grimoire = url.pathname.startsWith("/api/grimoire/");
+    const path = grimoire
+      ? url.pathname.replace(/^\/api\/grimoire/, "")
+      : url.pathname;
+    for (const [operation, reply] of Object.entries(
+      grimoire ? routes : other,
+    )) {
       const [routeMethod, template] = operation.split(" ") as [string, string];
       if (routeMethod !== method) continue;
       const params = match(template, path);

@@ -69,6 +69,9 @@ function detail(body: unknown): string | null {
   if (typeof body !== "object" || body === null) return null;
   const value = (body as { detail?: unknown }).detail;
   if (typeof value === "string") return value;
+  // The join landing answers {error}.
+  const error = (body as { error?: unknown }).error;
+  if (typeof error === "string") return error;
   // FastAPI validation errors: [{msg, loc}, ...].
   if (Array.isArray(value)) {
     const first = value[0] as { msg?: unknown } | undefined;
@@ -88,16 +91,28 @@ export function apiUrl<K extends Operation>(
   );
 }
 
-export async function api<K extends Operation>(
-  operation: K,
-  options: CallOptions<K> = {},
-): Promise<Response<K>> {
-  const method = operation.slice(0, operation.indexOf(" "));
+export interface RequestOptions {
+  method?: string;
+  /** Sent as JSON, or as multipart when it is FormData. */
+  body?: unknown;
+  signal?: AbortSignal;
+}
+
+/**
+ * One request to this origin, answered with JSON. `api()` is the typed entry
+ * for the Grimoire API; call this directly only for the few endpoints outside
+ * it (the join landing under /grimoire/join and the account API), from a
+ * module in src/api.
+ */
+export async function requestJson<T>(
+  url: string,
+  options: RequestOptions = {},
+): Promise<T> {
   const upload = options.body instanceof FormData;
   const signals = [AbortSignal.timeout(TIMEOUT_MS)];
   if (options.signal) signals.push(options.signal);
-  const response = await fetch(apiUrl(operation, options), {
-    method,
+  const response = await fetch(url, {
+    method: options.method ?? "GET",
     // A login redirect must surface as a sign-in signal, not be followed.
     redirect: "manual",
     credentials: "same-origin",
@@ -118,9 +133,9 @@ export async function api<K extends Operation>(
     throw new SignInError();
   }
   signIn.answered();
-  if (response.status === 204) return undefined as Response<K>;
+  if (response.status === 204) return undefined as T;
   const type = response.headers.get("content-type") ?? "";
-  // The gateway's static fallback must never answer under /api. If it does,
+  // The gateway's static fallback must never answer for data. If it does,
   // say so plainly instead of failing inside JSON.parse.
   if (!type.includes("json")) {
     throw new ApiError(
@@ -135,7 +150,18 @@ export async function api<K extends Operation>(
       detail(body) ?? "Grimoire could not complete that request.",
     );
   }
-  return body as Response<K>;
+  return body as T;
+}
+
+export function api<K extends Operation>(
+  operation: K,
+  options: CallOptions<K> = {},
+): Promise<Response<K>> {
+  return requestJson<Response<K>>(apiUrl(operation, options), {
+    method: operation.slice(0, operation.indexOf(" ")),
+    body: options.body,
+    signal: options.signal,
+  });
 }
 
 /** The message to show for any thrown value. */

@@ -13,9 +13,9 @@ import { MemoryRouter } from "react-router";
 import { App } from "../src/App";
 import { Providers } from "../src/app/Providers";
 import { installBackend } from "../src/test/backend";
-import { world } from "../src/test/world";
+import { world, worldOther } from "../src/test/world";
 
-installBackend(world);
+installBackend(world, worldOther);
 
 createRoot(document.getElementById("root")!).render(
   <MemoryRouter initialEntries={[location.hash.slice(1) || "/"]}>

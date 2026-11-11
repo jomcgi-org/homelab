@@ -10,6 +10,9 @@ export const paths = {
   notes: (campaignId: string) => `/campaigns/${campaignId}/notes`,
   journal: (campaignId: string) => `/campaigns/${campaignId}/journal`,
   grants: (campaignId: string) => `/campaigns/${campaignId}/grants`,
+  joinAccept: "/join/accept",
+  platform: "/platform",
+  profile: "/platform/profile",
   entity: (campaignId: string, entityId: string) =>
     `/campaigns/${campaignId}/entities/${entityId}`,
 };
@@ -17,6 +20,7 @@ export const paths = {
 /** The gateway serves these itself; they are full page navigations. */
 export const gateway = {
   signOut: "/grimoire/oauth2/logout",
+  /** The anonymous landing a single-use link opens; served by the backend. */
   joinLanding: "/grimoire/join",
 };
 

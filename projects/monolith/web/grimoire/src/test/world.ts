@@ -4,14 +4,16 @@
  * screen can be opened and screenshotted with no backend and no sign-in.
  * Add a route here when a screen starts calling a new operation.
  */
-import type { Routes } from "./backend";
+import type { OtherRoutes, Routes } from "./backend";
 import { characters, invitation, lobby, members } from "./fixtures";
 import { sessionRoutes } from "./fixtures/session";
 import { handoutsRoutes } from "./fixtures/handouts";
 import { inventoryRoutes } from "./fixtures/inventory";
+import { joinOther } from "./fixtures/join";
 import { journalRoutes } from "./fixtures/journal";
 import { knowledgeRoutes } from "./fixtures/knowledge";
 import { notesRoutes } from "./fixtures/notes";
+import { platformOther } from "./fixtures/platform";
 import { sheetsRoutes } from "./fixtures/sheets";
 import { turnsRoutes } from "./fixtures/turns";
 
@@ -32,3 +34,6 @@ export const world: Routes = {
   ...sheetsRoutes,
   ...turnsRoutes,
 };
+
+/** The endpoints outside the Grimoire API: the join landing and accounts. */
+export const worldOther: OtherRoutes = { ...joinOther, ...platformOther };
