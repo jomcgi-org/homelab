@@ -37,5 +37,5 @@ func (s *Server) ReadyBaseRootfsPaths() []string {
 // cgroup, the value NodeStatus reports. Startup refuses to register a classed
 // brick that reads zero: it would be placed as an unbounded wildcard.
 func (s *Server) BrickMemBudgetMib() uint64 {
-	return s.memBudget()
+	return s.memBudgetMib()
 }

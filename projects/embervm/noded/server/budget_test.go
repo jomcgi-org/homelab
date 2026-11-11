@@ -70,17 +70,16 @@ func TestUnlimitedCgroupReportsZero(t *testing.T) {
 	}
 }
 
-// TestExhaustedCgroupHeadroomIsKnown: a cgroup whose numeric limit is fully
-// charged reads 1 MiB through the real reader, never the 0 that means unknown,
-// so admission refuses instead of failing open (S16).
+// TestExhaustedCgroupHeadroomIsKnown distinguishes a full cgroup from an
+// unlimited one without rounding a finite zero up to an allocatable MiB.
 func TestExhaustedCgroupHeadroomIsKnown(t *testing.T) {
 	withBudgetFsRoot(t, map[string]string{
 		"memory.max":     "4294967296\n",
 		"memory.current": "4294967296\n",
 		"memory.stat":    "file 0\n",
 	})
-	if got := newBudget(0).MemHeadroomMib(); got != 1 {
-		t.Fatalf("MemHeadroomMib() on an exhausted cgroup = %d, want 1 (known, not the unknown 0)", got)
+	if got, known := newBudget(0).memHeadroomReading(); got != 0 || !known {
+		t.Fatalf("exhausted headroom = (%d, %t), want (0, true)", got, known)
 	}
 }
 
@@ -178,29 +177,26 @@ func TestParseMemHeadroomMibWithPageCache(t *testing.T) {
 			statRaw: "file 1\n",
 			want:    0,
 		},
-		// A numeric limit makes the reading KNOWN, so an exhausted cgroup reports
-		// 1 MiB rather than the 0 that means unknown (which admission fails open
-		// on). These rows pinned 0 before the known/unknown split.
 		{
 			name:    "max is no greater than nonreclaimable is known exhausted",
 			maxRaw:  "2147483648",
 			curRaw:  "2147483648",
 			statRaw: "file 1\nshmem 1\n",
-			want:    1,
+			want:    0,
 		},
 		{
 			name:    "free under 1 MiB is known, not unknown",
 			maxRaw:  "4294967296",
 			curRaw:  "4294967000",
 			statRaw: "file 0\nshmem 0\n",
-			want:    1,
+			want:    0,
 		},
 		{
 			name:    "current overshooting max is known exhausted",
 			maxRaw:  "4294967296",
 			curRaw:  "4295229440",
 			statRaw: "file 0\n",
-			want:    1,
+			want:    0,
 		},
 	}
 	for _, c := range cases {
@@ -474,5 +470,110 @@ func TestParseMemBudgetMib(t *testing.T) {
 		if got := parseMemBudgetMib(c.maxRaw, c.reserveMib); got != c.want {
 			t.Errorf("parseMemBudgetMib(%q, %d) = %d, want %d", c.maxRaw, c.reserveMib, got, c.want)
 		}
+	}
+}
+
+func TestMemoryReadingDistinguishesFiniteZero(t *testing.T) {
+	for _, tc := range []struct {
+		name, max, current         string
+		reserve                    uint64
+		budget, headroom           uint64
+		budgetKnown, headroomKnown bool
+	}{
+		{"zero limit", "0", "0", 0, 0, 0, true, true},
+		{"sub MiB", "524288", "0", 0, 0, 0, true, true},
+		{"reserve consumes capacity", "1048576", "0", 1, 0, 1, true, true},
+		{"usage at limit", "1048576", "1048576", 0, 1, 0, true, true},
+		{"usage above limit", "1048576", "2097152", 0, 1, 0, true, true},
+		{"sub MiB headroom", "2097152", "1572864", 0, 2, 0, true, true},
+		{"unlimited", "max", "0", 0, 0, 0, false, false},
+		{"invalid limit", "invalid", "0", 0, 0, 0, false, false},
+		{"invalid usage", "1048576", "invalid", 0, 1, 0, true, false},
+		{"unsigned limit", "18446744073709551615", "0", 0, (1 << 44) - 1, (1 << 44) - 1, true, true},
+		{"overflowing limit", "18446744073709551616", "0", 0, 0, 0, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withBudgetFsRoot(t, map[string]string{"memory.max": tc.max, "memory.current": tc.current})
+			got := newBudget(tc.reserve).readMemory()
+			want := memoryReading{budgetMib: tc.budget, headroomMib: tc.headroom, budgetKnown: tc.budgetKnown, headroomKnown: tc.headroomKnown}
+			if got != want {
+				t.Fatalf("memory reading = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestMemoryReadingAccountsForFiniteAncestorsAndSiblingUsage(t *testing.T) {
+	root := t.TempDir()
+	oldRoot, oldSelf := budgetFsRoot, selfCgroupPath
+	budgetFsRoot, selfCgroupPath = root, filepath.Join(root, "self")
+	t.Cleanup(func() { budgetFsRoot, selfCgroupPath = oldRoot, oldSelf })
+	if err := os.WriteFile(selfCgroupPath, []byte("0::/pod/container/embervm-noded-daemon\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	write := func(dir, max, current string) {
+		t.Helper()
+		path := filepath.Join(root, dir)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for name, value := range map[string]string{"memory.max": max, "memory.current": current} {
+			if err := os.WriteFile(filepath.Join(path, name), []byte(value), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	write("pod", "8589934592", "8053063680") // 8 GiB ceiling, only 512 MiB available.
+	write("pod/container", "4294967296", "1073741824")
+	write("pod/container/embervm-noded-daemon", "max", "134217728")
+	b := newBudget(256)
+	got := b.readMemory()
+	if got.budgetMib != 3840 || got.headroomMib != 512 || !got.budgetKnown || !got.headroomKnown {
+		t.Fatalf("ancestor reading = %+v, want budget 3840 and headroom 512", got)
+	}
+	// A finite exhausted ancestor must not be discarded because its leaf or
+	// another ancestor still has headroom. All reads must observe resize.
+	write("pod", "8589934592", "8589934592")
+	if got := b.readMemory(); !got.headroomKnown || got.headroomMib != 0 {
+		t.Fatalf("exhausted parent reading = %+v", got)
+	}
+	write("pod/container", "0", "0")
+	if got := b.readMemory(); !got.budgetKnown || got.budgetMib != 0 {
+		t.Fatalf("zero ancestor limit reading = %+v", got)
+	}
+}
+
+// A private cgroup namespace only exposes its own root, so an apparent limit
+// above that mount is not part of this reader's visible hierarchy.
+func TestMemoryReadingStopsAtMountRoot(t *testing.T) {
+	outer := t.TempDir()
+	root := filepath.Join(outer, "mount")
+	writeCgroupFixture(t, outer, map[string]string{"memory.max": "0", "memory.current": "0"})
+	writeCgroupFixture(t, root, map[string]string{"memory.max": "4194304", "memory.current": "1048576"})
+	oldRoot := budgetFsRoot
+	budgetFsRoot = root
+	t.Cleanup(func() { budgetFsRoot = oldRoot })
+	withSelfCgroup(t, "0::/\n")
+	got := newBudget(1).readMemory()
+	if got != (memoryReading{budgetMib: 3, headroomMib: 3, budgetKnown: true, headroomKnown: true}) {
+		t.Fatalf("private namespace reading = %+v", got)
+	}
+}
+
+func TestMemoryReadingFiniteParentWithUnreadableOrUnlimitedChild(t *testing.T) {
+	for _, leafLimit := range []string{"max", "invalid"} {
+		t.Run(leafLimit, func(t *testing.T) {
+			root := t.TempDir()
+			writeCgroupFixture(t, root, map[string]string{"memory.max": "4194304", "memory.current": "3145728"})
+			writeCgroupFixture(t, filepath.Join(root, "child"), map[string]string{"memory.max": leafLimit, "memory.current": "0"})
+			oldRoot := budgetFsRoot
+			budgetFsRoot = root
+			t.Cleanup(func() { budgetFsRoot = oldRoot })
+			withSelfCgroup(t, "0::/child\n")
+			got := newBudget(1).readMemory()
+			if got != (memoryReading{budgetMib: 3, headroomMib: 1, budgetKnown: true, headroomKnown: true}) {
+				t.Fatalf("finite parent reading = %+v", got)
+			}
+		})
 	}
 }
