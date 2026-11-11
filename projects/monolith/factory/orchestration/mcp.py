@@ -2825,8 +2825,9 @@ async def factory_request_landing_rereview(
     hold (release it separately with factory_release_landing_hold), an
     unmoved head, a closed PR, a different head and a branch that is not
     the delivery branch. Apply reopens the delivery through bounded landing
-    recovery: one correction round verifies the moved head without
-    rewriting history, then a fresh independent review of the exact current
+    recovery: one correction round verifies the moved head and rebuilds a
+    head with a merge commit as linear commits for the rebase queue, then a
+    fresh independent review of the exact current
     head must approve before landing can re-arm. It grants no landing
     authority and never waives review, CI, holds or recovery limits.
     """

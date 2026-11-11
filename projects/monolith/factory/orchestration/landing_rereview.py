@@ -5,7 +5,8 @@ its independent review approved, for example after an operator merged the base
 branch into the PR to resolve conflicts. Nothing automatic recovers that state.
 This control reopens one such delivery through the existing bounded landing
 recovery with reason ``head_moved``: one correction round verifies the moved
-head without rewriting history, then a fresh native review of the exact current
+head and rebuilds a head with a merge commit as linear commits for the rebase
+queue, then a fresh native review of the exact current
 head must approve before landing can re-arm. It grants no landing authority,
 waives no review or CI and releases no hold.
 """
