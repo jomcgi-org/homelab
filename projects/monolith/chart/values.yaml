@@ -2117,6 +2117,21 @@ cfIngress:
     clientID: grimoire-friends
     clientSecretName: grimoire-oidc-client
     onepasswordItemPath: vaults/k8s-homelab/items/grimoire-oidc
+    # The client-only React UI (projects/monolith/web/grimoire). Enabling it
+    # routes its static files and the listed API prefixes to the API port on
+    # the Grimoire route, and lets the backend accept the session cookie from
+    # that one origin. Off, the Svelte BFF remains the only thing reachable.
+    browserUi:
+      enabled: false
+      # Must equal the base the bundle was built with (GRIMOIRE_BASE in
+      # web/grimoire/vite.config.ts): /grimoire/next until cutover.
+      path: /grimoire/next
+      # Must equal BROWSER_API_PREFIXES in grimoire/browser_lane.py. Never add
+      # a prefix whose routes do not all enforce the Grimoire identity.
+      apiPrefixes:
+        - /api/grimoire/lobby
+        - /api/grimoire/campaigns
+        - /api/grimoire/invitations
   # The moving planner's lane on friends.jomcgi.dev (ADR security/006), gated to
   # the authentik `family` group. See templates/httproute-friends.yaml.
   #

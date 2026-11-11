@@ -42,6 +42,9 @@
 # and makes `ci` unable to start any build at all. Excluding from here is what
 # every other subdirectory above does, and unlike `ignore` it covers the subtree.
 # gazelle:exclude frontend
+# The Grimoire React app is another pnpm/rules_js package with a hand-written
+# BUILD, for the same reason.
+# gazelle:exclude web
 # Hand-written bdd_test targets (need the real-Postgres harness), so keep gazelle
 # from generating conflicting py_tests for them.
 # gazelle:exclude public_reader_grants_test.py
@@ -74,6 +77,13 @@ exports_files(["ARCHITECTURE.md"])
 exec_filegroup(
     name = "frontend_dist",
     src = "//projects/monolith/frontend:build",
+)
+
+# The Grimoire React bundle, served by grimoire/web.py. Built on the exec
+# platform for the same reason as :frontend_dist.
+exec_filegroup(
+    name = "grimoire_web_dist",
+    src = "//projects/monolith/web/grimoire:build",
 )
 
 # Module config.py files for chart validation test.
@@ -173,6 +183,7 @@ py_venv_binary(
         # explicitly or every escalation fails open with FileNotFoundError.
         "chat/orchestrator_bundle.md",
         ":frontend_dist",
+        ":grimoire_web_dist",
     ],
     imports = ["."],  # keep
     main = "app/main.py",
@@ -235,6 +246,7 @@ filegroup(
         "//projects/monolith/dev/deploy:repo_docs",
         "//projects/monolith/dev/grimoire:repo_docs",
         "//projects/monolith/frontend:repo_docs",
+        "//projects/monolith/web/grimoire:repo_docs",
         "//projects/operators/oci-model-cache:repo_docs",
         "//projects/platform/argocd:repo_docs",
         "//projects/platform/authentik:repo_docs",
@@ -1760,6 +1772,9 @@ py3_image(
         # at certifi's bundle so outbound HTTPS (e.g. Discord gateway) works.
         "SSL_CERT_FILE": "/projects/monolith/main.runfiles/_main/projects/monolith/.main/lib/python3.13/site-packages/certifi/cacert.pem",
         "REPO_DOCS_MANIFEST_PATH": "/etc/monolith/repo_docs_manifest.ndjson",
+        # The Grimoire React bundle (:grimoire_web_dist), named explicitly so
+        # grimoire/web.py never depends on how runfiles are laid out.
+        "GRIMOIRE_WEB_DIR": "/projects/monolith/main.runfiles/_main/projects/monolith/web/grimoire/dist",
     },
     main = "app/main.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/backend",
@@ -6958,6 +6973,51 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlmodel",
+    ],
+)
+
+# The friends lane's browser-facing API: cookie credential, CSRF, and the audit
+# that every gateway-routed path enforces the Grimoire identity.
+py_test(
+    name = "grimoire_browser_lane_test",
+    srcs = ["grimoire/browser_lane_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_core",
+        ":pkg_grimoire",
+        "@pip//cryptography",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pyjwt",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+# The committed TypeScript contract must equal the generator's output, so a
+# response-model change fails here until web/grimoire is regenerated.
+py_test(
+    name = "grimoire_browser_api_schema_test",
+    srcs = ["grimoire/browser_api_schema_test.py"],
+    data = ["//projects/monolith/web/grimoire:api_schema"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "@pip//fastapi",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "grimoire_web_test",
+    srcs = ["grimoire/web_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
     ],
 )
 

@@ -32,6 +32,8 @@ author's knowledge, with DM access requiring `dm_readable`.
 - Read-only public routes use the same prefix through `router_public.py`.
 - The Svelte frontend lives in `projects/monolith/frontend/src/lib/grimoire`
   and `projects/monolith/frontend/src/routes/public/app/grimoire`.
+- The friends web app lives in `projects/monolith/web/grimoire`. See
+  [Friends web app](#friends-web-app).
 - Persistent state lives in the Monolith Postgres cluster. There is no separate
   Grimoire deployment or datastore.
 
@@ -594,18 +596,90 @@ runtime, and no current code should imply otherwise.
 ## Deliberately absent
 
 The retired prototype's Cloud Run services, Firestore, Redis fan-out,
-standalone authentication, Gemini Live voice pipeline, and separate React UI
-are not supported architecture. New Grimoire work belongs in the Monolith
-domain, its Svelte frontend, or its batch jobs.
+standalone authentication, Gemini Live voice pipeline, and standalone React
+frontend are not supported architecture. New Grimoire work belongs in the
+Monolith domain, its web UIs, or its batch jobs.
+
+## Friends web app
+
+The friends UI is being rebuilt as a client-only React app on the
+[Astryx](https://github.com/facebook/astryx) component library
+(`projects/monolith/web/grimoire`, #7698). It is served at `/grimoire/next`
+beside the Svelte pages until it reaches parity, then moves to `/grimoire`.
+Public Grimoire pages stay in Svelte.
+
+- **Static files.** `grimoire/web.py` serves the built bundle from the API
+  port. Any path under the base that is not a built asset answers with
+  `index.html`; a missing asset is a 404, never the shell. The base path is
+  read from the bundle, so server and bundle cannot disagree. There is no
+  server rendering, no React Server Components and no server actions.
+- **Direct API calls.** The browser calls `/api/grimoire` itself. The
+  `-grimoire` HTTPRoute forwards an explicit list of prefixes to the API port:
+  `/api/grimoire/lobby`, `/api/grimoire/campaigns` and
+  `/api/grimoire/invitations` (`grimoire/browser_lane.py`). The prefix is
+  never routed whole: `/api/grimoire/books` and `/api/grimoire/chunks/*/image`
+  have no identity check of their own, because the private lane's Cloudflare
+  Access session is their gate.
+- **Credential.** Envoy's OIDC filter decrypts the session cookie before
+  forwarding, so the API port receives the signed ID token in the
+  `grimoire-id-token` cookie. `grimoire/access.py` verifies it exactly as it
+  verifies `X-Grimoire-Token`: issuer, audience, signature and expiry. The
+  cookie is a credential only when `GRIMOIRE_BROWSER_ORIGIN` is set, which
+  the chart does only when the route is enabled.
+- **Cross-site requests.** A cookie rides along on requests another site
+  makes. A write carrying the cookie must send exactly one `Origin` header
+  equal to `GRIMOIRE_BROWSER_ORIGIN`, and `Sec-Fetch-Site`, when present,
+  must be `same-origin`. Reads are not restricted: they change nothing and a
+  cross-origin page cannot read the answer.
+- **Caching.** Hashed assets are `private, max-age=31536000, immutable`.
+  `index.html` is `private, no-cache`, so a deploy takes effect on the next
+  reload. API responses are `private, no-store`. Everything carries
+  `Cloudflare-CDN-Cache-Control: no-store`: the route's SecurityPolicy gates
+  every byte, so a shared cache must never hold a copy.
+- **Content-Security-Policy.** The shell allows scripts and styles from its
+  own origin only, with one exception: the component library injects a single
+  fixed stylesheet for overlay positioning, allowed by its SHA-256 hash. The
+  bundle ships the hash in `style-hashes.json` and `src/csp.test.tsx` fails
+  when an upgrade changes it.
+- **Contract.** `grimoire/browser_api_schema.py` generates
+  `web/grimoire/src/api/schema.ts` from the response models. A test compares
+  the committed file with the generator's output, and the app's typecheck
+  compiles against it.
+- **Polling.** The session screen fetches new events and the turn order every
+  two seconds, by `after` sequence number, and everything else less often or
+  when an event arrives. The Svelte BFF refetched every event page and about
+  ten other reads on each poll.
+
+**Why.** Agents write most of this UI. A component library with tested
+overlays, comboboxes, focus handling and announcements removes the parts they
+most often get subtly wrong, and one typed contract makes a backend change
+that breaks the UI fail in CI. Static files with direct API calls remove a
+Node process and a hand-maintained relay layer from the path between a player
+and the table.
+
+**Tested.** `grimoire/browser_lane_test.py` covers the cookie credential, the
+cross-site rules and an audit that every routed path depends on the Grimoire
+identity check while every route without one stays unrouted.
+`chart/grimoire_browser_lane_test.py` pins the rendered route to that prefix
+list and to the one SecurityPolicy. `grimoire/web_test.py` covers the shell,
+the asset fallback and the response headers.
+
+**Outstanding.** The Svelte friends pages, the BFF helpers under
+`frontend/src/lib/server/grimoire-*.js` and the `X-Grimoire-Token` header path
+remain until cutover. Join links (`/grimoire/join`, `/grimoire/join/accept`)
+stay on the Svelte routes under #6858. Live verification against the
+production gateway is listed in #7698.
 
 ## Friend onboarding and campaign ownership
 
 The friend UI lives at `https://friends.jomcgi.dev/grimoire`. Its dedicated
 Authentik provider and OIDC cookies are separate from the operator and moving
-applications. Only the Svelte BFF is exposed on this path. It forwards the
-signed Grimoire ID token, which the backend independently checks against the
-Grimoire issuer, audience, signature and expiry. This provider is not added to
-the shared operator/MCP token resolver.
+applications. The Svelte BFF forwards the signed Grimoire ID token, which the
+backend independently checks against the Grimoire issuer, audience, signature
+and expiry. The React app at `/grimoire/next` presents the same token in its
+session cookie and reaches only the API prefixes listed under
+[Friends web app](#friends-web-app). This provider is not added to the shared
+operator/MCP token resolver.
 
 Account signup remains administrator-controlled. The lobby does not send email
 or send campaign owners into Authentik's global invitation administration.
@@ -763,8 +837,9 @@ After the normal Linux CI and deployment gates, verify with two fresh accounts:
    enrollment controls require the existing account-administrator entitlement.
 6. The moving app and preview lane retain their original access policies.
    Shared `/_app/` assets accept either app's signed cookie, while page and API
-   permissions remain separate. Requests to `/api/grimoire` on the friends
-   hostname have no backend route.
+   permissions remain separate. On the friends hostname only the listed
+   Grimoire API prefixes have a backend route: `/api/grimoire/books` and any
+   other unlisted path answer 404.
 
 Sign-in renews in place. The gateway requests `offline_access`, which the
 provider maps, so Authentik issues a refresh token and Envoy renews the
