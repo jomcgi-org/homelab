@@ -1,0 +1,13 @@
+/* Notes are typed with line breaks, and a long token must not widen a phone. */
+.inventory-notes {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.inventory-list {
+  display: grid;
+  gap: var(--spacing-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
