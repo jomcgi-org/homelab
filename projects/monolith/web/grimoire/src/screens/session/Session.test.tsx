@@ -220,7 +220,7 @@ describe("Session", () => {
       },
       path,
     );
-    await user.click(await screen.findByText("Roll dice"));
+    await user.click(await screen.findByRole("button", { name: "Roll dice" }));
     await user.click(await screen.findByRole("radio", { name: "Advantage" }));
     await user.click(screen.getByRole("button", { name: "d20" }));
     expect(
@@ -228,6 +228,32 @@ describe("Session", () => {
         "POST /campaigns/{campaign_id}/sessions/{session_id}/rolls",
       )[0]?.body,
     ).toEqual({ formula: "1d20adv", label: "", visibility: "dm" });
+  });
+
+  it("sends with Ctrl+Enter and leaves a plain Enter as a new line", async () => {
+    const { user, backend } = openApp(
+      {
+        ...dm,
+        "POST /campaigns/{campaign_id}/sessions/{session_id}/events": (call) =>
+          event({
+            kind: "narration",
+            body: (call.body as { body: object }).body as never,
+          }),
+      },
+      path,
+    );
+    const box = await screen.findByLabelText("Set the scene");
+    await user.type(box, "First line{Enter}second");
+    const posts = () =>
+      backend.callsTo(
+        "POST /campaigns/{campaign_id}/sessions/{session_id}/events",
+      );
+    expect(posts()).toHaveLength(0);
+    await user.type(box, "{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect((posts()[0]!.body as { body: { text: string } }).body.text).toBe(
+      "First line\nsecond",
+    );
   });
 
   it("confirms before the DM ends the session", async () => {

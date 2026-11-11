@@ -21,3 +21,23 @@
   padding: 0;
   list-style: none;
 }
+
+/*
+ * The message box stays at the bottom of the viewport while the feed scrolls
+ * above it, so nobody scrolls a long session to reach it.
+ */
+.table-dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: grid;
+  gap: var(--spacing-2);
+  justify-items: start;
+  padding-block: var(--spacing-3);
+  background: var(--color-background-body);
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+.table-dock > :last-child {
+  justify-self: stretch;
+}

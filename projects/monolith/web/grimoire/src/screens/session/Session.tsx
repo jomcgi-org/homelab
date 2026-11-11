@@ -3,9 +3,15 @@ import { useParams, useSearchParams } from "react-router";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Button } from "@astryxdesign/core/Button";
 import { Collapsible } from "@astryxdesign/core/Collapsible";
+import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Heading } from "@astryxdesign/core/Heading";
-import { HStack, VStack } from "@astryxdesign/core/Layout";
+import {
+  HStack,
+  Layout,
+  LayoutContent,
+  VStack,
+} from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
 import { Skeleton } from "@astryxdesign/core/Skeleton";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
@@ -45,6 +51,7 @@ import { Composer, type ReplyTarget } from "./Composer";
 import { DiceTray } from "./DiceTray";
 import { Feed } from "./Feed";
 import "./session.css";
+import { useFollowFeed } from "./useFollowFeed";
 import { useTable, type Table } from "./useTable";
 
 type TabName = "story" | "notes" | "inventory" | "journal";
@@ -105,6 +112,11 @@ function TableView({ table }: { table: Table }) {
   const [prefill, setPrefill] = useState<InventoryPrefill | null>(null);
   const [reply, setReply] = useState<ReplyTarget | null>(null);
   const [ending, setEnding] = useState(false);
+  const [tool, setTool] = useState<"dice" | "handout" | null>(null);
+  const { behind, toLatest } = useFollowFeed(
+    table.events.at(-1)?.seq ?? 0,
+    tab === "story",
+  );
   const journal = useJournal(
     campaignId,
     session,
@@ -272,42 +284,43 @@ function TableView({ table }: { table: Table }) {
             }}
             onOpenKnowledge={setEntity}
           />
-          {playing && session ? (
-            <>
+          {session && !playing && (
+            <Text type="body" color="secondary">
+              This session has ended. Your story is saved here.
+            </Text>
+          )}
+          {playing && session && (
+            <div className="table-dock">
+              {behind > 0 && (
+                <Button
+                  label={`${behind} new below`}
+                  size="sm"
+                  onClick={toLatest}
+                />
+              )}
               <Composer
                 table={table}
                 sessionId={session.id}
                 reply={reply}
                 onReplyDone={() => setReply(null)}
+                tools={
+                  <>
+                    <Button
+                      label="Roll dice"
+                      size="sm"
+                      onClick={() => setTool("dice")}
+                    />
+                    {dm && (
+                      <Button
+                        label="Send a handout"
+                        size="sm"
+                        onClick={() => setTool("handout")}
+                      />
+                    )}
+                  </>
+                }
               />
-              {dm && (
-                <VoicePresets campaignId={campaignId} presets={table.voices} />
-              )}
-              {dm && (
-                <Collapsible
-                  defaultIsOpen={false}
-                  trigger={<Text type="label">Send a handout</Text>}
-                >
-                  <HandoutComposer
-                    campaignId={campaignId}
-                    sessionId={session.id}
-                    characters={characters}
-                  />
-                </Collapsible>
-              )}
-              <Collapsible
-                defaultIsOpen={false}
-                trigger={<Text type="label">Roll dice</Text>}
-              >
-                <DiceTray table={table} sessionId={session.id} />
-              </Collapsible>
-            </>
-          ) : (
-            session && (
-              <Text type="body" color="secondary">
-                This session has ended. Your story is saved here.
-              </Text>
-            )
+            </div>
           )}
         </VStack>
 
@@ -340,6 +353,9 @@ function TableView({ table }: { table: Table }) {
             <Link href={paths.grants(campaignId)} isStandalone>
               Manage knowledge grants
             </Link>
+          )}
+          {dm && playing && (
+            <VoicePresets campaignId={campaignId} presets={table.voices} />
           )}
           {dm && (
             <HStack gap={2} wrap="wrap">
@@ -380,6 +396,35 @@ function TableView({ table }: { table: Table }) {
         </VStack>
       </div>
 
+      {session && (
+        <Dialog
+          isOpen={tool !== null}
+          onOpenChange={(open) => !open && setTool(null)}
+          width={560}
+        >
+          <Layout
+            header={
+              <DialogHeader
+                title={tool === "handout" ? "Send a handout" : "Roll dice"}
+                onOpenChange={() => setTool(null)}
+              />
+            }
+            content={
+              <LayoutContent>
+                {tool === "handout" ? (
+                  <HandoutComposer
+                    campaignId={campaignId}
+                    sessionId={session.id}
+                    characters={characters}
+                  />
+                ) : (
+                  <DiceTray table={table} sessionId={session.id} />
+                )}
+              </LayoutContent>
+            }
+          />
+        </Dialog>
+      )}
       <KnowledgeDrawer
         campaignId={campaignId}
         entityId={entity}
