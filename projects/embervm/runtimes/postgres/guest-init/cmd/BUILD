@@ -24,6 +24,7 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/embervm/runtimes/postgres/guest-init/cmd",
     visibility = ["//visibility:private"],
     deps = [
+        "//projects/firecracker/substrate/bootenv",
         "//projects/firecracker/substrate/shim",
         "//projects/firecracker/substrate/vsockproto",
     ] + select({
@@ -51,12 +52,15 @@ go_test(
     name = "cmd_test",
     srcs = [
         "main_test.go",
+        "mmds_test.go",
         "postgres_linux_test.go",
         "volume_linux_test.go",
         "vsock_linux_test.go",
     ],
     embed = [":cmd_lib"],
-    deps = select({
+    deps = [
+        "//projects/firecracker/substrate/bootenv",
+    ] + select({
         "@rules_go//go/platform:android": [
             "//projects/firecracker/substrate/guestvolume",
             "//projects/firecracker/substrate/guestvsock",
