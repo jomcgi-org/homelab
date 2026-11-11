@@ -3,21 +3,18 @@
 # warmth cache-cap retention decisions 2026-07-22 "Uniform storage cap"): noded's
 # hostPath expects a uniform logical path (noded.firecracker.nvmeRoot,
 # /var/lib/embervm/scratch, type Directory) to already exist and hold each node's
-# scratch. On EKS Karpenter userData mounts instance-store NVMe there at
-# bootstrap; on this fixed fleet of pet nodes there is no bootstrap script, so
-# this privileged DaemonSet is the actuator instead.
+# scratch. On the GKE hub this privileged DaemonSet prepares that mount on
+# nodes selected for Firecracker bricks, including replacement Spot nodes.
 #
 # UNIFORM SIZE-CAPPED LOOP SCRATCH (no per-node snowflake map). On every FC node
 # the contract is: /var/lib/embervm/scratch is a bounded loop mount, so a warmth
-# leak is PHYSICALLY unable to starve etcd/root. ext4 remains the default. XFS
+# leak is bounded away from the host root filesystem. ext4 remains the default. XFS
 # provisioning and ext4-to-XFS migration are separate, explicit gates.
 #
-#   node-4 already has its dedicated NVMe bind-mounted onto the path (fstab), so
-#   `mountpoint -q` is true there and this DaemonSet leaves it untouched. Even
+#   An existing dedicated-device bind mount is left untouched. Even
 #   with migration enabled, only the exact managed loop image is eligible.
-#   The masters (node-1/2/3) have nothing mounted there, so they get the loop
-#   cap from day one (near-empty scratch, hard-capped so a leak cannot spill onto
-#   the root/etcd disk).
+#   A selected brick host with no mount there gets the loop cap from day one
+#   (near-empty scratch, hard-capped so a leak cannot fill the host root disk).
 #
 # Tool boundary: the container does only file-level work (fallocate the backing
 # file, mkfs the FILE directly) with THIS IMAGE's own util-linux, e2fsprogs and
@@ -84,7 +81,7 @@ spec:
             - /bin/sh /opt/embervm/scratch-prep.sh && exec sleep infinity
           # Readiness IS the contract's liveness signal: only Ready once scratch is
           # a mountpoint in the host namespace (whether this DaemonSet's loop cap or
-          # node-4's pre-existing bind), so `kubectl get daemonset` on this chart
+          # a pre-existing device bind), so `kubectl get daemonset` on this chart
           # tells an operator whether every FC node's scratch contract is satisfied
           # without reading logs.
           readinessProbe:
