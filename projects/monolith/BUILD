@@ -42,9 +42,6 @@
 # and makes `ci` unable to start any build at all. Excluding from here is what
 # every other subdirectory above does, and unlike `ignore` it covers the subtree.
 # gazelle:exclude frontend
-# The Grimoire React app is another pnpm/rules_js package with a hand-written
-# BUILD, for the same reason.
-# gazelle:exclude web
 # Hand-written bdd_test targets (need the real-Postgres harness), so keep gazelle
 # from generating conflicting py_tests for them.
 # gazelle:exclude public_reader_grants_test.py
