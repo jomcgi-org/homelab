@@ -1038,8 +1038,9 @@ operator merged main into them. Landing refuses `head_moved` and its recovery
 skips that reason, so no control could ask for a review of the new head.
 `factory_request_landing_rereview` reopens one delivery through the existing
 bounded landing recovery with reason `head_moved`. Its correction round
-verifies the merge without rewriting history, and a fresh native review of the
-exact current head gates landing as before. Measure over 72 hours: receipts
+verifies the moved head and, because the merge queue lands by rebase, rebuilds
+a head containing a merge commit as linear commits with the same net change.
+A fresh native review of the exact resulting head gates landing as before. Measure over 72 hours: receipts
 refused `head_moved` with no recovery requested, baseline 5, expected 0.
 Revert if a `head_moved` recovery lands a head without a fresh native review.
 
