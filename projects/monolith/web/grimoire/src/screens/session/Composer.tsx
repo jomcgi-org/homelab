@@ -66,8 +66,8 @@ export function Composer({
   const send = useAction(postEvent, {
     invalidate: afterCommand(campaignId, sessionId),
     onSuccess: (_event, sent) => {
-      // Clear only if the box still holds what was sent.
-      if (text === (sent.event.body as { text: string }).text) {
+      // Clear only if the box still holds what was sent (the body is trimmed).
+      if (text.trim() === (sent.event.body as { text: string }).text) {
         setText("");
         pending.current = null;
         if (reply) onReplyDone();

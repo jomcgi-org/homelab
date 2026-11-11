@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { Route, Routes } from "react-router";
 import { Skeleton } from "@astryxdesign/core/Skeleton";
+import { ChunkBoundary } from "./app/ChunkBoundary";
 import { Page } from "./app/Page";
 import { NotFound } from "./screens/NotFound";
 import { Lobby } from "./screens/lobby/Lobby";
@@ -38,19 +39,21 @@ function Loading() {
 /** The route table. One screen per route; add a screen in `src/screens`. */
 export function App() {
   return (
-    <Suspense fallback={<Loading />}>
-      <Routes>
-        <Route index element={<Lobby />} />
-        <Route path="sheets" element={<Sheets />} />
-        <Route path="campaigns/:campaignId">
-          <Route path="session" element={<Session />} />
-          <Route path="notes" element={<Notes />} />
-          <Route path="journal" element={<CampaignJournal />} />
-          <Route path="grants" element={<Grants />} />
-          <Route path="entities/:entityId" element={<Entity />} />
-        </Route>
-        <Route path="*" element={<NotFound />} />
-      </Routes>
-    </Suspense>
+    <ChunkBoundary>
+      <Suspense fallback={<Loading />}>
+        <Routes>
+          <Route index element={<Lobby />} />
+          <Route path="sheets" element={<Sheets />} />
+          <Route path="campaigns/:campaignId">
+            <Route path="session" element={<Session />} />
+            <Route path="notes" element={<Notes />} />
+            <Route path="journal" element={<CampaignJournal />} />
+            <Route path="grants" element={<Grants />} />
+            <Route path="entities/:entityId" element={<Entity />} />
+          </Route>
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </Suspense>
+    </ChunkBoundary>
   );
 }

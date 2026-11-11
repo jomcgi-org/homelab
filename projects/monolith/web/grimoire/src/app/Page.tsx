@@ -94,7 +94,7 @@ function SignInNotice() {
     <Banner
       status="warning"
       title="Signed out"
-      description="Reload to sign in again. Unsent text on this page is kept."
+      description="Reload to sign in again. Copy anything unsaved on this page first."
       endContent={
         <Button label="Reload" size="sm" onClick={() => location.reload()} />
       }
