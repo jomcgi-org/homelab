@@ -17,7 +17,6 @@ interface ItemRowProps {
   ownerName: (owner: string | null) => string;
   onEdit: () => void;
   onMove: () => void;
-  onDelete: () => void;
   onOpenKnowledge: (entityId: string) => void;
 }
 
@@ -30,7 +29,6 @@ export function ItemRow({
   ownerName,
   onEdit,
   onMove,
-  onDelete,
   onOpenKnowledge,
 }: ItemRowProps) {
   const canEdit = dm || item.is_mine;
@@ -82,16 +80,6 @@ export function ItemRow({
                 onClick={onMove}
               >
                 {dm ? "Move" : item.owner === PARTY ? "Take" : "Move to party"}
-              </Button>
-            )}
-            {dm && (
-              <Button
-                label={`Delete ${item.name}`}
-                size="sm"
-                variant="ghost"
-                onClick={onDelete}
-              >
-                Delete
               </Button>
             )}
           </HStack>

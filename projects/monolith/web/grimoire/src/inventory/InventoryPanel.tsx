@@ -146,7 +146,6 @@ export function InventoryPanel({
                           ownerName={ownerName}
                           onEdit={() => setEditing(item)}
                           onMove={() => setMoving(item)}
-                          onDelete={() => setDeleting(item)}
                           onOpenKnowledge={onOpenKnowledge}
                         />
                       ))}
@@ -173,6 +172,15 @@ export function InventoryPanel({
           item={editing}
           dm={dm}
           onClose={() => setEditing(null)}
+          onDelete={
+            dm
+              ? () => {
+                  // One dialog at a time: the confirmation replaces the form.
+                  setDeleting(editing);
+                  setEditing(null);
+                }
+              : undefined
+          }
         />
       )}
       {moving && (

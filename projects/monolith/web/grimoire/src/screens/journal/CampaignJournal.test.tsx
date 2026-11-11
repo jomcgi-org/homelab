@@ -43,8 +43,13 @@ describe("CampaignJournal", () => {
     expect(
       within(sessions[0]!).getByRole("heading", { level: 4, name: "Old Tam" }),
     ).toBeTruthy();
-    // A session with nothing recorded still shows every section, empty.
-    expect(within(sessions[1]!).getByText("No discoveries yet.")).toBeTruthy();
+    // A session with nothing recorded says so once, with no empty sections.
+    expect(
+      within(sessions[1]!).getByText("Nothing recorded yet."),
+    ).toBeTruthy();
+    expect(
+      within(sessions[1]!).queryAllByRole("heading", { level: 3 }),
+    ).toEqual([]);
     expect(backend.callsTo(JOURNAL)[0]?.query.get("view")).toBe("mine");
     expect(backend.callsTo(JOURNAL)[0]?.query.has("cursor")).toBe(false);
     // One audience control for the page, none per session.

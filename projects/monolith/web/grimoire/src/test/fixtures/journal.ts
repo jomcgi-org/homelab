@@ -12,13 +12,17 @@ export const journalIds = {
   reveal: "e1000000-0000-4000-8000-000000000001",
   retractedReveal: "e1000000-0000-4000-8000-000000000002",
   recognition: "e1000000-0000-4000-8000-000000000003",
+  fullReveal: "e1000000-0000-4000-8000-000000000007",
   handout: "e1000000-0000-4000-8000-000000000004",
   roll: "e1000000-0000-4000-8000-000000000005",
   action: "e1000000-0000-4000-8000-000000000006",
   earlierSession: "56565656-5656-4565-8565-565656565656",
 };
 
-/** One entry of every kind: explorable, retracted and name-only knowledge. */
+/**
+ * One entry of every kind, shaped as `grimoire/journal.py` sends them:
+ * partial, retracted, name-only and full knowledge, and a roll with its dice.
+ */
 export const sessionJournal: Journal = {
   learned: [
     {
@@ -28,7 +32,12 @@ export const sessionJournal: Journal = {
       entity_type: "npc",
       grant_scope: "partial",
       retracted: false,
-      entity: { revealed_details: { occupation: "Ferryman" } },
+      entity: {
+        id: journalIds.ferryman,
+        name: "Old Tam",
+        entity_type: "npc",
+        revealed_details: { occupation: "Ferryman" },
+      },
     },
     {
       event_id: journalIds.retractedReveal,
@@ -45,7 +54,33 @@ export const sessionJournal: Journal = {
       entity_type: "npc",
       grant_scope: "name_only",
       retracted: false,
-      entity: { recognition_only: true },
+      entity: {
+        id: journalIds.stranger,
+        name: "Sister Orla",
+        entity_type: "npc",
+        recognition_only: true,
+      },
+    },
+    {
+      event_id: journalIds.fullReveal,
+      entity_id: journalIds.cellar,
+      name: "The Gilded Eel",
+      entity_type: "location",
+      grant_scope: "full",
+      retracted: false,
+      entity: {
+        id: journalIds.cellar,
+        entity_type: "location",
+        name: "The Gilded Eel",
+        source_type: "homebrew",
+        is_global: false,
+        source_book: null,
+        created_in_session: null,
+        created_at: "2026-10-01T12:00:00Z",
+        location_type: "Tavern",
+        region: "Harbour ward",
+        description: "A low room that smells of tar and eels.",
+      },
     },
   ],
   received: [
@@ -66,7 +101,15 @@ export const sessionJournal: Journal = {
     {
       id: journalIds.roll,
       kind: "roll",
-      body: { label: "Perception", formula: "1d20+3", total: 17 },
+      body: {
+        formula: "2d20kh1+3",
+        total: 17,
+        rolls: [6, 14],
+        kept: [14],
+        modifier: 3,
+        label: "Perception",
+        visibility: "table",
+      },
     },
   ],
   open_threads: [

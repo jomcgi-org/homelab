@@ -52,6 +52,8 @@ describe("Session", () => {
     ).toBeTruthy();
     expect(within(feed).getByText("Waiting for DM")).toBeTruthy();
     expect(screen.getByText("Live")).toBeTruthy();
+    // Each entry is a real list item, so a screen reader announces the count.
+    expect(within(feed).getAllByRole("listitem")).toHaveLength(story.length);
   });
 
   it("asks only for events after the last one it holds", async () => {
