@@ -250,10 +250,27 @@ echo "==> $PUSH_COUNT image(s) to push, $SKIPPED already published"
 # successful image build can leave an unreadable layer on a restored runner.
 # The wrapper inspects the generated script's image path but never executes it.
 # Only images already selected for publication are materialised here.
+#
+# Layered images (oci_push over oci_image tars) are different again. The layout
+# tree holds each layer blob as a symlink back to the tar that produced it, and
+# that tar is an input of the image action, never a runfile of the push. Under
+# --remote_download_minimal bazel leaves it remote, so the symlink dangles and
+# crane would fail on it. Building the image's own tars as top-level targets
+# downloads exactly those files. 2026-11-11: main stopped publishing for a day
+# because the claude runtime layer bazel/tools/image/prettier.tar was missing.
+_materialise_layers() {
+	local base="${1%.push}" layers
+	layers=$("$BAZEL" query "labels(tars, deps($base, 3))" 2>/dev/null || true)
+	[ -n "$layers" ] || return 0
+	# shellcheck disable=SC2086 # one label per word
+	"$BAZEL" build "${BAZEL_ARGS[@]}" --remote_download_toplevel $layers
+}
+
 while IFS= read -r image_row || [ -n "${image_row:-}" ]; do
 	_parse_image_row "$image_row"
 	[ -n "$label" ] || continue
 	echo "==> Checking push layout $label"
+	_materialise_layers "$label"
 	"$BAZEL" run "$label" "${BAZEL_ARGS[@]}" --build_runfile_links \
 		--run_under="python3 $WORKSPACE/bazel/tools/ci/oci_push_layout.py --push-script"
 done <"$TO_PUSH"
