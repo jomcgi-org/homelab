@@ -60,10 +60,10 @@ describe("SessionNotesPanel", () => {
     const { backend } = openPanel();
     expect(
       screen
-        .getByRole("button", { name: "My notes" })
-        .getAttribute("aria-current"),
+        .getByRole("tab", { name: "My notes" })
+        .getAttribute("aria-selected"),
     ).toBe("true");
-    expect(screen.getByRole("button", { name: "Party notes" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Party notes" })).toBeTruthy();
     expect(
       screen.getByText(
         "Only you can read these unless you share a note with the DM.",
@@ -92,9 +92,7 @@ describe("SessionNotesPanel", () => {
 
   it("gives the DM shared notes to read and only party notes to write", async () => {
     const { user } = openPanel({ dm: true });
-    expect(
-      screen.getByRole("button", { name: "Shared with you" }),
-    ).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Shared with you" })).toBeTruthy();
     expect(
       screen.getByText("Character notes players explicitly shared with you."),
     ).toBeTruthy();
@@ -102,7 +100,7 @@ describe("SessionNotesPanel", () => {
     await screen.findByRole("heading", { name: "Rumour at the Gilded Eel" });
     expect(screen.queryByRole("button", { name: /^Edit / })).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: "Party notes" }));
+    await user.click(screen.getByRole("tab", { name: "Party notes" }));
     expect(
       screen.getByText("Shared with the DM and every player with a character."),
     ).toBeTruthy();
@@ -147,7 +145,7 @@ describe("SessionNotesPanel", () => {
 
   it("creates a party note without a sharing choice", async () => {
     const { user, backend } = openPanel({ notes: [] });
-    await user.click(screen.getByRole("button", { name: "Party notes" }));
+    await user.click(screen.getByRole("tab", { name: "Party notes" }));
     await user.type(
       screen.getByRole("textbox", { name: /Note title/ }),
       "Watch order",
@@ -210,7 +208,7 @@ describe("SessionNotesPanel", () => {
 
   it("never sends DM sharing when the DM edits a party note", async () => {
     const { user, backend } = openPanel({ dm: true });
-    await user.click(screen.getByRole("button", { name: "Party notes" }));
+    await user.click(screen.getByRole("tab", { name: "Party notes" }));
     await user.click(
       await screen.findByRole("button", { name: "Edit Plan for the cellar" }),
     );
@@ -228,7 +226,7 @@ describe("SessionNotesPanel", () => {
     await user.click(
       await screen.findByRole("button", { name: "Edit The ferryman's map" }),
     );
-    await user.click(screen.getByRole("button", { name: "Party notes" }));
+    await user.click(screen.getByRole("tab", { name: "Party notes" }));
     expect(screen.getByRole("heading", { name: "Add a note" })).toBeTruthy();
     expect(
       (screen.getByRole("textbox", { name: /Note title/ }) as HTMLInputElement)

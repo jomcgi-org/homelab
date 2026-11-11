@@ -240,6 +240,7 @@ export function Composer({
                 <Selector
                   label="Narration speaker"
                   isLabelHidden
+                  placement="above"
                   options={[
                     { value: "narrator", label: "Narrator" },
                     ...speakers.map((row) => ({
@@ -273,9 +274,11 @@ export function Composer({
                 )}
               </>
             )}
+            {/* The composer is docked at the viewport's bottom edge, so its lists open upward. */}
             <Selector
               label="Send to"
               isLabelHidden
+              placement="above"
               isDisabled={reply !== null}
               options={[
                 { value: "table", label: "Everyone" },

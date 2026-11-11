@@ -30,8 +30,8 @@ export interface SessionNotesPanelProps {
   onOpenKnowledge: (entityId: string) => void;
 }
 
-/** Other players add party notes during play; this is how soon they appear. */
-const REFRESH_MS = 15_000;
+/** Other players add and share notes during play; this is how soon they appear. */
+const REFRESH_MS = 5_000;
 const TITLE_MAX = 200;
 const TEXT_MAX = 20_000;
 
@@ -123,6 +123,7 @@ export function SessionNotesPanel({
   return (
     <VStack gap={5} as="section" aria-label="Campaign notes">
       <TabList
+        role="tablist"
         aria-label="Notes audience"
         value={kind}
         onChange={(value) => {
@@ -130,8 +131,12 @@ export function SessionNotesPanel({
           setDraft(blank);
         }}
       >
-        <Tab value="character" label={dm ? "Shared with you" : "My notes"} />
-        <Tab value="party" label="Party notes" />
+        <Tab
+          value="character"
+          label={dm ? "Shared with you" : "My notes"}
+          aria-disabled={busy}
+        />
+        <Tab value="party" label="Party notes" aria-disabled={busy} />
       </TabList>
       <Text type="body" color="secondary">
         {audience(kind, dm)}
