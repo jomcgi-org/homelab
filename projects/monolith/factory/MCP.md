@@ -834,10 +834,11 @@ for one PR:
    `request_key`. Replay the same key after a lost response.
 3. Read `factory_status` after the next due owner PR sweep for the new blocker.
 
-The release waives the exact description read at preview and the comments
-written before it. An edited description needs a new release. Labels,
-assignees, later comments, the objective issue and every review, CI, landing
-and merge gate still bind. Standing landing delegations do not read a release,
+The release waives the exact description read at preview, the comments
+written before it, and holds the PR only inherits from issues or PRs its
+description mentions. An edited description needs a new release. Its labels,
+assignees and later comments, the closing objective issue and every review,
+CI, landing and merge gate still bind. Standing landing delegations do not read a release,
 so a released PR lands on a per-head `factory_release_landing_hold` grant. The
 control starts no work and lands nothing. `action: "revoke"` restores the
 wording. To hold a released PR again, add a `human` label or a new comment.

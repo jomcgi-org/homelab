@@ -3942,6 +3942,34 @@ def test_owner_pr_hold_release_keeps_later_discussion_binding(db, monkeypatch):
     assert owner_prs.assert_unheld(task, pull) is None
 
 
+def test_owner_pr_release_answers_inherited_holds_not_the_objective(db, monkeypatch):
+    from factory.orchestration import owner_prs
+
+    enable_owner_policy(db, owner_policy())
+    mentioned = issue(2, ["needs-human"])
+    body = "Closes #1. Refs #2"
+
+    def blocker(objective):
+        owner_prs.candidates(
+            "owner/repo",
+            [owner_pull(body=body)],
+            [objective, mentioned],
+            owner_policy(),
+        )
+        return json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"][0][
+            "blocker"
+        ]
+
+    ready = issue(1, ["agent-ready"])
+    assert blocker(ready) == "referenced_objective_held"
+    release_owner_hold(monkeypatch, body=body)
+    assert blocker(ready) != "referenced_objective_held"
+    # The closing objective is the scope, so its own hold still binds.
+    assert blocker(issue(1, ["agent-ready", "human"])) == "explicit_hold"
+    release_owner_hold(monkeypatch, action="revoke", key="revoke-1", body=body)
+    assert blocker(ready) == "referenced_objective_held"
+
+
 def test_owner_pr_new_human_hold_fences_further_delivery(db, monkeypatch):
     from factory.orchestration import owner_prs
 
@@ -4341,12 +4369,36 @@ def test_owner_pr_reference_reads_are_bounded_even_when_unavailable(db, monkeypa
         raise ValueError("missing reference")
 
     monkeypatch.setattr(conductor, "github_get", read)
+    monkeypatch.setattr(owner_prs, "MAX_REFERENCE_READS", 20)
     pulls = [owner_pull(number=100 + n, body=f"Refs #{n}") for n in range(1, 30)]
     assert (
         owner_prs.candidates("owner/repo", pulls, [], owner_policy(refine_enabled=True))
         == []
     )
-    assert len(reads) == owner_prs.MAX_REFERENCE_READS
+    assert len(reads) == 20
+
+
+def test_owner_pr_reference_budget_covers_a_large_owner_backlog(db, monkeypatch):
+    from factory.orchestration import factory_conductor as conductor, owner_prs
+
+    def read(_repo, suffix):
+        number = int(suffix.rsplit("/", 1)[1])
+        return issue(number, ["agent-ready"], state="closed")
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    # 60 PRs, each mentioning two distinct closed items outside the listing.
+    pulls = [
+        owner_pull(
+            number=1000 + n, body=f"Closes #1. Refs #{2 * n + 10}, #{2 * n + 11}"
+        )
+        for n in range(60)
+    ]
+    owner_prs.candidates(
+        "owner/repo", pulls, [issue(1, ["agent-ready"])], owner_policy()
+    )
+    items = json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"]
+    assert len(items) == 60
+    assert not [i for i in items if i["blocker"] == "referenced_objective_unavailable"]
 
 
 def test_intake_observations_keep_latest_history_with_bounded_status_reads(db):

@@ -2768,10 +2768,11 @@ async def factory_release_owner_pr_hold(
     apply identical arguments with the preview digest and a new request_key.
     Replay the same key after a lost response.
 
-    A release waives only the exact description read at preview and the
-    comments written before it. An edited description needs a new release.
-    Labels, assignees, later comments, the objective issue and every review,
-    CI, landing and merge gate still bind. Standing landing delegations do not
+    A release waives the exact description read at preview, the comments
+    written before it, and holds inherited from items the description only
+    mentions. An edited description needs a new release. Labels, assignees,
+    later comments, the closing objective issue and every review, CI, landing
+    and merge gate still bind. Standing landing delegations do not
     read a release, so a released PR lands on a per-head grant. It starts no
     work, changes no policy and lands nothing. Action revoke restores the wording.
     """
