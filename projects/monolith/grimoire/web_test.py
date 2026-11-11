@@ -10,7 +10,7 @@ from grimoire import web
 
 INDEX = (
     '<!doctype html><html><head><script type="module" crossorigin '
-    'src="/grimoire/next/assets/index-abc123.js"></script></head>'
+    'src="/grimoire/assets/index-abc123.js"></script></head>'
     '<body><div id="root"></div></body></html>'
 )
 STYLE_HASH = "sha256-K63bSR1LetGtaTb/2K6EIsLtf78i2//qEkOoBZCNcBQ="
@@ -29,8 +29,8 @@ def client_fixture(tmp_path, monkeypatch):
 
 
 def test_base_path_comes_from_the_bundle():
-    assert web.web_base(INDEX) == "/grimoire/next"
-    assert web.web_base(INDEX.replace("/grimoire/next/", "/grimoire/")) == "/grimoire"
+    assert web.web_base(INDEX) == "/grimoire"
+    assert web.web_base(INDEX.replace("/grimoire/", "/grimoire/next/")) == "/grimoire/next"
     with pytest.raises(ValueError):
         web.web_base("<html></html>")
 
@@ -38,10 +38,10 @@ def test_base_path_comes_from_the_bundle():
 @pytest.mark.parametrize(
     "path",
     [
-        "/grimoire/next",
-        "/grimoire/next/",
-        "/grimoire/next/sheets",
-        "/grimoire/next/campaigns/1b2c/session",
+        "/grimoire",
+        "/grimoire/",
+        "/grimoire/sheets",
+        "/grimoire/campaigns/1b2c/session",
     ],
 )
 def test_app_routes_answer_with_the_private_shell(client, path):
@@ -58,7 +58,7 @@ def test_app_routes_answer_with_the_private_shell(client, path):
 
 
 def test_hashed_assets_are_cached_by_the_browser_only(client):
-    response = client.get("/grimoire/next/assets/index-abc123.js")
+    response = client.get("/grimoire/assets/index-abc123.js")
     assert response.status_code == 200
     assert response.headers["cache-control"] == ("private, max-age=31536000, immutable")
     assert response.headers["cloudflare-cdn-cache-control"] == "no-store"
@@ -69,23 +69,24 @@ def test_hashed_assets_are_cached_by_the_browser_only(client):
     "name", ["missing-123.js", "..%2Findex.html", "%2e%2e%2f%2e%2e%2fetc%2fpasswd"]
 )
 def test_a_missing_asset_is_a_404_not_the_shell(client, name):
-    response = client.get(f"/grimoire/next/assets/{name}")
+    response = client.get(f"/grimoire/assets/{name}")
     assert response.status_code == 404
     assert "root" not in response.text
     assert response.headers["cloudflare-cdn-cache-control"] == "no-store"
 
 
 def test_nothing_is_served_outside_the_base(client):
-    assert client.get("/grimoire").status_code == 404
+    assert client.get("/grimoir").status_code == 404
+    assert client.get("/moving").status_code == 404
     assert client.get("/api/grimoire/lobby").status_code == 404
-    assert client.post("/grimoire/next/").status_code == 405
+    assert client.post("/grimoire/").status_code == 405
 
 
 def test_absent_bundle_registers_nothing(tmp_path, monkeypatch):
     monkeypatch.setenv("GRIMOIRE_WEB_DIR", str(tmp_path / "missing"))
     app = FastAPI()
     web.mount_web(app)
-    assert TestClient(app).get("/grimoire/next/").status_code == 404
+    assert TestClient(app).get("/grimoire/").status_code == 404
 
 
 def test_policy_allows_only_well_formed_style_hashes():
