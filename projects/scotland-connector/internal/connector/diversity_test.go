@@ -1,10 +1,39 @@
 package connector
 
 import (
+	"math"
 	"testing"
 
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/stars"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
 )
+
+func TestNearbyNightSpacingBoundary(t *testing.T) {
+	// At the equator this longitude is exactly 5 km under stars.DistanceKm.
+	lon := 5.0 / 6371.0088 * 180 / math.Pi
+	if d := stars.DistanceKm(0, 0, 0, lon); d != siteSpacingKm {
+		t.Fatalf("boundary fixture is %.17g km, want %g", d, float64(siteSpacingKm))
+	}
+	for _, tc := range []struct {
+		name string
+		lon  float64
+		want int
+	}{
+		{"below", lon * 0.999, 1},
+		{"equal", lon, 2},
+		{"above", lon * 1.001, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := distinctNearbyNights([]rankedNight{
+				{o: NightOption{SiteFacts: SiteFacts{SiteID: "best"}}},
+				{o: NightOption{SiteFacts: SiteFacts{SiteID: "next", Lon: tc.lon}}},
+			})
+			if len(got) != tc.want || got[0].SiteID != "best" {
+				t.Fatalf("%+v", got)
+			}
+		})
+	}
+}
 
 // Synthetic candidates isolate the conservative tie policy from weather math.
 func TestWalkDiversity(t *testing.T) {

@@ -12,6 +12,15 @@ import (
 // Now is the fixture clock: mid-afternoon on 19 October 2026.
 var Now = time.Date(2026, 10, 19, 15, 20, 0, 0, time.UTC)
 
+// LightArgs is shared by both transport round trips against Sites/History.
+// Those synthetic snapshots exercise scope and provenance, not ephemeris accuracy.
+const LightArgs = `{"lat":57.3,"lon":-3.7,"from":"2026-10-19","to":"2026-10-21"}`
+
+func LightParams() connector.LightParams {
+	lat, lon, from, to := 57.3, -3.7, "2026-10-19", "2026-10-21"
+	return connector.LightParams{Lat: &lat, Lon: &lon, From: &from, To: &to}
+}
+
 // Sites is a sites.json with three sites around Aviemore and one in Shetland.
 const Sites = `{
  "count": 4, "total_sites": 4, "darkness": "astronomical", "fetched_at": "2026-10-19T14:05:00+00:00",

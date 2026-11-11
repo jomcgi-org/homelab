@@ -30,12 +30,14 @@ go_library(
     deps = select({
         "@rules_go//go/platform:android": [
             "//projects/embervm/noded/guestagent",
+            "//projects/firecracker/substrate/guestvsock",
             "//projects/firecracker/substrate/shim",
             "//projects/firecracker/substrate/vsockproto",
             "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:linux": [
             "//projects/embervm/noded/guestagent",
+            "//projects/firecracker/substrate/guestvsock",
             "//projects/firecracker/substrate/shim",
             "//projects/firecracker/substrate/vsockproto",
             "@org_golang_x_sys//unix",
@@ -55,6 +57,16 @@ go_test(
     srcs = [
         "cmdline_test.go",
         "k3s_test.go",
+        "vsock_linux_test.go",
     ],
     embed = [":cmd_lib"],
+    deps = select({
+        "@rules_go//go/platform:android": [
+            "//projects/firecracker/substrate/guestvsock",
+        ],
+        "@rules_go//go/platform:linux": [
+            "//projects/firecracker/substrate/guestvsock",
+        ],
+        "//conditions:default": [],
+    }),
 )

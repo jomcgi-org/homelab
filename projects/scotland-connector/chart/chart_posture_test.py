@@ -32,6 +32,20 @@ _GATEWAY_VALUES = (
 _ROUTE_ON = ["route.enabled=true", "route.hostname=connector.example.test"]
 
 
+def test_aurora_is_enabled_in_deploy_and_has_explicit_enabled_wiring() -> None:
+    for overrides, expected in (
+        ([], "true"),
+        (["config.auroraEnabled=false"], "false"),
+    ):
+        docs = _render(overrides)
+        deployment = _one(docs, "Deployment")
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
+        env = {item["name"]: item.get("value") for item in container["env"]}
+        assert env["AURORA_ENABLED"] == expected
+        assert env["STARS_AURORA_KEY"] == "aurora.json"
+        assert env["STARS_BUCKET"] == "stars"
+
+
 def _render(overrides: list[str] | None = None) -> list[dict[str, Any]]:
     argv = [
         os.environ.get("HELM_BIN", "helm"),
@@ -55,6 +69,14 @@ def _one(docs: list[dict[str, Any]], kind: str) -> dict[str, Any]:
     found = [d for d in docs if d["kind"] == kind]
     assert len(found) == 1, f"want one {kind}, got {len(found)}"
     return found[0]
+
+
+@pytest.mark.parametrize("key", [None, "connector-sites.json"])
+def test_sites_key_selection_preserves_default(key):
+    docs = _render([f"config.sitesKey={key}"] if key else [])
+    container = _one(docs, "Deployment")["spec"]["template"]["spec"]["containers"][0]
+    env = {e["name"]: e.get("value") for e in container["env"]}
+    assert env["STARS_SITES_KEY"] == (key or "sites.json")
 
 
 def _rules(route: dict[str, Any]) -> list[tuple[str, str, dict[str, Any] | None]]:
@@ -287,6 +309,8 @@ def test_meter_and_analytics_are_off_and_credentials_inert() -> None:
     assert "CACHE_ANALYTICS_TOKEN" not in env
     prices = json.loads(env["TOOL_UNIT_PRICES"]["value"])
     assert prices == [
+        {"tool": "light", "unit": "light_invocation", "price_micros": "0"},
+        {"tool": "aurora", "unit": "aurora_invocation", "price_micros": "0"},
         {"tool": "plan", "unit": "plan_invocation", "price_micros": "0"},
         {"tool": "check", "unit": "check_invocation", "price_micros": "0"},
     ]

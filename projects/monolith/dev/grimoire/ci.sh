@@ -28,3 +28,16 @@ done 2>&1 | tee "$evidence_dir/run.log"
 "$ci_environment/venv/bin/python" projects/monolith/dev/grimoire/run.py \
 	--rehearse --join-links --output "$evidence_dir/join-links" \
 	2>&1 | tee "$evidence_dir/join-links.log"
+
+# Public sheet evidence uses invented responses only. Reuse the same pinned
+# browser environment and artifact upload, without changing workflow permissions
+# or any production publish step. Build from this exact checkout before capture.
+pnpm --dir projects/monolith/frontend exec vite build \
+	--config grimoire-preview/vite.config.js \
+	--outDir "$ci_environment/public-sheet-build" \
+	2>&1 | tee "$evidence_dir/public-sheet-build.log"
+"$ci_environment/venv/bin/python" projects/monolith/frontend/grimoire-preview/browser_check.py \
+	--artifact "$ci_environment/public-sheet-build" \
+	--output "$evidence_dir/public-sheet" \
+	--expected-sha "$(git rev-parse HEAD)" \
+	2>&1 | tee "$evidence_dir/public-sheet.log"

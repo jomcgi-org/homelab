@@ -10,7 +10,7 @@
 // result down as data, regardless of the ssr flag, which is what lets this
 // read the httpOnly session cookie without ever exposing it to the browser.
 // The localhost fallback is the established convention across every public
-// proxy/loader (ships/stars/notes/campsites/grimoire); prod sets CHAT_API_BASE
+// proxy/loader (ships/stars/notes/grimoire); prod sets CHAT_API_BASE
 // via values.yaml.
 // nosemgrep: sveltekit-server-hardcoded-api-base-fallback
 const CHAT_API_BASE = process.env.CHAT_API_BASE || "http://localhost:8000";

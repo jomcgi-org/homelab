@@ -46,10 +46,6 @@ MAX_EVIDENCE_AGE = timedelta(minutes=30)
 MAX_PROMPT_BYTES = 96_000
 
 
-def enabled() -> bool:
-    return os.environ.get("KG_FACT_REVIEW_ENABLED", "false").lower() == "true"
-
-
 def settings() -> tuple[int, int]:
     max_daily = int(os.environ.get("KG_FACT_REVIEW_MAX_DAILY", "20"))
     interval = int(os.environ.get("KG_FACT_REVIEW_INTERVAL_SECONDS", "900"))
@@ -60,11 +56,10 @@ def settings() -> tuple[int, int]:
 
 def status() -> dict:
     """Operator inspection without prompts, source bodies or credential data."""
-    if not enabled():
-        return {"enabled": False}
     from core.db import get_engine
 
     from knowledge.fact_review_batch import status as batch_status
+    from knowledge.review_coverage import enabled as source_coverage_enabled
 
     max_daily, interval = settings()
     with Session(get_engine()) as session:
@@ -77,6 +72,7 @@ def status() -> dict:
         ).all()
         return {
             "enabled": True,
+            "source_coverage_enabled": source_coverage_enabled(),
             "max_daily": max_daily,
             "interval_seconds": interval,
             "public_facts": fact_summary(session, now=now),
@@ -102,8 +98,6 @@ def ensure_job(session: Session) -> bool:
     """Reconcile the existing drain lane; retain unknown outcomes and leases."""
     from shared.invocation_outcomes import UNKNOWN_INVOCATION
 
-    if not enabled():
-        return False
     sqlite = session.get_bind().dialect.name == "sqlite"
     table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
     payload = ":payload" if sqlite else "CAST(:payload AS JSONB)"
@@ -494,8 +488,6 @@ def prepare(
     progress_signal: bool = False,
 ) -> str:
     """Pin the claim first; perform network reads outside a database transaction."""
-    if not enabled():
-        return NO_REVIEW
     now = utc(now or datetime.now(UTC))
     from knowledge import review_coverage as coverage
     from knowledge.review_source_blocks import probe, record_block
@@ -622,8 +614,6 @@ class Verdict(BaseModel):
 def apply(session: Session, invocation_key: str, result_text: str, *, now=None) -> dict:
     from knowledge import review_coverage as coverage
 
-    if not enabled():
-        return {"summary": "Source review disabled"}
     now = utc(now or datetime.now(UTC))
     run = session.exec(
         select(FactReviewRun)

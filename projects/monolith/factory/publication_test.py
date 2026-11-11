@@ -33,6 +33,39 @@ from factory.publication import (
 )
 
 
+def test_public_snapshot_never_loads_or_serializes_private_intake_backlog(monkeypatch):
+    from dataclasses import asdict
+    import json
+
+    from factory import private_view, publication
+
+    calls = []
+
+    def private_board(*, session, plan_tasks, include_backlog):
+        calls.append((session, plan_tasks, include_backlog))
+        assert include_backlog is False
+        # Even a reader returning an unexpected private field must not leak it.
+        return {
+            "ok": True,
+            "state": "enabled",
+            "intake_backlog": {"secret_issue": "private-backlog-sentinel"},
+        }
+
+    monkeypatch.setattr(private_view, "build_factory_view", private_board)
+    monkeypatch.setattr(publication, "_public_work_items", lambda *args: {})
+    monkeypatch.setattr(publication, "_board_task_ids", lambda *args: ([], {}))
+    monkeypatch.setattr(publication, "_raw_policy", lambda *args: {})
+    monkeypatch.setattr(publication, "_sessions_and_turns", lambda *args: ({}, {}))
+    monkeypatch.setattr(publication, "_task_list_costs", lambda *args: {})
+    monkeypatch.setattr(publication, "ledger_totals", lambda *args: {})
+    db = object()
+    result = publication.build_public_snapshot(db)
+    assert calls == [(db, [], False)]
+    serialized = json.dumps(asdict(result))
+    assert "intake_backlog" not in serialized
+    assert "private-backlog-sentinel" not in serialized
+
+
 def test_public_work_item_exposes_local_record_without_private_factory_details():
     item = {
         "id": 100123,
@@ -242,7 +275,7 @@ def test_summary_has_no_pr_and_no_finish_while_in_flight():
             ]
         )
     )
-    assert summary["state"] == "in flight"
+    assert summary["state"] == "uncertain"
     assert summary["pr"] is None
     assert summary["finished_at"] is None
 
@@ -1364,3 +1397,39 @@ def test_quota_pacing_does_not_invent_a_binding_reset_for_a_limited_account():
     pacing = shape_quota(raw, now)["providers"][0]["pacing"]
     assert pacing["state_counts"]["wait_for_reset"] == 1
     assert "blocked_next_reset_at" not in pacing
+
+
+def test_activity_distinguishes_execution_pause_and_uncertainty_without_private_details():
+    from factory.publication import activity_state
+
+    running = {
+        "state": "running",
+        "node_key": "review_1",
+        "session": {"status": "running", "guest_bound": True, "executing": True},
+    }
+    assert activity_state({"state": "admitted", "nodes": [running]}) == "executing"
+    assert (
+        activity_state({"state": "admitted", "task_paused": True, "nodes": [running]})
+        == "executing"
+    )
+    assert activity_state({"state": "admitted", "task_paused": True}) == "paused"
+    assert activity_state({"state": "admitted"}) == "waiting"
+    assert (
+        activity_state(
+            {"state": "admitted", "task_paused": True, "unresolved_starts": 1}
+        )
+        == "uncertain"
+    )
+    assert activity_state({"state": "uncertain", "nodes": [running]}) == "uncertain"
+    assert activity_state({"state": "escalated", "nodes": [running]}) == "escalated"
+    summary = task_summary(
+        {
+            "state": "admitted",
+            "task_paused": True,
+            "escalation": {"reason": "private sentinel"},
+            "nodes": [],
+        }
+    )
+    assert summary["state"] == "paused"
+    assert "private sentinel" not in str(summary)
+    assert "task_paused" not in summary

@@ -1,4 +1,10 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
+load("//bazel/tools/pytest:defs.bzl", "py_test")
+
+exports_files(
+    ["values-gke.yaml"],
+    visibility = ["//projects/platform-gke/argocd:__pkg__"],
+)
 
 helm_chart(
     name = "chart",
@@ -49,4 +55,25 @@ filegroup(
         exclude = ["**/node_modules/**"],
     ),
     visibility = ["//projects/monolith:__pkg__"],
+)
+
+# Hand-written Helm regression test, as in platform/kargo.
+py_test(
+    name = "upgrade_test",
+    srcs = ["upgrade_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "values-gke.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+    ]),
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )

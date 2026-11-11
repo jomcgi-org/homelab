@@ -12,6 +12,17 @@ import (
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 )
 
+// sync is syncEntries without a control-plane activator update.
+func (r *workloadRegistry) sync(entries []workloadEntry) int {
+	return r.syncEntries(entries, "", false)
+}
+
+func (r *workloadRegistry) setControlPlaneActivator(ip string) {
+	r.mu.Lock()
+	r.controlPlaneActivatorIP = ip
+	r.mu.Unlock()
+}
+
 func entry(workload, digest, rootfs string) workloadEntry {
 	return workloadEntry{Workload: workload, ImageDigest: digest, RootfsRef: rootfs, HarnessInit: "/init"}
 }

@@ -77,12 +77,15 @@ def _backend_env(documents: list[dict]) -> dict[str, str | None]:
 
 
 @pytest.mark.parametrize("values", [(), (DEPLOY,), (DEPLOY, GKE)])
-def test_source_coverage_is_default_off_with_reachable_opt_in(values, tmp_path):
+def test_source_coverage_defaults_and_production_opt_in(values, tmp_path):
     before = _render_documents(*values)
     env = _backend_env(before)
-    assert env.get("KG_FACT_REVIEW_COVERAGE_ENABLED", "false") == "false"
+    expected = "true" if DEPLOY in values else "false"
+    assert env.get("KG_FACT_REVIEW_COVERAGE_ENABLED", "false") == expected
     domain = tmp_path / "knowledge.yaml"
-    domain.write_text("knowledge:\n  enabled: true\n")
+    domain.write_text(
+        "knowledge:\n  enabled: true\n  factReview:\n    coverageEnabled: false\n"
+    )
     before = _render_documents(*values, domain)
     env = _backend_env(before)
     assert env["KG_FACT_REVIEW_COVERAGE_ENABLED"] == "false"
@@ -258,3 +261,91 @@ def test_grimoire_workflows_reference_existing_s3_secret(values):
                 "name": "monolith-r2-s3",
                 "key": key,
             }
+
+
+@pytest.mark.parametrize("values", [(), (DEPLOY,), (DEPLOY, GKE)])
+def test_completed_raw_recovery_opt_in_does_not_schedule_work(values, tmp_path):
+    override = tmp_path / "recovery.yaml"
+    override.write_text("knowledge:\n  enabled: true\n")
+    before = _render_documents(*values, override)
+    env = _backend_env(before)
+    assert env["KG_COMPLETED_RAW_RECOVERY_ENABLED"] == "false"
+    override.write_text(
+        "knowledge:\n  enabled: true\n  completedRawRecoveryEnabled: true\n"
+    )
+    after = _render_documents(*values, override)
+    assert _backend_env(after) == env | {"KG_COMPLETED_RAW_RECOVERY_ENABLED": "true"}
+    assert _cronworkflows(before) == _cronworkflows(after)
+
+
+@pytest.mark.parametrize("values", [DEPLOY, GKE])
+def test_learning_handoff_is_explicit_and_does_not_add_scheduler(values, tmp_path):
+    baseline = _render_documents(values)
+    override = tmp_path / "learning.yaml"
+    override.write_text("agents:\n  drainer:\n    learningHandoffEnabled: true\n")
+    opted = _render_documents(values, override)
+
+    def flags(documents):
+        return [
+            env["value"]
+            for doc in documents
+            if doc.get("kind") == "Deployment"
+            for container in doc["spec"]["template"]["spec"]["containers"]
+            for env in container.get("env", [])
+            if env.get("name") == "FACTORY_LEARNING_HANDOFF_ENABLED"
+        ]
+
+    assert flags(baseline) and set(flags(baseline)) == {
+        "true" if values == DEPLOY else "false"
+    }
+    assert set(flags(opted)) == {"true"}
+    assert _cronworkflows(baseline) == _cronworkflows(opted)
+
+
+def test_production_learning_activation_preserves_all_other_controls(tmp_path):
+    before_values = tmp_path / "before.yaml"
+    before_values.write_text(
+        "knowledge:\n  factReview:\n    coverageEnabled: false\nagents:\n  drainer:\n    learningHandoffEnabled: false\n"
+    )
+    before = _render_documents(DEPLOY, GKE, before_values)
+    after = _render_documents(DEPLOY, GKE)
+    env = _backend_env(after)
+    assert env == _backend_env(before) | {
+        "KG_FACT_REVIEW_COVERAGE_ENABLED": "true",
+        "FACTORY_LEARNING_HANDOFF_ENABLED": "true",
+    }
+    for key in (
+        "KG_COMPLETED_RAW_RECOVERY_ENABLED",
+        "KG_AUDIT_CLARITY_REPAIRS_ENABLED",
+    ):
+        assert env[key] == "false"
+    # Enabled on its own in deploy/values.yaml, not by the learning activation.
+    assert env["KG_AUDIT_ISSUES_ENABLED"] == "true"
+    assert env["KG_FACT_REVIEW_MAX_DAILY"] == "20000"
+    assert _cronworkflows(before) == _cronworkflows(after)
+
+
+def test_daily_learning_hash_is_empty_until_explicitly_pinned(tmp_path):
+    before = _render_documents()
+    env = _backend_env(before)
+    assert env["FACTORY_LEARNING_DAILY_PAYLOAD_SHA256"] == ""
+    override = tmp_path / "pin.yaml"
+    override.write_text(
+        'agents:\n  drainer:\n    learningDailyPayloadSha256: "' + "a" * 64 + '"\n'
+    )
+    after = _render_documents(override)
+    assert _backend_env(after) == env | {
+        "FACTORY_LEARNING_DAILY_PAYLOAD_SHA256": "a" * 64
+    }
+    assert _cronworkflows(before) == _cronworkflows(after)
+
+
+def test_production_daily_pin_changes_only_payload_guard(tmp_path):
+    rollback = tmp_path / "rollback.yaml"
+    rollback.write_text('agents:\n  drainer:\n    learningDailyPayloadSha256: ""\n')
+    before = _render_documents(DEPLOY, GKE, rollback)
+    after = _render_documents(DEPLOY, GKE)
+    assert _backend_env(after) == _backend_env(before) | {
+        "FACTORY_LEARNING_DAILY_PAYLOAD_SHA256": "e121e88364d8636ebaed35f00c2ff6711d5650a08e1c276af9b697a7780acf02"
+    }
+    assert _cronworkflows(before) == _cronworkflows(after)

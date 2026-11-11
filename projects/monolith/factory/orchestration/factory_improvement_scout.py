@@ -14,17 +14,17 @@ from sqlmodel import select
 from factory.orchestration import factory_controls as controls
 from factory.orchestration import factory_improvement_fence as fence
 from factory.orchestration import factory_improvements as improvements
-from factory.orchestration.factory_improvement_preview import preview
+from factory.orchestration.factory_improvement_preview import digest, preview
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 
-ACTOR = "factory:improvement-scout"
-TASK_CLASS = "advisory-diagnosis"
+ACTOR = fence.ACTOR
+TASK_CLASS = fence.TASK_CLASS
 CLAIM = "scout_claim"
 REVIEW = "scout_review"
 SETTLED = "scout_settled"
-COLLECT_KEY = "scout_collect_1"
-REVIEW_KEY = "scout_review_1"
-MODEL = "sol"
+COLLECT_KEY = fence.COLLECT_KEY
+REVIEW_KEY = fence.REVIEW_KEY
+MODEL = fence.MODEL
 MAX_PROMPT = 60_000
 
 FINDING_SCHEMA = {
@@ -253,11 +253,6 @@ def is_scout(task_id: str) -> bool:
     return _receipt(task_id) is not None
 
 
-def transport_allowed(task_id: str, node_key: str, attempt: int) -> bool:
-    """Compatibility seam; the executor imports the minimal leaf directly."""
-    return fence.transport_allowed(task_id, node_key, attempt)
-
-
 def dispatch_allowed(task_id: str) -> dict:
     """Rechecked at physical transport, including delayed starts and retries."""
     if _prior_settlement(task_id) is not None:
@@ -269,8 +264,7 @@ def dispatch_allowed(task_id: str) -> dict:
     if (
         receipt["generation"] != current["policy"].get("generation")
         or receipt["issue_number"] != _block(current["policy"]).get("issue_number")
-        or receipt["claim"].get("policy_digest")
-        != improvements._digest(current["policy"])
+        or receipt["claim"].get("policy_digest") != digest(current["policy"])
     ):
         return {"ok": False, "reason": "scout_policy_changed"}
     return eligibility(current)
@@ -333,7 +327,7 @@ def tick(policy: dict) -> dict:
             ACTOR,
             CLAIM,
             receipt_id=receipt_id,
-            policy_digest=improvements._digest(live["policy"]),
+            policy_digest=digest(live["policy"]),
             review_digest=current["review_digest"],
             quota_decisions=allowed["quota_decisions"],
         )
@@ -407,19 +401,31 @@ def _prompt(current, *, collection=None):
             "Collect at most the configured max_findings evidence-backed improvement findings. "
             "Prioritize known reproducible bugs, failing narrow tests, measured latency/performance "
             "and reliability gaps aligned with active goals. Do not invent work to consume quota. "
+            "Include factory bottlenecks, prompt failures and obsolete rules when evidence links "
+            "them to a goal. Prefer a scoped repair or removal over new machinery. "
+            "Investigate evidence of avoidable paused time, "
+            "operator interruptions, recovery outcomes and repeated causes. Unmatched pauses "
+            "have unknown duration/outcome. Do not copy private recovery records into "
+            "findings or transcripts. "
+            "Do not call a pause avoidable without evidence of an authorized safe recovery. "
+            "Separate transport/missing-result failures from code rejection and legitimate "
+            "review/CI/dependency waits. Measure reduced disruption without weakening "
+            "unknown-execution fences, human holds, subscription caps or acceptance. "
             "Return an empty findings list when none is actionable. Each finding needs fresh evidence "
             "at the exact repo_head, reproduction, benefit, scoped acceptance tests and proposed owner. "
+            "In benefit state the hypothesis and observed baseline; in acceptance_tests state the "
+            "success measure, evaluation window or sample, and rollback or stop condition. "
             "Observe current rules, open PRs/issues and ownership; do not duplicate active work.\n"
         )
     else:
-        evidence.update(
-            collection=collection, collection_digest=improvements._digest(collection)
-        )
+        evidence.update(collection=collection, collection_digest=digest(collection))
         text = (
             "Independently review the collected findings against current source, rules, active goals "
             "and complete open-work inventory. Reproduce or verify each evidence claim. Reject "
             "speculation, semantic duplicates, changed evidence or unready scope. Approve only if "
-            "every finding is supported, scoped and safe for ordinary issue refinement. Return the "
+            "every finding is supported, scoped and safe for ordinary issue refinement. Check that "
+            "the proposed measure tests goal progress, preserves delivery quality and has a bounded "
+            "evaluation and rollback or stop condition. Return the "
             "exact review_digest and collection_digest with evidence and approved boolean.\n"
         )
     prompt = text + json.dumps(evidence, sort_keys=True, default=str)
@@ -487,7 +493,7 @@ def reconcile(task, policy, nodes, runs, expected_version):
                 collected is None
                 or not isinstance(reviewed, dict)
                 or reviewed.get("approved") is not True
-                or reviewed.get("collection_digest") != improvements._digest(collected)
+                or reviewed.get("collection_digest") != digest(collected)
                 or reviewed.get("review_digest") != current["review_digest"]
                 or set(reviewed)
                 != {"approved", "review_digest", "collection_digest", "evidence"}
@@ -518,7 +524,7 @@ def reconcile(task, policy, nodes, runs, expected_version):
                     task_id=task_id,
                     receipt_id=receipt["id"],
                     review_digest=current["review_digest"],
-                    findings_digest=improvements._digest(batch["findings"]),
+                    findings_digest=digest(batch["findings"]),
                     approved=True,
                     evidence=reviewed["evidence"],
                     run_id=review_run["id"],

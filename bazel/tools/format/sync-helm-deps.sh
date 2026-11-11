@@ -40,6 +40,7 @@ fi
 # Find all Chart.yaml files that depend on homelab-library (excluding the library itself)
 MISMATCHED=()
 while IFS= read -r chart_file; do
+	[[ -z "$chart_file" ]] && continue
 	[[ "$chart_file" == "$LIBRARY_CHART" ]] && continue
 
 	# Extract the version after "name: homelab-library"
@@ -47,7 +48,7 @@ while IFS= read -r chart_file; do
 	if [[ -n "$dep_version" && "$dep_version" != "$LIBRARY_VERSION" ]]; then
 		MISMATCHED+=("$chart_file")
 	fi
-done < <(grep -rl 'name: homelab-library' --include='Chart.yaml' projects/ 2>/dev/null || true)
+done <<<"$(grep -rl 'name: homelab-library' --include='Chart.yaml' projects/ 2>/dev/null || true)"
 
 if $CHECK_ONLY; then
 	if [[ ${#MISMATCHED[@]} -gt 0 ]]; then

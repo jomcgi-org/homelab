@@ -7,19 +7,20 @@ import logging
 import json
 from datetime import timezone, timedelta
 
-from sqlalchemy import or_
+from sqlalchemy import String, case, cast, func, or_
 from sqlmodel import Session, select
 
+from core.jsonio import dumps
 from factory.orchestration.factory_controls import (
     _audit,
     _integer,
-    _json,
     _locked_session,
     _read_session,
     _now,
     _snapshot,
     _text,
     ADMISSION_CANDIDATE_SCAN_LIMIT,
+    ADVISORY_CLASSES,
     admission_eligible as admission_eligible,
     DEFAULT_TASK_CLASS,
     delivery_branch_owner,
@@ -163,6 +164,7 @@ def get_issue_receipt(
                 FactoryReceipt.issue_number == issue_number,
                 FactoryReceipt.generation == generation,
                 FactoryReceipt.task_class == task_class,
+                FactoryReceipt.recurrence_key == "",
             )
         ).one_or_none()
         return (
@@ -227,6 +229,7 @@ def receive_issue(
                 FactoryReceipt.issue_number == issue_number,
                 FactoryReceipt.generation == generation,
                 FactoryReceipt.task_class == task_class,
+                FactoryReceipt.recurrence_key == "",
             )
         ).first()
         if existing is not None:
@@ -287,7 +290,7 @@ def receive_issue(
             url=url,
             actor=actor,
             task_class=task_class,
-            direction_json=_json(delivery_target) if delivery_target else None,
+            direction_json=dumps(delivery_target) if delivery_target else None,
         )
         db.add(row)
         db.flush()
@@ -396,7 +399,9 @@ def open_lanes(policy: dict, rows, lanes=LANES, *, unresolved_task_ids=None) -> 
 
 def _eligible_clause(policy: dict):
     """The SQL twin of admission_eligible for the queued-receipt query."""
-    eligible = FactoryReceipt.issue_number.in_(policy["issue_numbers"])
+    eligible = FactoryReceipt.issue_number.in_(policy["issue_numbers"]) & (
+        FactoryReceipt.actor != "factory:backlog-refill"
+    )
     intake = intake_policy(policy)
     if intake["enabled"]:
         # Intake receipts are not in the operator allowlist by construction.
@@ -415,6 +420,17 @@ def _eligible_clause(policy: dict):
     from factory.orchestration.factory_controls import problem_issues_policy
 
     block = problem_issues_policy(policy)
+    from factory.orchestration.backlog_refill_policy import normalize as refill_policy
+
+    if refill_policy(policy)["enabled"] and not intake["refinement_batch"]:
+        eligible = or_(
+            eligible,
+            (FactoryReceipt.actor == "factory:backlog-refill")
+            & (FactoryReceipt.issue_number == 7366)
+            & (FactoryReceipt.task_class == "advisory-diagnosis")
+            & (FactoryReceipt.recurrence_key != "")
+            & (FactoryReceipt.repo == policy["repo"]),
+        )
     scout = block["improvement_scout"]
     if block["enabled"] and block["sources"]["quota_improvement"] and scout["enabled"]:
         eligible = or_(
@@ -644,7 +660,56 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             .exists()
         )
 
-        ordered = base_query.order_by(FactoryReceipt.created_at, FactoryReceipt.id)
+        # Autonomous receipts may have waited in the queue across sweeps.
+        # Reorder only equal repo/lane/rank autonomous work by issue age. Each
+        # group's original queue position and operator FIFO remain unchanged.
+        natural = FactoryReceipt.actor == INTAKE_ACTOR
+        issue_age = (
+            select(
+                case(
+                    (
+                        WorkItem.github_created_at.is_not(None),
+                        WorkItem.github_created_at,
+                    ),
+                    (WorkItem.authority == "local", WorkItem.created_at),
+                    else_=None,
+                )
+            )
+            .where(WorkItem.id == FactoryReceipt.work_item_id)
+            .correlate(FactoryReceipt)
+            .scalar_subquery()
+        )
+        issue_rank = (
+            select(
+                case(
+                    (cast(WorkItem.labels, String).like('%"critical"%'), 0),
+                    (cast(WorkItem.labels, String).like('%"bug"%'), 1),
+                    else_=2,
+                )
+            )
+            .where(WorkItem.id == FactoryReceipt.work_item_id)
+            .correlate(FactoryReceipt)
+            .scalar_subquery()
+        )
+        age = case((natural, issue_age), else_=FactoryReceipt.created_at)
+        lane_rank = case((FactoryReceipt.task_class.in_(ADVISORY_CLASSES), 1), else_=0)
+        rank = func.coalesce(issue_rank, 2)
+        queue_position = func.min(FactoryReceipt.created_at).over(
+            partition_by=(
+                case((natural, 0), else_=FactoryReceipt.id),
+                FactoryReceipt.repo,
+                lane_rank,
+                rank,
+            )
+        )
+        ordered = base_query.order_by(
+            queue_position,
+            age.is_(None),
+            age,
+            FactoryReceipt.repo,
+            FactoryReceipt.issue_number,
+            FactoryReceipt.id,
+        )
         candidates = db.exec(
             ordered.where(blocker_predicate).limit(ADMISSION_CANDIDATE_SCAN_LIMIT)
         ).all()
@@ -655,10 +720,8 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         # later receipt was admitted past it.
         blocked_head = db.exec(ordered.where(~blocker_predicate)).first()
         if blocked_head is not None and (first is None or blocked_head.id != first.id):
-            head_is_first = first is None or (
-                blocked_head.created_at,
-                blocked_head.id,
-            ) < (first.created_at, first.id)
+            head = db.exec(ordered.limit(1)).first()
+            head_is_first = head is not None and head.id == blocked_head.id
             if head_is_first:
                 blockers = db.exec(
                     select(WorkItem).where(
@@ -777,7 +840,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                     "landing_hold",
                     json.loads(held_prior.direction_json)["landing_hold"],
                 )
-                row.direction_json = _json(direction)
+                row.direction_json = dumps(direction)
             refined = next(
                 (
                     prior
@@ -791,12 +854,12 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                 gates = refined_direction.get("conductor_gates", [])
                 if gates and not direction.get("conductor_gates"):
                     direction["conductor_gates"] = gates
-                if "landing_hold" in refined_direction:
+                if landing_held(refined):
                     direction.setdefault(
                         "landing_hold", refined_direction["landing_hold"]
                     )
                 if direction:
-                    row.direction_json = _json(direction)
+                    row.direction_json = dumps(direction)
         try:
             granted_branch, _granted_pr = granted_delivery_surface(direction)
         except ValueError as exc:
@@ -842,12 +905,31 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             **pinned_policy,
             **(dispatch_grant["policy_overlay"] if dispatch_grant else {}),
         }
+        restriction = direction.get("model_restriction")
+        if restriction:
+            from factory.orchestration.factory_funding_limits import restrict_models
+
+            effective_policy = restrict_models(
+                effective_policy, restriction["removed_models"]
+            )
+            try:
+                # Requeue keeps receipt restrictions. A newly configured scalar
+                # or emptied pool must refuse before a new task is created.
+                validate_policy(effective_policy)
+            except ValueError as exc:
+                return {
+                    "ok": False,
+                    "reason": "model_restriction_invalid",
+                    "detail": str(exc),
+                }
         task_id = mint_task_id()
         task = SwarmTask(
             id=task_id,
             task_text=(
                 f"GitHub dependency pull request {row.url}\n\n{row.title}\n\n{row.body}"
                 if direction.get("dependency_review")
+                else f"GitHub pull request {row.url}\n\n{row.title}\n\n{row.body}"
+                if direction.get("owner_pr")
                 else f"GitHub issue {row.url}\n\n{row.title}\n\n{row.body}"
             ),
             repo=row.repo,
@@ -866,7 +948,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         row.task_id, row.state, row.policy_json = (
             task_id,
             "admitted",
-            _json(pinned_policy),
+            dumps(pinned_policy),
         )
         row.routing_tier = route["tier"]
         store_class_route(receipt_task_class(row), route, session=db)

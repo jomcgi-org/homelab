@@ -10,6 +10,25 @@ import (
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
 )
 
+func TestNearestSiteTieAndReach(t *testing.T) {
+	for _, rows := range []string{
+		`{"id":"z","lat":57,"lon":-4},{"id":"a","lat":57,"lon":-4}`,
+		`{"id":"a","lat":57,"lon":-4},{"id":"z","lat":57,"lon":-4}`,
+	} {
+		ds, err := Parse([]byte(`{"sites":[`+rows+`]}`), []byte(`{"sites":[]}`), "v")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, km := ds.Nearest(57, -4, 30)
+		if got == nil || got.ID != "a" || km != 0 {
+			t.Fatal("unstable tie", got, km)
+		}
+		if got, _ := ds.Nearest(55, -8, 30); got != nil {
+			t.Fatal("outside reach", got)
+		}
+	}
+}
+
 func TestEntityFreshnessFromSnapshot(t *testing.T) {
 	for _, date := range []string{"2026-03-28", "2026-10-24"} {
 		now, _ := time.Parse(time.DateOnly, date)
@@ -155,7 +174,7 @@ func TestParseRejectsBrokenInput(t *testing.T) {
 	}
 }
 
-func TestNightOfUsesLocalEvening(t *testing.T) {
+func TestNightDayUsesLocalEvening(t *testing.T) {
 	cases := map[string]string{
 		"2026-10-19T21:00:00Z": "2026-10-19",
 		"2026-10-20T01:00:00Z": "2026-10-19", // 02:00 BST still belongs to the 19th
@@ -165,8 +184,8 @@ func TestNightOfUsesLocalEvening(t *testing.T) {
 	}
 	for in, want := range cases {
 		ts, _ := time.Parse(time.RFC3339, in)
-		if got := NightOf(ts); got != want {
-			t.Errorf("NightOf(%s) = %s, want %s", in, got, want)
+		if got := NightName(NightDay(ts)); got != want {
+			t.Errorf("night of %s = %s, want %s", in, got, want)
 		}
 	}
 }

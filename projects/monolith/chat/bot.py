@@ -1669,7 +1669,7 @@ class ChatBot(discord.Client):
             logger.exception("agent: failed to persist trigger message %s", message.id)
 
         # Ack-first (Task 8): post the ⏳ queue reaction BEFORE start_agent_flow,
-        # which runs the ADR 036 orchestrator.compile (route + submit_plan, up to
+        # which runs the ADR 036 orchestrator.compile (chat-versus-session routing, up to
         # 60s). This hides that latency behind a visible ack so an engaged user
         # sees immediate feedback; the runner then flips ⏳ -> 👀 -> ✅/❌ as the
         # turn runs. Best-effort: a reaction failure must not block the run. (The
@@ -2249,9 +2249,7 @@ class ChatBot(discord.Client):
 
 
 #: Module-level reference to the running bot, set by `create_bot()`.
-#: Used by in-process callers (e.g. the agent.notify MCP tool) that
-#: need to send Discord messages without going through a FastAPI
-#: request scope. Tests patch this attribute directly.
+#: Read by `_get_recent_context` for the fact-check button.
 bot: ChatBot | None = None
 
 
@@ -2260,20 +2258,3 @@ def create_bot() -> ChatBot:
     global bot
     bot = ChatBot()
     return bot
-
-
-async def send_message(channel_id: str, content: str, level: str = "info") -> None:
-    """Send a Discord message from in-process code (e.g. an MCP tool).
-
-    Used by the agent.notify tool and any other internal caller that
-    needs to ping Discord without going through NATS.
-    """
-    prefix = {"info": "", "warn": "⚠️ ", "error": "\U0001f534 "}.get(level, "")
-    if bot is None:
-        raise RuntimeError("Discord bot is not running; cannot send message")
-    channel = bot.get_channel(int(channel_id))
-    if channel is None:
-        # bot.get_channel is sync and returns None if cache hasn't seen the channel;
-        # fall back to API fetch.
-        channel = await bot.fetch_channel(int(channel_id))
-    await channel.send(f"{prefix}{content}")

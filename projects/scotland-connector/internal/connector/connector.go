@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/aurora"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/stars"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
 )
@@ -120,8 +121,9 @@ type WalksSource interface {
 
 // Service answers queries.
 type Service struct {
-	Data  DatasetSource
-	Walks WalksSource
+	Data       DatasetSource
+	Walks      WalksSource
+	AuroraData interface{ Current() *aurora.Snapshot }
 	// MethodURL is published in every envelope.
 	MethodURL string
 	Now       func() time.Time

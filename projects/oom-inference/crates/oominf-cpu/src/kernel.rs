@@ -452,6 +452,16 @@ mod tests {
         *seed
     }
 
+    fn random_rows(seed: &mut u64, nt: usize, cols: usize) -> Vec<Vec<f32>> {
+        (0..nt)
+            .map(|_| {
+                (0..cols)
+                    .map(|_| (rng(seed) % 2001) as f32 / 1000.0 - 1.0)
+                    .collect()
+            })
+            .collect()
+    }
+
     /// The vector path matches a float64 evaluation of the same exactly-decoded
     /// weights to fp32 summation accuracy, as the scalar path does.
     #[test]
@@ -463,13 +473,7 @@ mod tests {
         let scales: Vec<u8> = (0..rows * cols / 16)
             .map(|_| (rng(&mut seed) % 0x77) as u8)
             .collect();
-        let xs: Vec<Vec<f32>> = (0..nt)
-            .map(|_| {
-                (0..cols)
-                    .map(|_| (rng(&mut seed) % 2001) as f32 / 1000.0 - 1.0)
-                    .collect()
-            })
-            .collect();
+        let xs = random_rows(&mut seed, nt, cols);
         let xr: Vec<&[f32]> = xs.iter().map(Vec::as_slice).collect();
         let m = Nvfp4Matrix {
             packed: &packed,
@@ -513,13 +517,7 @@ mod tests {
                 (v as u16).to_le_bytes()
             })
             .collect();
-        let xs: Vec<Vec<f32>> = (0..nt)
-            .map(|_| {
-                (0..cols)
-                    .map(|_| (rng(&mut seed) % 2001) as f32 / 1000.0 - 1.0)
-                    .collect()
-            })
-            .collect();
+        let xs = random_rows(&mut seed, nt, cols);
         let xr: Vec<&[f32]> = xs.iter().map(Vec::as_slice).collect();
         let m = Bf16Matrix { weights: &w, cols };
         let (mut a, mut b) = (vec![0.0; rows * nt], vec![0.0; rows * nt]);

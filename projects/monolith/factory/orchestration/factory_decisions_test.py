@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from factory.execution.models import AgentSession, PendingMessage
 from factory.orchestration import factory_conductor as conductor
 from factory.orchestration import factory_controls as controls
 from factory.orchestration import factory_decisions as decisions
@@ -45,7 +46,9 @@ def db(tmp_path, monkeypatch):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'decisions.db'}",
         connect_args={"check_same_thread": False, "timeout": 5},
-        execution_options={"schema_translate_map": {"swarm": None}},
+        execution_options={
+            "schema_translate_map": {"swarm": None, "agent_sessions": None}
+        },
     )
 
     @event.listens_for(engine, "connect")
@@ -53,6 +56,8 @@ def db(tmp_path, monkeypatch):
         connection.execute("PRAGMA foreign_keys=ON")
 
     tables = (
+        AgentSession,
+        PendingMessage,
         SwarmTask,
         SwarmPlanVersion,
         SwarmPlanNode,
@@ -74,6 +79,11 @@ def db(tmp_path, monkeypatch):
         session.commit()
     for module in (conductor, conductor.graph, controls):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
+    # Merit enrichment now runs on every eligible request. Keep its external
+    # evidence deterministic; dedicated evidence tests exercise the reader.
+    from factory.orchestration import factory_judge
+
+    monkeypatch.setattr(factory_judge, "merit_evidence", lambda _task, _runs: MERIT)
     yield engine
     engine.dispose()
 
@@ -734,9 +744,7 @@ def test_an_unknown_option_or_receipt_is_refused(db, github):
 def test_chat_posts_the_question_and_requeues_the_refine(db, github):
     configure()
     receipt_id = escalate(db)
-    result = decisions.request_chat(
-        receipt_id, "Does this cover the friends tier?", "joe@example.test"
-    )
+    result = durable_chat(db, receipt_id, "Does this cover the friends tier?")
     assert result["requeued"] is True
     assert "Operator asks: Does this cover the friends tier?" in github.bodies()
     with Session(db) as session:
@@ -752,21 +760,22 @@ def test_chat_posts_the_question_and_requeues_the_refine(db, github):
 def test_chat_twice_asks_twice_and_a_retry_asks_once(db, github):
     configure()
     receipt_id = escalate(db)
-    decisions.request_chat(receipt_id, "First question", "joe@example.test")
+    durable_chat(db, receipt_id, "First question", key="first")
     # The receipt is back in the queue, so the second ask is a new question on
     # the same escalation rather than a repeat of the first.
-    decisions.request_chat(receipt_id, "Second question", "joe@example.test")
+    durable_chat(db, receipt_id, "Second question", key="second")
     assert len(github.comments) == 2
     assert len(escalation(db, receipt_id)["chat"]) == 2
 
 
 def test_chat_needs_a_note_and_refuses_a_decided_escalation(db, github):
     receipt_id = escalate(db, "close")
-    assert decisions.request_chat(receipt_id, "   ", "joe@example.test")["ok"] is False
+    with pytest.raises(ValueError, match="non-empty note"):
+        durable_chat(db, receipt_id, "   ")
     decisions.apply_decision(receipt_id, "close", "joe@example.test")
-    with pytest.raises(decisions.DecisionError) as raised:
-        decisions.request_chat(receipt_id, "too late", "joe@example.test")
-    assert raised.value.status == 409
+    refused = durable_chat(db, receipt_id, "too late")
+    assert refused["state"] == "refused"
+    assert refused["status"] == 409
 
 
 def test_a_receipt_with_no_escalation_cannot_be_decided(db, github):
@@ -807,6 +816,16 @@ def durable_answer(
 ):
     return decisions.request_decision(
         receipt_id, identity, option, actor, request_key=key
+    )
+
+
+def durable_chat(db, receipt_id, note, actor="joe@example.test", *, key="chat-1"):
+    with Session(db) as session:
+        identity = decisions._fields(session.get(FactoryReceipt, receipt_id))[
+            "decision_id"
+        ]
+    return decisions.request_decision(
+        receipt_id, identity, "chat", actor, request_key=key, note=note, action="chat"
     )
 
 
@@ -957,8 +976,7 @@ def test_partial_external_effect_is_durably_unknown(db, github, monkeypatch):
     assert len(github.comments) == 1
     assert durable_answer(receipt_id, identity) == result
     assert durable_answer(receipt_id, identity, key="new")["state"] == "refused"
-    with pytest.raises(decisions.DecisionError):
-        decisions.request_chat(receipt_id, "try again", "browser")
+    assert durable_chat(db, receipt_id, "try again", "browser")["state"] == "refused"
     assert len(github.comments) == 1
 
 
@@ -1010,6 +1028,84 @@ def test_durable_chat_posts_and_requeues_once(db, github):
         assert session.get(FactoryReceipt, receipt_id).state == "queued"
 
 
+def test_chat_cooldown_before_comment_is_a_durable_refusal(db, github, monkeypatch):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    configure()
+    args = (receipt_id, identity, "chat", "operator")
+
+    def deferred(*_args):
+        raise GitHubReadDeferred("cooldown")
+
+    monkeypatch.setattr(conductor, "github_list", deferred)
+    result = decisions.request_decision(
+        *args, request_key="read-refused", note="Repository only?", action="chat"
+    )
+    assert result["state"] == "refused"
+    assert result["reason"] == "github_read_deferred_before_effects"
+    assert result["effects_started"] is False
+    assert not github.writes
+    assert not escalation(db, receipt_id).get("chat")
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, receipt_id).state == "succeeded"
+        assert not controls._pending_request(session, receipt_id)
+    # The refused key stays refused after the cooldown, even across readers.
+    monkeypatch.setattr(conductor, "github_list", github.list)
+    db.dispose()
+    assert (
+        decisions.request_decision(
+            *args, request_key="read-refused", note="Repository only?", action="chat"
+        )
+        == result
+    )
+    assert not github.writes
+    # A new explicit request can proceed; the refusal itself never retries.
+    next_result = decisions.request_decision(
+        *args, request_key="new-request", note="Repository only?", action="chat"
+    )
+    assert next_result["state"] == "completed"
+    assert len(github.comments) == 1
+
+
+def test_chat_write_exception_stays_unknown_even_if_named_read_deferred(
+    db, github, monkeypatch
+):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    write = github.write
+
+    def wrote_then_failed(*args, **kwargs):
+        write(*args, **kwargs)
+        raise GitHubReadDeferred("raised after write")
+
+    monkeypatch.setattr(landing, "github_write", wrote_then_failed)
+    args = (receipt_id, identity, "chat", "operator")
+    result = decisions.request_decision(
+        *args, request_key="unknown", note="Repository only?", action="chat"
+    )
+    assert result["state"] == "outcome_unknown"
+    assert len(github.comments) == 1
+    assert (
+        decisions.request_decision(
+            *args, request_key="unknown", note="Repository only?", action="chat"
+        )
+        == result
+    )
+    assert (
+        decisions.request_decision(
+            *args, request_key="new-request", note="Repository only?", action="chat"
+        )["state"]
+        == "refused"
+    )
+    with Session(db) as session:
+        assert controls._pending_request(session, receipt_id)
+    assert len(github.comments) == 1
+
+
 def test_durable_delivery_answer_does_not_block_its_own_readmission(db, github):
     receipt_id = escalate(db, "deliver", state="escalated", task_class="bug-fix")
     configure()
@@ -1024,7 +1120,6 @@ def test_fresh_context_uses_durable_requests_even_when_knowledge_is_down(
     import asyncio
     from factory.orchestration import conductor_context as context
 
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     receipt_id = escalate(db, "close")
     identity = current_decision_id()
     durable_answer(receipt_id, identity)
@@ -1060,7 +1155,6 @@ def test_committed_exchange_is_reported_deterministically_for_extraction(
     from types import SimpleNamespace
     from factory.orchestration import conductor_context as context
 
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     receipt_id = escalate(db, "close")
     identity = current_decision_id()
     durable_answer(receipt_id, identity)
@@ -1097,7 +1191,6 @@ def test_fresh_context_keeps_operator_history_isolated_and_epistemic(
     import asyncio
     from factory.orchestration import conductor_context as context
 
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     receipt_id = escalate(db, "close")
     brief_identity = current_decision_id()
     configure()
@@ -1127,6 +1220,16 @@ def test_fresh_context_keeps_operator_history_isolated_and_epistemic(
     first = asyncio.run(context.read_context(receipt_id, None, 5, actor="operator-a"))
     second = asyncio.run(context.read_context(receipt_id, None, 5, actor="operator-b"))
 
+    # Private chat views must still name the same actionable durable brief.
+    assert first["decision"]["decision_id"] == current_decision_id()
+    assert second["decision"]["decision_id"] == current_decision_id()
+    assert [entry["note"] for entry in first["decision"]["chat"]] == [
+        "Operator A constraint."
+    ]
+    assert [entry["note"] for entry in second["decision"]["chat"]] == [
+        "Operator B private constraint."
+    ]
+
     assert [item["actor"] for item in first["recent_exchanges"]] == [
         "factory:refine",
         "operator-a",
@@ -1151,7 +1254,29 @@ def test_fresh_context_keeps_operator_history_isolated_and_epistemic(
     assert first["summaries"][1]["evidence"] == ["factory-request:operator-a:same-key"]
 
 
-def test_legacy_operator_paths_trigger_receipt_knowledge_maintenance(
+def test_fresh_context_without_chat_has_an_actionable_decision_id(db, github):
+    from factory.orchestration import conductor_context as context
+
+    receipt_id = escalate(db, "close")
+    configure()
+    identity = current_decision_id()
+    fresh = context._factory_context(receipt_id, actor="operator")
+    assert fresh["decision"]["decision_id"] == identity
+    assert fresh["decision"]["chat"] == []
+    result = decisions.request_decision(
+        receipt_id,
+        fresh["decision"]["decision_id"],
+        "chat",
+        "operator",
+        request_key="from-fresh-context",
+        note="Keep implementation default-off.",
+        action="chat",
+    )
+    assert result["state"] == "completed"
+    assert len(github.comments) == 1
+
+
+def test_legacy_decision_path_triggers_receipt_knowledge_maintenance(
     db, github, monkeypatch
 ):
     from factory.orchestration import conductor_context as context
@@ -1165,9 +1290,8 @@ def test_legacy_operator_paths_trigger_receipt_knowledge_maintenance(
         lambda target: maintained.append(target) or {"status": "queued"},
     )
 
-    assert decisions.request_chat(receipt_id, "Which tier?", "operator")["ok"]
     assert decisions.apply_decision(receipt_id, "close", "operator")["applied"]
-    assert maintained == [receipt_id, receipt_id]
+    assert maintained == [receipt_id]
 
 
 def test_pending_question_survives_fresh_context_with_current_queue_state(
@@ -1176,7 +1300,6 @@ def test_pending_question_survives_fresh_context_with_current_queue_state(
     import asyncio
     from factory.orchestration import conductor_context as context
 
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     configure()
     receipt_id = escalate(db, "close")
     result = decisions.request_decision(
@@ -1250,7 +1373,6 @@ def test_receipt_knowledge_partitions_private_operator_exchanges(
     from types import SimpleNamespace
     from factory.orchestration import conductor_context as context
 
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     receipt_id = escalate(db, "close")
     configure()
     decisions.request_decision(
@@ -1309,7 +1431,6 @@ def test_interrupted_knowledge_maintenance_retries_without_replaying_decision(
     from types import SimpleNamespace
     from factory.orchestration import conductor_context as context
 
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     receipt_id = escalate(db, "close")
     identity = current_decision_id()
     completed = durable_answer(receipt_id, identity)
@@ -1519,9 +1640,7 @@ def test_a_failed_split_is_audited(db, github):
 def test_deciding_after_a_chat_cancels_the_re_brief(db, github):
     configure()
     receipt_id = escalate(db, "close")
-    assert decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")[
-        "requeued"
-    ]
+    assert durable_chat(db, receipt_id, "Which tier?")["requeued"]
     with Session(db) as session:
         assert session.get(FactoryReceipt, receipt_id).state == "queued"
     decisions.apply_decision(receipt_id, "close", "joe@example.test")
@@ -1549,7 +1668,7 @@ def test_a_chat_the_lane_cannot_take_says_so(db, github):
     # discoverable-only and intake is what would have found it.
     configure(intake_enabled=False, issues=(ISSUE + 99,))
     receipt_id = escalate(db)
-    result = decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")
+    result = durable_chat(db, receipt_id, "Which tier?")
     assert result["requeued"] is False
     assert "neither in the policy allowlist" in result["blocked_by"]
     assert "Operator asks: Which tier?" in github.bodies()
@@ -1573,9 +1692,7 @@ def test_rebrief_of_previous_batch_cannot_poison_next_batch_queue(db, github):
         assert not controls.admission_eligible(
             policy, ISSUE, "factory:intake", task_class="refine", repo=REPO
         )
-    result = decisions.request_chat(
-        receipt_id, "Revisit the earlier brief", "joe@example.test"
-    )
+    result = durable_chat(db, receipt_id, "Revisit the earlier brief")
     assert result["requeued"] is False
     assert "admission will not select it" in result["blocked_by"]
     with Session(db) as session:
@@ -1591,12 +1708,12 @@ def test_rebrief_of_previous_batch_cannot_poison_next_batch_queue(db, github):
 def test_a_generation_the_policy_has_moved_past_blocks_the_re_brief(db, github):
     configure(generation=4)
     receipt_id = escalate(db)
-    with pytest.raises(decisions.DecisionError) as raised:
-        decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")
-    assert raised.value.status == 409
-    assert "receipt generation 0" in raised.value.reason
-    assert "policy is on generation 4" in raised.value.reason
-    assert "no issue changes were made" in raised.value.reason
+    result = durable_chat(db, receipt_id, "Which tier?")
+    assert result["state"] == "refused"
+    assert result["status"] == 409
+    assert "receipt generation 0" in result["reason"]
+    assert "policy is on generation 4" in result["reason"]
+    assert "no issue changes were made" in result["reason"]
     assert github.writes == []
 
 
@@ -1818,7 +1935,7 @@ def test_a_dismissed_escalation_can_still_be_asked_about(db, github):
     receipt_id = escalate(db)
     decisions.apply_decision(receipt_id, "escape:dismiss", "joe@example.test")
 
-    result = decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")
+    result = durable_chat(db, receipt_id, "Which tier?")
 
     assert result["requeued"] is True
     assert "Operator asks: Which tier?" in github.bodies()
@@ -1833,9 +1950,9 @@ def test_a_real_decision_is_still_the_last_word(db, github):
     with pytest.raises(decisions.DecisionError) as raised:
         decisions.apply_decision(receipt_id, "escape:dismiss", "joe@example.test")
     assert raised.value.status == 409
-    with pytest.raises(decisions.DecisionError) as chat:
-        decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")
-    assert chat.value.status == 409
+    refused = durable_chat(db, receipt_id, "Which tier?")
+    assert refused["state"] == "refused"
+    assert refused["status"] == 409
 
 
 def test_a_dismiss_repeated_returns_the_first_one_rather_than_a_second(db, github):
@@ -1848,7 +1965,7 @@ def test_a_dismiss_repeated_returns_the_first_one_rather_than_a_second(db, githu
     assert audit_actions(db).count("decision_applied") == 1
 
 
-def envelope_task(*, max_turns=6, max_attempts=1):
+def envelope_task(*, max_turns=6, max_attempts=1, binding=True):
     policy = {
         "repo": REPO,
         "issue_numbers": [ISSUE],
@@ -1866,6 +1983,8 @@ def envelope_task(*, max_turns=6, max_attempts=1):
         "max_attempts": max_attempts,
         "intake": {"enabled": True, "refine_enabled": True},
     }
+    if binding:
+        policy["task_budget_binding"] = True
     assert controls.set_control("configure", "operator", policy=policy)["ok"]
     assert controls.set_control("enable", "operator")["ok"]
     receive_issue(
@@ -1958,6 +2077,7 @@ def funding_decision(**changes):
         "task_budget_usd": 30.0,
         "additional_work_turns": 1,
         "lease_minutes": 30,
+        "assessment": ASSESSMENT,
         **changes,
     }
 
@@ -2326,7 +2446,6 @@ def _merit_judge(monkeypatch):
     from factory.orchestration import factory_judge
 
     monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
-    monkeypatch.setenv("FACTORY_MERIT_JUDGE_ENABLED", "true")
     monkeypatch.setattr(factory_judge, "merit_evidence", lambda _task, _runs: MERIT)
     monkeypatch.setattr(
         funding,
@@ -2342,7 +2461,7 @@ def _merit_judge(monkeypatch):
 
 
 def _repeated_deficit(monkeypatch, task, policy, deficit):
-    """Two matching envelope refusals with merit judging on; the cards raised."""
+    """Two matching envelope refusals; return any cards raised."""
     _merit_judge(monkeypatch)
     monkeypatch.setattr(
         conductor,
@@ -2382,6 +2501,95 @@ def _grant(task):
 def _settled(task):
     with controls._read_session() as session:
         return funding.latest(session, task["id"], "funding_review_settled")
+
+
+@pytest.mark.parametrize("answer", ["resume", "amend", "amend_and_resume"])
+@pytest.mark.parametrize("verdict", ["escalate", "budget_approval"])
+def test_operator_answer_rearms_a_full_progress_step(db, monkeypatch, answer, verdict):
+    from factory.orchestration import factory_progress_watchdog as watchdog
+    from factory.orchestration import factory_policy_amendment as amendments
+
+    task, policy = envelope_task(max_turns=20)
+    add_spent_turns(db, task, count=8)
+    _merit_judge(monkeypatch)
+    cards = []
+    monkeypatch.setattr(
+        conductor, "_escalate_funding_doubt", lambda *args: cards.append(args)
+    )
+    assert watchdog.check(task["id"], policy) == "funding_review"
+    request = _pending(task)
+    settle_funding_request(
+        task,
+        request,
+        funding_decision(
+            action="escalate" if verdict == "escalate" else "continue",
+            task_budget_usd=40 if verdict == "budget_approval" else 30,
+            assessment=ASSESSMENT,
+        ),
+    )
+    assert _settled(task)["refusal"] is None
+    assert bool(cards) == (verdict == "escalate")
+    # A settlement awaiting its card must block a second trigger even before
+    # the card writer pauses the receipt.
+    monkeypatch.setattr(
+        funding, "_issue", lambda _: pytest.fail("operator answer was re-litigated")
+    )
+    assert funding.request(task, "Progress crossing", progress=True)
+    assert _pending(task) is None
+    assert controls.set_control("pause_task", "factory:funding", task_id=task["id"])[
+        "ok"
+    ]
+    if "amend" in answer:
+        with Session(db) as session:
+            receipt_id = controls._receipt(session, task["id"]).id
+        proposal = amendments.preview(
+            receipt_id, {"task_budget_usd": 40}, "Fund the correction."
+        )
+        assert amendments.apply(
+            receipt_id,
+            {"task_budget_usd": 40},
+            "Fund the correction.",
+            actor="operator",
+            request_key="fund-correction",
+            expected_preview_sha256=proposal["preview_sha256"],
+        )["ok"]
+    if "resume" in answer:
+        assert controls.set_control("resume_task", "operator", task_id=task["id"])["ok"]
+    assert watchdog.check(task["id"], policy) == "under_threshold"
+    with controls._read_session() as session:
+        detail = watchdog.detail(session, task["id"], policy)
+        assert detail["next_threshold_turns"] == 16
+        assert (
+            funding.latest(session, task["id"], "funding_review_requested")["audit_id"]
+            == request["audit_id"]
+        )
+        assert not funding._awaiting_operator(session, task["id"], _settled(task))
+    assert (
+        funding.reconcile(
+            task, policy, conductor.graph.node_runs(task["id"]), {"ok": True}
+        )
+        is False
+    )
+    assert len(cards) == (verdict == "escalate")
+    if "resume" in answer:
+        _merit_judge(monkeypatch)
+        for index in range(8):
+            with controls._locked_session() as (session, _control):
+                session.add(
+                    FactoryStart(
+                        task_id=task["id"],
+                        start_key=f"after-answer:{index}",
+                        actor="test",
+                        model="luna",
+                        max_cost_usd=1,
+                        status="succeeded",
+                        cost_usd=0.1,
+                    )
+                )
+            assert watchdog.check(task["id"], policy) == (
+                "funding_review" if index == 7 else "under_threshold"
+            )
+        assert _pending(task)["audit_id"] > request["audit_id"]
 
 
 def test_a_repeated_deficit_goes_to_the_merit_judge_not_a_person(db, monkeypatch):
@@ -2520,12 +2728,14 @@ def test_a_merit_verdict_without_its_assessment_is_refused(db, monkeypatch):
     task, policy = envelope_task()
     deficit = {"usd": {"allowed": 30.0, "needed": 31.2}}
     assert _repeated_deficit(monkeypatch, task, policy, deficit) == []
-    settle_funding_request(task, _pending(task), funding_decision())
+    decision = funding_decision()
+    decision.pop("assessment")
+    settle_funding_request(task, _pending(task), decision)
     assert _grant(task) is None
     assert _settled(task)["refusal"] == "a merit verdict needs its assessment"
 
 
-def test_escalate_is_refused_on_a_review_without_merit_judging(db, monkeypatch):
+def test_escalate_is_refused_on_a_historical_review_without_merit(db, monkeypatch):
     task, _policy = envelope_task()
     monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
     monkeypatch.setattr(
@@ -2540,6 +2750,13 @@ def test_escalate_is_refused_on_a_review_without_merit_judging(db, monkeypatch):
         },
     )
     assert funding.request(task, "Assess value")
+    # Simulate a durable request recorded before merit enrichment existed.
+    with controls._locked_session() as (session, _control):
+        request = _pending(task)
+        audit = session.get(FactoryAudit, request["audit_id"])
+        payload = json.loads(audit.detail_json)
+        payload.pop("merit")
+        audit.detail_json = json.dumps(payload)
     settle_funding_request(
         task,
         _pending(task),
@@ -2553,11 +2770,67 @@ def test_escalate_is_refused_on_a_review_without_merit_judging(db, monkeypatch):
     assert _settled(task)["refusal"] == "escalate is honoured only on a merit review"
 
 
-def test_merit_judging_is_off_by_default(db, monkeypatch):
+def test_merit_judging_enriches_repeated_deficits_without_a_rollout_flag(
+    db, monkeypatch
+):
+    from factory.orchestration import factory_judge
+
+    task, policy = envelope_task()
+    assert _repeated_deficit(monkeypatch, task, policy, {"usd": {"needed": 30.5}}) == []
+    request = _pending(task)
+    assert request["merit"] == {
+        "ceiling": factory_judge.ceiling(policy),
+        "evidence": MERIT,
+    }
+    node = next(
+        node
+        for node in conductor.graph.load_graph(task["id"])
+        if node["node_key"] == request["node_key"]
+    )
+    assert factory_judge.CRITERIA in node["prompt"]
+    assert json.dumps(MERIT) in node["prompt"]
+
+
+def test_missing_pinned_policy_cannot_judge_a_deficit(db, monkeypatch):
     task, _policy = envelope_task()
-    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
-    monkeypatch.delenv("FACTORY_MERIT_JUDGE_ENABLED", raising=False)
-    assert funding.judge_deficit(task, {"usd": {"needed": 30.5}}, "r") is False
+    _merit_judge(monkeypatch)
+    with controls._locked_session() as (session, _control):
+        controls._receipt(session, task["id"]).policy_json = None
+    assert funding._pinned_ceiling(task["id"]) is None
+    assert not funding.judge_deficit(task, {"usd": {"needed": 30.5}}, "r")
+    assert _pending(task) is None
+
+
+def test_request_without_a_bound_retains_legacy_enrichment_fallback(db, monkeypatch):
+    task, _policy = envelope_task()
+    _merit_judge(monkeypatch)
+    monkeypatch.setattr(funding, "_pinned_ceiling", lambda _: None)
+    monkeypatch.setattr(
+        funding.factory_judge,
+        "merit_evidence",
+        lambda *_: pytest.fail("missing policy must not collect merit evidence"),
+    )
+    assert funding.request(task, "Legacy request without pinned policy")
+    assert "merit" not in _pending(task)
+
+
+def test_unreadable_deficit_is_refused_without_starting_a_review(db, monkeypatch):
+    task, _policy = envelope_task()
+    _merit_judge(monkeypatch)
+    assert not funding.judge_deficit(task, {"spare_usd": 1}, "r")
+    assert _pending(task) is None
+    with controls._read_session() as session:
+        assert (
+            funding.latest(session, task["id"], "merit_funding_declined")["refusal"]
+            == "deficit_unreadable"
+        )
+
+
+def test_funding_disabled_unenrolled_task_cannot_judge_a_deficit(db, monkeypatch):
+    task, _policy = envelope_task()
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "false")
+    assert not funding.judge_deficit(task, {"usd": {"needed": 30.5}}, "r")
+    assert _pending(task) is None
 
 
 def test_the_merit_ceiling_takes_the_smaller_of_multiple_and_cap(monkeypatch):
@@ -2676,7 +2949,6 @@ SPLIT_CHILDREN = [
 def test_an_operational_split_child_opens_with_needs_human(db, github, monkeypatch):
     # #6559 (receipt 724): a live-check child opened without an exclusion
     # label and intake briefed it within seconds.
-    monkeypatch.setenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", "true")
     receipt_id = escalate(db, "split")
     _split_children(db, receipt_id, SPLIT_CHILDREN)
     decisions.apply_decision(receipt_id, "split", "joe@example.test")
@@ -2686,15 +2958,6 @@ def test_an_operational_split_child_opens_with_needs_human(db, github, monkeypat
         ["needs-human"],
         None,
     ]
-
-
-def test_without_the_flag_split_children_carry_no_label(db, github, monkeypatch):
-    monkeypatch.delenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", raising=False)
-    receipt_id = escalate(db, "split")
-    _split_children(db, receipt_id, SPLIT_CHILDREN)
-    decisions.apply_decision(receipt_id, "split", "joe@example.test")
-    created = [write[2] for write in github.writes if write[1] == "issues"]
-    assert all("labels" not in child for child in created)
 
 
 def test_the_option_schema_accepts_an_operational_child():
@@ -2749,7 +3012,6 @@ MERGED_6334 = {
 
 
 def _handoff_task(db, monkeypatch, github):
-    monkeypatch.setenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", "true")
     task, _policy = envelope_task()
     github.labels = {"agent-ready"}
     _merged_pulls(monkeypatch, github, MERGED_6334)
@@ -2822,14 +3084,6 @@ def test_an_unverified_delivery_keeps_the_decision_card(db, github, monkeypatch)
         assert row.state == "escalated"
 
 
-def test_without_the_flag_a_delivered_gate_keeps_the_card(db, github, monkeypatch):
-    task = _handoff_task(db, monkeypatch, github)
-    monkeypatch.delenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", raising=False)
-    conductor._escalate_task(task, _delivered_pause(), "factory-decision:c_1:1", [])
-    with Session(db) as session:
-        assert session.exec(select(FactoryReceipt)).one().state == "escalated"
-
-
 def test_the_issue_reference_must_be_this_issue():
     from factory.orchestration import factory_operational_handoff as handoff
 
@@ -2841,10 +3095,7 @@ def test_the_issue_reference_must_be_this_issue():
     assert not handoff.references_issue("Refs ##7", REPO, 7)
 
 
-@pytest.mark.parametrize("durable", [False, True])
-def test_explicit_held_readmission_consumes_current_queue_authority(
-    db, github, durable
-):
+def test_explicit_held_readmission_consumes_current_queue_authority(db, github):
     from factory.orchestration.factory_intake import (
         admit_next,
         operator_readmission_queued,
@@ -2855,20 +3106,15 @@ def test_explicit_held_readmission_consumes_current_queue_authority(
     with Session(db) as session, session.begin():
         row = session.get(FactoryReceipt, receipt_id)
         row.direction_json = json.dumps({"landing_hold": {"reason": "leave unmerged"}})
-    if durable:
-        result = decisions.request_decision(
-            receipt_id,
-            current_decision_id(),
-            "chat",
-            "operator",
-            request_key="continue-held",
-            note="Continue under the existing hold",
-            action="chat",
-        )
-    else:
-        result = decisions.request_chat(
-            receipt_id, "Continue under the existing hold", "operator"
-        )
+    result = decisions.request_decision(
+        receipt_id,
+        current_decision_id(),
+        "chat",
+        "operator",
+        request_key="continue-held",
+        note="Continue under the existing hold",
+        action="chat",
+    )
     assert result["requeued"] is True
     with Session(db) as session:
         assert operator_readmission_queued(session, receipt_id)
@@ -2880,3 +3126,778 @@ def test_explicit_held_readmission_consumes_current_queue_authority(
             "reason": "leave unmerged"
         }
         assert not operator_readmission_queued(session, receipt_id)
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [None, "conductor_model", "worker_model", "reviewer_model", "empty_pool"],
+)
+def test_model_restriction_survives_same_receipt_readmission(db, github, conflict):
+    receipt_id = escalate(db, "deliver", state="escalated", task_class="bug-fix")
+    configure(issues=())
+    restriction = {
+        "removed_models": ["spark"],
+        "actor": "operator",
+        "request_key": "remove-spark",
+    }
+    with Session(db) as session, session.begin():
+        row = session.get(FactoryReceipt, receipt_id)
+        row.direction_json = json.dumps(
+            {
+                "landing_hold": {"reason": "leave unmerged"},
+                "model_restriction": restriction,
+            }
+        )
+        policy = json.loads(session.get(FactoryControl, "factory").policy_json)
+        policy["allowed_models"].append("spark")
+        policy["model_pools"] = {
+            "implement": ["spark", "opus"],
+            "worker": ["luna", "spark"],
+        }
+        if conflict == "empty_pool":
+            policy["model_pools"]["implement"] = ["spark"]
+        elif conflict:
+            policy[conflict] = "spark"
+            if conflict == "worker_model":
+                policy["model_pools"]["worker"] = ["spark", "luna"]
+        history = [task.model_dump() for task in session.exec(select(SwarmTask)).all()]
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    result = decisions.request_decision(
+        receipt_id,
+        current_decision_id(),
+        "chat",
+        "operator",
+        request_key="continue-restricted",
+        note="Continue with existing restrictions",
+        action="chat",
+    )
+    assert result["requeued"] is True
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt_id)
+        assert json.loads(row.direction_json)["model_restriction"] == restriction
+        assert row.task_id is None and row.policy_json is None
+    admitted = admit_next("scheduler")
+    with Session(db) as session:
+        assert [
+            session.get(SwarmTask, task["id"]).model_dump() for task in history
+        ] == history
+        row = session.get(FactoryReceipt, receipt_id)
+        assert json.loads(row.direction_json)["model_restriction"] == restriction
+        if conflict:
+            assert admitted["reason"] == "model_restriction_invalid"
+            assert not admitted["ok"]
+            assert row.task_id is None and row.state == "queued"
+            assert len(session.exec(select(SwarmTask)).all()) == len(history)
+        else:
+            assert admitted["ok"] and admitted["receipt_id"] == receipt_id
+            effective = controls._effective_policy(session, row)
+            assert "spark" not in effective["allowed_models"]
+            assert effective["model_pools"] == {
+                "implement": ["opus"],
+                "worker": ["luna"],
+            }
+            assert "spark" in json.loads(row.policy_json)["allowed_models"]
+
+
+def test_judge_separates_transport_missing_output_and_code_failure():
+    from factory.orchestration.factory_judge import failure_kind, progress
+
+    def run(ident, status, outcome):
+        return {
+            "id": ident,
+            "node_key": "review_1",
+            "status": status,
+            "outcome_json": json.dumps(outcome),
+        }
+
+    runs = [
+        run(1, "failed", {"invocation_phase": "lost_before_guest"}),
+        run(2, "uncertain", {"invocation_phase": "not_invoked"}),
+        run(3, "failed", {}),
+        run(4, "failed", {"artifact": {"status": "missing"}}),
+    ]
+    assert [failure_kind(row) for row in runs] == [
+        "transport_before_model",
+        "unknown_execution",
+        "missing_output",
+        "missing_or_invalid_artifact",
+    ]
+    assert progress(runs)["most_repeated_failure"] is None
+    runs.append(run(5, "failed", {"error": "tests failed"}))
+    assert progress(runs)["most_repeated_failure"] == {
+        "node_key": "review_1",
+        "failures": 1,
+    }
+    assert progress(runs)["failure_causes"]["unknown_execution"] == 1
+
+
+# Routine planner pauses: the funding judge answers on the same task.
+
+
+def routine_pause(**changes):
+    return {
+        "action": "pause",
+        "reason": "The fix and its tests pass; carrying on is the natural next step.",
+        "question": "Carry on with the working fix, or wait for direction?",
+        "options": [
+            {
+                "key": "carry-on",
+                "label": "Carry on with the working fix",
+                "effect": "agent-ready",
+                "detail": {"scope": "Finish the same fix and request review."},
+            },
+            {"key": "hold", "label": "Wait for direction", "effect": "hold"},
+        ],
+        **changes,
+    }
+
+
+@pytest.fixture
+def routine(db, monkeypatch):
+    task, policy = envelope_task(max_turns=20)
+    _merit_judge(monkeypatch)
+    monkeypatch.setenv(funding.ROUTINE_PAUSE_ENV, "true")
+    _mirror_label(db, None)  # a synchronized work-item mirror, no labels
+    state = {"labels": [], "state": "open", "cards": []}
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda _repo, _suffix: {
+            "state": state["state"],
+            "labels": [{"name": name} for name in state["labels"]],
+        },
+    )
+    monkeypatch.setattr(
+        conductor,
+        "_escalate_task",
+        lambda *args, **kwargs: state["cards"].append(args[1]["question"]),
+    )
+    return task, policy, state
+
+
+def pause(task, policy, decision, ordinal=1):
+    conductor._apply_decision(
+        task, policy, decision, f"factory-decision:conductor_{ordinal}:1", []
+    )
+
+
+def audits_of(db, action):
+    with Session(db) as session:
+        return [
+            json.loads(row.detail_json)
+            for row in session.exec(
+                select(FactoryAudit).where(FactoryAudit.action == action)
+            )
+        ]
+
+
+def test_routine_pause_is_answered_by_the_judge_on_the_same_task(db, routine):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+
+    assert state["cards"] == []
+    request = _pending(task)
+    assert "recommends continuing" in request["trigger"]
+    rejected = audits_of(db, "conductor_rejected")
+    assert rejected[-1]["refusal_code"] == "routine_pause_funding_requested"
+    assert conductor._decision_processed(task["id"], "factory-decision:conductor_1:1")
+
+    settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
+    grant = _grant(task)
+    assert grant is not None and grant["granted_work_turns"] >= 1
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        # Same receipt, same task: no re-admission and no reset lineage.
+        assert row.task_id == task["id"] and row.state == "admitted"
+        assert row.escalation_json is None
+
+
+@pytest.mark.parametrize(
+    ("change", "env"),
+    [
+        ({}, "false"),
+        ({"gate": {"kind": "parameter"}}, "true"),
+        (
+            {"options": [routine_pause()["options"][1], routine_pause()["options"][0]]},
+            "true",
+        ),
+        ({"question": "Rotate the deploy token before continuing?"}, "true"),
+        ({"question": "Grant the agent access to the cluster?"}, "true"),
+        ({"reason": "This would delete the old bucket."}, "true"),
+        ({"question": "This is a security finding; continue?"}, "true"),
+        ({"question": "   "}, "true"),
+    ],
+)
+def test_non_routine_pauses_keep_their_card(db, routine, monkeypatch, change, env):
+    task, policy, state = routine
+    monkeypatch.setenv(funding.ROUTINE_PAUSE_ENV, env)
+    pause(task, policy, routine_pause(**change))
+    assert len(state["cards"]) == 1
+    assert audits_of(db, "funding_review_requested") == []
+
+
+@pytest.mark.parametrize(
+    "label", ["human", "needs-human", "needs-thought", "security-finding"]
+)
+def test_held_issue_labels_keep_the_card(db, routine, label):
+    task, policy, state = routine
+    state["labels"] = [label]
+    pause(task, policy, routine_pause())
+    assert len(state["cards"]) == 1
+    assert audits_of(db, "funding_review_requested") == []
+
+
+@pytest.mark.parametrize(
+    "direction",
+    [
+        {"nonrenewable_recovery": {"actor": "operator"}},
+        {"landing_hold": {"actor": "op"}},
+    ],
+)
+def test_shared_holds_keep_the_card_without_mutating_the_receipt(
+    db, routine, direction
+):
+    task, policy, state = routine
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        row.direction_json = json.dumps(direction)
+        session.add(row)
+        session.commit()
+    pause(task, policy, routine_pause())
+    assert len(state["cards"]) == 1
+    assert audits_of(db, "funding_review_requested") == []
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        assert json.loads(row.direction_json) == direction
+        assert not row.task_paused
+
+
+def test_recorded_human_handoff_keeps_the_card(db, routine):
+    task, policy, state = routine
+    with controls._locked_session() as (session, _control):
+        controls._audit(session, "operator", "human_handoff", task_id=task["id"])
+    pause(task, policy, routine_pause())
+    assert len(state["cards"]) == 1
+
+
+@pytest.mark.parametrize("control", ["pause_admissions", "stop"])
+def test_paused_or_stopped_lane_never_routes_a_pause(db, routine, control):
+    task, policy, state = routine
+    assert controls.set_control(control, "operator")["ok"]
+    pause(task, policy, routine_pause())
+    assert audits_of(db, "funding_review_requested") == []
+    assert len(state["cards"]) == 1
+
+
+def test_repeat_without_new_work_is_one_repair_signal_and_a_card(db, routine):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    settle_funding_request(
+        task, _pending(task), funding_decision(assessment=ASSESSMENT)
+    )
+    assert _grant(task) is not None
+
+    # The same question again, reworded, with no new artifact or head.
+    pause(task, policy, routine_pause(question="Still carry on with the fix?"), 2)
+    pause(task, policy, routine_pause(), 3)
+
+    assert len(state["cards"]) == 2
+    blockers = audits_of(db, funding.BLOCKER)
+    assert len(blockers) == 1
+    assert blockers[0]["reason"] == "funding_without_progress"
+    assert blockers[0]["blocker_key"] == funding.blocker_key(
+        REPO, ISSUE, "funding_without_progress"
+    )
+    # The allocation is not paused behind the person's card.
+    assert not controls.task_snapshot(task["id"])["task_paused"]
+    assert len(audits_of(db, "funding_review_requested")) == 1
+
+
+def test_repair_issue_stall_never_spawns_another_repair(db, routine):
+    task, policy, state = routine
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        row.body = "<!-- factory-problem:" + "a" * 64 + " -->\nrepair"
+        session.add(row)
+        session.commit()
+    pause(task, policy, routine_pause())
+    settle_funding_request(
+        task, _pending(task), funding_decision(assessment=ASSESSMENT)
+    )
+    pause(task, policy, routine_pause(), 2)
+    assert len(state["cards"]) == 1
+    assert audits_of(db, funding.BLOCKER) == []
+
+
+def test_concurrent_routine_pauses_request_one_review(db, routine):
+    import threading
+
+    task, policy, state = routine
+    barrier = threading.Barrier(3)
+    results = []
+
+    def attempt():
+        barrier.wait()
+        try:
+            results.append(funding.routine_pause(task, routine_pause()))
+        except Exception as exc:  # noqa: BLE001 - a lost lock race may raise
+            results.append(type(exc).__name__)
+
+    threads = [threading.Thread(target=attempt) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(audits_of(db, "funding_review_requested")) == 1
+    # Exactly one pause owns the review; any other keeps its own card.
+    assert results.count(True) == 1
+
+
+def test_routine_pause_never_rides_another_pending_review(db, routine):
+    task, policy, state = routine
+    # A review already pending for a different trigger.
+    assert funding.request(task, "Watchdog: assess the next tranche")
+    pause(task, policy, routine_pause())
+    assert len(state["cards"]) == 1
+    assert len(audits_of(db, "funding_review_requested")) == 1
+
+
+def test_exhausted_review_refusals_raise_the_routed_pause_card(
+    db, routine, monkeypatch
+):
+    from datetime import timedelta
+
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    assert state["cards"] == []
+    clock = {"now": controls._now()}
+    monkeypatch.setattr(controls, "_now", lambda: clock["now"])
+    for _ in range(funding.FUNDING_REFUSAL_LIMIT):
+        request = _pending(task)
+        assert request is not None
+        # An unusable artifact settles as a refusal.
+        settle_funding_request(task, request, {"action": "nonsense"})
+        assert _settled(task)["refusal"]
+        clock["now"] += timedelta(minutes=6)
+        funding.reconcile(
+            conductor._task(task["id"]),
+            policy,
+            conductor.graph.node_runs(task["id"]),
+            controls.can_start(task["id"]),
+        )
+    assert state["cards"] == [routine_pause()["question"]]
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        assert row.state != "failed"
+
+
+def test_scout_tasks_are_never_routed(db, routine, monkeypatch):
+    from factory.orchestration import factory_improvement_scout as scout
+
+    task, policy, state = routine
+    monkeypatch.setattr(scout, "owns_task", lambda _task_id: True)
+    pause(task, policy, routine_pause())
+    assert len(state["cards"]) == 1
+    assert audits_of(db, "funding_review_requested") == []
+
+
+def test_a_refusal_run_after_a_judge_answer_does_not_revive_an_old_pause(
+    db, routine, monkeypatch
+):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    # The judge answers without a grant (a stop); the routed pause is spent.
+    settle_funding_request(
+        task,
+        _pending(task),
+        funding_decision(
+            action="stop",
+            additional_work_turns=0,
+            lease_minutes=0,
+            assessment=ASSESSMENT,
+        ),
+    )
+    assert _settled(task)["refusal"] is None
+    assert funding._routed_pause(task["id"]) is None
+
+
+def test_exhausted_refusals_with_an_unpostable_card_fail_instead_of_wedging(
+    db, routine, monkeypatch
+):
+    from datetime import timedelta
+
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+
+    def refuse(*_args, **_kwargs):
+        raise conductor._EditRefused("pause_without_question", "no question")
+
+    monkeypatch.setattr(conductor, "_escalate_task", refuse)
+    clock = {"now": controls._now()}
+    monkeypatch.setattr(controls, "_now", lambda: clock["now"])
+    for _ in range(funding.FUNDING_REFUSAL_LIMIT):
+        settle_funding_request(task, _pending(task), {"action": "nonsense"})
+        clock["now"] += timedelta(minutes=6)
+        funding.reconcile(
+            conductor._task(task["id"]),
+            policy,
+            conductor.graph.node_runs(task["id"]),
+            controls.can_start(task["id"]),
+        )
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).one().state == "failed"
+
+
+def test_github_errors_while_raising_the_routed_card_retry_not_fail(
+    db, routine, monkeypatch
+):
+    from datetime import timedelta
+
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+
+    def unreadable(*_args, **_kwargs):
+        raise ValueError("GitHub response exceeds factory limit")
+
+    monkeypatch.setattr(conductor, "_escalate_task", unreadable)
+    clock = {"now": controls._now()}
+    monkeypatch.setattr(controls, "_now", lambda: clock["now"])
+    for attempt in range(funding.FUNDING_REFUSAL_LIMIT):
+        settle_funding_request(task, _pending(task), {"action": "nonsense"})
+        clock["now"] += timedelta(minutes=6)
+        args = (
+            conductor._task(task["id"]),
+            policy,
+            conductor.graph.node_runs(task["id"]),
+            controls.can_start(task["id"]),
+        )
+        if attempt < funding.FUNDING_REFUSAL_LIMIT - 1:
+            funding.reconcile(*args)
+        else:
+            with pytest.raises(ValueError):
+                funding.reconcile(*args)
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).one().state != "failed"
+
+
+def _set_hold(db, task, hold):
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        direction = json.loads(row.direction_json or "{}")
+        if hold == "landing_hold":
+            direction["landing_hold"] = {"actor": "operator"}
+        elif hold == "nonrenewable_recovery":
+            direction["nonrenewable_recovery"] = {"actor": "operator"}
+        row.direction_json = json.dumps(direction)
+        session.add(row)
+        session.commit()
+    if hold in ("human_handoff", "review_recovery_authorized"):
+        with controls._locked_session() as (session, _control):
+            controls._audit(session, "operator", hold, task_id=task["id"])
+
+
+HOLDS = (
+    "landing_hold",
+    "nonrenewable_recovery",
+    "human_handoff",
+    "review_recovery_authorized",
+)
+
+
+@pytest.mark.parametrize("hold", HOLDS)
+def test_hold_set_while_labels_are_read_still_wins_under_the_lock(
+    db, routine, monkeypatch, hold
+):
+    task, policy, state = routine
+    original = conductor.github_get
+
+    def racing_read(repo, suffix):
+        # The hold lands after the unlocked pre-check, mid label read.
+        _set_hold(db, task, hold)
+        return original(repo, suffix)
+
+    monkeypatch.setattr(conductor, "github_get", racing_read)
+    pause(task, policy, routine_pause())
+    assert audits_of(db, "funding_review_requested") == []
+    assert len(state["cards"]) == 1
+    # The routine path never mutates the held receipt itself.
+    assert not controls.task_snapshot(task["id"])["task_paused"]
+
+
+@pytest.mark.parametrize("hold", (*HOLDS, "label"))
+def test_hold_or_label_set_before_settlement_blocks_the_grant(
+    db, routine, monkeypatch, hold
+):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    request = _pending(task)
+    assert state["cards"] == []
+    if hold == "label":
+        state["labels"] = ["human"]
+    else:
+        _set_hold(db, task, hold)
+    settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
+    assert _grant(task) is None
+    if hold == "nonrenewable_recovery":
+        # Its existing locked owner pauses the task for the operator first.
+        assert controls.task_snapshot(task["id"])["task_paused"]
+        return
+    assert _settled(task)["refusal"].startswith("routine pause held")
+    assert state["cards"] == [routine_pause()["question"]]
+
+
+def test_held_refusal_retries_the_card_without_another_review(db, routine, monkeypatch):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    request = _pending(task)
+    _set_hold(db, task, "landing_hold")
+    calls = []
+
+    def flaky(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            raise ValueError("GitHub response exceeds factory limit")
+        state["cards"].append(args[1]["question"])
+
+    monkeypatch.setattr(conductor, "_escalate_task", flaky)
+    with pytest.raises(ValueError):
+        settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
+    assert _settled(task)["failure_category"] == "routine_pause_held"
+    from datetime import timedelta
+
+    later = controls._now() + timedelta(minutes=6)
+    monkeypatch.setattr(controls, "_now", lambda: later)
+    funding.reconcile(
+        conductor._task(task["id"]),
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    assert state["cards"] == [routine_pause()["question"]]
+    assert len(audits_of(db, "funding_review_requested")) == 1
+
+
+def test_routine_provenance_is_persisted_on_the_review_request(db, routine):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    request = _pending(task)
+    assert request["routine_pause"]["cause"] == "factory-decision:conductor_1:1"
+    assert request["routine_pause"]["decision"] == routine_pause()
+
+
+@pytest.mark.parametrize("hold", HOLDS)
+def test_hold_inside_request_before_its_lock_still_wins(db, routine, monkeypatch, hold):
+    """The window inside request(): after its unlocked reads, before the lock."""
+    task, policy, state = routine
+    original = funding._issue
+
+    def racing_issue(task_arg):
+        _set_hold(db, task, hold)
+        return original(task_arg)
+
+    monkeypatch.setattr(funding, "_issue", racing_issue)
+    pause(task, policy, routine_pause())
+    assert audits_of(db, "funding_review_requested") == []
+    assert len(state["cards"]) == 1
+    assert not controls.task_snapshot(task["id"])["task_paused"]
+
+
+@pytest.mark.parametrize("control", ["pause_admissions", "stop"])
+def test_lane_paused_between_request_and_settle_never_grants(db, routine, control):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    request = _pending(task)
+    assert controls.set_control(control, "operator")["ok"]
+    settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
+    assert _grant(task) is None
+    assert _settled(task) is None
+    assert state["cards"] == []
+    if control == "pause_admissions":
+        assert controls.set_control("enable", "operator")["ok"]
+        settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
+        assert _grant(task) is not None
+
+
+def test_retry_of_a_routed_review_keeps_provenance_and_its_locked_checks(
+    db, routine, monkeypatch
+):
+    from datetime import timedelta
+
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    settle_funding_request(task, _pending(task), {"action": "nonsense"})
+    clock = {"now": controls._now() + timedelta(minutes=6)}
+    monkeypatch.setattr(controls, "_now", lambda: clock["now"])
+    # A hold lands before the retry: the retry is refused under the lock.
+    _set_hold(db, task, "landing_hold")
+    args = (
+        conductor._task(task["id"]),
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    assert funding.reconcile(*args) is True
+    # No second paid review, and the held question reaches a person.
+    assert len(audits_of(db, "funding_review_requested")) == 1
+    assert state["cards"] == [routine_pause()["question"]]
+
+
+def test_transient_refusal_of_a_routed_retry_only_retries(db, routine, monkeypatch):
+    from datetime import timedelta
+
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    settle_funding_request(task, _pending(task), {"action": "nonsense"})
+    clock = {"now": controls._now() + timedelta(minutes=6)}
+    monkeypatch.setattr(controls, "_now", lambda: clock["now"])
+    monkeypatch.setattr(
+        controls, "execution_capacity_available", lambda *_args, **_kwargs: False
+    )
+    funding.reconcile(
+        conductor._task(task["id"]),
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    assert state["cards"] == []
+    assert len(audits_of(db, "funding_review_requested")) == 1
+
+
+def test_settle_uses_the_exact_request_provenance(db, routine, monkeypatch):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    request = _pending(task)
+    # Even if the run lookup misses it, the request's own provenance holds.
+    monkeypatch.setattr(funding, "_routed_pause", lambda _task_id: None)
+    _set_hold(db, task, "landing_hold")
+    settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
+    assert _grant(task) is None
+    assert _settled(task)["failure_category"] == "routine_pause_held"
+
+
+def _mirror_label(db, label):
+    """Set a label on the receipt's synchronized work-item mirror."""
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        if row.work_item_id is None:
+            item = WorkItem(
+                title="mirror",
+                state="ready",
+                source_kind="github",
+                trust="trusted",
+                authority="github",
+                github_repo=REPO,
+                github_issue_number=ISSUE,
+                labels=[],
+            )
+            session.add(item)
+            session.flush()
+            row.work_item_id = item.id
+            session.add(row)
+        item = session.get(WorkItem, row.work_item_id)
+        if label is not None:
+            item.labels = [*item.labels, label]
+        session.add(item)
+        session.commit()
+
+
+@pytest.mark.parametrize(
+    "label", ["human", "needs-human", "needs-thought", "security-finding", "security"]
+)
+def test_mirrored_label_after_the_github_read_is_revalidated_before_the_grant(
+    db, routine, label
+):
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    request = _pending(task)
+    # GitHub's settlement-time read still sees no label; the synchronized
+    # mirror records it before the locked grant decision.
+    _mirror_label(db, label)
+    settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
+    assert _grant(task) is None
+    assert _settled(task)["refusal"] == "routine pause held: held_label"
+    assert state["cards"] == [routine_pause()["question"]]
+
+
+def test_mirrored_label_between_preflight_and_request_lock_wins(
+    db, routine, monkeypatch
+):
+    task, policy, state = routine
+    original = funding._issue
+
+    def racing_issue(task_arg):
+        _mirror_label(db, "human")
+        return original(task_arg)
+
+    monkeypatch.setattr(funding, "_issue", racing_issue)
+    pause(task, policy, routine_pause())
+    assert audits_of(db, "funding_review_requested") == []
+    assert len(state["cards"]) == 1
+
+
+def test_unrelated_mirror_labels_do_not_hold(db, routine):
+    task, policy, state = routine
+    _mirror_label(db, "bug")
+    pause(task, policy, routine_pause())
+    settle_funding_request(
+        task, _pending(task), funding_decision(assessment=ASSESSMENT)
+    )
+    assert _grant(task) is not None
+
+
+def test_receipt_without_a_label_mirror_is_never_routine(db, routine):
+    task, policy, state = routine
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        row.work_item_id = None
+        session.add(row)
+        session.commit()
+    pause(task, policy, routine_pause())
+    assert audits_of(db, "funding_review_requested") == []
+    assert len(state["cards"]) == 1
+
+
+def test_retry_refused_by_a_mirrored_label_raises_the_card(db, routine, monkeypatch):
+    from datetime import timedelta
+
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    settle_funding_request(task, _pending(task), {"action": "nonsense"})
+    later = controls._now() + timedelta(minutes=6)
+    monkeypatch.setattr(controls, "_now", lambda: later)
+    _mirror_label(db, "needs-human")
+    assert funding.reconcile(
+        conductor._task(task["id"]),
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    assert state["cards"] == [routine_pause()["question"]]
+    assert len(audits_of(db, "funding_review_requested")) == 1
+
+
+def test_held_retry_with_an_unpostable_card_ends_instead_of_wedging(
+    db, routine, monkeypatch
+):
+    from datetime import timedelta
+
+    task, policy, state = routine
+    pause(task, policy, routine_pause())
+    settle_funding_request(task, _pending(task), {"action": "nonsense"})
+    later = controls._now() + timedelta(minutes=6)
+    monkeypatch.setattr(controls, "_now", lambda: later)
+    _set_hold(db, task, "landing_hold")
+
+    def refuse(*_args, **_kwargs):
+        raise conductor._EditRefused("pause_without_question", "no question")
+
+    monkeypatch.setattr(conductor, "_escalate_task", refuse)
+    assert funding.reconcile(
+        conductor._task(task["id"]),
+        policy,
+        conductor.graph.node_runs(task["id"]),
+        controls.can_start(task["id"]),
+    )
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).one().state == "failed"
+    assert len(audits_of(db, "funding_review_requested")) == 1

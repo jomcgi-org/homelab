@@ -20,7 +20,6 @@ Usage:
         --scaling-ratio 2.0 \\
         --gravity 0.1 \\
         --max-iter 100 \\
-        --no-linlog \\
         --core-fraction 0.99 \\
         --node-size-scale 0.005 \\
         --seed 42 \\
@@ -56,19 +55,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scaling-ratio", type=float, default=2.0)
     parser.add_argument("--gravity", type=float, default=0.1)
     parser.add_argument("--max-iter", type=int, default=100)
-    parser.add_argument(
-        "--linlog",
-        dest="linlog",
-        action="store_true",
-        default=False,
-        help="Enable FA2 logarithmic attraction (default: off).",
-    )
-    parser.add_argument(
-        "--no-linlog",
-        dest="linlog",
-        action="store_false",
-        help="Disable FA2 logarithmic attraction.",
-    )
     parser.add_argument("--core-fraction", type=float, default=0.99)
     parser.add_argument(
         "--node-size-scale",
@@ -99,7 +85,6 @@ def main(argv: list[str] | None = None) -> int:
         scaling_ratio=args.scaling_ratio,
         gravity=args.gravity,
         max_iter=args.max_iter,
-        linlog=args.linlog,
         core_fraction=args.core_fraction,
         node_size_scale=args.node_size_scale,
         seed=args.seed,
@@ -131,7 +116,7 @@ def _render_html(
     data = json.dumps({"nodes": nodes_with_pos, "edges": payload["edges"]})
     title = html.escape(
         f"layout preview (sr={params.scaling_ratio}, g={params.gravity}, "
-        f"it={params.max_iter}, ll={params.linlog}, "
+        f"it={params.max_iter}, "
         f"core={params.core_fraction}, "
         f"nss={params.node_size_scale}, seed={params.seed})"
     )

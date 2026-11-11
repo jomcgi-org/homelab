@@ -1053,6 +1053,30 @@ def test_composed_prose_carries_no_machine_formatting():
             assert not enum.fullmatch(value.strip()), f"{where} is a raw enum: {value}"
 
 
+def test_compose_master_loads_session_rows_for_listed_workflows_only():
+    workflows = [Workflow(Status("wf-one", "PENDING", ["one", "repo", "main"]))]
+
+    class ListingDBOS(DBOS):
+        def __init__(self):
+            super().__init__(workflows[0])
+
+        def list_workflows(self, **kwargs):
+            if "parent_workflow_id" in kwargs:
+                return []
+            return workflows
+
+    asked = []
+
+    def load_sessions(workflow_ids):
+        asked.append(list(workflow_ids))
+        return {"wf-one": []}
+
+    result = compose_master(ListingDBOS(), True, load_sessions, "unknown")
+
+    assert asked == [["wf-one"]]
+    assert [run["workflow_id"] for run in result["runs"]] == ["wf-one"]
+
+
 def test_compose_master_skips_non_run_workflows():
     """A drain_cycle workflow in the registry must not 500 the master view.
 

@@ -46,6 +46,9 @@ contents:
     - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
   packages:
     - busybox
+    # Complete source-push regeneration uses GNU grep and Go module resolution.
+    - grep
+    - go-1.26
     - ca-certificates-bundle
     # pi is Bun-compiled and dynamically linked, so glibc is pinned explicitly
     # rather than left to arrive transitively: a base that happens to pull it

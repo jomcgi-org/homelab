@@ -7,7 +7,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from chat.models import Message, UserChannelSummary
+from chat.models import UserChannelSummary
 from chat.store import MessageStore
 
 

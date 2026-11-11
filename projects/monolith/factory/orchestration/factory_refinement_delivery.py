@@ -9,6 +9,7 @@ import json
 
 from sqlmodel import select
 
+from core.jsonio import dumps
 from factory.orchestration import factory_controls as controls
 from factory.orchestration import factory_validation as validation
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
@@ -18,7 +19,7 @@ MARKER = "refinement_delivery"
 
 
 def _digest(value):
-    return hashlib.sha256(controls._json(value).encode()).hexdigest()
+    return hashlib.sha256(dumps(value).encode()).hexdigest()
 
 
 def _inherited(row):
@@ -28,7 +29,15 @@ def _inherited(row):
     # This operation carries the refinement's staging restriction only. Other
     # hold types, delivery grants and unknown direction semantics need their owner.
     if (
-        set(direction) != {"landing_hold", "conductor_gates"}
+        not {"landing_hold", "conductor_gates"} <= set(direction)
+        or set(direction)
+        - {
+            "landing_hold",
+            "conductor_gates",
+            "landing_hold_provenance",
+            "landing_hold_refusals",
+        }
+        or not controls.landing_held(row)
         or not isinstance(hold, dict)
         or hold.get("actor") != "factory:conductor"
         or hold.get("cause") != f"refine-gate:{row.task_id}"
@@ -154,7 +163,7 @@ def apply(receipt_id, reason, *, actor, request_key, expected_preview_sha256):
                 "preview_sha256": expected_preview_sha256,
             },
         }
-        destination.direction_json = controls._json(direction)
+        destination.direction_json = dumps(direction)
         result = {
             "ok": True,
             "source_receipt_id": receipt_id,

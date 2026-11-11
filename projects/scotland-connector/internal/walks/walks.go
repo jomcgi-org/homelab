@@ -68,11 +68,6 @@ func LocalDay(t time.Time) int32 {
 	return int32(time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix() / 86400)
 }
 
-// DayName formats a LocalDay as YYYY-MM-DD.
-func DayName(day int32) string {
-	return time.Unix(int64(day)*86400, 0).UTC().Format("2006-01-02")
-}
-
 // Hour is one daylight hour at the walk's start point. In a version 1
 // snapshot only good hours are present; in version 2 every daylight hour is.
 // The version 2 fields are NaN when unknown.
@@ -132,11 +127,6 @@ type Dataset struct {
 	// so limits can loosen the default test and a bad hour's weather is
 	// known.
 	Complete bool
-	// fullThrough and noneFrom index CoverageOf: days up to fullThrough are
-	// full, days from noneFrom have none, and the rest are partial. A plan
-	// asks for every walk on every day, so the answer is worked out once.
-	fullThrough, noneFrom int32
-	indexed               bool
 }
 
 type doc struct {
@@ -259,7 +249,6 @@ func Parse(body []byte, version string) (*Dataset, error) {
 			ds.HourlyUntil = end
 		}
 	}
-	ds.indexCoverage()
 	return ds, nil
 }
 
@@ -275,40 +264,6 @@ const (
 func localHour(day int32, hour int) time.Time {
 	y, m, d := time.Unix(int64(day)*86400, 0).UTC().Date()
 	return time.Date(y, m, d, hour, 0, 0, 0, london)
-}
-
-// CoverageOf is how much of day's daylight lies before the hourly horizon.
-func (d *Dataset) CoverageOf(day int32) Coverage {
-	if !d.indexed {
-		return d.coverage(day)
-	}
-	switch {
-	case day <= d.fullThrough:
-		return CoverageFull
-	case day >= d.noneFrom:
-		return CoverageNone
-	}
-	return CoveragePartial
-}
-
-// indexCoverage fills the CoverageOf index. Coverage only falls as days get
-// later, so the two boundaries sit either side of the horizon's own day.
-func (d *Dataset) indexCoverage() {
-	h := LocalDay(d.HourlyUntil)
-	d.fullThrough, d.noneFrom = h-2, h+2
-	for day := h - 1; day <= h+1; day++ {
-		switch d.coverage(day) {
-		case CoverageFull:
-			d.fullThrough = day
-		case CoverageNone:
-			d.noneFrom = min(d.noneFrom, day)
-		}
-	}
-	d.indexed = true
-}
-
-func (d *Dataset) coverage(day int32) Coverage {
-	return coverageUntil(day, d.HourlyUntil)
 }
 
 // Horizon is the earlier dataset/entity horizon. Missing metadata is unknown.
@@ -441,7 +396,13 @@ type Day struct {
 	// what made the slot's one bad hour bad (see Test.Fails), empty when the
 	// hour is not in the data.
 	DarkLateOnly bool
-	GapFails     []string
+	// NeedsDark reports that a walk the 80% rule fits cannot be placed
+	// inside the day's remaining daylight: the time it needs beyond its slot
+	// is longer than the daylight left either side of it, so some of the walk
+	// is in the dark. Rise is the day's sunrise, zero when not computed.
+	NeedsDark bool
+	Rise      time.Time
+	GapFails  []string
 	// GapRainMM is the bad hour's rain when the data has the hour, else NaN.
 	GapRainMM float32
 	// Test is the good-hour test the day was assessed with.
@@ -500,6 +461,24 @@ func (w *Walk) limitedEdges(d *Day, from time.Time) {
 	case !early:
 		d.DarkLateOnly = true
 	}
+}
+
+// needsDark reports whether the time a walk needs beyond its slot (the 80%
+// rule's weather tolerance) is more than the daylight left before and after
+// the slot. The tolerance is for hours of poor weather. A 10 h walk in an 8 h
+// November slot that fills the day is still doable under the hikes rule, and
+// only by walking in the dark.
+func (w *Walk) needsDark(b *Run, rise, set, from time.Time) bool {
+	extra := time.Duration(w.DurationH*float64(time.Hour)) - b.End.Sub(b.Start)
+	if extra <= 0 {
+		return false
+	}
+	earliest := rise
+	if from.After(earliest) {
+		earliest = from
+	}
+	daylight := max(b.Start.Sub(earliest), 0) + max(set.Sub(b.End), 0)
+	return daylight < extra
 }
 
 // Limits change what counts as a good hour from the default test (at most
@@ -587,18 +566,6 @@ func (t Test) filter(hours []Hour) []Hour {
 	return out
 }
 
-func sameHours(a, b []Hour) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].Unix != b[i].Unix {
-			return false
-		}
-	}
-	return true
-}
-
 // longestRun is _longest_good_run: the longest run of good hours allowing
 // one single-hour gap, as indices into hours (sorted, one day, unique hours).
 // Bounds are inclusive; tied runs keep the earliest slot. A second gap slides
@@ -675,9 +642,13 @@ func (w *Walk) dayAt(day int32, cutoff int64, until time.Time, coverage Coverage
 	// borrow elapsed daylight. Keep the weather tolerance, but a walk not
 	// using dark credit must finish by sunset after the cutoff moves it.
 	if d.Doable && float64(d.Best.GoodHours) >= w.required-requirementEpsilon {
-		_, set, ok := astro.SunTimes(time.Unix(int64(day)*86400, 0), w.Lat, w.Lon)
+		rise, set, ok := astro.SunTimes(time.Unix(int64(day)*86400, 0), w.Lat, w.Lon)
 		if ok && time.Unix(cutoff, 0).Add(time.Duration(w.DurationH*float64(time.Hour))).After(set) {
 			d.Doable = false
+		}
+		if ok && d.Doable {
+			d.Rise = rise
+			d.NeedsDark = w.needsDark(d.Best, rise, set, time.Unix(cutoff, 0))
 		}
 	}
 	d.All = all

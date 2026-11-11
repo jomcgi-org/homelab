@@ -12,37 +12,102 @@ import base64
 import posixpath
 import re
 import time
+from copy import copy
 from datetime import datetime, timezone
 from functools import lru_cache
 
+import httpx
 import yaml
 
 REGISTRY = "ghcr.io/jomcgi/homelab/charts"
 SHA = re.compile(r"[0-9a-f]{40}")
+PINNED_COMPARISON = re.compile(
+    r"compare/[0-9a-f]{40}\.\.\.[0-9a-f]{40}\?per_page=1&page=2"
+)
 VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 WORKLOADS = {"Deployment", "StatefulSet", "DaemonSet"}
 MAX_PUBLICATION_CANDIDATES = 8
 _recent: dict[tuple, tuple[float, object]] = {}
+READ_CACHE_TTL_SECONDS = 30
 
 
-def _cached(key: tuple, read):
+def _detached_failure(exc: Exception) -> Exception:
+    memo = {}
+    remaining = 256
+
+    def detach(value, depth=0):
+        nonlocal remaining
+        remaining -= 1
+        if remaining < 0 or depth > 8:
+            raise TypeError("failure evidence exceeds copy bound")
+        if isinstance(value, BaseException):
+            if id(value) in memo:
+                return memo[id(value)]
+            # HTTPStatusError needs keyword-only constructor evidence. Keep
+            # request/response objects rather than copying their transports.
+            if isinstance(value, httpx.HTTPStatusError):
+                result = type(value)(
+                    *value.args, request=value.request, response=value.response
+                )
+                result.__dict__.update(value.__dict__)
+            else:
+                result = copy(value)
+            if result is value or type(result) is not type(value):
+                raise TypeError("failure cannot be detached")
+            memo[id(value)] = result
+            result.__traceback__ = None
+            result.__cause__ = None
+            result.__context__ = None
+            # aiohttp connector errors retain an OSError in both args and
+            # _os_error. Preserve that alias without retaining its traceback.
+            result.args = detach(value.args, depth + 1)
+            result.__dict__.update(detach(value.__dict__, depth + 1))
+            return result
+        if type(value) is tuple:
+            return tuple(detach(item, depth + 1) for item in value)
+        if type(value) is list:
+            return [detach(item, depth + 1) for item in value]
+        if type(value) is dict:
+            return {
+                detach(key, depth + 1): detach(item, depth + 1)
+                for key, item in value.items()
+            }
+        return value
+
+    return detach(exc)
+
+
+def _cached(key: tuple, read, *, cache=None):
     """Share bounded observations across pending deliveries, for at most 30s."""
+    # An explicit store lets bounded synthetics exercise this same code without
+    # clearing, evicting or replacing the live process cache.
+    cache = _recent if cache is None else cache
     now = time.monotonic()
-    prior = _recent.get(key)
-    if prior is not None and now - prior[0] < 30:
+    prior = cache.get(key)
+    if prior is not None and now - prior[0] < READ_CACHE_TTL_SECONDS:
         value = prior[1]
     else:
         try:
             value = read()
         except Exception as exc:  # noqa: BLE001 - cache failures, never an empty inventory
-            value = exc.with_traceback(None)
-        if len(_recent) >= 64:
-            _recent.pop(next(iter(_recent)))
-        _recent[key] = (time.monotonic(), value)
+            try:
+                value = _detached_failure(exc)
+            except Exception:  # noqa: BLE001 - preserve an uncopyable read failure
+                cache.pop(key, None)
+                raise exc
+        if len(cache) >= 64:
+            cache.pop(next(iter(cache)))
+        cache[key] = (time.monotonic(), value)
     if isinstance(value, Exception):
         # A timed-out cluster must not cost another 30s for every pending task.
-        # Drop old traceback frames when sharing the same bounded failure.
-        raise value.with_traceback(None)
+        # Never raise the cached object: propagation attaches caller frames,
+        # including the current publication catalog and its local read cache.
+        try:
+            failure = _detached_failure(value)
+        except Exception:  # noqa: BLE001 - never replace the original failure
+            cache.pop(key, None)
+            raise value
+        raise failure from None
     return value
 
 
@@ -53,9 +118,24 @@ def _immutable_get(repo: str, path: str):
     return github_get(repo, path)
 
 
+@lru_cache(maxsize=4096)
+def _ancestry_status(repo: str, path: str) -> str:
+    """Small immutable facts cannot be evicted by a fleet's file responses."""
+    from factory.orchestration.factory_landing import github_get
+
+    status = github_get(repo, path).get("status")
+    if status not in ("ahead", "behind", "identical", "diverged"):
+        raise Pending("comparison_status_unknown")
+    return status
+
+
 def _get(repo: str, path: str):
     from factory.orchestration.factory_landing import github_get
 
+    if PINNED_COMPARISON.fullmatch(path):
+        # Both full commit SHAs identify immutable ancestry. Store only its
+        # status, never commit bodies or patches. Failures are not cached.
+        return {"status": _ancestry_status(repo, path)}
     if path.startswith(("compare/", "contents/")):
         return _immutable_get(repo, path)
     return _cached(("get", repo, path), lambda: github_get(repo, path))
@@ -236,13 +316,6 @@ def chart_catalog(repo: str, receipt: dict, get) -> dict[str, tuple[str, str]]:
             raise Pending("chart_identity_ambiguous")
         result[name] = (path, version)
     return result
-
-
-def chart_versions(repo: str, receipt: dict, get) -> dict[str, str]:
-    return {
-        name: version
-        for name, (_, version) in chart_catalog(repo, receipt, get).items()
-    }
 
 
 class CoveringPublications:

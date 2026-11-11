@@ -20,7 +20,7 @@ func TestPolicyRejectsUnsupportedTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tool := range []string{"plan", "check"} {
+	for _, tool := range []string{"light", "aurora", "plan", "check"} {
 		price, units := p.Quote(tool)
 		if units != 1 || price.PriceMicros != "0" {
 			t.Fatal("nonzero quote")

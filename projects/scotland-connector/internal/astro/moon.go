@@ -75,6 +75,23 @@ func MoonAt(t time.Time) Moon {
 	return Moon{eq: m, d: d, Lit: (1 + math.Cos(inc)) / 2}
 }
 
+// Phase is the cycle fraction: new 0, first quarter .25, full .5, last
+// quarter .75. The signed illumination angle distinguishes waxing and waning.
+func (m Moon) Phase() float64 {
+	s := sunCoords(m.d)
+	angle := math.Atan2(math.Cos(s.dec)*math.Sin(s.ra-m.eq.ra), math.Sin(s.dec)*math.Cos(m.eq.dec)-math.Cos(s.dec)*math.Sin(m.eq.dec)*math.Cos(s.ra-m.eq.ra))
+	return 0.5 + math.Copysign(0.5*math.Acos(2*m.Lit-1)/math.Pi, angle)
+}
+
+// GalacticCentreAltitude uses the same linear sidereal angle as Moon.Altitude,
+// with fixed J2000 RA 17h45m and declination -29 degrees. It is geometric,
+// with no terrain, refraction, precession or extinction model.
+func GalacticCentreAltitude(t time.Time, lat, lon float64) float64 {
+	h := rad * (280.46061837 + 360.98564736629*days(t) + lon - 266.25)
+	phi, dec := rad*lat, rad*(-29)
+	return math.Asin(math.Sin(phi)*math.Sin(dec)+math.Cos(phi)*math.Cos(dec)*math.Cos(h)) / rad
+}
+
 // Altitude is the moon's topocentric altitude in degrees seen from lat, lon
 // (degrees, east positive), without atmospheric refraction.
 func (m Moon) Altitude(lat, lon float64) float64 {
@@ -89,7 +106,12 @@ func (m Moon) Altitude(lat, lon float64) float64 {
 }
 
 // MoonAltitude is MoonAt(t).Altitude(lat, lon).
-func MoonAltitude(t time.Time, lat, lon float64) float64 { return MoonAt(t).Altitude(lat, lon) }
+func MoonAltitude(t time.Time, lat, lon float64) float64 {
+	// Altitude needs only lunar coordinates. Computing solar coordinates and
+	// illumination here doubles work for event finding and MoonAdvice.
+	d := days(t)
+	return (Moon{eq: moonCoords(d), d: d}).Altitude(lat, lon)
+}
 
 // MoonIllumination is MoonAt(t).Lit.
 func MoonIllumination(t time.Time) float64 { return MoonAt(t).Lit }

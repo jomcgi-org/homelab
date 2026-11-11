@@ -4,7 +4,7 @@ A delivery task can find its repository scope already merged, with only live
 or operational acceptance left (a production flag to enable, a check against
 the hub). Building more would duplicate merged work, and enabling a production
 flag stays a human decision, but that decision does not need a page: it needs
-a record a person will pick up. With ``FACTORY_OPERATIONAL_HANDOFF_ENABLED``:
+a record a person will pick up:
 
 - the planner's ``repository_delivered`` gate is verified against GitHub (each
   named PR merged, in this repository, referencing the issue), the live checks
@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 
 import httpx
@@ -34,7 +33,6 @@ from sqlmodel import select
 
 logger = logging.getLogger(__name__)
 
-ENABLED_ENV = "FACTORY_OPERATIONAL_HANDOFF_ENABLED"
 ACTOR = "factory:handoff"
 DELIVERED = "repository_scope_delivered"
 CHILD_CREATED = "operational_handoff_child_created"
@@ -52,10 +50,6 @@ OPERATIONAL_TITLE = re.compile(
     r"\b(?:hub|gke|prod|production|cluster|pod|node|live)\b",
     re.IGNORECASE,
 )
-
-
-def enabled() -> bool:
-    return os.getenv(ENABLED_ENV, "false").lower() == "true"
 
 
 class HandoffRefused(ValueError):
@@ -179,8 +173,6 @@ def handoff(task: dict, gate: dict, cause: str) -> bool:
     audited: a PR that is not merged or does not reference the issue, or a
     named tracking issue that is not an open issue.
     """
-    if not enabled():
-        return False
     from factory.orchestration import factory_conductor as conductor
     from factory.orchestration.factory_controls import _read_session, finish_task
 

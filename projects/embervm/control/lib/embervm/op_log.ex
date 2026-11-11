@@ -101,6 +101,7 @@ defmodule Embervm.OpLog do
     :residency_changed,
     :session_created,
     :session_invoke_started,
+    :session_recovery_fenced,
     :session_invoked,
     :session_brick_gone,
     :session_banked,
@@ -122,10 +123,9 @@ defmodule Embervm.OpLog do
     :session_expired,
     :session_evicted,
     # session_destroying is the durable destroy INTENT (ADR embervm/014 decision 5):
-    # appended by SessionManager BEFORE any teardown, regardless of the
-    # EMBERVM_NODE_CONFIRMED_DESTROY gate, so a CP crash mid-destroy rebuilds as
-    # destroying and re-drives. The gate only decides whether session_destroyed
-    # waits for node confirmation (#4804).
+    # appended by SessionManager BEFORE any teardown, so a CP crash mid-destroy
+    # rebuilds as destroying and re-drives; session_destroyed waits for node
+    # confirmation (#4804).
     :session_destroying,
     :session_destroyed,
     :session_failed,
@@ -146,8 +146,7 @@ defmodule Embervm.OpLog do
     :serving_relit,
     :serving_evicted,
     # serving_destroying: the durable destroy INTENT (ADR embervm/014 decision 5), the
-    # serving counterpart of session_destroying. Only written under the
-    # EMBERVM_NODE_CONFIRMED_DESTROY gate.
+    # serving counterpart of session_destroying.
     :serving_destroying,
     :serving_destroyed,
     :serving_failed,
@@ -175,8 +174,7 @@ defmodule Embervm.OpLog do
     :stateful_cold_booted,
     :stateful_evicted,
     # stateful_destroying: the durable destroy INTENT (ADR embervm/014 decision 5),
-    # the stateful counterpart of session_destroying. Only written under the
-    # EMBERVM_NODE_CONFIRMED_DESTROY gate.
+    # the stateful counterpart of session_destroying.
     :stateful_destroying,
     :stateful_destroyed,
     :stateful_failed,
@@ -243,8 +241,7 @@ defmodule Embervm.OpLog do
     :group_set_evicted,
     :group_degraded,
     # group_destroying: the durable destroy INTENT (ADR embervm/014 decision 5), the
-    # group counterpart of session_destroying. Only written under the
-    # EMBERVM_NODE_CONFIRMED_DESTROY gate.
+    # group counterpart of session_destroying.
     :group_destroying,
     :group_destroyed,
     :group_failed,
@@ -304,6 +301,12 @@ defmodule Embervm.OpLog do
   # it saw the whole log. A `seq >= marker` behaves as before.
   @callback read_from(server(), seq :: non_neg_integer()) ::
               {:ok, [Op.t()]} | {:error, {:compacted, non_neg_integer()}} | {:error, term()}
+  @callback session_cessation_evidence(server(), String.t(), map(), String.t() | :admin) ::
+              {:ok, map()} | {:error, atom(), map()}
+  @callback session_recovery_fence(server(), String.t(), map(), String.t(), integer()) ::
+              {:ok, map()} | {:error, atom(), map()}
+  @callback session_restore_allowed(server(), String.t()) ::
+              :ok | {:error, :recovery_fenced | :unknown_lineage | :recovery_store_unavailable}
   @callback load_tasks(server()) :: {:ok, [map()]} | {:error, term()}
   # Loads every session row from the durable `sessions` projection (R2), for the
   # SessionStore's boot/adoption rebuild (Task 5/8): the ETS hot set of sessions

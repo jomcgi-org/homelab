@@ -1,5 +1,23 @@
 spire:
   spire-server:
+    controllerManager:
+      identities:
+        clusterSPIFFEIDs:
+          # Hub dev only. Retain the actual ServiceAccount in the default
+          # SPIFFE template; only these two components need broker mTLS.
+          embervm-dev-platform:
+            enabled: true
+            hint: embervm-dev-platform
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: embervm-dev
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/instance: embervm-dev
+              matchExpressions:
+                - key: app.kubernetes.io/component
+                  operator: In
+                  values: [noded-brick, tokenbroker]
     nodeSelector:
       cloud.google.com/gke-nodepool: core-e2
     persistence:

@@ -6,7 +6,7 @@ import { error } from "@sveltejs/kit";
 // with no session, no input, and no Turnstile. The browser never talks to the
 // internal chat API: SSR fetches the snapshot here. The localhost fallback is
 // the established convention across every public proxy/loader
-// (ships/stars/notes/campsites/grimoire); prod sets CHAT_API_BASE via
+// (ships/stars/notes/grimoire); prod sets CHAT_API_BASE via
 // values.yaml.
 // nosemgrep: sveltekit-server-hardcoded-api-base-fallback
 const CHAT_API_BASE = process.env.CHAT_API_BASE || "http://localhost:8000";

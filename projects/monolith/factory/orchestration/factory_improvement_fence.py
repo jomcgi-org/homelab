@@ -8,7 +8,6 @@ transport rechecks durable ownership, fresh intake/goals and broker quotas.
 
 from __future__ import annotations
 
-import hashlib
 import json
 
 from core.clock import aware
@@ -20,6 +19,7 @@ from factory.execution.provider_quota import fetch_provider_quota_sync
 from factory.orchestration import factory_controls as controls
 from factory.orchestration.factory_improvement_preview import (
     PreviewPolicy,
+    digest,
     quota_decisions,
 )
 from factory.orchestration.factory_models import (
@@ -33,15 +33,16 @@ ACTOR = "factory:improvement-scout"
 TASK_CLASS = "advisory-diagnosis"
 REPO = "jomcgi-org/homelab"
 SOURCE = "quota_improvement"
+# Owned work that keeps first claim. Queued work is about to be admitted and
+# keeps priority; escalated, uncertain and paused receipts stay owned and
+# untouched but do not make read-only repair preparation wait. One definition
+# keeps improvement context and scout transport in agreement.
+PROGRESSING_STATES = ("queued", "admitted", "landing")
 MODEL = "sol"
-NODE_KEYS = {"scout_collect_1", "scout_review_1"}
+COLLECT_KEY = "scout_collect_1"
+REVIEW_KEY = "scout_review_1"
+NODE_KEYS = {COLLECT_KEY, REVIEW_KEY}
 MAX_AGE_SECONDS = 900
-
-
-def _digest(value):
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
-    ).hexdigest()
 
 
 def grant_permission(quota: dict, policy: dict, *, now) -> dict:
@@ -133,7 +134,7 @@ def _verified_policy(db, receipt, task_id, node_key, attempt):
         .limit(1)
     ).first()
     detail = json.loads(claim.detail_json) if claim else {}
-    if detail.get("receipt_id") != receipt.id or detail.get("policy_digest") != _digest(
+    if detail.get("receipt_id") != receipt.id or detail.get("policy_digest") != digest(
         policy
     ):
         return None
@@ -173,9 +174,8 @@ def _verified_policy(db, receipt, task_id, node_key, attempt):
         .where(
             FactoryReceipt.repo == REPO,
             FactoryReceipt.id != receipt.id,
-            FactoryReceipt.state.in_(
-                ("queued", "admitted", "uncertain", "landing", "escalated")
-            ),
+            FactoryReceipt.state.in_(PROGRESSING_STATES),
+            FactoryReceipt.task_paused.is_(False),
         )
         .limit(1)
     ).first()
@@ -215,7 +215,7 @@ def transport_allowed(task_id: str, node_key: str, attempt: int) -> bool:
 
     Exceptions propagate to the existing API's fail-closed wrapper. Broker I/O
     runs after the DB read session closes, with no control lock held. A scout's
-    own receipt is the sole ownership exclusion; unrelated owners block it.
+    own receipt is excluded; only unrelated progressing owners block it.
     """
     with controls._read_session() as db:
         receipt = db.exec(
@@ -238,6 +238,6 @@ def transport_allowed(task_id: str, node_key: str, attempt: int) -> bool:
         if receipt is None or receipt.actor != ACTOR:
             return False
         refreshed = _verified_policy(db, receipt, task_id, node_key, attempt)
-    if refreshed is None or _digest(refreshed) != _digest(policy):
+    if refreshed is None or digest(refreshed) != digest(policy):
         return False
     return grant_permission(quota, refreshed, now=controls._now())["ok"]

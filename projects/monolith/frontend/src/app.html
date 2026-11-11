@@ -2,7 +2,31 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <!-- The browser chrome paints the sheet colour of the scheme in use.
+         SchemeToggle rewrites both when the reader picks a scheme by hand. -->
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: light)"
+      content="#ffffff"
+    />
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: dark)"
+      content="#181a20"
+    />
+    <!-- use-credentials: the private host sits behind Cloudflare Access,
+         and a manifest fetched without the session cookie gets the login
+         page instead. Same origin everywhere, so nothing leaves the host. -->
+    <link
+      rel="manifest"
+      href="/manifest.webmanifest"
+      crossorigin="use-credentials"
+    />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <script>
       try {
         if (typeof window !== "undefined") {
@@ -16,26 +40,38 @@
       }
     </script>
     <script>
-      /* Set the initial period attribute before first paint.
-         This runs inline and blocking to avoid a white flash when switching
-         to night mode. The period module (src/lib/private/period.js) is the
-         source of truth; this duplication must remain inline because app.html
-         has no module graph. The agents console updates this attribute after
-         hydration in response to clock ticks every 60s. */
-      try {
-        const hour = new Date().getHours();
-        const period =
-          hour >= 5 && hour < 11
-            ? "dawn"
-            : hour >= 11 && hour < 17
-              ? "day"
-              : hour >= 17 && hour < 22
-                ? "dusk"
-                : "night";
-        document.documentElement.setAttribute("data-agents-period", period);
-      } catch (e) {
-        // Gracefully degrade if Date is not available
-      }
+      // A deploy replaces the hashed JS chunks. HTML cached at Cloudflare, or
+      // served by an old pod mid-rollout, can still name chunks that are gone.
+      // Reload once with a unique query: Cloudflare misses its cache and the
+      // origin returns HTML for the current build. src/hooks.client.js calls
+      // this for chunks that fail during hydration; the listener below covers
+      // the entry chunks, which fail before SvelteKit starts.
+      (() => {
+        const chunkError =
+          /dynamically imported module|Importing a module script failed/i;
+        const here = new URL(location.href);
+        if (here.searchParams.has("_fresh")) {
+          here.searchParams.delete("_fresh");
+          history.replaceState(history.state, "", here);
+        }
+        window.__freshReload = (error, target = location.href) => {
+          if (!chunkError.test(String(error?.message ?? error))) return false;
+          try {
+            const last = Number(sessionStorage.getItem("fresh-reload"));
+            if (Date.now() - last < 30000) return false;
+            sessionStorage.setItem("fresh-reload", String(Date.now()));
+          } catch {
+            return false; // No loop guard without storage, so no reload.
+          }
+          const url = new URL(target, location.href);
+          url.searchParams.set("_fresh", Date.now().toString(36));
+          location.replace(url);
+          return true;
+        };
+        addEventListener("unhandledrejection", (event) => {
+          if (window.__freshReload(event.reason)) event.preventDefault();
+        });
+      })();
     </script>
     <!-- Declared in the static shell (not just the layout) so it is present at
          initial parse: the /app/* pages are ssr=false, so a layout-injected

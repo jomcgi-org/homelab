@@ -209,10 +209,6 @@ def sync_note_embeddings(session: Session, note: Note) -> None:
     _sync_embeddings(session, note, ("note",))
 
 
-def sync_event_embeddings(session: Session, event: SessionEvent) -> None:
-    sync_events_embeddings(session, [event])
-
-
 def sync_events_embeddings(session: Session, events: list[SessionEvent]) -> None:
     from grimoire.character_facts import retract_facts_for_events
 

@@ -107,16 +107,38 @@ async def test_no_dsn_leaves_payload_code_untouched(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_rust_payload_is_byte_identical_when_dsn_is_set(monkeypatch):
+@pytest.mark.parametrize("language", ["go", "rust", "elixir", "ocaml", "javascript"])
+async def test_non_python_payload_is_byte_identical_when_dsn_is_set(
+    monkeypatch, language
+):
     _FakeClient.posts = []
     monkeypatch.setattr(client, "SCRATCH_POSTGRES_DSN", "postgresql://secret")
     monkeypatch.setattr(client.httpx, "AsyncClient", _FakeClient)
     monkeypatch.setattr(client, "EMBERVM_URL", "http://embervm")
     code = 'fn main() { println!("hi"); }\n'
 
-    await client.run_code_in_sandbox(code, language="rust")
+    await client.run_code_in_sandbox(code, language=language)
 
     assert _FakeClient.posts[0]["json"]["code"] == code
+
+
+@pytest.mark.asyncio
+async def test_scratch_configuration_does_not_leak_between_submissions(monkeypatch):
+    _FakeClient.posts = []
+    monkeypatch.setattr(client.httpx, "AsyncClient", _FakeClient)
+    monkeypatch.setattr(client, "EMBERVM_URL", "http://embervm")
+    monkeypatch.setattr(client, "SCRATCH_POSTGRES_DSN", "postgresql://first")
+    await client.run_code_in_sandbox("pass")
+    monkeypatch.setattr(client, "SCRATCH_POSTGRES_DSN", "postgresql://second")
+    await client.run_code_in_sandbox("pass")
+    monkeypatch.setattr(client, "SCRATCH_POSTGRES_DSN", "")
+    await client.run_code_in_sandbox("pass")
+    first, second, disabled = [post["json"]["code"] for post in _FakeClient.posts]
+    assert "postgresql://first" in first
+    assert "postgresql://second" not in first
+    assert "postgresql://second" in second
+    assert "postgresql://first" not in second
+    assert disabled == "pass"
 
 
 # httpx is imported so the fake-client seam matches client_test's dependency set.

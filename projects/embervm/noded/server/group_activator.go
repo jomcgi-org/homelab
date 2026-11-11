@@ -7,7 +7,6 @@ import (
 	"net"
 	"sort"
 	"strconv"
-	"sync"
 	"time"
 
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
@@ -33,18 +32,15 @@ type groupRelightMember struct {
 type groupActivator struct {
 	server *Server
 
-	mu      sync.Mutex
+	parkLedger
 	flights map[string]*groupActivatorFlight
-	boots   int
-	parked  map[string]int
-	wakes   []time.Time
 }
 
 func newGroupActivator(s *Server) *groupActivator {
 	return &groupActivator{
-		server:  s,
-		flights: make(map[string]*groupActivatorFlight),
-		parked:  make(map[string]int),
+		server:     s,
+		parkLedger: parkLedger{parked: make(map[string]int)},
+		flights:    make(map[string]*groupActivatorFlight),
 	}
 }
 
@@ -166,32 +162,6 @@ func (a *groupActivator) join(workload string) (*groupActivatorFlight, bool, boo
 	a.boots++
 	a.parked[workload]++
 	return f, true, true
-}
-
-func (a *groupActivator) allowWakeLocked(now time.Time) bool {
-	cutoff := now.Add(-activatorWakeWindow)
-	kept := a.wakes[:0]
-	for _, woke := range a.wakes {
-		if woke.After(cutoff) {
-			kept = append(kept, woke)
-		}
-	}
-	a.wakes = kept
-	if len(a.wakes) >= activatorWakeMax {
-		return false
-	}
-	a.wakes = append(a.wakes, now)
-	return true
-}
-
-func (a *groupActivator) unpark(workload string) {
-	a.mu.Lock()
-	if a.parked[workload] <= 1 {
-		delete(a.parked, workload)
-	} else {
-		a.parked[workload]--
-	}
-	a.mu.Unlock()
 }
 
 func (a *groupActivator) complete(workload string, flight *groupActivatorFlight, entry *groupMemberEntry, err error) {

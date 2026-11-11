@@ -9,7 +9,6 @@ const response = (value) => ({
 
 describe("DM grants table", () => {
   it("rejects a player before requesting any DM resource", async () => {
-    process.env.GRIMOIRE_PLAY_ENABLED = "true";
     const fetch = vi
       .fn()
       .mockResolvedValue(
@@ -22,7 +21,6 @@ describe("DM grants table", () => {
     expect(fetch.mock.calls[0][0]).toMatch(/\/lobby$/);
   });
   it("loads every entity page with signed authority", async () => {
-    process.env.GRIMOIRE_PLAY_ENABLED = "true";
     const fetch = vi.fn(async (url) => {
       if (url.endsWith("/lobby"))
         return response({ campaigns: [{ id: "campaign", role: "dm" }] });

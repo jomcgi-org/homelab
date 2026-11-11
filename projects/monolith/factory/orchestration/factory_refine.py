@@ -93,27 +93,16 @@ PROTECTED_LABELS = ("critical", "security-finding")
 # common refine path so both closing modes interpret deleted ADR references alike.
 ADR_RETIREMENT_RULE = (
     "ADR authoring is retired. `docs/decisions/` was deleted on 2026-09-06 "
-    "(#4667). An ADR file referenced by an issue does not exist and will not "
-    "be recreated. Its historical text is recoverable with `git log -- "
-    "docs/decisions/`. Decisions are now recorded in the relevant domain's "
+    "(#4667). Record decisions in the relevant domain's "
     "`projects/<domain>/ARCHITECTURE.md`, as a `**Why.**` paragraph under the "
-    "section the decision changes, plus a Direction row carrying its tracking "
-    "issue. When an issue requests writing an ADR, updating an ADR, or "
-    "recording a decision in an ADR, that deliverable alone is not a reason "
+    "changed section, plus a Direction row for unbuilt work and its issue. "
+    "When an issue requests an ADR, that deliverable alone is not a reason "
     "for `needs-human` or `stale`. Default to rescoping it to the equivalent "
-    "ARCHITECTURE.md note in the owning domain and reach `agent-ready`, while "
-    "keeping the issue's substantive acceptance criteria intact. Escalate to "
-    "`needs-human` only when something else genuinely needs a person, such as "
-    "a real scope or authorization question, a technical prerequisite that is "
-    "not ready, or a decision between two substantive designs. State that "
-    "other reason explicitly in `### Decision needed`. `stale` still applies "
-    "when the issue's underlying premise is dead on its own merits, for "
-    "example when the service, file, or flag it concerns is gone, or the "
-    "symptom no longer reproduces. A missing ADR file alone is not a dead "
-    "premise. An issue body citing `ADR <domain>/<nnn>` is a pointer to a "
-    "deleted file. Do not treat `I cannot find this ADR` as evidence of "
-    "anything. Read the owning domain's ARCHITECTURE.md instead, and use `git "
-    "log -- docs/decisions/` only when the historical text matters.\n\n"
+    "ARCHITECTURE.md note while preserving substantive acceptance criteria. "
+    "A missing ADR file alone is not a dead premise. Check the current code "
+    "and architecture; use `git log -- docs/decisions/` only when the historical "
+    "decision matters. `stale` requires evidence that the underlying premise "
+    "no longer holds.\n\n"
 )
 
 REFINE_SCHEMA = {
@@ -155,12 +144,32 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
     """
     body = _bounded_planner_text(receipt.get("body") or "", 12000)
     brief_only = brief_only_refinement(receipt)
+    owner_pr = (receipt.get("direction") or {}).get("owner_pr")
+    owner_scope = (
+        "This work item is an existing owner-authored PR, including drafts. "
+        "Use its diff, discussion and existing repository goals to establish scope. "
+        "The author identity is discovery evidence, not authority. Cite an accepted "
+        "goal/spec or standing maintenance policy in Evidence; resolve routine repairs "
+        "yourself and apply agent-ready when supported. Do not demand a new issue. "
+        "Inspect for superseded work and explicit human/security/leave-unmerged holds. "
+        "Preserve those holds and name the concrete owner decision when needed. "
+        "Only write this PR's brief comment and verdict label; never edit source, "
+        "ready, close, merge or deploy the PR in this advisory role. No typed "
+        "delivery-target or live-validation gate is needed to adopt this PR.\n\n"
+        if owner_pr
+        else ""
+    )
     scope = (
         "This is a brief-only batch. Typed gates are proposals only; the server "
         "does not execute them. Do not send external notifications or messages. "
         "Only the brief comment and its verdict label on this issue are authorized "
         "external writes. Keep decisions needing authority as needs-human with "
-        "options. Do not implement, rescope issue or PR text, or operate services.\n\n"
+        "options. A proposed gate still requires outcome and label needs-human "
+        "when its classification is spending, prod_deletion or external_account, "
+        "or any effect is true: spends_money, deletes_data, touches_external_account, "
+        "uses_credentials. Reusing existing credentials still counts as uses_credentials. "
+        "Do not apply agent-ready to such a gate. Do not implement, rescope issue "
+        "or PR text, or operate services.\n\n"
         if brief_only
         else factory_gates.GATE_PROMPT
     )
@@ -191,32 +200,28 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         if closing
         else ""
     )
-    human_examples = (
-        ", whether the work is still wanted, or confirming that #z supersedes this"
-        if closing
-        else ", or whether the work is still wanted"
-    )
     return (
         f"Brief repository {task['repo']} issue #{receipt['issue_number']} at "
         f"{receipt['url']}.\n\n"
         f"Title: {receipt['title']}\n\nIssue body:\n{body}\n\n"
         + _chat_prompt(receipt)
         + ADR_RETIREMENT_RULE
+        + owner_scope
         + scope
-        + "Research before reading toward a verdict, and cite what you find "
-        "under `### Evidence`, in this order. First, call `search_knowledge` "
-        "on the `agents` MCP server with the issue title, then once for every "
-        "issue, ADR, or pull request number the body references. Claude CLIs "
-        "see it as `mcp__agents__search_knowledge`; Codex sees the `agents` "
-        "server's `search_knowledge`. Each fact carries a "
-        "`verification_state`; cite it as `KG: <fact title> (<state>)`. A "
-        "`verified` fact saying the work merged, the file is gone, or a Why "
-        "paragraph decided against it is closing evidence. Second, inspect "
-        "the checkout: read the domain's ARCHITECTURE.md `**Why.**` paragraph, "
-        "run `git log` for files the issue names, and check whether referenced "
-        "pull requests merged. Cite this as `git: <sha or path>`. Third, only "
-        "when the issue names an external product, version, or CVE, use the "
-        "web search tool if this CLI has one and cite `web: <url>`. "
+        + "Resolve routine reversible design choices within the accepted goals "
+        "and scope. State the chosen approach in Acceptance and make the work "
+        "agent-ready when no actual authority decision remains. Missing design "
+        "detail alone is not a reason to defer or ask a person. This does not "
+        "override the brief-only restrictions or typed gate effects above.\n\n"
+        "Research only what the verdict depends on and cite it under `### Evidence`. "
+        "Inspect the relevant code, ARCHITECTURE.md decisions and current issue/PR "
+        "state. Cite `git: <sha or path>`. Use available `search_knowledge` on the "
+        "`agents` server for relevant prior decisions or recurring failures; "
+        "one focused query is normally enough. Cite `KG: <fact title> (<state>)` "
+        "and confirm decisive claims against current authoritative evidence, "
+        "even when verification_state is verified. Missing KG access does not "
+        "block a repository-backed verdict. Use web search for external facts "
+        "the decision needs and cite `web: <url>`. "
         "When the verdict depends on live cluster state (is it deployed, which "
         "chart revision, is an Application Synced and Healthy, is a workload "
         "failing), call `cluster_snapshot` on the same `agents` server and cite "
@@ -240,14 +245,15 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         + "Reach exactly one of these verdicts and act on it.\n"
         "`agent-ready` when the brief is actionable with no human decision "
         "left. Apply the `agent-ready` label.\n"
-        "`defer` when the issue is worth doing but needs a decision, design, "
-        "or event nobody can supply now. Add a `### Why defer` section naming "
+        "`defer` when the issue is worth doing but a concrete prerequisite or "
+        "external event prevents progress within the accepted scope. Add a "
+        "`### Why defer` section naming "
         "the concrete condition that would make it actionable, apply the "
         "`needs-thought` label, and leave the issue open.\n"
         "`needs-human` is for a decision a person can make in about a minute "
-        "and that unblocks the work, such as which of two scopes"
-        + human_examples
-        + ". Apply the "
+        "and that unblocks the work: conflicting goals, missing authority, "
+        "a constraint exception or an explicit human-owned decision. Already "
+        "accepted scope is not a question to reopen. Apply the "
         "`needs-human` label and make the LAST section `### Decision needed`, "
         "holding one line of the form `recommend: deliver` (or `close`, "
         "`split`), then the single specific question a person must "
@@ -258,9 +264,9 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         "say the same thing.\n"
         + triage
         + "\nThe bar for closing is evidence a reader can check, not a "
-        "judgement you formed. A question that needs real thought, a design, "
-        "or a window only the author can declare is the `defer` verdict, taken "
-        "by the node itself. Never "
+        "judgement you formed. A genuine external prerequisite can justify "
+        "`defer`; ordinary implementation uncertainty belongs in an actionable "
+        "brief. Never "
         "close an issue carrying `critical` or `security-finding`, or one "
         "assigned to a milestone; those can only be `agent-ready`, `defer`, "
         "or `needs-human`.\n\n"
@@ -394,6 +400,13 @@ def closing_allowed(
     action the server would refuse, and once at settlement, so a cap spent
     while the node was running still holds.
     """
+    if exclude_task_id is not None:
+        with _read_session() as db:
+            row = db.exec(
+                select(FactoryReceipt).where(FactoryReceipt.task_id == exclude_task_id)
+            ).first()
+            if row and json.loads(row.direction_json or "{}").get("owner_pr"):
+                return False, "owner_pr_disposition_requires_delivery_owner"
     intake = intake_policy(policy)
     if not intake["close_enabled"]:
         return False, "close_disabled"
@@ -965,6 +978,14 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
                 task["id"], number, "irreversible gate requires needs-human", False
             )
             return
+        if not factory_gates.restricted(gate) and not brief_only_refinement(receipt):
+            try:
+                factory_gates.enforce_hold_origin(
+                    task, gate, f"refine-gate:{task['id']}"
+                )
+            except factory_gates.LandingHoldRefused as exc:
+                _mismatch(task["id"], number, exc.reason, False)
+                return
     invalid = _verify_artifact(artifact, outcome)
     if invalid is None:
         invalid = _verify_supersedes(repo, number, artifact, outcome)

@@ -644,10 +644,8 @@ unknown and is never guessed from the brick's current configuration.
 
 ### Parked workspaces can rejoin across nodes
 
-`crossNodeRejoin` defaults to false in the chart and is enabled in the GKE
-overlay (#6663). With it off, workspace rejoin stays pinned to `volume_node_id`
-and drains use the existing asynchronous archive path. With it on, drain workers
-synchronously export the unattached workspace through the owning instance dial,
+Cross-node rejoin (#6663) is unconditional. Drain workers synchronously export
+the unattached workspace through the owning instance dial,
 falling back to the draining pod's dial or the pre-park session dial when draining
 has removed its capacity fact. Export retries are bounded to three attempts.
 
@@ -729,13 +727,44 @@ but off in every deployment and has never served a hydration: the shim's
 mirror attempt is denied at the egress proxy and falls through to the direct
 clone.
 
-A sequential Firecracker dirty-page diff bank path exists and is dormant.
-The merge-at-bank step now attempts Linux `FICLONE` for the temporary copy of
-the previous full and falls back to a byte copy on ext4 or across filesystems.
-Repository support does not establish that the fleet scratch path supports
-reflink: `noded.diffBanking` remains false until #5699 validates the staged XFS
-loop path on a dev node and #4970 records the demo-postgres latency and
-correctness comparison. Only full bundles ever enter the archive.
+**Why.** Repo-backed Claude, Codex and Pi workers use their native `AGENTS.md`
+loaders from the hydrated checkout. Root and ancestor guidance loads at startup;
+workers read scoped guidance when their assigned work enters that subtree.
+Pi keeps context loading enabled alongside its factory system prompt, while
+extension, skill and prompt-template discovery stay disabled. This keeps shared
+repository guidance versioned with the checkout. Factory prompts and pinned
+contracts still own roles, scope, tool limits and sequencing. The shim does not
+copy instructions into `CLAUDE.md` or inject a second copy into the prompt.
+(see: /projects/embervm/runtimes/claude/shim.py, /AGENTS.md)
+
+**Why.** The staged `/shim/funding-decision-v1` profile (#7583) is disabled.
+Deployment injects subscription OAuth from `CLAUDE_AUTH_TOKEN`; that credential
+does not authorize a bespoke Messages client. The adapter refuses with
+`funding_provider_route_unavailable` before constructing an HTTP client or
+starting a CLI, regardless of ambient credentials. No enable switch exists.
+The pinned CLI 2.1.284's pre-input initialize response does not declare tools;
+its later `system/init` event cannot establish a pre-content fence. Safe mode
+with empty tools produces a tool-free synthetic request, but does not supply
+that missing pre-input evidence. No live subscription probe is authorized.
+Durable one-shot markers still exclude replay, restore and mixed profiles.
+An absent CLI process remains insufficient evidence of cessation for historical
+direct-client attempts. No historical receipt, cost or lineage is reclassified.
+The [dedicated API-key proposal](../monolith/ARCHITECTURE.md#funding-stays-disabled)
+requires independent review and explicit provisioning approval before a separate
+activation change. Existing ordinary Claude Code use is unchanged.
+
+**Why.** The Claude runtime ships a stdlib `ci-log` helper (#6442) so factory
+workers share commit-status lookup, bounded log traversal and redaction.
+It uses existing GitHub access and the credential-free BuildBuddy log RPC;
+guests receive no new CI credentials. Fresh exact-commit status determines
+running versus terminal, while chunk coverage and test counts remain separate
+evidence. Private bounded caches reuse only redacted terminal logs. Image
+publication does not establish guest uptake or measured reductions in repeated
+CI calls; the next retro window supplies that operational acceptance.
+
+Banking always writes a Full snapshot. The dormant dirty-page diff path and
+its merge-at-bank reflink helper were removed in 2026-11: its prerequisite,
+XFS reflink scratch (#5699), was closed as not planned.
 
 **`maxLifetimeSeconds` is a version-convergence bound, not a data lifetime**:
 it stops a session riding a stale base forever and is never raised to buy
@@ -757,6 +786,63 @@ releases it once the heir row exists, each claim one atomic ETS insert, so a
 restore admitted inside the window is denied with the retryable
 `lineage_restore_in_flight` reason and a restore in flight holds the prefix for
 that sweep. The destructive GC gate stays off by default regardless.
+
+**Historical cessation evidence.** The management-authenticated, owner-scoped
+`GET /v1/sessions/:id/cessation-evidence` reads an exact original dispatch after
+its session projection has been pruned. It accepts only a retained original
+creation, one invocation start, positive `idled` parking/parked commits, and
+`idle_ttl` eviction. Guest, lineage, principal, workload, original node/VM,
+generation and timestamps must agree. Creation must be above the compaction
+marker; complete bounded creation history must contain no successor. Unknown
+transitions, missing fields, malformed payloads and exhausted bounds refuse.
+The limits are 256 target events/1 MiB, 32,768 creation events/16 MiB, and 64 KiB
+per payload. Neither raw payloads nor credential hashes leave the verifier.
+
+The backend reads marker, history and durable ownership in one read-only
+snapshot. The serialized session store and manager additionally refuse all hot
+lineage holders, even terminal ones, registry owners, pending restore authority
+and unresolved residency aliases. A surviving terminal holder could otherwise
+authorize a later restore. Successful reads carry a fresh observation timestamp
+and a stable hash of the exact positive history, independent of unrelated new
+sessions. They neither recreate a session nor determine its invocation result.
+
+**Why.** Seven-day projection pruning can remove a stopped guest while its
+thirty-day journal still contains positive cessation evidence. A missing row
+alone cannot justify recovery. This proof is explicitly scoped to the deployed
+single-writer control plane (`replicas: 1`, `strategy: Recreate`), not an
+unimplemented multi-writer authority. A crashed manager's orphan Restore/Prime
+RPC may finish resource work, but cannot register, Assign or dispatch through
+its dead owner. The restart regression covers that distinction; the proof does
+not assert that every orphan RPC has stopped. Consumers must retain their own
+freshness, exact ownership, audited authorization and unknown-outcome fences.
+
+**Retained-session recovery fencing.** The private factory recovery workflow
+uses management-authenticated `POST /v1/sessions/:id/recovery-fence`, restricted
+to the retained principal without a session-token or admin substitution. Preview
+binds a request key to generation zero, one exact dispatch and its interrupted
+turn marker, positive `idled` parking, and `idle_ttl` or `node_gone` eviction.
+Complete bounded original/creation history and fresh durable/hot ownership checks
+must exclude every successor, residency alias and dispatch-capable pending
+restore; tracked handoff exports also refuse. Missing evidence fails closed.
+
+Apply repeats those checks under the serialized manager and compares the exact
+preview digest in one backend transaction. It appends `session_recovery_fenced`
+and writes only immutable `sessions.recovery_fence_json`; original state,
+timestamps, interruption and usage remain unchanged. An identical request can
+read back a fresh proof after a lost response. A changed key, identity, history,
+claim or digest cannot reuse the fence as recovery authority. Freshness and the
+fenced flag are excluded from the stable preview digest.
+
+**Why.** A retained terminal row remains eligible for workspace restoration, so
+proof of prior physical cessation alone cannot safely authorize retry. Restore
+admission now reads the durable fence on every restoring create, including after
+an uncertain apply, and fails closed on unavailable storage. The field survives
+restart; after ordinary projection pruning, the missing durable holder refuses
+as `unknown_lineage` even if ETS still has the old row. The fence never fabricates
+an invocation result or recreates a missing native receipt. It shares the existing
+single-writer deployment assumption. Orphan non-dispatching export RPCs may finish
+uploading bytes, but cannot restore the fenced lineage or authorize execution;
+the proof makes no assertion that all resource RPCs have ceased.
 
 **Why.** A control-plane restart during an interruptible bank could leave a
 benign generation advance indistinguishable from an unauthorized one, forcing
@@ -800,8 +886,9 @@ expensive fresh-VM node attempt. The accepted cost is that a codex failure
 raised after `turn/start` may already have run tool calls under
 `danger-full-access`, and the retry re-delivers the same message to the same
 live thread, so a partially effectful turn can replay up to the ladder's bound.
-A header-based control-plane retry remains open (see Direction) for callers
-that do not go through the monolith transport.
+A header-based control-plane retry for callers outside the monolith transport
+closed not planned (#6185). The closing note says the monolith ladder covers
+the only caller that meaningfully hits transient 422s.
 
 **Why snapshot anywhere uses the between-turns safe point (#6256).** A provider
 stream can run for twelve hours, so waiting for it makes routine rollouts take
@@ -1028,8 +1115,8 @@ against them.
    to the pod UID and node name claims in the brick's bound ServiceAccount
    token, so a brick can establish only its own stream. The one carve-out is
    destruction: an instance is recorded destroyed only after the owning node
-   confirms teardown (gate `nodeConfirmedDestroy`: true in production
-   and dev since 2026-08-22, #4758), and reconciliation is fail-closed toward destruction (an
+   confirms teardown (unconditional since 2026-11; armed in production and dev
+   from 2026-08-22, #4758), and reconciliation is fail-closed toward destruction (an
    unrecognised node VM is an orphan to destroy, unless it carries the
    `origin: ACTIVATOR` marker, in which case it is adopted and backfilled).
    Model-checked (`adoption.tla`) against control-plane and node crashes
@@ -1095,18 +1182,14 @@ against them.
     mechanics. The scalar details are carried by the storage and
     control-plane sections.
 
-**Why.** Worker runtime state changed faster than synchronous durable writes
-could support, while stale reports could otherwise resurrect destroyed VMs or
-regress a generation (ADR embervm/014). The optional async path avoids keeping
-Postgres on four boot and wake appends, but the reference deployment currently
-keeps `asyncLifecycleWrites: false`, so those appends remain write-through
-(see: /projects/embervm/deploy/values.yaml and
-/projects/embervm/chart/values.yaml). Vocabulary-only conformance was also
+**Why.** Lifecycle appends remain synchronous: the durable write succeeds
+before ETS advances or ownership is acknowledged. The unarmed async lifecycle
+implementation was removed under #7059, superseding embervm/014 decision 2.
+Worker-authoritative state and node-confirmed destruction remain unchanged.
+Forward-only projection guards preserve terminal and generation protections
+for late records and historical replay. Vocabulary-only conformance remains
 insufficient because a modeled action can exist in an enum and never be emitted
-(ADR embervm/034). Worker-authoritative runtime state, forward-only
-reconciliation, and model-checked invariants support the async path's late
-durable records while keeping enforcement fail-closed and warmth discardable
-(ADR embervm/006, ADR embervm/014).
+(ADR embervm/034).
 
 ---
 
@@ -1135,8 +1218,15 @@ never stores or witnesses anything that scales with the fleet.
 - **Adoption**: noded reports `primed_vm_ids`, session VMs,
   checkpoint-pending VMs, and banked artifacts on every `NodeStatus`; the
   dispatcher and managers reconcile on boot and every sweep. Adoption is
-  ETS-only except the stateful bundle heal, which appends a `stateful_banked`
-  op marked `adopted: true`. The protocols are model-checked: the specs in
+  ETS-only except recovered session and stateful banks, which append
+  `session_banked` or `stateful_banked` with `adopted: true` before changing ETS.
+  A late session bank recovers the node's owned snapshot reference and size,
+  including an already-banked row missing its metadata. Inventory cannot replace
+  an existing snapshot identity. Absent size preserves the recorded size;
+  NodeStatus reports no generation or parent-base provenance, so recovery retains
+  those recorded fields. Repeated matching inventory appends nothing. Failed
+  appends leave the row and residency unchanged for the next reconcile.
+  The protocols are model-checked: the specs in
   `projects/embervm/specs/` run under TLC in the build, so a spec violation is
   a red build, and `vocabulary.exs` keeps them honest against the code's
   enums, though not against whether a modeled op kind is ever appended
@@ -1200,12 +1290,13 @@ never stores or witnesses anything that scales with the fleet.
   immediately if that exporter module is missing, and the Linux release-boot
   smoke exercises this configured path without requiring a live collector.
   Production delivery and stability checks remain outstanding on #6258.
-- **Health surface tiers** (ADR embervm/031): `/health` latches unhealthy
-  immediately on a sustained artifact-export failure streak (tier 1, a user's
-  data at risk now) and only after more than 24 h without a completed warmth
-  GC sweep, measured as the age of the newest `gc-manifests/` object (tier 2,
-  maintenance debt with days of runway). Both end in the health surface;
-  Discord alerts are a companion signal, not the record.
+- **Health surface tiers** (historical embervm/031): #4338 built a detector
+  for sustained artifact-export failure streaks and warmth-GC manifest age.
+  It was never armed. #7058 removes the detector, its HTTP route and its
+  monolith consumer. The store trust probe, readiness and liveness remain.
+  **Why.** Joe's 2026-10-28 decision removes the unused detector and corrects
+  the claim that its latch protected health. Artifact export, warmth GC and
+  their manifests retain their existing behavior.
 
 **Decided direction:**
 
@@ -1930,6 +2021,20 @@ guest-controlled placeholder can be spliced into a URL and reflect the
 credential into a request line. RAM scrubbing before snapshot is rejected
 as a mechanism to rely on; revocation at the validator is the control.
 
+The egress CA mount remains optional so a brick can start while cert-manager
+issues its release-local certificate in the same ArgoCD sync. If the initial
+load fails, CA fetches and permitted credentialed TLS requests retry the fixed
+configured files at most once every five seconds. A successful load keeps that
+keypair for the process lifetime; this does not introduce CA rotation. Missing
+or invalid material yields no CA response, and destination denial still happens
+before credential resolution or a TLS retry.
+
+**Why.** A one-shot startup load left S8 permanently unable to fetch its CA when
+certificate issuance finished after sidecar startup (#7187). Making the mount
+required had already deadlocked brick rollout. Bounded initial-load recovery
+lets the optional Secret arrive normally without a restart or a new egress
+permission, while retaining the trust anchor already fetched by running guests.
+
 Muse 1.0.3-R2198.1 was verified on 2026-09-10 to trust only its bundled
 roots (1.4.1-R4503.1 keeps the same settings surface; re-confirm live).
 A 2026-09-30 capture run of 1.4.1-R4503.1 under the shim's settings showed
@@ -1984,15 +2089,11 @@ that existing serving path before polling can resume.
 
 The Codex sidecar excludes grants at 97 percent or explicit exhaustion, and
 never falls from a fresh usable tier into stale or exhausted quota after a
-token-fetch failure. With `SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION=true`, the
-KG gate can ignore exhausted accounts beside a fresh permitting account. Unknown inventory, malformed evidence, role floors
-and no fresh permitting account still defer. Cached sidecar observations age
-even while the broker is unavailable. The gate's compatibility setting defaults
-to false because monolith and EmberVM promote independently. First deploy and
-verify every sidecar's exclusion, then enable the setting through a separate
-monolith values change (`swarm.codexExhaustedGrantExclusion: true`). Until that activation, reobserved exhaustion still
-vetoes KG admission, preserving the old conservative contract. Opposite version
-skew could let an old sidecar select an account the new gate excludes.
+token-fetch failure. The KG gate ignores exhausted accounts beside a fresh
+permitting account. Unknown inventory, malformed evidence, role floors and no
+fresh permitting account still defer. Cached sidecar observations age even
+while the broker is unavailable. Every sidecar carries the exclusion, so an old
+sidecar can no longer select an account the gate excludes.
 
 **Account preference** (enabled on the hub for factory and interactive guests): `grantPolicy: prefer-first`
 on a two-member Codex catalog pool chooses its first member whenever fresh usage
@@ -2054,9 +2155,12 @@ HTTPRoutes, with serving routes additionally constrained by node Envoy authority
 matches. Node Envoy returns 404 for `/shim/*` before routing to a serving
 workload, so the workload handler never sees the reserved prefix. Inside the
 guest, hydrate is build-only and the shim refuses another hydrate once it is
-ready. The pattern's proof is a public Bazel-query demo that serves each visitor
-query from a disposable CoW clone of a warm-Skyframe snapshot: server-controlled
-argv, zero egress, reaped per request.
+ready. The public Bazel-query demo exercised this pattern with server-controlled
+argv, zero egress and a disposable clone per query. Its exhibit retired in
+#6937; its unused guest image, Workload and build dependencies retired in #7056.
+
+**Why.** No deployed stack or caller used the Bazel demo after the exhibit was
+removed. Building and publishing its runtime no longer served a workload.
 
 **Guest identity**: a guest never holds a cluster credential (**Built**, by
 construction: no NIC, no mounted ServiceAccount); the
@@ -2266,6 +2370,11 @@ embervm/033, ADR embervm/036).
 
 ## 11. Deployment shape
 
+**Why.** Noded's image is amd64-only (#7065, Joe's 2026-10-28 decision):
+the fleet has no arm64 consumer. The daemon and all four Firecracker bundle
+files are retained in two amd64 layers on Wolfi. Shared archive registration
+still fetches both architectures.
+
 ### Minimum platform contract
 
 | Requirement | Why | Fails how if absent |
@@ -2396,6 +2505,46 @@ and architecture acceptance matrix for restore-time vsock overrides is a
 separate manual readiness gate in
 [`docs/drills/vsock-override-acceptance.md`](docs/drills/vsock-override-acceptance.md).
 
+Hub dev also requires S9 before promotion. It creates one bounded native
+`claude-runtime` session and runs Codex at `xhigh`, then waits for that session
+to park and resumes the same CLI thread. Each turn must produce positive input
+and output usage and execute a shell command that writes a fresh, unpredictable
+proof artifact. The runner checks both artifacts through the shim separately
+from model output. The artifacts include the actual Codex binary version and
+the guest image digest stamped inside the root filesystem; the expected values
+are not supplied in the model prompt. A matching workload declaration or a
+successful text-only response is insufficient. S9 destroys its session and
+confirms removal, including after failure, with an independent cleanup deadline.
+It retains a successful result for the current runner and chart, and stops
+after two failed attempts so an unavailable provider cannot consume quota on
+every scheduled suite. A runner restart resets that bounded attempt count.
+
+The digest stamp is an explicit dev opt-in. `stampImageDigest: true` derives
+the effective `b3` rootfs cache identity while the generic format remains `b2`.
+An older chart therefore continues to use its unstamped `b2` cache even when
+it receives the newer values. The `b3` builder has a separate ConfigMap name,
+exports the resolved immutable image digest, and writes a read-only stamp
+before constructing the filesystem. All builder modes and attached rootfs
+paths use that same identity. Existing banked sessions and production caches
+keep their original format.
+
+The dev broker owns a separate OAuth grant. Its strict login mode permits only
+the private Monolith identity to start or inspect login over SPIFFE mTLS; the
+dev noded identity separately owns token, refresh and quota routes. Plaintext
+protected routes are retired using the existing chart option so old-chart
+rollouts and rollbacks also keep login closed. Private Monolith exposes only
+the fixed dev broker login/status paths and pins the exact dev server identity;
+it shares its rotating client SVID with the production broker client without
+changing the production server pin. No production grant is copied into dev.
+
+Kargo requires an explicit passing S9 entry as well as the aggregate verdict
+and exact candidate chart version. A legacy S1-S8-only verdict cannot promote
+the candidate. The 90-minute dev deadline accommodates workload readiness,
+two complete suites and their retry interval; the production five-minute soak
+remains in place. Bootstrap first proves the currently published CLI and Sol
+model. The subsequent runtime change moves S9 to Terra and the new CLI; factory
+review policy changes only after that runtime has passed the live gate.
+
 **Known walls and provisional numbers** (each states what would move it):
 
 | Item | Value | Status | Confidence |
@@ -2432,6 +2581,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Factory guests share credential-free bounded CI log reads | section 4 | #6442 | helper packaged; guest uptake and next-window repeated-call evidence pending |
 | Brick scale-down couples durable archive acknowledgement with one brick per node (Joe, 2026-10-10) | section 7 | #6533 | single repository gate default-off; staged enable and live acceptance pending |
 | Guest digest-only publishes bake rootfs files in place without rolling bricks or draining live sessions | section 8 | #6662 | repository implementation staged; ReplicaSet and session live acceptance pending |
 | The Firecracker jailer arms on every brick, closing the direct-root-exec gap between co-resident guests | section 10 | #5255 | built and staged; dev arming then production after a dev soak (#6965) |
@@ -2456,11 +2606,11 @@ has the full text.
 | embervm/007 | Batched Postgres op-log tier, cells, hot-loop corrections | Accepted historically; Postgres Built, cell work closed unmerged and is not planned ([#4753](https://github.com/jomcgi-org/homelab/issues/4753), [#3855](https://github.com/jomcgi-org/homelab/issues/3855), [PR #6069](https://github.com/jomcgi-org/homelab/pull/6069)); tracker [#3853](https://github.com/jomcgi-org/homelab/issues/3853) closed | deleted |
 | embervm/008 | Opt-in two-phase interruptible bank | Accepted, Built | deleted |
 | embervm/009 | Continuity before tenancy: R6 to R9, spot availability contract, S3 seam | Accepted; quickstart merged (#3856, #3858), clean-host KVM validation not yet done | deleted |
-| embervm/010 | Bazel warm-Skyframe public demo as a stateless query consumer | Accepted, Built | deleted |
+| embervm/010 | Bazel warm-Skyframe public demo as a stateless query consumer | Retired with the exhibit (#6937); runtime removed in #7056 | deleted |
 | embervm/011 | Vendor-bound warmth, single-writer fencing, CP-sequenced rollouts | Accepted; stateful Longhorn withdrawn by 025; sole-issuer rule amended by 017, 018, 040 | deleted |
 | embervm/012 | Co-located fleet, etcd blast radius accepted, grandfather rule, registry survives restart | Accepted; dynamic sizing retired by 013; HA not planned (#3862) | deleted |
 | embervm/013 | Classes are reuse semantics, substrates are lanes; brick sizing; bricks everywhere | Accepted, Built | deleted |
-| embervm/014 | Worker-authoritative state, async writes, node-confirmed destruction | Draft, Built (`adoption.tla`); metering clause amended by 020 | deleted |
+| embervm/014 | Worker-authoritative state and node-confirmed destruction; decision 2 async writes retired by #7059 | Built (`adoption.tla`); decision 2 superseded by synchronous lifecycle appends (#7059); metering clause amended by 020 | deleted |
 | embervm/015 | Isolated high-throughput lane with data-plane placement | Draft; not planned ([#3864](https://github.com/jomcgi-org/homelab/issues/3864) closed, its #6132 reuse and evidence gate is the reopen criterion); fail-closed lease withdrawn by 020 | deleted |
 | embervm/016 | Kubernetes scheduling contract: the pod is the ABI, priority projection, session ladder | Accepted; kwok drills never built; placement loop superseded by 020, ladder amended by 025, 027, 029 | deleted |
 | embervm/017 | Bounded auto-heal of the checkpoint-abort quarantine | Accepted, Built (`generation_issuance.tla`) | deleted |
@@ -2477,7 +2627,7 @@ has the full text.
 | embervm/028 | Eager-local rootfs: OCI ref, Account chunk store, ublk | Accepted, not planned (#4182); Phase 0 measured on #4182 | deleted |
 | embervm/029 | Parked sessions count as disk, not against `concurrency.cap` | Accepted, Built | deleted |
 | embervm/030 | Lineage decoupled from session generation; the 6 h cap is a convergence bound | Accepted, Built | deleted |
-| embervm/031 | Health signals classified by time-to-impact, both tiers latch `/health` | Accepted, Built (#4338) | deleted |
+| embervm/031 | Historical export-failure and GC-age detector, never armed | Built (#4338), removed (#7058) | deleted |
 | embervm/032 | Actor / principal / permission split, authentik SSO for the management surface | Draft, Decided direction; SPIFFE seam resolved by 041 | deleted |
 | embervm/033 | Substrate threat model as the conformance frame, per-principal encryption at rest, tuple-authorized restore | Accepted, Built and armed; customer KMS mode and digest-verified manifests open (#4691) | deleted |
 | embervm/034 | Conformance harness: two lanes, two tiers, anti-vacuity, Freight override | Accepted; SpecTrace runs in dev, harness Planned (#4761, #4763) | deleted |

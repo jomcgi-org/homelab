@@ -1707,18 +1707,11 @@ class TestStartAgentFlowOrchestrator:
             assert model_family(name) in {"codex", "claude", "muse", "pi"}
 
     @pytest.mark.asyncio
-    async def test_plan_verdict_opens_thread_and_submits_raw_prompt(
+    async def test_session_verdict_opens_thread_and_submits_raw_prompt(
         self,
     ):
-        """A PlanVerdict opens a thread and submits the RAW prompt.
-
-        The plan itself is no longer consumed: its retired executor delivered it
-        to the guest via injectedContext.
-        Agent sessions take the prompt alone, so a PlanVerdict now behaves
-        exactly like a FailOpen here. Kept as a regression test that a non-chat
-        verdict still opens a thread rather than silently doing nothing."""
+        """The session route preserves caller input and links routing telemetry."""
         from chat import orchestrator
-        from chat.orchestrator_plan import Plan, PlanStep
 
         bot = _make_bot()
         channel = _flow_channel()
@@ -1728,38 +1721,32 @@ class TestStartAgentFlowOrchestrator:
         channel.create_thread = AsyncMock(return_value=thread)
         user = MagicMock()
 
-        plan = Plan(
-            enabled_subrecipes=("query", "implement"),
-            steps=(
-                PlanStep(sub_recipe="query", context="Find the failing test."),
-                PlanStep(sub_recipe="implement", context="Fix it and open a PR."),
-            ),
-            done_criteria=("CI green",),
-        )
-        verdict = orchestrator.PlanVerdict(
-            plan=plan,
+        verdict = orchestrator.SessionVerdict(
             repo="jomcgi/homelab",
             repo_paths=["projects/monolith/chat/bot.py"],
+            brief_id=42,
             repo_replaced=False,
         )
         with (
             patch.object(bot, "_orchestrator_verdict", AsyncMock(return_value=verdict)),
             patch("chat.bot.acl.is_owner", return_value=True),
+            patch("chat.bot.orchestrator.link_thread") as link_thread,
             patch(
                 "agent_sessions.api.start_session_for_thread", new_callable=AsyncMock
             ) as start_session,
         ):
-            outcome = await bot.start_agent_flow(channel, user, "raw prompt", "")
+            outcome = await bot.start_agent_flow(
+                channel, user, "raw prompt", "weave-hand/loom", model="terra"
+            )
 
         assert outcome.thread is thread
         # The submitted task is the raw prompt (ground truth), never brief-prefixed.
-        # None, not "", because start_session_for_thread validates a non-None repo
-        # against REPO_CATALOG.
-        start_session.assert_awaited_once_with("555", "raw prompt", None, model="luna")
+        start_session.assert_awaited_once_with(
+            "555", "raw prompt", "weave-hand/loom", model="terra"
+        )
+        link_thread.assert_called_once_with(42, "555")
         # The echo is an attributed, FENCED block (_format_agent_prompt_echo), so
         # match on the prompt being inside it rather than on the exact framing.
-        # The checklist that used to be pre-rendered here from the plan's steps is
-        # gone with the plan itself, so the intro is now the bare placeholder.
         sent_bodies = [c.args[0] for c in thread.send.call_args_list]
         assert sent_bodies[0].startswith("Prompt from ")
         assert "raw prompt" in sent_bodies[0]

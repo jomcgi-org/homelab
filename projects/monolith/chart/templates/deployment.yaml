@@ -16,6 +16,17 @@
 {{- fail "tokenBroker.spiffe.serverId is required when SPIFFE is enabled" }}
 {{- end }}
 {{- end }}
+{{- if .Values.tokenBroker.devLoginUrl }}
+{{- if not .Values.tokenBroker.spiffe.enabled }}
+{{- fail "tokenBroker.devLoginUrl requires tokenBroker.spiffe.enabled" }}
+{{- end }}
+{{- if not (hasPrefix "https://" .Values.tokenBroker.devLoginUrl) }}
+{{- fail "tokenBroker.devLoginUrl must use https" }}
+{{- end }}
+{{- if not (hasPrefix "spiffe://" .Values.tokenBroker.devLoginServerId) }}
+{{- fail "tokenBroker.devLoginServerId is required for dev login" }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -98,6 +109,10 @@ spec:
             # mismatch.
             - name: MONOLITH_CHART_VERSION
               value: {{ .Chart.Version | quote }}
+            - name: MONOLITH_IMAGE
+              value: "{{ .Values.backend.image.repository }}@{{ .Values.backend.image.digest }}"
+            - name: FACTORY_SYNTHETICS_ENABLED
+              value: {{ .Values.factory.synthetics.enabled | quote }}
             {{- if .Values.marine.enabled }}
             - name: AISSTREAM_API_KEY
               valueFrom:
@@ -118,14 +133,6 @@ spec:
             - name: EMBERVM_URL
               value: {{ .Values.semgrep.embervmUrl | quote }}
             {{- end }}
-            {{- if .Values.emberDurability.url }}
-            # ember-durability health component (#4338): the CP durability
-            # surface (GET /v1/health/durability) folded into /api/health as a
-            # FATAL-tier component. Empty (the default) keeps it dark: nothing
-            # registers and no env renders.
-            - name: EMBER_DURABILITY_HEALTH_URL
-              value: {{ .Values.emberDurability.url | quote }}
-            {{- end }}
             {{- if or .Values.tokenBroker.url .Values.tokenBroker.spiffe.enabled }}
             # OAuth token broker (ADR 048): the agent surface proxies its
             # device-code login flow so a login can run from a chat.
@@ -143,6 +150,12 @@ spec:
             - name: EMBER_TOKENBROKER_SVID_BUNDLE
               value: /run/tokenbroker-svid/svid_bundle.pem
             {{- end }}
+            {{- end }}
+            {{- if .Values.tokenBroker.devLoginUrl }}
+            - name: EMBER_DEV_TOKENBROKER_LOGIN_URL
+              value: {{ .Values.tokenBroker.devLoginUrl | quote }}
+            - name: EMBER_DEV_TOKENBROKER_LOGIN_SPIFFE_ID
+              value: {{ .Values.tokenBroker.devLoginServerId | quote }}
             {{- end }}
             {{- if .Values.faas }}
             # FaaS zip-lane function registry (ADR 045 / embervm R1). The read
@@ -174,6 +187,8 @@ spec:
             - name: AGENT_PI_WORKLOAD
               value: {{ .Values.agentSessions.piWorkload | quote }}
             {{- end }}
+            - name: AGENT_STAGED_RECEIPTS_ENABLED
+              value: {{ (.Values.agentSessions | default dict).stagedReceiptsEnabled | default false | quote }}
             {{- with (.Values.agentSessions | default dict).admission }}
             # Shared execution permits. Read per check in admission.py, so
             # these are the live bounds on the next pod rather than values
@@ -193,44 +208,22 @@ spec:
             # surfaces follow one values edit.
             - name: AGENT_MODELS
               value: {{ .Values.agents.models | default "" | quote }}
-            - name: AGENT_PROBE_SUPERVISION_ENABLED
-              value: {{ .Values.agents.sessions.probeSupervisionEnabled | quote }}
-            - name: AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED
-              value: {{ .Values.agents.sessions.uncertainPermitSupervisionEnabled | quote }}
             - name: FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED
               value: {{ .Values.agents.sessions.boundZeroTurnSettlementEnabled | default false | quote }}
-            - name: AGENT_RESULT_RECEIPTS_ENABLED
-              value: {{ .Values.agents.sessions.resultReceiptsEnabled | quote }}
-            - name: AGENT_RESULT_RECEIPT_ADOPTION_ENABLED
-              value: {{ .Values.agents.sessions.resultReceiptAdoptionEnabled | quote }}
-            - name: AGENT_RESPONSE_LOST_RECOVERY_ENABLED
-              value: {{ .Values.agents.sessions.responseLostRecoveryEnabled | default false | quote }}
             - name: FACTORY_ASYNC_RESIDENCY_ENABLED
               value: {{ .Values.agents.sessions.asyncResidencyEnabled | default false | quote }}
-            - name: AGENT_ROLLOUT_HANDOFF_ENABLED
-              value: {{ .Values.agents.sessions.rolloutHandoffEnabled | default false | quote }}
-            - name: AGENT_RESPONSE_LOST_DRAIN_RELAY_ENABLED
-              value: {{ .Values.agents.sessions.responseLostDrainRelayEnabled | default false | quote }}
-            - name: AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED
-              value: {{ .Values.agents.sessions.executorNotInvokedRecordEnabled | default false | quote }}
-            - name: AGENT_CLAIM_HEARTBEAT_SESSION_LOCK_ENABLED
-              value: {{ .Values.agents.sessions.claimHeartbeatSessionLockEnabled | default false | quote }}
-            - name: AGENT_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED
-              value: {{ .Values.agents.sessions.neverInvokedGuestSettlementEnabled | default false | quote }}
-            - name: AGENT_GUEST_ANSWER_SETTLEMENT_ENABLED
-              value: {{ .Values.agents.sessions.guestAnswerSettlementEnabled | default false | quote }}
-            - name: AGENT_SESSION_STOP_CONTROL_ENABLED
-              value: {{ .Values.agents.sessions.stopControlEnabled | quote }}
             {{- with .Values.agents.drainer }}
             # Work-queue drainer. DRAINER_ENABLED is checked both by the
             # internal trigger and inside the DBOS workflow. Its job kind is a
             # legacy persisted value and does not name the execution model.
             - name: DRAINER_ENABLED
               value: {{ .enabled | quote }}
-            - name: DRAINER_NOTIFY_FAILURES
-              value: {{ .notifyFailures | quote }}
-            - name: DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED
-              value: {{ .lostBeforeSessionSweepEnabled | default false | quote }}
+            - name: FACTORY_LEARNING_DAILY_PAYLOAD_SHA256
+              value: {{ .learningDailyPayloadSha256 | default "" | quote }}
+            - name: FACTORY_LEARNING_HANDOFF_ENABLED
+              value: {{ .learningHandoffEnabled | default false | quote }}
+            - name: FACTORY_LEARNING_INPUT_DEDUP_ENABLED
+              value: {{ .learningInputDedupEnabled | default false | quote }}
             - name: DRAINER_MAX_JOBS_PER_CYCLE
               value: {{ .maxJobsPerCycle | quote }}
             - name: DRAINER_TURN_TIMEOUT_SECONDS
@@ -262,6 +255,8 @@ spec:
             {{- if .Values.swarm.enabled }}
             - name: FACTORY_ENABLED
               value: {{ .Values.swarm.factoryEnabled | default false | quote }}
+            - name: FACTORY_RECOVERY_DELEGATION_ENABLED
+              value: {{ .Values.swarm.factoryRecoveryDelegationEnabled | default false | quote }}
             - name: FACTORY_RESERVATION_REVIEW_ENABLED
               value: {{ .Values.swarm.factoryReservationReviewEnabled | default false | quote }}
             - name: FACTORY_GITHUB_WEBHOOK_ENABLED
@@ -274,18 +269,12 @@ spec:
               value: {{ .Values.swarm.factoryGithubWebhookTrustedAuthors | quote }}
             - name: FACTORY_AGENT_BOARD_POLL_ENABLED
               value: {{ .Values.swarm.factoryAgentBoardPollEnabled | default false | quote }}
-            - name: FACTORY_OPERATIONAL_HANDOFF_ENABLED
-              value: {{ .Values.swarm.factoryOperationalHandoffEnabled | default false | quote }}
             - name: FACTORY_WORK_ITEM_POINTER_ENABLED
               value: {{ .Values.swarm.factoryWorkItemPointerEnabled | default false | quote }}
-            - name: FACTORY_NOTIFY_DIGEST_ENABLED
-              value: {{ .Values.swarm.factoryNotifyDigestEnabled | default false | quote }}
             - name: FACTORY_WORK_ITEM_BASE_URL
               value: {{ .Values.swarm.factoryWorkItemBaseUrl | default "https://jomcgi.dev/slop" | quote }}
             - name: FACTORY_CONDUCTOR_FUNDING_ENABLED
               value: {{ .Values.swarm.factoryConductorFundingEnabled | default false | quote }}
-            - name: FACTORY_MERIT_JUDGE_ENABLED
-              value: {{ .Values.swarm.factoryMeritJudgeEnabled | default false | quote }}
             - name: FACTORY_MERIT_JUDGE_MAX_EXTENSION_MULTIPLE
               value: {{ .Values.swarm.factoryMeritJudgeMaxExtensionMultiple | default 1 | quote }}
             - name: FACTORY_MERIT_JUDGE_MAX_EXTENSION_USD
@@ -294,36 +283,22 @@ spec:
               value: {{ .Values.swarm.factoryMeritJudgePriorityIssues | default "" | quote }}
             - name: FACTORY_AUTONOMOUS_CONTINUATION_ENABLED
               value: {{ .Values.swarm.factoryAutonomousContinuationEnabled | default false | quote }}
-            - name: FACTORY_STOP_SUPERVISION_ENABLED
-              value: {{ .Values.swarm.factoryStopSupervisionEnabled | default false | quote }}
             - name: FACTORY_RUNTIME_METER_ENABLED
               value: {{ .Values.swarm.factoryRuntimeMeterEnabled | default false | quote }}
             - name: FACTORY_RUNTIME_METER_TASK_IDS
               value: {{ .Values.swarm.factoryRuntimeMeterTaskIds | default "" | quote }}
             - name: FACTORY_TRANSIENT_STOP_RETRY_ENABLED
               value: {{ .Values.swarm.factoryTransientStopRetryEnabled | default false | quote }}
-            - name: FACTORY_INVOKE_FAILURE_CESSATION_ENABLED
-              value: {{ .Values.swarm.factoryInvokeFailureCessationEnabled | default false | quote }}
-            - name: FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED
-              value: {{ .Values.swarm.factoryNeverInvokedGuestSettlementEnabled | default false | quote }}
-            - name: FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED
-              value: {{ .Values.swarm.factoryDrainRelayContinuationEnabled | default false | quote }}
             - name: FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED
               value: {{ .Values.swarm.factoryDrainedLossSettlementEnabled | default false | quote }}
-            - name: FACTORY_ENFORCE_COST_CEILING_ENABLED
-              value: {{ .Values.swarm.factoryEnforceCostCeilingEnabled | default false | quote }}
-            - name: FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED
-              value: {{ .Values.swarm.factoryLostBeforeGuestSettlementEnabled | default false | quote }}
-            - name: FACTORY_ESCALATION_REVALIDATION_ENABLED
-              value: {{ .Values.swarm.factoryEscalationRevalidationEnabled | default false | quote }}
             - name: FACTORY_PLANNER_PREVIEW_ENABLED
               value: {{ .Values.swarm.factoryPlannerPreviewEnabled | default false | quote }}
+            - name: FACTORY_PLANNER_HOLD_REFUSAL_ENABLED
+              value: {{ .Values.swarm.factoryPlannerHoldRefusalEnabled | default false | quote }}
             - name: FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED
               value: {{ .Values.swarm.factoryActiveReceiptDecisionsEnabled | default false | quote }}
-            - name: FACTORY_DEADLINE_BACKSTOP_ENABLED
-              value: {{ .Values.swarm.factoryDeadlineBackstopEnabled | default false | quote }}
-            - name: FACTORY_ACTIVE_CESSATION_ENABLED
-              value: {{ .Values.swarm.factoryActiveCessationEnabled | default false | quote }}
+            - name: FACTORY_ROUTINE_PAUSE_FUNDING_ENABLED
+              value: {{ .Values.swarm.factoryRoutinePauseFundingEnabled | default false | quote }}
             - name: FACTORY_MAX_CONCURRENT_TASKS
               value: {{ .Values.swarm.factoryMaxConcurrentTasks | default 1 | quote }}
             - name: FACTORY_BACKGROUND_RESERVE
@@ -372,14 +347,10 @@ spec:
               value: {{ .Values.swarm.turnTimeoutSeconds | quote }}
             - name: SWARM_DECISION_TIMEOUT_SECONDS
               value: {{ .Values.swarm.decisionTimeoutSeconds | quote }}
-            - name: SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION
-              value: {{ .Values.swarm.codexExhaustedGrantExclusion | quote }}
             - name: SWARM_CODEX_PREFERRED_GRANT
               value: {{ .Values.swarm.codexPreferredGrant | quote }}
             - name: SWARM_CODEX_CONCURRENCY
               value: {{ .Values.swarm.codexConcurrency | quote }}
-            - name: FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED
-              value: {{ .Values.swarm.factoryLostBeforeSessionSweepEnabled | quote }}
             - name: SWARM_QUOTA_FLOORS
               value: {{ .Values.swarm.quotaFloors | default dict | toJson | quote }}
             {{- end }}
@@ -516,8 +487,6 @@ spec:
             {{- if and .Values.healthAlerts.cnpgBackups.enabled (not .Values.rbac.clusterAccess.enabled) }}
             {{- fail "healthAlerts.cnpgBackups requires rbac.clusterAccess for its ConfigMap read" }}
             {{- end }}
-            - name: CNPG_BACKUP_HEALTH_ENABLED
-              value: {{ .Values.healthAlerts.cnpgBackups.enabled | quote }}
             {{- if .Values.healthAlerts.cnpgBackups.enabled }}
             - name: CNPG_BACKUP_STATUS_NAMESPACE
               value: {{ .Values.healthAlerts.cnpgBackups.namespace | quote }}
@@ -532,27 +501,17 @@ spec:
               value: {{ .Values.healthAlerts.agentTurnsMinFailed | quote }}
             - name: EMBERVM_BRICK_NAMESPACE
               value: {{ .Values.healthAlerts.brickNamespace | quote }}
-            - name: EMBERVM_CREATE_OUTCOME_LATCH_ENABLED
-              value: {{ .Values.healthAlerts.recordCreateOutcomes | quote }}
             {{- if .Values.knowledge.enabled }}
+            - name: KG_COMPLETED_RAW_RECOVERY_ENABLED
+              value: {{ .Values.knowledge.completedRawRecoveryEnabled | quote }}
             - name: KG_FEED_SINCE
               value: {{ .Values.knowledge.feeds.emberSessions.since | quote }}
             - name: KNOWLEDGE_DEFAULT_REPO_SCOPE
               value: {{ .Values.knowledge.defaultRepoScope | quote }}
-            - name: KG_FEED_ENABLED
-              value: {{ .Values.knowledge.feeds.emberSessions.enabled | quote }}
-            - name: KNOWLEDGE_RECALL_ENABLED
-              value: {{ .Values.knowledge.recall.enabled | quote }}
             - name: KNOWLEDGE_RECALL_LIMIT
               value: {{ .Values.knowledge.recall.limit | quote }}
-            - name: CONDUCTOR_CONTINUITY_ENABLED
-              value: {{ .Values.knowledge.conductorContinuity.enabled | quote }}
-            - name: KG_REPO_DIFF_ENABLED
-              value: {{ .Values.knowledge.feeds.repoDiff.enabled | quote }}
             - name: KG_AUDIT_ENABLED
               value: {{ .Values.knowledge.audit.enabled | quote }}
-            - name: KG_FACT_REVIEW_ENABLED
-              value: {{ .Values.knowledge.factReview.enabled | quote }}
             - name: KG_FACT_REVIEW_COVERAGE_ENABLED
               value: {{ .Values.knowledge.factReview.coverageEnabled | quote }}
             - name: KG_FACT_REVIEW_MAX_DAILY
@@ -589,16 +548,12 @@ spec:
               value: {{ .Values.knowledge.audit.issues.maxPerWeek | quote }}
             - name: KG_REPO_DIFF_RECONCILE_ENABLED
               value: {{ .Values.knowledge.feeds.repoDiff.reconcile.enabled | quote }}
-            - name: KG_DOCFIX_REVIEW_ENABLED
-              value: {{ .Values.knowledge.feeds.docFixReview.enabled | quote }}
             - name: KNOWLEDGE_LAYOUT_SCALING_RATIO
               value: {{ .Values.knowledge.layout.scalingRatio | quote }}
             - name: KNOWLEDGE_LAYOUT_GRAVITY
               value: {{ .Values.knowledge.layout.gravity | quote }}
             - name: KNOWLEDGE_LAYOUT_MAX_ITER
               value: {{ .Values.knowledge.layout.maxIter | quote }}
-            - name: KNOWLEDGE_LAYOUT_LINLOG
-              value: {{ .Values.knowledge.layout.linlog | quote }}
             - name: KNOWLEDGE_LAYOUT_CORE_FRACTION
               value: {{ .Values.knowledge.layout.coreFraction | quote }}
             - name: KNOWLEDGE_LAYOUT_NODE_SIZE_SCALE
@@ -662,22 +617,13 @@ spec:
               value: {{ .Values.chat.blobBucket | quote }}
             {{- end }}
             {{- if .Values.artifact }}
-            # goosecracker artifact store (ADR 024) reuses the shared R2 S3
-            # endpoint/creds above. The full monolith mediates artifact writes
-            # (the agent guest holds no S3 credential); ARTIFACT_PUBLIC_BASE is the
-            # origin the publish response returns the artifact URL on.
+            # Existing artifact reads reuse the shared R2 S3 endpoint/creds above.
             - name: ARTIFACTS_S3_BUCKET
               value: {{ .Values.artifact.bucket | quote }}
-            - name: ARTIFACT_PUBLIC_BASE
-              value: {{ .Values.artifact.publicBase | quote }}
             {{- end }}
             {{- end }}
-            - name: GRIMOIRE_PLAY_ENABLED
-              value: {{ .Values.grimoire.play.enabled | quote }}
             - name: GRIMOIRE_TRANSCRIPT_ENABLED
               value: {{ .Values.grimoire.transcript.enabled | quote }}
-            - name: GRIMOIRE_INVITATION_LINKS_ENABLED
-              value: {{ .Values.grimoire.invitationLinks.enabled | quote }}
             - name: PLATFORM_AUTH_MANAGEMENT_ENABLED
               value: {{ .Values.platformAuth.managementEnabled | quote }}
             - name: PLATFORM_AUTH_ENROLLMENT_ENABLED
@@ -710,9 +656,6 @@ spec:
             - name: GRIMOIRE_INVITATION_ENROLLMENT_ENABLED
               value: {{ .Values.grimoire.invitationLinks.enrollmentEnabled | quote }}
             {{- if .Values.grimoire.invitationLinks.enrollmentEnabled }}
-            {{- if not .Values.grimoire.invitationLinks.enabled }}
-            {{- fail "grimoire invitation enrollment requires invitationLinks.enabled" }}
-            {{- end }}
             - name: GRIMOIRE_INVITATION_API_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -961,17 +904,18 @@ spec:
               value: "20"
             - name: API_BASE
               value: "http://localhost:8000"
+            # Keep the private root's board and home reads warm, so the
+            # phone dashboard answers with a reading after a deploy or a
+            # quiet spell instead of "factory reading".
+            - name: PRIVATE_DASHBOARD_PREWARM
+              value: "true"
             # adapter-node refuses request bodies over 512K by default; the
             # grimoire handout upload proxy accepts a 5 MiB image plus
             # multipart framing. The backend enforces the real 5 MiB cap.
             - name: BODY_SIZE_LIMIT
               value: "6M"
-            - name: GRIMOIRE_PLAY_ENABLED
-              value: {{ .Values.grimoire.play.enabled | quote }}
             - name: GRIMOIRE_TRANSCRIPT_ENABLED
               value: {{ .Values.grimoire.transcript.enabled | quote }}
-            - name: GRIMOIRE_INVITATION_LINKS_ENABLED
-              value: {{ .Values.grimoire.invitationLinks.enabled | quote }}
             - name: PLATFORM_AUTH_MANAGEMENT_ENABLED
               value: {{ .Values.platformAuth.managementEnabled | quote }}
             - name: PLATFORM_AUTH_ENROLLMENT_ENABLED
@@ -987,12 +931,6 @@ spec:
             # the private /qwen chat page.
             - name: QWEN_API_BASE
               value: {{ .Values.frontend.qwenApiBase | quote }}
-            {{- end }}
-            - name: AGENT_SESSION_STOP_CONTROL_ENABLED
-              value: {{ .Values.agents.sessions.stopControlEnabled | quote }}
-            {{- if .Values.frontend.otelCollectorUrl }}
-            - name: OTEL_COLLECTOR_HTTP_URL
-              value: {{ .Values.frontend.otelCollectorUrl | quote }}
             {{- end }}
             {{- if .Values.imgproxySigning.enabled }}
             # HMAC secret for signing /img imgproxy URLs (grimoire reader

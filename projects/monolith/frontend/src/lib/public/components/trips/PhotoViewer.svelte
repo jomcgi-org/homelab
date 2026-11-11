@@ -107,7 +107,7 @@
       aria-label="Previous photo">&larr;</button
     >
 
-    <figure class="frame">
+    <figure class="photo-frame">
       <img
         src={photo.imgDisplay}
         alt={`Photo ${index + 1} of ${photos.length}`}
@@ -138,12 +138,12 @@
   .overlay {
     position: fixed;
     inset: 0;
-    z-index: 50;
+    z-index: 1100;
     display: flex;
     align-items: center;
     justify-content: center;
     padding: 24px;
-    background: rgba(0, 0, 0, 0.92);
+    background: var(--sheet);
   }
   .backdrop {
     position: absolute;
@@ -152,7 +152,7 @@
     background: transparent;
     cursor: zoom-out;
   }
-  .frame {
+  .photo-frame {
     position: relative;
     margin: 0;
     max-width: min(1200px, 100%);
@@ -161,24 +161,24 @@
     flex-direction: column;
     gap: 10px;
   }
-  .frame img {
+  .photo-frame img {
     max-width: 100%;
     max-height: calc(100vh - 120px);
     object-fit: contain;
-    border: 2px solid var(--paper);
+    border: 1px solid var(--stroke);
   }
   figcaption {
     display: flex;
     flex-wrap: wrap;
     gap: 6px 16px;
-    font-family: var(--mono);
+    font-family: var(--font-code);
     font-size: 11px;
     letter-spacing: 0.04em;
-    color: rgba(255, 255, 255, 0.84);
+    color: var(--ink-2);
   }
   .count {
     font-weight: 700;
-    color: var(--paper);
+    color: var(--ink);
   }
   .close {
     position: absolute;
@@ -187,8 +187,8 @@
     right: 20px;
     background: none;
     border: none;
-    color: var(--paper);
-    font-family: var(--mono);
+    color: var(--ink);
+    font-family: var(--font-code);
     font-size: 34px;
     line-height: 1;
     cursor: pointer;
@@ -198,10 +198,10 @@
     z-index: 1;
     top: 50%;
     transform: translateY(-50%);
-    background: var(--paper);
-    border: 2px solid var(--ink);
+    background: var(--sheet);
+    border: 1px solid var(--ink);
     color: var(--ink);
-    font-family: var(--mono);
+    font-family: var(--font-code);
     font-size: 20px;
     font-weight: 700;
     padding: 10px 16px;
@@ -214,15 +214,15 @@
     right: 16px;
   }
   .nav:hover {
-    background: var(--ink);
-    color: var(--paper);
+    background: var(--band);
+    color: var(--ink);
   }
   .nav:disabled {
     opacity: 0.5;
     cursor: default;
   }
   button:focus-visible {
-    outline: 3px solid var(--accent);
+    outline: 2px solid var(--accent-ink);
     outline-offset: 3px;
   }
   @media (max-width: 640px) {

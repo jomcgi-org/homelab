@@ -14,6 +14,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from sqlalchemy.exc import OperationalError
 
 from factory.execution import store, transport
 from factory.execution.transport import EmberSessionGone
@@ -37,6 +38,340 @@ def _brick_events():
         for event in span.events
         if event.name == "agent_sessions.brick_gone"
     ]
+
+
+@pytest.mark.parametrize("old_runtime", [False, True])
+def test_funding_profile_transport_is_versioned_and_never_falls_back(
+    monkeypatch, old_runtime
+):
+    requests = []
+    profile = {
+        "name": "factory-funding-v1",
+        "model": "opus",
+        "request_id": 9,
+        "request_sha256": "a" * 64,
+        "schema_sha256": "b" * 64,
+    }
+
+    async def handler(request):
+        requests.append(request)
+        assert request.headers["X-Ember-Guest-Path"] == "/shim/funding-decision-v1"
+        body = json.loads(request.content)
+        assert body["execution_profile"] == profile
+        assert body["turn_seq"] == 1 and body["dispatch_id"]
+        assert not any(
+            k in body
+            for k in (
+                "repo",
+                "branch",
+                "system_prompt",
+                "push_format",
+                "workspace_handoff",
+            )
+        )
+        return (
+            httpx.Response(404, json={"error": "not found"}, request=request)
+            if old_runtime
+            else _turn_response(request)
+        )
+
+    _client(monkeypatch, handler)
+
+    async def run():
+        return await transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("guest", "token", None),
+            None,
+            "decision",
+            model="opus",
+            agent_session_id=42,
+            claim_owner="executor",
+            turn_seq=1,
+            dispatch_count=1,
+            artifact_path=".factory/t/funding.json",
+            execution_profile=profile,
+        )
+
+    if old_runtime:
+        with pytest.raises(EmberVMTransportError):
+            asyncio.run(run())
+    else:
+        asyncio.run(run())
+    assert len(requests) == 1
+
+
+def _lock_not_available():
+    class LockNotAvailable(Exception):
+        sqlstate = "55P03"
+
+    return OperationalError(
+        "UPDATE agent_sessions.agent_session", {}, LockNotAvailable()
+    )
+
+
+def test_staged_receipt_promotion_retries_only_preinvoke_lock_collision(monkeypatch):
+    calls = []
+    sleeps = []
+    delivery = transport._DeliveryInvocation()
+
+    def promote():
+        calls.append(1)
+        if len(calls) < 3:
+            raise _lock_not_available()
+        return {"promoted": True}
+
+    async def sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(transport.asyncio, "sleep", sleep)
+    assert asyncio.run(transport._promote_prepared_receipt(promote, delivery)) == {
+        "promoted": True
+    }
+    assert len(calls) == 3
+    assert sleeps == list(transport._RECEIPT_PROMOTION_LOCK_BACKOFF_SECONDS[:2])
+
+
+def test_staged_receipt_promotion_never_retries_published_attempt(monkeypatch):
+    calls = []
+    delivery = transport._DeliveryInvocation()
+
+    def promote():
+        calls.append(1)
+        delivery.attempted = True
+        raise _lock_not_available()
+
+    with pytest.raises(OperationalError):
+        asyncio.run(transport._promote_prepared_receipt(promote, delivery))
+    assert calls == [1]
+
+
+def test_staged_receipt_promotion_exhaustion_is_bounded(monkeypatch):
+    calls = []
+    sleeps = []
+    delivery = transport._DeliveryInvocation()
+
+    def promote():
+        calls.append(1)
+        raise _lock_not_available()
+
+    async def sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(transport.asyncio, "sleep", sleep)
+    with pytest.raises(OperationalError):
+        asyncio.run(transport._promote_prepared_receipt(promote, delivery))
+    assert len(calls) == len(transport._RECEIPT_PROMOTION_LOCK_BACKOFF_SECONDS) + 1
+    assert sleeps == list(transport._RECEIPT_PROMOTION_LOCK_BACKOFF_SECONDS)
+
+
+def test_staged_receipt_promotion_rechecks_admission_before_retry(monkeypatch):
+    calls = []
+    delivery = transport._DeliveryInvocation()
+
+    def promote():
+        calls.append(1)
+        raise _lock_not_available()
+
+    async def held():
+        raise RuntimeError("task held")
+
+    monkeypatch.setattr(transport, "_check_delivery_admission", held)
+    with pytest.raises(RuntimeError, match="task held"):
+        asyncio.run(transport._promote_prepared_receipt(promote, delivery))
+    assert calls == [1]
+
+
+def test_staged_receipt_promotion_does_not_retry_other_failures():
+    calls = []
+    delivery = transport._DeliveryInvocation()
+
+    def promote():
+        calls.append(1)
+        raise RuntimeError("not a row-lock refusal")
+
+    with pytest.raises(RuntimeError, match="not a row-lock refusal"):
+        asyncio.run(transport._promote_prepared_receipt(promote, delivery))
+    assert calls == [1]
+
+
+@pytest.mark.parametrize(
+    ("failure", "phase", "promotion_attempt", "attempted"),
+    [
+        ("initial_admission", "receipt_admission", None, False),
+        ("prepare", "receipt_prepare", None, False),
+        ("prepared_admission", "prepared_admission", None, False),
+        ("exhaustion", "receipt_promotion", 5, False),
+        ("retry_admission", "promotion_admission", 1, False),
+        ("published_intent", "receipt_promotion", 1, True),
+        ("attempted_admission", "attempted_admission", None, True),
+    ],
+)
+def test_staged_database_failure_identifies_phase_without_payload(
+    monkeypatch, caplog, failure, phase, promotion_attempt, attempted
+):
+    from factory.execution import result_receipts
+
+    calls = {"admission": 0, "prepare": 0, "promote": 0, "post": 0}
+    record = {}
+    private = "private-sql-credential-prompt-body"
+
+    class LockNotAvailable(Exception):
+        sqlstate = "55P03"
+
+    error = OperationalError(private, {"private": private}, LockNotAvailable(private))
+
+    async def admission():
+        calls["admission"] += 1
+        failed_check = {
+            "initial_admission": 1,
+            "prepared_admission": 2,
+            "retry_admission": 3,
+            "attempted_admission": 3,
+        }.get(failure)
+        if calls["admission"] == failed_check:
+            raise error
+
+    def prepare(*_args, **_kwargs):
+        calls["prepare"] += 1
+        if failure == "prepare":
+            raise error
+        return {"id": "a" * 32, "token": private}
+
+    def promote(*args):
+        calls["promote"] += 1
+        if failure in {"exhaustion", "retry_admission"}:
+            raise error
+        args[-1]()  # Publish conservative intent at the real transport boundary.
+        if failure == "published_intent":
+            raise error
+        return {}
+
+    async def handler(request):
+        calls["post"] += 1
+        return _turn_response(request)
+
+    async def no_wait(_delay):
+        pass
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport, "MAX_RECEIPT_OBSERVERS", 0)
+    monkeypatch.setattr(transport.asyncio, "sleep", no_wait)
+    monkeypatch.setattr(result_receipts, "prepare_receipt", prepare)
+    monkeypatch.setattr(result_receipts, "attempt_prepared_receipt", promote)
+    with pytest.raises(
+        OperationalError if attempted else transport.EmberTurnNotInvoked
+    ) as caught:
+        asyncio.run(
+            transport.EmberVmShimTransport().deliver(
+                transport.EmberSession("guest", private, None),
+                None,
+                private,
+                agent_session_id=123,
+                turn_seq=7,
+                dispatch_count=2,
+                receipt_claim_owner="owner",
+                admission_check=admission,
+                invocation_record=record,
+                invocation_guard=threading.Lock(),
+            )
+        )
+    assert calls["post"] == 0
+    assert calls["promote"] == (promotion_attempt or int(attempted))
+    assert record["attempted"] is attempted
+    diagnostic = {"phase": phase, "sqlstate": "55P03", "attempted": attempted}
+    if promotion_attempt is not None:
+        diagnostic["promotion_attempt"] = promotion_attempt
+    assert record["database_failure"] == diagnostic
+    messages = [
+        r.message
+        for r in caplog.records
+        if r.message.startswith("delivery_database_failure ")
+    ]
+    assert len(messages) == 1
+    assert json.loads(messages[0].split(" ", 1)[1]) == {
+        "session_id": 123,
+        "turn_seq": 7,
+        "dispatch_count": 2,
+        **diagnostic,
+    }
+    assert private not in messages[0]
+    if attempted:
+        assert caught.value is error  # Preserve the original uncertainty path.
+    else:
+        assert phase in str(caught.value)[:100]
+        assert "55P03" in str(caught.value)[:100]
+        assert private not in str(caught.value)
+
+
+@pytest.mark.parametrize("outcome", ["success", "hold", "cancel", "stale"])
+def test_handled_lock_failure_does_not_label_later_outcome(monkeypatch, outcome):
+    from factory.execution import result_receipts
+
+    delivery = transport._DeliveryInvocation(handoff_guard=threading.Lock())
+    calls = []
+
+    def promote():
+        calls.append(1)
+        if len(calls) == 1:
+            raise _lock_not_available()
+        if outcome == "stale":
+            raise result_receipts.ReceiptRejected(409, "executor_ownership_changed")
+        return {}
+
+    async def check():
+        if outcome == "hold":
+            raise RuntimeError("held")
+        if outcome == "cancel":
+            raise asyncio.CancelledError()
+
+    async def no_wait(_delay):
+        pass
+
+    async def run():
+        token = transport._delivery_invocation.set(delivery)
+        try:
+            return await transport._promote_prepared_receipt(promote, delivery)
+        finally:
+            transport._delivery_invocation.reset(token)
+
+    monkeypatch.setattr(transport, "_check_delivery_admission", check)
+    monkeypatch.setattr(transport.asyncio, "sleep", no_wait)
+    if outcome == "success":
+        assert asyncio.run(run()) == {}
+    else:
+        error = {
+            "hold": RuntimeError,
+            "cancel": asyncio.CancelledError,
+            "stale": result_receipts.ReceiptRejected,
+        }[outcome]
+        with pytest.raises(error):
+            asyncio.run(run())
+    assert len(calls) == (2 if outcome in {"success", "stale"} else 1)
+    assert "database_failure" not in delivery.record()
+
+
+@pytest.mark.parametrize("staged", [False, True])
+@pytest.mark.parametrize("sqlstate", [None, "private-error-payload", "55P03"])
+def test_database_diagnostic_requires_staged_owner_and_bounded_sqlstate(
+    staged, sqlstate
+):
+    from types import SimpleNamespace
+
+    delivery = transport._DeliveryInvocation(
+        handoff_guard=threading.Lock() if staged else None
+    )
+    error = RuntimeError("private driver message")
+    error.orig = SimpleNamespace(sqlstate=sqlstate)
+    token = transport._delivery_invocation.set(delivery)
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            with transport._delivery_database_phase("receipt_prepare"):
+                raise error
+        assert caught.value is error
+        assert ("database_failure" in delivery.record()) is (
+            staged and sqlstate == "55P03"
+        )
+    finally:
+        transport._delivery_invocation.reset(token)
 
 
 @pytest.mark.parametrize(
@@ -225,7 +560,6 @@ def test_receipt_observer_limit_preserves_one_synchronous_post(monkeypatch):
         pytest.fail("a full observer pool must not create another observer")
 
     _client(monkeypatch, handler)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "true")
     monkeypatch.setattr(transport, "MAX_RECEIPT_OBSERVERS", 0)
     monkeypatch.setattr(transport, "_observe_native_result", unexpected_observer)
     monkeypatch.setattr(
@@ -3221,6 +3555,110 @@ def test_long_invoke_budget_does_not_expand_create_wait(monkeypatch, read_timeou
     assert all(t.connect == transport.SUBMIT_CONNECT_TIMEOUT for t in timeouts)
 
 
+def test_historical_cessation_read_binds_identity_and_management_auth(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"session_id": "s-1"}, request=request)
+
+    _client(monkeypatch, handler)
+    result = asyncio.run(
+        transport.EmberVmShimTransport().get_session_cessation_evidence(
+            "s-1",
+            generation=0,
+            invoke_started_at=1000,
+            updated_at=2000,
+        )
+    )
+    assert result == {"session_id": "s-1"}
+    assert requests[0].method == "GET"
+    assert requests[0].url.path == "/v1/sessions/s-1/cessation-evidence"
+    assert dict(requests[0].url.params) == {
+        "generation": "0",
+        "invoke_started_at": "1000",
+        "updated_at": "2000",
+    }
+    assert requests[0].headers["Authorization"] == "management"
+
+
+@pytest.mark.parametrize("operation", ["preview", "apply"])
+def test_recovery_fence_binds_exact_body_and_management_auth(monkeypatch, operation):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200, json={"fenced": operation == "apply"}, request=request
+        )
+
+    _client(monkeypatch, handler)
+    body = {
+        "operation": operation,
+        "request_key": "one-exact-key",
+        "dispatch_id": "a" * 64,
+        "expected_preview_sha256": "b" * 64,
+    }
+    result = asyncio.run(
+        transport.EmberVmShimTransport().session_recovery_fence("s-1", body)
+    )
+    assert result == {"fenced": operation == "apply"}
+    assert len(requests) == 1
+    assert requests[0].method == "POST"
+    assert requests[0].url.path == "/v1/sessions/s-1/recovery-fence"
+    assert requests[0].headers["Authorization"] == "management"
+    assert json.loads(requests[0].content) == body
+
+
+@pytest.mark.parametrize("failure", [403, 404, 409, 500, "lost_response"])
+def test_recovery_fence_never_retries_or_turns_a_refusal_into_proof(
+    monkeypatch, failure
+):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        if failure == "lost_response":
+            raise httpx.ReadTimeout("ambiguous write", request=request)
+        return httpx.Response(
+            failure, json={"secret": "do-not-expose"}, request=request
+        )
+
+    _client(monkeypatch, handler)
+    with pytest.raises(EmberVMTransportError, match="^recovery fence unavailable$"):
+        asyncio.run(
+            transport.EmberVmShimTransport().session_recovery_fence(
+                "s-1", {"operation": "apply"}
+            )
+        )
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("status", [403, 404, 409, 500])
+def test_historical_cessation_read_refusals_never_become_positive_evidence(
+    monkeypatch, status
+):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            status, json={"error": "evidence unavailable"}, request=request
+        )
+
+    _client(monkeypatch, handler)
+    with pytest.raises(transport.EmberVMTransportError):
+        asyncio.run(
+            transport.EmberVmShimTransport().get_session_cessation_evidence(
+                "s-1",
+                generation=0,
+                invoke_started_at=1000,
+                updated_at=2000,
+            )
+        )
+    assert len(requests) == 1
+
+
 def test_get_session_reads_exact_session_with_management_auth(monkeypatch):
     requests = []
 
@@ -3239,6 +3677,45 @@ def test_get_session_reads_exact_session_with_management_auth(monkeypatch):
     assert str(requests[0].url) == "https://ember.test/v1/sessions/s-1"
     assert requests[0].method == "GET"
     assert requests[0].headers["Authorization"] == "management"
+
+
+def test_historical_cessation_refusal_exposes_only_bounded_code(monkeypatch):
+    async def handler(request):
+        return httpx.Response(
+            409,
+            json={
+                "reason": "history_compacted",
+                "private": "never expose raw body",
+                "diagnostics": {
+                    "history_complete": False,
+                    "event_count": 5,
+                    "event_kind": "session_evicted",
+                    "event_reason": "idle_ttl",
+                    "private": "hidden",
+                    "terminal_reason": "secret with spaces",
+                },
+            },
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    with pytest.raises(transport.EmberHistoricalCessationUnavailable) as caught:
+        asyncio.run(
+            transport.EmberVmShimTransport().get_session_cessation_evidence(
+                "s-1",
+                generation=0,
+                invoke_started_at=1000,
+                updated_at=2000,
+            )
+        )
+    assert caught.value.reason == "history_compacted"
+    assert str(caught.value) == "history_compacted"
+    assert caught.value.diagnostics == {
+        "history_complete": False,
+        "event_count": 5,
+        "event_kind": "session_evicted",
+        "event_reason": "idle_ttl",
+    }
 
 
 def test_get_session_uses_short_status_timeout_not_invoke_budget(monkeypatch):
@@ -3373,7 +3850,6 @@ def test_metered_synchronous_result_cannot_bypass_terminal_validation(monkeypatc
         return _turn_response(request)
 
     _client(monkeypatch, handler)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "false")
     monkeypatch.setattr(
         result_receipts,
         "prepare_receipt",
@@ -3470,3 +3946,30 @@ def test_residency_lost_invoke_is_never_reposted_or_replaced(monkeypatch):
         )
     assert len(requests) == 1
     assert invocation["attempted"] is True
+
+
+def test_funding_profile_fence_imports_without_orchestration_writers():
+    """The pruned execution library keeps ordinary sessions independent of writers."""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import sys
+from factory.orchestration import funding_profile, backlog_refill_repair
+from factory.execution.preinvoke_failure import database_failure
+assert funding_profile.session_profile('factory:t:implement:1') is None
+assert not backlog_refill_repair.execution_failure_eligible('factory:t:implement:1')
+assert database_failure({'phase': 'receipt_prepare', 'sqlstate': '42703', 'attempted': False})
+assert 'factory.orchestration.factory_funding' not in sys.modules
+assert 'factory.orchestration.graph' not in sys.modules
+""",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

@@ -5,15 +5,14 @@ Thin async wrappers that call into the corresponding operation module
 directive-autopilot surface) and serialize datetimes
 / UUIDs as strings for JSON transport. The Python function names use
 underscores; FastMCP's wire identifiers use the dashed form
-(``monolith-agent-acquire-lock`` etc.).
+(``monolith-agent-lock`` etc.).
 
-  Locks    : acquire_lock, extend_lock, release_lock, list_locks
+  Locks    : lock (acquire | extend | release), list_locks
   Notify   : notify
   Check    : check_stuck_jobs, check_dead_letters
   Trigger  : trigger_job  (Argo CronWorkflow one-off submission)
-  Routine  : list_routine_jobs, claim_routine_job, complete_routine_job,
-             register_routine_job, deregister_routine_job,
-             trigger_routine_job  (claude_agent.routine_jobs)
+  Routine  : list_routine_jobs, routine_job (claim | complete | register |
+             deregister | trigger)  (claude_agent.routine_jobs)
   Directives: chat_list_directives, chat_directive_history, chat_set_directive,
              chat_pin_directive, chat_revert_directive (introspect + tune the
              silent directive autopilot, manual writes win precedence)
@@ -22,6 +21,7 @@ underscores; FastMCP's wire identifiers use the dashed form
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -100,37 +100,37 @@ async def monolith_agent_schema_retirement_inventory() -> dict:
 
 
 @mcp.tool
-async def monolith_agent_acquire_lock(key: str, holder: str, ttl_secs: int) -> dict:
-    """Acquire an opportunistic TTL lock keyed by ``key``.
+async def monolith_agent_lock(
+    action: Literal["acquire", "extend", "release"],
+    key: str | None = None,
+    holder: str | None = None,
+    ttl_secs: int | None = None,
+    lock_id: str | None = None,
+) -> dict:
+    """Acquire, extend or release an opportunistic TTL lock.
 
-    Steals expired locks but refuses live ones. Returns ``acquired=False``
-    when another holder has the key with a still-live TTL.
+    acquire takes key, holder and ttl_secs. It steals an expired lock but
+    refuses a live one, returning acquired=False while another holder's TTL
+    is live. extend takes lock_id and ttl_secs and sets expiry ttl_secs from
+    now. It returns ok=False if the lock is gone or was re-acquired under a
+    different lock_id. release takes lock_id.
     """
-    result = locks.acquire(key, holder, ttl_secs)
-    return {
-        "acquired": result.acquired,
-        "lock_id": str(result.lock_id) if result.lock_id else None,
-        "expires_at": _iso(result.expires_at),
-    }
-
-
-@mcp.tool
-async def monolith_agent_extend_lock(lock_id: str, ttl_secs: int) -> dict:
-    """Extend an existing lock by ``ttl_secs`` from now.
-
-    Returns ``ok=False`` if the lock no longer exists or has been
-    re-acquired by someone else (different ``lock_id``).
-    """
-    new_expires = locks.extend(UUID(lock_id), ttl_secs)
-    return {
-        "ok": new_expires is not None,
-        "new_expires_at": _iso(new_expires),
-    }
-
-
-@mcp.tool
-async def monolith_agent_release_lock(lock_id: str) -> dict:
-    """Release a held lock by ``lock_id``."""
+    if action == "acquire":
+        if key is None or holder is None or ttl_secs is None:
+            raise ValueError("acquire requires key, holder and ttl_secs")
+        result = locks.acquire(key, holder, ttl_secs)
+        return {
+            "acquired": result.acquired,
+            "lock_id": str(result.lock_id) if result.lock_id else None,
+            "expires_at": _iso(result.expires_at),
+        }
+    if lock_id is None:
+        raise ValueError(f"{action} requires lock_id")
+    if action == "extend":
+        if ttl_secs is None:
+            raise ValueError("extend requires ttl_secs")
+        new_expires = locks.extend(UUID(lock_id), ttl_secs)
+        return {"ok": new_expires is not None, "new_expires_at": _iso(new_expires)}
     return {"ok": locks.release(UUID(lock_id))}
 
 
@@ -228,6 +228,28 @@ async def monolith_agent_list_routine_jobs(
         jobs = []
         for row in rows[:limit]:
             projected = {key: row.get(key) for key in fields}
+            if row.get("name") == "factory-retro-daily":
+                payload = row.get("payload")
+                if isinstance(payload, dict):
+                    import hashlib
+
+                    projected["learning_configuration"] = {
+                        "payload_sha256": hashlib.sha256(
+                            json.dumps(
+                                payload, sort_keys=True, separators=(",", ":")
+                            ).encode()
+                        ).hexdigest(),
+                        "model": payload.get("model")
+                        if payload.get("model") in {"sol", "luna", "astra"}
+                        else None,
+                        "stage": payload.get("learning_stage")
+                        if payload.get("learning_stage")
+                        in {"evidence", "evaluate", "diagnose"}
+                        else None,
+                        "reconciled": isinstance(
+                            payload.get("learning_activation"), dict
+                        ),
+                    }
             truncated = []
             for key, value in projected.items():
                 if isinstance(value, str) and len(value) > 256:
@@ -247,116 +269,81 @@ async def monolith_agent_list_routine_jobs(
 
 
 @mcp.tool
-async def monolith_agent_claim_routine_job(
-    holder: str,
-    ttl_secs: int,
-    kind: str | None = None,
+async def monolith_agent_routine_job(
+    action: Literal["claim", "complete", "register", "deregister", "trigger"],
     name: str | None = None,
-) -> dict:
-    """Claim a routine_jobs row.
-
-    With ``name`` set, claims that specific row. Without ``name``,
-    claims the next due unclaimed row, optionally filtered by ``kind``.
-    Returns ``claimed=False`` and ``job=None`` when nothing is available.
-    """
-    job = routine_jobs.claim_job(holder, ttl_secs, kind=kind, name=name)
-    return {
-        "claimed": job is not None,
-        "job": _serialize_routine_job(job) if job else None,
-    }
-
-
-@mcp.tool
-async def monolith_agent_complete_routine_job(
-    name: str, status: str, summary: str | None = None
-) -> dict:
-    """Mark a claimed routine_jobs row complete and clear its lock.
-
-    Records ``status`` (free text, stored as last_status) and, when given,
-    ``summary`` as the run's outcome. A recurring row (non-null
-    interval_secs) is rescheduled interval_secs from now. A one-shot row is
-    left idle until monolith-agent-trigger-routine-job re-arms it. Returns
-    ``ok=False`` when no matching row was updated, including a row held for
-    an unknown invocation outcome.
-    """
-    return {"ok": routine_jobs.complete_job(name, status, summary=summary)}
-
-
-@mcp.tool
-async def monolith_agent_register_routine_job(
-    name: str,
-    kind: str,
+    kind: str | None = None,
+    holder: str | None = None,
+    ttl_secs: int | None = None,
+    status: str | None = None,
+    summary: str | None = None,
     interval_secs: int | None = None,
     payload: dict | None = None,
     next_run_at: str | None = None,
     created_by: str = "unknown",
 ) -> dict:
-    """Insert a new routine_jobs row.
+    """Change a routine_jobs row. Read rows with monolith-agent-list-routine-jobs.
 
-    ``kind`` is the routine kind that claim and list filter on.
-    ``interval_secs`` makes the row recurring. Leave it unset for a one-shot
-    row that runs once and then waits to be re-triggered. ``payload`` is
-    stored as-is for the claiming worker. For kind qwen-drain (the drain lane)
-    the payload is an object with a required prompt and optional repo, branch
-    and reasoning. ``next_run_at`` accepts an ISO 8601 string, parsed with
-    ``datetime.fromisoformat``, and orders claims, so an earlier timestamp
-    runs first. Names are unique forever, completed one-shots included, so a
-    re-run needs a fresh name such as a dated prefix. Raises ``ValueError``
-    if a row with the given ``name`` already exists. docs/agents/drain-queue.md
-    covers writing drain-lane prompts.
+    claim takes holder and ttl_secs. With name it claims that row, otherwise
+    the next due unclaimed row, optionally filtered by kind. It returns
+    claimed=False and job=None when nothing is available.
+
+    complete takes name and status (free text, stored as last_status) and an
+    optional summary, then clears the lock. A recurring row (non-null
+    interval_secs) is rescheduled interval_secs from now. A one-shot row stays
+    idle until trigger re-arms it. It returns ok=False when no row was updated,
+    including a row held for an unknown invocation outcome.
+
+    register inserts a row and takes name and kind (what claim and list filter
+    on). interval_secs makes it recurring. Leave it unset for a one-shot row.
+    payload is stored as-is for the claiming worker. For kind qwen-drain the
+    payload is an object with a required prompt and optional repo, branch and
+    reasoning. next_run_at is an ISO 8601 string and orders claims, earliest
+    first. Names are unique forever, completed one-shots included, so a re-run
+    needs a fresh name such as a dated prefix. An existing name raises
+    ValueError. docs/agents/drain-queue.md covers writing drain-lane prompts.
+
+    deregister deletes the named row.
+
+    trigger sets the named row's next_run_at to now. This re-arms a completed
+    one-shot. A drain-lane job that failed on a bad guest (session_down,
+    workspace does not exist, a dropped connection) is terminal as a one-shot
+    and usually passes when triggered again. Unknown outcomes stay held. Use
+    monolith-agent-fact-review-recovery for an operator kg-fact-review
+    recovery.
     """
-    parsed_next = datetime.fromisoformat(next_run_at) if next_run_at else None
-    try:
-        routine_jobs.register_job(
-            name=name,
-            kind=kind,
-            interval_secs=interval_secs,
-            payload=payload,
-            next_run_at=parsed_next,
-            created_by=created_by,
-        )
-    except IntegrityError as exc:
-        raise ValueError(f"Routine job {name!r} already exists") from exc
-    return {"ok": True}
-
-
-@mcp.tool
-async def monolith_agent_deregister_routine_job(name: str) -> dict:
-    """Delete a routine_jobs row."""
-    return {"ok": routine_jobs.deregister_job(name)}
-
-
-@mcp.tool
-async def monolith_agent_trigger_routine_job(
-    name: str, recovery: dict | None = None
-) -> dict:
-    """Kick a routine_jobs row to immediately due by setting ``next_run_at = now()``.
-
-    This re-arms a completed one-shot. A drain-lane job that failed on a bad
-    guest (session_down, workspace does not exist, a dropped connection) is
-    terminal as a one-shot and usually passes when triggered again.
-
-    Unknown outcomes remain held unless recovery is explicitly supplied for
-    kg-fact-review by a standing human operator. Preview takes mode=preview,
-    session_id and permit_id. Apply takes the same IDs, mode=apply, the returned
-    expected_state_sha256, a unique reconciliation_key and acknowledgment equal
-    to accept_duplicate_compute_and_writes. This abandons only unfinished review
-    claims, preserves receipts and execution history, and rearms under existing
-    caps. Capacity stays charged unless a fresh control-plane read proves the
-    exact dispatch ceased. No successful result is invented. Never use this risk acceptance as automatic retry policy.
-    """
-    if recovery is not None:
-        principal = current_principal()
-        refusal = operator_access_error(principal)
-        if refusal:
-            return {"ok": False, "error": refusal}
-        if name != "kg-fact-review":
-            raise ValueError("Explicit recovery is limited to kg-fact-review")
-        from agent.routine_reconciliation import recover_review_job
-
-        return await asyncio.to_thread(
-            recover_review_job, actor=principal.subject, recovery=recovery
-        )
+    if action == "claim":
+        if holder is None or ttl_secs is None:
+            raise ValueError("claim requires holder and ttl_secs")
+        job = routine_jobs.claim_job(holder, ttl_secs, kind=kind, name=name)
+        return {
+            "claimed": job is not None,
+            "job": _serialize_routine_job(job) if job else None,
+        }
+    if name is None:
+        raise ValueError(f"{action} requires name")
+    if action == "complete":
+        if status is None:
+            raise ValueError("complete requires status")
+        return {"ok": routine_jobs.complete_job(name, status, summary=summary)}
+    if action == "register":
+        if kind is None:
+            raise ValueError("register requires kind")
+        parsed_next = datetime.fromisoformat(next_run_at) if next_run_at else None
+        try:
+            routine_jobs.register_job(
+                name=name,
+                kind=kind,
+                interval_secs=interval_secs,
+                payload=payload,
+                next_run_at=parsed_next,
+                created_by=created_by,
+            )
+        except IntegrityError as exc:
+            raise ValueError(f"Routine job {name!r} already exists") from exc
+        return {"ok": True}
+    if action == "deregister":
+        return {"ok": routine_jobs.deregister_job(name)}
     return {"ok": routine_jobs.trigger_job(name)}
 
 
@@ -373,48 +360,37 @@ async def _recover_fact_review(recovery: dict) -> dict:
 
 
 @mcp.tool
-async def monolith_agent_preview_fact_review_recovery(
+async def monolith_agent_fact_review_recovery(
+    operation: Literal["preview", "apply"],
     session_id: Annotated[int, Field(strict=True, gt=0)],
     permit_id: Annotated[int, Field(strict=True, gt=0)],
+    expected_state_sha256: Annotated[
+        str | None, Field(pattern=r"^[0-9a-f]{64}$")
+    ] = None,
+    reconciliation_key: str | None = None,
+    acknowledgment: Literal["accept_duplicate_compute_and_writes"] | None = None,
 ) -> dict:
-    """Read an exact held kg-fact-review attempt and preview operator recovery.
+    """Preview or apply operator recovery of one held kg-fact-review attempt.
 
-    Requires a standing human operator. Does not schedule work or change claims,
-    permits, receipts or audit history. Returns expected_state_sha256 for the
-    separate apply tool. Session and permit identity are checked server-side.
+    Requires a standing human operator. Preview does not schedule work or
+    change claims, permits, receipts or audit history. It returns
+    expected_state_sha256. Apply needs that digest, a reconciliation key and
+    the explicit acknowledgment. It preserves completed receipts and prior
+    state, abandons only unfinished claims, and rearms under existing caps.
+    Capacity remains charged unless fresh server evidence proves cessation.
+    The key makes replay idempotent. The acknowledgment accepts duplicate
+    computation and writes for this attempt only. Never use this as
+    automatic retry policy. Session and permit identity are checked
+    server-side.
     """
-    return await _recover_fact_review(
-        {"mode": "preview", "session_id": session_id, "permit_id": permit_id}
-    )
-
-
-@mcp.tool
-async def monolith_agent_apply_fact_review_recovery(
-    session_id: Annotated[int, Field(strict=True, gt=0)],
-    permit_id: Annotated[int, Field(strict=True, gt=0)],
-    expected_state_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
-    reconciliation_key: str,
-    acknowledgment: Literal["accept_duplicate_compute_and_writes"],
-) -> dict:
-    """Apply one digest-bound operator recovery of a held kg-fact-review attempt.
-
-    Requires a standing human operator and the digest from the separate preview
-    tool. Preserves completed receipts and prior state, abandons only unfinished
-    claims, and rearms under existing caps. Capacity remains charged unless fresh
-    server evidence proves cessation. The reconciliation key makes replay
-    idempotent. Explicit acknowledgment accepts duplicate computation and writes
-    for this attempt only. Never use this as automatic retry policy.
-    """
-    return await _recover_fact_review(
-        {
-            "mode": "apply",
-            "session_id": session_id,
-            "permit_id": permit_id,
+    recovery = {"mode": operation, "session_id": session_id, "permit_id": permit_id}
+    if operation == "apply":
+        recovery |= {
             "expected_state_sha256": expected_state_sha256,
             "reconciliation_key": reconciliation_key,
             "acknowledgment": acknowledgment,
         }
-    )
+    return await _recover_fact_review(recovery)
 
 
 @mcp.tool
@@ -520,3 +496,51 @@ async def monolith_chat_trust_pardon(
     ledger row yet.
     """
     return await asyncio.to_thread(chat_api.pardon_user, guild_id, user_id, pardoned_by)
+
+
+async def _recover_completed_raw(recovery: dict) -> dict:
+    principal = current_principal()
+    refusal = operator_access_error(principal)
+    if refusal:
+        return {"ok": False, "error": refusal}
+    from agent.routine_reconciliation import recover_completed_raw
+
+    return await asyncio.to_thread(
+        recover_completed_raw, actor=principal.subject, recovery=recovery
+    )
+
+
+@mcp.tool
+async def monolith_agent_completed_raw_recovery(
+    operation: Literal["preview", "apply"],
+    job_name: str,
+    session_id: Annotated[int, Field(strict=True, gt=0)],
+    permit_id: Annotated[int, Field(strict=True, gt=0)],
+    expected_state_sha256: Annotated[
+        str | None, Field(pattern=r"^[0-9a-f]{64}$")
+    ] = None,
+    reconciliation_key: str | None = None,
+) -> dict:
+    """Preview or apply one locked, completed raw KG result as an operator.
+
+    Requires a standing human operator. Preview returns no raw content and does
+    not apply, unlock, invoke or schedule work. Error, unknown, already-applied
+    and ambiguous ownership remain fenced. Apply needs the preview digest, a
+    reconciliation key and the default-off completedRawRecoveryEnabled
+    deployment gate. It revalidates exact original-result and ownership
+    identity, then atomically validates/applies extraction, completes its lease
+    and records a receipt. Never invokes a model, rearms a job or changes
+    execution/cost history.
+    """
+    recovery = {
+        "mode": operation,
+        "job_name": job_name,
+        "session_id": session_id,
+        "permit_id": permit_id,
+    }
+    if operation == "apply":
+        recovery |= {
+            "expected_state_sha256": expected_state_sha256,
+            "reconciliation_key": reconciliation_key,
+        }
+    return await _recover_completed_raw(recovery)

@@ -1,4 +1,6 @@
 <script>
+  import { Button } from "@homelab/design-system/components";
+  import TripSheet from "$lib/public/components/trips/TripSheet.svelte";
   import TripMap from "$lib/public/components/trips/TripMap.svelte";
   import ElevationChart from "$lib/public/components/trips/ElevationChart.svelte";
   import {
@@ -104,19 +106,8 @@ ${trkpts}
   {/if}
 </svelte:head>
 
-<div class="page">
-  <header class="head">
-    <nav class="crumb" aria-label="Breadcrumb">
-      <a class="crumb-home" href="/"
-        >jomcgi.dev<span class="crumb-arrow" aria-hidden="true">&nearr;</span
-        ></a
-      >
-      <span class="crumb-sep">/</span>
-      <a class="crumb-link" href="/app/trips">trips</a>
-      <span class="crumb-sep">/</span>
-      <span class="crumb-name">{trip?.short_title ?? trip?.slug}</span>
-    </nav>
-
+<TripSheet {trip}>
+  <header class="head edition ed-lead">
     <div class="title-row">
       <div>
         {#if stats}
@@ -129,7 +120,7 @@ ${trkpts}
         <h1>{trip?.title}</h1>
         {#if trip?.subtitle}<p class="sub">{trip.subtitle}</p>{/if}
       </div>
-      <a class="btn" href={`/app/trips/${trip.slug}/timeline`}
+      <a class="timeline-link" href={`/app/trips/${trip.slug}/timeline`}
         >Timeline &rarr;</a
       >
     </div>
@@ -224,8 +215,8 @@ ${trkpts}
           {/if}
         </div>
 
-        <section class="breakdown">
-          <p class="eyebrow">Daily routes</p>
+        <section class="breakdown edition">
+          <p class="ed-head">Daily routes</p>
           <ul class="days">
             {#each stats.days as day, i (day.dayNumber)}
               <li>
@@ -269,322 +260,203 @@ ${trkpts}
         </section>
 
         <footer class="dl">
-          <button class="btn small" onclick={downloadGPX}>&darr; GPX</button>
-          <button class="btn small" onclick={downloadJSON}>&darr; JSON</button>
+          <Button variant="secondary" onclick={downloadGPX}>&darr; GPX</Button>
+          <Button variant="secondary" onclick={downloadJSON}>&darr; JSON</Button
+          >
         </footer>
       </div>
     </div>
   {/if}
-</div>
+</TripSheet>
 
 <style>
-  .page {
-    max-width: 1280px;
-    margin: 0 auto;
-    padding: 28px 24px 64px;
-    background: var(--cream);
-    color: var(--ink);
-    min-height: 100vh;
-  }
-  .crumb {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    margin-bottom: 18px;
-  }
-  .crumb-home,
-  .crumb-link {
-    color: var(--ink);
-    text-decoration: underline;
-    text-decoration-color: var(--blue);
-    text-decoration-thickness: 2px;
-    text-underline-offset: 2px;
-    padding: 0 2px;
-  }
-  .crumb-home:hover,
-  .crumb-link:hover {
-    background: linear-gradient(transparent 56%, var(--accent) 56%);
-  }
-  .crumb-sep {
-    color: var(--ink-3);
+  .head {
+    margin-bottom: 1.5rem;
   }
   .title-row {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 16px;
+    gap: 1rem;
     flex-wrap: wrap;
-    margin-bottom: 28px;
   }
   .dateline {
-    font-family: var(--mono);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-    margin: 0 0 6px;
-  }
-  h1 {
-    font-family: var(--serif);
-    font-size: 40px;
-    line-height: 1;
-    margin: 0;
-  }
-  .sub {
-    font-family: var(--mono);
-    font-size: 12px;
+    font: 0.75rem var(--font-code);
     color: var(--ink-2);
-    margin: 6px 0 0;
+    margin: 0 0 0.5rem;
   }
-  .btn {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    padding: 10px 16px;
-    border: 2px solid var(--ink);
-    background: var(--paper);
-    color: var(--ink);
+  .timeline-link {
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--stroke);
+    font: 0.8rem var(--font-code);
     text-decoration: none;
-    cursor: pointer;
-    transition:
-      transform 120ms ease,
-      box-shadow 120ms ease;
   }
-  .btn:hover {
-    transform: translate(-2px, -2px);
-    box-shadow: 2px 2px 0 var(--ink);
-  }
-  .btn.small {
-    padding: 8px 14px;
+  .timeline-link:hover {
+    color: var(--accent-ink);
   }
   .layout {
     display: grid;
-    grid-template-columns: 360px 1fr;
-    gap: 40px;
-    align-items: start;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.5rem;
+  }
+  .left,
+  .right {
+    min-width: 0;
   }
   .map-box {
-    border: 2px solid var(--ink);
-    margin-bottom: 20px;
+    border: 1px solid var(--ink);
+    margin-bottom: 1.5rem;
   }
   .map-inner {
     height: 280px;
   }
   .colorbar {
     display: flex;
-    border-top: 2px solid var(--ink);
+    border-top: 1px solid var(--stroke);
   }
   .bar {
     flex: 1;
-    height: 8px;
+    min-width: 0;
+    min-height: 24px;
     border: none;
     cursor: pointer;
     padding: 0;
   }
   .eyebrow {
-    font-family: var(--mono);
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-    margin: 0 0 12px;
+    font: 0.8rem var(--font-code);
+    color: var(--ink-2);
   }
   .hl-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 2px;
-    border: 2px solid var(--ink);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    border: 1px solid var(--ink);
+    gap: 1px;
+    background: var(--stroke);
   }
   .hl {
-    position: relative;
-    aspect-ratio: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
     padding: 0;
     border: none;
-    background: var(--ink);
+    background: var(--sheet);
     cursor: pointer;
-    overflow: hidden;
+    text-align: left;
   }
-  .hl img {
+  .hl img,
+  .hl-fill {
     width: 100%;
-    height: 100%;
+    aspect-ratio: 3 / 2;
     object-fit: cover;
     display: block;
   }
   .hl-fill {
-    display: block;
-    width: 100%;
-    height: 100%;
-    background: var(--c);
+    background: var(--band);
+    border-bottom: 1px solid var(--c);
   }
   .hl-cap {
-    position: absolute;
-    inset: auto 0 0 0;
-    padding: 8px 10px;
-    background: linear-gradient(transparent, rgba(0, 0, 0, 0.82));
-    text-align: left;
+    padding: 0.6rem;
+    border-top: 1px solid var(--stroke);
   }
-  .hl-day {
-    display: block;
-    font-family: var(--mono);
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--paper);
-  }
+  .hl-day,
   .hl-title {
     display: block;
-    font-family: var(--mono);
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-    color: var(--paper);
+    font: 0.75rem var(--font-code);
+    color: var(--ink);
+  }
+  .hl-day {
+    color: var(--ink-2);
   }
   .totals {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    border: 2px solid var(--ink);
-    border-bottom: none;
-    margin-bottom: 32px;
+    grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+    border: 1px solid var(--ink);
+    margin-bottom: 1.5rem;
   }
   .tcell {
-    padding: 16px 18px;
-    border-bottom: 2px solid var(--ink);
-    border-right: 2px solid var(--ink);
-    background: var(--paper);
-  }
-  .tcell:last-child {
-    border-right: none;
+    padding: 1rem;
+    border-right: 1px solid var(--stroke);
   }
   .label {
     display: block;
-    font-family: var(--mono);
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-    margin-bottom: 8px;
+    font: 0.7rem var(--font-code);
+    color: var(--ink-2);
+    margin-bottom: 0.5rem;
   }
   .big {
-    font-family: var(--mono);
-    font-size: 34px;
-    font-weight: 900;
-    line-height: 1;
+    font: 700 1.6rem var(--font-code);
     color: var(--ink);
   }
   .big.cold {
-    color: var(--blue);
+    color: var(--tone-gpu);
   }
   .unit {
-    font-size: 14px;
-    font-weight: 700;
-    color: var(--ink-3);
+    font-size: 0.7rem;
+    color: var(--ink-2);
     margin-left: 3px;
   }
   .days {
     list-style: none;
     margin: 0;
     padding: 0;
-    border-top: 2px solid var(--ink);
   }
   .dayrow {
     width: 100%;
     display: grid;
-    grid-template-columns: 1.4fr 2fr 70px 90px 18px;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 2fr) 4rem 6rem 1rem;
     align-items: center;
-    gap: 16px;
-    padding: 12px 10px;
-    border-bottom: 2px solid var(--ink);
-    background: transparent;
+    gap: 1rem;
+    padding: 0.8rem;
+    border: none;
+    border-bottom: 1px solid var(--stroke);
+    background: var(--sheet);
     cursor: pointer;
     text-align: left;
   }
   .dayrow.noelev {
-    grid-template-columns: 1fr 80px 18px;
+    grid-template-columns: minmax(0, 1fr) 5rem 1rem;
   }
   .dayrow.active {
-    background: var(--ink);
-  }
-  .dayrow.active .dlabel,
-  .dayrow.active .dkm {
-    color: var(--paper);
+    background: var(--band);
   }
   .dlabel {
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    text-transform: uppercase;
-    color: var(--ink);
-    border-bottom: 2px solid var(--c);
+    font: 0.8rem var(--font-code);
+    border-bottom: 1px solid var(--c);
     padding-bottom: 4px;
     justify-self: start;
   }
   .profile {
     display: block;
   }
-  .dayrow.active .profile {
-    filter: invert(1);
-  }
-  .dkm {
-    font-family: var(--mono);
-    font-size: 14px;
-    font-weight: 900;
-    text-align: right;
-    color: var(--ink);
-  }
+  .dkm,
   .delev {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
+    font: 0.8rem var(--font-code);
     text-align: right;
   }
   .up {
-    color: var(--teal);
+    color: var(--tone-ram);
   }
   .down {
-    color: var(--coral);
+    color: var(--tone-disk);
   }
   .chev {
-    font-family: var(--mono);
-    color: var(--ink-3);
+    color: var(--ink-2);
     justify-self: end;
-  }
-  .dayrow.active .chev {
-    color: var(--paper);
   }
   .dl {
     display: flex;
     justify-content: flex-end;
-    gap: 8px;
-    margin-top: 28px;
-    padding-top: 18px;
-    border-top: 2px solid var(--ink);
+    gap: 0.5rem;
+    margin-top: 1.5rem;
+    font: 0.8rem var(--font-code);
   }
   .empty {
-    font-family: var(--mono);
-    color: var(--ink-3);
+    font-family: var(--font-code);
+    color: var(--ink-2);
   }
-
-  @media (max-width: 860px) {
-    .layout {
-      grid-template-columns: 1fr;
-      gap: 28px;
-    }
-    h1 {
-      font-size: 30px;
-    }
+  @media (max-width: 1000px) {
     .dayrow {
-      grid-template-columns: 1fr 60px 18px;
+      grid-template-columns: minmax(0, 1fr) 4rem 1rem;
     }
     .profile,
     .delev {

@@ -1,23 +1,19 @@
-"""Artifact storage on Cloudflare R2 through its S3 API.
+"""Read existing artifacts on Cloudflare R2 through its S3 API.
 
 Artifacts are agent-built, self-contained HTML pages published to
-the ``artifacts`` bucket at ``<id>/index.html``. The monolith mediates every
-write (the agent guest holds no S3 credential, ADR 024 decision 3), so this
-module is the single S3 seam: ``put_artifact`` on the write path (full monolith)
-and ``get_artifact`` / ``head_artifact`` on the public read path (the public
-backend, proxied by the SSR frontend).
+the ``artifacts`` bucket at ``<id>/index.html``. ``get_artifact`` and
+``head_artifact`` serve the read path on both backends, proxied by the SSR
+frontend.
 
-The client construction mirrors ``trips.s3`` / ``stars.grid._s3_client`` (chart
-credentials, path-style addressing, endpoint scheme guard) and the put +
-auto-create-bucket fallback mirrors ``chat.store._blob_s3_put``. boto3 is
-imported lazily inside each function so importing this module never pulls boto3
-into the public app's import closure (app/main_public_imports_test.py).
+The client comes from ``core.s3`` (chart credentials, path-style addressing,
+endpoint scheme guard). boto3 is imported lazily inside each function so
+importing this module never pulls boto3 into the public app's import closure
+(app/main_public_imports_test.py).
 """
 
-import logging
 import os
 
-logger = logging.getLogger("monolith.artifact.s3")
+from core.s3 import path_style_client
 
 # Public-image-safe: a single object key per artifact id. Index naming keeps the
 # door open for multi-file artifacts later without changing the id space.
@@ -33,62 +29,11 @@ def _object_key(artifact_id: str) -> str:
 
 
 def _client():
-    """Build an R2 S3 client, retaining legacy/test credential defaults."""
-    import boto3
-    from botocore.config import Config
-
+    """Build an R2 S3 client for the artifacts bucket."""
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "")
     if not endpoint:
-        raise RuntimeError("SEAWEEDFS_S3_ENDPOINT unset; cannot store artifact")
-    # The chart supplies HTTPS for R2. HTTP prefixing is retained only for
-    # scheme-less legacy/test endpoints; explicit schemes pass through.
-    if not endpoint.startswith(("http://", "https://")):
-        endpoint = "http://" + endpoint
-    # Scheme guaranteed above; the inline nosemgrep clears the pre-commit
-    # boto3-endpoint-url-missing-scheme hook (the Bazel semgrep test ignores
-    # nosemgrep and is covered by exclude_rules in projects/monolith/BUILD).
-    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),
-        aws_secret_access_key=os.environ.get("S3_SECRET_ACCESS_KEY", "duckdb"),
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-        config=Config(s3={"addressing_style": "path"}),
-    )
-
-
-def put_artifact(artifact_id: str, html: bytes) -> str:
-    """Write the artifact HTML to ``s3://<bucket>/<id>/index.html``.
-
-    Overwrites any existing object under the id (re-publishing the same id is how
-    an iterated artifact hot-reloads, ADR 024). Returns the stored object's ETag,
-    which is the version the read path serves to the hot-reload poller. Creates
-    the bucket once and retries on a missing bucket (mirrors chat.store).
-    """
-    from botocore.exceptions import ClientError
-
-    client = _client()
-    bucket = _bucket()
-    key = _object_key(artifact_id)
-
-    def _put():
-        return client.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=html,
-            ContentType="text/html; charset=utf-8",
-        )
-
-    try:
-        resp = _put()
-    except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "")
-        if code in ("NoSuchBucket", "404"):
-            client.create_bucket(Bucket=bucket)
-            resp = _put()
-        else:
-            raise
-    return _clean_etag(resp.get("ETag", ""))
+        raise RuntimeError("SEAWEEDFS_S3_ENDPOINT unset; cannot read artifact")
+    return path_style_client(endpoint)
 
 
 def get_artifact(artifact_id: str) -> tuple[bytes, str] | None:

@@ -7,10 +7,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from core.jsonio import dumps
 from factory.orchestration import factory_controls as controls
 from factory.orchestration import factory_improvement_fence as fence
 from factory.orchestration import factory_improvement_scout as scout
 from factory.orchestration import factory_improvements as service
+from factory.orchestration.factory_improvement_preview import digest
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryClassTier,
@@ -257,7 +259,7 @@ def db(tmp_path, monkeypatch):
                 id="factory",
                 actor="test",
                 state="enabled",
-                policy_json=controls._json(data["policy"]),
+                policy_json=dumps(data["policy"]),
             )
         )
         session.commit()
@@ -275,7 +277,7 @@ def db(tmp_path, monkeypatch):
                 actor="test",
                 action="intake_evaluated",
                 created_at=NOW,
-                detail_json=controls._json(
+                detail_json=dumps(
                     {
                         "generation": 1,
                         "github": "completed",
@@ -319,7 +321,9 @@ def attach_task(engine):
                 conductor_model="sol",
             )
         )
-        row = session.exec(select(FactoryReceipt)).one()
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.actor == scout.ACTOR)
+        ).one()
         row.task_id = "t-scout"
         row.state = "admitted"
         session.commit()
@@ -337,7 +341,7 @@ def test_dispatch_rechecks_quota_and_policy(db):
     with Session(engine) as session:
         policy = deepcopy(data["policy"])
         policy["generation"] = 2
-        session.get(FactoryControl, "factory").policy_json = controls._json(policy)
+        session.get(FactoryControl, "factory").policy_json = dumps(policy)
         session.commit()
     assert scout.dispatch_allowed("t-scout")["reason"] == "scout_policy_changed"
 
@@ -438,7 +442,7 @@ def test_rejected_or_nonindependent_review_never_submits(
     review = {
         "approved": approved,
         "review_digest": context["review_digest"] if digest_matches else "b" * 64,
-        "collection_digest": service._digest(collection),
+        "collection_digest": digest(collection),
         "evidence": "Checked exact source",
     }
     runs = [
@@ -492,7 +496,7 @@ def test_approved_review_uses_existing_submit_once(db, monkeypatch):
     review = {
         "approved": True,
         "review_digest": context["review_digest"],
-        "collection_digest": service._digest(collection),
+        "collection_digest": digest(collection),
         "evidence": "Checked exact source",
     }
     runs = [
@@ -532,7 +536,7 @@ def test_submission_commit_before_finish_replays_without_resubmission(db, monkey
                 actor=scout.ACTOR,
                 task_id=task["id"],
                 action=service.ATTEMPT,
-                detail_json=controls._json({"reason": "candidates"}),
+                detail_json=dumps({"reason": "candidates"}),
             )
         )
         session.commit()
@@ -619,7 +623,7 @@ def test_approved_scout_persists_candidate_through_real_service(db, monkeypatch)
     review = {
         "approved": True,
         "review_digest": context["review_digest"],
-        "collection_digest": service._digest(collection),
+        "collection_digest": digest(collection),
         "evidence": "Verified exact source and dedup inventory",
     }
     runs = [
@@ -772,7 +776,7 @@ def seed_run(engine, node_key, *, model="sol", pin_model="sol", attempt=1):
                 attempt=attempt,
                 status="admitted",
                 model=model,
-                pin_json=controls._json(
+                pin_json=dumps(
                     {
                         "task_id": "t-scout",
                         "node_key": node_key,
@@ -801,8 +805,8 @@ def test_scout_transport_rejects_generic_nodes_changed_models_and_retries(
     assert scout.tick(data["policy"])["ok"]
     attach_task(engine)
     seed_run(engine, key, model=model, pin_model=pin_model, attempt=attempt)
-    assert not scout.transport_allowed("t-scout", key, attempt)
-    assert scout.transport_allowed("ordinary-task", key, attempt)
+    assert not fence.transport_allowed("t-scout", key, attempt)
+    assert fence.transport_allowed("ordinary-task", key, attempt)
 
 
 @pytest.mark.parametrize("action", [scout.SETTLED, service.ATTEMPT])
@@ -817,14 +821,12 @@ def test_settlement_waiting_for_unresolved_starts_fences_all_transport(db, actio
                 actor=scout.ACTOR,
                 action=action,
                 task_id="t-scout",
-                detail_json=controls._json(
-                    {"reason": "scout_nonrenewable", "success": False}
-                ),
+                detail_json=dumps({"reason": "scout_nonrenewable", "success": False}),
             )
         )
         session.commit()
     assert scout.dispatch_allowed("t-scout")["reason"] == "scout_already_settled"
-    assert not scout.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
+    assert not fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
 
 
 @pytest.mark.parametrize("entrypoint", ["request", "reconcile"])
@@ -900,7 +902,7 @@ def test_real_admission_and_funding_reconcile_keep_scout_on_bounded_path(
     )
     data["policy"] = policy
     with Session(engine) as session:
-        session.get(FactoryControl, "factory").policy_json = controls._json(policy)
+        session.get(FactoryControl, "factory").policy_json = dumps(policy)
         session.commit()
     assert scout.tick(policy)["ok"]
     admitted = admit_next("scheduler", lanes=("advisory",))
@@ -937,8 +939,8 @@ def test_missing_claim_cannot_reclassify_scout_as_ordinary_transport(db):
         session.commit()
     assert scout.owns_task("t-scout")
     assert not scout.is_scout("t-scout")
-    assert not scout.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
-    assert not scout.transport_allowed("t-scout", "conductor_funding_1", 1)
+    assert not fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
+    assert not fence.transport_allowed("t-scout", "conductor_funding_1", 1)
 
 
 @pytest.mark.parametrize(
@@ -979,7 +981,7 @@ def test_leaf_transport_requires_current_database_and_quota_evidence(db, change)
                 if change == "stale_intake":
                     sweep.created_at = NOW - timedelta(seconds=901)
                 else:
-                    sweep.detail_json = controls._json(
+                    sweep.detail_json = dumps(
                         {
                             "github": "completed",
                             "truncated": False,
@@ -989,6 +991,41 @@ def test_leaf_transport_requires_current_database_and_quota_evidence(db, change)
                     )
             session.commit()
     assert not fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
+
+
+@pytest.mark.parametrize(
+    ("state", "paused"),
+    [("escalated", False), ("uncertain", False), ("admitted", True)],
+)
+def test_stalled_owner_neither_blocks_nor_is_touched_by_scout_transport(
+    db, state, paused
+):
+    engine, data = db
+    with Session(engine) as session:
+        session.add(
+            FactoryReceipt(
+                repo=service.REPO,
+                issue_number=7001,
+                generation=1,
+                title="Stalled task",
+                body="held",
+                url="https://github.com/jomcgi-org/homelab/issues/7001",
+                actor="factory:intake",
+                task_class="bug-fix",
+                state=state,
+                task_paused=paused,
+            )
+        )
+        session.commit()
+    assert scout.tick(data["policy"])["ok"]
+    attach_task(engine)
+    seed_run(engine, scout.COLLECT_KEY)
+    assert fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
+    with Session(engine) as session:
+        held = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.issue_number == 7001)
+        ).one()
+        assert (held.state, held.task_paused) == (state, paused)
 
 
 @pytest.mark.parametrize("change", ["pause", "policy", "new_owner", "goals"])
@@ -1011,7 +1048,7 @@ def test_broker_delay_cannot_carry_stale_transport_permission(db, monkeypatch, c
                 elif change == "policy":
                     updated = deepcopy(data["policy"])
                     updated["generation"] = 2
-                    control.policy_json = controls._json(updated)
+                    control.policy_json = dumps(updated)
                 else:
                     session.add(
                         FactoryReceipt(
@@ -1031,3 +1068,50 @@ def test_broker_delay_cannot_carry_stale_transport_permission(db, monkeypatch, c
 
     monkeypatch.setattr(fence, "fetch_provider_quota_sync", delayed_read)
     assert not fence.transport_allowed("t-scout", scout.COLLECT_KEY, 1)
+
+
+def test_private_recovery_audits_do_not_enter_publishable_scout_prompts():
+    data = current()
+    data["review_digest"] = "a" * 64
+    data["recovery_events"] = [
+        {"audit_id": 42, "task_id": "exact-task", "action": "pause_task"}
+    ]
+    collect = scout._prompt(data)
+    review = scout._prompt(data, collection={"findings": []})
+    assert '"audit_id": 42' not in collect and '"audit_id": 42' not in review
+    assert "exact-task" not in collect and "exact-task" not in review
+    assert "have unknown duration/outcome" in collect
+    assert "unknown-execution fences" in collect
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "pause_task",
+        "recurring_blocker",
+        "workflow_stranded",
+        "problem_issue_recovery_observed",
+    ],
+)
+def test_context_carries_bounded_pause_audits_as_private_advisory_evidence(db, action):
+    engine, _ = db
+    before = service.context()
+    with Session(engine) as session:
+        session.add(
+            FactoryAudit(
+                actor="test",
+                action=action,
+                task_id="task-a",
+                detail_json=dumps(
+                    {"ok": True, "reason": "x" * 1000, "private_unused": "omit"}
+                ),
+            )
+        )
+        session.commit()
+    after = service.context()
+    event = after["recovery_events"][0]
+    assert event["task_id"] == "task-a" and event["audit_id"]
+    assert event["detail"]["ok"] is True
+    assert event["reason_truncated"] and len(event["reason"]) == 500
+    assert "private_unused" not in str(event)
+    assert after["review_digest"] == before["review_digest"]

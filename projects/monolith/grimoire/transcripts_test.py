@@ -22,7 +22,7 @@ from grimoire.play_embeddings import (
     audience_columns,
     collect_play_inputs,
     event_text,
-    sync_event_embeddings,
+    sync_events_embeddings,
 )
 from grimoire.router import _lock_consent_member
 from grimoire.session_events import require_transcript_enabled, transcript_enabled
@@ -47,7 +47,6 @@ EXPECTED_ROUTES = {
 
 @pytest.fixture
 def http_harness(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     monkeypatch.setenv("GRIMOIRE_TRANSCRIPT_ENABLED", "true")
     with sqlite_harness(tmp_path / "transcripts.db") as h:
         h.prepare("play")
@@ -197,7 +196,6 @@ def test_retention_redacts_expired_text_and_vectors_preserving_stubs_and_feed(
     sessions_before = {
         key: persisted(h, h.rows[key]) for key in ("campaign_session", "other_session")
     }
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "false")
     monkeypatch.setenv("GRIMOIRE_TRANSCRIPT_ENABLED", "false")
     assert redact_transcripts(h.session, now=now) == len(expired_ids)
     h.session.expire_all()
@@ -230,7 +228,6 @@ def test_retention_redacts_expired_text_and_vectors_preserving_stubs_and_feed(
     h.session.expire_all()
     assert {row.id: persisted(h, row) for row in rows} == after
     assert retention_vectors(h) == remaining
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     monkeypatch.setenv("GRIMOIRE_TRANSCRIPT_ENABLED", "true")
     path = (
         PREFIX.format(campaign_id=h.rows["campaign"].id)
@@ -283,7 +280,7 @@ def test_redacted_or_empty_utterance_is_never_collected_and_stale_vectors_are_de
     ).all()
     h.session.add_all([retention_vector(row, kind) for kind in ("transcript", "event")])
     h.session.commit()
-    sync_event_embeddings(h.session, row)
+    sync_events_embeddings(h.session, [row])
     h.session.commit()
     assert not h.session.exec(
         select(Embedding).where(Embedding.embeddable_id == row.id)
@@ -558,7 +555,7 @@ def test_browser_dm_whisper_is_visible_only_to_speaker_and_dm_on_real_feed(
         for path in (
             base + "/journal",
             base + f"/sessions/{h.rows['campaign_session'].id}/journal",
-            base + "/sessions/current",
+            base + "/sessions",
         ):
             journal = client.get(path, headers=h.headers(viewer))
             assert journal.status_code == 200, journal.text
@@ -945,17 +942,13 @@ def transcript_routes(app):
     return routes
 
 
-@pytest.mark.parametrize(
-    "play,transcript", (("false", "false"), ("true", "false"), ("false", "true"))
-)
-def test_every_derived_transcript_route_is_hidden_when_either_flag_is_off(
-    http_harness, monkeypatch, play, transcript
+def test_every_derived_transcript_route_is_hidden_when_transcript_is_off(
+    http_harness, monkeypatch
 ):
     h, client = http_harness
     derived = transcript_routes(client.app)
     assert derived == EXPECTED_ROUTES
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", play)
-    monkeypatch.setenv("GRIMOIRE_TRANSCRIPT_ENABLED", transcript)
+    monkeypatch.setenv("GRIMOIRE_TRANSCRIPT_ENABLED", "false")
     before = h.snapshot()
     for method, path in derived:
         body = {"state": "on"} if path == STATE else {"processor": "Local"}

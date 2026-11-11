@@ -1,7 +1,7 @@
-// Single source of truth for the /app/* registry: the APPS nav dropdown
-// (Nav.svelte), the site index spine and the homepage keypad all look apps
-// up here instead of keeping their own copies, so a new app only needs
-// adding here once (the keypad also wants a line for it in +page.svelte).
+// Single source of truth for the /app/* registry: the site index spine and
+// the homepage keypad look apps up here instead of keeping their own copies,
+// so a new app only needs adding here once (the keypad also wants a line for
+// it in +page.svelte).
 // `featured` marks the two flagship pieces; the homepage no longer renders
 // pitch cards from it.
 export const apps = [

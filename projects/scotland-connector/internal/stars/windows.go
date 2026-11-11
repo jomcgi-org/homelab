@@ -32,9 +32,6 @@ func NightName(day int32) string {
 	return time.Unix(int64(day)*86400, 0).UTC().Format(time.DateOnly)
 }
 
-// NightOf names the night an instant belongs to.
-func NightOf(t time.Time) string { return NightName(NightDay(t)) }
-
 // WindowsQuery asks for the best sites near a point over the next few nights.
 type WindowsQuery struct {
 	Lat, Lon float64
@@ -47,6 +44,19 @@ type WindowsQuery struct {
 	// Now is the query clock. Hours before the top of its hour are dropped,
 	// matching the monolith's read-time filter.
 	Now time.Time
+}
+
+// Nearest returns the nearest site inside the requested reach. ID breaks exact
+// distance ties, independently of snapshot ordering or clear-hour ranking.
+func (d *Dataset) Nearest(lat, lon, radiusKm float64) (*Site, float64) {
+	var best *Site
+	distance := 0.0
+	d.visit(lat, lon, radiusKm, func(s *Site, km float64) {
+		if best == nil || km < distance || km == distance && s.ID < best.ID {
+			best, distance = s, km
+		}
+	})
+	return best, distance
 }
 
 // MoonlessMaxLit is the lit fraction below which the moon does not count:

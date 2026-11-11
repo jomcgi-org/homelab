@@ -33,6 +33,7 @@ defmodule Embervm.OpLog.Postgres do
   use GenServer
   require Logger
 
+  alias Embervm.OpLog.Codec
   alias Embervm.OpLog.Op
 
   # Retention and compaction key off the PROJECTION's state strings, which are
@@ -186,6 +187,8 @@ defmodule Embervm.OpLog.Postgres do
     )
     """,
     "CREATE INDEX IF NOT EXISTS ops_task_id_idx ON ops(task_id)",
+    "CREATE INDEX IF NOT EXISTS ops_session_id_seq_idx ON ops(session_id, seq)",
+    "CREATE INDEX IF NOT EXISTS ops_kind_seq_idx ON ops(kind, seq)",
     """
     CREATE TABLE IF NOT EXISTS tasks (
       task_id TEXT PRIMARY KEY,
@@ -263,6 +266,7 @@ defmodule Embervm.OpLog.Postgres do
       created_at BIGINT NOT NULL,
       stop_intent_json TEXT,
       stop_completion_json TEXT,
+      recovery_fence_json TEXT,
       invoke_started_at BIGINT,
       last_invoke_at BIGINT,
       expires_at BIGINT,
@@ -294,6 +298,7 @@ defmodule Embervm.OpLog.Postgres do
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS inflight_dispatch_id TEXT",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS stop_intent_json TEXT",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS stop_completion_json TEXT",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS recovery_fence_json TEXT",
     "UPDATE sessions SET invoke_started_at=last_invoke_at WHERE invoke_started_at IS NULL AND last_invoke_at IS NOT NULL",
     """
     CREATE UNIQUE INDEX IF NOT EXISTS sessions_idem_idx
@@ -477,6 +482,33 @@ defmodule Embervm.OpLog.Postgres do
   @impl Embervm.OpLog
   def read_from(server \\ __MODULE__, seq) do
     Embervm.OpLog.safe_server_call(server, {:read_from, seq}, @double_query_call_timeout_ms)
+  end
+
+  @impl Embervm.OpLog
+  def session_cessation_evidence(server, session_id, expected, principal) do
+    Embervm.OpLog.safe_server_call(server, {:session_cessation_evidence, session_id, expected, principal}, @double_query_call_timeout_ms)
+  end
+
+  @impl Embervm.OpLog
+  def session_recovery_fence(server, session_id, request, principal, now) do
+    case Embervm.OpLog.safe_server_call(server, {:session_recovery_fence, session_id, request, principal, now}, @double_query_call_timeout_ms) do
+      {:ok, _} = result -> result
+      {:error, _, _} = result -> result
+      _ -> {:error, :recovery_store_unavailable, %{}}
+    end
+  catch
+    :exit, _ -> {:error, :recovery_store_unavailable, %{}}
+  end
+
+  @impl Embervm.OpLog
+  def session_restore_allowed(server, lineage) do
+    case Embervm.OpLog.safe_server_call(server, {:session_restore_allowed, lineage}, @single_query_call_timeout_ms) do
+      :ok -> :ok
+      {:error, reason} = result when reason in [:recovery_fenced, :unknown_lineage] -> result
+      _ -> {:error, :recovery_store_unavailable}
+    end
+  catch
+    :exit, _ -> {:error, :recovery_store_unavailable}
   end
 
   @impl Embervm.OpLog
@@ -704,6 +736,73 @@ defmodule Embervm.OpLog.Postgres do
     end)
   end
 
+  def handle_call({:session_cessation_evidence, id, expected, principal}, _from, state) do
+    reply_connection_call(state, :session_cessation_evidence, fn ->
+      case state.transaction_fun.(state.conn, fn conn ->
+        query = fn sql, params ->
+          case state.query_fun.(conn, sql, params) do
+            {:ok, %Postgrex.Result{rows: rows}} -> {:ok, rows}
+            error -> error
+          end
+        end
+        with {:ok, _} <- query.("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY", []) do
+          Embervm.SessionCessationEvidence.read(query, :postgres, &Codec.decode_payload/1, id, expected, principal)
+        end
+      end) do
+        {:ok, result} -> result
+        _ -> {:error, :historical_store_unavailable, %{}}
+      end
+    end)
+  end
+
+  def handle_call({:session_recovery_fence, id, request, principal, now}, _from, state) do
+    reply_connection_call(state, :session_recovery_fence, fn ->
+      case state.transaction_fun.(state.conn, fn conn ->
+        query = fn sql, params ->
+          case state.query_fun.(conn, sql, params) do
+            {:ok, %Postgrex.Result{rows: rows}} -> {:ok, rows}
+            error -> error
+          end
+        end
+        access = if request["operation"] == "apply", do: "READ WRITE", else: "READ ONLY"
+        append = fn
+          %Op{kind: :session_recovery_fenced} = op ->
+            with {:ok, seq} <- insert_op(conn, op),
+                 :ok <- project(conn, op, seq) do
+              {:ok, seq}
+            else
+              _ -> Postgrex.rollback(conn, {:error, :recovery_store_unavailable, %{}})
+            end
+          _ -> Postgrex.rollback(conn, {:error, :recovery_store_unavailable, %{}})
+        end
+        result = with {:ok, _} <- query.("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, #{access}", []) do
+          Embervm.SessionRecoveryFence.run(query, :postgres, &Codec.decode_payload/1, id, request, principal, now, append)
+        end
+        case result do
+          {:ok, _} = ok -> ok
+          {:error, _, _} = error -> Postgrex.rollback(conn, error)
+          _ -> Postgrex.rollback(conn, {:error, :recovery_store_unavailable, %{}})
+        end
+      end) do
+        {:ok, result} -> result
+        {:error, {:error, _, _} = error} -> error
+        _ -> {:error, :recovery_store_unavailable, %{}}
+      end
+    end)
+  end
+
+  def handle_call({:session_restore_allowed, lineage}, _from, state) do
+    reply_connection_call(state, :session_restore_allowed, fn ->
+      sql = "SELECT COUNT(*), COUNT(recovery_fence_json) FROM sessions WHERE COALESCE(lineage_id, session_id) = $1"
+      case state.query_fun.(state.conn, sql, [lineage]) do
+        {:ok, %Postgrex.Result{rows: [[0, 0]]}} -> {:error, :unknown_lineage}
+        {:ok, %Postgrex.Result{rows: [[count, fenced]]}} when count > 0 and fenced > 0 -> {:error, :recovery_fenced}
+        {:ok, %Postgrex.Result{rows: [[count, 0]]}} when count > 0 -> :ok
+        _ -> {:error, :recovery_store_unavailable}
+      end
+    end)
+  end
+
   def handle_call(:load_tasks, _from, state) do
     reply_connection_call(state, :load_tasks, fn ->
       do_load_tasks(state.conn, state.query_fun)
@@ -892,7 +991,7 @@ defmodule Embervm.OpLog.Postgres do
       op.stateful_instance_id,
       op.group_instance_id,
       Atom.to_string(op.kind),
-      encode_payload(op.payload)
+      Codec.encode_payload(op.payload)
     ]
 
     with {:ok, %Postgrex.Result{rows: [[seq]]}} <- Postgrex.query(conn, sql, params) do
@@ -921,6 +1020,7 @@ defmodule Embervm.OpLog.Postgres do
     :residency_changed,
     :session_created,
     :session_invoke_started,
+    :session_recovery_fenced,
     :session_invoked,
     :session_brick_gone,
     :session_banked,
@@ -1020,12 +1120,8 @@ defmodule Embervm.OpLog.Postgres do
     end
   end
 
-  # Monotonic advance for the deferred async lifecycle appends (ADR embervm/014
-  # decision 2), mirroring Embervm.OpLog.SQLite: SET only from a strictly-lower-
-  # ranked state (Embervm.TaskState.states_below/1), so a late/out-of-order async
-  # :assigned/:started append cannot regress a row that already ran or terminalized,
-  # while a legitimate forward jump still applies. Inert under the gate off. See the
-  # SQLite backend for the full rationale.
+  # Match SQLite: late and historical lifecycle records cannot regress state
+  # or cross a retry epoch.
   defp project(conn, %Op{kind: :assigned} = op, _seq) do
     advance_task_state(conn, op.task_id, :assigned, op.ts, epoch_of(op))
   end
@@ -1061,7 +1157,7 @@ defmodule Embervm.OpLog.Postgres do
                bool_to_int(Map.get(payload, :truncated, false)),
                op.ts,
                Map.get(payload, :expires_at),
-               encode_headers(Map.get(payload, :headers, %{}))
+               Codec.encode_headers(Map.get(payload, :headers, %{}))
              ]) do
         project_usage(conn, op)
       end
@@ -1100,6 +1196,11 @@ defmodule Embervm.OpLog.Postgres do
     project_residency(conn, op.payload[:residency_intent])
   end
 
+  # Recovery seals only future restore authority. The old lifecycle and its
+  # invocation/accounting timestamps remain immutable.
+  defp project(conn, %Op{kind: :session_recovery_fenced} = op, _seq),
+    do: project_recovery_fence(conn, op)
+
   defp project(conn, %Op{kind: :session_created} = op, _seq) do
     payload = op.payload
 
@@ -1108,8 +1209,8 @@ defmodule Embervm.OpLog.Postgres do
     # row it reads), mirroring Embervm.OpLog.SQLite. A collision errors the
     # whole append (Postgrex.rollback discards the ops row too) and names the
     # EXISTING holder, terminal holders included. A holder equal to this op's
-    # own session_id is the adopt-and-backfill repair racing a late-draining
-    # original append, which ON CONFLICT DO NOTHING used to absorb benignly.
+    # own session_id is a repeated record for the same session. Accept it as
+    # an idempotent no-op and preserve the binding.
     idempotency_key = Map.get(payload, :idempotency_key)
 
     case existing_session_for_idempotency_key(conn, op.principal, idempotency_key) do
@@ -1125,9 +1226,7 @@ defmodule Embervm.OpLog.Postgres do
   end
 
   defp do_insert_session_created(conn, op, payload, idempotency_key) do
-    # ON CONFLICT DO NOTHING: idempotent on session_id so the adopt-and-backfill
-    # repair can re-append session_created for a lost async write without a clash
-    # (mirrors the SQLite backend's INSERT OR IGNORE), ADR embervm/014 decision 2.
+    # Repeated session_created records preserve the existing ownership row.
     sql = """
     INSERT INTO sessions
       (session_id, tenant, principal, workload, state, node_id, vm_id, volume_node_id,
@@ -1232,9 +1331,7 @@ defmodule Embervm.OpLog.Postgres do
     ])
   end
 
-  # Guarded against terminal states so a deferred async relit append cannot
-  # resurrect a since-destroyed session (mirrors the SQLite backend), ADR
-  # embervm/014 decision 2. Inert under the gate off.
+  # A late or replayed relight cannot resurrect a terminal session.
   defp project(conn, %Op{kind: :session_relit} = op, _seq) do
     exec(
       conn,
@@ -1255,13 +1352,9 @@ defmodule Embervm.OpLog.Postgres do
   # mid-destroy rebuilds as destroying and re-drives it rather than forgetting.
   # session_destroyed (terminal) is appended only once teardown completes.
   #
-  # This clause was missing while the op kind was only ever written under
-  # EMBERVM_NODE_CONFIRMED_DESTROY, which has never been armed in prod. The
-  # SQLite backend has always had it, so the two backends had drifted. Deferring
-  # the teardown made this kind reachable on the ungated path, and the missing
-  # clause raised FunctionClauseError inside the append transaction, which
-  # cascaded a crash through OpLog, SessionStore and SessionManager on every
-  # destroy of a live session.
+  # A missing clause here once raised FunctionClauseError inside the append
+  # transaction, which cascaded a crash through OpLog, SessionStore and
+  # SessionManager on every destroy of a live session.
   defp project(conn, %Op{kind: :session_destroying} = op, _seq) do
     exec(conn, "UPDATE sessions SET state='destroying', updated_at=$1, stop_intent_json=COALESCE(stop_intent_json, $2) WHERE session_id=$3", [
       op.ts,
@@ -1972,12 +2065,12 @@ defmodule Embervm.OpLog.Postgres do
     exec(conn, "UPDATE tasks SET state=$1, updated_at=$2 WHERE task_id=$3", [state, ts, task_id])
   end
 
-  # Monotonic advance for a deferred async lifecycle append: SET `to_state` only
+  # Monotonic advance for a lifecycle append: SET `to_state` only
   # when the row ranks strictly below it in the lifecycle partial order AND the
   # row's retry count is still below the op's issue-time attempt (see
   # Embervm.OpLog.SQLite.advance_task_state/5 for the full attempt-aliasing
   # rationale and Embervm.TaskState.states_below/1 for the rank order). `epoch` nil
-  # (sync write-through, or a pre-epoch op) runs only the rank guard, unchanged.
+  # (a pre-epoch op) runs only the rank guard, unchanged.
   defp advance_task_state(conn, task_id, to_state, ts, epoch \\ nil) do
     below = Embervm.TaskState.states_below(to_state)
     # $1 to_state, $2 ts, $3 task_id, then $4.. for the state-in list.
@@ -1997,7 +2090,7 @@ defmodule Embervm.OpLog.Postgres do
     )
   end
 
-  # The dispatch attempt (1-based) a deferred async :assigned/:started op was issued
+  # The dispatch attempt (1-based) an :assigned/:started op was issued
   # under, from the op payload (atom key on a fresh append, string key if ever
   # re-projected from durable JSON). nil when absent. Mirrors Embervm.OpLog.SQLite.
   defp epoch_of(%Op{payload: payload}) when is_map(payload) do
@@ -2163,7 +2256,7 @@ defmodule Embervm.OpLog.Postgres do
       stateful_instance_id: stateful_instance_id,
       group_instance_id: group_instance_id,
       kind: String.to_existing_atom(kind),
-      payload: decode_payload(payload_blob)
+      payload: Codec.decode_payload(payload_blob)
     }
   end
 
@@ -2205,6 +2298,33 @@ defmodule Embervm.OpLog.Postgres do
     }
   end
 
+  defp project_recovery_fence(conn, op) do
+    fence = op.payload[:recovery_fence]
+    if is_map(fence) and fence["schema"] == 1 and fence["session_id"] == op.session_id and
+         fence["principal"] == op.principal and fence["workload"] == op.workload and
+         fence["lineage_id"] == op.session_id and fence["generation"] == 0 and
+         fence["terminal_reason"] in ["idle_ttl", "node_gone"] and
+         Enum.all?(["session_id", "principal", "workload", "dispatch_id", "request_key",
+           "reason", "preview_sha256", "evidence_sha256"], &(is_binary(fence[&1]) and fence[&1] != "")) do
+      params = Enum.map(["session_id", "lineage_id", "principal", "workload", "generation",
+        "invoke_started_at", "updated_at", "dispatch_id", "terminal_reason"], &fence[&1])
+      case Postgrex.query(conn, "SELECT recovery_fence_json FROM sessions WHERE session_id=$1 AND COALESCE(lineage_id, session_id)=$2 AND principal=$3 AND workload=$4 AND generation=$5 AND invoke_started_at=$6 AND updated_at=$7 AND inflight_dispatch_id=$8 AND terminal_reason=$9 AND state='evicted' FOR UPDATE", params) do
+          {:ok, %Postgrex.Result{rows: [[nil]]}} ->
+            case exec_changes(conn, "UPDATE sessions SET recovery_fence_json=$10 WHERE session_id=$1 AND COALESCE(lineage_id, session_id)=$2 AND principal=$3 AND workload=$4 AND generation=$5 AND invoke_started_at=$6 AND updated_at=$7 AND inflight_dispatch_id=$8 AND terminal_reason=$9 AND state='evicted' AND recovery_fence_json IS NULL", params ++ [Jason.encode!(fence)]) do
+              {:ok, 1} -> :ok
+              _ -> {:error, :recovery_fence_identity_mismatch}
+            end
+          {:ok, %Postgrex.Result{rows: [[existing]]}} ->
+            if Jason.decode!(existing) == fence, do: :ok, else: {:error, :recovery_fence_identity_mismatch}
+          _ -> {:error, :recovery_fence_identity_mismatch}
+        end
+    else
+      {:error, :recovery_fence_identity_mismatch}
+    end
+  rescue
+    _ -> {:error, :recovery_fence_identity_mismatch}
+  end
+
   defp encode_turn_interruption(nil), do: nil
   defp encode_turn_interruption(value), do: Embervm.SessionStopProof.encode(value)
 
@@ -2214,7 +2334,7 @@ defmodule Embervm.OpLog.Postgres do
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
            token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
            COALESCE(lineage_id, session_id), idempotency_key, stop_intent_json, stop_completion_json,
-           turn_seq, interrupted_turn_json, inflight_dispatch_id
+           turn_seq, interrupted_turn_json, inflight_dispatch_id, recovery_fence_json
     FROM sessions
     """
 
@@ -2251,7 +2371,8 @@ defmodule Embervm.OpLog.Postgres do
           stop_completion_json,
           turn_seq,
           interrupted_turn_json,
-          inflight_dispatch_id
+          inflight_dispatch_id,
+          recovery_fence_json
         ]) do
     %{
       session_id: session_id,
@@ -2280,7 +2401,8 @@ defmodule Embervm.OpLog.Postgres do
       stop_completion: Embervm.SessionStopProof.decode(stop_completion_json),
       turn_seq: turn_seq,
       interrupted_turn: Embervm.SessionStopProof.decode(interrupted_turn_json),
-      inflight_dispatch_id: inflight_dispatch_id
+      inflight_dispatch_id: inflight_dispatch_id,
+      recovery_fence: Embervm.SessionStopProof.decode(recovery_fence_json)
     }
   end
 
@@ -2601,7 +2723,7 @@ defmodule Embervm.OpLog.Postgres do
            truncated: truncated == 1,
            created_at: created_at,
            expires_at: expires_at,
-           headers: decode_headers(headers)
+           headers: Codec.decode_headers(headers)
          }}
 
       {:ok, %Postgrex.Result{rows: []}} ->
@@ -2620,7 +2742,7 @@ defmodule Embervm.OpLog.Postgres do
 
     case Postgrex.query(conn, sql, [task_id]) do
       {:ok, %Postgrex.Result{rows: [[payload_blob]]}} ->
-        {:ok, Map.get(decode_payload(payload_blob), "request")}
+        {:ok, Map.get(Codec.decode_payload(payload_blob), "request")}
 
       {:ok, %Postgrex.Result{rows: []}} ->
         {:ok, nil}
@@ -2954,50 +3076,4 @@ defmodule Embervm.OpLog.Postgres do
   defp bool_to_int(false), do: 0
   defp bool_to_int(nil), do: 0
 
-  # -- payload codec ----------------------------------------------------
-
-  # Mirrors Embervm.OpLog.SQLite's ETF codec exactly (see that module's
-  # comment): payloads are :erlang.term_to_binary/1'd into BYTEA so any term,
-  # including a non-UTF-8 binary body, round-trips byte-exact. Payloads are
-  # this node's own trusted data, so binary_to_term/1 on read is safe here.
-  defp encode_payload(payload) when is_map(payload) do
-    :erlang.term_to_binary(payload)
-  end
-
-  defp decode_payload(<<131, _::binary>> = term) do
-    term |> :erlang.binary_to_term() |> stringify()
-  end
-
-  defp decode_payload(json) when is_binary(json) do
-    :json.decode(json)
-  end
-
-  defp stringify(map) when is_map(map) do
-    for {k, v} <- map, not is_nil(v), into: %{}, do: {to_string(k), stringify(v)}
-  end
-
-  defp stringify(list) when is_list(list), do: Enum.map(list, &stringify/1)
-  defp stringify(v) when is_atom(v) and not is_boolean(v), do: Atom.to_string(v)
-  defp stringify(v), do: v
-
-  defp encode_headers(headers) when is_map(headers) and map_size(headers) == 0, do: nil
-
-  defp encode_headers(headers) when is_map(headers) do
-    headers |> :json.encode() |> :erlang.iolist_to_binary()
-  end
-
-  defp encode_headers(_), do: nil
-
-  defp decode_headers(nil), do: %{}
-
-  defp decode_headers(json) when is_binary(json) do
-    case :json.decode(json) do
-      map when is_map(map) -> map
-      _ -> %{}
-    end
-  rescue
-    _ -> %{}
-  end
-
-  defp decode_headers(_), do: %{}
 end

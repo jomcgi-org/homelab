@@ -70,6 +70,18 @@ class CompareTests(unittest.TestCase):
                 )
             )
 
+    def test_agents_harness_is_not_invented_on_the_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            head, base = self.setup_sources(root, "agents")
+            shutil.rmtree(base / "projects/monolith/frontend/agents-preview")
+            inputs, eligible = compare.baseline_plan(head, base, ["agents"])
+            self.assertEqual(eligible, [])
+            self.setup_artifacts(root, "agents", baseline=False)
+            model = self.assemble(root, "agents", baseline=False, fingerprints=inputs)
+            self.assertEqual(len(model["rows"]), 48)
+            self.assertTrue(all(row["before"] is None for row in model["rows"]))
+
     def test_missing_historical_fixture_inputs_are_unavailable(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -111,11 +123,12 @@ class CompareTests(unittest.TestCase):
         for side, sha in (("head", HEAD), ("before", BASE)):
             if side == "before" and not baseline:
                 continue
-            artifact = root / (side + "-artifact")
-            artifact.mkdir()
-            (artifact / "index.html").write_bytes(
-                suite.page("Synthetic demo", "Invented data")
-            )
+            if side == "head":
+                artifact = root / "head-artifact"
+                artifact.mkdir()
+                (artifact / "index.html").write_bytes(
+                    suite.page("Synthetic demo", "Invented data")
+                )
             evidence = root / "evidence" / side / name
             evidence.mkdir(parents=True)
             for filename in suite.expected_captures(name):
@@ -136,7 +149,6 @@ class CompareTests(unittest.TestCase):
         return compare.assemble(
             root / "site",
             root / "head-artifact",
-            root / "before-artifact",
             root / "evidence",
             HEAD,
             BASE,
@@ -159,6 +171,7 @@ class CompareTests(unittest.TestCase):
             self.assertIn(
                 "Screenshot comparison", (root / "site/index.html").read_text()
             )
+            self.assertFalse((root / "site/before").exists())
 
     def test_absent_owner_harness_has_no_fake_before_image(self):
         with tempfile.TemporaryDirectory() as directory:

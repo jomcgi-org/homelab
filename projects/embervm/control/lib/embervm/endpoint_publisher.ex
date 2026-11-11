@@ -74,8 +74,8 @@ defmodule Embervm.EndpointPublisher do
       has elapsed since its last successful PUT. This interval keeps repushes well
       above the normal 10-18s publish cadence, which removes duplicate noise while
       bounding recovery when the sidecar CONTAINER restarts and loses its volatile
-      cache. A node re-registration or channel invalidation clears that node's
-      remembered hash so its snapshot is pushed again.
+      cache. A node re-registration clears that node's remembered hash so its
+      snapshot is pushed again.
     * on BOOT the publisher does ONE synchronous publish before the process
       reports ready, so the fan-out reflects the rebuilt facts before any request
       can arrive (a control-plane restart republishes exactly the same endpoints).
@@ -171,17 +171,6 @@ defmodule Embervm.EndpointPublisher do
   @spec flush(GenServer.server()) :: :ok
   def flush(server \\ __MODULE__) do
     GenServer.call(server, :flush)
-  end
-
-  @doc """
-  Forgets the last successfully pushed snapshot for `node_id`. Call this when the
-  node's channel is invalidated, making the next flush push even when the rendered
-  facts are unchanged. Replacement registration identities are also detected from
-  node facts. A cast keeps lifecycle paths independent of the sidecar PUT.
-  """
-  @spec invalidate_node(GenServer.server(), String.t()) :: :ok
-  def invalidate_node(server \\ __MODULE__, node_id) when is_binary(node_id) do
-    GenServer.cast(server, {:invalidate_node, node_id})
   end
 
   @doc """
@@ -303,7 +292,7 @@ defmodule Embervm.EndpointPublisher do
       # Per-node successful-push state. The hash excludes the version so identical
       # facts compare equal; the acknowledged version and failure bit preserve the
       # level-triggered retry contract. Entries are cleared when a node disappears
-      # or its registration/channel owner explicitly invalidates it.
+      # or re-registers.
       pushed: %{},
       # The current serving-capable instance identities grouped by configured node.
       # A changed set means the node re-registered through a replacement instance,
@@ -345,10 +334,6 @@ defmodule Embervm.EndpointPublisher do
   @impl true
   def handle_cast(:publish, state) do
     {:noreply, arm_debounce(state)}
-  end
-
-  def handle_cast({:invalidate_node, node_id}, state) do
-    {:noreply, %{state | pushed: Map.delete(state.pushed, node_id)}}
   end
 
   @impl true

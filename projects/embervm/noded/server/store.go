@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +21,7 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/driver"
 	"github.com/jomcgi/homelab/projects/embervm/noded/snapshotmeta"
 	"github.com/jomcgi/homelab/projects/embervm/noded/store"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
@@ -468,15 +468,10 @@ func (s *Server) StartStoreLoops(ctx context.Context) {
 	s.StartStoreLoopsWithExportContext(ctx, ctx)
 }
 
-// DrainExportContext returns the context the export workers run under. When
-// outliveSignal is false it returns signalCtx unchanged (the old behaviour).
-// When true it returns a context that keeps signalCtx's values but not its
-// cancellation, cancelled only by the returned func, which the daemon defers
-// until after the drain has finished.
-func DrainExportContext(signalCtx context.Context, outliveSignal bool) (context.Context, context.CancelFunc) {
-	if !outliveSignal {
-		return signalCtx, func() {}
-	}
+// DrainExportContext returns the context the export workers run under: it
+// keeps signalCtx's values but not its cancellation, and is cancelled only by
+// the returned func, which the daemon defers until after the drain has finished.
+func DrainExportContext(signalCtx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithCancel(context.WithoutCancel(signalCtx))
 }
 
@@ -819,7 +814,7 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 		if !ok {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: restore base %q: runtime image %q not provisioned on this node", prefix, storedImageRef)
 		}
-		localRootfsID, rootfsErr := ext4UUID(img.RootfsPath)
+		localRootfsID, rootfsErr := driver.Ext4UUID(img.RootfsPath)
 		if rootfsErr != nil {
 			if pendingErr := s.refuseIfRootfsPending(img.RootfsPath); pendingErr != nil {
 				return nil, pendingErr
@@ -939,12 +934,7 @@ func (s *Server) restoreDataKey(raw []byte, ref *nodev1.ArtifactRef, generation 
 	if err == nil {
 		return key, nil
 	}
-	if s.cfg.RequireRestoreCapability {
-		return nil, status.Errorf(codes.PermissionDenied, "noded: restore capability check failed: %v", err)
-	}
-	s.logger.Warn("noded: restore capability check failed while enforcement is inert",
-		"artifact", artifactPrefix(ref, s.cfg.CpuVendor), "detail", err)
-	return nil, status.Errorf(codes.FailedPrecondition, "noded: %v: restore capability check failed: %v", store.ErrKeyRequired, err)
+	return nil, status.Errorf(codes.PermissionDenied, "noded: restore capability check failed: %v", err)
 }
 
 func (s *Server) exportWithKeys(ctx context.Context, ref *nodev1.ArtifactRef, prefix, localDir string, files []string, generation uint64, fingerprintOut ...*string) (int64, bool, error) {
@@ -952,7 +942,7 @@ func (s *Server) exportWithKeys(ctx context.Context, ref *nodev1.ArtifactRef, pr
 	if len(fingerprintOut) > 0 {
 		opts.ContentFingerprint = fingerprintOut[0]
 	}
-	if s.cfg.StoreEncrypt && isPrincipalKind(ref.GetKind()) {
+	if isPrincipalKind(ref.GetKind()) {
 		opts.Kind = artifactKindStr(ref.GetKind())
 		opts.Workload = ref.GetWorkload()
 		opts.Ref = ref.GetRef()
@@ -1476,20 +1466,6 @@ func (u *unexportableSet) contains(artifact string) bool {
 		return false
 	}
 	return true
-}
-
-func (u *unexportableSet) snapshot() []unexportableArtifact {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.purgeExpiredLocked(u.now())
-	out := make([]unexportableArtifact, 0, len(u.entries))
-	for _, entry := range u.entries {
-		out = append(out, entry)
-	}
-	slices.SortFunc(out, func(a, b unexportableArtifact) int {
-		return strings.Compare(a.Artifact, b.Artifact)
-	})
-	return out
 }
 
 func (u *unexportableSet) purgeExpiredLocked(now time.Time) {

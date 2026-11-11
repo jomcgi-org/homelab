@@ -30,8 +30,7 @@ SOURCE = {
 
 
 @pytest.fixture
-def db(tmp_path, monkeypatch):
-    monkeypatch.setenv("KG_FACT_REVIEW_ENABLED", "true")
+def db(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'facts.db'}").execution_options(
         schema_translate_map={
             table.schema: None for table in SQLModel.metadata.tables.values()
@@ -354,7 +353,7 @@ def test_missing_sources_and_outage_never_grant_freshness(db):
     assert row.last_reviewed_at is None
 
 
-def test_daily_limit_and_kill_switch(db, monkeypatch):
+def test_daily_limit(db, monkeypatch):
     monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "3")
     note(db)
     db.add_all(
@@ -367,9 +366,6 @@ def test_daily_limit_and_kill_switch(db, monkeypatch):
     assert prepare(db) == review.NO_REVIEW
     monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "20000")
     assert prepare(db, "raised-limit") != review.NO_REVIEW
-    monkeypatch.setenv("KG_FACT_REVIEW_ENABLED", "false")
-    assert prepare(db, "disabled") == review.NO_REVIEW
-    assert db.get(FactReviewRun, "disabled") is None
 
 
 def test_limit_is_rolling_and_replays_do_not_spend_it_again(db, monkeypatch):
@@ -1108,3 +1104,15 @@ def test_citations_preserve_markup_comments_and_escaping_without_repair(
         assert run.result == saved
     assert run.sources == sources
     assert len(db.exec(select(ReviewOutcome)).all()) == 1
+
+
+@pytest.mark.parametrize("coverage_enabled", [False, True])
+def test_operator_status_reports_actual_source_policy(
+    db, monkeypatch, coverage_enabled
+):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", str(coverage_enabled).lower())
+    monkeypatch.setattr("core.db.get_engine", lambda: db.get_bind())
+    result = review.status()
+    assert result["enabled"] is True
+    assert result["source_coverage_enabled"] is coverage_enabled
+    assert result["throughput"]["attempts"] == 0

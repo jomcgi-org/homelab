@@ -71,6 +71,7 @@ export async function load({ fetch, setHeaders }) {
   setHeaders(headers);
 
   return {
+    evaluatedAt: new Date().toISOString(),
     title: "Factory",
     activity: values[0],
     merges: values[1],

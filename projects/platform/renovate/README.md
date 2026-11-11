@@ -1,37 +1,36 @@
 # Renovate
 
-Renovate runs as a daily Argo `CronWorkflow` in `monolith-workflows`. The home
-cluster remains the active writer while the GKE hub deployment is staged. The
-hub Application loads `values.yaml` and then `values-gke.yaml`, which renders
-both the Renovate scan and apko lock maintenance CronWorkflows with
-`spec.suspend: true`. Merging that enrollment creates no second scheduled
-writer. The home Application still loads only `values.yaml`, so its existing
-writers remain active until the operator-controlled cutover.
+The GKE hub is the sole intended deployment for Renovate and dependency lock
+maintenance in `monolith-workflows`. Its Application loads `values.yaml` then
+`values-gke.yaml`; both effective CronWorkflow suspension flags remain `true`.
+The base render is a build input, not another deployed writer.
 
-The repository configuration keeps ordinary dependency PR creation inside the
-Monday maintenance window. Running the workflow daily means one transient
-failure does not delay updates for a full week.
+PR #7358 integrates #7168's existing cleanup commit and resolves its README and
+renamed policy-test conflicts. The retired home enrollment and cutover files
+stay removed; #7168's branch is not rewritten. #7186 remains the existing draft
+that owns activation under #7001/#7068. The explicit handoff below adds the
+automerge switches to its existing two suspension flips without changing that
+owner's branch. This preparation enables no schedule, automerge or credential.
 
 ## GitHub credential
 
-Before merging this deployment, create a secure-note item named
-`renovate-github` in the `k8s-homelab` 1Password vault. Add a concealed field
-named `RENOVATE_TOKEN` containing a fine-grained token for the dedicated bot
-identity, scoped only to `jomcgi/homelab`.
+Both CronWorkflows reference `renovate-github` / `RENOVATE_TOKEN`, supplied by the
+existing OnePasswordItem at `vaults/k8s-homelab/items/renovate-github`. Prefer
+that existing identity and installation. The workflow templates target only
+`jomcgi-org/homelab`. There is no App-token minting or refresh implementation in
+this chart; the credential's actual type, expiry/renewal and usable permissions
+remain unverified. Do not infer these from a synced Application or the item name.
 
-The token needs these repository permissions:
-
-- Contents: read and write
-- Commit statuses: read and write
-- Issues: read and write
-- Pull requests: read and write
-- Workflows: read and write
-
-It also needs read-only organization member access. Workflow permission lets the
-GitHub Actions manager update checked-in workflows.
-
-The 1Password Operator materializes the item as the `renovate-github` Secret.
-Renovate reads only its `RENOVATE_TOKEN` field.
+An authorized owner must verify the installed identity's existing repository
+selection and grants before proposing any missing scope. Renovate's
+[GitHub authentication contract](https://docs.renovatebot.com/modules/platform/github/#running-as-a-github-app)
+differs for App and fine-grained tokens. In particular, managed workflow-file
+updates need workflow-write capability and App enqueue operations need merge
+queue write capability. The independent evidence publisher needs its own
+verified App identity for repository/PR, dependency graph, open-alert, commit-status and queue
+reads plus check publication. These are capability checks, not permission grants.
+Any new token, installation, scope, binding or renewal setup needs a concrete
+separately approved change. No Secret object or value is read in this task.
 
 ## Operations
 
@@ -44,79 +43,193 @@ The main Renovate scan requests and limits memory at 4 GiB. The repository has
 more than 500 extracted dependencies, and a 2 GiB limit was repeatedly killed
 during registry metadata resolution.
 
-Package lifecycle scripts and plugins are disabled. Two repository-owned
-maintenance commands are explicitly allowlisted: wrapper chart version bumps
-and regeneration of compiled Python requirement locks. Renovate targets only
-`jomcgi/homelab`, requires the checked-in `renovate.json`, and does not perform
+Package lifecycle scripts and plugins are disabled. The sole allowlisted
+post-upgrade command regenerates the root compiled Python requirement locks.
+The existing separate weekly job also refreshes apko/root Python locks and
+non-GitHub tool pins; it does not expand Renovate's command allowlist.
+Helm updates refresh lock files and vendored archives without advancing wrapper
+chart versions; main publication owns those versions. Renovate targets only
+`jomcgi-org/homelab`, requires the checked-in `renovate.json`, and does not perform
 repository autodiscovery or onboarding.
 
-Auto-merge and platform auto-merge are disabled for every update type in
-`renovate.json`. Release-age checks and required Linux CI still apply. PR
-creation grants no merge authority; dependency updates require adversarial
-review and separately authorized merging.
+Repository-wide and package-rule `automerge` / `platformAutomerge` stay false.
+The weekly helper also requires `MAINTENANCE_AUTOMERGE_ENABLED=true`; its base
+and hub chart values render that flag as false. Missing or malformed flags stay
+off, including in an older workflow loading the updated ConfigMap. Manual or
+hosted runners reading this repository therefore receive no automerge enablement
+from this preparation. These defaults do not cancel an already armed PR or queue
+entry created by another actor.
 
-Monolith stages `factory/dependency-evidence` off by default. It compares
-independent assessments against server-fetched PR and queue-base evidence,
-including file blobs, dependency changes and open advisories. Bot identities
-and `renovate/` branches force evidence without granting approval. See the
-activation checklist in `projects/monolith/factory/orchestration/FACTORY.md`:
-dedicated App token delivery, explicit enablement, PR/merge-group canaries,
-App-pinned ruleset 9180009, stale/advisory refusal, unapproved auto-merge refusal,
-BuildBuddy same-repository credential isolation and a dedicated Renovate author.
-The author intake list stays empty and factory dependency landing stays refused.
-No credentials, account settings or deployed flags are changed here. Existing
-PRs with auto-merge armed need a separate operator audit.
+The staged policy retains ordinary major, minor, patch, digest, pin and lock
+updates for the eventual protected-queue path; no approval review is manufactured. Ordinary PR creation remains
+before 06:00 Monday in America/Vancouver, with five concurrent PRs, two per hour
+and a three-day release age. Security alerts retain their immediate exception.
+See [coverage and holds](COVERAGE.md) for exact exclusions and generated files.
 
-## GKE staged cutover
+**Activation is held.** The inactive preparation can ship separately. Do not
+enable any automerge switch or writer until
+`factory/dependency-evidence` is required in ruleset 9180009, pinned to its
+verified App integration, alongside `pr-checks`. Renovate's native auto-merge
+can enqueue before checks finish: the ruleset must enforce independent review.
+The staged publisher must have a verified existing identity, fresh PR/queue
+canaries, stale-evidence refusal and the CI credential boundary from #7005.
+No credential, App grant, ruleset or live intake setting is changed by this PR.
+Reusing an existing installation is preferred; a new grant needs exact approval.
 
-Repository preflight is non-writing. Render the home chart with `values.yaml`,
-the hub chart with `values.yaml` followed by `values-gke.yaml`, and the future
-home cutover state with `values.yaml` followed by
-`values-home-suspend.yaml`. The focused `migration_staging_test.py` asserts the
-effective `spec.suspend` values, not just the overlay filenames. An operator may
-also inspect the hub Application, its suspended CronWorkflows, and the existing
-`OnePasswordItem` and Secret materialization. Those checks do not establish
-that either writer can complete its GitHub work.
+Both independent dependency assessments must record `authorization_scope` and
+`evidence_coverage`, and list the complete server-fetched changed-file inventory
+in `reviewed_files`. Ordinary bumps, including majors, need no routine human
+approval. Credential, access, security-policy, budget or audience changes
+bundled with an update need exact existing authority or review refuses that
+update. Existing holds and compatibility pins remain binding. Old assessments
+without these dimensions cannot pass.
 
-The live handoff is deliberately separate from this staged merge:
+The factory's own landing function remains inspection-only for dependency
+PRs. After separate activation, Renovate and the weekly maintenance job can
+request native platform auto-merge; the factory supplies independent evidence,
+and the required App-bound queue check must enforce it. A successful empty GitHub graph is a coverage limitation:
+reviewers must provide upstream advisory/artifact evidence. Both reviewers must
+agree on complete base/head `advisory_sources` inventories bound to the reviewed
+commits and covering every corresponding changed file. Each component records a
+stable occurrence identity, immutable artifact hash, exposure fingerprint, exact
+package version or Git commit, file associations and full OSV response hash.
+Completion and each publication freshly query both inventories without credentials.
+Partial remediation is eligible when unrelated findings remain only on exactly
+unchanged components. Added vulnerable versions, new vulnerable occurrences or
+exposure, and changed advisory records invalidate approval. A new version that
+still has findings refuses even if it removes others. This preserves the
+established non-regression policy; it creates no vulnerability waiver. If any
+finding remains, the current PR or queue base must equal the independently
+reviewed base. A moved base invalidates approval and requires fresh review,
+since main may have fixed that finding or changed its exposure. Clean candidates
+retain the existing equivalent-content queue comparison.
 
-1. Confirm the hub Application is healthy, both hub CronWorkflows are suspended,
-   and the home CronWorkflows remain active. Inspect both clusters for active
-   Workflows and wait for every run to finish. Setting `suspend` does not stop a
-   Workflow that is already running.
-2. During the staged overlap, audit both clusters' workflow history and confirm
-   that no hub writer fired. The hub's effective suspended values make this a
-   bounded staging check, not evidence that its GitHub writes work and not a
-   claim of exactly-once execution.
-3. At the operator-controlled cutover, make a reviewed repository change that
-   adds `values-home-suspend.yaml` after `values.yaml` in the home
-   `application.yaml`. Wait for the home Application to reconcile, wait for any
-   already-active home Workflow to finish, and verify both home CronWorkflows
-   remain suspended. Keep both hub CronWorkflows suspended throughout this step.
-4. Only after the home suspension is effective, make a separate reviewed change
-   that sets both fields in `values-gke.yaml` to `false`. After the hub
-   reconciles, wait for the scheduled hub Renovate scan to complete and surface
-   its result and for scheduled hub apko maintenance to complete and open or
-   update its maintenance PR. Manual rendering, sync, or suspension checks are
-   not substitutes for those scheduled writing checks. Keep Renovate dashboard
-   issue #4493 open.
+The server enforces inventory agreement, commit/file binding and response
+comparison. Both reviewers must establish the complete dependency/SBOM closure,
+exposure inputs and feed applicability; hashes or unknown package names returning
+empty results do not prove coverage. Unsupported coverage, incomplete inventories,
+pagination and read failures refuse the update. The bound is 100 components per
+side; larger inventories still need a supported adapter.
 
-If hub verification fails, restore both hub fields to `true` and wait for any
-active hub Workflow to finish before removing the home overlay in another
-reviewed change. This ordering always establishes one suspended side before
-enabling the other; it does not terminate in-flight work.
+Dependency checks wait for exact-head `pr-checks`, then re-read evidence and the
+durable approval immediately before each publication, within a 60-second
+collection budget. Slow reads revoke an existing success while the publisher
+can write. This bounds collection age, not the lifetime of a check at GitHub:
+[GitHub's Checks API](https://docs.github.com/en/rest/checks/runs?apiVersion=2022-11-28)
+has no expiry field. This is point-in-time verification of the exact PR or queue
+commit, not atomic merge-time freshness. A dead publisher or lost token cannot
+revoke a stored success, and an advisory may arrive between publication and merge.
+The activation canary must demonstrate the implemented checks and refusals, and
+Joe must explicitly accept this residual race before enabling automatic merges.
+An expiry service is not an existing repository requirement or a prerequisite
+introduced by this change.
 
-Issue #6247 retains the operational acceptance for the scheduled hub scan, the
-scheduled apko maintenance PR, and the duplicate-writer audit plus durable home
-suspension. The home enrollment stays in place until that acceptance is complete
-and any later home-cluster retirement is separately authorized.
+#7168 owns retired-home cleanup and #7186 owns the hub suspension flip under
+#7001/#7068. Reuse those PRs; neither schedule is changed here. Keep those issues
+open until successful scheduled scans and dedicated-bot PRs are observed.
 
-## apko lock maintenance
+## Repository checks
 
-A second CronWorkflow runs at 01:00 America/Vancouver each Monday. It regenerates
-every committed `apko.lock.json` on Linux through the repository's pinned
-`rules_apko` toolchain, runs the committed-artifact generators, and maintains a
-single `renovate/apko-lock-maintenance` PR. The script opens or updates the PR
-and labels it `dependencies`; it never requests auto-merge. Updated Wolfi
-packages require the same adversarial approval and separately authorized merge
-as other dependency updates.
+`hub_deployment_test.py` is retained from #7168: it follows the actual hub root,
+checks overlay order, and verifies effective suspension, resource identities,
+schedules and credential references. `dependency_policy_test.py` retains the
+expanded extraction, maintenance, ownership and reviewed auto-merge tests from
+#7358 under the cleanup's new filename. Each Bazel target collects only its own
+test file. Policy tests retain the Helm and Node runfiles needed to exercise the
+rendered maintenance scripts. The retired two-cluster tests are not restored.
+
+These checks establish repository behavior, not live credential or rollout
+acceptance. Changing `suspend` does not terminate an already-running Workflow.
+
+## Weekly dependency maintenance
+
+The existing second CronWorkflow runs at 01:00 America/Vancouver each Monday.
+It keeps separate `renovate/<mode>-lock-maintenance` PRs for `apko`, `python`,
+`atlas`, `helm`, `op` and `claude`. Apko uses pinned `rules_apko` plus generators.
+Python runs both root requirement compilers with `--upgrade --no-build`.
+The shared compiler also refuses source builds, and Renovate passes
+`UV_NO_BUILD=true` to native uv artifact commands. Packages that require build-backend execution need isolated generation; a
+required source build is a failed automatic update. Each tool adapter
+updates all platforms atomically, without executing downloaded code. Each mode
+fails independently, and existing held, assigned, draft or human-authored PRs
+are preserved. The job labels PRs `dependencies`; its REBASE platform auto-merge
+request is gated off by default. An explicit `apkoLockMaintenance.automerge: true`
+renders the exact helper opt-in, only after separate activation authorization.
+The helper never submits an approval or bypasses checks. Enabled requests require
+the same App-bound evidence gate and CI as ordinary Renovate updates.
+
+## Smallest owner handoff
+
+The following steps remain on #7001/#7068 and #7005. They distinguish an action
+an authorized operator must be able to perform from approval to change settings.
+A statement of approval cannot replace missing access, evidence or passing CI.
+
+| Step | Kind | Exact target and evidence |
+| --- | --- | --- |
+| Verify existing identities | Manual/read-only capability | Joe or an authorized GitHub owner records the installed Renovate App/installation IDs, bot login and numeric user ID, selected `jomcgi-org/homelab` repository, actual grants and credential renewal arrangement; separately identify the trusted check publisher's numeric App ID. The organization-installation API returned HTTP 403 and is not retried through another route. No new grant is needed merely to report these facts. |
+| Verify the suspended hub | Manual/read-only capability | An authorized operator records the effective `renovate` and `renovate-apko-lock-maintenance` CronWorkflow states, available active-run/history evidence and its retention limits, plus OnePasswordItem synchronization/materialization attestation without retrieving Secret objects or values. Current tools cannot supply these resource reads. |
+| Close implementation/evidence gaps | Platform engineering and validation | #7005 still requires pre-execution isolation of same-repository PR and queue credentials and snapshots. Verify the concrete provider target and budget/access implications before authorizing its implementation. Complete base/head OSV revalidation and bounded late publication are implemented here; verify live feed applicability and point-in-time queue behavior. Unsupported advisory coverage still refuses the particular update. Any required token renewal/wiring is designed only after the existing identity is known. |
+| Authorize the verified canary setup | Exact settings approval | Only after identities and isolation are verified: supply the existing trusted publisher identity as `FACTORY_DEPENDENCY_GATE_TOKEN` and its matching `FACTORY_DEPENDENCY_GATE_APP_ID`, enable `FACTORY_DEPENDENCY_GATE_ENABLED`, and set `intake.dependency_pr_authors` / `dependency_pr_author_ids` to the verified dedicated bot, never `jomcgi`. Propose any missing grant/binding separately, scoped to this repository. Keep both scheduled writers suspended while testing PR and single-entry queue success, unapproved/unsafe/stale evidence, unavailable reads and late ownership holds. Verify publisher/token loss and an advisory arriving after success, and explicitly accept the remaining post-publication race; GitHub does not expire that success. |
+| Authorize enforcement and release | Exact settings and PR approval | After canaries pass, require `factory/dependency-evidence` from the verified App integration in ruleset `9180009`, preserving `pr-checks`, the queue and all protections. Release the reviewed inactive preparation through #7358, which already incorporates #7168; do not enqueue #7168 separately. Rebase #7186 onto the integrated result and refresh its CI/review for the explicit activation edits below. Keep activation separate from code-release authority. |
+
+The observed App IDs and bot identity must appear in the concrete approval
+request; they are not guessed here. Verification alone does not enable anything.
+After authorized release, observe the hub Application and effective schedules,
+then successful scheduled scans, all maintenance modes, dedicated-bot PR authors,
+independent evidence and queue outcomes before closing #7001/#7068. Reuse #7186
+for activation; do not create another activation task or change live resources.
+
+## Activation handoff to existing #7186
+
+These are instructions for that PR's owner, not changes to its branch or current
+release authority. First verify the identities, isolation, live advisory coverage,
+canaries and App-bound required check above. Then rebase #7186 onto the released
+preparation and include these exact edits in its reviewed activation diff:
+
+1. In `renovate.json`, set top-level `automerge` and `platformAutomerge` to true,
+   and do the same only in the ordinary-update rule identified by its
+   `matchUpdateTypes` list (major, minor, patch, pin, digest, pinDigest,
+   lockFileMaintenance, replacement, bump, rollback). Keep both explicit
+   compatibility-hold rules false and retain every existing exclusion.
+2. In `values-gke.yaml`, set `apkoLockMaintenance.automerge` to true. This renders
+   `MAINTENANCE_AUTOMERGE_ENABLED="true"` for that workflow. Keep the reusable
+   base chart default false. No credential or grant is implied by this flag.
+3. Apply #7186's existing `suspend: false` and
+   `apkoLockMaintenance.suspend: false` changes only after those activation
+   prerequisites are enforced. Both remain true in this preparation.
+4. Update the staging assertions in `dependency_policy_test.py` and
+   `hub_deployment_test.py` to the approved activated state, retaining tests for
+   missing/false helper flags, ownership holds, checks and compatibility holds.
+   Refresh exact-head CI, independent review, rollout and first-run evidence.
+
+The repository policy switch affects any runner consuming it, including a hosted
+App. CronWorkflow suspension alone is not an automerge control. The default-off
+helper makes no GraphQL merge-state or mutation call; it may still create/label a
+PR if an operator invokes the otherwise suspended maintenance workflow. No existing
+PR is disarmed or removed from the queue by this preparation.
+
+## Credential isolation boundary (#7005)
+
+Read-only ownership check on 2026-10-27: #7005 is open, `needs-thought`, with no
+assignee, comments or factory receipt; PR search found no separate implementation.
+This work reuses that issue and does not claim the boundary is resolved.
+
+BuildBuddy [injects secrets into trusted workflows](https://www.buildbuddy.io/docs/secrets/).
+Its [workflow service](https://github.com/buildbuddy-io/buildbuddy/blob/master/enterprise/server/workflow/service/service.go)
+classifies same-repository events as trusted, reads their workflow configuration
+from the pushed commit, and supplies runner repository credentials. The
+[action schema](https://github.com/buildbuddy-io/buildbuddy/blob/master/enterprise/server/workflow/config/config.go)
+has no per-event secret exclusion. The hosted deployment/version and effective
+credential capabilities still require owner verification; these upstream facts
+are not a read of live credentials.
+
+A shell `unset`, an early assertion or splitting actions in PR-editable YAML
+cannot enforce this boundary. The current `pr-checks` also inherits main's
+snapshot namespace, so merely withholding new environment variables does not
+prove old Docker/git credentials are absent. #7005 needs a platform-enforced
+untrusted PR/queue execution boundary, isolated snapshots/cache authority and a
+separate main-only publication identity. Preserve the required check name and
+main publication, including generated-file handling, in that migration. Changing
+provider configuration, token capabilities, cache/snapshot state or publication
+wiring is outside this code-only pass and needs an exact verified proposal.
+No workflow split or credential change is presented as an implemented safeguard.

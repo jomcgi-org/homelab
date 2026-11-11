@@ -327,6 +327,49 @@ func TestCheckNearbyWalksAreSubstitutes(t *testing.T) {
 	}
 }
 
+// A walk_name several routes match equally well checks the shortest name and
+// says so ("ben" was Ben Ledi with nothing to say it was a tie-break); a
+// name that is a walk's whole name, a single match, or one route listed
+// twice under two ids (as Beinn Eighe is live) carries no note.
+func TestCheckSaysWhenWalkNameIsATieBreak(t *testing.T) {
+	walk := func(id, name string) string {
+		return `{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"` + id + `","name":"` + name + `","url":"https://www.walkhighlands.co.uk/` + id + `.shtml","lat":57.1,"lon":-3.7,"distance_km":8,"ascent_m":600,"duration_h":4,"hours":[]}`
+	}
+	body := `{"schema_version":1,"fetched_at":"2026-10-19T14:20:00+00:00","walks":[` +
+		walk("ledi", "Ben Ledi") + `,` + walk("hope", "Ben Hope") + `,` + walk("nevis", "Ben Nevis by the Mountain Track") + `,` + walk("vrackie", "Ben Vrackie") + `,` +
+		strings.Replace(walk("eighe-a", "Beinn Eighe (western summits)"), "eighe-a.shtml", "eighe.shtml", 1) + `,` +
+		strings.Replace(walk("eighe-b", "Beinn Eighe (western summits)"), "eighe-b.shtml", "eighe.shtml", 1) + `]}`
+	wk, err := walks.Parse([]byte(body), "w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := fixture.Service(true)
+	svc.Walks = fixture.WalkSource{DS: wk}
+	for _, c := range []struct{ name, walk, note string }{
+		{"ben", "Ben Hope", `4 walks match "ben" equally well; Ben Hope was checked`},
+		{"Ben Ledi", "Ben Ledi", ""},
+		{"nevis", "Ben Nevis by the Mountain Track", ""},
+		{"beinn eighe western", "Beinn Eighe (western summits)", ""},
+	} {
+		env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-10-20", WalkName: c.name}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		it := env.Data.(connector.CheckResult).Items[0]
+		if it.Walk == nil || it.Walk.Name != c.walk {
+			t.Fatalf("%q checked %+v, want %s", c.name, it.Walk, c.walk)
+		}
+		if c.note == "" && it.Walk.MatchNote != "" || !strings.Contains(it.Walk.MatchNote, c.note) {
+			t.Errorf("%q note = %q, want %q", c.name, it.Walk.MatchNote, c.note)
+		}
+		for _, other := range it.Walk.AlsoMatched {
+			if other == c.walk {
+				t.Errorf("%q also matched the same route: %v", c.name, it.Walk.AlsoMatched)
+			}
+		}
+	}
+}
+
 // Before 09:00 the night under way is yesterday's: check accepts its date,
 // and a plan with stargazing starts on it.
 func TestTonightAfterMidnight(t *testing.T) {
@@ -853,5 +896,63 @@ func TestRefinedAdviceMetadataAndSize(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(sky.Meta.Notes, " "), "cloud base") {
 		t.Fatal(sky.Meta.Notes)
+	}
+}
+
+func TestCheckNightAlternativesAreDistinct(t *testing.T) {
+	// The checked point has one clear hour. Better sites are outside its
+	// inner 10 km search, with the first two less than 1 km apart.
+	site := func(id string, lat float64, count int, fetched string) string {
+		var hours []string
+		for h := 0; h < count; h++ {
+			stamp := time.Date(2026, 10, 19, 20+h, 0, 0, 0, time.UTC).Format(time.RFC3339)
+			hours = append(hours, fmt.Sprintf(`{"time":%q,"cloud_area_fraction":0,"dark":true}`, stamp))
+		}
+		return fmt.Sprintf(`{"id":%q,"lat":%f,"lon":-4,"lp_zone":"pristine","forecast_fetched_at":%q,"clear_dark_hours":%d,"clear_twilight_hours":%d,"best_hours":[%s]}`, id, lat, fetched, count, count, strings.Join(hours, ","))
+	}
+	fresh := "2026-10-19T14:05:00Z"
+	checked := site("checked", 57, 1, fresh)
+	a, b := site("a", 57.11, 8, fresh), site("b", 57.115, 8, fresh)
+	far := site("far", 57.19, 8, fresh)
+	for _, tc := range []struct {
+		name  string
+		sites []string
+		want  []string
+	}{
+		{"cluster", []string{a, b, far}, []string{"a", "far"}},
+		{"sparse", []string{a, b}, []string{"a"}},
+		{"quality before proximity", []string{site("closer", 57.11, 7, fresh), far}, []string{"far", "closer"}},
+		{"equal rank permutation", []string{site("z", 57.11, 8, fresh), a, far}, []string{"a", "far"}},
+		{"equal rank reversed", []string{far, a, site("z", 57.11, 8, fresh)}, []string{"a", "far"}},
+		{"no unsuitable filler", []string{a, b, site("cloudy", 57.19, 0, fresh), site("stale", 57.20, 8, "2026-10-16T14:05:00Z")}, []string{"a"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"fetched_at":"2026-10-19T14:05:00Z","sites":[` + strings.Join(append([]string{checked}, tc.sites...), ",") + `]}`
+			ds, err := stars.Parse([]byte(body), []byte(`{"sites":[]}`), "spacing")
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc := fixture.Service(true)
+			svc.Data = fixture.Source{DS: ds}
+			env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "stargaze", Date: "2026-10-19", Lat: f(57), Lon: f(-4)}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := env.Data.(connector.CheckResult).Items[0]
+			if item.Verdict != verdict.Marginal || item.Night.SiteID != "checked" {
+				t.Fatalf("checked point changed: %+v", item)
+			}
+			if len(item.NearbyNights) != len(tc.want) {
+				t.Fatalf("alternatives: %+v, want IDs %v", item.NearbyNights, tc.want)
+			}
+			for i, id := range tc.want {
+				if item.NearbyNights[i].SiteID != id {
+					t.Fatalf("alternative %d = %s, want %s", i, item.NearbyNights[i].SiteID, id)
+				}
+				if item.NearbyNights[i].Verdict != verdict.Go {
+					t.Fatalf("unsuitable alternative: %+v", item.NearbyNights[i])
+				}
+			}
+		})
 	}
 }

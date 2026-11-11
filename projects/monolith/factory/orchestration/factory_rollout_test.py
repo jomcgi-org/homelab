@@ -2,11 +2,14 @@
 
 import asyncio
 import base64
+import gc
+import weakref
 from copy import deepcopy
 from types import SimpleNamespace
 
 import httpx
 import pytest
+from aiohttp import ClientConnectorError
 
 from factory.orchestration import factory_rollout as rollout
 
@@ -419,6 +422,168 @@ def test_short_cache_expires_and_shares_failures_without_turning_them_into_succe
     assert rollout._cached(("snapshot",), lambda: {"recovered": True}) == {
         "recovered": True
     }
+
+
+@pytest.mark.parametrize("kind", ["pending", "http", "cooldown", "connector"])
+def test_cached_failures_release_reader_and_caller_frames(monkeypatch, kind):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    monkeypatch.setattr(rollout, "_recent", {})
+    references, reads = [], []
+
+    class Payload:
+        pass
+
+    def payload():
+        value = Payload()
+        references.append(weakref.ref(value))
+        return value
+
+    request = httpx.Request("GET", "https://example.invalid/snapshot")
+    response = httpx.Response(503, request=request)
+    connection = SimpleNamespace(host="example.invalid", port=443, ssl=True)
+
+    def failed():
+        _reader_state = payload()
+        reads.append(True)
+        try:
+            if kind == "connector":
+                raise ConnectionRefusedError(111, "unavailable")
+            raise ValueError("inner read failure")
+        except Exception as cause:
+            if kind == "pending":
+                raise rollout.Pending(
+                    "unavailable", application="demo", resource="Deployment/demo"
+                ) from cause
+            if kind == "http":
+                raise httpx.HTTPStatusError(
+                    "unavailable", request=request, response=response
+                ) from cause
+            if kind == "connector":
+                raise ClientConnectorError(connection, cause) from cause
+            raise GitHubReadDeferred("unavailable") from cause
+
+    def call():
+        _caller_state = payload()
+        try:
+            rollout._cached(("snapshot",), failed)
+        except Exception as failure:
+            assert "unavailable" in str(failure)
+            if kind == "pending":
+                assert isinstance(failure, rollout.Pending)
+                assert failure.application == "demo"
+                assert failure.resource == "Deployment/demo"
+            elif kind == "http":
+                assert isinstance(failure, httpx.HTTPStatusError)
+                assert failure.request is request
+                assert failure.response is response
+            elif kind == "cooldown":
+                assert isinstance(failure, GitHubReadDeferred)
+            else:
+                assert isinstance(failure, ClientConnectorError)
+                assert failure.os_error.errno == 111
+                assert failure.os_error.strerror == "unavailable"
+                assert failure.args[1] is failure.os_error
+                assert failure.host == "example.invalid"
+        else:
+            pytest.fail("an unavailable read must remain a failure")
+
+    for _ in range(3):
+        call()
+        gc.collect()
+        assert all(reference() is None for reference in references)
+    assert len(reads) == 1
+    cached = rollout._recent[("snapshot",)][1]
+    assert cached.__traceback__ is None
+    assert cached.__cause__ is None
+    assert cached.__context__ is None
+
+
+@pytest.mark.parametrize("copy_behavior", ["raises", "same_object"])
+def test_uncopyable_failure_remains_an_uncached_failure(monkeypatch, copy_behavior):
+    monkeypatch.setattr(rollout, "_recent", {})
+    reads = []
+
+    class Uncopyable(ValueError):
+        def __copy__(self):
+            if copy_behavior == "raises":
+                raise TypeError("cannot copy")
+            return self
+
+    def failed():
+        reads.append(True)
+        raise Uncopyable("original failure")
+
+    for _ in range(2):
+        with pytest.raises(Uncopyable, match="original failure"):
+            rollout._cached(("snapshot",), failed)
+        assert ("snapshot",) not in rollout._recent
+    assert len(reads) == 2
+
+
+@pytest.mark.parametrize("shape", ["wide", "deep", "cycle"])
+def test_unbounded_failure_metadata_is_not_cached(monkeypatch, shape):
+    monkeypatch.setattr(rollout, "_recent", {})
+    metadata = list(range(300))
+    if shape == "deep":
+        metadata = []
+        for _ in range(12):
+            metadata = [metadata]
+    elif shape == "cycle":
+        metadata = []
+        metadata.append(metadata)
+
+    def failed():
+        exc = ValueError("unavailable")
+        exc.detail = metadata
+        raise exc
+
+    with pytest.raises(ValueError, match="unavailable"):
+        rollout._cached(("snapshot",), failed)
+    assert ("snapshot",) not in rollout._recent
+
+
+def test_repeated_large_publication_history_keeps_ancestry_after_content_reads(
+    monkeypatch,
+):
+    from factory.orchestration import factory_landing
+
+    reads = []
+
+    def read(_repo, path):
+        reads.append(path)
+        return (
+            {"status": "ahead"}
+            if path.startswith("compare/")
+            else {"content": "manifest"}
+        )
+
+    monkeypatch.setattr(factory_landing, "github_get", read)
+    rollout._immutable_get.cache_clear()
+    rollout._ancestry_status.cache_clear()
+    paths = [f"compare/{i:040x}...{'f' * 40}?per_page=1&page=2" for i in range(330)]
+    for path in paths:
+        assert rollout._get("history/repo", path)["status"] == "ahead"
+    for i in range(330):
+        rollout._get("history/repo", f"contents/path{i}?ref={'a' * 40}")
+    for path in paths:
+        assert rollout._get("history/repo", path)["status"] == "ahead"
+    assert len([path for path in reads if path.startswith("compare/")]) == 330
+    # A different immutable source pair is new evidence, never a cached verdict.
+    rollout._get("history/repo", f"compare/{'e' * 40}...{'f' * 40}?per_page=1&page=2")
+    assert len(reads) == 661
+
+
+def test_unknown_ancestry_is_not_cached_as_a_rollout_fact(monkeypatch):
+    from factory.orchestration import factory_landing
+
+    replies = iter([{}, {"status": "ahead"}])
+    monkeypatch.setattr(factory_landing, "github_get", lambda *_: next(replies))
+    rollout._ancestry_status.cache_clear()
+    path = f"compare/{'1' * 40}...{'2' * 40}?per_page=1&page=2"
+    with pytest.raises(rollout.Pending, match="comparison_status_unknown"):
+        rollout._get("unknown/repo", path)
+    assert rollout._get("unknown/repo", path) == {"status": "ahead"}
 
 
 def test_external_tagged_sidecar_does_not_require_our_publication_digest():

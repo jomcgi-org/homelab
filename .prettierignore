@@ -30,11 +30,6 @@
 # Git worktrees have their own formatting
 .claude/worktrees/
 
-# Vendored third-party docs (impeccable frontend-design references, Apache-2.0):
-# kept byte-identical to upstream so the vendored copy stays verifiable. Baked
-# into the goosecracker guest image at /opt/impeccable/.
-**/vendor/impeccable/**
-
 # Prose (Markdown) and YAML: Prettier owns CODE, not prose. The CI formatter
 # (//bazel/tools/format:format_code) wires prettier to the `javascript` language
 # slot ONLY, so CI never reformats .md or .yaml. Local ci lint also selects
@@ -53,6 +48,3 @@ tools/session_collector/fixtures/*.jsonl
 # Muse 1.4.1 exec fixture is a verbatim two-turn JSONL recording from the
 # pinned CLI (same rationale as above): byte-stable test input, not code.
 projects/embervm/runtimes/claude/muse_exec_echo_two_turns_1_4_1.jsonl
-# KG audit calibration labels are JSON Lines, one labelled note per line
-# (same rationale): hand-labelled evaluation data, not code.
-projects/monolith/knowledge/evaluations/*/*.jsonl

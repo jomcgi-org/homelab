@@ -388,9 +388,8 @@ frontend:
       initialDelaySeconds: 3
       periodSeconds: 5
   # API_BASE points at the backend "web" Service (in-cluster).
-  # OTEL_COLLECTOR_HTTP_URL is intentionally empty. The same-origin /otel proxy
-  # returns 204 when no collector is configured. IMGPROXY_KEY/SALT are the only
-  # secrets: the SSR signer (lib/server/trips-img.js) reads them via
+  # IMGPROXY_KEY/SALT are the only secrets: the SSR signer
+  # (lib/server/trips-img.js) reads them via
   # $env/dynamic/private to sign /img URLs server-side and they never reach the
   # browser ($lib/server is never client-bundled).
   env:
@@ -412,8 +411,6 @@ frontend:
     - name: TURNSTILE_SITE_KEY
       value: "0x4AAAAAADm59tvOGWo09IYc"
     - name: PUBLIC_MAINTENANCE_BANNER
-      value: ""
-    - name: OTEL_COLLECTOR_HTTP_URL
       value: ""
     # imgproxy URL signing secret (hex-encoded KEY/SALT), synced from 1Password
     # via the imgproxy-signing OnePasswordItem. The SSR signer computes the same

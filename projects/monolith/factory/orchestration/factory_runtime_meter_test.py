@@ -32,6 +32,14 @@ from factory.orchestration.models import (
 )
 
 
+def operator_request(proposal, key):
+    return dict(
+        actor="operator",
+        request_key=key,
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+
+
 @pytest.fixture
 def database(tmp_path, monkeypatch):
     engine = create_engine(
@@ -62,7 +70,6 @@ def database(tmp_path, monkeypatch):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
     monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "true")
     monkeypatch.setenv("FACTORY_RUNTIME_METER_TASK_IDS", "task")
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     policy = {
         "repo": "org/repo",
         "issue_numbers": [7001],
@@ -167,6 +174,28 @@ def update(receipt, sequence, output=0, coverage="parent"):
             "coverage": coverage,
         },
     )
+
+
+def test_staged_receipt_binds_usage_only_at_attempt_and_never_twice(database):
+    body = b'{"model":"astra","dispatch_id":"exact-dispatch"}'
+    receipt = result_receipts.prepare_receipt(1, "owner", 1, "guest", body, staged=True)
+    assert "runtime_meter" not in receipt
+    with Session(database) as db:
+        assert not meter._records_for_receipt(db, receipt["id"], meter.BOUND)
+    additions = result_receipts.attempt_prepared_receipt(
+        receipt["id"], 1, "owner", 1, "guest", body, lambda: None
+    )
+    assert additions["runtime_meter"] is True
+    assert not update(receipt, 0)["stop"]
+    assert not update(receipt, 1, 100000)["stop"]
+    with pytest.raises(result_receipts.ReceiptRejected, match="receipt_not_prepared"):
+        result_receipts.attempt_prepared_receipt(
+            receipt["id"], 1, "owner", 1, "guest", body, lambda: None
+        )
+    with Session(database) as db:
+        assert len(meter._records_for_receipt(db, receipt["id"], meter.BOUND)) == 1
+        owner = db.get(FactoryReceipt, 838)
+        assert meter.objective_totals(db, owner)["known_list_usd"] == 5
 
 
 def test_native_binding_and_acknowledged_duplicates_are_durable(database):
@@ -410,11 +439,7 @@ def test_exact_policy_amendment_is_reviewable_idempotent_and_stays_paused(databa
     assert proposal["remaining_task_allocation_usd"] == 61
     with Session(database) as db:
         assert db.get(SwarmTask, "task").budget_usd == 50
-    args = dict(
-        actor="operator",
-        request_key="one",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "one")
     applied = amendments.apply(838, overlay, direction, **args)
     assert applied["stays_paused"]
     assert amendments.apply(838, overlay, direction, **args) == applied
@@ -666,9 +691,7 @@ def test_expired_recovery_rechecks_fresh_authority(
     with pytest.raises(ValueError, match=reason):
         recovery.apply(
             **args,
-            actor="operator",
-            request_key="recover",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "recover"),
         )
     with Session(database) as db:
         assert db.get(FactoryReceipt, 838).state == "escalated"
@@ -683,9 +706,7 @@ def test_recovery_fences_old_retry_until_new_plan_and_enforces_deadline(
     proposal = recovery.preview(**args)
     recovery.apply(
         **args,
-        actor="operator",
-        request_key="recover",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "recover"),
     )
     assert controls.set_control("resume_task", "operator", task_id="task")["ok"]
     assert (
@@ -736,9 +757,7 @@ def test_recovery_cumulative_caps_cannot_be_bypassed(
     proposal = recovery.preview(**args)
     recovery.apply(
         **args,
-        actor="operator",
-        request_key="recover",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "recover"),
     )
     assert controls.set_control("resume_task", "operator", task_id="task")["ok"]
     with Session(database) as db, db.begin():
@@ -783,9 +802,7 @@ def test_expired_recovery_cannot_renew_after_second_settlement(
     proposal = recovery.preview(**args)
     recovery.apply(
         **args,
-        actor="operator",
-        request_key="recover",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "recover"),
     )
     later = now + timedelta(hours=2)
     monkeypatch.setattr(controls, "_now", lambda: later)
@@ -853,9 +870,7 @@ def test_policy_preview_changes_or_unresolved_work_prevent_application(
             838,
             {"task_budget_usd": 65},
             "continue",
-            actor="operator",
-            request_key="amend",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "amend"),
         )
 
 
@@ -897,9 +912,7 @@ def test_single_field_amendment_retains_graph_funding_contract(database):
         838,
         {"max_planner_turns": 10},
         "continue",
-        actor="operator",
-        request_key="planner",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "planner"),
     )
     with Session(database) as db:
         assert graph_budget(db, db.get(SwarmTask, "task")) == 50
@@ -996,11 +1009,7 @@ def test_capacity_release_intent_matrix(
         assert resumed["ok"] and resumed["pending"]
     if has_hold:
         proposal = releases.preview(838, 7170, "a" * 40, "Approved exact delivery")
-        args = dict(
-            actor="operator",
-            request_key="release-waiting",
-            expected_preview_sha256=proposal["preview_sha256"],
-        )
+        args = operator_request(proposal, "release-waiting")
         result = releases.apply(838, 7170, "a" * 40, "Approved exact delivery", **args)
         assert result["ok"]
         # A hold-only release on an already paused receipt needs no slot.
@@ -1158,11 +1167,7 @@ def test_landing_release_only_removes_hold_and_is_idempotent(
     proposal = releases.preview(838, 7170, "a" * 40, "Operator approved landing")
     with Session(database) as db:
         assert controls.landing_held(db.get(FactoryReceipt, 838))
-    args = dict(
-        actor="operator",
-        request_key="release",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "release")
     result = releases.apply(838, 7170, "a" * 40, "Operator approved landing", **args)
     assert result["ok"] and result["stays_paused"]
     assert result["delivery_accepted"] is False
@@ -1207,9 +1212,7 @@ def released_delivery(database, pull):
         7170,
         "b" * 40,
         "initial release",
-        actor="operator",
-        request_key="initial",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "initial"),
     )
     with Session(database) as db, db.begin():
         db.get(FactoryReceipt, 838).state = "escalated"
@@ -1236,11 +1239,7 @@ def test_landing_authorization_refresh_preserves_state_and_replays(
         before = json.loads(db.get(FactoryReceipt, 838).direction_json)
     proposal = releases.preview(838, 7170, "a" * 40, "reviewed rebase")
     assert proposal["operation"] == "refresh"
-    args = dict(
-        actor="operator",
-        request_key="refresh",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "refresh")
     result = releases.apply(838, 7170, "a" * 40, "reviewed rebase", **args)
     assert result["operation"] == "refresh" and not result["delivery_accepted"]
     assert releases.apply(838, 7170, "a" * 40, "reviewed rebase", **args) == result
@@ -1291,9 +1290,7 @@ def test_landing_refresh_competing_previews_cannot_overwrite_authorization(
         7170,
         "a" * 40,
         "refresh",
-        actor="operator",
-        request_key="first",
-        expected_preview_sha256=first["preview_sha256"],
+        **operator_request(first, "first"),
     )
     with pytest.raises(ValueError):
         releases.apply(
@@ -1301,9 +1298,7 @@ def test_landing_refresh_competing_previews_cannot_overwrite_authorization(
             7170,
             "a" * 40,
             "refresh",
-            actor="operator",
-            request_key="second",
-            expected_preview_sha256=second["preview_sha256"],
+            **operator_request(second, "second"),
         )
     with Session(database) as db:
         authorization = json.loads(db.get(FactoryReceipt, 838).direction_json)[
@@ -1501,9 +1496,7 @@ def test_landing_release_rechecks_preview_and_execution(
             7170,
             "a" * 40,
             "approved",
-            actor="operator",
-            request_key="one",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "one"),
         )
     with Session(database) as db:
         assert controls.landing_held(db.get(FactoryReceipt, 838)) is (
@@ -1837,9 +1830,7 @@ def test_receipt_hold_is_sticky_without_changing_budget_or_other_direction(
             838,
             overlay,
             proposal["direction"],
-            actor="operator",
-            request_key=key,
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, key),
         )
     with Session(database) as db:
         row = db.get(FactoryReceipt, 838)
@@ -1938,11 +1929,7 @@ def test_validation_preparation_is_narrow_audited_and_idempotent(
         assert before[key] == after[key]
     with Session(database) as db:
         receipt_before = db.get(FactoryReceipt, 838).model_dump()
-    args = dict(
-        actor="operator",
-        request_key="prepare",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "prepare")
     result = validation.apply(838, "bounded check", **args)
     assert result["state"] == "paused" and not result["execution_authorized"]
     assert validation.apply(838, "bounded check", **args) == result
@@ -2015,9 +2002,7 @@ def test_validation_rechecks_concurrent_state(database, validation_ready, change
         validation.apply(
             838,
             "bounded check",
-            actor="operator",
-            request_key="stale",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "stale"),
         )
     with Session(database) as db:
         assert json.loads(db.get(FactoryControl, "factory").policy_json)["auto_merge"]
@@ -2035,9 +2020,7 @@ def test_validation_competing_applications_are_serialized(database, validation_r
             return validation.apply(
                 838,
                 "bounded check",
-                actor="operator",
-                request_key=key,
-                expected_preview_sha256=proposal["preview_sha256"],
+                **operator_request(proposal, key),
             )
         except ValueError as exc:
             return str(exc)
@@ -2059,9 +2042,7 @@ def test_validation_preserves_implicit_primary_repository(database, validation_r
     result = validation_ready.apply(
         838,
         "implicit primary",
-        actor="operator",
-        request_key="implicit-primary",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "implicit-primary"),
     )
     assert result["ok"] and result["state"] == "paused"
     with Session(database) as db:
@@ -2125,9 +2106,7 @@ def test_fresh_issue_rechecks_inventory(database, validation_ready, change):
             None,
             "selected work",
             issue_number=7275,
-            actor="operator",
-            request_key="stale-fresh",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "stale-fresh"),
         )
 
 
@@ -2186,9 +2165,7 @@ def test_completed_refinement_prepares_delivery_without_reviving_receipt(
     result = validation.apply(
         838,
         "delivery after verified refinement",
-        actor="operator",
-        request_key="refined-issue",
-        expected_preview_sha256=preview["preview_sha256"],
+        **operator_request(preview, "refined-issue"),
     )
     assert result["state"] == "paused" and not result["execution_authorized"]
     with Session(database) as db:
@@ -2392,9 +2369,7 @@ def test_refinement_apply_rejects_changed_state(database, completed_refinement, 
         validation.apply(
             838,
             "prepare",
-            actor="operator",
-            request_key="changed",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "changed"),
         )
     with Session(database) as db:
         assert db.get(FactoryControl, "factory").model_dump() == control_before
@@ -2411,11 +2386,7 @@ def test_refinement_replay_does_not_read_github(completed_refinement, monkeypatc
 
     validation, _ = completed_refinement
     proposal = validation.preview(838, "prepare")
-    args = dict(
-        actor="operator",
-        request_key="once",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "once")
     result = validation.apply(838, "prepare", **args)
 
     def forbidden(*args):
@@ -2593,9 +2564,7 @@ def test_refinement_late_changes_refuse_apply(
         validation.apply(
             838,
             "prepare",
-            actor="operator",
-            request_key="late",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "late"),
         )
     with Session(database) as db:
         assert (
@@ -2643,10 +2612,111 @@ def held_apply(owner, proposal, key="continuation"):
     return owner.apply(
         838,
         "continue held work",
+        **operator_request(proposal, key),
+    )
+
+
+def refused_hold_direction(cause="refine-gate:task", origin="planner"):
+    hold = {"actor": "factory:conductor", "cause": cause, "reason": "stage"}
+    return {
+        "landing_hold": hold,
+        "landing_hold_provenance": {
+            "origin": origin,
+            "cause": cause,
+            "gate_id": "exact",
+            "hold": hold.copy(),
+        },
+        "landing_hold_refusals": [{"cause": cause, "gate_id": "exact"}],
+    }
+
+
+@pytest.mark.parametrize("origin", ["planner", "operator", "human_issue"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_refinement_continuation_preserves_hold_evidence(
+    database, held_refinement, monkeypatch, origin, enabled
+):
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", str(enabled).lower())
+    owner, _issue, direction = held_refinement
+    direction.update(refused_hold_direction(origin=origin))
+    with Session(database) as db, db.begin():
+        db.get(FactoryReceipt, 838).direction_json = json.dumps(direction)
+    if enabled and origin == "planner":
+        with pytest.raises(ValueError, match="restrictions_not_supported"):
+            owner.preview(838, "continue held work")
+        return
+    proposal = owner.preview(838, "continue held work")
+    result = held_apply(owner, proposal)
+    with Session(database) as db:
+        copied = json.loads(db.get(FactoryReceipt, result["receipt_id"]).direction_json)
+        assert all(copied[key] == value for key, value in direction.items())
+        assert controls.landing_held({"direction": copied})
+
+
+def test_operator_amendment_reasserts_previously_refused_hold(database, monkeypatch):
+    from factory.orchestration import factory_policy_amendment as amendments
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    paused(database)
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        row.direction_json = json.dumps(refused_hold_direction())
+        assert not controls.landing_held(row)
+    proposal = amendments.preview(838, {"landing_hold": True}, "Operator hold")
+    amendments.apply(
+        838,
+        {"landing_hold": True},
+        "Operator hold",
         actor="operator",
-        request_key=key,
+        request_key="reassert",
         expected_preview_sha256=proposal["preview_sha256"],
     )
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        assert controls.landing_held(row)
+        assert json.loads(row.direction_json)["landing_hold_refusals"]
+
+
+def test_operator_recovery_reasserts_previously_refused_hold(
+    database, expired_recovery, monkeypatch
+):
+    from factory.orchestration import factory_task_recovery as recovery
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    args, _issue, _now = expired_recovery
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        direction = json.loads(row.direction_json)
+        direction.update(refused_hold_direction())
+        row.direction_json = json.dumps(direction)
+        assert not controls.landing_held(row)
+    proposal = recovery.preview(**args)
+    recovery.apply(
+        **args,
+        actor="operator",
+        request_key="reassert",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    with Session(database) as db:
+        assert controls.landing_held(db.get(FactoryReceipt, 838))
+
+
+def test_unrelated_human_readmission_preserves_exact_refusal(database, monkeypatch):
+    from factory.orchestration import factory_decisions as decisions
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    paused(database)
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        row.direction_json = json.dumps(refused_hold_direction())
+        direction = decisions._direction(
+            row,
+            {},
+            {"key": "chat", "label": "continue", "effect": "chat"},
+            "operator",
+            None,
+        )
+        assert not controls.landing_held({"direction": direction})
+        assert direction["landing_hold_refusals"]
 
 
 def test_held_refinement_creates_distinct_restricted_delivery(
@@ -2687,9 +2757,7 @@ def test_held_refinement_creates_distinct_restricted_delivery(
         owner.apply(
             838,
             "changed reason",
-            actor="operator",
-            request_key="continuation",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "continuation"),
         )
 
 
@@ -2914,11 +2982,7 @@ def test_backlog_preparation_preserves_bounds_holds_and_requires_enable(
         assert before["intake"][key] == after["intake"][key]
     with Session(database) as db:
         receipt_before = db.get(FactoryReceipt, 838).model_dump()
-    args = dict(
-        actor="operator",
-        request_key="backlog",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "backlog")
     result = validation.apply_backlog("resume useful backlog", **args)
     assert result["state"] == "paused" and not result["execution_authorized"]
     assert validation.apply_backlog("resume useful backlog", **args) == result
@@ -2951,9 +3015,7 @@ def test_backlog_rejects_receipt_race_and_keeps_policy(database, validation_read
     with pytest.raises(ValueError, match="validation_preview_changed"):
         validation.apply_backlog(
             "resume",
-            actor="operator",
-            request_key="race",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "race"),
         )
     with Session(database) as db:
         assert (
@@ -2990,9 +3052,7 @@ def test_backlog_rechecks_authority_snapshot(database, validation_ready, change)
     with pytest.raises(ValueError):
         validation.apply_backlog(
             "resume",
-            actor="operator",
-            request_key="race",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "race"),
         )
     with Session(database) as db:
         assert not db.exec(
@@ -3039,6 +3099,46 @@ def test_backlog_empty_manual_allowlist_cannot_ingest_unreviewed_work(
         controls.validate_policy(inactive)
 
 
+@pytest.mark.parametrize("active", [False, True])
+@pytest.mark.parametrize(
+    "exclusions,accepted",
+    [
+        (["needs-human", "wontfix"], True),
+        (["needs-human", "security-finding", "wontfix"], True),
+        (["needs-human", "operator-only", "wontfix"], True),
+        (["needs-human"], False),
+        (["wontfix"], False),
+    ],
+)
+def test_backlog_preview_preserves_effective_exclusions(
+    database, validation_ready, active, exclusions, accepted
+):
+    if active:
+        safe = validation_ready.preview_backlog("prepare")["policy_after"]
+        safe["issue_numbers"] = [7001]
+        safe["intake"]["enabled"] = False
+    with Session(database) as db, db.begin():
+        control = db.get(FactoryControl, "factory")
+        policy = safe if active else json.loads(control.policy_json)
+        policy["repos"][policy["repo"]]["exclude_labels"] = exclusions
+        control.policy_json = json.dumps(policy)
+        if active:
+            db.get(FactoryReceipt, 838).state = "admitted"
+    if not accepted:
+        with pytest.raises(ValueError, match="backlog_requires_safe_exclusions"):
+            validation_ready.preview_backlog("restore")
+        return
+    proposal = validation_ready.preview_backlog("restore")
+    assert (
+        controls.repo_entry(proposal["policy_after"], policy["repo"])["exclude_labels"]
+        == exclusions
+    )
+    assert (
+        proposal["policy_after"]["intake"]["exclude_labels"]
+        == controls.intake_policy(policy)["exclude_labels"]
+    )
+
+
 def test_backlog_concurrent_apply_has_one_winner(database, validation_ready):
     proposal = validation_ready.preview_backlog("resume")
 
@@ -3046,9 +3146,7 @@ def test_backlog_concurrent_apply_has_one_winner(database, validation_ready):
         try:
             return validation_ready.apply_backlog(
                 "resume",
-                actor="operator",
-                request_key=key,
-                expected_preview_sha256=proposal["preview_sha256"],
+                **operator_request(proposal, key),
             )
         except ValueError as exc:
             return {"ok": False, "reason": str(exc)}
@@ -3092,9 +3190,7 @@ def test_backlog_active_restore_only_enables_intake(
         assert not refused["ok"] and refused["reason"] == "generation_not_advanced"
     result = validation.apply_backlog(
         "restore discovery alongside existing work",
-        actor="operator",
-        request_key="restore-active",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "restore-active"),
     )
     assert result["ok"] and result["state"] == "paused"
     with Session(database) as db:
@@ -3114,6 +3210,43 @@ def active_backlog(database, validation_ready):
         db.get(FactoryControl, "factory").policy_json = json.dumps(safe)
         db.get(FactoryReceipt, 838).state = "admitted"
     return validation_ready
+
+
+@pytest.mark.parametrize("operation", ["restore", "batch"])
+@pytest.mark.parametrize(
+    "exclusions,accepted",
+    [
+        (["needs-human", "wontfix"], True),
+        (["needs-human", "security-finding", "wontfix"], True),
+        (["needs-human", "operator-only", "wontfix"], True),
+        (["needs-human"], False),
+        (["wontfix"], False),
+    ],
+)
+def test_active_admission_checks_effective_repository_exclusions(
+    database, active_backlog, operation, exclusions, accepted
+):
+    with Session(database) as db, db.begin():
+        control = db.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json)
+        # The primary override, not the global defaults, is the guard's input.
+        policy["repos"].setdefault(policy["repo"], {})["exclude_labels"] = exclusions
+        control.policy_json = json.dumps(policy)
+        before = controls.validate_policy(policy)
+        if not accepted:
+            with pytest.raises(
+                ValueError, match="backlog_active_requires_safe_posture"
+            ):
+                controls._active_admission_policy(db, control)
+            return
+        after = (
+            controls.active_intake_restoration_policy(db, control)
+            if operation == "restore"
+            else controls.refinement_batch_policy(db, control, [7002])
+        )
+        assert after["repos"] == before["repos"]
+        assert after["intake"]["exclude_labels"] == before["intake"]["exclude_labels"]
+        assert control.policy_json == json.dumps(policy)
 
 
 @pytest.mark.parametrize("active", [True, False])
@@ -3141,9 +3274,7 @@ def test_broad_refinement_preserves_policy_and_pinned_work(
         expected, 9999, "factory:intake", task_class="bug-fix", repo=expected["repo"]
     )
     args = dict(
-        actor="operator",
-        request_key="continuous",
-        expected_preview_sha256=proposal["preview_sha256"],
+        **operator_request(proposal, "continuous"),
         include_refinement=True,
     )
     result = active_backlog.apply_backlog("continuous eligible work", **args)
@@ -3170,11 +3301,7 @@ def test_broad_refinement_refuses_queued_or_unresolved_work(
 
 def test_legacy_backlog_replay_keeps_original_request_shape(database, validation_ready):
     proposal = validation_ready.preview_backlog("legacy")
-    args = dict(
-        actor="operator",
-        request_key="legacy",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "legacy")
     result = validation_ready.apply_backlog("legacy", **args)
     assert (
         validation_ready.apply_backlog("legacy", **args, include_refinement=False)
@@ -3232,9 +3359,7 @@ def test_active_backlog_rejects_stale_preview(database, active_backlog, change):
     with pytest.raises(ValueError):
         active_backlog.apply_backlog(
             "restore",
-            actor="operator",
-            request_key="stale",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "stale"),
         )
     with Session(database) as db:
         assert not json.loads(db.get(FactoryControl, "factory").policy_json)["intake"][
@@ -3244,11 +3369,7 @@ def test_active_backlog_rejects_stale_preview(database, active_backlog, change):
 
 def test_active_backlog_replay_and_conflicting_key(database, active_backlog):
     proposal = active_backlog.preview_backlog("restore")
-    args = dict(
-        actor="operator",
-        request_key="active-replay",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "active-replay")
     result = active_backlog.apply_backlog("restore", **args)
     assert active_backlog.apply_backlog("restore", **args) == result
     with pytest.raises(ValueError, match="conflicting_validation_request"):
@@ -3286,9 +3407,7 @@ def test_active_backlog_concurrent_apply_has_one_winner(database, active_backlog
         try:
             return active_backlog.apply_backlog(
                 "restore",
-                actor="operator",
-                request_key=key,
-                expected_preview_sha256=proposal["preview_sha256"],
+                **operator_request(proposal, key),
             )["ok"]
         except ValueError as exc:
             assert str(exc) == "validation_preview_changed"
@@ -3342,11 +3461,7 @@ def test_refinement_batch_preserves_active_work_and_requires_enable(
     )
     assert after == expected
     assert not proposal["execution_authorized"]
-    args = dict(
-        actor="operator",
-        request_key="batch",
-        expected_preview_sha256=proposal["preview_sha256"],
-    )
+    args = operator_request(proposal, "batch")
     result = batch.apply([7249, 7251], "prepare exact briefs", **args)
     assert (
         result["ok"]
@@ -3395,9 +3510,7 @@ def test_refinement_batch_rechecks_issue_ownership(refinement_batch, change):
         batch.apply(
             [7249, 7251],
             "briefs",
-            actor="operator",
-            request_key="race",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "race"),
         )
 
 
@@ -3433,9 +3546,7 @@ def test_refinement_batch_rejects_changed_evidence(database, refinement_batch, c
         batch.apply(
             [7249],
             "briefs",
-            actor="operator",
-            request_key="race",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "race"),
         )
     with Session(database) as db:
         assert not json.loads(db.get(FactoryControl, "factory").policy_json)["intake"][
@@ -3493,9 +3604,7 @@ def test_refinement_batch_checks_work_item_ownership_and_history(
         batch.apply(
             [7249],
             "briefs",
-            actor="operator",
-            request_key="work-race",
-            expected_preview_sha256=proposal["preview_sha256"],
+            **operator_request(proposal, "work-race"),
         )
 
 
@@ -3508,9 +3617,7 @@ def test_refinement_batch_concurrent_apply_has_one_winner(refinement_batch):
             return batch.apply(
                 [7249],
                 "briefs",
-                actor="operator",
-                request_key=key,
-                expected_preview_sha256=proposal["preview_sha256"],
+                **operator_request(proposal, key),
             )["ok"]
         except ValueError:
             return False
@@ -3530,9 +3637,7 @@ def test_refinement_batch_replenishes_without_draining_unrelated_work(
     batch.apply(
         [7249],
         "first batch",
-        actor="operator",
-        request_key="first",
-        expected_preview_sha256=first["preview_sha256"],
+        **operator_request(first, "first"),
     )
     with Session(database) as db, db.begin():
         active = db.get(FactoryReceipt, 838)
@@ -3547,9 +3652,7 @@ def test_refinement_batch_replenishes_without_draining_unrelated_work(
     result = batch.apply(
         [7251],
         "next batch",
-        actor="operator",
-        request_key="second",
-        expected_preview_sha256=second["preview_sha256"],
+        **operator_request(second, "second"),
     )
     assert result["ok"] and result["state"] == "paused"
     assert second["policy_before"]["intake"]["refinement_batch"] == [7249]
@@ -3568,9 +3671,7 @@ def test_refinement_batch_cannot_replace_in_flight_batch(
     batch.apply(
         [7249],
         "first batch",
-        actor="operator",
-        request_key="first",
-        expected_preview_sha256=first["preview_sha256"],
+        **operator_request(first, "first"),
     )
     with Session(database) as db, db.begin():
         previous = db.get(FactoryReceipt, 838).model_dump(exclude={"id", "task_id"})
@@ -3578,3 +3679,1918 @@ def test_refinement_batch_cannot_replace_in_flight_batch(
         db.add(FactoryReceipt(**previous))
     with pytest.raises(ValueError):
         batch.preview([7251], "next batch")
+
+
+@pytest.fixture
+def scoped_delivery(database, held_delivery):
+    pull, direction = held_delivery
+    pull["draft"] = False
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        row.state = "succeeded"
+        row.task_paused = False
+        row.direction_json = json.dumps(
+            {k: v for k, v in direction.items() if k != "landing_hold"}
+        )
+    return pull
+
+
+def test_scoped_landing_grant_preview_apply_replay(database, scoped_delivery):
+    from factory.orchestration import factory_landing_release as releases
+
+    scope = {
+        "classification": "private_internal_reversible",
+        "evidence": "Operator inspected exact diff and deployment boundary.",
+    }
+    proposal = releases.preview(
+        838, 7170, "a" * 40, "Land reviewed change", scope=scope
+    )
+    assert proposal["operation"] == "authorize"
+    with Session(database) as db:
+        assert releases.scoped_refusal(db, db.get(FactoryReceipt, 838), 7170, "a" * 40)
+    args = dict(
+        **operator_request(proposal, "scoped"),
+        scope=scope,
+    )
+    result = releases.apply(838, 7170, "a" * 40, "Land reviewed change", **args)
+    assert result["ok"] and not result["delivery_accepted"]
+    assert releases.apply(838, 7170, "a" * 40, "Land reviewed change", **args) == result
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        assert row.state == "succeeded" and not row.task_paused
+        assert releases.scoped_refusal(db, row, 7170, "a" * 40) is None
+        assert releases.scoped_refusal(db, row, 7170, "b" * 40)
+        assert json.loads(row.direction_json)["conductor_gates"]
+        assert db.get(SwarmTask, "task").budget_usd == 50
+        assert db.exec(select(FactoryStart)).one().cost_usd == 4
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == releases.SCOPE_ACTION
+                    )
+                ).all()
+            )
+            == 1
+        )
+
+
+@pytest.mark.parametrize(
+    "classification", ["public", "security", "destructive", "private", ""]
+)
+def test_scoped_landing_rejects_other_scope(database, scoped_delivery, classification):
+    from factory.orchestration import factory_landing_release as releases
+
+    with pytest.raises(ValueError, match="landing_scope_unsupported"):
+        releases.preview(
+            838,
+            7170,
+            "a" * 40,
+            "reason",
+            scope={"classification": classification, "evidence": "evidence"},
+        )
+
+
+@pytest.mark.parametrize("change", ["hold", "paused", "head", "scope"])
+def test_scoped_landing_apply_rechecks_preview(database, scoped_delivery, change):
+    from factory.orchestration import factory_landing_release as releases
+
+    scope = {
+        "classification": "private_internal_reversible",
+        "evidence": "Exact diff assessment",
+    }
+    proposal = releases.preview(838, 7170, "a" * 40, "reason", scope=scope)
+    if change in ("hold", "paused"):
+        with Session(database) as db, db.begin():
+            row = db.get(FactoryReceipt, 838)
+            if change == "hold":
+                direction = json.loads(row.direction_json)
+                direction["landing_hold"] = {"reason": "security review"}
+                row.direction_json = json.dumps(direction)
+            else:
+                row.task_paused = True
+    elif change == "head":
+        scoped_delivery["head"]["sha"] = "b" * 40
+    else:
+        scope["evidence"] = "Different assessment"
+    with pytest.raises(ValueError):
+        releases.apply(
+            838,
+            7170,
+            "a" * 40,
+            "reason",
+            **operator_request(proposal, "scoped"),
+            scope=scope,
+        )
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        assert "landing_authorization" not in json.loads(row.direction_json)
+        if change == "hold":
+            assert controls.landing_held(row)
+
+
+@pytest.mark.parametrize("task_paused", [False, True])
+def test_landing_hold_only_preserves_expired_lease_and_funding(
+    database, monkeypatch, task_paused
+):
+    from factory.orchestration import factory_policy_amendment as amendments
+    from factory.orchestration import factory_funding_limits as funding
+
+    paused(database)
+    with Session(database) as db, db.begin():
+        db.get(FactoryReceipt, 838).task_paused = task_paused
+        controls._audit(
+            db,
+            "factory",
+            "funding_granted",
+            task_id="task",
+            policy_overlay={},
+            deadline_at="2020-01-01T00:00:00+00:00",
+            review_due_at="2020-01-01T00:00:00+00:00",
+        )
+        original = funding.amendment(db, "task")
+    before = controls.task_snapshot("task")
+    overlay = {"landing_hold": True}
+    direction = "Preserve explicitly authorized draft-only repository delivery."
+    proposal = amendments.preview(838, overlay, direction)
+    args = operator_request(proposal, "hold-only")
+    applied = amendments.apply(838, overlay, direction, **args)
+    assert amendments.apply(838, overlay, direction, **args) == applied
+    after = controls.task_snapshot("task")
+    assert after["direction"]["landing_hold"]["request_key"] == "hold-only"
+    assert after["task_paused"] == task_paused
+    for key in (
+        "policy",
+        "deadline_at",
+        "turns_used",
+        "planner_turns_used",
+        "committed_cost_usd",
+    ):
+        assert after[key] == before[key]
+    with Session(database) as db:
+        assert funding.amendment(db, "task") == original
+
+
+@pytest.fixture
+def recovered_amendment(database, expired_recovery):
+    from factory.orchestration import factory_task_recovery as recovery
+
+    args, _, now = expired_recovery
+    args = {**args, "max_work_turns": 7}
+    proposal = recovery.preview(**args)
+    recovery.apply(
+        **args,
+        **operator_request(proposal, "recover-for-amendment"),
+    )
+    return now
+
+
+@pytest.mark.parametrize(
+    "overlay", [{"max_review_rounds": 3}, {"max_task_turns_hard": 8}]
+)
+def test_recovered_amendment_preserves_deadline_and_recovery_grant(
+    database, recovered_amendment, overlay
+):
+    from factory.orchestration import factory_policy_amendment as amendments
+    from factory.orchestration import factory_funding_limits as funding
+
+    with Session(database) as db:
+        original_recovery = controls.task_recovery_grant("task", session=db)
+        original_funding = funding.amendment(db, "task")
+        original_task = db.get(SwarmTask, "task").model_dump()
+    proposal = amendments.preview(
+        838, overlay, "Adjust policy only; retain recovery limits."
+    )
+    args = operator_request(proposal, "review-cap-only")
+    applied = amendments.apply(
+        838, overlay, "Adjust policy only; retain recovery limits.", **args
+    )
+    assert (
+        amendments.apply(
+            838, overlay, "Adjust policy only; retain recovery limits.", **args
+        )
+        == applied
+    )
+    with Session(database) as db:
+        current = funding.amendment(db, "task")
+        assert current["deadline_at"] == original_funding["deadline_at"]
+        assert current["review_due_at"] == original_funding["review_due_at"]
+        assert controls.task_recovery_grant("task", session=db) == original_recovery
+        assert db.get(SwarmTask, "task").model_dump() == original_task
+        row = db.get(FactoryReceipt, 838)
+        assert row.task_paused and controls.landing_held(row)
+        assert controls.nonrenewable_recovery(row)
+        assert all(
+            funding.effective_policy(db, row)[k] == v for k, v in overlay.items()
+        )
+        assert (
+            controls.task_recovery_grant("task", session=db)["work_turn_ceiling"] == 7
+        )
+    assert (
+        controls.task_snapshot("task")["deadline_at"]
+        == original_recovery["deadline_at"]
+    )
+
+
+@pytest.mark.parametrize("change", ["recovery", "identical_recovery", "funding"])
+def test_recovered_amendment_binds_existing_authority(
+    database, recovered_amendment, change
+):
+    from factory.orchestration import factory_policy_amendment as amendments
+    from factory.orchestration import factory_funding_limits as funding
+
+    overlay = {"max_review_rounds": 3}
+    proposal = amendments.preview(838, overlay, "Review cap.")
+    with Session(database) as db, db.begin():
+        if change in {"recovery", "identical_recovery"}:
+            action = controls.TASK_RECOVERY_ACTION
+            detail = {"proposal": controls.task_recovery_grant("task", session=db)}
+            if change == "recovery":
+                detail["proposal"]["work_turn_ceiling"] = 6
+        else:
+            action = "funding_granted"
+            detail = funding.amendment(db, "task")
+            detail.pop("audit_id")
+            detail["review_due_at"] = recovered_amendment.isoformat()
+        controls._audit(db, "other-operator", action, task_id="task", **detail)
+    with pytest.raises(ValueError, match="policy_amendment_preview_changed"):
+        amendments.apply(
+            838,
+            overlay,
+            "Review cap.",
+            **operator_request(proposal, "stale-recovery"),
+        )
+
+
+def test_recovered_amendment_preserves_expired_funding_lease(
+    database, recovered_amendment
+):
+    from factory.orchestration import factory_policy_amendment as amendments
+    from factory.orchestration import factory_funding_limits as funding
+
+    with Session(database) as db, db.begin():
+        prior = funding.amendment(db, "task")
+        prior.pop("audit_id")
+        prior["review_due_at"] = (
+            recovered_amendment - timedelta(minutes=1)
+        ).isoformat()
+        controls._audit(db, "operator", "funding_granted", task_id="task", **prior)
+    proposal = amendments.preview(838, {"max_review_rounds": 3}, "Review cap.")
+    amendments.apply(
+        838,
+        {"max_review_rounds": 3},
+        "Review cap.",
+        **operator_request(proposal, "no-renewal"),
+    )
+    with Session(database) as db:
+        assert funding.amendment(db, "task")["review_due_at"] == prior["review_due_at"]
+
+
+def test_recovered_amendment_rejects_expired_absolute_deadline(
+    database, recovered_amendment, monkeypatch
+):
+    from factory.orchestration import factory_policy_amendment as amendments
+
+    monkeypatch.setattr(
+        controls, "_now", lambda: recovered_amendment + timedelta(hours=1)
+    )
+    with pytest.raises(ValueError, match="amendment_task_deadline_expired"):
+        amendments.preview(838, {"max_review_rounds": 3}, "Review cap.")
+
+
+def test_recovered_amendment_cannot_change_timeout(database, recovered_amendment):
+    from factory.orchestration import factory_policy_amendment as amendments
+
+    with pytest.raises(ValueError, match="amendment_recovery_deadline_immutable"):
+        amendments.preview(838, {"task_timeout_seconds": 86400}, "Change timeout.")
+
+
+@pytest.fixture
+def progress_recovery(database, recovered_amendment, monkeypatch):
+    from factory.orchestration import factory_funding as progress
+    from factory.orchestration import factory_conductor as conductor
+
+    head = "a" * 40
+    artifact = {
+        "pr_number": 3,
+        "head_sha": head,
+        "verdict": "changes_requested",
+        "summary": "Remove the unrelated edits",
+    }
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        policy = json.loads(row.policy_json)
+        policy["reviewer_model"] = "astra"
+        row.policy_json = json.dumps(policy)
+        task = db.get(SwarmTask, "task")
+        task.repo = "org/repo"
+        task.base_branch = "main"
+        db.add_all(
+            [
+                SwarmNodeRun(
+                    task_id="task",
+                    node_key="implement_saved",
+                    attempt=1,
+                    status="succeeded",
+                    session_id=1,
+                    cost_usd=0.1,
+                    head_sha=head,
+                    outcome_json=json.dumps(
+                        {"artifact": {"pr_number": 3, "head_sha": head}}
+                    ),
+                ),
+                AgentSession(
+                    id=2,
+                    local_session_id="factory:task:review_fix:1",
+                    workspace="guest",
+                    branch="factory/task",
+                    model="astra",
+                    node_key="review_fix",
+                    node_attempt=1,
+                ),
+            ]
+        )
+        db.add(
+            SwarmNodeRun(
+                task_id="task",
+                node_key="review_fix",
+                attempt=1,
+                session_id=2,
+                pin_json=json.dumps({"model": "astra"}),
+                status="succeeded",
+                head_sha=head,
+                model="astra",
+                cost_usd=0.1,
+                outcome_json=json.dumps({"artifact": artifact}),
+            )
+        )
+    monkeypatch.setattr(
+        conductor,
+        "_review_recovery_evidence",
+        lambda task, review, **kw: {"state": "ready", **conductor._artifact(review)},
+    )
+    quota = {
+        "available": True,
+        "providers": {
+            "codex": {
+                "observed": True,
+                "age_seconds": 0,
+                "status": "allowed",
+                "windows": [
+                    {
+                        "name": "primary",
+                        "used_percent": 20,
+                        "expired": False,
+                        "resets_at": (
+                            recovered_amendment + timedelta(days=1)
+                        ).isoformat(),
+                    }
+                ],
+            }
+        },
+    }
+    monkeypatch.setattr(
+        progress.provider_quota, "fetch_provider_quota_sync", lambda **kw: quota
+    )
+    return {
+        "receipt_id": 838,
+        "pr_number": 3,
+        "head_sha": head,
+        "direction": "Continue the same artifact; retain landing hold and all accounting.",
+    }, quota
+
+
+def test_progress_authorization_preserves_original_grant_and_accounting(
+    database, progress_recovery
+):
+    from factory.orchestration import factory_funding as progress
+    from factory.orchestration import factory_funding_limits as funding
+
+    args, _ = progress_recovery
+    with Session(database) as db:
+        original = funding.latest(db, "task", controls.TASK_RECOVERY_ACTION)
+        spent = controls._accounting(controls._starts(db, "task"))
+        direction = db.get(FactoryReceipt, 838).direction_json
+    proposal = progress.preview_continuation(**args)
+    request = {
+        **args,
+        "actor": "operator",
+        "request_key": "progress-one",
+        "expected_preview_sha256": proposal["preview_sha256"],
+    }
+    first = progress.apply_continuation(**request)
+    assert first["ok"] and progress.apply_continuation(**request) == first
+    with Session(database) as db:
+        assert funding.latest(db, "task", controls.TASK_RECOVERY_ACTION) == original
+        assert controls._accounting(controls._starts(db, "task")) == spent
+        row = db.get(FactoryReceipt, 838)
+        assert row.direction_json == direction
+        assert row.task_id == "task" and not row.task_paused
+        assert controls.landing_held(row)
+        effective = controls.task_recovery_grant("task", session=db)
+        assert effective["deadline_at"] == first["lease"]["deadline_at"]
+        assert funding.effective_policy(db, row)["task_budget_usd"] == 50
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == progress.CONTINUATION_LEASE
+                    )
+                ).all()
+            )
+            == 1
+        )
+    assert not progress.renew_continuation(
+        "task"
+    )  # No new reviewed head is no new authority.
+
+
+@pytest.mark.parametrize(
+    "change", ["version", "grant", "funding", "head", "uncertain", "pause", "quota"]
+)
+def test_progress_apply_rechecks_bound_authority(database, progress_recovery, change):
+    from factory.orchestration import factory_funding as progress
+
+    args, quota = progress_recovery
+    proposal = progress.preview_continuation(**args)
+    with Session(database) as db, db.begin():
+        if change == "version":
+            db.get(FactoryControl, "factory").version += 1
+        elif change == "grant":
+            raw = db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.action == controls.TASK_RECOVERY_ACTION
+                )
+            ).first()
+            db.add(
+                FactoryAudit(
+                    actor="other",
+                    action=raw.action,
+                    task_id="task",
+                    detail_json=raw.detail_json,
+                )
+            )
+        elif change == "funding":
+            controls._audit(
+                db,
+                "other",
+                "funding_granted",
+                task_id="task",
+                policy_overlay={"max_task_turns_hard": 8},
+            )
+        elif change == "head":
+            row = db.exec(
+                select(SwarmNodeRun).where(SwarmNodeRun.node_key == "review_fix")
+            ).one()
+            row.outcome_json = row.outcome_json.replace("a" * 40, "b" * 40)
+        elif change == "uncertain":
+            db.exec(select(FactoryStart)).first().status = "uncertain"
+        elif change == "pause":
+            db.get(FactoryReceipt, 838).task_paused = False
+        elif change == "quota":
+            quota["providers"]["codex"]["age_seconds"] = 999999
+    with pytest.raises(ValueError):
+        progress.apply_continuation(
+            **args,
+            **operator_request(proposal, "progress-stale"),
+        )
+    with Session(database) as db:
+        assert (
+            db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.action == progress.CONTINUATION_AUTHORIZED
+                )
+            ).first()
+            is None
+        )
+
+
+def test_progress_new_review_renews_once_then_repeated_failure_stops(
+    database, progress_recovery
+):
+    from factory.orchestration import factory_funding as progress
+
+    args, _ = progress_recovery
+    p = progress.preview_continuation(**args)
+    progress.apply_continuation(
+        **args,
+        **operator_request(p, "progress"),
+    )
+    for i, head in enumerate(("b" * 40, "c" * 40)):
+        artifact = {
+            "pr_number": 3,
+            "head_sha": head,
+            "verdict": "changes_requested",
+            "summary": "Still not fixed",
+        }
+        with Session(database) as db, db.begin():
+            db.add(
+                AgentSession(
+                    id=3 + i,
+                    local_session_id=f"factory:task:review_next_{i}:1",
+                    workspace="guest",
+                    branch="factory/task",
+                    model="astra",
+                    node_key=f"review_next_{i}",
+                    node_attempt=1,
+                )
+            )
+            db.add(
+                SwarmNodeRun(
+                    task_id="task",
+                    node_key=f"review_next_{i}",
+                    attempt=1,
+                    session_id=3 + i,
+                    pin_json=json.dumps({"model": "astra"}),
+                    status="succeeded",
+                    head_sha=head,
+                    model="astra",
+                    cost_usd=0.1,
+                    outcome_json=json.dumps({"artifact": artifact}),
+                )
+            )
+        assert progress.renew_continuation("task") is (i == 0)
+    with Session(database) as db:
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == progress.CONTINUATION_LEASE
+                    )
+                ).all()
+            )
+            == 2
+        )
+
+
+@pytest.mark.parametrize(
+    "hold", ["pending", "escalated", "budget_approval_required", "refusal"]
+)
+def test_continuation_shares_funding_review_wait(
+    database, progress_recovery, monkeypatch, hold
+):
+    from factory.orchestration import factory_funding as funding
+
+    args, _ = progress_recovery
+    proposal = funding.preview_continuation(**args)
+    funding.apply_continuation(
+        **args,
+        **operator_request(proposal, "progress-wait"),
+    )
+    with controls._locked_session() as (db, _control):
+        controls._audit(db, funding.ACTOR, "funding_review_requested", task_id="task")
+        db.flush()
+        if hold != "pending":
+            controls._audit(
+                db,
+                funding.ACTOR,
+                "funding_review_settled",
+                task_id="task",
+                request_id=funding.latest(db, "task", "funding_review_requested")[
+                    "audit_id"
+                ],
+                **{
+                    hold: "waiting",
+                    "retry_after": (controls._now() + timedelta(minutes=5)).isoformat(),
+                },
+            )
+    monkeypatch.setattr(
+        funding, "_review", lambda *_: pytest.fail("duplicate continuation review")
+    )
+    assert not funding.renew_continuation("task")
+
+
+@pytest.mark.parametrize(
+    "problem", ["unavailable", "exhausted", "unobserved", "missing_windows"]
+)
+def test_progress_subscription_evidence_fails_closed(progress_recovery, problem):
+    from factory.orchestration import factory_funding as progress
+
+    args, quota = progress_recovery
+    if problem == "unavailable":
+        quota["available"] = False
+    elif problem == "exhausted":
+        quota["providers"]["codex"]["windows"][0]["used_percent"] = 100
+    elif problem == "unobserved":
+        quota["providers"]["codex"]["observed"] = False
+    else:
+        quota["providers"]["codex"]["windows"] = []
+    with pytest.raises(ValueError, match="progress_"):
+        progress.preview_continuation(**args)
+
+
+@pytest.mark.parametrize("restriction", ["pause", "cancel", "uncertain"])
+def test_progress_renewal_does_not_clear_later_restrictions(
+    database, progress_recovery, restriction
+):
+    from factory.orchestration import factory_funding as progress
+
+    args, _ = progress_recovery
+    proposal = progress.preview_continuation(**args)
+    progress.apply_continuation(
+        **args,
+        **operator_request(proposal, "progress"),
+    )
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        if restriction == "pause":
+            row.task_paused = True
+        elif restriction == "cancel":
+            row.cancellation_requested = True
+        else:
+            db.exec(select(FactoryStart)).first().status = "uncertain"
+        db.add(
+            AgentSession(
+                id=3,
+                local_session_id="factory:task:review_later:1",
+                workspace="guest",
+                branch="factory/task",
+                model="astra",
+                node_key="review_later",
+                node_attempt=1,
+            )
+        )
+        db.add(
+            SwarmNodeRun(
+                task_id="task",
+                node_key="review_later",
+                attempt=1,
+                session_id=3,
+                pin_json=json.dumps({"model": "astra"}),
+                status="succeeded",
+                model="astra",
+                cost_usd=0.1,
+                head_sha="b" * 40,
+                outcome_json=json.dumps(
+                    {
+                        "artifact": {
+                            "pr_number": 3,
+                            "head_sha": "b" * 40,
+                            "verdict": "approve",
+                            "summary": "Reviewed",
+                        }
+                    }
+                ),
+            )
+        )
+    assert not progress.renew_continuation("task")
+    with Session(database) as db:
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == progress.CONTINUATION_LEASE
+                    )
+                ).all()
+            )
+            == 1
+        )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "same_session",
+        "missing_session",
+        "foreign_session",
+        "wrong_model",
+        "missing_implementation",
+        "implementation_session_missing",
+    ],
+)
+def test_progress_requires_native_independent_review(
+    database, progress_recovery, fault
+):
+    from factory.orchestration import factory_funding as progress
+
+    args, _ = progress_recovery
+    with Session(database) as db, db.begin():
+        review = db.exec(
+            select(SwarmNodeRun).where(SwarmNodeRun.node_key == "review_fix")
+        ).one()
+        implementation = db.exec(
+            select(SwarmNodeRun).where(SwarmNodeRun.node_key == "implement_saved")
+        ).one()
+        if fault == "same_session":
+            review.session_id = 1
+        elif fault == "missing_session":
+            review.session_id = None
+        elif fault == "foreign_session":
+            db.get(AgentSession, 2).local_session_id = "factory:other:review_fix:1"
+        elif fault == "wrong_model":
+            review.pin_json = json.dumps({"model": "spark"})
+        elif fault == "missing_implementation":
+            implementation.status = "failed"
+        else:
+            implementation.session_id = None
+    with pytest.raises(
+        ValueError, match="progress_(independent_review|review_provenance)_missing"
+    ):
+        progress.preview_continuation(**args)
+
+
+@pytest.mark.parametrize("lane", ["allowed_models", "model_pools"])
+def test_progress_refuses_non_subscription_execution_lane(
+    database, progress_recovery, lane
+):
+    from factory.orchestration import factory_funding as progress
+
+    args, _ = progress_recovery
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        policy = json.loads(row.policy_json)
+        if lane == "allowed_models":
+            policy["allowed_models"].append("muse")
+        else:
+            policy["model_pools"] = {"implement": ["muse", "astra"]}
+        row.policy_json = json.dumps(policy)
+    with pytest.raises(ValueError, match="progress_subscription_evidence_stale"):
+        progress.preview_continuation(**args)
+
+
+def test_model_restriction_unblocks_subscription_preview_without_renewing_expiry(
+    database, progress_recovery, monkeypatch
+):
+    from factory.orchestration import factory_policy_amendment as amendments
+    from factory.orchestration import factory_funding as progress
+    from factory.orchestration import factory_funding_limits as funding
+
+    args, _ = progress_recovery
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        policy = json.loads(row.policy_json)
+        policy["allowed_models"].append("spark")
+        policy["model_pools"] = {
+            role: ["astra", "spark"] for role in ("implement", "refine", "worker")
+        }
+        row.policy_json = json.dumps(policy)
+        recovery = controls.task_recovery_grant("task", session=db)
+        grant = funding.amendment(db, "task")
+    now = datetime.fromisoformat(recovery["deadline_at"]) + timedelta(minutes=1)
+    monkeypatch.setattr(controls, "_now", lambda: now)
+    with pytest.raises(progress.SubscriptionRefusal) as caught:
+        progress.preview_continuation(**args)
+    assert caught.value.diagnostics["refused_model"]["model"] == "spark"
+    assert (
+        caught.value.diagnostics["refused_model"]["state"]
+        == "unsupported_subscription_feed"
+    )
+    overlay = {"remove_models": ["spark"]}
+    proposal = amendments.preview(838, overlay, "Remove unused Spark")
+    amendments.apply(
+        838,
+        overlay,
+        "Remove unused Spark",
+        **operator_request(proposal, "remove-spark"),
+    )
+    continuation = progress.preview_continuation(**args)
+    assert "spark" not in continuation["policy"]["allowed_models"]
+    with Session(database) as db:
+        assert controls.task_recovery_grant("task", session=db) == recovery
+        assert funding.amendment(db, "task") == grant
+        assert controls._recovery_deadline(db, "task") < now
+        assert db.get(FactoryReceipt, 838).task_paused
+        assert funding.latest(db, "task", progress.CONTINUATION_LEASE) is None
+
+
+def test_progress_failed_latest_review_returns_to_normal_reconciliation(
+    database, progress_recovery
+):
+    from factory.orchestration import factory_funding as progress
+
+    args, _ = progress_recovery
+    p = progress.preview_continuation(**args)
+    progress.apply_continuation(
+        **args,
+        **operator_request(p, "progress"),
+    )
+    with Session(database) as db, db.begin():
+        db.add(
+            SwarmNodeRun(
+                task_id="task",
+                node_key="review_failed",
+                attempt=1,
+                status="failed",
+                model="astra",
+                cost_usd=0.1,
+            )
+        )
+    assert progress.renew_continuation("task") is False
+    with Session(database) as db:
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == progress.CONTINUATION_LEASE
+                    )
+                ).all()
+            )
+            == 1
+        )
+
+
+@pytest.mark.parametrize(
+    "fault, expected",
+    [
+        ("spark", "unsupported_subscription_feed"),
+        ("stale", "stale_observation"),
+        ("missing", "missing_observation"),
+        ("exhausted", "subscription_unavailable"),
+    ],
+)
+def test_progress_refusal_identifies_exact_feed_without_mutation(
+    database, progress_recovery, fault, expected
+):
+    from factory.orchestration import factory_funding as progress
+
+    args, raw = progress_recovery
+    raw["providers"]["codex"]["observed_at"] = "2026-10-30T02:40:00Z"
+    if fault == "stale":
+        raw["providers"]["codex"]["age_seconds"] = 901
+    elif fault == "missing":
+        raw["providers"] = {}
+    elif fault == "exhausted":
+        raw["providers"]["codex"]["windows"][0]["used_percent"] = 100
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        if fault == "spark":
+            policy = json.loads(row.policy_json)
+            policy["model_pools"] = {"implement": ["astra", "spark"]}
+            row.policy_json = json.dumps(policy)
+        before = row.model_dump()
+        audits = len(db.exec(select(FactoryAudit)).all())
+    with pytest.raises(progress.SubscriptionRefusal) as caught:
+        progress.preview_continuation(**args)
+    detail = caught.value.diagnostics
+    refused = detail["refused_model"]
+    assert refused["state"] == expected
+    assert detail["effect"] == "read_only_refusal_no_admission"
+    if fault == "spark":
+        assert refused["model"] == "spark" and refused["family"] == "muse"
+        assert refused["provider"] is None and refused["observed_at"] is None
+        assert refused["required_by"] == ["model_pools.implement"]
+        assert any(m["state"] == "fresh_admissible" for m in detail["models"])
+    elif fault == "stale":
+        assert refused["provider"] == "codex" and refused["age_seconds"] == 901
+        assert refused["observed_at"] == "2026-10-30T02:40:00Z"
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).model_dump() == before
+        assert len(db.exec(select(FactoryAudit)).all()) == audits
+
+
+def test_progress_subscription_diagnostic_is_bounded_and_keeps_exact_refusal():
+    from factory.orchestration import factory_funding as progress
+
+    policy = {"allowed_models": [f"unknown{i:02}" for i in range(40)]}
+    detail = progress._subscription_diagnostics(
+        policy, [], {"providers": {}}, {}, "unknown39"
+    )
+    assert len(detail["models"]) == 32 and detail["truncated"]
+    assert detail["refused_model"]["model"] == "unknown39"
+
+
+def test_funding_meter_audit_is_single_authority_with_rollback_projection(database):
+    receipt = prepare()
+    update(receipt, 0)
+    update(receipt, 1, 100000)
+    with Session(database) as db:
+        rows = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action.in_(("runtime_meter_bound", "funding_meter_bound"))
+            )
+        ).all()
+        assert {r.action for r in rows} == {
+            "runtime_meter_bound",
+            "funding_meter_bound",
+        }
+        old = next(r for r in rows if r.action == "runtime_meter_bound")
+        canonical = next(r for r in rows if r.action == "funding_meter_bound")
+        projection = json.loads(old.detail_json)
+        assert projection.pop("funding_compatibility_projection") is True
+        assert projection == json.loads(canonical.detail_json)
+        bindings = meter._records(db, ["task"], (meter.BOUND,))
+        assert [r["audit_id"] for r in bindings] == [canonical.id]
+        assert (
+            runtime_meter_evidence.binding(db, receipt["id"])["receipt_id"]
+            == receipt["id"]
+        )
+        assert (
+            meter.objective_totals(db, db.get(FactoryReceipt, 838))["known_list_usd"]
+            == 5
+        )
+        # The old binary's exact-action query still sees one binding and each
+        # usage update once; these rows remain sufficient after reverting code.
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(FactoryAudit.action == meter.UPDATE)
+                ).all()
+            )
+            == 2
+        )
+
+
+def test_historical_meter_evidence_remains_readable(database):
+    receipt = prepare()
+    with Session(database) as db, db.begin():
+        rows = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action.in_(("runtime_meter_bound", "funding_meter_bound"))
+            )
+        ).all()
+        for row in rows:
+            if row.action == "funding_meter_bound":
+                db.delete(row)
+            else:
+                detail = json.loads(row.detail_json)
+                del detail["funding_compatibility_projection"]
+                row.detail_json = json.dumps(detail)
+    assert not update(receipt, 0)["stop"]
+    with Session(database) as db:
+        assert len(meter._records(db, ["task"], (meter.BOUND,))) == 1
+        assert runtime_meter_evidence.binding(db, receipt["id"])["guest_id"] == "guest"
+
+
+def test_canonical_continuation_and_compatibility_rows_commit_together(database):
+    from factory.orchestration import factory_funding as funding
+
+    with pytest.raises(RuntimeError, match="rollback"):
+        with Session(database) as db, db.begin():
+            funding.record_audit(
+                db,
+                "operator",
+                funding.CONTINUATION_LEASE,
+                task_id="task",
+                head_sha="a" * 40,
+            )
+            db.flush()
+            raise RuntimeError("rollback")
+    with Session(database) as db:
+        assert funding.latest(db, "task", funding.CONTINUATION_LEASE) is None
+        assert not db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action.in_(
+                    (funding.CONTINUATION_LEASE, "funding_continuation_lease")
+                )
+            )
+        ).all()
+    with Session(database) as db, db.begin():
+        funding.record_audit(
+            db,
+            "operator",
+            funding.CONTINUATION_REFUSED,
+            task_id="task",
+            reason="progress_execution_failed",
+        )
+    with Session(database) as db:
+        canonical = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "funding_continuation_renewal_refused"
+            )
+        ).one()
+        result = funding.continuation_status(db, "task")
+        assert result["state"] == "refused"
+        assert result["reason"] == "progress_execution_failed"
+        assert result["audit_id"] == canonical.id
+
+
+def test_rollback_reader_retains_continuation_authority_and_replay(
+    database, progress_recovery, monkeypatch
+):
+    from factory.orchestration import factory_funding as progress
+    from factory.orchestration import factory_funding_limits as limits
+
+    args, _ = progress_recovery
+    proposal = progress.preview_continuation(**args)
+    request = {
+        **args,
+        "actor": "operator",
+        "request_key": "rollback-reader",
+        "expected_preview_sha256": proposal["preview_sha256"],
+    }
+    result = progress.apply_continuation(**request)
+
+    def old_latest(db, task_id, action):
+        row = db.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.task_id == task_id, FactoryAudit.action == action)
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+        return (
+            None if row is None else {**json.loads(row.detail_json), "audit_id": row.id}
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(limits, "latest", old_latest)
+        with Session(database) as db:
+            assert (
+                old_latest(db, "task", progress.CONTINUATION_AUTHORIZED)["result"]
+                == result
+            )
+            assert (
+                controls.task_recovery_grant("task", session=db)["deadline_at"]
+                == result["lease"]["deadline_at"]
+            )
+            assert (
+                limits.effective_policy(db, db.get(FactoryReceipt, 838))[
+                    "task_budget_usd"
+                ]
+                == 50
+            )
+    assert progress.apply_continuation(**request) == result
+    assert not progress.renew_continuation("task")
+
+
+@pytest.fixture
+def public_docs_delivery(database, scoped_delivery, monkeypatch):
+    import base64
+    from factory.orchestration import factory_conductor as conductor
+    from factory.orchestration import factory_landing_release as releases
+
+    pull = scoped_delivery
+    pull["base"]["sha"] = "b" * 40
+    pull["changed_files"] = 2
+    paths = sorted(releases.PUBLIC_DOCS)
+    files = [
+        dict(filename=p, status="modified", sha=str(i + 1) * 40)
+        for i, p in enumerate(paths)
+    ]
+    responses = {f"compare/{'b' * 40}...{'a' * 40}": {"files": files}}
+    for revision, prefix in (("b" * 40, "old"), ("a" * 40, "new")):
+        responses[f"git/commits/{revision}"] = {"tree": {"sha": prefix}}
+        for i, path in enumerate(paths):
+            parts = path.split("/")
+            for depth, part in enumerate(parts):
+                tree_sha = prefix + "/" + "/".join(parts[:depth]) if depth else prefix
+                tree = responses.setdefault(
+                    f"git/trees/{tree_sha}", {"truncated": False, "tree": []}
+                )
+                if any(e["path"] == part for e in tree["tree"]):
+                    continue
+                is_file = depth == len(parts) - 1
+                sha = (
+                    (str(i + 1) * 40 if prefix == "new" else str(i + 3) * 40)
+                    if is_file
+                    else prefix + "/" + "/".join(parts[: depth + 1])
+                )
+                tree["tree"].append(
+                    dict(
+                        path=part,
+                        mode="100644" if is_file else "040000",
+                        type="blob" if is_file else "tree",
+                        sha=sha,
+                    )
+                )
+    for f in files:
+        responses[f"git/blobs/{f['sha']}"] = {
+            "encoding": "base64",
+            "size": 7,
+            "content": base64.b64encode(b"# Docs\n").decode(),
+        }
+
+    def github_get(repo, suffix):
+        assert repo == "org/repo"
+        return pull if suffix == "pulls/7170" else responses[suffix]
+
+    monkeypatch.setattr(conductor, "github_get", github_get)
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        direction = json.loads(row.direction_json)
+        direction["landing_hold"] = {"actor": "operator", "reason": "review first"}
+        row.direction_json = json.dumps(direction)
+    return pull, responses
+
+
+def public_docs_scope():
+    return {
+        "classification": "public_docs",
+        "evidence": "Operator approves public documentation publication at this exact head.",
+    }
+
+
+@pytest.mark.parametrize("queue_change", ["review", "head", "hold"])
+def test_public_docs_atomic_release_grant_replay_and_queue(
+    database, public_docs_delivery, monkeypatch, queue_change
+):
+    from factory import review_publisher
+    from factory.orchestration import factory_landing as landing
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, _ = public_docs_delivery
+    pull["node_id"] = "PR_7170"
+    with Session(database) as db:
+        before = db.get(FactoryReceipt, 838).model_dump()
+        assert (
+            releases.scoped_refusal(db, db.get(FactoryReceipt, 838), 7170, "a" * 40)
+            == "landing_receipt_held"
+        )
+    proposal = releases.preview(
+        838, 7170, "a" * 40, "Publish docs", scope=public_docs_scope()
+    )
+    assert proposal["operation"] == "release_and_authorize"
+    assert {f["path"] for f in proposal["public_docs"]["files"]} == releases.PUBLIC_DOCS
+    args = {**operator_request(proposal, "public-docs"), "scope": public_docs_scope()}
+    result = releases.apply(838, 7170, "a" * 40, "Publish docs", **args)
+    assert result["ok"] and not result["delivery_accepted"]
+    assert releases.apply(838, 7170, "a" * 40, "Publish docs", **args) == result
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        after = row.model_dump()
+        assert {
+            k: v for k, v in before.items() if k not in ("direction_json", "updated_at")
+        } == {
+            k: v for k, v in after.items() if k not in ("direction_json", "updated_at")
+        }
+        direction = json.loads(row.direction_json)
+        assert "landing_hold" not in direction
+        assert direction["conductor_gates"] and direction["nonrenewable_recovery"]
+        assert releases.scoped_refusal(db, row, 7170, "a" * 40) is None
+        assert releases.scoped_refusal(db, row, 7170, "b" * 40)
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == releases.SCOPE_ACTION
+                    )
+                ).all()
+            )
+            == 1
+        )
+    # The actual queue fence consumes the same audited grant and still requires
+    # the existing native independent review. It never races a separate release.
+    monkeypatch.setattr(landing, "github_get", lambda *_: pull)
+    monkeypatch.setattr(landing, "_queued_ids", lambda *_: {"PR_7170"})
+    monkeypatch.setattr(
+        review_publisher,
+        "collect",
+        lambda task, *, session=None: review_publisher.ReviewEvidence(
+            task_id=task,
+            repo="org/repo",
+            pr_number=7170,
+            branch="factory/task",
+            head_sha=pull["head"]["sha"],
+            review_run_id=1,
+            review_session_id=2,
+            policy_version=0,
+            details_url="https://example.test/review",
+        ),
+    )
+    actions = []
+    monkeypatch.setattr(landing, "github_graphql", lambda *args: actions.append(args))
+    item = {
+        "task_id": "task",
+        "pr_number": 7170,
+        "head_sha": "a" * 40,
+        "armed": 0,
+        "ejected": 0,
+        "merged": False,
+    }
+    assert not landing._enforce_landing_hold("org/repo", item)
+    assert not landing._fence_ungranted_queue_entry("org/repo", item)
+    assert actions == []
+    # An exact-head grant is not an independent-review substitute.
+    if queue_change == "review":
+        monkeypatch.setattr(
+            review_publisher,
+            "collect",
+            lambda task, *, session=None: review_publisher.Refusal(
+                task, "review_missing"
+            ),
+        )
+    if queue_change == "head":
+        pull["head"]["sha"] = "c" * 40
+    elif queue_change == "hold":
+        with Session(database) as db, db.begin():
+            row = db.get(FactoryReceipt, 838)
+            direction = json.loads(row.direction_json)
+            direction["landing_hold"] = {"actor": "operator", "reason": "new hold"}
+            row.direction_json = json.dumps(direction)
+    # The fence observes membership before and again under the control lock,
+    # then verifies removal after the dequeue mutation.
+    queued = iter([{"PR_7170"}, {"PR_7170"}, set()])
+    monkeypatch.setattr(landing, "_queued_ids", lambda *_: next(queued))
+    assert landing._fence_ungranted_queue_entry("org/repo", item)
+    assert len(actions) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "code",
+        "agent_instructions",
+        "rename",
+        "added",
+        "count",
+        "duplicate",
+        "truncated",
+        "symlink",
+        "executable",
+        "binary",
+        "oversize",
+        "blob",
+        "missing",
+        "non_utf8",
+        "unchanged",
+        "size_mismatch",
+        "base_executable",
+        "base_symlink",
+        "base_truncated",
+        "bad_base64",
+    ],
+)
+def test_public_docs_rejects_unverified_scope(database, public_docs_delivery, change):
+    import base64
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, responses = public_docs_delivery
+    files = responses[f"compare/{'b' * 40}...{'a' * 40}"]["files"]
+    entry = next(
+        e
+        for e in responses["git/trees/new/projects/monolith"]["tree"]
+        if e["path"] == "ARCHITECTURE.md"
+    )
+    old_entry = next(
+        e
+        for e in responses["git/trees/old/projects/monolith"]["tree"]
+        if e["path"] == "ARCHITECTURE.md"
+    )
+    blob = responses[f"git/blobs/{files[0]['sha']}"]
+    if change == "code":
+        files[0]["filename"] = "projects/monolith/main.py"
+    elif change == "agent_instructions":
+        files[0]["filename"] = "AGENTS.md"
+    elif change == "rename":
+        files[0]["previous_filename"] = "other.md"
+    elif change == "added":
+        files[0]["status"] = "added"
+    elif change == "count":
+        pull["changed_files"] = 3
+    elif change == "duplicate":
+        files[1] = files[0]
+    elif change == "truncated":
+        responses["git/trees/new"]["truncated"] = True
+    elif change == "symlink":
+        entry["mode"] = "120000"
+    elif change == "executable":
+        entry["mode"] = "100755"
+    elif change == "binary":
+        blob.update(content="AA==", size=1)
+    elif change == "oversize":
+        blob["size"] = 512 * 1024 + 1
+    elif change == "blob":
+        files[0]["sha"] = "f" * 40
+    elif change == "missing":
+        responses["git/trees/new"]["tree"].clear()
+    elif change == "non_utf8":
+        blob.update(content=base64.b64encode(b"\xff\xfe# x").decode(), size=5)
+    elif change == "unchanged":
+        old_entry["sha"] = files[0]["sha"]
+    elif change == "size_mismatch":
+        blob["size"] = 8
+    elif change == "base_executable":
+        old_entry["mode"] = "100755"
+    elif change == "base_symlink":
+        old_entry["mode"] = "120000"
+    elif change == "base_truncated":
+        responses["git/trees/old"]["truncated"] = True
+    elif change == "bad_base64":
+        blob["content"] += "!"
+    with pytest.raises(ValueError, match="landing_public_docs_unverified"):
+        releases.preview(838, 7170, "a" * 40, "Publish docs", scope=public_docs_scope())
+    with Session(database) as db:
+        assert controls.landing_held(db.get(FactoryReceipt, 838))
+        assert not db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == releases.SCOPE_ACTION)
+        ).all()
+
+
+@pytest.mark.parametrize("tamper", ["head", "path"])
+def test_public_docs_scoped_refusal_rejects_tampered_proof(
+    database, public_docs_delivery, tamper
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    proposal = releases.preview(
+        838, 7170, "a" * 40, "Publish docs", scope=public_docs_scope()
+    )
+    args = {**operator_request(proposal, "public-docs"), "scope": public_docs_scope()}
+    assert releases.apply(838, 7170, "a" * 40, "Publish docs", **args)["ok"]
+
+    def edit(grant):
+        proof = grant["public_docs"]
+        if tamper == "head":
+            proof["head_sha"] = "c" * 40
+        else:
+            proof["files"][0]["path"] = "AGENTS.md"
+
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        assert releases.scoped_refusal(db, row, 7170, "a" * 40) is None
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        direction = json.loads(row.direction_json)
+        edit(direction["landing_authorization"])
+        row.direction_json = json.dumps(direction)
+        (audit,) = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == releases.SCOPE_ACTION)
+        ).all()
+        detail = json.loads(audit.detail_json)
+        edit(detail["result"]["landing_authorization"])
+        audit.detail_json = json.dumps(detail)
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        assert (
+            releases.scoped_refusal(db, row, 7170, "a" * 40)
+            == "scoped_landing_public_docs_unverified"
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["head", "base", "receipt", "live", "unknown", "hold", "scope", "unauthorized"],
+)
+def test_public_docs_apply_stale_or_unsafe_refuses_without_release(
+    database, public_docs_delivery, change
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, responses = public_docs_delivery
+    proposal = releases.preview(
+        838, 7170, "a" * 40, "Publish docs", scope=public_docs_scope()
+    )
+    if change in ("head", "base"):
+        part = pull[change]
+        old = part["sha"]
+        part["sha"] = "c" * 40
+        responses[f"git/commits/{'c' * 40}"] = responses[f"git/commits/{old}"]
+        responses[f"compare/{pull['base']['sha']}...{pull['head']['sha']}"] = responses[
+            f"compare/{'b' * 40}...{'a' * 40}"
+        ]
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        if change == "receipt":
+            row.repo = "other/repo"
+        elif change in ("live", "unknown"):
+            if change == "live":
+                db.add(
+                    SwarmNodeRun(
+                        task_id="task",
+                        node_key="live",
+                        attempt=1,
+                        dispatch_key="live",
+                        status="running",
+                    )
+                )
+            else:
+                db.exec(select(FactoryStart)).one().status = "uncertain"
+        elif change == "hold":
+            direction = json.loads(row.direction_json)
+            direction["landing_hold"]["reason"] = "new operator hold"
+            row.direction_json = json.dumps(direction)
+    scope = public_docs_scope()
+    if change == "scope":
+        scope["classification"] = "public_code"
+    if change == "unauthorized":
+        scope["evidence"] = ""
+    # A receipt identity change is rejected before reads can use the other repo.
+    with pytest.raises((ValueError, AssertionError)):
+        releases.apply(
+            838,
+            7170,
+            "a" * 40,
+            "Publish docs",
+            **operator_request(proposal, "stale-docs"),
+            scope=scope,
+        )
+    with Session(database) as db:
+        assert controls.landing_held(db.get(FactoryReceipt, 838))
+        assert not db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == releases.SCOPE_ACTION)
+        ).all()
+
+
+def test_public_docs_audit_failure_rolls_back_hold_and_grant(
+    database, public_docs_delivery, monkeypatch
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    proposal = releases.preview(
+        838, 7170, "a" * 40, "Publish docs", scope=public_docs_scope()
+    )
+    with Session(database) as db:
+        before = db.get(FactoryReceipt, 838).direction_json
+        version = db.get(FactoryControl, "factory").version
+
+    def fail_audit(*args, **kwargs):
+        raise RuntimeError("audit failed")
+
+    monkeypatch.setattr(controls, "_audit", fail_audit)
+    with pytest.raises(RuntimeError, match="audit failed"):
+        releases.apply(
+            838,
+            7170,
+            "a" * 40,
+            "Publish docs",
+            **operator_request(proposal, "atomic-docs"),
+            scope=public_docs_scope(),
+        )
+    with Session(database) as db:
+        assert db.get(FactoryReceipt, 838).direction_json == before
+        assert db.get(FactoryControl, "factory").version == version
+
+
+@pytest.fixture
+def operator_docs_handoff(database, public_docs_delivery, monkeypatch):
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, responses = public_docs_delivery
+    pull["node_id"] = "PR_7170"
+    monkeypatch.setattr(
+        controls, "OPERATOR_DOCS_HANDOFF_TARGET", (838, "task", "org/repo", 7170)
+    )
+    responses[f"commits/{'a' * 40}/status"] = {
+        "sha": "a" * 40,
+        "statuses": [
+            {
+                "context": "pr-checks",
+                "state": "success",
+                "target_url": "https://ci.test/1",
+            }
+        ],
+    }
+    evidence = dict(
+        state="ready_for_review",
+        head_sha=releases.HANDOFF_ACCEPTED_HEAD,
+        pr_url="https://github.com/org/repo/pull/7170",
+        review_session_id=24402,
+        reviewer_model="opus",
+    )
+    with Session(database) as db, db.begin():
+        db.get(SwarmTask, "task").settled_at = datetime.now(timezone.utc)
+        for session in db.exec(select(AgentSession)).all():
+            session.status = "completed"
+        control = db.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json)
+        policy["auto_merge"] = True
+        control.policy_json = json.dumps(policy)
+        controls._audit(
+            db,
+            "factory",
+            "finish_task",
+            task_id="task",
+            outcome="succeeded",
+            evidence=evidence,
+        )
+    scope = {
+        **public_docs_scope(),
+        "operator_handoff": {
+            "head_sha": "a" * 40,
+            "reviewer": "independent-reviewer",
+            "implementer": "delivery-owner",
+            "reference": "cloud-review:exact-head:approved",
+            "verdict": "approve",
+            "independent": True,
+        },
+    }
+    return pull, responses, scope
+
+
+def test_operator_handoff_replay_preserves_acceptance_and_owns_queue(
+    database, operator_docs_handoff, monkeypatch
+):
+    from factory.orchestration import (
+        factory_landing_release as releases,
+        factory_landing as landing,
+    )
+    from factory import review_publisher
+
+    pull, _, scope = operator_docs_handoff
+    proposal = releases.preview(838, 7170, "a" * 40, "Approved handoff", scope=scope)
+    args = {**operator_request(proposal, "handoff"), "scope": scope}
+    result = releases.apply(838, 7170, "a" * 40, "Approved handoff", **args)
+    assert result["landing_owner"] == "operator" and not result["delivery_accepted"]
+    assert releases.apply(838, 7170, "a" * 40, "Approved handoff", **args) == result
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        assert row.state == "succeeded"
+        direction = json.loads(row.direction_json)
+        assert "landing_hold" not in direction
+        assert direction["nonrenewable_recovery"] and direction["conductor_gates"]
+        events = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "finish_task")
+        ).all()
+        assert len(events) == 1
+        assert (
+            json.loads(events[0].detail_json)["evidence"]["head_sha"]
+            == releases.HANDOFF_ACCEPTED_HEAD
+        )
+        assert releases.scoped_refusal(db, row, 7170, "a" * 40) is None
+        assert db.exec(select(FactoryStart)).one().cost_usd == 4
+    monkeypatch.setattr(landing, "github_get", lambda *_: pull)
+    monkeypatch.setattr(landing, "_queued_ids", lambda *_: {"PR_7170"})
+    monkeypatch.setattr(
+        landing, "github_graphql", lambda *_: pytest.fail("valid handoff dequeued")
+    )
+    monkeypatch.setattr(
+        review_publisher, "collect", lambda *_: pytest.fail("native review used")
+    )
+    item = dict(
+        task_id="task",
+        pr_number=7170,
+        head_sha="a" * 40,
+        armed=0,
+        ejected=0,
+        merged=False,
+    )
+    assert not landing._enforce_landing_hold("org/repo", item)
+    assert not landing._fence_ungranted_queue_entry("org/repo", item)
+    for name in (
+        "_publish_review_gate",
+        "_arm",
+        "_record_merged",
+        "_close_issue",
+        "_recover_refused",
+    ):
+        monkeypatch.setattr(landing, name, lambda *_: pytest.fail("native mutation"))
+    monkeypatch.setattr(landing, "_deliveries", lambda *a, **kw: [item])
+    # The independent recovery scan must itself be suppressed or per-item guarded.
+    monkeypatch.setattr(landing, "_recover_refused", lambda *_: None)
+    landing.landing_tick({"repo": "org/repo", "auto_merge": True})
+    assert controls.request_landing_recovery(
+        "task", 7170, "a" * 40, "merge_queue", "operator"
+    ) == {"ok": False, "reason": "operator_landing_ownership"}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "head",
+        "base",
+        "ci",
+        "ci_unknown",
+        "hold",
+        "live",
+        "unknown",
+        "audit",
+        "ownership",
+        "history",
+        "paused",
+    ],
+)
+def test_operator_handoff_queue_fails_closed(
+    database, operator_docs_handoff, monkeypatch, change
+):
+    import httpx
+    from factory.orchestration import (
+        factory_landing_release as releases,
+        factory_landing as landing,
+    )
+
+    pull, responses, scope = operator_docs_handoff
+    proposal = releases.preview(838, 7170, "a" * 40, "Approved", scope=scope)
+    releases.apply(
+        838,
+        7170,
+        "a" * 40,
+        "Approved",
+        scope=scope,
+        **operator_request(proposal, "handoff"),
+    )
+    if change == "head":
+        pull["head"]["sha"] = "c" * 40
+    if change == "base":
+        pull["base"]["sha"] = "c" * 40
+    if change == "ci":
+        responses[f"commits/{'a' * 40}/status"]["statuses"][0]["state"] = "failure"
+    if change == "ci_unknown":
+        monkeypatch.setattr(
+            releases,
+            "_handoff_ci",
+            lambda *_: (_ for _ in ()).throw(httpx.ReadTimeout("unknown")),
+        )
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        direction = json.loads(row.direction_json)
+        if change == "hold":
+            direction["landing_hold"] = {"actor": "operator"}
+        if change == "ownership":
+            direction.pop("operator_landing_handoff")
+        if change == "paused":
+            row.task_paused = True
+        if change == "live":
+            db.add(
+                SwarmNodeRun(
+                    task_id="task", node_key="live", attempt=1, status="running"
+                )
+            )
+        if change == "unknown":
+            db.exec(select(FactoryStart)).one().status = "uncertain"
+        if change == "audit":
+            db.delete(
+                db.exec(
+                    select(FactoryAudit).where(
+                        FactoryAudit.action == releases.SCOPE_ACTION
+                    )
+                ).one()
+            )
+        if change == "history":
+            db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == "finish_task")
+            ).one().detail_json = "{}"
+        row.direction_json = json.dumps(direction)
+    actions = []
+    queued = iter([{"PR_7170"}, set()])
+    monkeypatch.setattr(landing, "github_get", lambda *_: pull)
+    monkeypatch.setattr(landing, "_queued_ids", lambda *_: next(queued))
+    monkeypatch.setattr(landing, "github_graphql", lambda *a: actions.append(a))
+    item = dict(
+        task_id="task",
+        pr_number=7170,
+        head_sha="a" * 40,
+        armed=0,
+        ejected=0,
+        merged=False,
+    )
+    assert landing._fence_ungranted_queue_entry("org/repo", item)
+    assert len(actions) == 1
+    assert releases.operator_target(
+        "task"
+    )  # Invalid grants never restore native ownership.
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "target",
+        "acceptance",
+        "unsettled",
+        "review",
+        "independence",
+        "reference",
+        "review_head",
+        "ci",
+        "live",
+        "unknown",
+    ],
+)
+def test_operator_handoff_preview_refuses(
+    database, operator_docs_handoff, monkeypatch, change
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    _, responses, scope = operator_docs_handoff
+    if change == "target":
+        monkeypatch.setattr(
+            controls, "OPERATOR_DOCS_HANDOFF_TARGET", (1045, "task", "org/repo", 7170)
+        )
+    if change == "review":
+        scope["operator_handoff"]["verdict"] = "reject"
+    if change == "independence":
+        scope["operator_handoff"]["independent"] = False
+    if change == "reference":
+        scope["operator_handoff"]["reference"] = ""
+    if change == "review_head":
+        scope["operator_handoff"]["head_sha"] = "c" * 40
+    if change == "ci":
+        responses[f"commits/{'a' * 40}/status"]["statuses"][0]["state"] = "pending"
+    with Session(database) as db, db.begin():
+        if change == "acceptance":
+            db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == "finish_task")
+            ).one().detail_json = "{}"
+        if change == "unsettled":
+            db.get(SwarmTask, "task").settled_at = None
+        if change == "live":
+            db.add(
+                SwarmNodeRun(
+                    task_id="task", node_key="live", attempt=1, status="running"
+                )
+            )
+        if change == "unknown":
+            db.exec(select(FactoryStart)).one().status = "uncertain"
+    with pytest.raises(ValueError):
+        releases.preview(838, 7170, "a" * 40, "Approved", scope=scope)
+    with Session(database) as db:
+        assert "landing_hold" in json.loads(db.get(FactoryReceipt, 838).direction_json)
+
+
+@pytest.mark.parametrize("change", ["ci", "history", "head", "review", "base"])
+def test_operator_handoff_apply_rechecks_preview(
+    database, operator_docs_handoff, change
+):
+    from factory.orchestration import factory_landing_release as releases
+
+    pull, responses, scope = operator_docs_handoff
+    proposal = releases.preview(838, 7170, "a" * 40, "Approved", scope=scope)
+    if change == "ci":
+        responses[f"commits/{'a' * 40}/status"]["statuses"][0]["target_url"] = (
+            "https://ci.test/replaced"
+        )
+    if change == "head":
+        pull["head"]["sha"] = "c" * 40
+    if change == "base":
+        pull["base"]["sha"] = "c" * 40
+    if change == "review":
+        scope["operator_handoff"]["reference"] = "a different review"
+    if change == "history":
+        with Session(database) as db, db.begin():
+            db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == "finish_task")
+            ).one().detail_json = "{}"
+    with pytest.raises((ValueError, KeyError)):
+        releases.apply(
+            838,
+            7170,
+            "a" * 40,
+            "Approved",
+            scope=scope,
+            **operator_request(proposal, "handoff"),
+        )
+    with Session(database) as db:
+        direction = json.loads(db.get(FactoryReceipt, 838).direction_json)
+        assert (
+            "landing_hold" in direction and "operator_landing_handoff" not in direction
+        )
+
+
+def test_operator_handoff_audit_rollback(database, operator_docs_handoff, monkeypatch):
+    from factory.orchestration import factory_landing_release as releases
+
+    _, _, scope = operator_docs_handoff
+    proposal = releases.preview(838, 7170, "a" * 40, "Approved", scope=scope)
+    monkeypatch.setattr(
+        controls,
+        "_audit",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("audit unavailable")),
+    )
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        releases.apply(
+            838,
+            7170,
+            "a" * 40,
+            "Approved",
+            scope=scope,
+            **operator_request(proposal, "handoff"),
+        )
+    with Session(database) as db:
+        direction = json.loads(db.get(FactoryReceipt, 838).direction_json)
+        assert (
+            "landing_hold" in direction and "operator_landing_handoff" not in direction
+        )
+        assert db.get(FactoryControl, "factory").version == proposal["expected_version"]
+
+
+def test_operator_handoff_quarantines_stale_native_snapshots(
+    database, operator_docs_handoff, monkeypatch
+):
+    from factory.orchestration import factory_landing as landing
+    from factory import review_publisher
+
+    pull, _, _ = operator_docs_handoff
+    item = dict(
+        task_id="task",
+        pr_number=7170,
+        head_sha="a" * 40,
+        armed=1,
+        ejected=0,
+        merged=True,
+        closed=False,
+    )
+    monkeypatch.setattr(
+        landing, "github_write", lambda *a, **kw: pytest.fail("native write")
+    )
+    monkeypatch.setattr(
+        landing, "github_graphql", lambda *a, **kw: pytest.fail("native GraphQL")
+    )
+    monkeypatch.setattr(
+        review_publisher, "publish", lambda *a, **kw: pytest.fail("native publish")
+    )
+    # Before transfer as well as after invalidation, native actions are prohibited.
+    assert not landing._publish_review_gate(item)
+    landing._arm("org/repo", item)
+    assert not landing._record_merged("org/repo", item, pull)
+    landing._close_issue("org/repo", item)
+    landing._observe("org/repo", item)
+    assert not landing._verify_rollout("org/repo", item)
+    landing._recover_conflict_without_arming("org/repo", item)
+    monkeypatch.setattr(landing, "_deliveries", lambda *a, **kw: [item])
+    landing._recover_refused({"repo": "org/repo"})
+
+
+def test_operator_handoff_old_receipt_remains_observable(
+    database, operator_docs_handoff
+):
+    from factory.orchestration import factory_landing as landing
+
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        row.updated_at = datetime.now(timezone.utc) - timedelta(days=90)
+        direction = json.loads(row.direction_json)
+        direction.pop("landing_hold")
+        row.direction_json = json.dumps(direction)
+    items = landing._deliveries({"repo": "org/repo"}, include_refused=True)
+    assert [item["task_id"] for item in items] == ["task"]
+
+
+def test_operator_handoff_fence_ignores_stale_pr_snapshot(
+    database, operator_docs_handoff, monkeypatch
+):
+    from factory.orchestration import (
+        factory_landing as landing,
+        factory_landing_release as releases,
+    )
+
+    pull, _, scope = operator_docs_handoff
+    proposal = releases.preview(838, 7170, "a" * 40, "Approved", scope=scope)
+    releases.apply(
+        838,
+        7170,
+        "a" * 40,
+        "Approved",
+        scope=scope,
+        **operator_request(proposal, "handoff"),
+    )
+    stale = {**pull, "head": {**pull["head"], "sha": "c" * 40}}
+    monkeypatch.setattr(landing, "github_get", lambda *_: pull)
+    monkeypatch.setattr(landing, "_queued_ids", lambda *_: {"PR_7170"})
+    monkeypatch.setattr(
+        landing,
+        "github_graphql",
+        lambda *_: pytest.fail("fresh grant dequeued by old snapshot"),
+    )
+    item = dict(task_id="task", pr_number=7170, head_sha="c" * 40, armed=0)
+    assert not landing._fence_ungranted_queue_entry("org/repo", item, stale)
+
+
+@pytest.mark.parametrize("state", ["succeeded", "uncertain", "admitted", "cancelled"])
+def test_operator_handoff_observes_canonical_pr_despite_changed_history(
+    database, operator_docs_handoff, state
+):
+    from factory.orchestration import factory_landing as landing
+
+    with Session(database) as db, db.begin():
+        db.get(FactoryReceipt, 838).state = state
+        event = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "finish_task")
+        ).one()
+        detail = json.loads(event.detail_json)
+        detail["evidence"]["pr_url"] = "https://github.com/org/repo/pull/9999"
+        event.detail_json = json.dumps(detail)
+    items = landing._deliveries({"repo": "org/repo"}, include_refused=True)
+    assert [item["pr_number"] for item in items] == [7170]
+
+
+def test_operator_handoff_apply_serializes_with_inflight_hold_fence(
+    database, operator_docs_handoff, monkeypatch
+):
+    from threading import Event
+    from factory.orchestration import (
+        factory_landing as landing,
+        factory_landing_release as releases,
+    )
+
+    pull, _, scope = operator_docs_handoff
+    proposal = releases.preview(838, 7170, "a" * 40, "Approved", scope=scope)
+    entered, finish, observed = Event(), Event(), Event()
+    actions = []
+
+    def hold_read(*_):
+        entered.set()
+        assert finish.wait(5)
+        return pull
+
+    monkeypatch.setattr(landing, "github_get", hold_read)
+    queues = iter([{"PR_7170"}, set()])
+    monkeypatch.setattr(landing, "_queued_ids", lambda *_: next(queues))
+    monkeypatch.setattr(
+        landing, "github_graphql", lambda *_: actions.append("dequeued")
+    )
+    original = releases._observe
+
+    def observe(*a):
+        result = original(*a)
+        observed.set()
+        return result
+
+    monkeypatch.setattr(releases, "_observe", observe)
+    item = dict(task_id="task", pr_number=7170)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fencing = pool.submit(landing._enforce_landing_hold, "org/repo", item)
+        assert entered.wait(5)
+        applying = pool.submit(
+            releases.apply,
+            838,
+            7170,
+            "a" * 40,
+            "Approved",
+            scope=scope,
+            **operator_request(proposal, "handoff"),
+        )
+        assert observed.wait(5)
+        assert not applying.done()
+        finish.set()
+        assert fencing.result(timeout=5)
+        assert applying.result(timeout=5)["landing_owner"] == "operator"
+    assert actions == ["dequeued"]
+    # A tick starting after apply sees no hold and performs no stale cleanup.
+    assert not landing._enforce_landing_hold("org/repo", item)

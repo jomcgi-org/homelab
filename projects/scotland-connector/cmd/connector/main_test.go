@@ -20,6 +20,59 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func TestAuroraActivationIsIndependentOfReadiness(t *testing.T) {
+	r2srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"fixture"`)
+		switch r.URL.Path {
+		case "/stars/sites.json":
+			io.WriteString(w, fixture.Sites)
+		case "/stars/history-map.json":
+			io.WriteString(w, fixture.History)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer r2srv.Close()
+	t.Setenv("R2_ENDPOINT", r2srv.URL)
+	t.Setenv("S3_ACCESS_KEY_ID", "fixture-key")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "fixture-secret")
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, enabled := range []string{"false", "true"} {
+		t.Setenv("AURORA_ENABLED", enabled)
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, err := newApp(cfg, log, r2srv.Client())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (a.aurora != nil) != (enabled == "true") {
+			t.Fatal("activation flag")
+		}
+		if err = a.store.Refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if a.aurora != nil && a.aurora.Refresh(context.Background()) == nil {
+			t.Fatal("missing aurora snapshot accepted")
+		}
+		r := httptest.NewRecorder()
+		a.admin.ServeHTTP(r, httptest.NewRequest("GET", "/readyz", nil))
+		if r.Code != 200 {
+			t.Fatal("aurora broke readiness", r.Body)
+		}
+		r = httptest.NewRecorder()
+		a.public.ServeHTTP(r, httptest.NewRequest("GET", "/v1/aurora?lat=58&lon=-4&at=2026-12-01T23:00:00Z", nil))
+		if r.Code != 200 || !strings.Contains(r.Body.String(), `"verdict":"unknown"`) {
+			t.Fatal(r.Code, r.Body)
+		}
+	}
+	t.Setenv("AURORA_ENABLED", "maybe")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("invalid activation value")
+	}
+}
+
 // End to end through the real wiring: a fake R2 serves the fixture
 // snapshots, the store loads them, and both public surfaces answer.
 func TestAppServesFromR2Snapshots(t *testing.T) {
@@ -49,7 +102,7 @@ func TestAppServesFromR2Snapshots(t *testing.T) {
 			return
 		}
 		switch r.URL.Path {
-		case "/stars/sites.json":
+		case "/stars/connector-sites.json":
 			w.Header().Set("ETag", `"s1"`)
 			_, _ = io.WriteString(w, fixture.Sites)
 		case "/stars/history-map.json":
@@ -62,6 +115,7 @@ func TestAppServesFromR2Snapshots(t *testing.T) {
 	defer r2srv.Close()
 
 	t.Setenv("R2_ENDPOINT", r2srv.URL)
+	t.Setenv("STARS_SITES_KEY", "connector-sites.json")
 	t.Setenv("S3_ACCESS_KEY_ID", "key")
 	t.Setenv("S3_SECRET_ACCESS_KEY", "secret")
 	t.Setenv("PUBLIC_BASE_URL", "https://example.test/")
@@ -303,5 +357,22 @@ func TestMeterConfigConsumersAndRegisteredTools(t *testing.T) {
 	}
 	if _, err := meter.ParsePolicy(meter.DefaultPrices); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSitesKeyDefaultAndSelection(t *testing.T) {
+	t.Setenv("R2_ENDPOINT", "https://r2.example")
+	t.Setenv("STARS_SITES_KEY", "")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.sitesKey != "sites.json" {
+		t.Fatalf("default: %+v", cfg)
+	}
+	t.Setenv("STARS_SITES_KEY", "connector-sites.json")
+	cfg, err = loadConfig()
+	if err != nil || cfg.sitesKey != "connector-sites.json" {
+		t.Fatalf("selected: %+v, %v", cfg, err)
 	}
 }

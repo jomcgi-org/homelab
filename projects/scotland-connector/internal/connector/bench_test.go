@@ -76,6 +76,19 @@ func BenchmarkPlan(b *testing.B) {
 	}
 }
 
+// Full computation on every iteration, with the dense snapshot and seven days.
+// No response cache exists on the service path.
+func BenchmarkLight(b *testing.B) {
+	svc := dense(b)
+	p := connector.LightParams{Lat: f(57.19), Lon: f(-3.83), RadiusKm: f(connector.MaxRadiusKm), To: s("2026-10-25")}
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := svc.Light(p); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // The default plan: 30 km, three days, both activities.
 func BenchmarkPlanDefault(b *testing.B) {
 	svc := dense(b)

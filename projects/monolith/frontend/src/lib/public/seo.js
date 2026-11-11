@@ -1,7 +1,7 @@
 // Single source of truth for public-tier SEO and machine-readable identity.
 //
 // `PUBLIC_BASE` is the canonical absolute origin for the public site. It is
-// hardcoded (matching Nav.svelte's convention) rather than derived from the
+// hardcoded rather than derived from the
 // request so canonical/OG/sitemap URLs stay stable regardless of which host
 // the gateway routes through. The public content lives on the apex; change
 // this one constant if it ever moves again.
@@ -18,7 +18,7 @@ export const LOCATION = {
 // It lets an LLM answer "who is Joe McGinley" from a typed entity (jobTitle,
 // worksFor, sameAs) instead of parsing prose. Facts here are deliberately
 // stable identity claims, kept independent of the CV page's presentation data.
-export const person = {
+const person = {
   "@context": "https://schema.org",
   "@type": "Person",
   name: "Joe McGinley",

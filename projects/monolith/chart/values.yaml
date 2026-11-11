@@ -72,6 +72,10 @@ backend:
 # This only emits the factory/review check. Token delivery, branch protection,
 # and merge activation are separate operator-controlled rollout steps.
 factory:
+  # Manual operator POST only. Requires reviewed run scope and PostgreSQL TEMP
+  # capability before activation. No schedule, Kargo gate or automatic rollback.
+  synthetics:
+    enabled: false
   reviewPublish:
     enabled: false
   dependencyGate:
@@ -137,82 +141,26 @@ agents:
   # not appear in the console or Discord command without a values change.
   models: "luna,terra,sol,astra,opus,sonnet,fable,spark,pi-spark"
   sessions:
-    # Repository-only rollout gate for exact-turn Stop. Keep false until the
-    # live lane, reuse, accounting and relay-failure checks on #4321 pass.
-    stopControlEnabled: false
-    # Observe failed probes until exact eviction evidence releases their hold.
-    probeSupervisionEnabled: false
-    # Cover bound or proven-no-guest kg/project drainers and interactive permits,
-    # probe destroyed/no-guest shapes, and bound factory project attempts.
-    uncertainPermitSupervisionEnabled: false
     # Stage the post-guest, zero-local-turn settlement proof from #6288. This
     # remains separate because it conditionally stops a healthy bound guest.
     boundZeroTurnSettlementEnabled: false
-    # Capture exact completed results before the guest's synchronous response.
-    resultReceiptsEnabled: false
-    # Consume exact native receipts for active owners. Restart adoption and
-    # clearing an observer fence after process loss remain separate controls.
-    resultReceiptAdoptionEnabled: false
-    # Hold a turn whose invoke response was lost over a still-working guest and
-    # finish it from its committed receipt instead of settling it unknown.
-    # Requires resultReceiptsEnabled: without a receipt there is nothing to
-    # recover and the hold would only delay the same unknown outcome.
-    responseLostRecoveryEnabled: false
-    # Fence new claims at SIGTERM and persist exact holds before cancelling
-    # response observers. Requires resultReceiptsEnabled and response loss
-    # recovery for adoption; other turns receive a bounded five-second grace.
-    rolloutHandoffEnabled: false
     # Existing-session capacity waits only; no new-session credential bootstrap.
     # Roll back the producer before withdrawing Ember admission support.
     asyncResidencyEnabled: false
-    # Resume, rather than settle, a held turn whose guest a brick drain
-    # interrupted on exactly this dispatch (the guest parked with an
-    # interrupted_turn naming it). The live node workflow turns the hold into
-    # the #6256 drain relay and the same guest resumes its CLI session.
-    # Requires responseLostRecoveryEnabled and, for factory nodes,
-    # swarm.factoryDrainRelayContinuationEnabled.
-    responseLostDrainRelayEnabled: false
-    # When a replica shutdown cancels a turn's executor before it sent the
-    # invoke POST (the transport marks every POST attempted before it is
-    # sent), record the turn not_invoked at once, under a bounded lock wait,
-    # so the permit settles at zero cost instead of as an unknown outcome.
-    executorNotInvokedRecordEnabled: false
-    # Refresh a running turn's claim under its own session row lock only,
-    # instead of queueing on the global capacity_pool row first. Off, a
-    # heartbeat can wait behind fleet admission and settlement transactions
-    # past the 30 second lease, and the stale sweep settles the healthy
-    # invoke as lease_expired, destroying its guest.
-    claimHeartbeatSessionLockEnabled: false
-    # Supervision backstop for kg, project and interactive permits: settle an
-    # uncertain permit whose bound guest the control plane shows never ran an
-    # invoke (turn_seq 0, no invoke stamp or stop record) and for which no
-    # result receipt was ever minted. Requires resultReceiptsEnabled and
-    # uncertainPermitSupervisionEnabled.
-    neverInvokedGuestSettlementEnabled: false
-    # Settle a non-factory permit when the invoke failed with the guest's own
-    # 4xx/5xx answer, which EmberVM marks with x-ember-invoke-outcome:
-    # guest_response. The turn ended inside the guest, so nothing is still
-    # running for it. Without the marker (an older control plane, the
-    # at-most-once 502, a lost response) the permit stays uncertain as before.
-    guestAnswerSettlementEnabled: false
     # Thread-bound sessions always post into their Discord thread. For sessions
     # started elsewhere, post only turns that need a human by default.
     channelNotify: "needs-input"
   drainer:
+    # Report-only Luna to Astra handoff; existing daily job needs explicit opt-in.
+    learningHandoffEnabled: false
+    # Stage unchanged-input suppression and one report-only diagnosis.
+    learningInputDedupEnabled: false
+    # Pin the reviewed existing daily payload before reconciliation may replace it.
+    learningDailyPayloadSha256: ""
     # Master kill switch. The CronWorkflow stays unsuspended and safely gets a
     # disabled response until a follow-up production values PR turns this on,
     # following the values-versus-template rollout rule.
     enabled: false
-    # Health advisories and logs are the default failure surface. Enable only
-    # when each failed job should also ask for attention in Discord.
-    notifyFailures: false
-    # Settle a drainer permit whose workflow ended (e.g. killed by a rollout)
-    # after reserve_start but before its session was created, and release
-    # that job's lease from the dead holder. Proof: permit reserved with no
-    # session row, owning DBOS workflow terminal for 10 minutes. Without it
-    # such a permit holds a KG slot and a daily-allowance unit forever
-    # (permit 10732, 2026-10-01).
-    lostBeforeSessionSweepEnabled: false
     # Jobs are deliberately serial so background work does not consume the
     # whole Luna lane. This only bounds how much backlog one tick may consume;
     # 15 makes a deep queue drain continuously (one cycle keeps claiming until
@@ -694,6 +642,23 @@ jobs:
           memory: 1Gi
         limits:
           memory: 1Gi
+    # Separate from three-hour weather refresh: preserve cached MET bodies
+    # while NOAA updates. No live job until the bounded activation is reviewed.
+    - name: stars-aurora
+      replaces: stars.aurora
+      args: ["stars-aurora"]
+      schedule: "*/10 * * * *"
+      concurrencyPolicy: Forbid
+      s3: true
+      activeDeadlineSeconds: 240
+      suspend: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
     - name: stars-refresh
       replaces: stars.refresh
       args: ["stars-refresh"]
@@ -1108,7 +1073,7 @@ jobs:
       # room to finish; a fully-blocked run still bails early via
       # MAX_CONSECUTIVE_FAILURES. Safe under the hourly schedule + Forbid.
       activeDeadlineSeconds: 1500
-      suspend: false
+      suspend: true
       resources:
         requests:
           cpu: 250m
@@ -1291,6 +1256,10 @@ jobs:
 # code surfaced in the tool response. Empty disables the tools.
 tokenBroker:
   url: "http://embervm-embervm-tokenbroker.embervm.svc.cluster.local:8080"
+  # Private-tier dev login bridge only; no token, refresh or quota proxy.
+  # Requires the existing SPIFFE helper. Empty leaves the dev bridge disabled.
+  devLoginUrl: ""
+  devLoginServerId: ""
   spiffe:
     # Staged plaintext-retirement client. Keep false until the broker listener
     # and its exact monolith allowlist are live and verified separately.
@@ -1311,7 +1280,6 @@ tokenBroker:
           memory: 32Mi
 
 frontend:
-  otelCollectorUrl: ""
   # OpenAI-compatible FreeToken endpoint for the private /qwen chat page; empty
   # leaves QWEN_API_BASE unset and the page answers 503.
   qwenApiBase: ""
@@ -1426,6 +1394,8 @@ onepassword:
   itemPath: ""
 
 knowledge:
+  # Operator-only application of exact saved results, never automatic retries.
+  completedRawRecoveryEnabled: false
   enabled: false
   publishFacts:
     enabled: false
@@ -1435,8 +1405,8 @@ knowledge:
   factReview:
     # Bounded literal witnesses and content-based reconsideration (#6995).
     coverageEnabled: false
-    # Independent source-grounded review within the shared KG admission budget.
-    enabled: false
+    # Independent source-grounded review within the shared KG admission budget,
+    # always on.
     maxDaily: 20
     intervalSeconds: 900
     batchSize: 32
@@ -1466,34 +1436,21 @@ knowledge:
   # Recall top knowledge-graph facts into every Ember session's system prompt
   # (ADR agents/063 read side). kg-drain sessions are always excluded.
   recall:
-    enabled: false
     limit: 5
-  # Receipt-conversation KG maintenance and Astra context injection. Keep this
-  # off until the live #5787 checks establish provenance, isolation and outage
-  # behavior. Existing Ember recall and completed-session feeds are independent.
-  conductorContinuity:
-    enabled: false
   feeds:
     emberSessions:
-      # Export finished Ember sessions only after this dark feed is verified.
-      # Empty starts at process startup, so enabling the feed does not backfill
-      # history. Set an RFC3339 timestamp to backfill sessions created since it.
-      enabled: false
+      # Empty starts at process startup, so the feed does not backfill history.
+      # Set an RFC3339 timestamp to backfill sessions created since it.
       since: ""
     repoDiff:
-      # Hourly read-only scout feeding the normal knowledge extraction lane.
-      enabled: false
+      # The hourly read-only scout feeding the normal extraction lane always runs.
       reconcile:
         # Default-off backfill of ranges ingested from placeholder evidence.
         enabled: false
-    docFixReview:
-      # Demand-driven only. There is no schedule, so an idle queue costs nothing.
-      enabled: false
   layout:
     scalingRatio: 2.0
     gravity: 0.1
     maxIter: 100
-    linlog: false
     coreFraction: 0.99
     seed: 42
     nodeSizeScale: 0.005
@@ -1559,7 +1516,7 @@ podRestartWatch:
 # stays failing). channelId empty means agent.discord.defaultChannelId.
 # brickNamespace is where the EmberVM noded-brick Deployments live (read with
 # the clusterAccess ClusterRole); empty skips the zero-bricks half of
-# embervm_capacity. recordCreateOutcomes makes every replica record EmberVM
+# embervm_capacity. Every replica records EmberVM
 # session-create outcomes in platform_probe for the create-failure half.
 healthAlerts:
   enabled: true
@@ -1568,8 +1525,7 @@ healthAlerts:
   channelId: ""
   agentTurnsMinFailed: 2
   brickNamespace: embervm
-  recordCreateOutcomes: true
-  # Shared checker ConfigMap, staged off for #7002. No direct CNPG reads.
+  # Shared checker ConfigMap, opt-in outside the hub (#7002). No CNPG reads.
   cnpgBackups:
     enabled: false
     namespace: otel-collector
@@ -1585,20 +1541,6 @@ healthAlerts:
     optionalTargets:
       - namespace: loom
         cluster: loom-pg
-
-# ember-durability health component (#4338, ADR embervm/031): a FATAL-tier
-# /api/health component reading the EmberVM control plane's durability surface
-# (GET /v1/health/durability): tier 1 sustained artifact-export failure
-# streaks, tier 2 gc-manifests age past 24h + sweep interval. Both tiers end
-# in the health surface, so this is registered under register_health (never
-# advisory). DARK by default per the standing rule that a health-affecting
-# detector flips on only after live verification: empty URL means nothing is
-# registered and this block renders no env. To arm, set this to the CP service
-# URL with the /v1/health/durability path (the monolith SA is already on the
-# embervm auth allow-list) AFTER verifying the detector against live fleet
-# facts; clearing it is the entire rollback lever.
-emberDurability:
-  url: ""
 
 chat:
   enabled: false
@@ -1644,6 +1586,9 @@ sandbox:
   workloadPrefix: "sandbox-"
 
 agentSessions:
+  # Enable only after the additive receipt phase migration and compatible
+  # executors/readers have rolled out. False retains legacy preparation.
+  stagedReceiptsEnabled: false
   # EmberVM workload the pi-spark family creates its guest sessions on.
   # Empty means "use the code default" (pi-runtime). This is the REVERT
   # LEVER for routing pi-spark back to the claude-runtime lane: set it to
@@ -1762,6 +1707,8 @@ metaSpark:
 swarm:
   # Availability gate only. Operator policy and durable enable are separate.
   factoryEnabled: false
+  # Staged only: human-authorized internal recovery calls. No grants are seeded.
+  factoryRecoveryDelegationEnabled: false
   # Consume exact durable Ember teardown proof for stopped/expired attempts.
   factoryReservationReviewEnabled: false
   # Authenticated issue lifecycle ingress. Keep off until the GitHub hook and
@@ -1780,18 +1727,7 @@ swarm:
   # server flag and remains off until trusted binding and live queue checks are
   # complete.
   factoryAgentBoardPollEnabled: false
-  # Hand live checks to a person without paging (factory_operational_handoff):
-  # a delivery whose repository scope is already merged moves its live checks
-  # to a needs-human issue and settles; intake treats such issues, and issues
-  # whose live-validation rescope PR has merged, as delivered; operational
-  # split children open with needs-human.
-  factoryOperationalHandoffEnabled: false
   factoryWorkItemPointerEnabled: false
-  # Page Discord only for notices that need a person's authority (decision
-  # cards, watchdog loops, PRs left to merge, stranded slots nothing will
-  # release) and send the rest, plus the factory's own auto-approvals, as one
-  # daily digest (factory_notify_policy). Cards stay on the escalations page.
-  factoryNotifyDigestEnabled: false
   factoryWorkItemBaseUrl: https://jomcgi.dev/slop
   factoryConductorFundingEnabled: false
   # Merit judging (factory_judge). The funding judge and the no-progress
@@ -1801,14 +1737,12 @@ swarm:
   # Every judge grant is capped at the pinned task_budget_usd plus
   # min(MaxExtensionMultiple x task_budget_usd, MaxExtensionUsd). A grant the
   # cap cannot hold goes to a person. Needs factoryConductorFundingEnabled.
-  factoryMeritJudgeEnabled: false
   factoryMeritJudgeMaxExtensionMultiple: 1
   factoryMeritJudgeMaxExtensionUsd: 50
   # Issue numbers the judge reads as roadmap or factory-unblocking work,
   # comma separated. This repository has no roadmap label to read instead.
   factoryMeritJudgePriorityIssues: ""
   factoryAutonomousContinuationEnabled: false
-  factoryStopSupervisionEnabled: false
   # Observed list-price backstop for Astra on explicitly named task IDs only.
   # Both switches are required. Existing bound invocations keep their fences.
   factoryRuntimeMeterEnabled: false
@@ -1816,68 +1750,22 @@ swarm:
   # Sample transient stop refusals for a fixed bounded window before notifying.
   # Keep staged off until the brick-roll and restart live checks pass (#6266).
   factoryTransientStopRetryEnabled: false
-  # Accept the control plane's own "failed"/"failed" record for the exact
-  # guest whose invoke failed inside this dispatch as cessation evidence
-  # (factory_supervision._invoke_failure_cessation). EmberVM writes that
-  # absorbing state before it answers the at-most-once 502, so the attempt
-  # settles failed at unknown cost and normal retry runs, instead of holding
-  # its lane until supervised cessation two hours past the task deadline.
-  factoryInvokeFailureCessationEnabled: false
-  # Settle an uncertain attempt whose exact guest the control plane reports
-  # never invoked (turn_seq 0, no invoke stamp) when no result receipt was
-  # ever minted for it, so no executor reached a POST before the settlement
-  # fence (factory_supervision._never_invoked_guest_cessation). A monolith
-  # rollout that cancels the executor between claim and POST otherwise holds
-  # the lane on missing_stop_precondition until supervised cessation.
-  factoryNeverInvokedGuestSettlementEnabled: false
-  # Carry a brick-drain relay through to its owner (#6256). The node workflow
-  # treats the relay's own continuation dispatch as the same attempt instead of
-  # ending uncertain; a terminal workflow may retire a priced drain
-  # continuation at unknown cost; and stop supervision settles an unknown
-  # attempt whose guest a drain parked with this exact dispatch's
-  # interrupted_turn marker.
-  factoryDrainRelayContinuationEnabled: false
   # Settle only a drained factory continuation whose exact dispatch is proven
   # permanently lost by the control plane. Staged off until the live checks in
   # FACTORY.md have exercised the proof and refusal paths.
   factoryDrainedLossSettlementEnabled: false
-  # Stop an exact running attempt after provider-measured spend exceeds its
-  # max_cost_usd. Settlement keeps the same post-hoc check as a backstop.
-  factoryEnforceCostCeilingEnabled: false
-  # Settle an attempt whose invoke was sent but whose guest was never bound, so
-  # its reservation is refunded instead of held forever: stop supervision has no
-  # guest to prove ceased there and leaves the lane slot occupied (#6025).
-  # Flipped on in a follow-up PR after review, never in the PR adding the
-  # template, so a behaviour change never rides in on a template change.
-  factoryLostBeforeGuestSettlementEnabled: false
-  # Recover an aged reserved start only after the no-session and no-model-use
-  # proof succeeds. Keep staged off until #6285's live checks are complete.
-  factoryLostBeforeSessionSweepEnabled: false
-  # Re-read open escalation cards from GitHub in bounded batches. Off until
-  # the reconciliation path is reviewed and deliberately enabled.
-  factoryEscalationRevalidationEnabled: false
   # Advisory planner adapter only; no production binding verifier exists yet.
   factoryPlannerPreviewEnabled: false
+  # Stage #7449 disabled until one verified rollout, following #7450.
+  factoryPlannerHoldRefusalEnabled: false
   # Decide a card on a receipt that is still admitted, uncertain or landing
   # whatever the current policy generation: active work keeps its pinned
   # policy, so its card (a watchdog pause, most often) is not stale.
   factoryActiveReceiptDecisionsEnabled: false
-  # Release a lane slot held past the task deadline by a start no cessation
-  # proof can settle (#6025). Stop supervision is fail-closed by design, so an
-  # attempt whose evidence never arrives keeps its slot forever; past the
-  # deadline this settles the stranded starts and escalates the task so a
-  # person owns the question. Never interrupts a reserved start.
-  # Flipped on in a follow-up PR after review, never in the PR adding the
-  # template, so a behaviour change never rides in on a template change.
-  factoryDeadlineBackstopEnabled: false
-  # Produce cessation evidence for an uncertain attempt more than two hours
-  # past its task deadline, paused or not: record the exact guest, destroy it,
-  # and settle only after the control plane has reported that recorded guest
-  # gone across the sampled absence window (factory_cessation.py). Elapsed time
-  # only selects the attempt; the settlement is on evidence. Past-deadline
-  # tasks then finish escalated with a card. Operator-requested cessation runs
-  # whatever this says. Flipped on in a follow-up PR after review.
-  factoryActiveCessationEnabled: false
+  # Send an ungated planner pause that recommends continuing to the funding
+  # judge on the same task instead of a person; see factory/orchestration/
+  # FACTORY.md "Routine planner pauses".
+  factoryRoutinePauseFundingEnabled: false
   # Hard ceiling on factory tasks in flight at once, over BOTH lanes together.
   # The policy's per-lane max_tasks is what sizes each lane; this only stops a
   # posted policy opening more than the platform is sized for, and delivery
@@ -1939,9 +1827,6 @@ swarm:
   # Concurrent Codex dispatches. Three concurrent dispatches have been killed
   # before, so this stays at 2 until there is evidence it can go higher.
   codexConcurrency: 2
-  # Enable only after every EmberVM sidecar excludes exhausted/stale fallback.
-  # Independent chart promotion keeps the compatibility gate off initially.
-  codexExhaustedGrantExclusion: false
   # Set codex-b before activating the sidecar's shared prefer-first policy,
   # after accepting its scope for interactive guests. Empty retains the gate.
   codexPreferredGrant: ""
@@ -1991,7 +1876,6 @@ grimoire:
     # extraction transport, and none is registered in this release (#6991).
     dailyCap: 0
   invitationLinks:
-    enabled: false
     enrollmentEnabled: false
     # Set only after a separate permission/provisioning review. The chart
     # references an existing Operator-managed Secret; it does not create one.
@@ -2000,9 +1884,6 @@ grimoire:
     flowID: ""
   authentikBaseUrl: "http://authentik-server.authentik:80"
   enabled: false
-  play:
-    # Play routes stay off until the complete play surface is ready (#6612).
-    enabled: false
   transcript:
     # Off until the capture surface is ready.
     enabled: false
@@ -2035,13 +1916,13 @@ grimoire:
   # the number that actually matters here.
   extractConcurrency: ""
 
-# ADR 036 orchestrator brief compiler: a host-side OpenRouter call that routes
-# chat vs goose and compiles a grounded task brief for escalations. Disabled
+# ADR 036 orchestrator: a host-side call that decides chat versus session.
+# It does not generate a task brief or plan. Disabled
 # by default; the private deploy values flip it on. OPENROUTER_API_KEY is NOT
 # synced by a dedicated OnePasswordItem here: it is sourced from the existing
 # "goosecracker" Secret (synced from the goosecracker 1Password item for the
 # artifact egress sidecar), so the same key is never double-synced. model is
-# pinned (never ":auto") so briefs stay attributable; timeoutSeconds bounds
+# pinned (never ":auto") so routing stays attributable; timeoutSeconds bounds
 # the fail-open budget before the flow falls back to direct submit.
 orchestrator:
   enabled: false
@@ -2059,8 +1940,7 @@ orchestrator:
   # holding that provider's key; empty means no auth for a local provider). Empty
   # list = no fallback (single-attempt contract).
   fallbacks: []
-  # Initial-compile budget: covers BOTH the route-decision call and the
-  # submit_plan tool call (plan construction is real work, not a quick classify).
+  # Timeout for each provider attempt in the route-decision call.
   timeoutSeconds: 60
 
 # Marine / AIS ship tracking: streams vessel positions from AISStream.io.
@@ -2092,6 +1972,8 @@ stars:
   gridKey: "grid.json"
   climatologyKey: "climatology.json"
   sitesKey: "sites.json"
+  # Empty keeps scheduled publication disabled until separately authorized.
+  connectorSitesKey: ""
   mapKey: "map.json"
   historyMapKey: "history-map.json"
   # Written by hikes-refresh-forecasts for the Scotland connector, which reads
@@ -2142,13 +2024,10 @@ stars:
         memory: 3Gi
         ephemeral-storage: 5Gi
 
-# goosecracker artifact store (ADR 024). The full monolith writes agent-built
-# HTML to s3://<bucket>/<id>/index.html (reusing the shared SeaweedFS S3
-# endpoint/creds from the stars block) and returns the artifact URL on
-# publicBase. The bucket auto-creates on first write.
+# Existing artifact HTML is read from s3://<bucket>/<id>/index.html, reusing
+# the shared R2 S3 endpoint/creds from the stars block.
 artifact:
   bucket: "artifacts"
-  publicBase: "https://jomcgi.dev"
 
 # imgproxy URL signing for the private frontend (grimoire reader images).
 # Reuses the trips-imgproxy-signing 1Password item so signatures validate

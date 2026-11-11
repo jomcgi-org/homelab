@@ -28,6 +28,7 @@ defmodule Embervm.OpLog.SQLite do
   use GenServer
   require Logger
 
+  alias Embervm.OpLog.Codec
   alias Embervm.OpLog.Op
   alias Exqlite.Sqlite3
 
@@ -121,6 +122,7 @@ defmodule Embervm.OpLog.SQLite do
     )
     """,
     "CREATE INDEX IF NOT EXISTS ops_task_id_idx ON ops(task_id)",
+    "CREATE INDEX IF NOT EXISTS ops_kind_seq_idx ON ops(kind, seq)",
     """
     CREATE TABLE IF NOT EXISTS tasks (
       task_id TEXT PRIMARY KEY,
@@ -225,6 +227,7 @@ defmodule Embervm.OpLog.SQLite do
       created_at INTEGER NOT NULL,
       stop_intent_json TEXT,
       stop_completion_json TEXT,
+      recovery_fence_json TEXT,
       invoke_started_at INTEGER,
       last_invoke_at INTEGER,
       expires_at INTEGER,
@@ -630,6 +633,33 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   @impl Embervm.OpLog
+  def session_cessation_evidence(server, session_id, expected, principal) do
+    Embervm.OpLog.safe_server_call(server, {:session_cessation_evidence, session_id, expected, principal}, @double_query_call_timeout_ms)
+  end
+
+  @impl Embervm.OpLog
+  def session_recovery_fence(server, session_id, request, principal, now) do
+    case Embervm.OpLog.safe_server_call(server, {:session_recovery_fence, session_id, request, principal, now}, @double_query_call_timeout_ms) do
+      {:ok, _} = result -> result
+      {:error, _, _} = result -> result
+      _ -> {:error, :recovery_store_unavailable, %{}}
+    end
+  catch
+    :exit, _ -> {:error, :recovery_store_unavailable, %{}}
+  end
+
+  @impl Embervm.OpLog
+  def session_restore_allowed(server, lineage) do
+    case Embervm.OpLog.safe_server_call(server, {:session_restore_allowed, lineage}, @single_query_call_timeout_ms) do
+      :ok -> :ok
+      {:error, reason} = result when reason in [:recovery_fenced, :unknown_lineage] -> result
+      _ -> {:error, :recovery_store_unavailable}
+    end
+  catch
+    :exit, _ -> {:error, :recovery_store_unavailable}
+  end
+
+  @impl Embervm.OpLog
   def load_tasks(server \\ __MODULE__) do
     Embervm.OpLog.safe_server_call(server, :load_tasks, @single_query_call_timeout_ms)
   end
@@ -807,6 +837,73 @@ defmodule Embervm.OpLog.SQLite do
     {:reply, do_read_from(state.conn, seq), state}
   end
 
+  def handle_call({:session_cessation_evidence, id, expected, principal}, _from, state) do
+    result = with :ok <- Sqlite3.execute(state.conn, "BEGIN") do
+      try do
+        query = fn sql, params -> cessation_query(state.conn, sql, params) end
+        Embervm.SessionCessationEvidence.read(query, :sqlite, &Codec.decode_payload/1, id, expected, principal)
+      after
+        :ok = Sqlite3.execute(state.conn, "ROLLBACK")
+      end
+    end
+    {:reply, result, state}
+  end
+
+  def handle_call({:session_recovery_fence, id, request, principal, now}, _from, state) do
+    apply? = request["operation"] == "apply"
+    begin = if apply?, do: "BEGIN IMMEDIATE", else: "BEGIN"
+    result = case Sqlite3.execute(state.conn, begin) do
+      :ok ->
+        result = try do
+          query = fn sql, params -> cessation_query(state.conn, sql, params) end
+          append = fn
+            %Op{kind: :session_recovery_fenced} = op when apply? ->
+              with {:ok, seq} <- insert_op(state.conn, op),
+                   :ok <- project(state.conn, op, seq) do
+                {:ok, seq}
+              else
+                _ -> throw(:recovery_append_failed)
+              end
+            _ -> throw(:recovery_append_failed)
+          end
+          Embervm.SessionRecoveryFence.run(query, :sqlite, &Codec.decode_payload/1, id, request, principal, now, append)
+        rescue
+          _ -> {:error, :recovery_store_unavailable, %{}}
+        catch
+          _, _ -> {:error, :recovery_store_unavailable, %{}}
+        end
+        case result do
+          {:ok, _} = ok when apply? ->
+            case Sqlite3.execute(state.conn, "COMMIT") do
+              :ok -> ok
+              _ ->
+                Sqlite3.execute(state.conn, "ROLLBACK")
+                {:error, :recovery_store_unavailable, %{}}
+            end
+          _ ->
+            Sqlite3.execute(state.conn, "ROLLBACK")
+            case result do
+              {:ok, _} = ok -> ok
+              {:error, _, _} = error -> error
+              _ -> {:error, :recovery_store_unavailable, %{}}
+            end
+        end
+      _ -> {:error, :recovery_store_unavailable, %{}}
+    end
+    {:reply, result, state}
+  end
+
+  def handle_call({:session_restore_allowed, lineage}, _from, state) do
+    sql = "SELECT COUNT(*), COUNT(recovery_fence_json) FROM sessions WHERE COALESCE(lineage_id, session_id) = ?1"
+    result = case cessation_query(state.conn, sql, [lineage]) do
+      {:ok, [[0, 0]]} -> {:error, :unknown_lineage}
+      {:ok, [[count, fenced]]} when count > 0 and fenced > 0 -> {:error, :recovery_fenced}
+      {:ok, [[count, 0]]} when count > 0 -> :ok
+      _ -> {:error, :recovery_store_unavailable}
+    end
+    {:reply, result, state}
+  end
+
   def handle_call(:load_tasks, _from, state) do
     {:reply, do_load_tasks(state.conn), state}
   end
@@ -932,8 +1029,8 @@ defmodule Embervm.OpLog.SQLite do
              op.group_instance_id,
              Atom.to_string(op.kind),
              # An ETF {:blob, _}, not JSON, so a binary body persists byte-exact
-             # (see encode_payload/1).
-             encode_payload(op.payload)
+             # (see Codec.encode_payload/1).
+             {:blob, Codec.encode_payload(op.payload)}
            ]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt),
@@ -963,6 +1060,7 @@ defmodule Embervm.OpLog.SQLite do
     :residency_changed,
     :session_created,
     :session_invoke_started,
+    :session_recovery_fenced,
     :session_invoked,
     :session_brick_gone,
     :session_banked,
@@ -1068,19 +1166,9 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
-  # :assigned/:started advance the projection MONOTONICALLY along the task-lifecycle
-  # partial order (queued < assigned < running < terminal), never as an
-  # unconditional SET. Under EMBERVM_ASYNC_LIFECYCLE_WRITES (ADR embervm/014
-  # decision 2) these appends are deferred through Embervm.AsyncWriter, so an append
-  # can arrive out of order relative to a later synchronous op: a stale :assigned
-  # landing AFTER :succeeded, or a :started landing after its own :assigned was lost.
-  # advance_task_state SETs the target state only from a STRICTLY-LOWER-ranked state
-  # (Embervm.TaskState.forward_rank/1), so a stale late append against an equal-or-
-  # higher-ranked row is the no-op the FSM already treats it as, while a legitimate
-  # forward jump (queued -> running when :assigned was lost) still applies. The
-  # durable projection therefore converges to the same terminal state on BOTH the
-  # live write-through path and a full oplog rebuild-replay, regardless of async
-  # append order. Inert under the gate off (appends always arrive in rank order).
+  # Lifecycle projection remains monotonic for late records and historical replay.
+  # A stale assigned/started op cannot regress a terminal row; epoch guards
+  # also reject records belonging to an earlier dispatch attempt.
   defp project(conn, %Op{kind: :assigned} = op, _seq) do
     advance_task_state(conn, op.task_id, :assigned, op.ts, epoch_of(op))
   end
@@ -1111,7 +1199,7 @@ defmodule Embervm.OpLog.SQLite do
                bool_to_int(Map.get(payload, :truncated, false)),
                op.ts,
                Map.get(payload, :expires_at),
-               encode_headers(Map.get(payload, :headers, %{}))
+               Codec.encode_headers(Map.get(payload, :headers, %{}))
              ]),
            :done <- Sqlite3.step(conn, stmt),
            :ok <- Sqlite3.release(conn, stmt) do
@@ -1173,6 +1261,11 @@ defmodule Embervm.OpLog.SQLite do
     project_residency(conn, op.payload[:residency_intent])
   end
 
+  # Recovery seals only future restore authority. The old lifecycle and its
+  # invocation/accounting timestamps remain immutable.
+  defp project(conn, %Op{kind: :session_recovery_fenced} = op, _seq),
+    do: project_recovery_fence(conn, op)
+
   defp project(conn, %Op{kind: :session_created} = op, _seq) do
     payload = op.payload
 
@@ -1184,9 +1277,8 @@ defmodule Embervm.OpLog.SQLite do
     # survives, and the unique index stays a pure backstop. Terminal holders
     # conflict as well (a reused key after destroy never silently mints a fresh
     # session); retention compaction freeing the row is what frees the key.
-    # A holder EQUAL to this op's own session_id is not a collision: it is the
-    # adopt-and-backfill repair racing a late-draining original append, which
-    # INSERT OR IGNORE alone used to absorb as a benign no-op.
+    # A holder equal to this op's own session_id is a repeated record for the
+    # same session. Accept it as an idempotent no-op and preserve the binding.
     idempotency_key = Map.get(payload, :idempotency_key)
 
     case existing_session_for_idempotency_key(conn, op.principal, idempotency_key) do
@@ -1202,11 +1294,7 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   defp do_insert_session_created(conn, op, payload, idempotency_key) do
-    # INSERT OR IGNORE: idempotent on session_id so the adopt-and-backfill repair
-    # (session_manager Direction-2, ADR embervm/014) can re-append session_created
-    # for a lost async write without a primary-key clash if the original append
-    # later drains. A row already present (created before, or a backfill that won
-    # the race) is authoritative and left untouched.
+    # Repeated session_created records preserve the existing ownership row.
     sql = """
     INSERT OR IGNORE INTO sessions
       (session_id, tenant, principal, workload, state, node_id, vm_id, volume_node_id,
@@ -1345,11 +1433,7 @@ defmodule Embervm.OpLog.SQLite do
          :ok <- Sqlite3.release(conn, stmt), do: :ok
   end
 
-  # session_relit: restored to a live VM from its banked snapshot; back to running.
-  # Guarded against terminal states so a deferred async relit append (ADR embervm/014
-  # decision 2) that lands after the session was later destroyed/expired/failed
-  # cannot resurrect it to running; a live (running/banked/relighting) row still
-  # advances. Inert under the gate off (relit always lands from banked/relighting).
+  # A late or replayed relight cannot resurrect a terminal session.
   defp project(conn, %Op{kind: :session_relit} = op, _seq) do
     sql =
       "UPDATE sessions SET state='running', node_id=?, vm_id=?, updated_at=? WHERE session_id=? AND state NOT IN ('destroyed','expired','evicted','failed')"
@@ -2479,28 +2563,28 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
-  # Monotonic advance for a deferred async lifecycle append (see the :assigned/
+  # Monotonic advance for a lifecycle append (see the :assigned/
   # :started projections): SET `to_state` (an atom) only when the row's current
   # state ranks STRICTLY BELOW it in the task-lifecycle partial order
   # (Embervm.TaskState.states_below/1). A late append against a row that already
   # ran/terminalized (equal or higher rank) matches no row and is a harmless no-op,
-  # so an out-of-order async append can never regress the durable state; a
+  # so an out-of-order append can never regress the durable state; a
   # legitimate forward jump (queued -> running when :assigned was lost) still
   # applies. Same guard, same outcome on the live path and on rebuild-replay.
   #
   # `epoch` is the SECOND, ORTHOGONAL half of the guard: the state-rank test alone
   # cannot catch an ATTEMPT-ALIASED stale append, because queued -> assigned is
   # FORWARD in the rank order regardless of which dispatch attempt issued it. A task
-  # that was assigned under attempt N (deferred :assigned enqueued), then failed and
+  # that was assigned under attempt N (:assigned recorded), then failed and
   # `:retried` (back to queued, attempt N+1) awaiting a fresh dispatch, would have
   # that stale attempt-N :assigned land against the now-queued row and re-assign it
-  # to a worker that no longer exists. So the deferred op carries the 1-based attempt
+  # to a worker that no longer exists. So an epoch-tagged op carries the 1-based attempt
   # it was issued under, and we additionally require the row's retry count (the
   # 0-based `attempt` column) to still be BELOW that epoch: `attempt < epoch`. A
   # stale attempt-N append (epoch N) against a row already retried to attempt N (SQL
   # attempt column N, i.e. not < N) matches no row and is dropped; the current
   # attempt's append (epoch N+1 against SQL attempt N) still applies. `epoch` is nil
-  # for the write-through (gate-off) path and every pre-epoch op, in which case only
+  # for historical pre-epoch ops, in which case only
   # the rank guard runs and behaviour is exactly as before.
   defp advance_task_state(conn, task_id, to_state, ts, epoch \\ nil) do
     below = Embervm.TaskState.states_below(to_state)
@@ -2524,10 +2608,9 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
-  # The dispatch attempt (1-based) a deferred async :assigned/:started op was issued
+  # The dispatch attempt (1-based) an :assigned/:started op was issued
   # under, read from the op payload (atom key on a fresh append, string key if ever
-  # re-projected from durable JSON). nil when absent (sync write-through path, or an
-  # op appended before the epoch tag existed): the caller then applies only the
+  # re-projected from durable JSON). nil for historical records written before the epoch tag existed: the caller then applies only the
   # state-rank guard, unchanged.
   defp epoch_of(%Op{payload: payload}) when is_map(payload) do
     Map.get(payload, :epoch) || Map.get(payload, "epoch")
@@ -2734,6 +2817,24 @@ defmodule Embervm.OpLog.SQLite do
   # not silently assume it saw the whole journal. `read_from/2` reads ops STRICTLY
   # after `seq`, so any `seq >= marker` still sees every surviving op; only a
   # `seq < marker` could miss compacted ops, hence the guard. See ADR embervm/002.
+  defp cessation_query(conn, sql, params) do
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql) do
+      try do
+        with :ok <- Sqlite3.bind(stmt, params), do: cessation_rows(conn, stmt, [])
+      after
+        :ok = Sqlite3.release(conn, stmt)
+      end
+    end
+  end
+
+  defp cessation_rows(conn, stmt, rows) do
+    case Sqlite3.step(conn, stmt) do
+      {:row, row} -> cessation_rows(conn, stmt, [row | rows])
+      :done -> {:ok, Enum.reverse(rows)}
+      error -> error
+    end
+  end
+
   defp do_read_from(conn, seq) do
     marker = read_marker(conn)
 
@@ -2783,7 +2884,7 @@ defmodule Embervm.OpLog.SQLite do
           stateful_instance_id: stateful_instance_id,
           group_instance_id: group_instance_id,
           kind: String.to_existing_atom(kind),
-          payload: decode_payload(payload_json)
+          payload: Codec.decode_payload(payload_json)
         }
 
         collect_ops(conn, stmt, [op | acc])
@@ -2806,6 +2907,35 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
+  defp project_recovery_fence(conn, op) do
+    fence = op.payload[:recovery_fence]
+    if is_map(fence) and fence["schema"] == 1 and fence["session_id"] == op.session_id and
+         fence["principal"] == op.principal and fence["workload"] == op.workload and
+         fence["lineage_id"] == op.session_id and fence["generation"] == 0 and
+         fence["terminal_reason"] in ["idle_ttl", "node_gone"] and
+         Enum.all?(["session_id", "principal", "workload", "dispatch_id", "request_key",
+           "reason", "preview_sha256", "evidence_sha256"], &(is_binary(fence[&1]) and fence[&1] != "")) do
+      params = Enum.map(["session_id", "lineage_id", "principal", "workload", "generation",
+        "invoke_started_at", "updated_at", "dispatch_id", "terminal_reason"], &fence[&1])
+      case cessation_query(conn, "SELECT recovery_fence_json FROM sessions WHERE session_id=?1 AND COALESCE(lineage_id, session_id)=?2 AND principal=?3 AND workload=?4 AND generation=?5 AND invoke_started_at=?6 AND updated_at=?7 AND inflight_dispatch_id=?8 AND terminal_reason=?9 AND state='evicted'", params) do
+          {:ok, [[nil]]} ->
+            with {:ok, []} <- cessation_query(conn, "UPDATE sessions SET recovery_fence_json=?10 WHERE session_id=?1 AND COALESCE(lineage_id, session_id)=?2 AND principal=?3 AND workload=?4 AND generation=?5 AND invoke_started_at=?6 AND updated_at=?7 AND inflight_dispatch_id=?8 AND terminal_reason=?9 AND state='evicted' AND recovery_fence_json IS NULL", params ++ [Jason.encode!(fence)]),
+                 {:ok, 1} <- Sqlite3.changes(conn) do
+              :ok
+            else
+              _ -> {:error, :recovery_fence_identity_mismatch}
+            end
+          {:ok, [[existing]]} ->
+            if Jason.decode!(existing) == fence, do: :ok, else: {:error, :recovery_fence_identity_mismatch}
+          _ -> {:error, :recovery_fence_identity_mismatch}
+        end
+    else
+      {:error, :recovery_fence_identity_mismatch}
+    end
+  rescue
+    _ -> {:error, :recovery_fence_identity_mismatch}
+  end
+
   defp encode_turn_interruption(nil), do: nil
   defp encode_turn_interruption(value), do: Embervm.SessionStopProof.encode(value)
 
@@ -2815,7 +2945,7 @@ defmodule Embervm.OpLog.SQLite do
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
            token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
            COALESCE(lineage_id, session_id), idempotency_key, stop_intent_json, stop_completion_json,
-           turn_seq, interrupted_turn_json, inflight_dispatch_id
+           turn_seq, interrupted_turn_json, inflight_dispatch_id, recovery_fence_json
     FROM sessions
     """
 
@@ -2856,7 +2986,8 @@ defmodule Embervm.OpLog.SQLite do
          stop_completion_json,
          turn_seq,
          interrupted_turn_json,
-         inflight_dispatch_id
+         inflight_dispatch_id,
+         recovery_fence_json
        ]} ->
         session = %{
           session_id: session_id,
@@ -2885,7 +3016,8 @@ defmodule Embervm.OpLog.SQLite do
           stop_completion: Embervm.SessionStopProof.decode(stop_completion_json),
           turn_seq: turn_seq,
           interrupted_turn: Embervm.SessionStopProof.decode(interrupted_turn_json),
-          inflight_dispatch_id: inflight_dispatch_id
+          inflight_dispatch_id: inflight_dispatch_id,
+          recovery_fence: Embervm.SessionStopProof.decode(recovery_fence_json)
         }
 
         collect_sessions(conn, stmt, [session | acc])
@@ -3300,7 +3432,7 @@ defmodule Embervm.OpLog.SQLite do
                truncated: truncated == 1,
                created_at: created_at,
                expires_at: expires_at,
-               headers: decode_headers(headers)
+               headers: Codec.decode_headers(headers)
              }}
 
           :done ->
@@ -3334,7 +3466,7 @@ defmodule Embervm.OpLog.SQLite do
       result =
         case Sqlite3.step(conn, stmt) do
           {:row, [payload_json]} ->
-            {:ok, Map.get(decode_payload(payload_json), "request")}
+            {:ok, Map.get(Codec.decode_payload(payload_json), "request")}
 
           :done ->
             {:ok, nil}
@@ -3832,12 +3964,14 @@ defmodule Embervm.OpLog.SQLite do
          :ok <- migrate_sessions_invoke_started_at(conn),
          :ok <- migrate_sessions_stop_proof(conn),
          :ok <- migrate_sessions_turn_state(conn),
+         :ok <- migrate_sessions_recovery_fence(conn),
          :ok <- migrate_ops_session_id(conn),
          :ok <- migrate_ops_serving_instance_id(conn),
          :ok <- migrate_usage_request_count(conn),
          :ok <- migrate_ops_stateful_instance_id(conn),
          :ok <- migrate_volumes_exported_generation(conn),
-         :ok <- migrate_ops_group_instance_id(conn) do
+         :ok <- migrate_ops_group_instance_id(conn),
+         :ok <- Sqlite3.execute(conn, "CREATE INDEX IF NOT EXISTS ops_session_id_seq_idx ON ops(session_id, seq)") do
       :ok
     end
   end
@@ -3857,6 +3991,12 @@ defmodule Embervm.OpLog.SQLite do
          :ok <- add_column_if_missing(conn, cols, "interrupted_turn_json", "ALTER TABLE sessions ADD COLUMN interrupted_turn_json TEXT"),
          :ok <- add_column_if_missing(conn, cols, "inflight_dispatch_id", "ALTER TABLE sessions ADD COLUMN inflight_dispatch_id TEXT") do
       :ok
+    end
+  end
+
+  defp migrate_sessions_recovery_fence(conn) do
+    with {:ok, cols} <- table_columns(conn, "sessions") do
+      add_column_if_missing(conn, cols, "recovery_fence_json", "ALTER TABLE sessions ADD COLUMN recovery_fence_json TEXT")
     end
   end
 
@@ -4106,70 +4246,4 @@ defmodule Embervm.OpLog.SQLite do
   defp blob(nil), do: nil
   defp blob(bin) when is_binary(bin), do: {:blob, bin}
 
-  # -- payload codec ----------------------------------------------------
-
-  # Op payloads are stored as an Erlang External Term Format binary
-  # (:erlang.term_to_binary/1), bound as a {:blob, _} so SQLite keeps the exact
-  # bytes. This replaces the previous :json.encode/1: JSON cannot represent a
-  # non-UTF-8 binary, so a task whose result (or request) body was binary (e.g.
-  # a PNG, first byte 0x89 = 137) crashed the writer with {:invalid_byte, 137}
-  # and cascaded a control-plane restart. ETF round-trips ANY term, so a binary
-  # body persists byte-exact. Payloads are this node's own trusted data (never
-  # untrusted external input), so binary_to_term/1 on read is safe here.
-  defp encode_payload(payload) when is_map(payload) do
-    {:blob, :erlang.term_to_binary(payload)}
-  end
-
-  # An ETF blob begins with the version byte 131; legacy rows written before this
-  # change are JSON objects beginning with "{" (123). The first byte disambiguates
-  # the two formats during the retention overlap, so old and new rows both read
-  # back correctly. binary_to_term/1 restores the original atom-keyed map, which
-  # `stringify/1` coerces into the string-keyed shape :json.decode/1 produced, so
-  # every reader (the dispatcher's request envelope, replay) is unchanged.
-  defp decode_payload(<<131, _::binary>> = term) do
-    term |> :erlang.binary_to_term() |> stringify()
-  end
-
-  defp decode_payload(json) when is_binary(json) do
-    :json.decode(json)
-  end
-
-  # Coerces a binary_to_term result into the exact shape :json.decode/1 yields
-  # for a legacy row: string keys, non-boolean atom values stringified, and
-  # nil-valued map keys dropped (encode used to reject them before JSON encoding).
-  # Binaries, numbers, booleans and lists pass through, so a binary body survives
-  # intact while staying contract-compatible with the JSON path for all readers.
-  defp stringify(map) when is_map(map) do
-    for {k, v} <- map, not is_nil(v), into: %{}, do: {to_string(k), stringify(v)}
-  end
-
-  defp stringify(list) when is_list(list), do: Enum.map(list, &stringify/1)
-  defp stringify(v) when is_atom(v) and not is_boolean(v), do: Atom.to_string(v)
-  defp stringify(v), do: v
-
-  # Guest response headers (a string->string map) ride the `results.headers` column
-  # as a JSON object. An empty/absent map is stored as NULL so old rows and
-  # headerless results are indistinguishable and both read back as %{}.
-  defp encode_headers(headers) when is_map(headers) and map_size(headers) == 0, do: nil
-
-  defp encode_headers(headers) when is_map(headers) do
-    headers |> :json.encode() |> :erlang.iolist_to_binary()
-  end
-
-  defp encode_headers(_), do: nil
-
-  # NULL (old rows, headerless results) and a malformed blob both default to %{},
-  # so a read never crashes on a pre-migration record (backward compatibility).
-  defp decode_headers(nil), do: %{}
-
-  defp decode_headers(json) when is_binary(json) do
-    case :json.decode(json) do
-      map when is_map(map) -> map
-      _ -> %{}
-    end
-  rescue
-    _ -> %{}
-  end
-
-  defp decode_headers(_), do: %{}
 end

@@ -1,6 +1,11 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
+exports_files(
+    ["values-gke.yaml"],
+    visibility = ["//projects/platform-gke/authentik:__pkg__"],
+)
+
 helm_chart(
     name = "chart",
     lint = False,
@@ -66,6 +71,13 @@ filegroup(
 )
 
 py_test(
+    name = "grimoire_refresh_test",
+    srcs = ["grimoire_refresh_test.py"],
+    data = ["blueprints/grimoire-auth.yaml"],
+    deps = ["@pip//pyyaml"],
+)
+
+py_test(
     name = "grimoire_join_enrollment_test",
     srcs = ["grimoire_join_enrollment_test.py"],
     data = [
@@ -87,12 +99,13 @@ py_test(
 )
 
 py_test(
-    name = "platform_enrollment_test",
-    srcs = ["platform_enrollment_test.py"],
+    name = "platform_management_test",
+    srcs = ["platform_management_test.py"],
     data = [
         "Chart.lock",
         "Chart.yaml",
         "values.yaml",
+        "values-gke.yaml",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -102,8 +115,6 @@ py_test(
     ]),
     env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
     deps = [
-        "@pip//cryptography",
-        "@pip//pyjwt",
         "@pip//pytest",
         "@pip//pyyaml",
     ],

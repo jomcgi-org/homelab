@@ -67,7 +67,6 @@ async function renderLobby(campaign) {
 
 beforeEach(() => {
   process.env.API_BASE = "http://backend.test";
-  delete process.env.GRIMOIRE_INVITATION_LINKS_ENABLED;
 });
 
 describe("Grimoire lobby", () => {
@@ -109,7 +108,8 @@ describe("Grimoire lobby", () => {
         .mockResolvedValueOnce(
           response([{ id: characterId }, available, { id: dmCharacterId }]),
         )
-        .mockResolvedValueOnce(response(invitations));
+        .mockResolvedValueOnce(response(invitations))
+        .mockResolvedValueOnce(response([]));
       const lobby = await load(event(fetch));
       expect(fetch.mock.calls.map(([url]) => url)).toEqual([
         "http://backend.test/api/grimoire/lobby",
@@ -118,6 +118,7 @@ describe("Grimoire lobby", () => {
         ...(is_owner
           ? [
               `http://backend.test/api/grimoire/campaigns/${campaignId}/invitations`,
+              `http://backend.test/api/grimoire/campaigns/${campaignId}/join-links`,
             ]
           : []),
       ]);
@@ -419,7 +420,7 @@ describe("Grimoire lobby", () => {
       expect(html).toContain(
         'New character name <input name="name" required="" maxlength="120"',
       );
-      expect(html.includes('action="?/invite"')).toBe(is_owner);
+      expect(html.includes('action="?/createLink"')).toBe(is_owner);
       expect(html.includes('action="?/remove"')).toBe(is_owner);
       expect(html).not.toContain('action="?/createCharacter"');
     },
@@ -478,7 +479,6 @@ describe("single-use campaign links", () => {
   };
 
   it("returns the new secret once and forwards only validated creation fields", async () => {
-    process.env.GRIMOIRE_INVITATION_LINKS_ENABLED = "true";
     const fetch = vi.fn().mockResolvedValue(
       response({
         ...metadata,
@@ -513,7 +513,6 @@ describe("single-use campaign links", () => {
     { email: "a".repeat(321) },
     { allow_enrollment: "true" },
   ])("rejects malformed form fields %j", async (fields) => {
-    process.env.GRIMOIRE_INVITATION_LINKS_ENABLED = "true";
     const fetch = vi.fn();
     const result = await actions.createLink(
       event(fetch, {
@@ -526,24 +525,7 @@ describe("single-use campaign links", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it.each(["createLink", "revokeLink"])(
-    "fails closed when disabled for %s",
-    async (actionName) => {
-      const fetch = vi.fn();
-      const result = await actions[actionName](
-        event(fetch, {
-          campaign_id: campaignId,
-          join_link_id: invitationId,
-          email: "friend@example.test",
-        }),
-      );
-      expect(result.data.error).toContain("unavailable");
-      expect(fetch).not.toHaveBeenCalled();
-    },
-  );
-
   it("does not reflect unknown backend or transport errors from creation", async () => {
-    process.env.GRIMOIRE_INVITATION_LINKS_ENABLED = "true";
     for (const fetch of [
       vi
         .fn()
@@ -561,7 +543,6 @@ describe("single-use campaign links", () => {
   });
 
   it("revokes only the specified campaign link", async () => {
-    process.env.GRIMOIRE_INVITATION_LINKS_ENABLED = "true";
     const fetch = vi.fn().mockResolvedValue(response(null, 204));
     expect(
       await actions.revokeLink(
@@ -575,13 +556,11 @@ describe("single-use campaign links", () => {
   });
 
   it("strips tokens and provider identifiers from loaded link metadata", async () => {
-    process.env.GRIMOIRE_INVITATION_LINKS_ENABLED = "true";
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(
         response({
           user: { email: "owner@example.test" },
-          invitation_links_enabled: true,
           campaigns: [{ id: campaignId, role: "dm", is_owner: true }],
         }),
       )
@@ -594,20 +573,17 @@ describe("single-use campaign links", () => {
         ]),
       );
     const data = await load(event(fetch));
-    expect(data.invitation_links_enabled).toBe(true);
     expect(data.campaigns[0].join_links[0]).toMatchObject(metadata);
     expect(JSON.stringify(data)).not.toContain(token);
     expect(JSON.stringify(data)).not.toContain("provider-secret");
   });
 
   it("keeps the lobby and registered invitation fallback when the links backend is unavailable", async () => {
-    process.env.GRIMOIRE_INVITATION_LINKS_ENABLED = "true";
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(
         response({
           user: { email: "owner@example.test" },
-          invitation_links_enabled: true,
           campaigns: [{ id: campaignId, role: "dm", is_owner: true }],
           invitations: [],
         }),
@@ -625,7 +601,7 @@ describe("single-use campaign links", () => {
     expect(html).not.toContain("provider-secret");
   });
 
-  it("removes the provider admin redirect and explains the disabled fallback", async () => {
+  it("removes the provider admin redirect", async () => {
     const { html } = await render(Lobby, {
       props: {
         data: {
@@ -636,7 +612,6 @@ describe("single-use campaign links", () => {
         },
       },
     });
-    expect(html).toContain("Account invitations are unavailable right now");
     expect(html).not.toContain("auth.jomcgi.dev/if/admin");
     expect(html).not.toContain("Fixed data");
     expect(html).not.toContain("Send via Email");

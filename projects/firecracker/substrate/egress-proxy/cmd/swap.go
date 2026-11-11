@@ -492,10 +492,6 @@ func better(candidate, incumbent grantBand) bool {
 	return candidate.resetsAt.Before(incumbent.resetsAt)
 }
 
-func newTokenBroker(rawURL string) *tokenBroker {
-	return newTokenBrokerWithClient(rawURL, brokerHTTPClient(nil, 10*time.Second))
-}
-
 func newTokenBrokerWithClient(rawURL string, client *http.Client) *tokenBroker {
 	if rawURL == "" {
 		return &tokenBroker{grants: make(map[string]*brokerGrantState), forced: make(map[string]time.Time)}
@@ -795,14 +791,10 @@ func (e *secretEntry) invalidate() {
 	e.mu.Unlock()
 }
 
-// headerValue renders what the sidecar SETS on the request: Basic when the
-// entry names a user, otherwise the prefix form. One place, so the two callers
-// (claim-bearing and plain) cannot diverge on encoding.
-func (e *secretEntry) headerValue() string {
-	return e.headerValueFor(e.resolvedValue())
-}
-
-// headerValueFor renders the header for one snapshotted credential value.
+// headerValueFor renders what the sidecar SETS on the request for one
+// snapshotted credential value: Basic when the entry names a user, otherwise
+// the prefix form. One place, so the two callers (claim-bearing and plain)
+// cannot diverge on encoding.
 func (e *secretEntry) headerValueFor(value string) string {
 	if e.BasicUser != "" {
 		return "Basic " + base64.StdEncoding.EncodeToString([]byte(e.BasicUser+":"+value))
@@ -810,16 +802,8 @@ func (e *secretEntry) headerValueFor(value string) string {
 	return e.ValuePrefix + value
 }
 
-func (e *secretEntry) resolvedValue() string {
-	if e.mu != nil {
-		e.mu.RLock()
-		defer e.mu.RUnlock()
-	}
-	return e.value
-}
-
-// loadSecrets parses EGRESS_SECRETS (a JSON catalog) and resolves each real value
-// from the sidecar env.
+// loadSecretsWithBrokerClient parses EGRESS_SECRETS (a JSON catalog) and
+// resolves each real value from the sidecar env.
 //
 // FAIL CLOSED, in two different ways on purpose:
 //
@@ -830,14 +814,6 @@ func (e *secretEntry) resolvedValue() string {
 //     the entry (dead) and deny only its own egressTo hosts. Exiting instead would
 //     crash-loop the sidecar and take down all guest egress on the node over one
 //     unresolved credential.
-func loadSecrets(logger *slog.Logger) []secretEntry {
-	return loadSecretsWithBroker(logger, os.Getenv("EGRESS_TOKEN_BROKER_URL"))
-}
-
-func loadSecretsWithBroker(logger *slog.Logger, brokerURL string) []secretEntry {
-	return loadSecretsWithBrokerClient(logger, brokerURL, brokerHTTPClient(nil, 10*time.Second))
-}
-
 func loadSecretsWithBrokerClient(logger *slog.Logger, brokerURL string, client *http.Client) []secretEntry {
 	raw := os.Getenv("EGRESS_SECRETS")
 	if strings.TrimSpace(raw) == "" {
@@ -927,6 +903,47 @@ func (p *proxy) secretFor(host string) *secretEntry {
 		}
 	}
 	return nil
+}
+
+const caLoadRetryInterval = 5 * time.Second
+
+// caMinterSource recovers when cert-manager populates an optional Secret after
+// the sidecar starts. Only CA-dependent requests retry, at most once per interval,
+// so missing/invalid material cannot cause a per-connection file-read or keygen
+// storm. A successful keypair stays fixed for this process, as before: this is
+// startup recovery, not CA rotation, and existing guests keep their trust anchor.
+type caMinterSource struct {
+	mu          sync.Mutex
+	certFile    string
+	keyFile     string
+	nextAttempt time.Time
+	minter      *caMinter
+}
+
+func (s *caMinterSource) get(now time.Time) (*caMinter, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.minter != nil || now.Before(s.nextAttempt) {
+		return s.minter, nil
+	}
+	s.nextAttempt = now.Add(caLoadRetryInterval)
+	minter, err := newCAMinter(s.certFile, s.keyFile)
+	if err != nil {
+		return nil, err
+	}
+	s.minter = minter
+	return minter, nil
+}
+
+func (p *proxy) currentMinter() *caMinter {
+	if p.caSource == nil {
+		return nil
+	}
+	minter, err := p.caSource.get(time.Now())
+	if err != nil {
+		p.logger.Error("egress CA load failed; retrying on later CA-dependent requests", "err", err)
+	}
+	return minter
 }
 
 // caMinter terminates guest TLS by minting leaf certs signed by the egress CA.
@@ -1054,8 +1071,8 @@ func (p *proxy) swapPlaintext(br *bufio.Reader, client net.Conn, dialAddr, host 
 // validated TLS connection to the pinned dialAddr. The cert is validated against
 // host (ServerName), so dialing the guardrail-pinned IP does not weaken TLS
 // verification. It returns when either side closes.
-func (p *proxy) terminateAndSwap(br *bufio.Reader, client net.Conn, dialAddr, host string, sec *secretEntry) {
-	serverCfg := &tls.Config{GetCertificate: p.minter.getCertificate, MinVersion: tls.VersionTLS12}
+func (p *proxy) terminateAndSwap(br *bufio.Reader, client net.Conn, dialAddr, host string, sec *secretEntry, minter *caMinter) {
+	serverCfg := &tls.Config{GetCertificate: minter.getCertificate, MinVersion: tls.VersionTLS12}
 	guest := tls.Server(prefixConn{r: br, Conn: client}, serverCfg)
 	defer guest.Close()
 	if err := guest.Handshake(); err != nil {
@@ -1360,7 +1377,8 @@ func rejectSwapRequest(req *http.Request) bool {
 	return false
 }
 
-// injectRequest sets the entry's header to the real credential.
+// injectRequestWith sets the entry's header to one snapshotted credential, so
+// the token and the account id claim are always read from the same value.
 //
 // Only that one header, and only when the guest sent it AT ALL: presence is the
 // signal, not content, so an empty value counts. The guest has to send something
@@ -1382,12 +1400,6 @@ func rejectSwapRequest(req *http.Request) bool {
 // Whatever the guest put in the header is DISCARDED rather than matched. That is
 // the point: the guest's value is uncoupled config, and a prompt-injected guest
 // cannot authenticate as a different account by supplying its own token.
-func injectRequest(req *http.Request, sec *secretEntry) bool {
-	return injectRequestWith(req, sec, sec.credential())
-}
-
-// injectRequestWith injects one snapshotted credential, so the token and
-// the account id claim are always read from the same value.
 func injectRequestWith(req *http.Request, sec *secretEntry, cred credential) bool {
 	if sec.ClaimHeader != "" {
 		requested := len(req.Header.Values(sec.Header)) > 0 || sec.injectAlwaysPath(req.URL.Path)

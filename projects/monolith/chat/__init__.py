@@ -1,4 +1,4 @@
-"""Chat domain — Discord bot, backfill, and explore agent."""
+"""Chat domain: Discord bot, explore and cluster agents."""
 
 from fastapi import FastAPI
 

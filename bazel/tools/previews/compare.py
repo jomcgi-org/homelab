@@ -20,6 +20,18 @@ import suite
 
 ROOT = Path(__file__).resolve().parents[3]
 EXTRA_FIXTURES = {
+    "agents": [
+        "profile-preview/App.svelte",
+        "profile-preview/fixtures.js",
+        "profile-preview/vite.config.js",
+        "test/ProfileRoute.svelte",
+        "test/profile-page.svelte.js",
+        "test/profile-stores.js",
+        "test/app-environment-stub.js",
+        "test/app-navigation-stub.js",
+        "preview/fonts.css",
+        "preview/fonts/SchibstedGrotesk.ttf",
+    ],
     "trips": [
         "test/trips-fixtures.js",
         "test/TripsRoute.svelte",
@@ -107,6 +119,12 @@ def baseline_plan(head_source, base_source, names):
 
 
 def case_details(name, filename):
+    if name == "agents":
+        match = re.fullmatch(
+            r"agents-(390|1440)-(light|dark)-(normal|reduced|no-js)-(opening|full|resume|banner)\.png",
+            filename,
+        )
+        return f"{match[3]}-{match[4]}", int(match[1]), match[2]
     if name == "blog":
         match = re.fullmatch(r"(\d+)x\d+-(opening|full|complete)\.png", filename)
         return match[2], int(match[1]), "light"
@@ -133,7 +151,6 @@ def case_details(name, filename):
 def assemble(
     output,
     head_artifact,
-    base_artifact,
     evidence,
     head,
     baseline,
@@ -146,9 +163,9 @@ def assemble(
         "invalid comparison revisions",
     )
     output.mkdir()
+    # Only the head's fixture site is published. The baseline is shown by its
+    # captures; its own site would duplicate them and overflow the archive cap.
     shutil.copytree(head_artifact, output / "after")
-    if base_names:
-        shutil.copytree(base_artifact, output / "before")
     head_receipt = json.loads((evidence / "head/suite.json").read_text())
     base_receipt = (
         json.loads((evidence / "before/suite.json").read_text())
@@ -210,9 +227,6 @@ def assemble(
                 ),
                 "before_dimensions": None,
                 "interactive_after": f"after/suites/{name}/",
-                "interactive_before": f"before/suites/{name}/"
-                if before_record
-                else None,
             }
             target = output / "captures" / name
             target.mkdir(parents=True, exist_ok=True)
@@ -319,7 +333,6 @@ def run(output, evidence, head, base_sha):
                 model = assemble(
                     output,
                     root / "head-artifact",
-                    root / "base-artifact",
                     evidence,
                     head,
                     baseline,

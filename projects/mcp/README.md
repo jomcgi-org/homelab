@@ -33,8 +33,7 @@ projects/mcp/
     │       ├── team-mapping-cronjob.yaml # Reconciles authentik group -> CF team from values
     │       ├── postgres-cnpg.yaml        # CloudNativePG cluster and scheduled GCS backup
     │       ├── cnpg-backup-gcs-secret.yaml
-    │       ├── onepassworditem.yaml      # 1Password secret sync (JWT_SECRET_KEY, etc.)
-    │       └── networkpolicy.yaml        # Cross-namespace ingress policy (disabled; see below)
+    │       └── onepassworditem.yaml      # 1Password secret sync (JWT_SECRET_KEY, etc.)
     ├── scripts/provision-mcp-auth.sh     # Creates the sso_providers row after a DB rebuild
     └── deploy/
         ├── application.yaml    # Home-cluster Application shape (no root references it)
@@ -67,7 +66,7 @@ helm dependency update projects/mcp/context-forge-gateway/chart
 - **In-cluster access:** the gateway Service's `/mcp` path inside the `mcp` namespace (the hostname is whatever the release renders; read it from the Service, never hardcode it). This is no longer an unauthenticated path: `MCP_REQUIRE_AUTH` is gateway-wide rather than per virtual server, so in-cluster callers authenticate too. The one in-cluster caller, the team-mapping CronJob, mints a short-lived admin JWT from the synced secret and calls the REST API, not `/mcp`.
 - **UI and catalog:** disabled by default in `chart/values.yaml`; re-enabled in `deploy/values.yaml` for the production cluster.
 - **Tool catalog refresh:** The monolith registration lives in Context Forge's Postgres, not git, and is set by hand to `STREAMABLEHTTP`. Context Forge's health-check loop is now the only catalog refresh path, with `AUTO_REFRESH_SERVERS=true` and `GATEWAY_AUTO_REFRESH_INTERVAL=600`. Failure reporting is warning only, and a tool rejected by the XSS validator is dropped silently, so check `last_refresh_at` on the monolith `gateways` row and compare the tool count. Refresh never publishes a new tool: the association and visibility rows are hand edits, listed in [Tool catalogue refresh](ARCHITECTURE.md#tool-catalogue-refresh).
-- **SSRF allowlist:** `SSRF_ALLOWED_NETWORKS` is checked when a gateway row is created or updated, so it only bites on the next registration. It still names the home cluster's ranges; see [Configuration discipline](ARCHITECTURE.md#configuration-discipline).
+- **SSRF allowlist:** `SSRF_ALLOWED_NETWORKS` is checked when a gateway row is created or updated, never on health ticks or tool calls. Since #5840, `SSRF_ALLOWED_NETWORKS` in [deploy/values.yaml](context-forge-gateway/deploy/values.yaml) configures the GKE hub's pod and service CIDRs. That file is the source of the current values. A future cluster CIDR change requires updating `SSRF_ALLOWED_NETWORKS` there; see [Configuration discipline](ARCHITECTURE.md#configuration-discipline) for the masked 422 diagnostic.
 
 ## GitHub access for agents
 

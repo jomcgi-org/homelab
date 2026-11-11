@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime, timezone
 
 from factory.orchestration import retro
@@ -8,6 +9,40 @@ from factory.orchestration import retro
 NOW = datetime(2026, 10, 1, 7, 0, tzinfo=timezone.utc)
 TASK = "t-aaaaaaaa-1111"
 OTHER = "t-bbbbbbbb-2222"
+
+
+def test_intake_digest_uses_three_oldest_latest_skips_and_marks_coverage():
+    rows = [
+        {
+            "repo": "owner/repo",
+            "issue_number": number,
+            "decision": "skipped",
+            "reason": f"blocked_by:#{number + 10}",
+            "created_at": f"2026-09-{number:02d}",
+            "observed_at": "2026-10-01",
+        }
+        for number in (5, 3, 1, 4, 2)
+    ]
+    rows[-1]["subsequently_admitted"] = True
+    data = {
+        "intake_backlog": {
+            "available": True,
+            "coverage": {"owner/repo": "partial"},
+            "issues": rows,
+        }
+    }
+    text = "\n".join(retro._intake_skips(data))
+    assert "Insufficient coverage" in text
+    assert "owner/repo#2:" not in text and "owner/repo#5:" not in text
+    assert (
+        text.index("owner/repo#1:")
+        < text.index("owner/repo#3:")
+        < text.index("owner/repo#4:")
+    )
+    assert "blocked_by:#11" in text
+    data["intake_backlog"]["issues"] = rows[:1]
+    assert "Only 1 currently skipped" in "\n".join(retro._intake_skips(data))
+    assert "Insufficient coverage" in "\n".join(retro._intake_skips({}))
 
 
 def _run(task, node, attempt, status="succeeded", outcome=None, run_id=None):
@@ -274,28 +309,46 @@ def test_optimizer_waits_for_rollout_and_strict_post_window():
     )
 
 
-def test_optimizer_keeps_missing_traffic_and_coverage_unknown():
+def test_optimizer_ended_window_without_an_answer_is_final():
+    # An ended cohort never gains traffic, so holding the selection on it only
+    # freezes the loop: the verdict is INCONCLUSIVE and releases the slot.
     assert (
         retro.optimizer_evidence(_experiment_context(post={"attempts": 0}), NOW)[
             "status"
         ]
-        == "UNKNOWN"
+        == "INCONCLUSIVE"
     )
-    assert (
-        retro.optimizer_evidence(
-            _experiment_context(post={"attempts": 10, "unknown": 1}), NOW
-        )["status"]
-        == "UNKNOWN"
+    unsettled = _experiment_context(post={"attempts": 10, "unknown": 1})
+    # Attempts created near the window's end get a day to settle first.
+    assert retro.optimizer_evidence(unsettled, NOW)["status"] == "WAIT"
+    later = NOW + retro.timedelta(hours=retro._OPTIMIZER_SETTLE_HOURS)
+    assert retro.optimizer_evidence(unsettled, later)["status"] == "INCONCLUSIVE"
+    short = retro.optimizer_evidence(
+        _experiment_context(post={"attempts": 4, "dispatch_failure": 0, "unknown": 0}),
+        NOW,
     )
-    assert (
-        retro.optimizer_evidence(
-            _experiment_context(overlapping_revisions=["0.2.0"]), NOW
-        )["status"]
-        == "UNKNOWN"
-    )
+    assert short["status"] == "INCONCLUSIVE"
+    assert "4 of 10 attempts" in short["reason"]
     context = _experiment_context()
     context["experiment"].pop("minimum_attempts")
-    assert retro.optimizer_evidence(context, NOW)["status"] == "UNKNOWN"
+    assert retro.optimizer_evidence(context, NOW)["status"] == "INCONCLUSIVE"
+    context["experiment"]["metric"] = "not-a-metric"
+    assert retro.optimizer_evidence(context, NOW)["status"] == "INCONCLUSIVE"
+
+
+def test_optimizer_names_overlapping_deployments_without_holding_the_verdict():
+    verdict = retro.optimizer_evidence(
+        _experiment_context(overlapping_revisions=["0.2.0"]), NOW
+    )
+    assert verdict["status"] == "ACCEPTED"
+    assert verdict["confounders"] == {"overlapping_revisions": ["0.2.0"]}
+    # Unavailable evidence stays UNKNOWN: the next run can still read it.
+    assert (
+        retro.optimizer_evidence(_experiment_context(error="GitHub unavailable"), NOW)[
+            "status"
+        ]
+        == "UNKNOWN"
+    )
 
 
 def test_optimizer_reports_observed_acceptance_or_regression_with_counts():
@@ -340,6 +393,8 @@ def test_optimizer_loader_bounds_windows_at_proven_deployment(monkeypatch):
     def rows(_session, sql, params):
         observed.append((sql, params))
         if sql == retro._OPTIMIZER_OBSERVATIONS:
+            return [{"deployed_revision": "0.1.0", "polls": 1}]
+        if sql == retro._OPTIMIZER_BOUNDARY:
             return [
                 {
                     "note_id": "deployment-example",
@@ -370,6 +425,27 @@ def test_optimizer_loader_bounds_windows_at_proven_deployment(monkeypatch):
         if sql == retro._OPTIMIZER_COUNTS:
             assert params["end"] - params["start"] == retro.timedelta(hours=72)
             assert params["as_of"] == NOW
+    from factory.orchestration import learning_inputs
+
+    loaded["rollout"]["reconciled_at"] = NOW.isoformat()
+    monkeypatch.setattr(
+        retro,
+        "_verify_optimizer_rollout",
+        lambda *_: {
+            "verdict": "verified",
+            "reconciled_at": (NOW + retro.timedelta(hours=1)).isoformat(),
+        },
+    )
+    later = retro._load_optimizer(object(), NOW + retro.timedelta(hours=1))
+    assert later["outcomes_and_cost_as_of"] != loaded["outcomes_and_cost_as_of"]
+    first = learning_inputs.fingerprint({"optimizer": loaded}, "a" * 40, "prompt")
+    assert first == learning_inputs.fingerprint(
+        {"optimizer": later}, "a" * 40, "prompt"
+    )
+    later["post"]["unknown_reservation_usd"] = 0
+    assert first != learning_inputs.fingerprint(
+        {"optimizer": later}, "a" * 40, "prompt"
+    )
 
 
 def test_optimizer_merge_without_provenance_never_loads_windows(monkeypatch):
@@ -400,7 +476,16 @@ def test_optimizer_loader_holds_saturated_history(monkeypatch):
     monkeypatch.setattr(
         retro, "_verify_optimizer_rollout", lambda *_: {"verdict": "verified"}
     )
-    monkeypatch.setattr(retro, "_rows", lambda *_: [{}] * 5000)
+
+    def rows(_session, sql, params):
+        if sql == retro._OPTIMIZER_BOUNDARY:
+            return [
+                {"note_id": "deployed", "observed_at": NOW - retro.timedelta(hours=72)}
+            ]
+        assert params["limit"] == retro._OPTIMIZER_OBSERVATION_LIMIT + 1
+        return [{}] * (retro._OPTIMIZER_OBSERVATION_LIMIT + 1)
+
+    monkeypatch.setattr(retro, "_rows", rows)
     loaded = retro._load_optimizer(object(), NOW)
     assert retro.optimizer_evidence(loaded, NOW)["status"] == "UNKNOWN"
     assert "saturated" in loaded["error"]
@@ -426,8 +511,13 @@ def test_optimizer_loader_ignores_deployments_after_completed_window(monkeypatch
         retro, "_verify_optimizer_rollout", lambda *_: {"verdict": "verified"}
     )
 
-    def rows(_session, sql, _params):
+    def rows(_session, sql, params):
         if sql == retro._OPTIMIZER_OBSERVATIONS:
+            # The query itself bounds the window, so a revision deployed an
+            # hour after it closed never reaches the loader.
+            assert params["as_of"] == boundary + retro.timedelta(hours=72)
+            return [{"deployed_revision": "0.1.0", "polls": 2}]
+        if sql == retro._OPTIMIZER_BOUNDARY:
             return [
                 {
                     "note_id": "deployed",
@@ -439,11 +529,7 @@ def test_optimizer_loader_ignores_deployments_after_completed_window(monkeypatch
                         "newest_freight_version": "0.1.0",
                         "writeback_commit": "a" * 40,
                     },
-                },
-                {
-                    "observed_at": boundary + retro.timedelta(hours=73),
-                    "extra": {"deployed_revision": "0.2.0"},
-                },
+                }
             ]
         return [{"attempts": 10}]
 
@@ -451,3 +537,1162 @@ def test_optimizer_loader_ignores_deployments_after_completed_window(monkeypatch
     loaded = retro._load_optimizer(object(), NOW)
     assert loaded["overlapping_revisions"] == []
     assert loaded["post"]["end"] == (boundary + retro.timedelta(hours=72)).isoformat()
+
+
+def test_optimizer_missing_boundary_does_not_scan_poll_history(monkeypatch):
+    monkeypatch.setattr(
+        retro,
+        "_optimizer_github",
+        lambda: {
+            "experiment": {"app": "monolith", "expected_revision": "0.1.0"},
+            "merged_at": (NOW - retro.timedelta(days=30)).isoformat(),
+            "contains_merge": True,
+        },
+    )
+    monkeypatch.setattr(
+        retro, "_verify_optimizer_rollout", lambda *_: {"verdict": "verified"}
+    )
+
+    def rows(_session, sql, params):
+        assert sql == retro._OPTIMIZER_BOUNDARY
+        return []
+
+    monkeypatch.setattr(retro, "_rows", rows)
+    loaded = retro._load_optimizer(object(), NOW)
+    assert "post" not in loaded
+    assert retro.optimizer_evidence(loaded, NOW)["status"] == "WAIT"
+
+
+def test_optimizer_old_window_coverage_is_independent_of_later_polls(monkeypatch):
+    boundary = NOW - retro.timedelta(days=20)
+    end = boundary + retro.timedelta(hours=72)
+    monkeypatch.setattr(
+        retro,
+        "_optimizer_github",
+        lambda: {
+            "experiment": {
+                "app": "monolith",
+                "expected_revision": "0.1.0",
+                "writeback_commit": "a" * 40,
+                "metric": "dispatch_failure",
+                "minimum_attempts": 10,
+            },
+            "merged_at": (boundary - retro.timedelta(days=1)).isoformat(),
+            "contains_merge": True,
+        },
+    )
+    monkeypatch.setattr(
+        retro, "_verify_optimizer_rollout", lambda *_: {"verdict": "verified"}
+    )
+
+    def rows(_session, sql, params):
+        if sql == retro._OPTIMIZER_BOUNDARY:
+            assert params["revision"] == "0.1.0" and params["writeback"] == "a" * 40
+            return [{"note_id": "deployed", "observed_at": boundary}]
+        if sql == retro._OPTIMIZER_OBSERVATIONS:
+            assert params["since"] == boundary and params["as_of"] == end
+            # One row per distinct revision, however many polls observed it.
+            return [
+                {"deployed_revision": "0.1.0", "polls": 5000},
+                {"deployed_revision": "0.2.0", "polls": 5000},
+            ]
+        return [{"attempts": 10, "dispatch_failure": 2, "unknown": 0}]
+
+    monkeypatch.setattr(retro, "_rows", rows)
+    loaded = retro._load_optimizer(object(), NOW)
+    assert loaded["observation_coverage"]["complete"] is True
+    assert loaded["observation_coverage"]["revisions_observed"] == 2
+    assert loaded["post"]["end"] == end.isoformat()
+    assert loaded["overlapping_revisions"] == ["0.2.0"]
+    # The overlapping revision is reported, and the verdict is still given.
+    verdict = retro.optimizer_evidence(loaded, NOW)
+    assert verdict["status"] == "ACCEPTED"
+    assert verdict["confounders"]["overlapping_revisions"] == ["0.2.0"]
+
+
+def test_optimizer_sql_selects_exact_boundary_before_bounded_history():
+    # SQLite supports the JSON extraction and named bounds used by these two
+    # SELECTs, so exercise the SQL rather than only mocking its result shape.
+    with sqlite3.connect(":memory:") as db:
+        db.execute("ATTACH DATABASE ':memory:' AS knowledge")
+        db.execute("""CREATE TABLE knowledge.notes (
+            note_id TEXT, observed_at TEXT, status TEXT, extra TEXT,
+            source TEXT, scope TEXT, verification_state TEXT, deleted_at TEXT
+        )""")
+        boundary = NOW - retro.timedelta(days=20)
+        merged = boundary - retro.timedelta(hours=1)
+        end = boundary + retro.timedelta(hours=72)
+        identity = {
+            "app": "monolith",
+            "newest_freight_version": "0.1.0",
+            "requested_revision": "0.1.0",
+            "deployed_revision": "0.1.0",
+            "writeback_commit": "a" * 40,
+        }
+
+        def insert(note_id, observed_at, extra, verified="verified"):
+            db.execute(
+                "INSERT INTO knowledge.notes VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    note_id,
+                    observed_at.isoformat(),
+                    "complete",
+                    json.dumps(extra),
+                    "deployment-observation",
+                    "environment:homelab",
+                    verified,
+                    None,
+                ),
+            )
+
+        insert("wrong-writeback", merged, {**identity, "writeback_commit": "b" * 40})
+        insert("unverified", merged, identity, "unverified")
+        insert("deployed", boundary, identity)
+        insert(
+            "overlap",
+            boundary + retro.timedelta(hours=1),
+            {**identity, "deployed_revision": "0.2.0"},
+        )
+        for index in range(5001):
+            insert(f"later-{index}", end, identity)
+        params = {
+            "since": merged.isoformat(),
+            "as_of": NOW.isoformat(),
+            "app": "monolith",
+            "revision": "0.1.0",
+            "writeback": "a" * 40,
+        }
+        rows = db.execute(retro._OPTIMIZER_BOUNDARY, params).fetchall()
+        assert [row[0] for row in rows] == ["deployed"]
+        rows = db.execute(
+            retro._OPTIMIZER_OBSERVATIONS,
+            {
+                "since": boundary.isoformat(),
+                "as_of": end.isoformat(),
+                "app": "monolith",
+                "limit": retro._OPTIMIZER_OBSERVATION_LIMIT + 1,
+            },
+        ).fetchall()
+        # 5001 polls of the later revision sit outside the window; the two
+        # inside collapse to one row per revision in first-seen order.
+        assert [(row[0], row[1]) for row in rows] == [("0.1.0", 1), ("0.2.0", 1)]
+
+
+# Learning deliberately stays inside this existing workflow/test target.
+import pytest
+from sqlalchemy import text
+from sqlmodel import Session, create_engine
+from factory.orchestration import learning
+
+
+@pytest.fixture
+def learning_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("FACTORY_LEARNING_HANDOFF_ENABLED", "true")
+    engine = create_engine(f"sqlite:///{tmp_path / 'learning.db'}")
+    with Session(engine) as db:
+        db.execute(
+            text(
+                "CREATE TABLE routine_jobs (name TEXT PRIMARY KEY, routine_kind TEXT, interval_secs INTEGER, next_run_at TEXT, locked_by TEXT, last_status TEXT, payload TEXT, created_by TEXT)"
+            )
+        )
+        db.execute(
+            text(
+                "CREATE TABLE agent_sessions (id INTEGER PRIMARY KEY, repo TEXT, model TEXT, local_session_id TEXT, workflow_id TEXT, node_key TEXT, status TEXT)"
+            )
+        )
+        db.execute(
+            text(
+                "CREATE TABLE agent_turns (session_id INTEGER, seq INTEGER, result_text TEXT, terminal_reason TEXT, stop_reason TEXT, created_at TEXT)"
+            )
+        )
+        payload = {
+            "model": "luna",
+            "repo": learning.REPO,
+            "learning_stage": "evidence",
+            "digest": "factory-retro",
+        }
+        db.execute(
+            text(
+                "INSERT INTO routine_jobs (name,payload,interval_secs) VALUES ('factory-retro-daily',:payload,86400)"
+            ),
+            {"payload": json.dumps(payload)},
+        )
+        for sid, model, local, workflow in [
+            (1, "luna", "w:qwen-drain:factory-retro-daily", "w"),
+            (2, "astra", "factory:source:implement:1", "source"),
+        ]:
+            db.execute(
+                text(
+                    "INSERT INTO agent_sessions VALUES (:sid,:repo,:model,:local,:workflow,'qwen-drain','completed')"
+                ),
+                dict(
+                    sid=sid,
+                    repo=learning.REPO,
+                    model=model,
+                    local=local,
+                    workflow=workflow,
+                ),
+            )
+            db.execute(
+                text(
+                    "INSERT INTO agent_turns VALUES (:sid,1,:result,'completed',NULL,:now)"
+                ),
+                dict(
+                    sid=sid,
+                    result="original evidence",
+                    now=datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+        db.commit()
+        yield db
+
+
+def _finding():
+    return {
+        "findings": [
+            {
+                "signature": "source load fails",
+                "code_sha": "a" * 40,
+                "hypothesis": "bounded failure",
+                "sources": [{"session_id": 2, "turn_seq": 1}],
+            }
+        ]
+    }
+
+
+def _learn(db, output):
+    db.execute(
+        text("UPDATE agent_turns SET result_text=:result WHERE session_id=1"),
+        {"result": json.dumps(output)},
+    )
+    learning.complete(db, "factory-retro-daily", "luna-drainer:w:0")
+
+
+def _learning_jobs(db):
+    return db.execute(
+        text(
+            "SELECT name,payload FROM routine_jobs WHERE name LIKE 'factory-learning:%'"
+        )
+    ).all()
+
+
+@pytest.fixture
+def learning_input_db(learning_db, monkeypatch):
+    from sqlmodel import SQLModel
+    from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
+    from factory.orchestration.models import SwarmTask
+
+    db = learning_db
+    monkeypatch.setenv("FACTORY_LEARNING_INPUT_DEDUP_ENABLED", "true")
+    db.connection(execution_options={"schema_translate_map": {"swarm": None}})
+    SQLModel.metadata.create_all(
+        db.connection(),
+        tables=[SwarmTask.__table__, FactoryAudit.__table__, FactoryReceipt.__table__],
+    )
+    db.execute(
+        text(
+            "UPDATE routine_jobs SET routine_kind='qwen-drain', locked_by='luna-drainer:w:0'"
+        )
+    )
+    yield db
+
+
+def _prepare_learning(db, data=None, head="a" * 40, holder="luna-drainer:w:0"):
+    from factory.orchestration import learning_inputs
+
+    return learning_inputs.prepare(
+        db,
+        "factory-retro-daily",
+        holder,
+        data or {"turns": [{"session_id": 2, "result_text": "source evidence"}]},
+        head,
+    )
+
+
+def test_learning_unchanged_verified_empty_result_routes_one_diagnosis(
+    learning_input_db,
+):
+    from factory.orchestration import learning_inputs
+    from factory.orchestration.factory_models import FactoryAudit
+    from sqlmodel import select
+
+    db = learning_input_db
+    first = _prepare_learning(db)
+    assert not first["skip"]
+    _learn(db, {"findings": []})
+    before = db.execute(
+        text("SELECT result_text FROM agent_turns WHERE session_id=1")
+    ).scalar_one()
+    for _ in range(3):
+        assert _prepare_learning(db) == {
+            "skip": True,
+            "input_sha256": first["input_sha256"],
+            "reason": "no_new_evidence",
+        }
+    jobs = _learning_jobs(db)
+    assert len(jobs) == 1
+    payload = json.loads(jobs[0].payload)
+    assert payload["learning_stage"] == "diagnose" and payload["model"] == "astra"
+    assert "Do not modify files" in learning.prompt(payload)
+    assert "HTTP 502 alone" in learning.prompt(payload)
+    assert (
+        len(
+            db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.action == learning_inputs.ACTION
+                )
+            ).all()
+        )
+        == 1
+    )
+    assert (
+        db.execute(
+            text("SELECT result_text FROM agent_turns WHERE session_id=1")
+        ).scalar_one()
+        == before
+    )
+
+
+@pytest.mark.parametrize("change", ["head", "evidence", "prompt", "coverage"])
+def test_learning_changed_inputs_allow_new_observation(
+    learning_input_db, monkeypatch, change
+):
+    db = learning_input_db
+    first = _prepare_learning(db)
+    _learn(db, {"findings": []})
+    if change == "prompt":
+        old = learning.prompt
+        monkeypatch.setattr(
+            learning,
+            "prompt",
+            lambda payload: old(payload) + " new collection question",
+        )
+    data = (
+        {"turns": [{"session_id": 2, "result_text": "new evidence"}]}
+        if change == "evidence"
+        else None
+    )
+    if change == "coverage":
+        data = {
+            "turns": [{"session_id": 2, "result_text": "source evidence"}],
+            "coverage": "unavailable",
+        }
+    result = _prepare_learning(db, data, "b" * 40 if change == "head" else "a" * 40)
+    assert not result["skip"] and result["input_sha256"] != first["input_sha256"]
+    assert not _learning_jobs(db)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "unknown",
+        "error",
+        "changed_result",
+        "missing",
+        "wrong_holder",
+        "disabled",
+        "missing_head",
+    ],
+)
+def test_learning_dedup_requires_exact_completed_evidence(
+    learning_input_db, monkeypatch, change
+):
+    db = learning_input_db
+    _prepare_learning(db)
+    _learn(db, {"findings": []})
+    if change == "unknown":
+        db.execute(
+            text(
+                "UPDATE agent_turns SET terminal_reason='failed', stop_reason='invocation_outcome_unknown' WHERE session_id=1"
+            )
+        )
+    elif change == "error":
+        db.execute(
+            text("UPDATE agent_turns SET terminal_reason='error' WHERE session_id=1")
+        )
+    elif change == "changed_result":
+        db.execute(text("UPDATE agent_turns SET result_text='{}' WHERE session_id=1"))
+    elif change == "missing":
+        db.execute(text("DELETE FROM agent_turns WHERE session_id=1"))
+    elif change == "disabled":
+        monkeypatch.setenv("FACTORY_LEARNING_INPUT_DEDUP_ENABLED", "false")
+    with pytest.raises(ValueError):
+        _prepare_learning(
+            db,
+            head=None if change == "missing_head" else "a" * 40,
+            holder="stale" if change == "wrong_holder" else "luna-drainer:w:0",
+        )
+    assert not _learning_jobs(db)
+
+
+def test_learning_input_ignores_observation_clock_and_its_own_diagnostic():
+    from factory.orchestration import learning_inputs
+
+    data = {
+        "observed_at": "yesterday",
+        "items": [{"id": 1, "age_days": 1}, {"id": 2}],
+        "recovery_events": [],
+    }
+    later = {
+        "observed_at": "today",
+        "items": [{"id": 2}, {"id": 1, "age_days": 2}],
+        "recovery_events": [{"action": learning_inputs.ACTION, "id": 4}],
+    }
+    assert learning_inputs.fingerprint(
+        data, "a" * 40, "prompt"
+    ) == learning_inputs.fingerprint(later, "a" * 40, "prompt")
+    later["items"][0]["stale"] = True
+    assert learning_inputs.fingerprint(
+        data, "a" * 40, "prompt"
+    ) != learning_inputs.fingerprint(later, "a" * 40, "prompt")
+
+
+def test_learning_fingerprint_keeps_optimizer_settlement_phase_transition():
+    from factory.orchestration import learning_inputs
+
+    context = _experiment_context(post={"attempts": 10, "unknown": 1})
+
+    def observed(hours):
+        return {
+            "optimizer": {
+                **context,
+                "outcomes_and_cost_as_of": (
+                    NOW + retro.timedelta(hours=hours)
+                ).isoformat(),
+            }
+        }
+
+    first = learning_inputs.fingerprint(observed(0), "a" * 40, "prompt")
+    assert first == learning_inputs.fingerprint(observed(1), "a" * 40, "prompt")
+    final = learning_inputs.fingerprint(
+        observed(retro._OPTIMIZER_SETTLE_HOURS), "a" * 40, "prompt"
+    )
+    assert first != final
+    assert final == learning_inputs.fingerprint(
+        observed(retro._OPTIMIZER_SETTLE_HOURS + 1), "a" * 40, "prompt"
+    )
+
+
+@pytest.mark.parametrize("state", ["queued", "admitted", "escalated", "uncertain"])
+def test_learning_diagnosis_stays_with_existing_native_owner(learning_input_db, state):
+    from factory.orchestration.factory_models import FactoryReceipt
+    from factory.orchestration.recovery_delegation import diagnostic_context
+
+    db = learning_input_db
+    db.add(
+        FactoryReceipt(
+            repo=learning.REPO,
+            issue_number=6781,
+            title="learning",
+            body="existing",
+            url="https://github.com/jomcgi-org/homelab/issues/6781",
+            actor="operator",
+            state=state,
+            task_id=None if state == "queued" else "existing-learning-owner",
+        )
+    )
+    db.flush()
+    _prepare_learning(db)
+    _learn(db, {"findings": []})
+    _prepare_learning(db)
+    assert not _learning_jobs(db)
+    if state == "queued":
+        assert not diagnostic_context(db, "existing-learning-owner")
+        db.execute(
+            text(
+                "UPDATE factory_receipt SET state='admitted',task_id='existing-learning-owner' WHERE issue_number=6781"
+            )
+        )
+    context = diagnostic_context(db, "existing-learning-owner")
+    assert len(context) == 1 and context[0]["source"]["session_id"] == 1
+    assert not diagnostic_context(db, "unrelated-owner")
+
+
+def test_learning_diagnosis_completion_records_report_without_new_work(
+    learning_input_db,
+):
+    db = learning_input_db
+    _prepare_learning(db)
+    _learn(db, {"findings": []})
+    _prepare_learning(db)
+    job = _learning_jobs(db)[0]
+    db.execute(
+        text(
+            "INSERT INTO agent_sessions VALUES (3,:repo,'astra',:local,'diag','qwen-drain','completed')"
+        ),
+        {"repo": learning.REPO, "local": "diag:qwen-drain:" + job.name},
+    )
+    output = {
+        "verdict": "unknown",
+        "issue_number": 6781,
+        "pr_number": None,
+        "rationale": "No new source evidence; do not infer a failure or retry the same input.",
+    }
+    db.execute(
+        text("INSERT INTO agent_turns VALUES (3,1,:result,'completed',NULL,:now)"),
+        {"result": json.dumps(output), "now": datetime.now(timezone.utc).isoformat()},
+    )
+    learning.complete(db, job.name, "luna-drainer:diag:0")
+    assert len(_learning_jobs(db)) == 1
+    saved = json.loads(_learning_jobs(db)[0].payload)["learning_evaluation"]
+    assert saved["session_id"] == 3 and not saved["links_verified_by_server"]
+
+
+def test_learning_pins_evidence_and_never_rearms_duplicate(learning_db):
+    db = learning_db
+    _learn(db, _finding())
+    job = _learning_jobs(db)[0]
+    payload = json.loads(job.payload)
+    assert payload["model"] == "astra"
+    assert payload["learning_evidence"]["origin"]["session_id"] == 1
+    assert payload["learning_evidence"]["sources"][0]["result_sha256"] == learning._sha(
+        "original evidence"
+    )
+    # A retained evaluator from before typed observations has the same identity.
+    legacy_sources = [
+        {k: v for k, v in source.items() if k != "observation"}
+        for source in payload["learning_evidence"]["sources"]
+    ]
+    assert job.name == learning.PREFIX + learning._sha({"sources": legacy_sources})
+    payload["learning_evidence"]["sources"] = legacy_sources
+    db.execute(
+        text(
+            "UPDATE routine_jobs SET next_run_at=NULL,last_status='ok',payload=:payload WHERE name=:name"
+        ),
+        {"name": job.name, "payload": json.dumps(payload)},
+    )
+    _learn(db, _finding())
+    assert len(_learning_jobs(db)) == 1
+    assert (
+        db.execute(
+            text("SELECT next_run_at FROM routine_jobs WHERE name=:name"),
+            {"name": job.name},
+        ).scalar()
+        is None
+    )
+    parent = json.loads(
+        db.execute(
+            text("SELECT payload FROM routine_jobs WHERE name='factory-retro-daily'")
+        ).scalar()
+    )
+    assert parent["learning_last_evidence"]["disposition"] == "duplicate"
+
+
+def test_learning_pending_blocks_new_fingerprint(learning_db):
+    db = learning_db
+    _learn(db, _finding())
+    output = _finding()
+    db.execute(
+        text(
+            "UPDATE agent_turns SET result_text='new original evidence' WHERE session_id=2"
+        )
+    )
+    _learn(db, output)
+    assert len(_learning_jobs(db)) == 1
+    parent = json.loads(
+        db.execute(
+            text("SELECT payload FROM routine_jobs WHERE name='factory-retro-daily'")
+        ).scalar()
+    )
+    assert parent["learning_last_evidence"]["disposition"] == "evaluation_pending"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing",
+        "self",
+        "stale",
+        "future",
+        "foreign",
+        "incomplete",
+        "oversized",
+        "empty_result",
+        "invalid_stop",
+        "completed_unknown",
+        "duplicate",
+        "boolean_id",
+    ],
+)
+def test_learning_rejects_bad_evidence(learning_db, change):
+    db = learning_db
+    output = _finding()
+    if change == "missing":
+        output["findings"][0]["sources"][0]["session_id"] = 99
+    if change == "self":
+        output["findings"][0]["sources"][0]["session_id"] = 1
+    if change == "stale":
+        db.execute(
+            text("UPDATE agent_turns SET created_at='2000-01-01' WHERE session_id=2")
+        )
+    if change == "future":
+        db.execute(
+            text("UPDATE agent_turns SET created_at='2999-01-01' WHERE session_id=2")
+        )
+    if change == "foreign":
+        db.execute(text("UPDATE agent_sessions SET repo='other/repo' WHERE id=2"))
+    if change == "incomplete":
+        db.execute(
+            text("UPDATE agent_turns SET terminal_reason='running' WHERE session_id=2")
+        )
+    if change == "empty_result":
+        db.execute(text("UPDATE agent_turns SET result_text=' ' WHERE session_id=2"))
+    if change == "invalid_stop":
+        db.execute(
+            text(
+                "UPDATE agent_turns SET terminal_reason='error',stop_reason='' WHERE session_id=2"
+            )
+        )
+    if change == "completed_unknown":
+        db.execute(
+            text(
+                "UPDATE agent_turns SET stop_reason='invocation_outcome_unknown' WHERE session_id=2"
+            )
+        )
+    if change == "duplicate":
+        output["findings"][0]["sources"] *= 2
+    if change == "boolean_id":
+        output["findings"][0]["sources"][0]["session_id"] = True
+    if change == "oversized":
+        output["findings"][0]["hypothesis"] = "x" * 8001
+    with pytest.raises(ValueError):
+        _learn(db, output)
+    assert _learning_jobs(db) == []
+
+
+@pytest.mark.parametrize("stop", [None, "invocation_outcome_unknown"])
+def test_learning_error_observation_preserves_unknown_source_and_deduplicates(
+    learning_db, stop
+):
+    db = learning_db
+    source_result = (
+        "EmberVM invoke returned HTTP 502; invocation outcome unknown. " * 50
+    )
+    db.execute(text("UPDATE agent_sessions SET status='warn' WHERE id=2"))
+    db.execute(
+        text(
+            "UPDATE agent_turns SET terminal_reason='error',stop_reason=:stop,result_text=:result WHERE session_id=2"
+        ),
+        {"stop": stop, "result": source_result},
+    )
+    before = db.execute(text("SELECT * FROM agent_turns WHERE session_id=2")).one()
+    _learn(db, _finding())
+    job = _learning_jobs(db)[0]
+    payload = json.loads(job.payload)
+    source = payload["learning_evidence"]["sources"][0]
+    assert source["observation"] == {
+        "version": 1,
+        "origin": "stored_agent_turn",
+        "repo": learning.REPO,
+        "model": "astra",
+        "terminal_reason": "error",
+        "stop_reason": stop,
+    }
+    assert (source["session_id"], source["turn_seq"]) == (2, 1)
+    assert source["excerpt"] == source_result[:2000] and source["truncated"]
+    assert source["result_sha256"] == learning._sha(source_result)
+    assert "observations authorize no retry or settlement" in learning.prompt(payload)
+    assert "does not establish a root cause" in learning.prompt(payload)
+    # Unknown evaluation and different model wording never rearm its one-shot.
+    payload["learning_evaluation"] = {"verdict": "unknown"}
+    db.execute(
+        text(
+            "UPDATE routine_jobs SET next_run_at=NULL,last_status='ok',payload=:payload WHERE name=:name"
+        ),
+        {"name": job.name, "payload": json.dumps(payload)},
+    )
+    finding = _finding()
+    finding["findings"][0].update(hypothesis="Reworded claim", code_sha="b" * 40)
+    _learn(db, finding)
+    assert len(_learning_jobs(db)) == 1
+    assert (
+        db.execute(
+            text("SELECT next_run_at FROM routine_jobs WHERE name=:name"),
+            {"name": job.name},
+        ).scalar()
+        is None
+    )
+    assert (
+        db.execute(text("SELECT * FROM agent_turns WHERE session_id=2")).one() == before
+    )
+    assert (
+        db.execute(text("SELECT status FROM agent_sessions WHERE id=2")).scalar_one()
+        == "warn"
+    )
+    # A changed persisted stop reason is new evidence, still fenced by that evaluator.
+    db.execute(
+        text("UPDATE agent_turns SET stop_reason=:stop WHERE session_id=2"),
+        {"stop": "invocation_outcome_unknown" if stop is None else "response_lost"},
+    )
+    _learn(db, finding)
+    parent = json.loads(
+        db.execute(
+            text("SELECT payload FROM routine_jobs WHERE name='factory-retro-daily'")
+        ).scalar_one()
+    )["learning_last_evidence"]
+    assert parent["disposition"] == "evaluation_pending"
+    assert parent["evaluation_job"] != job.name
+    assert len(_learning_jobs(db)) == 1
+
+
+@pytest.mark.parametrize("stage", ["evidence", "evaluate"])
+def test_learning_owned_error_output_never_completes(learning_db, stage):
+    db = learning_db
+    name = "factory-retro-daily"
+    output = {"findings": []}
+    if stage == "evaluate":
+        _learn(db, _finding())
+        name = _learning_jobs(db)[0].name
+        db.execute(
+            text(
+                "UPDATE agent_sessions SET model='astra',local_session_id=:local WHERE id=1"
+            ),
+            {"local": "w:qwen-drain:" + name},
+        )
+        output = {
+            "verdict": "unknown",
+            "issue_number": 6781,
+            "pr_number": None,
+            "rationale": "Uncertain",
+        }
+    before = db.execute(
+        text("SELECT payload FROM routine_jobs WHERE name=:name"), {"name": name}
+    ).scalar_one()
+    db.execute(
+        text(
+            "UPDATE agent_turns SET terminal_reason='error',result_text=:output WHERE session_id=1"
+        ),
+        {"output": json.dumps(output)},
+    )
+    with pytest.raises(ValueError, match="incomplete"):
+        learning.complete(db, name, "luna-drainer:w:0")
+    assert (
+        db.execute(
+            text("SELECT payload FROM routine_jobs WHERE name=:name"), {"name": name}
+        ).scalar_one()
+        == before
+    )
+
+
+@pytest.mark.parametrize("failure", [None, "invalid_source", "after_handoff"])
+def test_learning_error_handoff_and_job_completion_are_atomic(
+    learning_db, monkeypatch, failure
+):
+    from agent import routine_jobs
+
+    db = learning_db
+    for column in ("last_run_at", "last_summary", "locked_at"):
+        db.execute(text(f"ALTER TABLE routine_jobs ADD COLUMN {column} TEXT"))
+    holder = "luna-drainer:w:0"
+    finding = _finding()
+    if failure == "invalid_source":
+        finding["findings"][0]["sources"].append({"session_id": 99, "turn_seq": 1})
+    db.execute(
+        text("UPDATE agent_turns SET result_text=:output WHERE session_id=1"),
+        {"output": json.dumps(finding)},
+    )
+    db.execute(
+        text(
+            "UPDATE agent_turns SET terminal_reason='error',stop_reason='invocation_outcome_unknown' WHERE session_id=2"
+        )
+    )
+    db.execute(
+        text(
+            "UPDATE routine_jobs SET routine_kind='qwen-drain',locked_by=:holder,last_status='pending' WHERE name='factory-retro-daily'"
+        ),
+        {"holder": holder},
+    )
+    db.commit()
+    monkeypatch.setattr(routine_jobs, "get_engine", db.get_bind)
+    before = db.execute(
+        text("SELECT * FROM routine_jobs WHERE name='factory-retro-daily'")
+    ).one()
+    db.rollback()
+
+    def finalize(transaction):
+        learning.complete(transaction, "factory-retro-daily", holder)
+        if failure == "after_handoff":
+            raise ValueError("simulated failure after inserting evaluator")
+
+    def finish():
+        return routine_jobs.complete_job(
+            "factory-retro-daily",
+            "ok",
+            expected_holder=holder,
+            transaction_finalize=finalize,
+        )
+
+    if failure:
+        with pytest.raises(ValueError):
+            finish()
+        assert (
+            db.execute(
+                text("SELECT * FROM routine_jobs WHERE name='factory-retro-daily'")
+            ).one()
+            == before
+        )
+        assert not _learning_jobs(db)
+    else:
+        assert finish()
+        saved = (
+            db.execute(
+                text("SELECT * FROM routine_jobs WHERE name='factory-retro-daily'")
+            )
+            .mappings()
+            .one()
+        )
+        assert saved["last_status"] == "ok" and saved["locked_by"] is None
+        evidence = json.loads(saved["payload"])["learning_last_evidence"]
+        assert evidence["disposition"] == "queued"
+        assert evidence["evaluation_job"] == _learning_jobs(db)[0].name
+    assert db.execute(
+        text("SELECT terminal_reason,stop_reason FROM agent_turns WHERE session_id=2")
+    ).one() == ("error", "invocation_outcome_unknown")
+
+
+def test_learning_disabled_and_wrong_owner_fail_closed(learning_db, monkeypatch):
+    with pytest.raises(ValueError, match="owner"):
+        learning.complete(learning_db, "factory-retro-daily", "wrong")
+    monkeypatch.delenv("FACTORY_LEARNING_HANDOFF_ENABLED")
+    with pytest.raises(ValueError, match="disabled"):
+        _learn(learning_db, _finding())
+    assert _learning_jobs(learning_db) == []
+
+
+def test_learning_retains_evaluation_lineage_without_authorizing_links(learning_db):
+    db = learning_db
+    _learn(db, _finding())
+    job = _learning_jobs(db)[0]
+    db.execute(
+        text(
+            "INSERT INTO agent_sessions VALUES (3,:repo,'astra',:local,'eval','qwen-drain','completed')"
+        ),
+        {"repo": learning.REPO, "local": f"eval:qwen-drain:{job.name}"},
+    )
+    result = {
+        "verdict": "duplicate",
+        "issue_number": 6781,
+        "pr_number": None,
+        "rationale": "existing owner",
+    }
+    db.execute(
+        text("INSERT INTO agent_turns VALUES (3,1,:result,'completed',NULL,:now)"),
+        {"result": json.dumps(result), "now": datetime.now(timezone.utc).isoformat()},
+    )
+    learning.complete(db, job.name, "luna-drainer:eval:0")
+    payload = json.loads(_learning_jobs(db)[0].payload)
+    assert payload["learning_evidence"]["origin"]["session_id"] == 1
+    assert payload["learning_evaluation"]["session_id"] == 3
+    assert payload["learning_evaluation"]["links_verified_by_server"] is False
+    assert len(_learning_jobs(db)) == 1
+
+
+def test_learning_rewording_is_not_new_evidence(learning_db):
+    db = learning_db
+    _learn(db, _finding())
+    job = _learning_jobs(db)[0]
+    db.execute(
+        text(
+            "UPDATE routine_jobs SET next_run_at=NULL,last_status='ok' WHERE name=:name"
+        ),
+        {"name": job.name},
+    )
+    output = _finding()
+    output["findings"][0]["code_sha"] = "b" * 40
+    output["findings"][0]["signature"] = "different wording"
+    _learn(db, output)
+    assert len(_learning_jobs(db)) == 1
+
+
+def test_learning_unknown_evaluation_holds_new_evidence(learning_db):
+    db = learning_db
+    _learn(db, _finding())
+    job = _learning_jobs(db)[0]
+    payload = json.loads(job.payload)
+    payload["learning_evaluation"] = {"verdict": "unknown"}
+    db.execute(
+        text(
+            "UPDATE routine_jobs SET next_run_at=NULL,last_status='ok',payload=:payload WHERE name=:name"
+        ),
+        {"name": job.name, "payload": json.dumps(payload)},
+    )
+    db.execute(
+        text(
+            "UPDATE agent_turns SET result_text='new original evidence' WHERE session_id=2"
+        )
+    )
+    _learn(db, _finding())
+    assert len(_learning_jobs(db)) == 1
+
+
+def test_learning_prompt_contains_bounded_original_evidence(learning_db):
+    db = learning_db
+    db.execute(
+        text("UPDATE agent_turns SET result_text=:result WHERE session_id=2"),
+        {"result": "original failure " + "x" * 3000},
+    )
+    _learn(db, _finding())
+    payload = json.loads(_learning_jobs(db)[0].payload)
+    source = payload["learning_evidence"]["sources"][0]
+    assert source["truncated"] is True
+    assert len(source["excerpt"]) == 2000
+    assert "original failure" in learning.prompt(payload)
+    assert "omitted" in learning.prompt(payload)
+
+
+def test_learning_rejects_duplicate_source_refs(learning_db):
+    output = _finding()
+    output["findings"][0]["sources"] *= 2
+    with pytest.raises(ValueError, match="Duplicate"):
+        _learn(learning_db, output)
+    assert _learning_jobs(learning_db) == []
+
+
+@pytest.mark.parametrize("result", [None, "", "   "])
+def test_learning_rejects_empty_source(learning_db, result):
+    learning_db.execute(
+        text("UPDATE agent_turns SET result_text=:result WHERE session_id=2"),
+        {"result": result},
+    )
+    with pytest.raises(ValueError, match="readable"):
+        _learn(learning_db, _finding())
+    assert _learning_jobs(learning_db) == []
+
+
+@pytest.fixture
+def learning_config_db(learning_db, monkeypatch):
+    db = learning_db
+    db.execute(text("ALTER TABLE routine_jobs ADD COLUMN locked_at TEXT"))
+    db.execute(
+        text(
+            "CREATE TABLE capacity_reservations (id INTEGER PRIMARY KEY,routine_job_name TEXT,state TEXT)"
+        )
+    )
+    db.execute(text("CREATE TABLE pending_messages (session_id INTEGER,seq INTEGER)"))
+    payload = {
+        "model": "sol",
+        "repo": learning.REPO,
+        "digest": "factory-retro",
+        "prompt": "old instructions",
+        "branch": "main",
+    }
+    db.execute(
+        text(
+            "UPDATE routine_jobs SET routine_kind='qwen-drain',next_run_at='2026-11-01',last_status='ok',payload=:payload WHERE name='factory-retro-daily'"
+        ),
+        {"payload": json.dumps(payload)},
+    )
+    db.commit()
+    monkeypatch.setenv("FACTORY_LEARNING_DAILY_PAYLOAD_SHA256", learning._sha(payload))
+    return db
+
+
+def test_daily_config_preserves_identity_schedule_history_and_replays(
+    learning_config_db,
+):
+    db = learning_config_db
+    before = dict(
+        db.execute(text("SELECT * FROM routine_jobs WHERE name='factory-retro-daily'"))
+        .mappings()
+        .one()
+    )
+    assert learning.reconcile_daily_payload(db) == "configured"
+    after = dict(
+        db.execute(text("SELECT * FROM routine_jobs WHERE name='factory-retro-daily'"))
+        .mappings()
+        .one()
+    )
+    assert {k: v for k, v in after.items() if k != "payload"} == {
+        k: v for k, v in before.items() if k != "payload"
+    }
+    payload = json.loads(after["payload"])
+    assert payload["model"] == "luna" and payload["learning_stage"] == "evidence"
+    assert payload["learning_activation"]["previous_fields"] == {
+        "model": "sol",
+        "prompt": "old instructions",
+        "repo": learning.REPO,
+        "branch": "main",
+    }
+    assert payload["learning_activation"]["previous_payload_sha256"] == learning._sha(
+        json.loads(before["payload"])
+    )
+    assert "Report-only" in learning.prompt(payload)
+    assert learning.reconcile_daily_payload(db) == "already_configured"
+    assert (
+        db.execute(
+            text("SELECT payload FROM routine_jobs WHERE name='factory-retro-daily'")
+        ).scalar()
+        == after["payload"]
+    )
+    db.rollback()
+    assert (
+        db.execute(
+            text("SELECT payload FROM routine_jobs WHERE name='factory-retro-daily'")
+        ).scalar()
+        == before["payload"]
+    )
+
+
+@pytest.mark.parametrize(
+    "fence",
+    [
+        "locked",
+        "unknown",
+        "disabled",
+        "missing",
+        "cadence",
+        "active_permit",
+        "pending",
+        "running",
+        "custom_model",
+    ],
+)
+def test_daily_config_refuses_unsafe_or_custom_rows(
+    learning_config_db, monkeypatch, fence
+):
+    db = learning_config_db
+    if fence == "locked":
+        db.execute(text("UPDATE routine_jobs SET locked_by='owner'"))
+    if fence == "unknown":
+        db.execute(
+            text("UPDATE routine_jobs SET last_status='invocation_outcome_unknown'")
+        )
+    if fence == "disabled":
+        monkeypatch.setenv("FACTORY_LEARNING_HANDOFF_ENABLED", "false")
+    if fence == "missing":
+        db.execute(text("DELETE FROM routine_jobs"))
+    if fence == "cadence":
+        db.execute(text("UPDATE routine_jobs SET interval_secs=3600"))
+    if fence == "active_permit":
+        db.execute(
+            text(
+                "INSERT INTO capacity_reservations VALUES (1,'factory-retro-daily','reserved')"
+            )
+        )
+    if fence == "pending":
+        db.execute(text("INSERT INTO pending_messages VALUES (1,2)"))
+    if fence == "running":
+        db.execute(text("UPDATE agent_sessions SET status='running' WHERE id=1"))
+    if fence == "custom_model":
+        payload = json.loads(
+            db.execute(text("SELECT payload FROM routine_jobs")).scalar()
+        )
+        payload["model"] = "astra"
+        db.execute(
+            text("UPDATE routine_jobs SET payload=:payload"),
+            {"payload": json.dumps(payload)},
+        )
+    before = db.execute(text("SELECT payload FROM routine_jobs")).all()
+    assert learning.reconcile_daily_payload(db) not in {
+        "configured",
+        "already_configured",
+    }
+    assert db.execute(text("SELECT payload FROM routine_jobs")).all() == before
+
+
+def test_daily_config_ignores_settled_historical_failure(learning_config_db):
+    db = learning_config_db
+    db.execute(
+        text(
+            "INSERT INTO agent_sessions VALUES (0,:repo,'sol','old:qwen-drain:factory-retro-daily','old','qwen-drain','warn')"
+        ),
+        {"repo": learning.REPO},
+    )
+    assert learning.reconcile_daily_payload(db) == "configured"
+
+
+def test_daily_config_pins_only_verified_default_repository(
+    learning_config_db, monkeypatch
+):
+    db = learning_config_db
+    payload = json.loads(db.execute(text("SELECT payload FROM routine_jobs")).scalar())
+    del payload["repo"]
+    monkeypatch.setenv("FACTORY_LEARNING_DAILY_PAYLOAD_SHA256", learning._sha(payload))
+    db.execute(
+        text("UPDATE routine_jobs SET payload=:payload"),
+        {"payload": json.dumps(payload)},
+    )
+    assert (
+        learning.reconcile_daily_payload(db, default_repo="other/repo")
+        == "held_or_customized"
+    )
+    assert (
+        learning.reconcile_daily_payload(db, default_repo=learning.REPO) == "configured"
+    )
+    configured = json.loads(
+        db.execute(text("SELECT payload FROM routine_jobs")).scalar()
+    )
+    assert configured["repo"] == learning.REPO
+    assert configured["learning_activation"]["previous_absent_fields"] == [
+        "repo",
+        "learning_stage",
+    ]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("prompt", "operator changed instructions"), ("branch", "private-branch")],
+)
+def test_daily_config_fences_operator_edits_after_preview(
+    learning_config_db, field, value
+):
+    db = learning_config_db
+    payload = json.loads(db.execute(text("SELECT payload FROM routine_jobs")).scalar())
+    payload[field] = value
+    db.execute(
+        text("UPDATE routine_jobs SET payload=:payload"),
+        {"payload": json.dumps(payload)},
+    )
+    assert learning.reconcile_daily_payload(db) == "unreviewed_payload"
+    assert (
+        json.loads(db.execute(text("SELECT payload FROM routine_jobs")).scalar())
+        == payload
+    )
+
+
+def test_daily_config_requires_reviewed_hash(learning_config_db, monkeypatch):
+    monkeypatch.delenv("FACTORY_LEARNING_DAILY_PAYLOAD_SHA256")
+    assert learning.reconcile_daily_payload(learning_config_db) == "unreviewed_payload"
+
+
+def test_daily_config_refuses_custom_default_branch(learning_config_db, monkeypatch):
+    db = learning_config_db
+    payload = json.loads(db.execute(text("SELECT payload FROM routine_jobs")).scalar())
+    del payload["branch"]
+    db.execute(
+        text("UPDATE routine_jobs SET payload=:payload"),
+        {"payload": json.dumps(payload)},
+    )
+    monkeypatch.setenv("FACTORY_LEARNING_DAILY_PAYLOAD_SHA256", learning._sha(payload))
+    assert (
+        learning.reconcile_daily_payload(db, default_branch="staging")
+        == "held_or_customized"
+    )
+    assert learning.reconcile_daily_payload(db, default_branch="main") == "configured"
+    result = json.loads(db.execute(text("SELECT payload FROM routine_jobs")).scalar())
+    assert result["branch"] == "main"
+    assert result["learning_activation"]["previous_absent_fields"] == [
+        "branch",
+        "learning_stage",
+    ]
+
+
+def test_retro_targets_disruption_with_exact_audits_and_no_inferred_cessation():
+    from factory.orchestration.retro import build_retro_digest
+
+    digest = build_retro_digest(
+        {
+            "recovery_events": [
+                {
+                    "audit_id": 42,
+                    "task_id": "task-a",
+                    "action": "pause_task",
+                    "at": "2026-10-30T00:00:00Z",
+                }
+            ]
+        }
+    )
+    assert "Recovery disruption" in digest
+    assert '"audit_id": 42' in digest
+    assert "unmatched duration/outcome is unknown" in digest
+    assert "unknown-execution fences" in digest

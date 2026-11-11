@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
     name = "cmd_lib",
@@ -19,9 +19,11 @@ go_library(
         "//projects/firecracker/substrate/vsockproto",
     ] + select({
         "@rules_go//go/platform:android": [
+            "//projects/firecracker/substrate/guestvsock",
             "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:linux": [
+            "//projects/firecracker/substrate/guestvsock",
             "@org_golang_x_sys//unix",
         ],
         "//conditions:default": [],
@@ -32,4 +34,19 @@ go_binary(
     name = "cmd",
     embed = [":cmd_lib"],
     visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "cmd_test",
+    srcs = ["vsock_linux_test.go"],
+    embed = [":cmd_lib"],
+    deps = select({
+        "@rules_go//go/platform:android": [
+            "//projects/firecracker/substrate/guestvsock",
+        ],
+        "@rules_go//go/platform:linux": [
+            "//projects/firecracker/substrate/guestvsock",
+        ],
+        "//conditions:default": [],
+    }),
 )

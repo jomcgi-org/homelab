@@ -1,10 +1,7 @@
 """Render-test the control-plane feature-gate env wiring (issue #5230).
 
-EMBERVM_PLACEMENT_RETRY and EMBERVM_ASYNC_LIFECYCLE_WRITES are read by the
-control plane but were rendered by no template, so their docstrings'
-"flips via a values-only deploy" claim described unreachable configuration.
-This pins both env vars to their chart keys: rendered "false" by default
-(the code's OFF default) and "true" when the key is set.
+The surviving gates render false by default and true through their chart keys.
+Retired gates, now unconditional, must never render.
 """
 
 from __future__ import annotations
@@ -19,11 +16,17 @@ import pytest
 _ENV = re.compile(r'^\s*- name: (\S+)\n\s+value: "?([^"\n]+)"?', re.MULTILINE)
 _GATES = (
     "EMBERVM_PLACEMENT_RETRY",
-    "EMBERVM_ASYNC_LIFECYCLE_WRITES",
-    "EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS",
     "EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS",
+)
+# Retired rollout gates whose behaviour is now unconditional.
+_RETIRED = (
+    "EMBERVM_ASYNC_LIFECYCLE_WRITES",
+    "EMBERVM_NODE_CONFIRMED_DESTROY",
+    "EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS",
     "EMBERVM_CROSS_NODE_REJOIN",
     "EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES",
+    "EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED",
+    "EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED",
 )
 
 
@@ -57,6 +60,7 @@ def _render_env(sets: list[str]) -> dict[str, str]:
 
 def _render_gate_values(sets: list[str]) -> dict[str, str]:
     env = _render_env(sets)
+    assert not [name for name in _RETIRED if name in env]
     missing = [name for name in _GATES if name not in env]
     assert not missing, f"gates not always rendered: {missing}"
     return {name: env[name] for name in _GATES}
@@ -65,11 +69,7 @@ def _render_gate_values(sets: list[str]) -> dict[str, str]:
 def test_gates_default_off() -> None:
     assert _render_gate_values([]) == {
         "EMBERVM_PLACEMENT_RETRY": "false",
-        "EMBERVM_ASYNC_LIFECYCLE_WRITES": "false",
-        "EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS": "false",
         "EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS": "false",
-        "EMBERVM_CROSS_NODE_REJOIN": "false",
-        "EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES": "false",
     }
 
 
@@ -121,11 +121,7 @@ def test_workspace_archive_ack_gate_is_inert_without_bricks() -> None:
     ("key", "env_name"),
     [
         ("dispatcher.placementRetry", "EMBERVM_PLACEMENT_RETRY"),
-        ("asyncLifecycleWrites", "EMBERVM_ASYNC_LIFECYCLE_WRITES"),
-        ("drainInstanceScopedSessions", "EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS"),
         ("drainInstanceScopedWorkloads", "EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS"),
-        ("crossNodeRejoin", "EMBERVM_CROSS_NODE_REJOIN"),
-        ("restartFlushInflightInvokes", "EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES"),
     ],
 )
 def test_gate_flips_via_its_chart_key(key: str, env_name: str) -> None:
@@ -133,3 +129,11 @@ def test_gate_flips_via_its_chart_key(key: str, env_name: str) -> None:
     assert rendered[env_name] == "true"
     for other in (name for name in _GATES if name != env_name):
         assert rendered[other] == "false", f"{key} must not move {other}"
+
+
+@pytest.mark.parametrize(
+    "sets", [[], ["dispatcher.placementRetry=true"], ["asyncLifecycleWrites=true"]]
+)
+def test_retired_gate_envs_are_absent(sets: list[str]) -> None:
+    env = _render_env(sets)
+    assert not [name for name in _RETIRED if name in env]

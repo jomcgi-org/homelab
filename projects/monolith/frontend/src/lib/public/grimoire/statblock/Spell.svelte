@@ -71,19 +71,19 @@
 <style>
   .spell {
     padding: clamp(1rem, 3vw, 1.5rem);
-    border: 1px solid var(--grim-paper-line);
-    border-top: 3px solid var(--grim-accent);
+    border: 1px solid var(--stroke);
+    border-top: 1px solid var(--accent-ink);
     max-width: 40rem;
   }
 
   .name {
     font-size: clamp(1.4rem, 4vw, 1.9rem);
-    color: var(--grim-accent-strong);
+    color: var(--accent-ink);
   }
 
   .strap {
     font-size: 0.85rem;
-    color: var(--grim-ink-soft);
+    color: var(--ink-2);
     font-style: italic;
   }
 
@@ -94,31 +94,31 @@
   }
 
   .meta dt {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 0.58rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: var(--grim-ink-soft);
+    color: var(--ink-2);
   }
 
   .meta dd {
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-weight: 700;
     font-size: 0.95rem;
   }
 
   .classes {
     margin-top: 0.6rem;
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: 0.9rem;
   }
 
   .classes-label {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 0.6rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: var(--grim-ink-soft);
+    color: var(--ink-2);
   }
 
   .body {
@@ -128,10 +128,10 @@
   }
 
   .para {
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: 0.95rem;
     line-height: 1.55;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   @media (max-width: 480px) {

@@ -1,13 +1,14 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
 import json
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from factory.execution import admission, permit_supervision as supervision
+from factory.execution import admission
+from factory.execution import permit_supervision as supervision
 from factory.execution.constants import UNKNOWN_INVOCATION
 from factory.execution.models import (
     AgentCapacityPool,
@@ -61,7 +62,6 @@ def database(tmp_path, monkeypatch):
                 "next_run_at TIMESTAMP, locked_by TEXT, locked_at TIMESTAMP)"
             )
         )
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     yield engine
     engine.dispose()
@@ -248,6 +248,219 @@ def sweep(response):
     )
 
 
+def terminal_before_dispatch(database):
+    """A follow-up POST names an already evicted guest; restore then fails."""
+    now = datetime.now(timezone.utc)
+    dispatched = now - timedelta(seconds=100)
+    pid = seed(
+        database,
+        tier="interactive",
+        legacy=True,
+        history=3,
+        created_at=dispatched + timedelta(seconds=1),
+        recovery_updates={"last_dispatch_at": dispatched.isoformat()},
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        agent = db.get(AgentSession, permit.session_id)
+        db.add(
+            AgentResultReceipt(
+                id="terminal-receipt",
+                token_sha256="a" * 64,
+                request_sha256="b" * 64,
+                session_id=agent.id,
+                local_session_id=agent.local_session_id,
+                seq=permit.pending_seq,
+                dispatch_count=1,
+                claim_owner=permit.owner,
+                guest_id=agent.ember_session_id,
+                created_at=dispatched + timedelta(seconds=2),
+                accept_until=now + timedelta(hours=12),
+                retain_until=now + timedelta(days=6),
+                response_observer_released_at=dispatched + timedelta(seconds=3),
+            )
+        )
+    ms = lambda seconds: int((now - timedelta(seconds=seconds)).timestamp() * 1000)
+    return pid, proof(
+        invoke_started_at=ms(150), last_invoke_at=ms(120), updated_at=ms(110)
+    )
+
+
+@pytest.mark.parametrize("state", ["evicted", "destroyed"])
+@pytest.mark.parametrize("unknown", [False, True])
+def test_post_to_terminal_guest_settles_only_capacity(database, state, unknown):
+    pid, observed = terminal_before_dispatch(database)
+    observed["state"] = state
+    if unknown:
+        with Session(database) as db, db.begin():
+            permit = db.get(AgentCapacityReservation, pid)
+            turn = db.exec(
+                select(AgentTurn).where(
+                    AgentTurn.session_id == permit.session_id,
+                    AgentTurn.seq == permit.pending_seq,
+                )
+            ).one()
+            turn.stop_reason = UNKNOWN_INVOCATION
+    original = before(database, pid)
+    with Session(database) as db:
+        receipt = db.get(AgentResultReceipt, "terminal-receipt").model_dump()
+    sweep(observed)
+    after = before(database, pid)
+    assert after[0]["state"] == "settled"
+    assert after[0]["outcome"] == "guest_cessation_confirmed"
+    assert after[1:] == original[1:]
+    with Session(database) as db:
+        from factory.execution.admission_diagnostics import _recorded_cessation
+
+        assert db.get(AgentResultReceipt, "terminal-receipt").model_dump() == receipt
+        audit = db.get(ProbeObservation, pid)
+        assert json.loads(audit.evidence_json)["cessation_evidence"] == (
+            "terminal_before_dispatch"
+        )
+        assert audit.settled_at is not None
+        assert _recorded_cessation(db, pid)["cessation_evidence"] == (
+            "terminal_before_dispatch"
+        )
+        if unknown:
+            from factory.execution import store
+
+            with pytest.raises(store.SessionOutcomeUnknown):
+                store._assert_sendable(db, after[1]["id"])
+    sweep(observed)
+    assert before(database, pid) == after
+
+
+def test_terminal_guest_receipt_result_arriving_during_observation_retains_hold(
+    database,
+):
+    pid, observed = terminal_before_dispatch(database)
+    original = before(database, pid)
+
+    def result_arrives(_guest):
+        with Session(database) as db, db.begin():
+            receipt = db.get(AgentResultReceipt, "terminal-receipt")
+            receipt.result_body = b"late result"
+            receipt.received_at = datetime.now(timezone.utc)
+        return observed
+
+    sweep(result_arrives)
+    assert before(database, pid) == original
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing_receipt",
+        "second_receipt",
+        "different_guest",
+        "different_owner",
+        "different_local_id",
+        "superseded",
+        "received",
+        "result",
+        "observed",
+        "observer_live",
+        "observer_after_failure",
+        "prepared",
+        "expired_history",
+        "second_dispatch",
+        "missing_dispatch",
+        "naive_dispatch",
+        "workflow",
+        "cancelled",
+        "human_stop",
+        "receipt_fence",
+        "late_pending",
+        "live_guest",
+        "terminal_after_dispatch",
+        "missing_completion",
+    ],
+)
+def test_post_to_terminal_guest_requires_complete_exact_evidence(database, change):
+    pid, observed = terminal_before_dispatch(database)
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        agent = db.get(AgentSession, permit.session_id)
+        turn = db.exec(
+            select(AgentTurn).where(
+                AgentTurn.session_id == agent.id, AgentTurn.seq == permit.pending_seq
+            )
+        ).one()
+        receipt = db.get(AgentResultReceipt, "terminal-receipt")
+        recovery = json.loads(turn.usage_json)
+        now = datetime.now(timezone.utc)
+        if change == "missing_receipt":
+            db.delete(receipt)
+        elif change == "second_receipt":
+            db.add(
+                AgentResultReceipt(
+                    **{
+                        **receipt.model_dump(),
+                        "id": "other-receipt",
+                        "token_sha256": "c" * 64,
+                        "guest_id": "other-guest",
+                        "superseded_at": now,
+                    }
+                )
+            )
+        elif change == "different_guest":
+            receipt.guest_id = "other-guest"
+        elif change == "different_owner":
+            receipt.claim_owner = "other-owner"
+        elif change == "different_local_id":
+            receipt.local_session_id = "other-session"
+        elif change == "superseded":
+            receipt.superseded_at = now
+        elif change == "received":
+            receipt.received_at = now
+        elif change == "result":
+            receipt.result_body = b"result"
+        elif change == "observed":
+            receipt.response_observed_at = now
+        elif change == "observer_live":
+            receipt.response_observer_released_at = None
+        elif change == "observer_after_failure":
+            receipt.response_observer_released_at = now
+        elif change == "prepared":
+            receipt.attempt_phase = "prepared"
+        elif change == "expired_history":
+            recovery["recovery"]["last_dispatch_at"] = (
+                now - timedelta(days=8)
+            ).isoformat()
+            for field in ("invoke_started_at", "last_invoke_at", "updated_at"):
+                observed[field] -= 9 * 24 * 60 * 60 * 1000
+        elif change == "second_dispatch":
+            recovery["recovery"]["dispatch_count"] = 2
+        elif change == "missing_dispatch":
+            recovery["recovery"].pop("last_dispatch_at")
+        elif change == "naive_dispatch":
+            recovery["recovery"]["last_dispatch_at"] = (
+                (now - timedelta(seconds=100)).replace(tzinfo=None).isoformat()
+            )
+        elif change == "workflow":
+            agent.workflow_id = "workflow-owner"
+        elif change == "cancelled":
+            agent.status = "cancelled"
+        elif change == "human_stop":
+            turn.stop_reason = "operator_stop"
+        elif change == "receipt_fence":
+            agent.result_receipt_fence_id = receipt.id
+        elif change == "late_pending":
+            db.add(PendingMessage(session_id=agent.id, seq=5, message_text="queued"))
+        elif change == "live_guest":
+            observed["state"] = "running"
+        elif change == "terminal_after_dispatch":
+            observed["updated_at"] = int(
+                (now - timedelta(seconds=90)).timestamp() * 1000
+            )
+        elif change == "missing_completion":
+            observed["last_invoke_at"] = None
+        turn.usage_json = json.dumps(recovery)
+    original = before(database, pid)
+    sweep(observed)
+    assert before(database, pid) == original
+
+
 @pytest.mark.parametrize("legacy", [False, True])
 def test_exact_probe_settles_preserving_history_and_other_tiers(database, legacy):
     pid = seed(database, legacy=legacy)
@@ -282,7 +495,6 @@ def test_workflow_died_before_hold_settles_non_probe_guest(database, monkeypatch
     still says last_status ok with next_run_at set, which is what seed writes
     unless job_held is passed. Interactive permits have no routine job at all.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, tier, tier=tier)
     sweep(proof(f"guest-{tier}"))
     assert before(database, pid)[0]["state"] == "settled"
@@ -290,7 +502,6 @@ def test_workflow_died_before_hold_settles_non_probe_guest(database, monkeypatch
 
 
 def test_factory_owned_session_is_skipped(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "factory",
@@ -313,7 +524,6 @@ def test_factory_owned_session_is_skipped_via_swarm_node_run_pin(database, monke
     real drainer row, so only the SwarmNodeRun.pin_json ownership check can
     tell this attempt is factory-owned.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "factory-pin",
@@ -343,7 +553,6 @@ def test_factory_owned_session_is_skipped_via_swarm_node_run_pin(database, monke
 
 @pytest.mark.parametrize("tier", ["probe", "kg", "project", "interactive"])
 def test_no_guest_without_delivery_settles(database, monkeypatch, tier):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         f"no-guest-{tier}",
@@ -358,7 +567,6 @@ def test_no_guest_without_delivery_settles(database, monkeypatch, tier):
 
 
 def test_no_guest_without_claim_identity_remains_uncertain(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "unclaimed", tier="kg", guest_bound=False, claimed=False)
     original = before(database, pid)
     sweep(None)
@@ -368,7 +576,6 @@ def test_no_guest_without_claim_identity_remains_uncertain(database, monkeypatch
 def test_no_guest_delivery_is_validated_once_per_locked_identity_read(
     database, monkeypatch
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "single-validation",
@@ -391,7 +598,6 @@ def test_no_guest_delivery_is_validated_once_per_locked_identity_read(
 
 
 def test_failed_kg_without_a_routine_job_is_a_candidate(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "unbound-candidate",
@@ -407,7 +613,6 @@ def test_failed_kg_without_a_routine_job_is_a_candidate(database, monkeypatch):
 def test_stale_unbound_permit_settles_only_after_grace(
     database, monkeypatch, age_seconds
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         f"stale-unbound-{age_seconds}",
@@ -450,7 +655,6 @@ def test_probe_stale_unbound_settlement_requires_all_shape_gates(
     status,
     expected_reason,
 ):
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
     pid = seed(
         database,
         f"stale-probe-{age_seconds}-{binding_evidence}-{status}",
@@ -484,50 +688,15 @@ def test_probe_stale_unbound_settlement_requires_all_shape_gates(
             assert permit["state"] == "uncertain"
 
 
-def test_probe_stale_unbound_flag_is_revalidated_before_settlement(
-    database, monkeypatch
-):
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
-    pid = seed(
-        database,
-        "stale-probe-flag-race",
-        guest_bound=False,
-        created_at=datetime.now(timezone.utc) - timedelta(hours=2),
-    )
-    with Session(database) as db, db.begin():
-        permit = db.get(AgentCapacityReservation, pid)
-        turn = db.exec(
-            select(AgentTurn).where(AgentTurn.session_id == permit.session_id)
-        ).one()
-        turn.usage_json = "{}"
-        db.add(turn)
-
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "false")
-    assert pid not in supervision._candidates()
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
-    candidate = supervision._prepare(pid)
-    assert candidate is not None
-
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "false")
-    supervision._record_stale_unbound(candidate)
-
-    assert before(database, pid)[0]["state"] == "uncertain"
-    with Session(database) as db:
-        assert db.get(ProbeObservation, pid).reason == "no_guest_supervision_disabled"
-
-
 @pytest.mark.parametrize(
     ("age_seconds", "guest_bound", "expected_reason"),
     [
-        (7200, False, "stale_unbound_permit"),
-        (300, False, "stale_unbound_grace"),
         (7200, True, "observation_unavailable"),
     ],
 )
 def test_lease_expired_settles_only_via_stale_unbound_shape(
     database, monkeypatch, age_seconds, guest_bound, expected_reason
 ):
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
     pid = seed(
         database,
         f"lease-expired-{age_seconds}-{guest_bound}",
@@ -555,29 +724,7 @@ def test_lease_expired_settles_only_via_stale_unbound_shape(
             assert permit["state"] == "uncertain"
 
 
-def test_lease_expired_stale_unbound_requires_probe_flag(database, monkeypatch):
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "false")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    pid = seed(
-        database,
-        "lease-expired-probe-disabled",
-        guest_bound=False,
-        created_at=datetime.now(timezone.utc) - timedelta(hours=2),
-    )
-    with Session(database) as db, db.begin():
-        db.get(AgentCapacityReservation, pid).outcome = "lease_expired"
-    original = before(database, pid)
-
-    sweep(None)
-
-    assert before(database, pid) == original
-    with Session(database) as db:
-        assert db.get(ProbeObservation, pid) is None
-
-
 def test_lease_expired_stale_unbound_rejects_binding_evidence(database, monkeypatch):
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
     pid = seed(
         database,
         "lease-expired-prior-binding",
@@ -600,11 +747,7 @@ def test_lease_expired_stale_unbound_rejects_binding_evidence(database, monkeypa
         assert audit.settled_at is None
 
 
-def test_lease_expired_exact_delivery_proof_settles_with_both_flags(
-    database, monkeypatch
-):
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+def test_lease_expired_exact_delivery_proof_settles(database, monkeypatch):
     pid = seed(
         database,
         "lease-expired-both-flags",
@@ -623,9 +766,7 @@ def test_lease_expired_exact_delivery_proof_settles_with_both_flags(
         assert audit.settled_at is not None
 
 
-def test_both_flags_do_not_settle_fresh_non_error_legacy_probe(database, monkeypatch):
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+def test_fresh_non_error_legacy_probe_is_not_settled(database, monkeypatch):
     pid = seed(
         database,
         "fresh-non-error-both-flags",
@@ -653,7 +794,6 @@ def test_both_flags_do_not_settle_fresh_non_error_legacy_probe(database, monkeyp
 
 
 def test_unrelated_probe_outcome_is_not_tolerated_by_stale_path(database, monkeypatch):
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
     pid = seed(
         database,
         "stale-probe-unrelated-outcome",
@@ -673,7 +813,6 @@ def test_unrelated_probe_outcome_is_not_tolerated_by_stale_path(database, monkey
 
 
 def test_binding_evidence_prevents_stale_unbound_settlement(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "stale-with-binding",
@@ -702,7 +841,6 @@ def test_binding_evidence_prevents_stale_unbound_settlement(database, monkeypatc
 def test_only_true_workspace_loss_blocks_stale_unbound_settlement(
     database, monkeypatch, workspace_loss, settles
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         f"stale-workspace-loss-{workspace_loss}",
@@ -735,7 +873,6 @@ def test_parked_guest_on_absent_node_requests_destroy_and_keeps_hold(
 ):
     from cluster import kubernetes
 
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "departed-node", tier="kg")
     now = datetime.now(timezone.utc)
     stamp = int(now.timestamp() * 1000)
@@ -777,7 +914,6 @@ def test_parked_guest_on_absent_node_requests_destroy_and_keeps_hold(
 def test_node_gone_destroy_is_bounded_and_records_exhaustion(database, monkeypatch):
     from cluster import kubernetes
 
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "bounded-departed-node", tier="kg")
     now = datetime.now(timezone.utc)
     stamp = int(now.timestamp() * 1000)
@@ -830,7 +966,6 @@ def test_never_invoked_parked_guest_on_absent_node_requests_destroy(
 ):
     from cluster import kubernetes
 
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "never-invoked-departed", tier="kg")
     now = datetime.now(timezone.utc)
     observed = proof(
@@ -870,7 +1005,6 @@ def test_never_invoked_parked_guest_on_absent_node_requests_destroy(
 def test_unknown_node_inventory_does_not_request_destroy(database, monkeypatch):
     from cluster import kubernetes
 
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "unknown-inventory", tier="kg")
     now = datetime.now(timezone.utc)
     observed = proof(
@@ -906,7 +1040,6 @@ def test_unknown_node_inventory_does_not_request_destroy(database, monkeypatch):
 
 @pytest.mark.parametrize("guest_bound", [False, True])
 def test_pending_message_blocks_settlement(database, monkeypatch, guest_bound):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         f"pending-{guest_bound}",
@@ -935,7 +1068,6 @@ def test_pending_message_blocks_settlement(database, monkeypatch, guest_bound):
 def test_no_guest_with_delivery_or_missing_recovery_remains_uncertain(
     database, monkeypatch, recovery_updates
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "attempted",
@@ -957,30 +1089,7 @@ def test_no_guest_with_delivery_or_missing_recovery_remains_uncertain(
     assert before(database, pid) == original
 
 
-def test_non_probe_flag_off_leaves_kg_and_project_untouched(database, monkeypatch):
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
-    probe_id = seed(database, "probe")
-    other_ids = [seed(database, tier, tier=tier) for tier in ("kg", "project")]
-    originals = [before(database, pid) for pid in other_ids]
-    sweep(lambda guest: proof(guest))
-    assert before(database, probe_id)[0]["state"] == "settled"
-    assert [before(database, pid) for pid in other_ids] == originals
-
-
-def test_probe_flag_off_excludes_probe_when_general_flag_is_on(database, monkeypatch):
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "false")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    probe_id = seed(database, "probe")
-    kg_id = seed(database, "kg", tier="kg")
-    original_probe = before(database, probe_id)
-    sweep(lambda guest: proof(guest))
-    assert before(database, probe_id) == original_probe
-    assert before(database, kg_id)[0]["state"] == "settled"
-
-
 def test_cessation_timestamp_before_failed_turn_does_not_settle(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "early", tier="project")
     original = before(database, pid)
     created_at = original[2][0]["created_at"]
@@ -996,19 +1105,10 @@ def test_cessation_timestamp_before_failed_turn_does_not_settle(database, monkey
     assert before(database, pid) == original
 
 
-def test_destroyed_with_timestamp_settles_under_general_flag(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+def test_destroyed_with_timestamp_settles(database, monkeypatch):
     pid = seed(database)
     sweep(proof(state="destroyed"))
     assert before(database, pid)[0]["state"] == "settled"
-
-
-def test_probe_only_destroyed_view_preserves_hold_and_binding(database, monkeypatch):
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
-    pid = seed(database)
-    original = before(database, pid)
-    sweep(proof(state="destroyed"))
-    assert before(database, pid) == original
 
 
 @pytest.mark.parametrize("tier", ["kg", "project"])
@@ -1025,7 +1125,6 @@ def test_held_routine_job_permit_is_left_to_the_operator_path(
     owns both supported drainer kinds, and settling here would remove its exact
     permit evidence before it can apply the requested job disposition.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, f"held-{tier}", tier=tier, job_held=True)
     assert pid in supervision._candidates()
     with Session(database) as db:
@@ -1055,7 +1154,6 @@ def test_interactive_session_with_completed_history_settles(database, monkeypatc
     reserve_start per turn, so the session owns three reservation rows and the
     two earlier ones are settled.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "chat", tier="interactive", history=2)
     assert before(database, pid)[0]["pending_seq"] == 3
     with Session(database) as db:
@@ -1086,7 +1184,6 @@ def test_interactive_reservation_past_the_failed_turn_is_ambiguous(
     reserve_start with the new pending seq), so this permit is no longer the
     session's live attempt and the loop must not settle it.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "chat-resent", tier="interactive", history=1)
     with Session(database) as db, db.begin():
         permit = db.get(AgentCapacityReservation, pid)
@@ -1118,7 +1215,6 @@ def test_interactive_reservation_past_the_failed_turn_is_ambiguous(
 def test_other_drainer_history_is_reported_as_unsupported_shape(
     database, monkeypatch, tier, job_name, history
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database, "other-history", tier=tier, history=history, routine_job_name=job_name
     )
@@ -1131,7 +1227,6 @@ def test_other_drainer_history_is_reported_as_unsupported_shape(
 
 def test_kg_correction_with_settled_history_reaches_cessation(database, monkeypatch):
     """drain_cycle sends a correction in the first extraction's session."""
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database, "kg-correction", tier="kg", history=1, routine_job_name="kg:raw"
     )
@@ -1151,7 +1246,6 @@ def test_kg_correction_with_settled_history_reaches_cessation(database, monkeypa
 
 
 def test_kg_correction_still_requires_guest_cessation(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "kg-live", tier="kg", history=1, routine_job_name="kg:raw")
     original = before(database, pid)
     sweep(proof("guest-kg-live", state="running"))
@@ -1164,7 +1258,6 @@ def test_kg_correction_still_requires_guest_cessation(database, monkeypatch):
 def test_kg_correction_cannot_settle_an_earlier_live_permit(
     database, monkeypatch, state
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database, "kg-live-history", tier="kg", history=1, routine_job_name="kg:raw"
     )
@@ -1191,7 +1284,6 @@ def test_kg_correction_cannot_settle_an_earlier_live_permit(
 def test_kg_correction_requires_routine_session_identity(
     database, monkeypatch, field, value
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database, "kg-wrong-identity", tier="kg", history=1, routine_job_name="kg:raw"
     )
@@ -1208,7 +1300,6 @@ def test_kg_correction_requires_routine_session_identity(
 
 
 def test_later_turn_after_the_failed_turn_is_a_changed_attempt(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "resent", tier="interactive", history=1)
     with Session(database) as db, db.begin():
         permit = db.get(AgentCapacityReservation, pid)
@@ -1238,7 +1329,6 @@ def test_residual_binding_evidence_blocks_a_no_guest_settlement(
     destroy that motivated this lives in admission_test.py, which can import
     store: test_operator_destroy_retains_a_binding_under_an_unknown_outcome.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, f"residual-{field}", tier="kg", guest_bound=False)
     with Session(database) as db, db.begin():
         permit = db.get(AgentCapacityReservation, pid)
@@ -1270,7 +1360,6 @@ def test_production_drainer_kg_settles_when_the_workflow_died_before_the_hold(
     name on the reservation, which is the only selector _candidates matches on.
     The routine job row is still armed because hold_drainer_job never ran.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "production-kg",
@@ -1367,7 +1456,6 @@ def test_never_invoked_terminal_guest_settles(database, monkeypatch):
     indefinitely. `destroyed` is the state the control-plane node-gone
     completion produces, so general mode is on, as it is in production.
     """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database)
     sweep(proof(state="destroyed", invoke_started_at=None, last_invoke_at=None))
     after = before(database, pid)
@@ -1390,7 +1478,6 @@ def test_terminal_guest_with_one_null_invoke_stamp_still_refuses(
     database, monkeypatch, change
 ):
     """One null stamp is a malformed observation, not a never-invoked guest."""
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database)
     original = before(database, pid)
     sweep(proof(state="destroyed", **change))
@@ -1399,7 +1486,6 @@ def test_terminal_guest_with_one_null_invoke_stamp_still_refuses(
 
 def test_never_invoked_guest_that_is_not_terminal_still_refuses(database, monkeypatch):
     """Null stamps on a LIVE guest prove no cessation."""
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database)
     original = before(database, pid)
     sweep(proof(state="running", invoke_started_at=None, last_invoke_at=None))
@@ -1514,14 +1600,7 @@ def test_failed_get_does_not_block_later_terminal_candidate(database):
     assert before(database, second)[0]["state"] == "settled"
 
 
-def test_disabled_start_creates_no_task(monkeypatch):
-    monkeypatch.delenv("AGENT_PROBE_SUPERVISION_ENABLED", raising=False)
-    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
-    assert supervision.start_permit_supervision_loop() == []
-
-
 def test_enabled_leader_task_is_cancellable(monkeypatch):
-    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
 
     async def check():
         tasks = supervision.start_permit_supervision_loop()
@@ -1531,6 +1610,14 @@ def test_enabled_leader_task_is_cancellable(monkeypatch):
             await tasks[0]
 
     asyncio.run(check())
+
+
+def test_candidates_cover_every_tier(database):
+    ids = {
+        tier: seed(database, tier, tier=tier)
+        for tier in ("probe", "kg", "project", "interactive")
+    }
+    assert set(ids.values()) <= set(supervision._candidates())
 
 
 def test_reimporting_maintenance_keeps_one_model_registration():
@@ -1553,7 +1640,6 @@ def test_nonsettling_reasons_are_visible_without_secret_payloads(database, caplo
 def test_malformed_recovery_still_settles_once_stale_unbound(database, monkeypatch):
     """A recognised outcome with no usable recovery blob is held only until the
     stale unbound grace has passed; afterwards the shape alone settles it."""
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "stale-malformed-recovery",
@@ -1582,7 +1668,6 @@ def test_malformed_recovery_still_settles_once_stale_unbound(database, monkeypat
 
 
 def test_malformed_recovery_is_held_before_the_grace(database, monkeypatch):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
         "young-malformed-recovery",
@@ -1622,14 +1707,11 @@ def test_malformed_recovery_is_held_before_the_grace(database, monkeypatch):
         "bad_count",
         "bad_completion",
         "nonterminal",
-        "disabled",
     ],
 )
 def test_terminal_dispatch_can_precede_client_failure(
     database, monkeypatch, guest_state, change
 ):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
     now = datetime.now(timezone.utc)
     recovery = {"last_dispatch_at": (now - timedelta(seconds=120)).isoformat()}
     if change == "wrong_owner":
@@ -1660,8 +1742,6 @@ def test_terminal_dispatch_can_precede_client_failure(
         evidence["last_invoke_at"] = True
     elif change == "nonterminal":
         evidence["state"] = "running"
-    elif change == "disabled":
-        monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "false")
     sweep(evidence)
     after = before(database, pid)
     assert after[2] == original[2]
@@ -1682,18 +1762,13 @@ def test_terminal_dispatch_can_precede_client_failure(
 @pytest.mark.parametrize(
     "change",
     [
-        "disabled",
         "wrong_reason",
         "missing_interruption",
         "interrupted",
         "completed_invoke",
     ],
 )
-def test_failed_invoke_requires_opt_in_and_exact_terminal_proof(
-    database, monkeypatch, change
-):
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
+def test_failed_invoke_requires_exact_terminal_proof(database, monkeypatch, change):
     now = datetime.now(timezone.utc)
     pid = seed(
         database,
@@ -1713,9 +1788,7 @@ def test_failed_invoke_requires_opt_in_and_exact_terminal_proof(
         last_invoke_at=started - 1,
         updated_at=int((now - timedelta(seconds=11)).timestamp() * 1000),
     )
-    if change == "disabled":
-        monkeypatch.delenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED")
-    elif change == "wrong_reason":
+    if change == "wrong_reason":
         evidence["terminal_reason"] = "brick_gone"
     elif change == "missing_interruption":
         del evidence["interrupted_turn"]
@@ -1762,9 +1835,6 @@ def never_invoked(database, monkeypatch):
     from factory.execution.models import AgentResultReceipt
 
     SQLModel.metadata.create_all(database, tables=[AgentResultReceipt.__table__])
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
-    monkeypatch.setenv("AGENT_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "true")
     return database
 
 
@@ -1782,16 +1852,6 @@ def test_never_invoked_parked_guest_settles_non_factory_permit(never_invoked, ti
         audit = db.get(ProbeObservation, pid)
         assert audit.reason == "guest_cessation_confirmed"
         assert json.loads(audit.evidence_json)["cessation_evidence"] == "never_invoked"
-
-
-def test_never_invoked_settlement_is_off_by_default(never_invoked, monkeypatch):
-    monkeypatch.setenv("AGENT_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "false")
-    pid = seed(never_invoked, "never-off", tier="kg")
-    original = before(never_invoked, pid)
-    sweep(_never_invoked_view("guest-never-off"))
-    assert before(never_invoked, pid) == original
-    with Session(never_invoked) as db:
-        assert db.get(ProbeObservation, pid).reason == "malformed_identity"
 
 
 def test_never_invoked_settlement_refuses_a_session_with_a_receipt(never_invoked):
@@ -1846,6 +1906,7 @@ def test_never_invoked_settlement_requires_the_exact_idle_guest(never_invoked, c
 
 def test_permit_diagnostics_are_select_only_and_redacted(database):
     from sqlalchemy import event
+
     from factory.execution.admission_diagnostics import inspect_permits
 
     permit_id = seed(database, tier="kg", job_held=True)
@@ -1986,6 +2047,7 @@ def test_permit_diagnostics_reject_unbounded_or_ambiguous_requests(ids):
 
 def test_routine_permit_lookup_is_exact_bounded_and_select_only(database):
     from sqlalchemy import event
+
     from factory.execution.admission_diagnostics import find_routine_permits
 
     first = seed(
@@ -2086,8 +2148,141 @@ def test_dispatch_diagnostics_reject_malformed_metadata(database, usage):
     }
 
 
+def test_diagnostics_preserve_supervisor_evidence_after_settlement(
+    database, monkeypatch
+):
+    from factory.execution import admission_diagnostics as diagnostics
+
+    with database.begin() as connection:
+        connection.execute(
+            text("CREATE TABLE workflow_status (workflow_uuid TEXT, status TEXT)")
+        )
+    now = datetime.now(UTC)
+    pid = seed(
+        database,
+        tier="kg",
+        routine_job_name=None,
+        recovery_updates={
+            "last_dispatch_at": (now - timedelta(seconds=120)).isoformat()
+        },
+    )
+    observed = proof(
+        state="destroyed",
+        invoke_started_at=int((now - timedelta(seconds=100)).timestamp() * 1000),
+        last_invoke_at=None,
+        updated_at=int((now - timedelta(seconds=11)).timestamp() * 1000),
+    )
+    sweep(observed)
+    settled = before(database, pid)
+    assert settled[0]["state"] == "settled"
+    with Session(database) as db, db.begin():
+        audit = db.get(ProbeObservation, pid)
+        expected_identity = audit.identity_sha256
+        saved = json.loads(audit.evidence_json)
+        # Fields outside the diagnostic allowlist must not leave the query.
+        saved["private"] = {"token": "secret-evidence-not-projected"}
+        audit.evidence_json = json.dumps(saved)
+        db.add(audit)
+        saved_audit = audit.model_dump()
+
+    def read_rows(*args, **kwargs):
+        rows = original_rows(*args, **kwargs)
+        assert "secret-evidence-not-projected" not in json.dumps(rows)
+        return rows
+
+    original_rows = diagnostics._rows
+    monkeypatch.setattr(diagnostics, "_rows", read_rows)
+    # The settlement is immutable to the supervisor even after GET stops working.
+    sweep(RuntimeError("guest record expired"))
+    with Session(database) as db:
+        result = diagnostics.inspect_permits([pid], session=db)
+        assert db.get(ProbeObservation, pid).model_dump() == saved_audit
+    evidence = result["items"][0]["observation"]["recorded_cessation"]
+    assert evidence == {
+        "identity_sha256": expected_identity,
+        **{
+            key: saved[key]
+            for key in (
+                "session_id",
+                "observed_at",
+                "response_sha256",
+                "terminal_state",
+                "cessation_evidence",
+                "generation",
+                "invoke_started_at",
+                "updated_at",
+                "last_invoke_at",
+            )
+        },
+    }
+    assert evidence["terminal_state"] == "destroyed"
+    assert evidence["cessation_evidence"] == "terminal_dispatch"
+    assert result["recovery_authorized"] is False
+    assert "Guest cessation is not verified" in result["coverage"]
+    assert before(database, pid) == settled
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not-json",
+        "null",
+        "[]",
+        "{}",
+        '{"generation":' + "9" * 5000 + "}",
+        json.dumps(
+            {
+                "session_id": {"secret": "not-projected"},
+                "observed_at": ["not-projected"],
+                "response_sha256": "f" * 65,
+                "terminal_state": "running",
+                "cessation_evidence": "untrusted",
+                "generation": True,
+                "invoke_started_at": 1.5,
+                "updated_at": -1,
+                "last_invoke_at": 2**64,
+            }
+        ),
+        json.dumps(
+            {
+                key: "x" * 257
+                for key in (
+                    "session_id",
+                    "observed_at",
+                    "response_sha256",
+                    "terminal_state",
+                    "cessation_evidence",
+                    "generation",
+                    "invoke_started_at",
+                    "updated_at",
+                    "last_invoke_at",
+                )
+            }
+        ),
+    ],
+)
+def test_recorded_cessation_diagnostics_reject_malformed_fields(database, raw):
+    from factory.execution.admission_diagnostics import _recorded_cessation
+
+    pid = seed(database)
+    with Session(database) as db, db.begin():
+        db.add(
+            ProbeObservation(
+                permit_id=pid,
+                identity_sha256="not-a-hash",
+                evidence_json=raw,
+                checked_at=datetime.now(UTC),
+            )
+        )
+    with Session(database) as db:
+        assert _recorded_cessation(db, 999999) is None
+        result = _recorded_cessation(db, pid)
+    assert result and all(value is None for value in result.values())
+
+
 def test_session_dispatch_diagnostics_without_turn_or_permit(database):
     from sqlalchemy import event
+
     from factory.execution.admission_diagnostics import inspect_session_turn
 
     now = datetime.now(timezone.utc)
@@ -2207,9 +2402,10 @@ def test_raw_diagnostics_reject_nonexact_job_before_read(name):
 
 
 def test_raw_diagnostics_bounded_select_only_and_redacted(database):
-    from sqlalchemy import event
-    from factory.execution.admission_diagnostics import inspect_raw_extraction
     from knowledge.api import EXTRACTION_VERSION
+    from sqlalchemy import event
+
+    from factory.execution.admission_diagnostics import inspect_raw_extraction
 
     raw_id = "a" * 64
     permit_id = seed(database, tier="kg", job_held=True)
@@ -2305,3 +2501,278 @@ def test_raw_diagnostics_attempt_bound_and_foreign_job(database):
     assert [a["permit_id"] for a in result["attempts"]] == list(reversed(ids))[:5]
     assert result["attempts_truncated"] is True
     assert result["raw_found"] is False
+
+
+def redispatch_chain(database, restored=True):
+    """A drain response is adopted, then its continuation dies during restore."""
+    now = datetime.now(UTC)
+    at = lambda seconds: now - timedelta(seconds=seconds)
+    pid = seed(
+        database,
+        tier="interactive",
+        legacy=True,
+        history=3,
+        created_at=at(600),
+        dispatch_count=2,
+        recovery_updates={
+            "last_dispatch_at": at(300).isoformat(),
+            "partial_text": "preserved interrupted output",
+        },
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        agent = db.get(AgentSession, permit.session_id)
+        agent.created_at = at(1000)
+        rows = []
+        for key, guest, count, created, released, superseded in [
+            ("old", "old-guest", 1, 590, 580, 500),
+            ("prior", "guest-one", 1, 501, 350, 289),
+            ("latest", "guest-one", 2, 290, 210, None),
+        ]:
+            if key == "old" and not restored:
+                continue
+            rows.append(
+                AgentResultReceipt(
+                    id=key,
+                    token_sha256=key.ljust(64, "a"),
+                    request_sha256="b" * 64,
+                    session_id=agent.id,
+                    local_session_id=agent.local_session_id,
+                    seq=permit.pending_seq,
+                    dispatch_count=count,
+                    claim_owner="worker" if count == 2 else "previous-worker",
+                    guest_id=guest,
+                    created_at=at(created),
+                    response_observer_released_at=at(released),
+                    superseded_at=at(superseded) if superseded else None,
+                    received_at=at(340) if key == "prior" else None,
+                    result_sha256="c" * 64 if key == "prior" else None,
+                    result_body=b"preserved interrupted result"
+                    if key == "prior"
+                    else None,
+                    accept_until=now + timedelta(hours=12),
+                    retain_until=now + timedelta(days=6),
+                )
+            )
+        db.add_all(rows)
+    views = {
+        "guest-one": proof(
+            invoke_started_at=int(at(490).timestamp() * 1000),
+            last_invoke_at=int(at(340).timestamp() * 1000),
+            updated_at=int(at(220).timestamp() * 1000),
+        ),
+        "old-guest": proof(
+            "old-guest",
+            invoke_started_at=int(at(900).timestamp() * 1000),
+            last_invoke_at=int(at(800).timestamp() * 1000),
+            updated_at=int(at(700).timestamp() * 1000),
+        ),
+    }
+    return pid, views
+
+
+@pytest.mark.parametrize("restored", [False, True])
+@pytest.mark.parametrize("observed_response", [False, True])
+def test_native_redispatch_terminal_chain_preserves_all_history(
+    database, restored, observed_response
+):
+    pid, views = redispatch_chain(database, restored)
+    if observed_response:
+        with Session(database) as db, db.begin():
+            row = db.get(AgentResultReceipt, "prior")
+            row.response_observed_at = row.received_at
+            row.response_observer_released_at = None
+    original = before(database, pid)
+    with Session(database) as db:
+        receipts = [r.model_dump() for r in db.exec(select(AgentResultReceipt)).all()]
+    calls = []
+
+    def observe(guest):
+        calls.append(guest)
+        return views[guest]
+
+    sweep(observe)
+    after = before(database, pid)
+    assert after[0]["state"] == "settled"
+    assert after[0]["outcome"] == "guest_cessation_confirmed"
+    assert after[1:] == original[1:]
+    assert set(calls) == ({"guest-one", "old-guest"} if restored else {"guest-one"})
+    with Session(database) as db:
+        assert receipts == [
+            r.model_dump() for r in db.exec(select(AgentResultReceipt)).all()
+        ]
+        audit = db.get(ProbeObservation, pid)
+        evidence = json.loads(audit.evidence_json)
+        assert evidence["cessation_evidence"] == "terminal_receipt_chain"
+        assert len(evidence["terminal_receipt_chain"]["guests"]) == len(calls)
+        assert "preserved interrupted" not in audit.evidence_json
+        from factory.execution.admission_diagnostics import _recorded_cessation
+
+        assert (
+            _recorded_cessation(db, pid)["cessation_evidence"]
+            == "terminal_receipt_chain"
+        )
+    sweep(observe)
+    assert before(database, pid) == after
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "old_live",
+        "old_missing",
+        "old_wrong_id",
+        "old_bad_generation",
+        "old_future",
+        "old_bad_stamp",
+        "latest_result",
+        "latest_observed",
+        "latest_live_observer",
+        "prior_live_observer",
+        "wrong_owner",
+        "wrong_local",
+        "wrong_session",
+        "prepared",
+        "expired_receipt",
+        "old_permit",
+        "old_session",
+        "missing_first",
+        "extra_receipt",
+        "supersession_missing",
+        "supersession_reordered",
+        "latest_superseded",
+        "current_terminal_before_receipt",
+        "current_terminal_after_release",
+        "other_guest_owner",
+        "fenced",
+        "explicit_stop",
+        "workflow",
+        "pending",
+    ],
+)
+def test_native_redispatch_refuses_incomplete_or_live_chain(database, change):
+    pid, views = redispatch_chain(database)
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        agent = db.get(AgentSession, permit.session_id)
+        turn = db.exec(
+            select(AgentTurn).where(
+                AgentTurn.session_id == agent.id, AgentTurn.seq == permit.pending_seq
+            )
+        ).one()
+        latest = db.get(AgentResultReceipt, "latest")
+        prior = db.get(AgentResultReceipt, "prior")
+        old = db.get(AgentResultReceipt, "old")
+        if change == "old_live":
+            views["old-guest"]["state"] = "parked"
+        elif change == "old_missing":
+            views["old-guest"] = None
+        elif change == "old_wrong_id":
+            views["old-guest"]["session_id"] = "other"
+        elif change == "old_bad_generation":
+            views["old-guest"]["generation"] = True
+        elif change == "old_future":
+            views["old-guest"]["updated_at"] = 9999999999999
+        elif change == "old_bad_stamp":
+            views["old-guest"]["invoke_started_at"] = None
+        elif change == "latest_result":
+            latest.result_body = b"late result"
+        elif change == "latest_observed":
+            latest.response_observed_at = latest.response_observer_released_at
+        elif change == "latest_live_observer":
+            latest.response_observer_released_at = None
+        elif change == "prior_live_observer":
+            prior.response_observer_released_at = None
+        elif change == "wrong_owner":
+            latest.claim_owner = "other"
+        elif change == "wrong_local":
+            old.local_session_id = "other"
+        elif change == "wrong_session":
+            old.session_id = 9999
+        elif change == "prepared":
+            old.attempt_phase = "prepared"
+        elif change == "expired_receipt":
+            old.retain_until = datetime.now(UTC) - timedelta(seconds=1)
+        elif change == "old_permit":
+            permit.created_at = datetime.now(UTC) - timedelta(days=8)
+        elif change == "old_session":
+            agent.created_at = datetime.now(UTC) - timedelta(days=8)
+        elif change == "missing_first":
+            db.delete(prior)
+        elif change == "extra_receipt":
+            data = old.model_dump()
+            data["id"] = "extra"
+            data["token_sha256"] = "extra"
+            db.add(AgentResultReceipt(**data))
+        elif change == "supersession_missing":
+            old.superseded_at = None
+        elif change == "supersession_reordered":
+            old.superseded_at = old.created_at
+        elif change == "latest_superseded":
+            latest.superseded_at = datetime.now(UTC)
+        elif change == "current_terminal_before_receipt":
+            views["guest-one"]["updated_at"] = views["guest-one"]["last_invoke_at"]
+        elif change == "current_terminal_after_release":
+            views["guest-one"]["updated_at"] += 20000
+        elif change == "other_guest_owner":
+            db.add(
+                AgentSession(
+                    local_session_id="other",
+                    workspace="x",
+                    branch="main",
+                    ember_session_id="old-guest",
+                )
+            )
+        elif change == "fenced":
+            agent.result_receipt_fence_id = "fence"
+        elif change == "explicit_stop":
+            turn.stop_reason = "operator_stop"
+        elif change == "workflow":
+            agent.workflow_id = "owned"
+        elif change == "pending":
+            db.add(
+                PendingMessage(
+                    session_id=agent.id,
+                    seq=permit.pending_seq + 1,
+                    message_text="later",
+                )
+            )
+        else:
+            raise AssertionError(change)
+    original = before(database, pid)
+    sweep(lambda guest: views[guest])
+    assert before(database, pid) == original
+
+
+@pytest.mark.parametrize(
+    "change", ["late_result", "new_receipt", "owner", "binding", "stale"]
+)
+def test_native_redispatch_revalidates_after_remote_observation(database, change):
+    pid, views = redispatch_chain(database)
+    candidate = supervision._prepare(pid)
+    now = datetime.now(UTC)
+    observations = {guest: (view, now) for guest, view in views.items()}
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        agent = db.get(AgentSession, permit.session_id)
+        if change == "late_result":
+            db.get(AgentResultReceipt, "prior").result_body = b"changed result"
+        elif change == "new_receipt":
+            data = db.get(AgentResultReceipt, "old").model_dump()
+            data["id"] = "new"
+            data["token_sha256"] = "new"
+            db.add(AgentResultReceipt(**data))
+        elif change == "owner":
+            permit.owner = "new-worker"
+        elif change == "binding":
+            agent.ember_session_id = "replacement"
+        elif change == "stale":
+            observations["old-guest"] = (
+                views["old-guest"],
+                now - timedelta(seconds=31),
+            )
+    original = before(database, pid)
+    supervision._record(
+        candidate, views["guest-one"], now, chain_observations=observations
+    )
+    assert before(database, pid) == original

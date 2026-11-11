@@ -23,8 +23,9 @@ idna==3.18
 iniconfig==2.3.0
 markdown-it-py==4.0.0
 mdurl==0.1.2
-opentelemetry-sdk==1.40.0
-opentelemetry-semantic-conventions==0.61b0
+# Keep SDK, API and semantic conventions on the publisher-matched release set.
+opentelemetry-sdk==1.45.1
+opentelemetry-semantic-conventions==0.66b1
 packaging==26.2
 pluggy==1.6.0
 pydantic==2.13.4
@@ -44,9 +45,9 @@ typing_extensions==4.15.0
 # Factory execution (factory-rollout-fence-01): the turn executor imports these at
 # module load. Top-level pins from bazel/requirements/runtime.txt; their own
 # dependencies resolve at install time.
-fastmcp==3.2.0
+fastmcp==3.4.10
 genai-prices==0.1.6
-opentelemetry-api==1.40.0
+opentelemetry-api==1.45.1
 pgvector==0.4.2
 # Factory orchestration (DBOS runtime) and the faas Kubernetes client, for tasks
 # graded by the swarm router and faas router tests.

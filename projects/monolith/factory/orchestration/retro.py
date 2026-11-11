@@ -725,14 +725,40 @@ def _optimizer_github() -> dict:
         return {"error": type(exc).__name__}
 
 
-_OPTIMIZER_OBSERVATIONS = """
+# Locate the deployment independently of later polling volume. A fixed experiment
+# must not lose coverage merely because it is evaluated weeks after its window.
+_OPTIMIZER_BOUNDARY = """
 SELECT note_id, observed_at, status, extra
 FROM knowledge.notes
 WHERE source = 'deployment-observation' AND scope = 'environment:homelab'
   AND verification_state = 'verified' AND deleted_at IS NULL
   AND observed_at >= :since AND observed_at < :as_of
+  AND extra->>'app' = :app AND status = 'complete'
+  AND extra->>'newest_freight_version' = :revision
+  AND extra->>'requested_revision' = :revision
+  AND extra->>'deployed_revision' = :revision
+  AND extra->>'writeback_commit' = :writeback
+ORDER BY observed_at, note_id LIMIT 1
+"""
+# Distinct revisions deployed inside the window, not every poll of them: the
+# polls ran past 5000 in a 72-hour window and saturated the old row bound,
+# which held one experiment UNKNOWN for a week while the job explained the
+# saturation to itself daily.
+_OPTIMIZER_OBSERVATION_LIMIT = 500
+# Attempts created near the end of the window may still be running when it
+# ends. A task deadline is 12 hours plus a 2-hour backstop, so 24 hours lets
+# every one of them settle before unresolved attempts make a verdict final.
+_OPTIMIZER_SETTLE_HOURS = 24
+_OPTIMIZER_OBSERVATIONS = """
+SELECT extra->>'deployed_revision' AS deployed_revision, count(*) AS polls,
+       min(observed_at) AS first_observed_at
+FROM knowledge.notes
+WHERE source = 'deployment-observation' AND scope = 'environment:homelab'
+  AND verification_state = 'verified' AND deleted_at IS NULL
+  AND observed_at >= :since AND observed_at < :as_of
   AND extra->>'app' = :app
-ORDER BY observed_at LIMIT 5000
+GROUP BY extra->>'deployed_revision'
+ORDER BY min(observed_at), extra->>'deployed_revision' LIMIT :limit
 """
 _OPTIMIZER_COUNTS = """
 WITH attempts AS (
@@ -809,31 +835,44 @@ def _load_optimizer(session, now) -> dict:
     if app not in {"monolith", "embervm"} or not isinstance(revision, str):
         return {**context, "error": "invalid deployment identity"}
     context["rollout"] = _verify_optimizer_rollout(app, revision)
-    observations = _rows(
-        session, _OPTIMIZER_OBSERVATIONS, {"since": merged, "as_of": now, "app": app}
+    boundaries = _rows(
+        session,
+        _OPTIMIZER_BOUNDARY,
+        {
+            "since": merged,
+            "as_of": now,
+            "app": app,
+            "revision": revision,
+            "writeback": experiment.get("writeback_commit"),
+        },
     )
-    context["observations"] = observations
-    if len(observations) >= 5000:
+    if not boundaries:
+        return context
+    boundary = boundaries[0]
+    deployed = _utc_time(boundary["observed_at"])
+    end = min(now, deployed + timedelta(hours=72))
+    observations = _rows(
+        session,
+        _OPTIMIZER_OBSERVATIONS,
+        {
+            "since": deployed,
+            "as_of": end,
+            "app": app,
+            "limit": _OPTIMIZER_OBSERVATION_LIMIT + 1,
+        },
+    )
+    context["observation_coverage"] = {
+        "start": deployed.isoformat(),
+        "end": end.isoformat(),
+        "revisions_observed": len(observations),
+        "limit": _OPTIMIZER_OBSERVATION_LIMIT,
+        "complete": len(observations) <= _OPTIMIZER_OBSERVATION_LIMIT,
+    }
+    if not context["observation_coverage"]["complete"]:
         return {
             **context,
-            "error": "Deployment observation history saturated; overlap coverage unknown",
+            "error": "Deployment observation window saturated; overlap coverage unknown",
         }
-    boundary = next(
-        (
-            row
-            for row in observations
-            if row.get("status") == "complete"
-            and row["extra"].get("newest_freight_version") == revision
-            and row["extra"].get("requested_revision") == revision
-            and row["extra"].get("deployed_revision") == revision
-            and row["extra"].get("writeback_commit")
-            == experiment.get("writeback_commit")
-        ),
-        None,
-    )
-    if boundary is None:
-        return context
-    deployed = _utc_time(boundary["observed_at"])
     context["outcomes_and_cost_as_of"] = now.isoformat()
     context["deployment"] = {
         "note_id": boundary["note_id"],
@@ -842,12 +881,9 @@ def _load_optimizer(session, now) -> dict:
     }
     context["overlapping_revisions"] = sorted(
         {
-            row["extra"].get("deployed_revision")
+            row["deployed_revision"]
             for row in observations
-            if deployed
-            <= _utc_time(row["observed_at"])
-            < min(now, deployed + timedelta(hours=72))
-            and row["extra"].get("deployed_revision") not in (None, revision)
+            if row["deployed_revision"] not in (None, revision)
         }
     )
     for name, start, end in (
@@ -888,21 +924,29 @@ def optimizer_evidence(context: dict, now: datetime) -> dict:
             reason="Live rollout verifier has not confirmed sync and health",
         )
         return result
-    if context.get("overlapping_revisions"):
-        result["reason"] = (
-            "Other deployments overlap the observation; isolate or review attribution"
-        )
-        return result
     deployed = _utc_time(context["deployment"].get("observed_at"))
     if deployed is None or now < deployed + timedelta(hours=72):
         result.update(
             status="WAIT", reason="72h strictly post-deployment observation incomplete"
         )
         return result
+    # The window has ended, so a later run cannot add traffic to its cohort.
+    # Every verdict below is final except the settle WAIT for attempts still
+    # running; holding the selection on a question the window cannot answer
+    # kept the loop on one experiment for four weeks. Other deployments inside the window are named beside the
+    # verdict; on a repository that ships several times a day they would
+    # otherwise block every verdict.
+    result["confounders"] = {
+        "overlapping_revisions": list(context.get("overlapping_revisions") or [])
+    }
+
+    def inconclusive(reason: str) -> dict:
+        result.update(status="INCONCLUSIVE", reason=reason)
+        return result
+
     metric = (context.get("experiment") or {}).get("metric")
     if metric not in OPTIMIZER_METRICS:
-        result["reason"] = "Unknown experiment metric"
-        return result
+        return inconclusive("Unknown experiment metric")
     denominator = (
         "funding_attempts"
         if metric == "funding_execution_failure"
@@ -912,17 +956,20 @@ def optimizer_evidence(context: dict, now: datetime) -> dict:
     )
     baseline, post = context.get("baseline") or {}, context.get("post") or {}
     if not baseline.get(denominator) or not post.get(denominator):
-        result["reason"] = "No comparable traffic; zero denominator is UNKNOWN"
-        return result
+        return inconclusive("No comparable traffic; a zero denominator cannot answer")
     unknown_key = (
         "funding_unknown" if metric == "funding_execution_failure" else "unknown"
     )
     if baseline.get(unknown_key) or post.get(unknown_key):
-        result["reason"] = "Unresolved or unclassified attempts prevent acceptance"
-        return result
+        if now < deployed + timedelta(hours=72 + _OPTIMIZER_SETTLE_HOURS):
+            result.update(
+                status="WAIT",
+                reason="Attempts from the ended window are still settling",
+            )
+            return result
+        return inconclusive("Unresolved or unclassified attempts prevent a verdict")
     if metric not in baseline or metric not in post:
-        result["reason"] = "Target metric coverage is missing"
-        return result
+        return inconclusive("Target metric coverage is missing")
     before = baseline[metric] / baseline[denominator]
     after = post.get(metric, 0) / post[denominator]
     result["rates"] = {"baseline": before, "post": after, "denominator": denominator}
@@ -935,13 +982,17 @@ def optimizer_evidence(context: dict, now: datetime) -> dict:
         # Traffic sufficiency is an explicit experiment criterion, not a
         # hardcoded significance claim. Missing criterion holds the selection.
         minimum = (context.get("experiment") or {}).get("minimum_attempts")
-        if type(minimum) is not int or minimum < 1 or post[denominator] < minimum:
-            result["reason"] = "Missing or unmet explicit traffic criterion"
-        else:
-            result.update(
-                status="ACCEPTED",
-                reason="Observation criterion met; descriptive association only, no causal or mature-outcome claim",
+        if type(minimum) is not int or minimum < 1:
+            return inconclusive("Missing explicit traffic criterion")
+        if post[denominator] < minimum:
+            return inconclusive(
+                f"Traffic criterion unmet: {post[denominator]} of {minimum} "
+                f"{denominator} in the ended window"
             )
+        result.update(
+            status="ACCEPTED",
+            reason="Observation criterion met; descriptive association only, no causal or mature-outcome claim",
+        )
     return result
 
 
@@ -952,8 +1003,43 @@ def _optimizer(data, now):
     evidence.pop("observations", None)
     return [
         json.dumps(evidence, default=str, sort_keys=True)[:12000],
-        "Do not launch another experiment while status is WAIT or UNKNOWN. Costs distinguish settled observed cost from unknown reservation exposure. This section does not establish seven-day mature outcomes.",
+        "WAIT holds the current selection. ACCEPTED, REGRESSED and INCONCLUSIVE are final for this experiment: record the verdict once on the program issue, then this run may select the next experiment. UNKNOWN means evidence was unavailable this run; retry next run and file a fix when the same cause repeats. Post an observation comment only when the status or a counted figure changed since the last observation; an unchanged verdict is not new evidence. Name confounders beside the verdict, never as a reason to hold it. Costs distinguish settled observed cost from unknown reservation exposure. This section does not establish seven-day mature outcomes.",
     ]
+
+
+def _intake_skips(data):
+    backlog = data.get("intake_backlog") or {}
+    coverage = backlog.get("coverage") or {}
+    lines = []
+    if (
+        not backlog.get("available")
+        or backlog.get("stale")
+        or backlog.get("unfinished")
+        or not coverage
+        or any(value != "complete" for value in coverage.values())
+    ):
+        lines.append(
+            "Insufficient coverage: inventory unavailable, stale, partial or unfinished; this is not a complete backlog ranking."
+        )
+    skipped = [
+        row
+        for row in backlog.get("issues", [])
+        if row.get("decision") == "skipped" and not row.get("subsequently_admitted")
+    ]
+    skipped.sort(
+        key=lambda row: (
+            row.get("created_at") or "9999",
+            row["repo"],
+            row["issue_number"],
+        )
+    )
+    for row in skipped[:3]:
+        lines.append(
+            f"{row['repo']}#{row['issue_number']}: {_one_line(row['reason'])} (created {row.get('created_at') or 'unknown'}; observed {row.get('observed_at') or 'unknown'})."
+        )
+    if len(skipped) < 3:
+        lines.append(f"Only {len(skipped)} currently skipped issues have evidence.")
+    return lines
 
 
 def build_retro_digest(data: dict, now: datetime | None = None) -> str:
@@ -990,6 +1076,7 @@ def build_retro_digest(data: dict, now: datetime | None = None) -> str:
     )
     sections = [
         header,
+        _section("Oldest currently skipped agent-ready issues", _intake_skips(data)),
         _section("0. Selected optimizer experiment", _optimizer(data, now)),
         _section(
             "1. Planner decision refusals (conductor_rejected)",
@@ -1008,6 +1095,21 @@ def build_retro_digest(data: dict, now: datetime | None = None) -> str:
         _section("6. Review verdicts and correction rounds", _reviews(data, cite)),
         _section("7. Cost", _costs(data, cite, task_cost)),
         _section("8. Escalations and stuck receipts", _escalations(data, cite)),
+        _section(
+            "8a. Recovery disruption",
+            [
+                "Bounded private audit sample, not complete history. Pair successful pause/resume "
+                "events by exact task and audit identity; unmatched duration/outcome is unknown. "
+                "Investigate avoidable paused time, interruptions and repeat causes. Distinguish "
+                "transport/missing output from code rejection and legitimate review/CI/dependency waits. "
+                "Call a pause avoidable only with evidence of an authorized safe recovery. Preserve "
+                "unknown-execution fences, human holds, subscription caps and acceptance. "
+                "Use private audit identities for verification only; public findings must "
+                "use aggregate measurements and existing public issue references, not raw "
+                "audit records, private task identities or reasons.",
+                json.dumps(data.get("recovery_events", []), default=str),
+            ],
+        ),
         _section("9. Existing issues (dedupe)", _issues(data)),
     ]
     out = ""
@@ -1054,7 +1156,7 @@ FROM swarm.factory_review_verdict
 WHERE reviewed_at >= :since
 """
 _TURNS = """
-SELECT s.local_session_id, t.seq, t.list_cost_usd, t.terminal_reason, t.stop_reason,
+SELECT s.id AS session_id, s.local_session_id, t.seq, t.list_cost_usd, t.terminal_reason, t.stop_reason,
        t.permission_denials, t.usage_json, left(t.result_text, 300) AS result_head
 FROM agent_sessions.agent_turns t
 JOIN agent_sessions.agent_sessions s ON s.id = t.session_id
@@ -1144,6 +1246,14 @@ def _github_issues(now: datetime) -> dict:
 def load_retro_data(session, now: datetime | None = None) -> dict:
     """Read the window's factory evidence as plain dicts (Postgres only)."""
     now = now or datetime.now(timezone.utc)
+    from factory.orchestration.intake_evidence import backlog
+    from factory.orchestration.factory_improvements import recovery_events
+
+    try:
+        with session.begin_nested():
+            intake_backlog = backlog(session, now)
+    except Exception:  # noqa: BLE001 - missing evidence must stay visible
+        intake_backlog = {"available": False, "issues": [], "coverage": {}}
     since = now - timedelta(hours=WINDOW_HOURS)
     params = {"since": since}
     runs = _rows(session, _RUNS, params)
@@ -1178,6 +1288,8 @@ def load_retro_data(session, now: datetime | None = None) -> dict:
         logger.warning("factory optimizer evidence unavailable", exc_info=True)
         optimizer = {"error": type(exc).__name__}
     return {
+        "intake_backlog": intake_backlog,
+        "recovery_events": recovery_events(session),
         "optimizer": optimizer,
         "window_hours": WINDOW_HOURS,
         "runs": runs,
@@ -1203,4 +1315,22 @@ def build_factory_retro_prompt(instructions: str) -> str:
 
     with Session(get_engine()) as session:
         data = load_retro_data(session)
-    return f"{instructions.strip()}\n\n{build_retro_digest(data)}"
+    return render_factory_retro_prompt(instructions, data)
+
+
+def render_factory_retro_prompt(instructions: str, data: dict, *, now=None) -> str:
+    from factory.orchestration import learning
+
+    references = ""
+    if learning.enabled():
+        sources = [
+            {
+                key: row.get(key)
+                for key in ("session_id", "seq", "local_session_id", "result_head")
+            }
+            for row in data["turns"]
+            if row.get("session_id") is not None
+        ]
+        sources.sort(key=lambda row: (row["session_id"], row["seq"]), reverse=True)
+        references = "\n\nBounded source turn references:\n" + json.dumps(sources[:32])
+    return f"{instructions.strip()}{references}\n\n{build_retro_digest(data, now=now)}"

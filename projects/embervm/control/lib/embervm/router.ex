@@ -15,9 +15,6 @@ defmodule Embervm.Router do
     * `GET  /v1/nodes`                 read-only node health + dispatcher snapshot
       (operational introspection: capacity facts, inventory, denials).
     * `GET  /v1/capacity`              read-only capacity and demand tiers.
-    * `GET  /v1/health/durability`     both ADR 031 durability tiers (#4338):
-      tier 1 export-failure streaks + tier 2 gc-manifests stall. 200 ok /
-      503 not-ok / 404 while dark.
     * `GET  /v1/health/store`          latest artifact-store TLS probe result.
     * `GET  /healthz`                  unauthenticated readiness.
     * `GET  /livez`                    unauthenticated liveness.
@@ -135,15 +132,6 @@ defmodule Embervm.Router do
     handle_conformance_trace_window(conn)
   end
 
-  # GET /v1/health/durability (#4338, ADR embervm/031): both durability tiers
-  # as one machine-readable surface. 200 when both tiers read ok, 503 with the
-  # SAME report body otherwise (unknown/missing data is never green), and 404
-  # while the detector is dark (durabilityHealth.enabled unset), so a suspended
-  # detector neither reads healthy nor pages anybody.
-  get "/v1/health/durability" do
-    handle_durability(conn)
-  end
-
   get "/v1/health/store" do
     handle_store_health(conn)
   end
@@ -189,6 +177,18 @@ defmodule Embervm.Router do
 
   post "/v1/sessions/:id/residency" do
     handle_residency(conn, id, :submit)
+  end
+
+  # Management-only, owner-scoped read of retained journal evidence. It never
+  # recreates a pruned session or accepts its retired session bearer token.
+  get "/v1/sessions/:id/cessation-evidence" do
+    handle_session_cessation_evidence(conn, id)
+  end
+
+  # Existing management authentication and exact retained owner only. A retired
+  # session capability cannot acquire a recovery fence for its own lineage.
+  post "/v1/sessions/:id/recovery-fence" do
+    handle_session_recovery_fence(conn, id)
   end
 
   get "/v1/sessions/:id/residency" do
@@ -832,41 +832,6 @@ defmodule Embervm.Router do
     error -> {:error, error}
   catch
     kind, reason -> {:error, {kind, reason}}
-  end
-
-  # The durability module resolves from app env (the :durability key) so a
-  # request test can inject a fake without the supervised process, mirroring
-  # the :authenticator seam. A dead/unavailable evaluator is a durability
-  # UNKNOWN (503 with the same body shape), never a 500 crash and never green.
-  defp handle_durability(conn) do
-    mod = Application.get_env(:embervm, :durability, Embervm.Durability)
-
-    case try_durability_snapshot(mod) do
-      :suspended ->
-        # Dark landing: the detector ships suspend:true and flips on only after
-        # live verification (#4338 standing rule), so an unset gate reads as an
-        # absent route.
-        send_json(conn, 404, %{error: "not found"})
-
-      {:error, reason} ->
-        send_json(conn, 503, %{
-          ok: false,
-          error: "durability evaluation failed",
-          detail: inspect(reason)
-        })
-
-      report when is_map(report) ->
-        status = if report.ok, do: 200, else: 503
-        send_json(conn, status, json_nullify(report))
-    end
-  end
-
-  defp try_durability_snapshot(mod) do
-    mod.snapshot()
-  catch
-    :exit, reason -> {:error, reason}
-  rescue
-    e -> {:error, e}
   end
 
   defp handle_store_health(conn) do
@@ -2135,6 +2100,53 @@ defmodule Embervm.Router do
     # the session process falls back to the workload's invokePath (the shim serves
     # only /invoke, so a baked "/" default 404s the guest, the R1 baked-path trap).
     header_value(conn, @path_header)
+  end
+
+  defp handle_session_cessation_evidence(conn, session_id) do
+    keys = ["generation", "invoke_started_at", "updated_at"]
+    parsed = Enum.map(keys, fn key ->
+      case Map.get(conn.query_params, key) do
+        text when is_binary(text) and byte_size(text) <= 19 ->
+          case Integer.parse(text) do
+            {value, ""} -> value
+            _ -> nil
+          end
+        _ -> nil
+      end
+    end)
+    [generation, started, updated] = parsed
+    expected = %{generation: generation, invoke_started_at: started, updated_at: updated}
+    if Enum.sort(Map.keys(conn.query_params)) == Enum.sort(keys) and Embervm.SessionCessationEvidence.expected?(expected) do
+      owner = if admin?(conn), do: :admin, else: conn.assigns.principal
+      case session_manager().session_cessation_evidence(session_manager_server(), session_id, expected, owner) do
+        {:ok, proof} -> send_json(conn, 200, proof)
+        {:error, :historical_not_found, _} -> send_json(conn, 404, %{error: "session not found", retryable: false})
+        {:error, reason, diagnostics} ->
+          status = if reason == :historical_store_unavailable, do: 503, else: 409
+          send_json(conn, status, %{error: "historical cessation unavailable", reason: to_string(reason), diagnostics: diagnostics, retryable: false})
+        _ -> send_json(conn, 503, %{error: "historical cessation unavailable", reason: "historical_store_unavailable", retryable: false})
+      end
+    else
+      send_json(conn, 400, %{error: "invalid historical cessation identity", retryable: false})
+    end
+  end
+
+  defp handle_session_recovery_fence(conn, session_id) do
+    with {:ok, body, conn} <- read_body(conn, length: 4096, read_length: 4096),
+         {:ok, request} <- Jason.decode(body),
+         true <- Embervm.SessionRecoveryFence.valid_request?(request) do
+      case session_manager().session_recovery_fence(session_manager_server(), session_id, request, conn.assigns.principal) do
+        {:ok, proof} -> send_json(conn, 200, proof)
+        {:error, :historical_not_found, _} -> send_json(conn, 404, %{error: "session not found", retryable: false})
+        {:error, reason, diagnostics} when is_atom(reason) and is_map(diagnostics) ->
+          status = if reason in [:historical_store_unavailable, :recovery_store_unavailable], do: 503, else: 409
+          send_json(conn, status, %{error: "session recovery fence unavailable", reason: to_string(reason), diagnostics: diagnostics, retryable: false})
+        _ -> send_json(conn, 503, %{error: "session recovery fence unavailable", reason: "recovery_store_unavailable", retryable: false})
+      end
+    else
+      {:more, _, conn} -> send_json(conn, 413, %{error: "request too large", retryable: false})
+      _ -> send_json(conn, 400, %{error: "invalid recovery fence request", retryable: false})
+    end
   end
 
   # GET /v1/sessions/:id (management OR session token). The management-auth plug is

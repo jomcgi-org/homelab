@@ -1,7 +1,7 @@
 // A run state is terminal when the engine is claiming no further work will
 // happen. The complement of the live set means a later state defaults to
 // terminal, so disagreement is treated as unconfirmed.
-export const LIVE_STATES = new Set([
+const LIVE_STATES = new Set([
   "queued",
   "running",
   "reviewing",
@@ -9,7 +9,7 @@ export const LIVE_STATES = new Set([
   "blocked",
 ]);
 
-export function isTerminalState(state) {
+function isTerminalState(state) {
   return !LIVE_STATES.has(state);
 }
 

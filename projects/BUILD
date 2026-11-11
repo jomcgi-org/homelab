@@ -2,12 +2,10 @@ load("@aspect_rules_py//py:defs.bzl", "py_library")
 
 filegroup(
     name = "backup_status_application",
-    # CI tests before Gazelle generates temporary enrollment packages. A glob
-    # follows those package boundaries during the later formatting checks.
-    srcs = glob(
-        ["platform-gke/otel-collector/application.yaml"],
-        allow_empty = True,
-    ),
+    # application.yaml lives in the generated platform-gke package, which
+    # exports it above. A glob cannot cross that package boundary, so depend
+    # on the explicit label instead of globbing from this package.
+    srcs = ["//projects/platform-gke/otel-collector:application.yaml"],
     visibility = ["//projects/platform/otel-collector:__pkg__"],
 )
 
@@ -18,13 +16,15 @@ py_library(
 )
 
 # The cluster enrollment roots intentionally have no package-local BUILD files.
-# Expose only the two hand-maintained kustomizations the Renovate migration test
-# needs, without turning either root into a Gazelle package.
+# Expose the hub enrollment path for Renovate's deployment test without creating
+# package-local BUILD files in those roots.
 filegroup(
-    name = "renovate_enrollment_manifests",
+    name = "hub_renovate_enrollment_manifests",
     srcs = [
+        "gke-cluster/hub-root-application.yaml",
+        "gke-cluster/kustomization.yaml",
+        "gke-cluster/root/root-application.yaml",
         "platform-gke/kustomization.yaml",
-        "platform/kustomization.yaml",
     ],
     visibility = ["//projects/platform/renovate:__pkg__"],
 )
@@ -34,6 +34,13 @@ exports_files(
         "gke-apps/kustomization.yaml",
     ],
     visibility = ["//projects/loom/deploy:__pkg__"],
+)
+
+# The faas workload test checks build_workload_spec against this CRD sample.
+filegroup(
+    name = "faas_workload_sample",
+    srcs = ["embervm/crd/samples/workload-echo-fn.yaml"],
+    visibility = ["//projects/monolith:__pkg__"],
 )
 
 # Markdown read by the monolith doc-manifest genrules (#6446). See

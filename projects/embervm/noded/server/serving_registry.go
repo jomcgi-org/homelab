@@ -261,19 +261,6 @@ func (r *servingRegistry) add(e *servingEntry) {
 	r.mu.Unlock()
 }
 
-// firstByWorkload returns any live serving VM for workload. The activator uses
-// this to serve Envoy stragglers that arrive after another path made the VM live.
-func (r *servingRegistry) firstByWorkload(workload string) (*servingEntry, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, e := range r.vms {
-		if e.workload == workload && !e.teardown.started.Load() {
-			return e, true
-		}
-	}
-	return nil, false
-}
-
 func (r *servingRegistry) byID(vmID string) (*servingEntry, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

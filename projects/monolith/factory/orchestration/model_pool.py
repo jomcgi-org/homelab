@@ -21,6 +21,7 @@ import math
 import os
 from datetime import datetime, timezone
 
+
 logger = logging.getLogger(__name__)
 
 ROLES = ("conductor", "worker", "implement", "refine", "reviewer", "judge")
@@ -417,15 +418,6 @@ def _grant_stale_note(view: dict) -> str | None:
     return f"stale_observation age {age:g}"
 
 
-def exhausted_grant_exclusion_enabled() -> bool:
-    """Activate only after every sidecar enforces the matching serving rule.
-
-    Monolith and EmberVM promote independently. Default off keeps old sidecars
-    from serving an account the new admission gate has excluded.
-    """
-    return os.environ.get("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", "").lower() == "true"
-
-
 def _sidecar_exhausted(view: dict, now: datetime | None) -> bool:
     """Only positive Codex exhaustion which the sidecar excludes from serving.
 
@@ -525,11 +517,7 @@ def confirmed_availability(
                 notes = reasons if preferred and grant == preferred else skipped
                 notes.append(f"grant {grant} {note}" if grant else note)
                 continue
-            if (
-                provider == "codex"
-                and exhausted_grant_exclusion_enabled()
-                and _sidecar_exhausted(view, now)
-            ):
+            if provider == "codex" and _sidecar_exhausted(view, now):
                 _, reason = _confirmed_view_availability(
                     view, provider=provider, role=role, now=now
                 )

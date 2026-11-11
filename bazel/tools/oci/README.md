@@ -114,11 +114,12 @@ The binary runs as uid `65532` (distroless nonroot convention).
 ## `apko_image`
 
 Builds an image from an apko config and lock file, optionally layering in
-additional tars. The macro defaults `arm64 = True`; 24 of its 25 callers pass
-`arm64 = False` and get a single amd64 image, and `projects/embervm/noded/image`
-keeps an amd64 plus arm64 index. Every apko config lists both `x86_64` and
-`aarch64` in `archs`: the lock checksums the config, and apko ignores a
-declared arch nobody builds, so `arm64 = False` needs no `archs` edit.
+additional tars. The macro defaults `arm64 = True`; callers pass
+`arm64 = False` and get a single amd64 image. Most apko configs, including
+noded's, declare only `x86_64` in `archs`. Building arm64 also requires
+declaring `aarch64` and regenerating the lock.
+apko ignores a declared arch nobody builds. Changing `archs` requires
+regenerating the lock, which checksums the entire config.
 
 ```python
 # projects/monolith/obsidian-image/BUILD
@@ -158,7 +159,6 @@ instead, and the macro appends `_amd64` / `_arm64`. `arm64 = False` with
 | `arm64`              | `True`                                  | Also build the aarch64 variant and an index; callers pass `False` |
 | `tars`               | `None`                                  | Tar layers added to every built platform                         |
 | `multiarch_tars`     | `None`                                  | Tar base names; macro appends `_amd64` / `_arm64`; needs `arm64 = True` |
-| `multiplatform_tars` | `None`                                  | Deprecated. Use `tars` and `multiarch_tars` instead              |
 | `visibility`         | `["//bazel/images:__pkg__"]`            | Visibility of the `.push` target                                 |
 
 Created targets:
@@ -175,8 +175,7 @@ Created targets:
 
 Builds one Python 3 image using `py_image_layer` from `@aspect_rules_py`.
 The platform transition selects Linux for the caller's CPU, amd64 in Linux
-CI. The default Ubuntu base supports amd64 and arm64, including the separate
-dual-arch `//projects/monolith:domain_images` targets. Handles runfiles layout,
+CI. The default Ubuntu base supports amd64 and arm64. Handles runfiles layout,
 `PYTHONPATH`, and a `/bin/bash` symlink layer automatically.
 
 ```python
@@ -249,8 +248,8 @@ the deploy-time `values.yaml` never needs manual image entries.
 ## Conventions
 
 - Linux CI builds `go_image` and `py3_image` as single-platform amd64 images.
-  `apko_image` retains its separate `arm64` knob: callers pass `False` except
-  noded, which builds an amd64 plus arm64 index with `multiarch_tars`.
+  `apko_image` retains its separate `arm64` knob: callers pass `False` and use
+  concrete per-architecture `tars` for architecture-specific layers.
 - All containers run as uid `65532` (nonroot). The distroless base enforces
   this; apko images should declare a non-root user in their config.
 - The `{name}.push` target is visible to `//bazel/images:__pkg__` by default,

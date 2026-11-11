@@ -1006,7 +1006,6 @@ _BACKEND_SHARED_ENV = _SHARED_ENV + [
     "STARS_CLIMATOLOGY_S3_KEY",
     "CHAT_BLOB_S3_BUCKET",
     "ARTIFACTS_S3_BUCKET",
-    "ARTIFACT_PUBLIC_BASE",
 ]
 _GRIMOIRE_OWN_ENV = [
     "EMBEDDING_URL",
@@ -1104,7 +1103,7 @@ def test_shared_s3_default_preserves_complete_projection():
     assert by_name["STARS_CLIMATOLOGY_S3_KEY"].get("value") == "climatology.json"
     assert by_name["CHAT_BLOB_S3_BUCKET"].get("value") == "chat"
     assert by_name["ARTIFACTS_S3_BUCKET"].get("value") == "artifacts"
-    assert by_name["ARTIFACT_PUBLIC_BASE"].get("value") == "https://jomcgi.dev"
+    assert "ARTIFACT_PUBLIC_BASE" not in by_name
     grid = dict(_cron_containers(rendered)).get("stars-load-grid")
     assert grid is not None, "default .s3 job must render under the forced jobs image"
     grid_names = [item["name"] for item in grid]
@@ -1186,6 +1185,23 @@ def _probe_renders(tmp_path):
     return _cron_docs(_render("recovery", [base])), _cron_docs(
         _render("recovery", [off])
     )
+
+
+def test_connector_snapshot_setting_reaches_real_stars_refresh(tmp_path):
+    for key in ("", "connector-sites.json"):
+        overlay = _write_values(
+            tmp_path, "connector.yaml", {"stars": {"connectorSitesKey": key}}
+        )
+        docs = _cron_docs(_render("production", [overlay]))
+        job = docs["stars-refresh"]
+        container = job["spec"]["workflowSpec"]["templates"][0]["container"]
+        assert container["args"] == ["stars-refresh"]
+        env = _env_by_name(container["env"])
+        if key:
+            assert env["STARS_CONNECTOR_SITES_S3_KEY"]["value"] == key
+        else:
+            assert "STARS_CONNECTOR_SITES_S3_KEY" not in env
+        assert env["STARS_SITES_S3_KEY"]["value"] == "sites.json"
 
 
 def test_shared_s3_probe_jobs_positive_then_omission(tmp_path):
@@ -1904,7 +1920,6 @@ def test_recovery_gke_keeps_real_failover_and_bounded_drainer(recovery_gke_rende
         "DRAINER_ENABLED": "true",
         "DRAINER_JOB_KINDS": "qwen-drain",
         "DRAINER_MAX_JOBS_PER_CYCLE": "1",
-        "DRAINER_NOTIFY_FAILURES": "false",
         "DRAINER_DOCFIX_ENABLED": "false",
         "DRAINER_DOCFIX_AUTO_MERGE": "false",
         "AGENT_SESSIONS_CHANNEL_NOTIFY": "none",

@@ -166,8 +166,13 @@ def _build_sites_from_db(
     request: Request,
     response: Response,
     session: Session = Depends(get_session),
+    *,
+    hour_limit: int | None = _DISPLAY_HOURS,
 ):
-    """Build the payload in the Argo materializer, never in the web pod."""
+    """Build from one upcoming scalar load; None retains all connector hours.
+
+    The public reader and disabled materializer keep the display limit.
+    """
     now = datetime.now(timezone.utc)
     cutoff = top_of_hour(now)
 
@@ -252,7 +257,8 @@ def _build_sites_from_db(
             any_twilight_hour = True
 
         # The site's upcoming clear windows in chronological order, capped at
-        # _DISPLAY_HOURS. This is the clear-twilight superset, each hour tagged
+        # _DISPLAY_HOURS for public output (uncapped for the staged connector
+        # object). This is the clear-twilight superset, each hour tagged
         # ``dark`` (true nautical dark, sun < -12) vs a twilight-only fallback
         # hour. The live map field, the night-filter buckets and the card list
         # all derive from this one array on the client, so the marker colour and
@@ -266,7 +272,7 @@ def _build_sites_from_db(
                 "cloud_area_fraction": h[1],
                 "dark": is_dark_hour(h[2]),
             }
-            for h in sorted(clear_twilight, key=lambda h: h[0])[:_DISPLAY_HOURS]
+            for h in sorted(clear_twilight, key=lambda h: h[0])[:hour_limit]
         ]
         sites.append(
             {

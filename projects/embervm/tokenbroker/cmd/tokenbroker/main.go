@@ -50,10 +50,11 @@ type listenerConfig struct {
 	listenAddr               string
 	tlsListenAddr            string
 	spiffeClientIDs          []spiffeid.ID
+	loginAuthRequired        bool
+	loginSpiffeClientIDs     []spiffeid.ID
 	retirePlaintextProtected bool
 }
 type server struct {
-	githubGrants       map[string]githubGrant
 	broker             *broker.Broker
 	store              store.Store
 	adapters           map[string]provider.Adapter
@@ -71,7 +72,7 @@ type server struct {
 const (
 	forceRefreshCooldown = 60 * time.Second
 	// loginStartWaitTimeout is coupled to the 10-second client-side proxy budget in
-	// projects/monolith/frontend/src/routes/private/agents/codex-login/start/+server.js.
+	// projects/monolith/frontend/src/routes/private/factory/execution/codex-login/start/+server.js.
 	// Do not raise either timeout in isolation. Preserve headroom for monolith latency.
 	loginStartWaitTimeout = 5 * time.Second
 	// x509SourceTimeout is coupled to the chart's liveness probe, which kills the
@@ -82,14 +83,11 @@ const (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	runner := run
-	if len(os.Args) == 2 && os.Args[1] == "--github-canary" {
-		runner = runGitHubCanary
-	} else if len(os.Args) != 1 {
+	if len(os.Args) != 1 {
 		logger.Error("unknown token broker command")
 		os.Exit(1)
 	}
-	if err := runner(logger); err != nil {
+	if err := run(logger); err != nil {
 		logger.Error("token broker stopped", "err", err)
 		os.Exit(1)
 	}
@@ -105,10 +103,6 @@ func run(logger *slog.Logger) error {
 	listeners, err := configuredListeners()
 	if err != nil {
 		return err
-	}
-	githubGrants, err := configuredGitHubGrants(listeners)
-	if err != nil {
-		return fmt.Errorf("invalid GitHub App configuration: %w", err)
 	}
 	quotaProviders, err := configuredQuotaProviders()
 	if err != nil {
@@ -165,8 +159,7 @@ func run(logger *slog.Logger) error {
 		quotaProviderSet[provider] = struct{}{}
 	}
 	s := &server{
-		githubGrants: githubGrants,
-		store:        st, adapters: adapters, configs: configMap, logger: logger,
+		store: st, adapters: adapters, configs: configMap, logger: logger,
 		startWaitTimeout: loginStartWaitTimeout, quotaStore: quotaStore,
 		quotaProviders: quotaProviderSet, quotaProviderOrder: quotaProviders,
 		tokenRequests: tokenRequests,
@@ -196,19 +189,14 @@ func run(logger *slog.Logger) error {
 	}
 	defer source.Close()
 
-	mtlsMux := http.NewServeMux()
-	mtlsMux.Handle("/grants/", s.grantsHandler(true, true))
-	mtlsMux.Handle("/github/grants/", s.githubHandler(true))
-	mtlsMux.HandleFunc("/quota", s.quota)
-	mtlsMux.HandleFunc("/quota/", s.quota)
 	mtlsServer := &http.Server{
 		Addr:              listeners.tlsListenAddr,
-		Handler:           mtlsMux,
+		Handler:           s.mtlsMux(listeners),
 		ReadHeaderTimeout: 5 * time.Second,
 		TLSConfig: tlsconfig.MTLSServerConfig(
 			source,
 			source,
-			tlsconfig.AuthorizeOneOf(listeners.spiffeClientIDs...),
+			tlsconfig.AuthorizeOneOf(listeners.mtlsClientIDs()...),
 		),
 	}
 	defer mtlsServer.Close()
@@ -229,6 +217,56 @@ func waitForListener(ctx context.Context, serverErrors <-chan error) error {
 	}
 }
 
+func (listeners listenerConfig) mtlsClientIDs() []spiffeid.ID {
+	ids := append([]spiffeid.ID(nil), listeners.spiffeClientIDs...)
+	if listeners.loginAuthRequired {
+		ids = append(ids, listeners.loginSpiffeClientIDs...)
+	}
+	return ids
+}
+
+func (s *server) mtlsMux(listeners listenerConfig) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/grants/", s.grantsHandler(true, true))
+	mux.HandleFunc("/quota", s.quota)
+	mux.HandleFunc("/quota/", s.quota)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		allowedIDs := listeners.spiffeClientIDs
+		if listeners.loginAuthRequired && isLoginRequest(r) {
+			allowedIDs = listeners.loginSpiffeClientIDs
+		}
+		// The listener validates the peer SVID. Apply the route's exact-ID
+		// authorization again: a login client gains no token, refresh or quota
+		// access merely because it can complete the shared TLS handshake.
+		if err := authorizeSPIFFERequest(r, allowedIDs); err != nil {
+			s.logger.Info("tokenbroker SPIFFE request rejected", "path", r.URL.Path)
+			writeJSON(w, http.StatusForbidden, map[string]string{"reason": "spiffe_forbidden"})
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+func authorizeSPIFFERequest(r *http.Request, allowedIDs []spiffeid.ID) error {
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		return errors.New("client SVID is required")
+	}
+	id, err := x509svid.IDFromCert(r.TLS.PeerCertificates[0])
+	if err != nil {
+		return err
+	}
+	return tlsconfig.AuthorizeOneOf(allowedIDs...)(id, r.TLS.VerifiedChains)
+}
+
+func isLoginRequest(r *http.Request) bool {
+	if !strings.HasPrefix(r.URL.Path, "/grants/") {
+		return false
+	}
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/grants/"), "/"), "/")
+	return len(parts) == 3 && parts[1] == "login" &&
+		((parts[2] == "start" && r.Method == http.MethodPost) || (parts[2] == "status" && r.Method == http.MethodGet))
+}
+
 func (s *server) plaintextMux(listeners listenerConfig) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.health)
@@ -236,13 +274,18 @@ func (s *server) plaintextMux(listeners listenerConfig) *http.ServeMux {
 	if listeners.retirePlaintextProtected {
 		denied := http.HandlerFunc(s.rejectRetiredPlaintext)
 		mux.Handle("/grants/", denied)
-		mux.Handle("/github/grants/", denied)
 		mux.Handle("/quota", denied)
 		mux.Handle("/quota/", denied)
 		return mux
 	}
-	mux.Handle("/grants/", s.grantsHandler(false, listeners.tlsListenAddr != ""))
-	mux.Handle("/github/grants/", s.githubHandler(false))
+	grants := s.grantsHandler(false, listeners.tlsListenAddr != "")
+	mux.Handle("/grants/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if listeners.loginAuthRequired && isLoginRequest(r) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"reason": "login_requires_mtls"})
+			return
+		}
+		grants.ServeHTTP(w, r)
+	}))
 	mux.HandleFunc("/quota", s.quota)
 	mux.HandleFunc("/quota/", s.quota)
 	return mux
@@ -288,6 +331,16 @@ func configuredListeners() (listenerConfig, error) {
 	if config.retirePlaintextProtected && config.tlsListenAddr == "" {
 		return listenerConfig{}, errors.New("BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES requires BROKER_TLS_LISTEN_ADDR")
 	}
+	switch raw := strings.TrimSpace(os.Getenv("BROKER_LOGIN_AUTH_REQUIRED")); raw {
+	case "", "false":
+	case "true":
+		config.loginAuthRequired = true
+	default:
+		return listenerConfig{}, fmt.Errorf("BROKER_LOGIN_AUTH_REQUIRED must be true or false, got %q", raw)
+	}
+	if config.loginAuthRequired && config.tlsListenAddr == "" {
+		return listenerConfig{}, errors.New("BROKER_LOGIN_AUTH_REQUIRED requires BROKER_TLS_LISTEN_ADDR")
+	}
 	if config.tlsListenAddr == "" {
 		return config, nil
 	}
@@ -301,6 +354,19 @@ func configuredListeners() (listenerConfig, error) {
 			return listenerConfig{}, fmt.Errorf("invalid BROKER_SPIFFE_CLIENT_IDS entry %q: %w", rawClientID, err)
 		}
 		config.spiffeClientIDs = append(config.spiffeClientIDs, clientID)
+	}
+	if config.loginAuthRequired {
+		rawLoginIDs := strings.TrimSpace(os.Getenv("BROKER_LOGIN_SPIFFE_CLIENT_IDS"))
+		if rawLoginIDs == "" {
+			return listenerConfig{}, errors.New("BROKER_LOGIN_SPIFFE_CLIENT_IDS is required when BROKER_LOGIN_AUTH_REQUIRED is true")
+		}
+		for _, rawClientID := range strings.Split(rawLoginIDs, ",") {
+			clientID, err := spiffeid.FromString(strings.TrimSpace(rawClientID))
+			if err != nil {
+				return listenerConfig{}, fmt.Errorf("invalid BROKER_LOGIN_SPIFFE_CLIENT_IDS entry %q: %w", rawClientID, err)
+			}
+			config.loginSpiffeClientIDs = append(config.loginSpiffeClientIDs, clientID)
+		}
 	}
 	return config, nil
 }
@@ -515,7 +581,7 @@ func (s *server) grants(w http.ResponseWriter, r *http.Request, mtlsListener, mt
 	}
 	valid := tokenRequest ||
 		(len(parts) == 2 && parts[1] == "refresh" && r.Method == http.MethodPost) ||
-		(len(parts) == 3 && parts[1] == "login" && ((parts[2] == "start" && r.Method == http.MethodPost) || (parts[2] == "status" && r.Method == http.MethodGet)))
+		isLoginRequest(r)
 	if !valid {
 		http.NotFound(w, r)
 		return

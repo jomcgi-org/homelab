@@ -8,7 +8,7 @@
   <button
     role="tab"
     aria-selected={mode === "pending"}
-    class:active={mode === "pending"}
+    class:here={mode === "pending"}
     onclick={() => onChange("pending")}
   >
     Pending
@@ -16,7 +16,7 @@
   <button
     role="tab"
     aria-selected={mode === "audit"}
-    class:active={mode === "audit"}
+    class:here={mode === "audit"}
     onclick={() => onChange("audit")}
   >
     Audit auto-decisions
@@ -24,52 +24,32 @@
 </div>
 
 <style>
-  /* Brutalist tablist: chunky stamp blocks instead of subtle underlines.
-     Active = filled cream block with 2px border and offset shadow (looks
-     like a sticker). Hover = inactive button gets an outline preview of
-     the same frame so the click target advertises itself. */
-
+  /* The mode strip is the second divided tab strip in the review band. */
   .toggle {
     display: inline-flex;
-    gap: 0.6rem;
-    align-items: center;
+    margin: -0.55em 0;
   }
 
   .toggle button {
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: var(--fg-tertiary);
-    background: transparent;
-    border: 2px solid transparent;
-    padding: 0.4rem 0.65rem;
+    padding: 0.55em 0.8em;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: var(--ink-2);
+    font: inherit;
     cursor: pointer;
-    transform: translate(0, 0);
-    transition:
-      transform 0.08s ease,
-      box-shadow 0.08s ease,
-      background 0.08s ease,
-      color 0.08s ease,
-      border-color 0.08s ease;
   }
 
-  .toggle button:hover:not(.active) {
-    color: var(--fg);
-    border-color: var(--fg);
-    transform: translate(-2px, -2px);
-    box-shadow: 4px 4px 0 0 var(--fg);
+  .toggle button + button {
+    border-left: 1px solid var(--stroke);
   }
 
-  .toggle button.active {
-    color: var(--fg);
-    background: var(--cream);
-    border-color: var(--fg);
+  .toggle button:hover {
+    color: var(--ink);
   }
 
-  .toggle button:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
+  .toggle button.here {
+    border-bottom-color: var(--accent-ink);
+    color: var(--accent-ink);
   }
 </style>

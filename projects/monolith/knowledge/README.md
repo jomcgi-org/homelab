@@ -1,6 +1,6 @@
 # Knowledge Pipeline
 
-LLM-powered knowledge graph with on-cluster inference.
+LLM-powered knowledge graph with remote decomposition and hub CPU embeddings.
 
 ## Overview
 
@@ -110,11 +110,11 @@ evidence-backed review (below) renews a deadline.
 ### Evidence-backed review
 
 Source-grounded prose review runs independently of both the strict GitHub
-template verifier and the sampled quality audit. `knowledge.factReview.enabled`
-admits one repository-scoped fact to the existing KG drain lane every 15 minutes,
-with a hard limit of 20 selected facts in a rolling 24 hours and the unchanged
-shared KG capacity limit. It prefers facts with repository file pointers, then
-orders by review deadline. The chart default is off.
+template verifier and the sampled quality audit. It admits one
+repository-scoped fact to the existing KG drain lane every 15 minutes, with a
+hard limit of 20 selected facts in a rolling 24 hours and the unchanged shared
+KG capacity limit. It prefers facts with repository file pointers, then orders
+by review deadline.
 
 The server pins the complete claim, scope, revision and content hash before
 collecting primary sources outside a database transaction. Coverage is limited

@@ -22,9 +22,10 @@ graph LR
 One Go binary, `cmd/connector`, in its own `scotland-connector` namespace.
 It serves two surfaces on port 8080 and nothing else:
 
-- `GET /v1/plan`, `POST /v1/check`, `/v1/openapi.json` (the published
-  contract) and `/v1/method`.
-- `POST /mcp`: tools `plan` and `check`.
+- `GET /v1/plan`, `POST /v1/check`, `GET /v1/light`, `GET /v1/aurora`,
+  `/v1/openapi.json` (the published contract) and `/v1/method`.
+- `POST /mcp`: tools `plan`, `check` and `light`, and `aurora` when its
+  snapshot store is enabled.
 
 Health (`/healthz`), readiness (`/readyz`) and Prometheus metrics
 (`/metrics`) are on an admin listener, port 9090, that no Service or route
@@ -34,6 +35,131 @@ Both surfaces call the same `internal/connector` functions, which validate
 parameters, apply the caps, query the dataset and wrap the answer in the
 provenance envelope. `internal/httpapi` and `internal/mcp` only translate
 transport.
+
+## Light
+
+`light` and `GET /v1/light` answer the astronomical part without a snapshot.
+Inputs are `lat`, `lon`, `radius_km`, `from` and `to`. Coordinates use the
+existing 0.01-degree rounding. Dates own Europe/London civil days, from local
+midnight inclusive to the next midnight exclusive, including 23-hour and
+25-hour DST days. The default is today through two days later. The range is
+at most seven dates and ends no later than 13 days ahead, matching plan's
+daytime caps. Times are UTC RFC3339 seconds. A null event means no crossing
+on that date; a window array omits absent intervals. Each window carries the
+existing `NightDay`/`NightName` label at its midpoint. Windows spanning
+midnight are clipped and returned on both dates under the same night label.
+
+Sunrise and sunset use `SunTimes` seeds refined against `SunElevation` at
+centre altitude -0.833 degrees. Civil, nautical and astronomical dawn/dusk
+cross -6, -12 and -18 degrees. Their windows are the bands between those
+thresholds, with civil ending at -0.833. Golden light is -4 to +6 degrees;
+blue light is -6 to -4. Moonrise/set use topocentric `MoonAltitude` at
+-0.833 degrees, an approximate refraction plus disc-radius allowance.
+Phase and `MoonIllumination` are sampled at local noon, recorded in
+`reference_at`. Phase is a signed cycle fraction: new 0, first quarter .25,
+full .5 and last quarter .75. Direction distinguishes waxing and waning
+using the unrounded phase. These truncated series do not model local terrain.
+
+Milky Way windows intersect fixed galactic-centre RA 17h45m and declination
+-29 degrees above the geometric horizon with sun below -12 degrees, the
+stars model's nautical darkness. The existing linear sidereal-time path is
+reused. Astronomical twilight can persist throughout Scottish July nights;
+these windows establish geometry only. Twilight, extinction, bright moonlight,
+terrain and cloud can prevent useful views. Astronomical darkness below -18
+degrees is returned separately. No new data source or per-request fetch exists.
+
+Hourly altitude samples bracket crossings, with local quadratic extremum
+fits to retain short grazing intervals. Safeguarded secant refinement is
+bounded and resolves events to about a second numerically. This is solver
+resolution, with no corresponding claim about ephemeris accuracy. Tests compare
+against an independent one-minute scan and bisection oracle across Scottish
+latitudes and months, plus synthetic narrow crossings and all-day intervals.
+
+The nearest snapshot site is selected within `min(radius_km,30)` km, using
+the existing check reach cap, with site ID breaking exact distance ties.
+`site` records coordinates, distance, entity fetch, effective hourly horizon
+and truncation. The producer in `stars/router.py` filters every retained row
+to cloud below 10% and sun below -10 degrees. It supplies no daylight or
+cloudy-hour measurements. A window's `cloud` therefore measures positive
+hourly sample support at that nearby site. Each retained row supports its
+one-hour bucket, clipped to the window and to requested-point sun below -10.
+`supported_seconds` is their union; `samples` counts matching rows.
+`clear` requires support over the whole window; otherwise the verdict is
+`unknown`, with `full`, `partial` or `none` coverage. This is sampled forecast
+support, with no claim of continuous clear conditions at the requested point.
+Golden and blue cloud remain unknown. Missing rows never prove cloud.
+
+Hours before the as-of hour or before the site's fetch hour are excluded.
+Complete hourly buckets must end by the earlier of site fetch plus 48 hours
+and the dataset horizon. Missing, future-dated or expired fetches supply no
+support. Truncation never turns an omitted row into a cloudy hour.
+`AssessNight` supplies a separate suitability verdict for each represented
+night, including moonlight, coverage and truncation. Its optional omission of
+moon advice avoids recomputing lunar geometry already returned by light;
+plan/check use the unchanged default explanation. A night verdict is never
+copied into a window's cloud field. `meta.sources` attributes geometry and,
+when a nearby site is used, the existing weather/grid/climatology sources.
+
+**Why.** The existing snapshots can support clear dark-hour observations and
+night suitability. Photography windows also need useful times when weather
+is unavailable. Separating numerical geometry, hourly sample support and night
+suitability preserves that distinction without extending producers or fetching
+another forecast.
+
+**Why.** Light reuses plan's browser and Cloudflare cache headers, with a
+snapshot-version, as-of-hour, freshness-state and canonical-query ETag.
+Night explanations use the as-of hour; exact site expiry is included in the
+ETag even when it falls inside that hour. Forecast-backed support can change
+while astronomical geometry stays the same. The chart's existing
+`/scotland/v1` PathPrefix route rewrites every versioned endpoint to `/v1`,
+so light reaches the same backend as plan. The repository has no path-specific
+Cloudflare Cache Rule to extend. The documented apex rule and query-key
+behavior require live observation after a separately authorized release.
+No Cloudflare account configuration is changed here.
+
+### Reference evidence and benchmark
+
+`TestLightPublishedEdinburghSun` records US Naval Observatory API v4.0.1
+one-day tables fetched on 2026-10-28, at WGS84 55.9533,-3.1868, `tz=0`,
+`isdst=false`. For 2026-03-20, 2026-06-21 and 2026-12-21 the UTC rise/set
+clocks are 06:15/18:26, 03:26/21:03 and 08:42/15:40. Each assertion allows
+two minutes. The independently published full moon is 2026-07-29 14:36 UTC.
+Sources are the USNO [one-day API](https://aa.usno.navy.mil/api/rstt/oneday?date=2026-03-20&coords=55.9533,-3.1868&tz=0)
+and [phase API](https://aa.usno.navy.mil/api/moon/phases/date?date=2026-07-01&nump=4).
+The USNO table at 55.95,-3.19 with `tz=1` records no moonrise on
+2026-07-07; that absence is tested independently of the solver.
+
+The July date was chosen against independent PyEphem 4.2 (libastro),
+downloaded only for offline reference generation, with no runtime dependency.
+At WGS84 Galloway 54.95,-4.45 on 2026-07-31 23:00 UTC, pressure zero,
+PyEphem gives sun altitude -14:48:37.3 and the J2000 fixed core +3:39:10.6.
+It establishes nautical darkness with persistent astronomical twilight. The
+test also checks December's absence and every returned core-window interior.
+The reference can be reproduced with:
+
+```python
+import ephem
+o = ephem.Observer()
+o.lat, o.lon, o.pressure = "54.95", "-4.45", 0
+o.date = "2026/7/31 23:00"
+core = ephem.FixedBody()
+core._ra, core._dec, core._epoch = "17:45", "-29", ephem.J2000
+core.compute(o)
+print(ephem.Sun(o).alt, core.alt)
+```
+
+Linux amd64, Intel Xeon @ 2.80 GHz, Go 1.26.9, `GOMAXPROCS=1`:
+`go test ./projects/scotland-connector/internal/connector -run '^$' -bench
+'^BenchmarkLight$' -benchtime=2s -count=3 -benchmem` measured 972941,
+963344 and 974873 ns/op, 96168 to 96170 B/op and 942 allocations/op.
+Every iteration computes a complete seven-day answer against the dense fixture
+(35340 sites, 3000 walks); fixture setup is outside timing. No response cache
+is on this service path.
+
+`light` is deployed: `GET /scotland/v1/light` and the MCP tool answered on
+2026-11-01. #7367 stays open for acceptance of the published REST/MCP/spec
+behavior, actual Cloudflare cache/query isolation and honest published cloud
+coverage.
 
 ## Tools: plan and check
 
@@ -144,12 +270,141 @@ verdict alone and builds the full answer only for the ones it returns.
 
 **Why.** Reading Postgres would put a database credential and an egress path
 to CNPG in the namespace that takes public traffic, and make the database's
-load a function of the replica count. The snapshots already exist, are a few
-MB, and change every three hours, so loading them into memory costs nothing to keep in
-sync. The cost is that the snapshot caps each site's hour list at 25, so
+load a function of the replica count. The existing snapshots change every three
+hours and can be refreshed independently of the database. Their full-grid size
+and refresh-memory cost need the capacity checks below. The public snapshot
+caps each site's hour list at 25, so
 later nights can be undercounted. A night past a capped site's last listed
-hour is `unknown` unless it is already a go, and #7246 adds an uncapped
-snapshot.
+hour is `unknown` unless it is already a go. The separate connector snapshot
+below removes that display cap when explicitly enabled.
+
+### Uncapped snapshot is staged off
+
+The materializer accepts `STARS_CONNECTOR_SITES_S3_KEY`, empty or unset by
+default. When enabled, the shared builder loads scalar site metadata and
+upcoming forecast rows once, emits all clear-twilight hours to the separate
+object, then trims the same hour lists to 25 before public serialization.
+Counts, ordering, entity fetch timestamps and zero-hour sites are shared.
+The public `sites.json`, `map.json` and `history-map.json` bytes and cache
+contracts are unchanged. The materializer still returns the public body length.
+Disabled runs build capped lists and write only the original three objects.
+If the connector upload fails, the materializer logs the error, releases the
+connector body and trims the tree, then writes all three public objects before
+raising the upload error. Public freshness survives that failure while the run
+still reports failure; the connector continues serving its last-good snapshot.
+An enabled key matching a public, map, history, grid, climatology or walks key
+is rejected before database or storage I/O.
+
+**Why.** One upcoming scalar load avoids a second database scan and historical
+ORM hydration. Serializing the connector body first and releasing it before
+public serialization avoids retaining two site trees or two large bodies.
+The connector retains its 64 MiB object bound, last-good snapshot pair and
+legacy truncation guard. Uncapped hours do not extend the conservative 48-hour
+hourly horizon or a site's own successful-fetch coverage. Sparse later rows
+remain unknown in a seven-day plan/check request. This is the repository-only
+2026-10-24 scope of #7246; production acceptance is outstanding.
+
+Before activation, resolve the object-size and consumer-memory shortfall below
+under #7246. Keep both settings at their defaults until that precondition has
+evidence. After separate authorization, activation needs these two GitOps changes:
+
+- Set `stars.connectorSitesKey: connector-sites.json` in
+  `projects/monolith/deploy/values.yaml`. The shared S3 block in
+  `chart/templates/cronworkflows.yaml` carries it as
+  `STARS_CONNECTOR_SITES_S3_KEY` into the real `stars-refresh` container.
+  `app/jobs_main.py::stars_refresh` refreshes forecasts and invokes
+  `stars.materialize.materialize_handler` there. A web-pod-only environment
+  change does not enable this job.
+- Once normal scheduled publication is observed, set
+  `config.sitesKey: connector-sites.json` in
+  `projects/scotland-connector/deploy/values.yaml`. Existing deployment
+  plumbing sets `STARS_SITES_KEY`; runtime and store select that object.
+  The connector's chart/runtime default remains `sites.json`.
+
+Operational checks remain on #7246: chart publication/write-back and deployed
+revisions; normal scheduled publication with compatible public objects; real
+plan/check truncation and per-entity coverage; actual object size, materializer
+peak memory and connector pod memory after switching `config.sitesKey`, with
+site/hour counts and the observation method. No manual job trigger is needed.
+
+### Grid-scale capacity is a pre-activation condition
+
+The offline fixture defaults to 14,000 sites, matching the documented grid in
+`projects/monolith/stars/jobs.py` (`REFRESH_BATCH_SIZE` and `refresh_handler`).
+Each site has 89 input rows (1,246,000 total), 88 upcoming rows (1,232,000 total),
+and 55 qualifying clear-twilight hours. Public output retains 25 hours/site
+(350,000 total); connector output retains 55 (770,000 total). The profile uses
+72 hourly steps from 2026-10-19 08:00 UTC and a sparse six-hourly tail at offsets
+78 through 168. Three 16-hour winter nights include twilight boundaries and one
+cloudy hour; the tail adds eight qualifying rows. Uniform clear weather across
+the grid stresses the output volume. This is a synthetic winter-clear-spell
+scenario with daylight/cloudy exclusions. Longer nights, additional qualifying
+rows and larger site metadata can increase it; it is not an upper bound.
+
+Measurements on Linux amd64, CPython 3.12.15, from the correction to #7323:
+
+| Run | sites.json B | map.json B | history-map.json B | connector-sites.json B | Python allocation peak B | Process max RSS MiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline materialize.py at 925d9cd18, current router.py | 29,162,112 | 1,428,092 | 12 | absent | 362,842,546 | 416.69 |
+| Staged path disabled | 29,162,112 | 1,428,092 | 12 | absent | 362,844,236 | 416.29 |
+| Staged path enabled | 29,162,112 | 1,428,092 | 12 | 60,704,112 | 471,428,706 | 529.55 |
+
+The original three objects have identical SHA-256 digests in all runs. Each
+allocation peak comes from a fresh traced process; RSS comes from a separate
+untraced process via Linux `getrusage().ru_maxrss`. Tracing raises RSS and must
+be disabled for the deployment comparison. The producer's 529.55 MiB max RSS
+is below the 1 GiB `stars-refresh` job limit, but excludes real database/storage
+drivers, populated climatology and the preceding forecast-refresh work.
+
+The consumer benchmark uses the actual `Store.Refresh`, an initial resident
+snapshot, a fresh replacement body and a reader retaining the old dataset.
+Its local-file getter uses the same bounded `io.ReadAll` as `r2.Client.Get`.
+It samples `HeapInuse` and `Sys - HeapReleased` every millisecond; process RSS
+comes from `/usr/bin/time -v` around the compiled test binary. Fresh processes,
+Go 1.26.9, `GOMEMLIMIT=220MiB`, one replacement each:
+
+| Selected object | Peak HeapInuse MiB | Peak Go-managed memory MiB | Process max RSS MiB |
+| --- | ---: | ---: | ---: |
+| Capped sites.json | 166.88 | 173.95 | 175.11 |
+| Uncapped connector-sites.json | 224.20 | 231.22 | 232.45 |
+
+**Activation is blocked on capacity evidence.** The 57.89 MiB connector object
+uses 90.46% of the 64 MiB bound, leaving 6.11 MiB (roughly six more hours/site at
+this encoding). A larger valid snapshot can be rejected, leaving last-good data
+to become stale. The consumer exceeds the 220 MiB Go memory target and has only
+23.55 MiB RSS margin below the 256 MiB container limit even without HTTP/TLS,
+walks, populated history or query-serving load. These synthetic results do not
+establish safe production headroom. Before enabling either setting, demonstrate
+representative worst-case size and replacement-memory headroom, or deliver and
+validate a separately scoped capacity/representation change. Keep the 64 MiB,
+220 MiB and 256 MiB limits unchanged in this staged change. After authorized
+activation, record production object size and both producer and connector pod
+memory separately from these measurements.
+
+For reproducible offline measurements, run each command in a fresh Linux
+Python process from the repository root, with the monolith dependencies:
+
+```sh
+git rev-parse HEAD
+PYTHONPATH=projects/monolith python -m stars.tests.snapshot_fixture --baseline-revision 925d9cd18
+PYTHONPATH=projects/monolith python -m stars.tests.snapshot_fixture
+PYTHONPATH=projects/monolith python -m stars.tests.snapshot_fixture --enabled
+# Repeat each with --no-tracemalloc for process RSS. Save local consumer input:
+PYTHONPATH=projects/monolith python -m stars.tests.snapshot_fixture --enabled --no-tracemalloc --output-dir /tmp/stars-grid-fixture
+go test -c -o /tmp/stars-store.test ./projects/scotland-connector/internal/store
+GOMEMLIMIT=220MiB STARS_BENCH_SNAPSHOT=/tmp/stars-grid-fixture/sites.json /usr/bin/time -v /tmp/stars-store.test -test.run='^$' -test.bench='^BenchmarkSnapshotRefresh$' -test.benchtime=1x
+GOMEMLIMIT=220MiB STARS_BENCH_SNAPSHOT=/tmp/stars-grid-fixture/connector-sites.json /usr/bin/time -v /tmp/stars-store.test -test.run='^$' -test.bench='^BenchmarkSnapshotRefresh$' -test.benchtime=1x
+```
+
+The helper exercises materialization and JSON serialization with mocked scalar
+selects and object writes, tracing from before the load until after serialization.
+The sink retains only lengths/digests; `--output-dir` also writes local files.
+Climatology is empty. The baseline loads only the old `materialize.py`, with
+the current `router.py` and its unchanged default hour limit. Record the exact
+tested head in the PR. No weather requests or live storage calls are made.
+The small checked-in consumer fixture is regenerated by
+`python -m stars.tests.snapshot_fixture --fixture` with the same `PYTHONPATH`.
+`stars/router_test.py` checks it against actual producer bytes.
 
 ## Walks
 
@@ -176,6 +431,15 @@ walk's finish beyond sunset; the existing explicit dark-shoulder allowance
 remains separate.
 Only a tightening limit makes a day "limited" for the dark-credit rule:
 loosening rules no daylight out.
+A walk the 80% rule fits is still `marginal`, "Fits only by starting or
+finishing in the dark", when the time it needs beyond its slot is longer than
+the daylight left before and after the slot. When that daylight is enough but
+the slot ends too early, the walk starts at sunrise rather than before it.
+**Why.** The 80% rule tolerates hours of poor weather. In November an 8 h
+slot can fill the day, so the tolerance was spent on darkness: on 2026-11-02
+An Teallach (10 h) and Ben Nevis (9 h) were `go` with starts before sunrise
+and nothing in the why to say so. The doable-day rule itself is unchanged, so the
+hikes app and the connector still agree on which days are doable.
 `internal/walks` buckets those hours into UK days at load time and applies
 the hikes app's doable-day rule (`projects/monolith/hikes/router.py`); its
 tests replay the hikes router's cases. A separate `WalkStore` loads the
@@ -287,9 +551,16 @@ single JSON object:
 
 Tool argument errors come back as `isError` results so the model can
 correct itself; unknown argument names are rejected rather than ignored.
-Every tool has a title and `readOnlyHint: true`.
+Every tool has a title and `readOnlyHint: true`. `tools/list` and the
+instructions leave `aurora` out while its store is disabled
+(`AURORA_ENABLED`); a call naming it still answers, for clients holding an
+older list.
 
-**Why.** The tool surface is two read-only functions. An SDK would add a
+**Why.** A disabled aurora store answers every call `unknown`. Listing it
+spent assistants' calls on the most-asked winter question and invited them
+to relay `unknown` as if it were evidence.
+
+**Why.** The tool surface is a few read-only functions. An SDK would add a
 dependency, version churn and session machinery to a server whose whole
 point is to need none, and the stateless revision is what lets any replica
 answer any request.
@@ -406,7 +677,8 @@ process identity makes resets and replica aggregation explicit.
 ### Zero-priced invocation units
 
 `toolUnitPrices` becomes `TOOL_UNIT_PRICES`, consumed by the meter's policy
-hook. Both registered tools must have exactly one entry. `plan_invocation`
+hook. Each registered tool (`light`, `aurora`, `plan`, `check`) must have
+exactly one entry. `light_invocation`, `aurora_invocation`, `plan_invocation`
 and `check_invocation` are independent configurable unit names. Prices are
 decimal strings representing integer currency millionths. Only the canonical
 string `"0"` is supported. Missing, duplicate or unknown tools, invalid unit
@@ -502,14 +774,132 @@ only this folder. `plugin_test.py` keeps the two manifests and both MCP
 configs in step. The privacy page describes what this service and the
 gateway log, so a change to either updates it.
 
+The [repository readiness audit](READINESS.md) records #7687's client and
+marketplace validation, source evidence and proposed wording corrections.
+It stays outside the distributed `plugin/` package. The operational child
+#7688, split from closed #7255, retains publication and live acceptance under
+its explicit publisher-authorization hold. Joe owns final public wording.
+
 **Why.** The plugin carries no tools of its own, only the URL, so tool
 changes ship by deploying the connector; a plugin release is needed only
 when the skill or the listing text changes. Serving the marketplace as a
 file keeps it in the monorepo without users cloning the monorepo to add it.
 
-## Not here yet
+## Aurora: staged repository delivery (#7256)
 
-Aurora is #7256.
+`internal/aurora` is a bounded near-term heuristic shared by MCP `aurora`
+and REST `GET /v1/aurora`. The independent `AuroraStore` reads the existing
+stars bucket's `aurora.json` only when `config.auroraEnabled` is true. The
+default is false. Failed parsing or replacement retains the last good object
+without changing its source clocks. Aurora never gates readiness or reads
+upstream providers during a caller request. No new destination or account is
+introduced. Collection, publication and activation remain staged.
+
+**Why.** The existing stars `sites.json` drops brighter hours and caps returned
+hours. Those omissions cannot establish weather or darkness for an aurora
+request, and site altitude cannot establish a northern horizon. An additive
+version-1 snapshot carries unfiltered MET instant rows, actual NOAA timing
+and precomputed terrain profiles. Existing stars consumers and snapshots stay
+unchanged. Shared `internal/astro` solar coordinates provide darkness at the
+requested instant using the stars -10/-12 degree policy.
+
+NOAA's provider JSON fields are `Observation Time`, `Forecast Time`,
+`Data Format` and `coordinates` in longitude, latitude, intensity order.
+The product documents a usual 30 to 90 minute lead and no lead under current-Kp
+fallback. It supplies no universal valid-until time. Version 1 supports only
+the exact published forecast instant. The response states that support and
+separates observation, forecast, collection and application expiry. Retention
+and HTTP revalidation cannot turn an expired observation into fresh evidence.
+MET issue time is `properties.meta.updated_at`, distinct from collection and
+the timestamps of the instant cloud rows. Missing numeric fields stay unknown.
+
+**Why.** An interval inferred from a typical forecast lead would outlive some
+inputs and falsely support future requests during fallback. Point-only
+support is narrow and explicit. Application freshness is less than 20 minutes
+since NOAA collection, two hours since its observation, four hours since MET
+collection and six hours since MET issue. Exactly at a limit is unknown.
+Future input clocks are unknown. These constants are reversible policy,
+separate from NOAA's published timestamps. Operational polling and fallback
+acceptance remain on #7256.
+
+The public [method](internal/httpapi/method.md#near-term-aurora-staged) gives
+the heuristic thresholds, spatial matching and coverage limits. Every input
+must be supported for a go, marginal or no assertion. No calibrated local
+sighting probability is returned. Aurora answers are `no-store` on both
+browser and shared caches. Its `as_of` is the request clock rather than the
+plan/check hour, and `data_version` is the snapshot byte digest. The existing
+meter records tool `aurora` on each transport. This adds no exporter or alert.
+
+### Reproducible local producer and terrain preprocessing
+
+`cmd/stars-aurora` adds a separate producer contract; it does not change the
+existing filtered stars materializer. Its default mode reads local JSON
+provider bytes. `--collect --sites sites.json` explicitly enables bounded
+collection with fixed NOAA/MET endpoints, identified requests, no redirects,
+15-second request deadlines and a three-minute overall deadline. MET requests
+are sequential, at most one per second, for at most 128 sites. No schedule or
+upload command is installed. Do not run collection or publication as part of
+this repository delivery. A separately authorized publisher can use the
+existing stars storage integration for one atomic `aurora.json` replacement.
+
+The snapshot is at most 16 MiB, 128 sites, 65,160 NOAA cells and 96 weather
+rows per site. The unfiltered input retains daylight and cloudy rows, with
+null cloud where absent. Provider bodies are bounded before decoding. The
+collector records NOAA completion separately from each site's MET completion.
+Malformed or out-of-order timestamps fail materialization. The consumer also
+rejects regressive NOAA observation/collection or snapshot replacement times.
+
+Terrain input is USGS GMTED2010 mean elevation at 7.5 arc-seconds, about
+232 m north-south and 116 to 135 m east-west in Scotland. The geographic
+reference is WGS84 and heights are metres in a source-dependent vertical
+datum, as the USGS metadata states. Retain each tile's source metadata and
+verify vertical consistency before operational use; do not assume EGM96
+across every input or source boundary. The USGS
+[metadata](https://topotools.cr.usgs.gov/gmted_viewer/gmted2010_fgdc_metadata.html)
+states unrestricted public availability and the USGS disclaimer. Credit
+USGS, Danielson and Gesch (2011), [report 2011-1073](https://doi.org/10.3133/ofr20111073).
+The [public download index](https://topotools.cr.usgs.gov/gmted_viewer/gmted2010_global_grids.php)
+links the mean 7.5-arc-second grid without an account. Do not acquire the bulk
+global archive in this attempt. Its nominal land coverage includes Scotland;
+metadata warns of poorer source coverage above 60 degrees north. Representative
+island and Shetland validation is still required. No Scottish profiles ship
+with this change.
+
+After separately acquiring the source, retain the archive URL, checksum,
+metadata, GDAL version and exact extraction command. Extract a site-local
+window padded at least 25 km north, east and west; do not resample. For a
+WGS84 source grid the local conversion is, for example:
+
+```sh
+gdal_translate -of AAIGrid -projwin -4.4 58.6 -3.6 57.8 source/mn75 terrain.asc
+go run ./projects/scotland-connector/cmd/stars-aurora --grid terrain.asc --sites sites.json
+go run ./projects/scotland-connector/cmd/stars-aurora --input provider-input.json
+```
+
+`sites.json` is an array of objects with required `id`, `lat` and `lon` from
+the supported stars site inventory. The grid mode adds `terrain` to each
+object. It accepts only square WGS84 ASCII corner grids at no coarser than
+7.5 arc-seconds, at most four million cells and 128 MiB. Preserve the source's
+nodata sentinel. It computes each site's observer elevation from that raster,
+then 19 great-circle rays from -45 to +45 degrees at five-degree spacing,
+sampled every 100 m through 20 km. Each ray takes the maximum elevation angle
+with earth curvature subtracted and no atmospheric refraction. An outside or
+nodata cell makes the whole ray null. Profiles include the raster's SHA-256
+and algorithm version. Terrain excludes trees, buildings and access, and coarse
+samples can miss narrow ridges.
+
+For offline materialization, `provider-input.json` contains `collected_at`
+(materialization time), `noaa_collected_at`, the raw `noaa` object, and a
+`weather` array with `id`, `lat`, `lon`, `collected_at`, raw `met` and the
+computed `terrain`. The output is one versioned snapshot on stdout. Local
+fixtures exercise collection, preprocessing, materialization, store replacement,
+both transports, provenance and metering. Synthetic flat/ridge fixtures are
+labelled synthetic and establish no real terrain coverage.
+
+Operational acceptance remains on #7256: actual NOAA timing/polling/fallback;
+representative terrain and nodata coverage; separately authorized producer and
+existing-storage publication with refresh/replacement/expiry checks; separately
+authorized rollout and public MCP/REST smoke tests, plan/check and accounting.
 
 ## Direction
 
@@ -519,8 +909,10 @@ this table when the work ships or the issue closes without it.
 | Direction                                         | Tracks | State       |
 | ------------------------------------------------- | ------ | ----------- |
 | Meter export, zero-priced units, cache analytics  | #7245  | staged, live acceptance pending |
-| Uncapped connector snapshot from the materializer | #7246  | not started |
+| Uncapped connector snapshot from the materializer | #7246  | staged off, live acceptance pending |
 | Egress NetworkPolicy enabled                      | #7248  | staged off  |
 | Per-walk and per-site forecast fetch times        | #7274  | staged, live acceptance pending |
 | Slot rule slides past a second gap                | #7275  | not started |
-| Directory listings                                | #7255  | staged      |
+| Directory listings                                | #7688  | staged, publisher authorization and live acceptance pending |
+| Near-term aurora, independent snapshot and terrain preprocessing | #7256 | staged off, live acceptance pending |
+| Light windows and scoped cloud sample support | #7367 | deployed, live acceptance pending |

@@ -165,6 +165,17 @@ def resource_detail(kind: str, obj: dict, full: bool = False) -> dict:
         "status": _status_for(kind, obj),
         "conditions": _conditions(obj),
     }
+    if kind == "deployments":
+        spec, status = obj.get("spec") or {}, obj.get("status") or {}
+        detail["deployment"] = _compact(
+            {
+                "replicas": spec.get("replicas"),
+                "strategy": (spec.get("strategy") or {}).get("type"),
+                "actual_replicas": status.get("replicas"),
+                "generation": meta.get("generation"),
+                "observed_generation": status.get("observedGeneration"),
+            }
+        )
     return _compact(detail)
 
 

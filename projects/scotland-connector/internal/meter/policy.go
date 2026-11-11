@@ -18,7 +18,10 @@ type UnitPrice struct {
 
 type Policy struct{ prices map[string]UnitPrice }
 
-const DefaultPrices = `[{"tool":"plan","unit":"plan_invocation","price_micros":"0"},{"tool":"check","unit":"check_invocation","price_micros":"0"}]`
+const DefaultPrices = `[{"tool":"light","unit":"light_invocation","price_micros":"0"},{"tool":"aurora","unit":"aurora_invocation","price_micros":"0"},{"tool":"plan","unit":"plan_invocation","price_micros":"0"},{"tool":"check","unit":"check_invocation","price_micros":"0"}]`
+
+// registeredTools mirrors mcp.Tools; the connector's tests fail if they drift.
+var registeredTools = map[string]bool{"light": true, "aurora": true, "plan": true, "check": true}
 
 var unitName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
@@ -32,7 +35,7 @@ func ParsePolicy(raw string) (*Policy, error) {
 	}
 	p := &Policy{prices: make(map[string]UnitPrice)}
 	for _, e := range entries {
-		if (e.Tool != "plan" && e.Tool != "check") || !unitName.MatchString(e.Unit) || e.PriceMicros != "0" {
+		if !registeredTools[e.Tool] || !unitName.MatchString(e.Unit) || e.PriceMicros != "0" {
 			return nil, errors.New("unit prices require registered tools, bounded unit names and exact zero price_micros")
 		}
 		if _, exists := p.prices[e.Tool]; exists {
@@ -40,7 +43,7 @@ func ParsePolicy(raw string) (*Policy, error) {
 		}
 		p.prices[e.Tool] = e
 	}
-	if len(p.prices) != 2 {
+	if len(p.prices) != len(registeredTools) {
 		return nil, errors.New("missing tool price")
 	}
 	return p, nil
