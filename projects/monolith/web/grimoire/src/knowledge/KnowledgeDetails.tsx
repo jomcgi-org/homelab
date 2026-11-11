@@ -1,10 +1,10 @@
-import { Markdown } from "@astryxdesign/core/Markdown";
 import {
   MetadataList,
   MetadataListItem,
 } from "@astryxdesign/core/MetadataList";
 import { Text } from "@astryxdesign/core/Text";
 import { VStack } from "@astryxdesign/core/Layout";
+import { HandoutText } from "../handouts/HandoutText";
 import type { EntityProjection } from "../api/knowledge";
 import { knowledgeFields } from "../lib/knowledge-fields.js";
 
@@ -16,12 +16,7 @@ const plain = (value: unknown) =>
     : String(value);
 
 function FieldValue({ value }: { value: unknown }) {
-  if (typeof value === "string")
-    return (
-      <Markdown density="compact" headingLevelStart={4}>
-        {value}
-      </Markdown>
-    );
+  if (typeof value === "string") return <HandoutText markdown={value} />;
   if (Array.isArray(value))
     return (
       <VStack gap={1} as="ul">
