@@ -645,6 +645,12 @@ only this folder. `plugin_test.py` keeps the two manifests and both MCP
 configs in step. The privacy page describes what this service and the
 gateway log, so a change to either updates it.
 
+The [repository readiness audit](READINESS.md) records #7687's client and
+marketplace validation, source evidence and proposed wording corrections.
+It stays outside the distributed `plugin/` package. The operational child
+#7688, split from closed #7255, retains publication and live acceptance under
+its explicit publisher-authorization hold. Joe owns final public wording.
+
 **Why.** The plugin carries no tools of its own, only the URL, so tool
 changes ship by deploying the connector; a plugin release is needed only
 when the skill or the listing text changes. Serving the marketplace as a
@@ -778,6 +784,6 @@ this table when the work ships or the issue closes without it.
 | Egress NetworkPolicy enabled                      | #7248  | staged off  |
 | Per-walk and per-site forecast fetch times        | #7274  | staged, live acceptance pending |
 | Slot rule slides past a second gap                | #7275  | not started |
-| Directory listings                                | #7255  | staged      |
+| Directory listings                                | #7688  | staged, publisher authorization and live acceptance pending |
 | Near-term aurora, independent snapshot and terrain preprocessing | #7256 | staged off, live acceptance pending |
 | Light windows and scoped cloud sample support | #7367 | deployed, live acceptance pending |

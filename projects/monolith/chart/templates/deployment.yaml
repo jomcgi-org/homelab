@@ -16,6 +16,17 @@
 {{- fail "tokenBroker.spiffe.serverId is required when SPIFFE is enabled" }}
 {{- end }}
 {{- end }}
+{{- if .Values.tokenBroker.devLoginUrl }}
+{{- if not .Values.tokenBroker.spiffe.enabled }}
+{{- fail "tokenBroker.devLoginUrl requires tokenBroker.spiffe.enabled" }}
+{{- end }}
+{{- if not (hasPrefix "https://" .Values.tokenBroker.devLoginUrl) }}
+{{- fail "tokenBroker.devLoginUrl must use https" }}
+{{- end }}
+{{- if not (hasPrefix "spiffe://" .Values.tokenBroker.devLoginServerId) }}
+{{- fail "tokenBroker.devLoginServerId is required for dev login" }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -139,6 +150,12 @@ spec:
             - name: EMBER_TOKENBROKER_SVID_BUNDLE
               value: /run/tokenbroker-svid/svid_bundle.pem
             {{- end }}
+            {{- end }}
+            {{- if .Values.tokenBroker.devLoginUrl }}
+            - name: EMBER_DEV_TOKENBROKER_LOGIN_URL
+              value: {{ .Values.tokenBroker.devLoginUrl | quote }}
+            - name: EMBER_DEV_TOKENBROKER_LOGIN_SPIFFE_ID
+              value: {{ .Values.tokenBroker.devLoginServerId | quote }}
             {{- end }}
             {{- if .Values.faas }}
             # FaaS zip-lane function registry (ADR 045 / embervm R1). The read

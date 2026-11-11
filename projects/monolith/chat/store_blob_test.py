@@ -11,6 +11,52 @@ from chat.models import Blob
 from chat.store import MessageStore
 
 
+def test_blob_upload_uses_shared_helper_and_returns_true(monkeypatch):
+    from unittest.mock import Mock
+    from chat import store
+    from core.s3_upload import put_object
+
+    assert store.put_object is put_object
+    monkeypatch.setenv("CHAT_BLOB_S3_BUCKET", "blobs")
+    monkeypatch.setenv("SEAWEEDFS_S3_ENDPOINT", "https://storage.example")
+    client = Mock()
+    monkeypatch.setattr(store, "path_style_client", lambda endpoint: client)
+    with patch.object(store, "put_object") as upload:
+        assert store._blob_s3_put("hash", b"photo", "image/jpeg") is True
+    upload.assert_called_once_with(
+        client,
+        bucket="blobs",
+        key="blobs/hash",
+        body=b"photo",
+        content_type="image/jpeg",
+    )
+
+
+@pytest.mark.parametrize("missing", ["CHAT_BLOB_S3_BUCKET", "SEAWEEDFS_S3_ENDPOINT"])
+def test_blob_upload_unconfigured_returns_false(monkeypatch, missing):
+    from chat import store
+
+    monkeypatch.setenv("CHAT_BLOB_S3_BUCKET", "blobs")
+    monkeypatch.setenv("SEAWEEDFS_S3_ENDPOINT", "https://storage.example")
+    monkeypatch.delenv(missing)
+    with patch.object(store, "path_style_client") as client:
+        assert store._blob_s3_put("hash", b"photo", "image/jpeg") is False
+    client.assert_not_called()
+
+
+def test_blob_upload_propagates_failure(monkeypatch):
+    from chat import store
+
+    monkeypatch.setenv("CHAT_BLOB_S3_BUCKET", "blobs")
+    monkeypatch.setenv("SEAWEEDFS_S3_ENDPOINT", "https://storage.example")
+    with (
+        patch.object(store, "path_style_client"),
+        patch.object(store, "put_object", side_effect=RuntimeError("offline")),
+    ):
+        with pytest.raises(RuntimeError, match="offline"):
+            store._blob_s3_put("hash", b"photo", "image/jpeg")
+
+
 @pytest.fixture(name="session")
 def session_fixture():
     """In-memory SQLite session with schema stripped for SQLite compatibility."""

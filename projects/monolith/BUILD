@@ -317,6 +317,28 @@ py_venv_binary(
     ],  # keep
 )
 
+# Shared one-shot tracing, without the core package's serving or DB closure.
+py_library(
+    name = "job_tracing",
+    srcs = ["core/job_tracing.py"],
+    imports = ["."],
+    deps = [
+        "@pip//opentelemetry_api",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_sdk",
+    ],
+)
+
+py_test(
+    name = "job_tracing_test",
+    srcs = ["core/job_tracing_test.py"],
+    imports = ["."],
+    deps = [
+        ":job_tracing",
+        "@pip//pytest",
+    ],
+)
+
 # Dedicated heavy geospatial computation. None of these sources or dependencies
 # enter :monolith_backend, :main, or :jobs: grid_gen is excluded from their
 # source globs above, and only this binary depends on the GIS wheels.
@@ -357,6 +379,7 @@ py_venv_binary(
     main = "stars/grid_gen/job.py",
     visibility = ["//:__subpackages__"],
     deps = [
+        ":job_tracing",
         ":stars_grid_generator",
         ":stars_grid_ingest",
         "@pip//boto3",
@@ -452,6 +475,7 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        "@pip//botocore",
         "@pip//certifi",
         "@pip//fastapi",
         "@pip//fastmcp",
@@ -1244,6 +1268,7 @@ py_library(
         ":pkg_framework",
         ":pkg_grimoire",
         ":pkg_knowledge",
+        ":pkg_shared",
         "@pip//certifi",
         "@pip//fastapi",
         "@pip//httpx",
@@ -1390,6 +1415,7 @@ py_library(
         ":pkg_core",
         ":pkg_shared",
         ":swarm_factory_controls",
+        "//projects/monolith/factory/execution/preinvoke_failure",
         "//projects/monolith/factory/execution/workspace_handoff",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
@@ -1491,7 +1517,9 @@ py_library(
         ":factory_goal_models",
         ":pkg_core",
         ":pkg_shared",
+        "//projects/monolith/factory/orchestration/backlog_refill_repair",
         "//projects/monolith/factory/orchestration/evidence_continuation",
+        "//projects/monolith/factory/orchestration/funding_profile",
         "@pip//httpx",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
@@ -1653,8 +1681,11 @@ py_library(
     visibility = ["//:__subpackages__"],
     deps = [
         ":pkg_platform_auth",
+        "//projects/monolith/factory/execution/preinvoke_failure",
         "//projects/monolith/factory/execution/workspace_handoff",
+        "//projects/monolith/factory/orchestration/backlog_refill_repair",
         "//projects/monolith/factory/orchestration/evidence_continuation",
+        "//projects/monolith/factory/orchestration/funding_profile",
         "@pip//dbos",
         "@pip//astral",
         "@pip//beautifulsoup4",
@@ -2591,6 +2622,7 @@ py_test(
         ":pkg_core",
         "@pip//httpx",
         "@pip//pytest",
+        "@pip//pytest_asyncio",
     ],
 )
 
@@ -3066,6 +3098,30 @@ py_test(
 )
 
 py_test(
+    name = "shared_async_retry_test",
+    srcs = ["shared/async_retry_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "shared_async_retry_adapters_test",
+    srcs = ["shared/async_retry_adapters_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cyclegroup",
+        ":pkg_shared",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "shared_embedding_test",
     srcs = ["shared/embedding_test.py"],
     imports = ["."],
@@ -3093,6 +3149,31 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_shared",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "shared_text_stream_test",
+    srcs = ["shared/text_stream_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        ":text_stream_test_support",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_library(
+    name = "text_stream_test_support",
+    testonly = True,
+    srcs = ["shared/testing/text_stream.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        "@pip//httpx",
         "@pip//pytest",
     ],
 )
@@ -4011,6 +4092,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
+        "@pip//botocore",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -5202,12 +5284,63 @@ py_test(
 )
 
 py_test(
+    name = "swarm_operator_landing_evidence_test",
+    srcs = ["factory/orchestration/operator_landing_evidence_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "swarm_operator_landing_authorization_test",
+    srcs = ["factory/orchestration/operator_landing_authorization_test.py"],
+    # Reuse real Git-object fixtures without recollecting their separate suite.
+    data = ["factory/orchestration/operator_landing_evidence_test.py"],
+    env = {"PYTEST_ADDOPTS": "--ignore=projects/monolith/factory/orchestration/operator_landing_evidence_test.py"},
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_owner_pr_landing_delegation_test",
     srcs = ["factory/orchestration/owner_pr_landing_delegation_test.py"],
     # Reuse the established native repair fixture without copying its producer.
     data = ["factory/orchestration/factory_conductor_test.py"],
     # Import the fixture without collecting its full, separately tested suite.
     env = {"PYTEST_ADDOPTS": "--ignore=projects/monolith/factory/orchestration/factory_conductor_test.py"},
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//httpx",
+        "@pip//jsonschema",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "swarm_delivery_landing_delegation_test",
+    srcs = ["factory/orchestration/delivery_landing_delegation_test.py"],
+    # Reuse the owner-PR suite's native fixtures without copying them.
+    data = [
+        "factory/orchestration/factory_conductor_test.py",
+        "factory/orchestration/owner_pr_landing_delegation_test.py",
+    ],
+    # Import the fixtures without collecting their separately tested suites.
+    env = {"PYTEST_ADDOPTS": "--ignore=projects/monolith/factory/orchestration/factory_conductor_test.py --ignore=projects/monolith/factory/orchestration/owner_pr_landing_delegation_test.py"},
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -5651,6 +5784,7 @@ py_test(
     deps = [
         ":pkg_knowledge",
         ":pkg_swarm",
+        "@pip//httpx",
         "@pip//opentelemetry_sdk",
         "@pip//pytest",
         "@pip//sqlalchemy",
@@ -5732,8 +5866,10 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_swarm",
+        "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
+        "@pip//pytest_asyncio",
     ],
 )
 
@@ -7144,6 +7280,19 @@ py_test(
 )
 
 py_test(
+    name = "moving_stream_test",
+    srcs = ["moving/tests/stream_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_moving",
+        ":text_stream_test_support",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "moving_chat_test",
     srcs = [
         "moving/tests/__init__.py",
@@ -7225,6 +7374,7 @@ py_test(
     deps = [
         ":pkg_faas",
         "@pip//boto3",
+        "@pip//botocore",
         "@pip//pytest",
     ],
 )
@@ -7512,6 +7662,19 @@ py_test(
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "grimoire_chat_inference_test",
+    srcs = ["grimoire_chat/inference_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire_chat",
+        ":text_stream_test_support",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
     ],
 )
 
@@ -7869,6 +8032,7 @@ py_test(
     ],
     imports = ["."],
     deps = [
+        ":job_tracing",
         ":stars_grid_generator",
         ":stars_grid_ingest",
         "@pip//opentelemetry_api",
@@ -7885,6 +8049,7 @@ py_test(
         "BUILD",
         "stars/grid_gen/apko.lock.json",
         "stars/grid_gen/apko.yaml",
+        ":stars_grid_job",
         "//bazel/tools/oci:py3_image",
     ],
     imports = ["stars/grid_gen"],
@@ -8312,6 +8477,7 @@ py_test(
     deps = [
         ":pkg_knowledge",
         "@pip//boto3",
+        "@pip//botocore",
         "@pip//pytest",
     ],
 )
@@ -9265,8 +9431,29 @@ py_test(
     ],
 )
 
-# Hand-registered (trips is gazelle-excluded): SeaweedFS S3 image upload --
-# missing endpoint, scheme guard, head-hit skip, auto-create bucket.
+# Hand-registered storage tests for gazelle-excluded subpackages.
+py_test(
+    name = "core_s3_upload_test",
+    srcs = ["core/s3_upload_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        "@pip//botocore",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "shotter_s3_test",
+    srcs = ["shotter/s3_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shotter",
+        "@pip//botocore",
+        "@pip//pytest",
+    ],
+)
+
 py_test(
     name = "trips_s3_test",
     srcs = ["trips/s3_test.py"],

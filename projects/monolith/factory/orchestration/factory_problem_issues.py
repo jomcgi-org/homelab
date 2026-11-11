@@ -32,6 +32,7 @@ from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryReceipt,
 )
+from factory.orchestration.factory_funding_limits import RECOVERY_REPO
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,6 @@ RESPONSE_LIMIT_BYTES = 1_000_000
 MARKER_PREFIX = "factory-problem"
 RECOVERY_SOURCES = frozenset({"recurring_blocker", "workflow_stranded"})
 RECOVERY_ACTIVATION = "problem_issue_recovery_loop_activated"
-RECOVERY_REPO = "jomcgi-org/homelab"
 RECOVERY_SHORT_WINDOW_MINUTES = 300
 _TERMINAL_ACTIONS = (
     "problem_issue_created",
@@ -60,24 +60,9 @@ _EVENT_ACTIONS = {
 
 
 def _delivery_enabled(policy: dict) -> bool:
-    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_funding_limits import recovery_delivery_enabled
 
-    if policy.get("repo") != RECOVERY_REPO:
-        return False
-    intake = controls.intake_policy(policy)
-    if not intake["enabled"] or intake["refinement_batch"]:
-        return False
-    entry = controls.repo_entry(policy, RECOVERY_REPO)
-    labels = {label.lower() for label in problem_issues_policy(policy)["labels"]}
-    return bool(
-        entry["enabled"]
-        and not entry["paused"]
-        and (
-            intake["refine_enabled"]
-            or labels.intersection(label.lower() for label in entry["labels"])
-        )
-        and not labels.intersection(label.lower() for label in entry["exclude_labels"])
-    )
+    return recovery_delivery_enabled(policy)
 
 
 def _recovery_quota() -> bool:
@@ -163,6 +148,7 @@ def _recovery_owner(db, row):
 
 def _recovery_context(policy, row):
     from factory.orchestration.factory_conductor import github_get
+    from factory.orchestration.backlog_refill_repair import objective_open
 
     with _read_session() as db:
         owner = _recovery_owner(db, row)
@@ -172,9 +158,9 @@ def _recovery_context(policy, row):
     labels = {x["name"].lower() for x in issue.get("labels", [])}
     if (
         issue.get("number") != owner["issue_number"]
-        or issue.get("state") != "open"
+        or not objective_open({**owner, "id": row.task_id}, issue)
         or issue.get("assignees")
-        or labels & {"human", "security-finding", "security"}
+        or labels & {"human", "needs-human", "security-finding", "security"}
         or f"{MARKER_PREFIX}:" in (issue.get("body") or "")
     ):
         return None
@@ -322,7 +308,9 @@ def _observe_recoveries():
                     .order_by(SwarmNodeRun.id)
                     .limit(1)
                 ).first()
-                if recovered is not None:
+                from factory.orchestration.backlog_refill_repair import useful_delivery
+
+                if recovered is not None and useful_delivery(db, source):
                     _audit(
                         db,
                         ACTOR,
@@ -847,6 +835,16 @@ def _issue(
     issue_number: int,
     marker: str,
 ):
+    public = detail.get("preinvoke_repair")
+    if public is not None:
+        from factory.orchestration.backlog_refill_repair import public_failure
+
+        with _read_session() as db:
+            verified = public_failure(db, row.task_id, detail.get("source_run_id"))
+        if verified is None or verified != public:
+            return None
+        # Only the reauthenticated, fixed-vocabulary projection is public.
+        public = verified
     source_url = f"https://github.com/{repo}/issues/{issue_number}"
     titles = {
         "node_stalled": f"factory: node stalled while delivering #{issue_number}",
@@ -882,14 +880,36 @@ def _issue(
         "node_stalled": "factory_conductor.py and node timeout supervision",
         "landing_recovery_exhausted": "factory_landing.py and exact-head recovery",
     }
+    if public:
+        titles[source] = (
+            "factory: repeated preinvoke database failure in refill " + public["role"]
+        )
+        lines.extend(
+            [
+                "",
+                "## Authenticated failure context",
+                "",
+                "- Fixed role: " + public["role"] + ".",
+                "- Pre-invocation stage: `" + public["stage"] + "`.",
+                "- SQLSTATE: `" + public["sqlstate"] + "`.",
+                "- Native evidence positively establishes no invocation; raw SQL, errors and private IDs are omitted.",
+            ]
+        )
+    scope = (
+        "Inspect only these owning paths and their existing contracts: "
+        + ", ".join("`" + path + "`" for path in public["owning_paths"])
+        + "."
+        if public
+        else "Inspect `projects/monolith/factory/orchestration/`: "
+        + paths[source]
+        + "."
+    )
     lines.extend(
         [
             "",
             "## Scoped repair",
             "",
-            "Inspect `projects/monolith/factory/orchestration/`: "
-            + paths[source]
-            + ".",
+            scope,
             "Reproduce the missing recovery transition with synthetic evidence and "
             "fix it in the existing owner. Check existing issues and PRs before "
             "implementation; reuse an existing repair rather than competing with it.",
@@ -910,6 +930,18 @@ def _issue(
             "recovery engine. Repair tickets must not recursively produce repairs.",
         ]
     )
+    if public:
+        lines.extend(
+            [
+                "",
+                "## Landing authority boundary",
+                "",
+                "These execution/admission owners are outside the existing observation and diagnostics standing repair landing profiles. "
+                "Implementation does not grant landing authority: an explicit operator-owned exact-head authorization is required. "
+                "Do not broaden a path profile or substitute a diagnostic-only change for the repair. "
+                "Automatic landing reachability is not established for this failure class.",
+            ]
+        )
     lines.extend(
         [
             "",
@@ -1300,8 +1332,25 @@ def problem_issues_tick(policy: dict) -> None:
         issue = {key: issue[key] for key in ("title", "body")}
     else:
         issue = _issue(source, row, source_detail, repo, issue_number, marker)
+        if issue is None:
+            _record(
+                "problem_issue_source_refused",
+                row,
+                source,
+                fingerprint,
+                reason="native_preinvoke_evidence_changed",
+            )
+            return
 
     with _locked_session() as (db, _control):
+        if source_detail.get("preinvoke_repair") is not None:
+            from factory.orchestration.backlog_refill_repair import public_failure
+
+            if (
+                public_failure(db, row.task_id, source_detail.get("source_run_id"))
+                != source_detail["preinvoke_repair"]
+            ):
+                return
         if recovery_owner is not None:
             if (
                 _control.state != "enabled"

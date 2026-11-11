@@ -646,6 +646,15 @@ the existing landing owner refused acceptance; inspect its approved delivery
 identity and the current PR through the owning review/landing workflow. Status
 does not rewrite the approved head, accept a different merge or clear a hold.
 
+### Recorded landing waits
+
+Each compact status row also includes `landing_wait`: the latest recorded
+`landing_authorization_wait` reason, PR number, audit ID and timestamp. It says
+why an approved delivery has no landing authority yet, for example a path
+outside the delivery delegation or a missing current-head review. The landing
+tick records a new row only when the reason or PR changes. A newer grant,
+recovery request, arm or merge answers it. Null does not prove authority.
+
 ### Separate restriction, continuation and refill activation
 
 After code release, each live change still needs its applicable authority.
@@ -813,6 +822,28 @@ Read `intake.owner_pr_backlog` for the latest observed backlog and separate
 merged/verified delivery counts. An activated producer or queued receipt is not
 operational acceptance; #7597 retains the real autonomous delivery demonstration.
 
+### Owner PR text hold release
+
+Owner PR discovery reads hold wording in a PR description or its discussion as
+an explicit hold and does not interpret the prose. When the owner decides that
+wording no longer binds, `factory_release_owner_pr_hold` records the decision
+for one PR:
+
+1. Preview with `action: "release"`, the PR number and the decision as `reason`.
+2. Apply identical arguments with `expected_preview_sha256` and a new
+   `request_key`. Replay the same key after a lost response.
+3. Read `factory_status` after the next due owner PR sweep for the new blocker.
+
+The release waives the exact description read at preview, the comments written
+before it, and holds the PR only inherits from issues or PRs its description
+mentions, unless a mentioned item carries a security label. An edited
+description needs a new release. Its labels, assignees and later comments, the
+closing objective issue and every review, CI, landing and merge gate still bind.
+Standing landing delegations do not read a release, so a released PR lands on a
+per-head `factory_release_landing_hold` grant. The control starts no work and
+lands nothing. `action: "revoke"` restores the wording. To hold a released PR
+again, add a `human` label or a new comment.
+
 ### Owner PR standing landing decision
 
 `factory_configure_refill` also accepts `target=owner_pr_landing`. This distinct
@@ -829,3 +860,33 @@ typed review and the existing queue remain mandatory. Status is reported under
 `factory_status.owner_pr_landing`. Disable fences existing queued grants on the
 next landing observation. Changing and restoring intake policy cannot revive an
 earlier authorization. Activation alone is not autonomous backlog acceptance.
+
+### Standing delivery landing decision
+
+`factory_configure_delivery_landing` configures the default-off standing owner
+for ordinary intake-admitted deliveries. See
+[FACTORY.md](orchestration/FACTORY.md#standing-delivery-landing-delegation) for
+the boundary.
+
+1. Read `factory_status.version` and confirm automatic landing is enabled.
+   Refresh the client's tool catalog if `factory_configure_delivery_landing`
+   is absent. It is published automatically by the gateway; it has no
+   `factory_configure_refill` target or `factory_status.control_catalog` entry.
+2. Preview with `operation: "preview"`, `enabled: true`, `expected_version`,
+   a reason and `max_landings` from 1 to 50. Review `deny_rules`, `max_files`
+   and the bounds, plus `path_limitations`. The rules exclude the factory and
+   its framework packages, deployment and schema, credential and isolation
+   code, public routes and `projects/monolith/ARCHITECTURE.md`. Other private
+   project code is eligible, including `projects/monolith/BUILD`. The deny-list
+   is a second check, not isolation: safety relies on the typed independent
+   review, required CI and the merge queue. Joe set this boundary on 2026-11-10.
+3. Apply identical arguments with `expected_preview_sha256` and a new
+   `request_key`. Replay the same key after a lost response.
+4. Re-read `factory_status.delivery_landing` for `derivations_used` and
+   `derivations_remaining`.
+
+To revoke, preview and apply `enabled: false` with `max_landings` omitted. A
+delivery outside the boundary records a `landing_authorization_wait` whose
+reason usually starts `delivery_landing_`, and still needs
+`factory_release_landing_hold`. Activation dispatches nothing and is not
+evidence that any delivery landed.

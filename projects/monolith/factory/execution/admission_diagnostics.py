@@ -151,7 +151,12 @@ def _recorded_cessation(db, permit_id):
             row[key] = None
     if row["terminal_state"] not in {"evicted", "destroyed", "failed"}:
         row["terminal_state"] = None
-    if row["cessation_evidence"] not in {"terminal_dispatch", "invoke_failure"}:
+    if row["cessation_evidence"] not in {
+        "terminal_dispatch",
+        "invoke_failure",
+        "terminal_before_dispatch",
+        "terminal_receipt_chain",
+    }:
         row["cessation_evidence"] = None
     return row
 

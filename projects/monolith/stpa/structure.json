@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "e9f64ef7d4",
+  "commit": "cbe0525ff",
   "nodes": [
     {
       "key": "console-caller",
@@ -297,7 +297,7 @@
       "view": "logical",
       "layer": "actor",
       "maturity": "built",
-      "evidence": "projects/monolith/factory/orchestration/mcp.py:1336,2174"
+      "evidence": "projects/monolith/factory/orchestration/mcp.py:1336,2227"
     },
     {
       "key": "standing-landing-operator",
@@ -370,6 +370,22 @@
       "layer": "enforcement",
       "maturity": "built",
       "evidence": "projects/monolith/factory/execution/result_receipts.py:97,160,230"
+    },
+    {
+      "key": "permit-supervisor",
+      "label": "Exact uncertain permit settlement owner",
+      "view": "logical",
+      "layer": "enforcement",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/permit_supervision.py:781"
+    },
+    {
+      "key": "factory-funding",
+      "label": "Factory allocation owner",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/factory_funding.py:2036"
     }
   ],
   "control_actions": [
@@ -785,7 +801,7 @@
       "from": "factory-landing",
       "to": "github-pulls",
       "maturity": "built",
-      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:902"
+      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:926"
     },
     {
       "key": "factory-required-recovery.publish",
@@ -822,6 +838,51 @@
       "to": "receipt-attempt",
       "maturity": "built",
       "evidence": "projects/monolith/factory/execution/mcp.py:915,954"
+    },
+    {
+      "key": "permit-supervisor.settle",
+      "label": "Settle exact interactive permit from complete terminal guest evidence",
+      "view": "logical",
+      "from": "permit-supervisor",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/permit_supervision.py:197,330,968"
+    },
+    {
+      "key": "factory-funding.resume-native-repair",
+      "label": "Renew one repaired fixed role within original remaining allocation",
+      "view": "logical",
+      "from": "factory-funding",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/factory_funding.py:2036"
+    },
+    {
+      "key": "standing-landing-operator.authorize-delivery",
+      "label": "Record explicit finite approval for one independently reviewed delivery",
+      "view": "logical",
+      "from": "standing-landing-operator",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/mcp.py:1854; projects/monolith/factory/orchestration/operator_landing_authorization.py:283"
+    },
+    {
+      "key": "standing-landing-operator.revoke-delivery",
+      "label": "Retain a revocation tombstone for one exact operator authorization audit",
+      "view": "logical",
+      "from": "standing-landing-operator",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/operator_landing_authorization.py:448"
+    },
+    {
+      "key": "factory-landing.reserve-operator-arm",
+      "label": "Commit one operator-authorized arming attempt before the external queue request",
+      "view": "logical",
+      "from": "factory-landing",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/orchestration/operator_landing_authorization.py:560"
     }
   ],
   "feedback": [
@@ -1053,6 +1114,20 @@
       "to": "agent-runner",
       "signal": "Pending or published attempt intent survives cancellation; neither proves guest receipt or cessation",
       "evidence": "projects/monolith/factory/execution/transport.py:1980,2014; projects/monolith/factory/execution/mcp.py:1483"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "permit-supervisor",
+      "signal": "Locked exact permit, last turn, absent pending claim and complete unexpired receipt chain",
+      "evidence": "projects/monolith/factory/execution/permit_supervision.py:108"
+    },
+    {
+      "view": "logical",
+      "from": "embervm",
+      "to": "permit-supervisor",
+      "signal": "Fresh exact terminal guest identity, generation and invocation timestamps",
+      "evidence": "projects/monolith/factory/execution/permit_supervision.py:781"
     }
   ]
 }

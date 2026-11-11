@@ -2947,6 +2947,7 @@ def mark_turn_error_sync(
     invocation_not_attempted: bool = False,
     dispatch_count: int | None = None,
     lock_timeout_seconds: float | None = None,
+    preinvoke_database_failure: dict | None = None,
 ) -> bool:
     """Retain error progress and settle only with exact execution evidence.
 
@@ -2995,6 +2996,11 @@ def mark_turn_error_sync(
         usage = _progress_usage(row, error_msg)
         if invocation_not_attempted:
             usage["recovery"]["invocation_phase"] = "not_invoked"
+            from factory.execution.preinvoke_failure import database_failure
+
+            failure = database_failure(preinvoke_database_failure)
+            if dispatch_count == 1 and failure is not None:
+                usage["recovery"]["database_failure"] = failure
         create_turn(
             session,
             session_id,

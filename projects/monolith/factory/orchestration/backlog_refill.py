@@ -305,6 +305,12 @@ def observe(
         )
         db.add(row)
         db.flush()
+        from factory.orchestration import funding_profile
+        from factory.orchestration.backlog_refill_repair import (
+            CONTRACT_VERSION as repair_version,
+        )
+        from factory.orchestration.backlog_refill_repair import epoch
+
         record(
             db,
             "started",
@@ -318,6 +324,11 @@ def observe(
             routine=routine,
             eligible=eligible,
             policy_digest=digest(policy),
+            **(
+                {"repair_contract": {"version": repair_version, "epoch": epoch(db)}}
+                if repair_version == 2 or funding_profile.PROVIDER_ROUTE_AVAILABLE
+                else {}
+            ),
         )
         return {"ok": True, "run_id": run_id, "receipt_id": row.id}
 
@@ -760,6 +771,7 @@ def dispatch_allowed(task_id, node_key=NODE, attempt=1, *, physical=False):
 
 def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
     from factory.orchestration.backlog_refill_policy import normalize
+    from factory.orchestration.backlog_refill_repair import attempt_allowed
 
     with controls._read_session() as db:
         receipt = db.exec(
@@ -786,7 +798,7 @@ def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
             or receipt.cancellation_requested
             or node_key not in NODES
             or type(attempt) is not int
-            or attempt != 1
+            or not attempt_allowed(db, receipt, node_key, attempt)
             or receipt.generation != policy.get("generation")
             or receipt.repo not in controls.enabled_repos(policy)
             or not normalize(policy)["enabled"]
@@ -805,7 +817,7 @@ def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
         from factory.orchestration.models import SwarmTask
 
         task = db.get(SwarmTask, task_id)
-        pinned = json.loads(receipt.policy_json or "{}")
+        pinned = controls._effective_policy(db, receipt)
         if task is None or controls._now() >= (
             controls._recovery_deadline(db, task_id)
             or aware(task.created_at)
@@ -819,7 +831,7 @@ def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
                 select(SwarmNodeRun).where(
                     SwarmNodeRun.task_id == task_id,
                     SwarmNodeRun.node_key == node_key,
-                    SwarmNodeRun.attempt == 1,
+                    SwarmNodeRun.attempt == attempt,
                 )
             ).first()
             if run is None or run.status not in {"admitted", "dispatched", "uncertain"}:
@@ -831,7 +843,7 @@ def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
                 or pin.get("task_id") != task_id
                 or pin.get("node_key") != node_key
                 or type(pin.get("attempt")) is not int
-                or pin["attempt"] != 1
+                or pin["attempt"] != attempt
                 or (
                     detail.get("review_contract") is not None
                     and (
@@ -850,6 +862,25 @@ def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
                     or pin.get("hydration_branch") != "commit:" + source["sha"]
                 ):
                     return False
+        from factory.orchestration import factory_funding_limits as funding
+        from factory.orchestration.backlog_refill_repair import (
+            REMAINING_GRANT,
+            native_repair_grant_valid,
+            remaining_allowance,
+        )
+
+        grant = funding.amendment(db, task_id)
+        if (
+            grant
+            and grant.get("grant_kind") == REMAINING_GRANT
+            and (
+                not native_repair_grant_valid(db, receipt, grant)
+                or not remaining_allowance(
+                    db, receipt, own_start=run.dispatch_key if physical else None
+                )
+            )
+        ):
+            return False
     # No broker I/O under a database/control lock. Recheck the durable gates
     # after a slow quota fetch before crossing physical transport.
     if observed is not None:

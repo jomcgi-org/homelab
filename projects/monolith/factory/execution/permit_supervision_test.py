@@ -248,6 +248,219 @@ def sweep(response):
     )
 
 
+def terminal_before_dispatch(database):
+    """A follow-up POST names an already evicted guest; restore then fails."""
+    now = datetime.now(timezone.utc)
+    dispatched = now - timedelta(seconds=100)
+    pid = seed(
+        database,
+        tier="interactive",
+        legacy=True,
+        history=3,
+        created_at=dispatched + timedelta(seconds=1),
+        recovery_updates={"last_dispatch_at": dispatched.isoformat()},
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        agent = db.get(AgentSession, permit.session_id)
+        db.add(
+            AgentResultReceipt(
+                id="terminal-receipt",
+                token_sha256="a" * 64,
+                request_sha256="b" * 64,
+                session_id=agent.id,
+                local_session_id=agent.local_session_id,
+                seq=permit.pending_seq,
+                dispatch_count=1,
+                claim_owner=permit.owner,
+                guest_id=agent.ember_session_id,
+                created_at=dispatched + timedelta(seconds=2),
+                accept_until=now + timedelta(hours=12),
+                retain_until=now + timedelta(days=6),
+                response_observer_released_at=dispatched + timedelta(seconds=3),
+            )
+        )
+    ms = lambda seconds: int((now - timedelta(seconds=seconds)).timestamp() * 1000)
+    return pid, proof(
+        invoke_started_at=ms(150), last_invoke_at=ms(120), updated_at=ms(110)
+    )
+
+
+@pytest.mark.parametrize("state", ["evicted", "destroyed"])
+@pytest.mark.parametrize("unknown", [False, True])
+def test_post_to_terminal_guest_settles_only_capacity(database, state, unknown):
+    pid, observed = terminal_before_dispatch(database)
+    observed["state"] = state
+    if unknown:
+        with Session(database) as db, db.begin():
+            permit = db.get(AgentCapacityReservation, pid)
+            turn = db.exec(
+                select(AgentTurn).where(
+                    AgentTurn.session_id == permit.session_id,
+                    AgentTurn.seq == permit.pending_seq,
+                )
+            ).one()
+            turn.stop_reason = UNKNOWN_INVOCATION
+    original = before(database, pid)
+    with Session(database) as db:
+        receipt = db.get(AgentResultReceipt, "terminal-receipt").model_dump()
+    sweep(observed)
+    after = before(database, pid)
+    assert after[0]["state"] == "settled"
+    assert after[0]["outcome"] == "guest_cessation_confirmed"
+    assert after[1:] == original[1:]
+    with Session(database) as db:
+        from factory.execution.admission_diagnostics import _recorded_cessation
+
+        assert db.get(AgentResultReceipt, "terminal-receipt").model_dump() == receipt
+        audit = db.get(ProbeObservation, pid)
+        assert json.loads(audit.evidence_json)["cessation_evidence"] == (
+            "terminal_before_dispatch"
+        )
+        assert audit.settled_at is not None
+        assert _recorded_cessation(db, pid)["cessation_evidence"] == (
+            "terminal_before_dispatch"
+        )
+        if unknown:
+            from factory.execution import store
+
+            with pytest.raises(store.SessionOutcomeUnknown):
+                store._assert_sendable(db, after[1]["id"])
+    sweep(observed)
+    assert before(database, pid) == after
+
+
+def test_terminal_guest_receipt_result_arriving_during_observation_retains_hold(
+    database,
+):
+    pid, observed = terminal_before_dispatch(database)
+    original = before(database, pid)
+
+    def result_arrives(_guest):
+        with Session(database) as db, db.begin():
+            receipt = db.get(AgentResultReceipt, "terminal-receipt")
+            receipt.result_body = b"late result"
+            receipt.received_at = datetime.now(timezone.utc)
+        return observed
+
+    sweep(result_arrives)
+    assert before(database, pid) == original
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing_receipt",
+        "second_receipt",
+        "different_guest",
+        "different_owner",
+        "different_local_id",
+        "superseded",
+        "received",
+        "result",
+        "observed",
+        "observer_live",
+        "observer_after_failure",
+        "prepared",
+        "expired_history",
+        "second_dispatch",
+        "missing_dispatch",
+        "naive_dispatch",
+        "workflow",
+        "cancelled",
+        "human_stop",
+        "receipt_fence",
+        "late_pending",
+        "live_guest",
+        "terminal_after_dispatch",
+        "missing_completion",
+    ],
+)
+def test_post_to_terminal_guest_requires_complete_exact_evidence(database, change):
+    pid, observed = terminal_before_dispatch(database)
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        agent = db.get(AgentSession, permit.session_id)
+        turn = db.exec(
+            select(AgentTurn).where(
+                AgentTurn.session_id == agent.id, AgentTurn.seq == permit.pending_seq
+            )
+        ).one()
+        receipt = db.get(AgentResultReceipt, "terminal-receipt")
+        recovery = json.loads(turn.usage_json)
+        now = datetime.now(timezone.utc)
+        if change == "missing_receipt":
+            db.delete(receipt)
+        elif change == "second_receipt":
+            db.add(
+                AgentResultReceipt(
+                    **{
+                        **receipt.model_dump(),
+                        "id": "other-receipt",
+                        "token_sha256": "c" * 64,
+                        "guest_id": "other-guest",
+                        "superseded_at": now,
+                    }
+                )
+            )
+        elif change == "different_guest":
+            receipt.guest_id = "other-guest"
+        elif change == "different_owner":
+            receipt.claim_owner = "other-owner"
+        elif change == "different_local_id":
+            receipt.local_session_id = "other-session"
+        elif change == "superseded":
+            receipt.superseded_at = now
+        elif change == "received":
+            receipt.received_at = now
+        elif change == "result":
+            receipt.result_body = b"result"
+        elif change == "observed":
+            receipt.response_observed_at = now
+        elif change == "observer_live":
+            receipt.response_observer_released_at = None
+        elif change == "observer_after_failure":
+            receipt.response_observer_released_at = now
+        elif change == "prepared":
+            receipt.attempt_phase = "prepared"
+        elif change == "expired_history":
+            recovery["recovery"]["last_dispatch_at"] = (
+                now - timedelta(days=8)
+            ).isoformat()
+            for field in ("invoke_started_at", "last_invoke_at", "updated_at"):
+                observed[field] -= 9 * 24 * 60 * 60 * 1000
+        elif change == "second_dispatch":
+            recovery["recovery"]["dispatch_count"] = 2
+        elif change == "missing_dispatch":
+            recovery["recovery"].pop("last_dispatch_at")
+        elif change == "naive_dispatch":
+            recovery["recovery"]["last_dispatch_at"] = (
+                (now - timedelta(seconds=100)).replace(tzinfo=None).isoformat()
+            )
+        elif change == "workflow":
+            agent.workflow_id = "workflow-owner"
+        elif change == "cancelled":
+            agent.status = "cancelled"
+        elif change == "human_stop":
+            turn.stop_reason = "operator_stop"
+        elif change == "receipt_fence":
+            agent.result_receipt_fence_id = receipt.id
+        elif change == "late_pending":
+            db.add(PendingMessage(session_id=agent.id, seq=5, message_text="queued"))
+        elif change == "live_guest":
+            observed["state"] = "running"
+        elif change == "terminal_after_dispatch":
+            observed["updated_at"] = int(
+                (now - timedelta(seconds=90)).timestamp() * 1000
+            )
+        elif change == "missing_completion":
+            observed["last_invoke_at"] = None
+        turn.usage_json = json.dumps(recovery)
+    original = before(database, pid)
+    sweep(observed)
+    assert before(database, pid) == original
+
+
 @pytest.mark.parametrize("legacy", [False, True])
 def test_exact_probe_settles_preserving_history_and_other_tiers(database, legacy):
     pid = seed(database, legacy=legacy)
@@ -2288,3 +2501,278 @@ def test_raw_diagnostics_attempt_bound_and_foreign_job(database):
     assert [a["permit_id"] for a in result["attempts"]] == list(reversed(ids))[:5]
     assert result["attempts_truncated"] is True
     assert result["raw_found"] is False
+
+
+def redispatch_chain(database, restored=True):
+    """A drain response is adopted, then its continuation dies during restore."""
+    now = datetime.now(UTC)
+    at = lambda seconds: now - timedelta(seconds=seconds)
+    pid = seed(
+        database,
+        tier="interactive",
+        legacy=True,
+        history=3,
+        created_at=at(600),
+        dispatch_count=2,
+        recovery_updates={
+            "last_dispatch_at": at(300).isoformat(),
+            "partial_text": "preserved interrupted output",
+        },
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        agent = db.get(AgentSession, permit.session_id)
+        agent.created_at = at(1000)
+        rows = []
+        for key, guest, count, created, released, superseded in [
+            ("old", "old-guest", 1, 590, 580, 500),
+            ("prior", "guest-one", 1, 501, 350, 289),
+            ("latest", "guest-one", 2, 290, 210, None),
+        ]:
+            if key == "old" and not restored:
+                continue
+            rows.append(
+                AgentResultReceipt(
+                    id=key,
+                    token_sha256=key.ljust(64, "a"),
+                    request_sha256="b" * 64,
+                    session_id=agent.id,
+                    local_session_id=agent.local_session_id,
+                    seq=permit.pending_seq,
+                    dispatch_count=count,
+                    claim_owner="worker" if count == 2 else "previous-worker",
+                    guest_id=guest,
+                    created_at=at(created),
+                    response_observer_released_at=at(released),
+                    superseded_at=at(superseded) if superseded else None,
+                    received_at=at(340) if key == "prior" else None,
+                    result_sha256="c" * 64 if key == "prior" else None,
+                    result_body=b"preserved interrupted result"
+                    if key == "prior"
+                    else None,
+                    accept_until=now + timedelta(hours=12),
+                    retain_until=now + timedelta(days=6),
+                )
+            )
+        db.add_all(rows)
+    views = {
+        "guest-one": proof(
+            invoke_started_at=int(at(490).timestamp() * 1000),
+            last_invoke_at=int(at(340).timestamp() * 1000),
+            updated_at=int(at(220).timestamp() * 1000),
+        ),
+        "old-guest": proof(
+            "old-guest",
+            invoke_started_at=int(at(900).timestamp() * 1000),
+            last_invoke_at=int(at(800).timestamp() * 1000),
+            updated_at=int(at(700).timestamp() * 1000),
+        ),
+    }
+    return pid, views
+
+
+@pytest.mark.parametrize("restored", [False, True])
+@pytest.mark.parametrize("observed_response", [False, True])
+def test_native_redispatch_terminal_chain_preserves_all_history(
+    database, restored, observed_response
+):
+    pid, views = redispatch_chain(database, restored)
+    if observed_response:
+        with Session(database) as db, db.begin():
+            row = db.get(AgentResultReceipt, "prior")
+            row.response_observed_at = row.received_at
+            row.response_observer_released_at = None
+    original = before(database, pid)
+    with Session(database) as db:
+        receipts = [r.model_dump() for r in db.exec(select(AgentResultReceipt)).all()]
+    calls = []
+
+    def observe(guest):
+        calls.append(guest)
+        return views[guest]
+
+    sweep(observe)
+    after = before(database, pid)
+    assert after[0]["state"] == "settled"
+    assert after[0]["outcome"] == "guest_cessation_confirmed"
+    assert after[1:] == original[1:]
+    assert set(calls) == ({"guest-one", "old-guest"} if restored else {"guest-one"})
+    with Session(database) as db:
+        assert receipts == [
+            r.model_dump() for r in db.exec(select(AgentResultReceipt)).all()
+        ]
+        audit = db.get(ProbeObservation, pid)
+        evidence = json.loads(audit.evidence_json)
+        assert evidence["cessation_evidence"] == "terminal_receipt_chain"
+        assert len(evidence["terminal_receipt_chain"]["guests"]) == len(calls)
+        assert "preserved interrupted" not in audit.evidence_json
+        from factory.execution.admission_diagnostics import _recorded_cessation
+
+        assert (
+            _recorded_cessation(db, pid)["cessation_evidence"]
+            == "terminal_receipt_chain"
+        )
+    sweep(observe)
+    assert before(database, pid) == after
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "old_live",
+        "old_missing",
+        "old_wrong_id",
+        "old_bad_generation",
+        "old_future",
+        "old_bad_stamp",
+        "latest_result",
+        "latest_observed",
+        "latest_live_observer",
+        "prior_live_observer",
+        "wrong_owner",
+        "wrong_local",
+        "wrong_session",
+        "prepared",
+        "expired_receipt",
+        "old_permit",
+        "old_session",
+        "missing_first",
+        "extra_receipt",
+        "supersession_missing",
+        "supersession_reordered",
+        "latest_superseded",
+        "current_terminal_before_receipt",
+        "current_terminal_after_release",
+        "other_guest_owner",
+        "fenced",
+        "explicit_stop",
+        "workflow",
+        "pending",
+    ],
+)
+def test_native_redispatch_refuses_incomplete_or_live_chain(database, change):
+    pid, views = redispatch_chain(database)
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        agent = db.get(AgentSession, permit.session_id)
+        turn = db.exec(
+            select(AgentTurn).where(
+                AgentTurn.session_id == agent.id, AgentTurn.seq == permit.pending_seq
+            )
+        ).one()
+        latest = db.get(AgentResultReceipt, "latest")
+        prior = db.get(AgentResultReceipt, "prior")
+        old = db.get(AgentResultReceipt, "old")
+        if change == "old_live":
+            views["old-guest"]["state"] = "parked"
+        elif change == "old_missing":
+            views["old-guest"] = None
+        elif change == "old_wrong_id":
+            views["old-guest"]["session_id"] = "other"
+        elif change == "old_bad_generation":
+            views["old-guest"]["generation"] = True
+        elif change == "old_future":
+            views["old-guest"]["updated_at"] = 9999999999999
+        elif change == "old_bad_stamp":
+            views["old-guest"]["invoke_started_at"] = None
+        elif change == "latest_result":
+            latest.result_body = b"late result"
+        elif change == "latest_observed":
+            latest.response_observed_at = latest.response_observer_released_at
+        elif change == "latest_live_observer":
+            latest.response_observer_released_at = None
+        elif change == "prior_live_observer":
+            prior.response_observer_released_at = None
+        elif change == "wrong_owner":
+            latest.claim_owner = "other"
+        elif change == "wrong_local":
+            old.local_session_id = "other"
+        elif change == "wrong_session":
+            old.session_id = 9999
+        elif change == "prepared":
+            old.attempt_phase = "prepared"
+        elif change == "expired_receipt":
+            old.retain_until = datetime.now(UTC) - timedelta(seconds=1)
+        elif change == "old_permit":
+            permit.created_at = datetime.now(UTC) - timedelta(days=8)
+        elif change == "old_session":
+            agent.created_at = datetime.now(UTC) - timedelta(days=8)
+        elif change == "missing_first":
+            db.delete(prior)
+        elif change == "extra_receipt":
+            data = old.model_dump()
+            data["id"] = "extra"
+            data["token_sha256"] = "extra"
+            db.add(AgentResultReceipt(**data))
+        elif change == "supersession_missing":
+            old.superseded_at = None
+        elif change == "supersession_reordered":
+            old.superseded_at = old.created_at
+        elif change == "latest_superseded":
+            latest.superseded_at = datetime.now(UTC)
+        elif change == "current_terminal_before_receipt":
+            views["guest-one"]["updated_at"] = views["guest-one"]["last_invoke_at"]
+        elif change == "current_terminal_after_release":
+            views["guest-one"]["updated_at"] += 20000
+        elif change == "other_guest_owner":
+            db.add(
+                AgentSession(
+                    local_session_id="other",
+                    workspace="x",
+                    branch="main",
+                    ember_session_id="old-guest",
+                )
+            )
+        elif change == "fenced":
+            agent.result_receipt_fence_id = "fence"
+        elif change == "explicit_stop":
+            turn.stop_reason = "operator_stop"
+        elif change == "workflow":
+            agent.workflow_id = "owned"
+        elif change == "pending":
+            db.add(
+                PendingMessage(
+                    session_id=agent.id,
+                    seq=permit.pending_seq + 1,
+                    message_text="later",
+                )
+            )
+        else:
+            raise AssertionError(change)
+    original = before(database, pid)
+    sweep(lambda guest: views[guest])
+    assert before(database, pid) == original
+
+
+@pytest.mark.parametrize(
+    "change", ["late_result", "new_receipt", "owner", "binding", "stale"]
+)
+def test_native_redispatch_revalidates_after_remote_observation(database, change):
+    pid, views = redispatch_chain(database)
+    candidate = supervision._prepare(pid)
+    now = datetime.now(UTC)
+    observations = {guest: (view, now) for guest, view in views.items()}
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        agent = db.get(AgentSession, permit.session_id)
+        if change == "late_result":
+            db.get(AgentResultReceipt, "prior").result_body = b"changed result"
+        elif change == "new_receipt":
+            data = db.get(AgentResultReceipt, "old").model_dump()
+            data["id"] = "new"
+            data["token_sha256"] = "new"
+            db.add(AgentResultReceipt(**data))
+        elif change == "owner":
+            permit.owner = "new-worker"
+        elif change == "binding":
+            agent.ember_session_id = "replacement"
+        elif change == "stale":
+            observations["old-guest"] = (
+                views["old-guest"],
+                now - timedelta(seconds=31),
+            )
+    original = before(database, pid)
+    supervision._record(
+        candidate, views["guest-one"], now, chain_observations=observations
+    )
+    assert before(database, pid) == original

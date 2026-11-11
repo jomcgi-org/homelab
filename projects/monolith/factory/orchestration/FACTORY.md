@@ -36,7 +36,7 @@ A paused task’s pending decision presents exact receipt/decision identities fo
 
 ### Operating rules
 
-1. No frozen packets, hash pinning or timed approval windows: a PR needs required CI plus one independent exact-head review.
+1. Routine delivery needs required CI plus one independent exact-head review. The explicit `requires_operator` exception below binds an operator's decision to exact evidence and a finite expiry; ordinary delivery has no timed approval window.
 2. One line per task: outcome, blocker, next action, starts and USD used.
 3. Record cost per accepted PR on landing.
 4. Planner turns share the task start budget; past half the starts, stop and respec by hand.
@@ -132,6 +132,32 @@ The optional `backlog_refill` block ships omitted; omission and `enabled: false`
 
 ### Exact-event problem issues
 
+Fresh native refill starts pin `repair_contract` version 2 and a control
+epoch. Two matching, distinct-task attempt-one failures within 24 hours may enter
+the existing repair loop only with native positive `not_invoked` proof and typed
+preinvoke database metadata. The second original task remains machine-paused;
+historical failures, breakers and uncertain execution remain unchanged. The
+source can be closed charter #7366 only while its exact recurring contract,
+unassigned GitHub identity, synchronized mirror and current ownership allow it.
+
+After exact accepted repair rollout, the funding owner may renew the exhausted
+original node from one to two attempts using only the original unused turns and
+budget. It reserves room for every unfinished fixed role, including independent
+review, and grants a finite 30-minute lease. The atomic authorization binds the
+original pause, source run, rollout, policy and graph renewal; physical admission
+rechecks that proof, holds, current accounting and exact reservation. There is no
+paid judge, model verdict or budget increase. Unknown starts refuse. Collector
+and reviewer retain their original model, source commit and read-only contracts.
+No second repair cycle is created for that task. Successful retry alone is not
+recovery: the producer also requires independently reviewed useful publication.
+Historical starts and breakers are not adopted, and landing profiles stay fixed.
+
+The earlier `factory-funding-v1` paid-decision protocol remains staged with
+`PROVIDER_ROUTE_AVAILABLE` false. Its guest endpoint refuses before provider I/O;
+subscription OAuth cannot be reused for direct Messages. Existing v1 waits do not
+acquire v2 authority. See the [supported-authentication proposal](../../ARCHITECTURE.md#funding-stays-disabled)
+for that separate future route.
+
 Optional `problem_issues` creates GitHub issues from `node_stalled`, `workflow_stranded`, `recurring_blocker` and terminal `landing_recovery_exhausted`. It neither creates receipts nor admits tasks. The master switch defaults false; `recurring_blocker` defaults true behind it. Each tick scans at most 50 source audits, creating at most one issue within a rolling 24-hour cap of 3. `factory_configure_problem_issues` lets a standing operator preview/apply the master, recurring-blocker and stranded-workflow switches without changing generation, existing receipts or any other settings. Newly enabled sources are watermarked on the next producer tick. The existing producer owns deduplication and recursion prevention; ordinary intake/refinement owns future work. [MCP activation](../MCP.md#enable-recovery-problem-issues) records the exact arguments.
 
 ### Bounded repair landing delegation
@@ -176,9 +202,106 @@ an external action that already completed. Policy replacement or drift invalidat
 the authorization. Rollout and same-node recovery remain their existing owners.
 See [activation and limitations](../MCP.md#enable-bounded-repair-landing).
 
+### Standing delivery landing delegation
+
+An ordinary intake-admitted delivery has no repair provenance and no owner-PR
+adoption, so before this owner it waited for a per-head operator grant even
+after independent approval and passing CI. `delivery_landing_delegation` is a
+third default-off standing decision, configured through
+`factory_configure_delivery_landing`. It records the standing decision and a
+separate `factory:delivery-landing` audit per exact head. It never writes a
+human grant, and explicit per-head operator grants stay separate.
+
+Each receipt has one authority owner: an explicit grant, the owner-PR
+delegation, the repair delegation for producer-marked repairs, or this owner
+for everything else. None falls through to another.
+
+The boundary is a deny-list, shown in full by preview. Joe set it on 2026-11-10
+after review rounds had widened the exclusions to whole projects and domains
+until three of the 23 waiting deliveries still qualified. Do not widen it into
+whole projects or domains without his decision.
+
+Only paths under `projects/` qualify. Excluded:
+
+- The factory and its framework packages: monolith `factory/`, `core/`,
+  `shared/`, `app/`, `framework/`, `agent/`, `agent_kubernetes/`,
+  `agent_sessions/` and `swarm/`.
+- Deployment and schema: `chart`, `deploy`, `migrations`, `crd`, `crds`,
+  `templates`, `overlays` and `cluster` directories, and the `gke-apps`,
+  `gke-cluster`, `platform`, `platform-gke`, `operators` and `monolith-public`
+  projects.
+- Credential and isolation code: monolith `faas/`, `artifact/`, `sandbox/` and
+  `personal_retrieval_audit/`, EmberVM key management, signing, xDS, egress
+  and the jailer driver, the Firecracker egress proxy, and any path with a
+  word beginning `auth`, `token`, `secret`, `credential`, `password`, `login`,
+  `redact`, `visib`, `hook` or `grant`, matched after splitting camelCase.
+- Public routes: any path with a word beginning `public`, each public domain's `__init__.py`
+  route registration, and the frontend build, cache-header and exposure-guard
+  files.
+- Agent instructions, Bazel macros, the root authority guard tests, the
+  repository catalog and `projects/monolith/ARCHITECTURE.md`, which defines this
+  delegation's measure and stop condition.
+
+Other private project code is eligible, including `projects/monolith/BUILD`,
+which most monolith changes must edit. At most forty files may change, as
+regular non-executable blobs. The typed independent review must attest the
+complete diff at its exact merge base and head as private, internal and
+reversible, with every public, security, credential and destructive flag false.
+
+The deny-list is a second check on that attestation, not an isolation boundary.
+Domain packages the factory imports, such as `knowledge/`, `goosecracker/` and
+`grimoire/`, stay eligible and run in its process, and API or MCP modules in
+eligible domains are not excluded by path. Their safety relies on the typed
+review, required CI and the merge queue; preview states this in
+`path_limitations`. Binary regular blobs remain eligible: tree checks bind blob
+identities and modes without inspecting content, so a reviewer unable to assess
+that content cannot attest `private_internal_reversible`.
+
+Preview and apply bind the standing operator's subject as well as the policy,
+version and bounds. File evidence records base and head blob identities, with
+both names for renames. The review's `landing_scope.paths` lists only the new
+name for a rename, matching GitHub's compare listing. Removed files must be safe
+at the merge base; modified and renamed files must be safe in both trees.
+Missing or truncated tree evidence refuses derivation.
+
+Only the task's own `factory/<task-id>` branch qualifies, on an open, unassigned
+issue with no held label. Receipt holds, unknown execution, recovery limits,
+required CI and the protected queue apply as for the other owners. The operator
+sets 1 to 50 new derivations per rolling 24 hours across authorizations; each
+task gets at most three. Rate exhaustion waits for the next landing tick.
+Disable, policy replacement, or a rollout that changes the deny rules or bounds
+invalidates the authorization, and the queue observer fences outstanding grants.
+
+Repository delivery remains default-off. Operational acceptance is outstanding:
+
+- [ ] Verify the deployed revision containing this delivery.
+- [ ] Obtain separately authorized standing-operator preview/apply evidence.
+- [ ] Observe one eligible ordinary delivery landing without a per-head grant.
+- [ ] Confirm revocation fences an outstanding queued derived grant.
+- [ ] Record the delivery measure, regression checks and stop-condition verdict
+      documented in [ARCHITECTURE.md](../../ARCHITECTURE.md#4-agents).
+
 ### Escalation decisions
 
 A `needs-human` verdict arrives as two to four options, recommendation first; `effect` is one of `agent-ready`, `close`, `split`, `defer`, `hold`, `supersede`. Every unresolved escalation also carries the fixed escape group, of which only the dismiss is non-final. Deciding uses `POST /api/swarm/factory/decisions/{receipt_id}` with an exact `decision_id` and a stable `request_key`. `FACTORY_OPERATOR_EMAILS` is empty by default. The derived allowance is `max_attempts` over live unsucceeded nodes plus spent turns plus engine-insertable rounds; an edit exceeding the envelope refuses with `envelope_exceeded`, never for dollars.
+
+A machine pause writes a stop-only card: its single option stops the task and
+leaves the issue open. That is a restriction, not a decision, so it does not
+wait for a person indefinitely. Once the task deadline has passed, and 24 hours
+have elapsed since both the card was written and the current pause was taken,
+`factory:pause-expiry` applies that same stop. Cancellation is requested and
+the slot is released when the reconciler settles the task. An operator's own
+pause, a landing hold, a recorded and unconsumed repair wait for that pause
+(whatever the lane or policy state), a decision in flight, unknown execution
+and human ownership all keep the card. Expiry never offers or applies any
+other choice.
+
+A factory-owned pause with no card and no open question is also stopped at its
+deadline: the task settles `cancelled` with `task_deadline` evidence and the
+issue stays open. No new task is started, so attempts are never reset. An
+operator's own pause, a funding pause that awaits an operator's approval, a
+retained planner question and a landing hold still raise the continue-or-hold
+card, because those are a person's decision.
 
 ### Routine planner pauses
 
@@ -259,12 +382,34 @@ A planner decision applies together under one expected revision. The server owns
 
 Capacity releases only to the explicit reconciliation owner after fresh authoritative terminal proof. Uncertain permit settlement is always on.
 
+A native interactive `delivery_error` may release only its exact permit when
+fresh terminal guest evidence predates the first dispatch and the complete,
+unexpired receipt chain contains one matching attempted POST with its observer
+released. Missing, prepared, superseded or conflicting receipts, results, pending
+work, changed ownership and explicit holds refuse this proof. Factory and routine
+owners retain their existing paths. Settlement preserves the failed turn,
+unknown-outcome marker, cost, receipt and binding; it does not retry the turn.
+
 ### Guest reuse cleanup
 
 The invoke terminal path releases the exact receipt it fenced, then runs completion cleanup. A receipt inside its acceptance window with nothing committed stays fenced.
 (see: /projects/monolith/factory/execution/result_receipts.py)
 
 ### Landing
+
+For an unheld, settled delivery requiring an explicit operator decision,
+`factory_release_landing_hold` accepts `requires_operator` scope with evidence,
+four acknowledged effect flags, a rollback plan and an absolute UTC expiry of
+at most 24 hours. Preview binds the authenticated standing human, owned receipt
+and PR, current base tip, immutable merge base, head, complete bounded file
+manifest, native typed independent review and successful CI. Apply requires the
+same actor and preview digest. The schema-2 grant is revalidated by the existing
+landing and queue owners. Revocation retains an audit-specific tombstone;
+expired, revoked or invalid explicit grants cannot fall through to delegation.
+See the [operator approval contract](../../ARCHITECTURE.md#explicit-operator-landing-approval)
+for supported files, review evidence and the asynchronous revocation limit.
+This scope preserves all holds and task state. Routine model and runtime
+maintenance retains the root delivery authority.
 
 `factory_release_landing_hold` supports explicitly approved `public_docs` publication only for modifications to `projects/monolith/ARCHITECTURE.md` and `projects/monolith/factory/orchestration/FACTORY.md`. The server verifies exact-head paths, regular non-executable files and bounded UTF-8 text. Apply atomically records an audited grant and removes only the landing hold, preserving acceptance history, accounting and other holds. Replay acknowledges only; changed heads need fresh authorization. Except for the handoff below, native independent exact-head review remains mandatory. CI and protected queue gates always apply. The grant neither resumes execution nor refreshes accepted delivery.
 
@@ -311,6 +456,17 @@ Automatic safety pauses keep their active receipt and reservations. The pause an
 The deadline-release implementation stays hard-staged off, and agent workloads have a twelve-hour runtime backstop. An uncertain attempt keeps its capacity until exact control-plane evidence proves its guest ceased. Settled cessation proof extends to the at-most-once 502 and the never-invoked guest. Attempt stops lock factory control, capacity pool, then session; Ember owns physical cessation.
 
 ### Supervised cessation
+
+Native interactive delivery errors after a drain redispatch may settle capacity
+from a complete retained two-dispatch receipt chain. This separate proof accepts
+at most three attempted receipts and two guests, including a first-dispatch
+restore. Every guest needs fresh positive eviction/destruction evidence; absent
+or live records refuse. The supervisor locks and revalidates all same-turn
+receipts, current ownership and quiescence after observation. Retention must
+cover both session and permit creation, every observer must have finished, and
+the latest exact receipt must have no result. Earlier interrupted responses,
+failed turns, costs, unknown markers and workspace bindings remain unchanged.
+This releases only capacity and grants no retry, task recovery or hold override.
 
 `factory_reconcile` kind `settled_retry` is an explicit standing-operator recovery for
 one missing first-dispatch response followed by a proven uninvoked second
@@ -375,6 +531,32 @@ Linux orchestrator CI and a real bounded operating trial stay the delivery gates
 ## Funding
 
 Funding lives in `factory_funding.py`: `request` records one judge node, `settle` verifies its authority, `decide` resolves a validated artifact to `continue`, `steer` or `stop`. A continue or steer grants at most 20 work turns and a 30-minute review horizon. Reservations and unknown outcomes stay charged; a factory start reserves a ceiling and settles at the reported cost, falling back to the token-usage list price. A judge proposing a larger budget pauses the receipt for operator approval. Continuation contracts remain: the legacy pair below and an operator `progress_continuation` two-hour lease for one paused recovered task.
+
+Native refill repair uses the deterministic version-2 remaining-allocation grant
+above (#7583). It records `native_repair_resume_authorized` and an explicitly typed
+`funding_granted`, with no funding-review request, settlement or model verdict.
+The original task budget and turn ceilings do not change. A 30-minute deadline
+covers the retry, independent review and publication; grants cannot renew it.
+Only fresh typed positive not-invoked evidence on the exact recurring charter
+#7366 contract can produce a bounded repair pause. Closed-charter authority never
+overrides current human/security holds. The repair ticket exports only fixed role,
+allowlisted stage/SQLSTATE and code-selected owning paths, reauthenticated before
+publication. Exact verified repair rollout precedes the original-node retry;
+useful reviewed publication is observed separately. Historical failures and
+breakers are not enrolled. The paid `factory-funding-v1` profile and its guest
+endpoint remain disabled; ordinary funding is unchanged.
+
+The currently classified database stages belong to execution admission or result
+receipts, outside both standing landing path profiles. Their repairs need explicit
+operator-owned exact-head landing authorization; this implementation does not
+expand those profiles. The exact existing route and its limits are recorded in
+[the per-repair runbook](../../ARCHITECTURE.md#native-repair-landing-authority).
+Eligible observation repairs exercise the real candidate
+and queue owners in regression tests. Injected external rollout evidence tests
+post-operator recovery with the paid provider disabled;
+they do not prove autonomous native repair landing. Naturally occurring
+useful-delivery acceptance remains unproven;
+neither a passing fixture nor this PR completes #7583.
 
 Eligible funding reviews include progress, proximity-to-landing and issue-value criteria and server-read evidence from `factory_judge.py`. Explicit doubt steers to an operator card, and the turn ceiling is the original allowance plus `factoryMeritJudgeMaxExtensionMultiple` times it. Missing pinned policy and historical requests without merit metadata retain their legacy handling.
 
@@ -470,7 +652,8 @@ Repair descriptions expose code paths and synthetic acceptance only; the
 private ledger retains exact source identity. Recursive repair issues refuse.
 For a fresh exhausted-node allocation pause, funding records exact machine
 provenance before any repair. Verified rollout of the bound producer repair
-permits one funding review using native capacity release, with no manual resume.
+permits one funding review for ordinary tasks, or the deterministic original-allocation
+retry for native version-2 refill tasks, using native capacity release with no manual resume.
 The review and settlement preserve cumulative caps, prior attempts, ownership,
 uncertainty and explicit holds. Legacy cards are never adopted; operator
 reassertion or concurrent evidence changes refuse this authority.

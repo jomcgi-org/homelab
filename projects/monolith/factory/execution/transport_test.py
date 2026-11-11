@@ -40,6 +40,65 @@ def _brick_events():
     ]
 
 
+@pytest.mark.parametrize("old_runtime", [False, True])
+def test_funding_profile_transport_is_versioned_and_never_falls_back(
+    monkeypatch, old_runtime
+):
+    requests = []
+    profile = {
+        "name": "factory-funding-v1",
+        "model": "opus",
+        "request_id": 9,
+        "request_sha256": "a" * 64,
+        "schema_sha256": "b" * 64,
+    }
+
+    async def handler(request):
+        requests.append(request)
+        assert request.headers["X-Ember-Guest-Path"] == "/shim/funding-decision-v1"
+        body = json.loads(request.content)
+        assert body["execution_profile"] == profile
+        assert body["turn_seq"] == 1 and body["dispatch_id"]
+        assert not any(
+            k in body
+            for k in (
+                "repo",
+                "branch",
+                "system_prompt",
+                "push_format",
+                "workspace_handoff",
+            )
+        )
+        return (
+            httpx.Response(404, json={"error": "not found"}, request=request)
+            if old_runtime
+            else _turn_response(request)
+        )
+
+    _client(monkeypatch, handler)
+
+    async def run():
+        return await transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("guest", "token", None),
+            None,
+            "decision",
+            model="opus",
+            agent_session_id=42,
+            claim_owner="executor",
+            turn_seq=1,
+            dispatch_count=1,
+            artifact_path=".factory/t/funding.json",
+            execution_profile=profile,
+        )
+
+    if old_runtime:
+        with pytest.raises(EmberVMTransportError):
+            asyncio.run(run())
+    else:
+        asyncio.run(run())
+    assert len(requests) == 1
+
+
 def _lock_not_available():
     class LockNotAvailable(Exception):
         sqlstate = "55P03"
@@ -3887,3 +3946,30 @@ def test_residency_lost_invoke_is_never_reposted_or_replaced(monkeypatch):
         )
     assert len(requests) == 1
     assert invocation["attempted"] is True
+
+
+def test_funding_profile_fence_imports_without_orchestration_writers():
+    """The pruned execution library keeps ordinary sessions independent of writers."""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import sys
+from factory.orchestration import funding_profile, backlog_refill_repair
+from factory.execution.preinvoke_failure import database_failure
+assert funding_profile.session_profile('factory:t:implement:1') is None
+assert not backlog_refill_repair.execution_failure_eligible('factory:t:implement:1')
+assert database_failure({'phase': 'receipt_prepare', 'sqlstate': '42703', 'attempted': False})
+assert 'factory.orchestration.factory_funding' not in sys.modules
+assert 'factory.orchestration.graph' not in sys.modules
+""",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

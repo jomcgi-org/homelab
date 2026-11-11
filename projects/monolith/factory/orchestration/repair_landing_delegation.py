@@ -363,20 +363,30 @@ def _provenance(db, row, authorization_id):
     return matches[0]
 
 
-def _issue(row):
+def _issue(row, *, source_session=None):
     from factory.orchestration import (
         factory_funding as funding,
         factory_landing as landing,
     )
 
     issue = landing.github_get(row.repo, f"issues/{row.issue_number}")
+    from factory.orchestration.backlog_refill_repair import objective_open
+
+    objective = issue.get("state") == "open" or (
+        source_session is not None
+        and objective_open(
+            {"id": row.task_id, "issue_number": row.issue_number},
+            issue,
+            session=source_session,
+        )
+    )
     labels = {
         (x.get("name", "") if isinstance(x, dict) else str(x)).lower()
         for x in issue.get("labels") or []
     }
     _require(
         issue.get("number") == row.issue_number
-        and issue.get("state") == "open"
+        and objective
         and not issue.get("assignees")
         and not labels & funding.ROUTINE_HELD_LABELS,
         "issue_held",
@@ -429,7 +439,7 @@ def _candidate(db, row, number, head):
     refusal = releases.execution_refusal(db, source.task_id)
     if refusal:
         raise ValueError("repair_landing_source_" + refusal)
-    issue, source_issue = _issue(row), _issue(source)
+    issue, source_issue = _issue(row), _issue(source, source_session=db)
     _require(
         provenance["marker"] in issue["body"] and provenance["marker"] in row.body,
         "producer_identity_changed",

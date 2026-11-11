@@ -277,6 +277,7 @@ def _task_row(receipt: dict, *, queue_position: int | None = None) -> dict:
         "progress": _progress(receipt.get("nodes") or []),
         "stop": _stop_summary(receipt),
         "landing_refusal": receipt.get("landing_refusal"),
+        "landing_wait": receipt.get("landing_wait"),
     }
 
 
@@ -303,6 +304,50 @@ def _landing_refusal(db, task_id):
         .limit(1)
     ).first()
     if event is None or event.action != "merge_arm_refused":
+        return None
+    detail = json.loads(event.detail_json)
+    return {
+        "source": "recorded_landing_audit",
+        "audit_id": event.id,
+        "observed_at": iso_or_str(event.created_at),
+        "reason": str(detail.get("reason") or "unspecified")[:200],
+        "pr_number": detail.get("pr_number")
+        if type(detail.get("pr_number")) is int
+        else None,
+    }
+
+
+# A grant, recovery request or merge answers the wait recorded before it.
+_LANDING_WAIT_SUPERSEDED_BY = (
+    "delivery_landing_authorized",
+    "owner_pr_landing_authorized",
+    "repair_landing_authorized",
+    "operator_scoped_landing_authorized",
+    "landing_recovery_requested",
+    "merge_armed",
+    "merged",
+)
+
+
+def _landing_wait(db, task_id):
+    """Latest recorded authority wait, not a live queue or GitHub observation."""
+    from sqlmodel import select
+    from factory.orchestration.factory_models import FactoryAudit
+
+    if not task_id:
+        return None
+    event = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.task_id == task_id,
+            FactoryAudit.action.in_(
+                ("landing_authorization_wait", *_LANDING_WAIT_SUPERSEDED_BY)
+            ),
+        )
+        .order_by(FactoryAudit.id.desc())
+        .limit(1)
+    ).first()
+    if event is None or event.action != "landing_authorization_wait":
         return None
     detail = json.loads(event.detail_json)
     return {
@@ -372,6 +417,7 @@ def _status_payload(
         "refill": view.get("refill"),
         "repair_landing": view.get("repair_landing"),
         "owner_pr_landing": view.get("owner_pr_landing"),
+        "delivery_landing": view.get("delivery_landing"),
         "active": active,
         "queued": queued,
         "needs_operator": needs_operator,
@@ -744,6 +790,7 @@ def _operator_view(
                 else:
                     cards.append(shape_receipt(receipt))
                 cards[-1]["landing_refusal"] = _landing_refusal(db, row.task_id)
+                cards[-1]["landing_wait"] = _landing_wait(db, row.task_id)
             buckets[name] = cards
             pagination[name] = _pagination(total, offset, limit, len(cards))
         # Lane accounting needs all active/eligible queue identities, including
@@ -771,6 +818,7 @@ def _operator_view(
         decisions = _decision_page(db, False, offset, limit)
         generated = _now()
         from factory.orchestration import (
+            delivery_landing_delegation,
             owner_pr_landing_delegation,
             refill_control,
             repair_landing_delegation,
@@ -792,6 +840,7 @@ def _operator_view(
             "refill": refill_status,
             "repair_landing": repair_landing_delegation.status(db),
             "owner_pr_landing": owner_pr_landing_delegation.status(db),
+            "delivery_landing": delivery_landing_delegation.status(db),
             "intake": controls.intake_state(policy, session=db),
             "lanes": controls.lane_usage(
                 policy,
@@ -886,6 +935,9 @@ async def factory_status(
         ``landing_refusal`` is the latest recorded refusal in the current
         landing attempt, not a live GitHub or queue check. A newer recovery
         or accepted merge supersedes it. Arming or observing a merge does not.
+        ``landing_wait`` is the latest recorded reason an approved delivery
+        still lacks landing authority. A newer grant, recovery, arm or merge
+        answers it. Null does not prove the delivery is authorized.
         ``control_catalog`` reports native controls and their supported targets.
         It cannot observe or refresh a gateway or caller's cached tool list.
     """
@@ -1852,7 +1904,7 @@ async def factory_recover_expired_task(
 
 @mcp.tool
 async def factory_release_landing_hold(
-    operation: Literal["preview", "apply"],
+    operation: Literal["preview", "apply", "revoke"],
     receipt_id: Annotated[MCPInteger, Field(gt=0, le=2**63 - 1)],
     pr_number: Annotated[MCPInteger, Field(gt=0)],
     head_sha: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")],
@@ -1862,6 +1914,9 @@ async def factory_release_landing_hold(
         str | None, Field(pattern=r"^[0-9a-f]{64}$")
     ] = None,
     scope: dict | None = None,
+    authorization_audit_id: Annotated[
+        MCPInteger | None, Field(gt=0, le=2**63 - 1)
+    ] = None,
 ) -> dict:
     """Preview a hold release or head refresh as a standing human operator.
 
@@ -1905,6 +1960,24 @@ async def factory_release_landing_hold(
     changed heads, renewed holds or unknown execution. No other receipt qualifies.
     Independent exact-head review, required CI and the global merge switch still
     apply. Scope is an operator attestation, not an automatic code classifier.
+
+    For an unheld settled delivery whose typed native review requires an
+    operator, use classification="requires_operator", evidence, rollback_plan,
+    an absolute UTC expires_at no more than 24 hours ahead, and
+    acknowledged_effects containing strict booleans for public_facing,
+    security_sensitive, authentication_or_credentials and destructive. Every
+    effect reported by the native independent review must be acknowledged.
+    The server proves the exact base branch tip, merge base, head and complete
+    bounded text-file diff, and binds the review, current successful CI, policy,
+    ownership and execution state. The preview digest also binds your identity.
+    Apply grants one factory arming attempt, not standing authority. Expiry or
+    evidence drift requires a fresh preview and approval. This mode never
+    releases any hold, changes acceptance, or bypasses the protected queue.
+    Revoke with operation="revoke", the returned authorization_audit_id,
+    identical target, reason and a new request_key. Revocation records a durable
+    tombstone and cannot affect a later replacement grant. It does not require
+    GitHub availability. The asynchronous queue observer disarms stale grants.
+    it cannot make revocation atomic with an external GitHub merge.
     """
     principal = current_principal()
     refusal = _refuse(principal)
@@ -1916,9 +1989,41 @@ async def factory_release_landing_hold(
 
         try:
             scoped = {"scope": scope} if scope is not None else {}
+            if operation == "revoke":
+                from factory.orchestration import operator_landing_authorization
+
+                if (
+                    not request_key
+                    or authorization_audit_id is None
+                    or scope is not None
+                    or expected_preview_sha256 is not None
+                ):
+                    return {
+                        "ok": False,
+                        "reason": "landing_revoke_requires_exact_authorization_and_request_key",
+                    }
+                return operator_landing_authorization.revoke(
+                    receipt_id,
+                    pr_number,
+                    head_sha,
+                    reason,
+                    actor=principal.subject,
+                    request_key=request_key,
+                    authorization_audit_id=authorization_audit_id,
+                )
+            if authorization_audit_id is not None:
+                return {
+                    "ok": False,
+                    "reason": "landing_authorization_id_only_for_revoke",
+                }
             if operation == "preview":
                 return releases.preview(
-                    receipt_id, pr_number, head_sha, reason, **scoped
+                    receipt_id,
+                    pr_number,
+                    head_sha,
+                    reason,
+                    actor=principal.subject,
+                    **scoped,
                 )
             if not request_key or not expected_preview_sha256:
                 return {
@@ -2640,6 +2745,126 @@ async def factory_configure_owner_prs(
             reason,
             request_key,
             expected_preview_sha256,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
+async def factory_release_owner_pr_hold(
+    operation: Literal["preview", "apply"],
+    action: Literal["release", "revoke"],
+    pr_number: Annotated[MCPInteger, Field(ge=1)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    repo: str = "jomcgi-org/homelab",
+    request_key: str | None = None,
+    expected_preview_sha256: str | None = None,
+) -> dict:
+    """Release or restore the text holds on one owner PR. Standing operators only.
+
+    Owner PR discovery treats hold wording in a PR description or discussion
+    as an explicit hold. Use action release when the owner has decided that
+    wording no longer binds, with the decision as reason. Preview first, then
+    apply identical arguments with the preview digest and a new request_key.
+    Replay the same key after a lost response.
+
+    A release waives the exact description read at preview, the comments
+    written before it, and holds inherited from items the description only
+    mentions. An edited description needs a new release. Labels, assignees,
+    later comments, the closing objective issue and every review, CI, landing
+    and merge gate still bind. Standing landing delegations do not
+    read a release, so a released PR lands on a per-head grant. It starts no
+    work, changes no policy and lands nothing. Action revoke restores the wording.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from factory.orchestration import owner_pr_hold_release
+
+    try:
+        if operation == "preview":
+            return await asyncio.to_thread(
+                owner_pr_hold_release.preview, repo, pr_number, action, reason
+            )
+        if not request_key or not expected_preview_sha256:
+            return {"ok": False, "reason": "owner_pr_hold_release_preview_required"}
+        return await asyncio.to_thread(
+            owner_pr_hold_release.apply,
+            principal.subject,
+            repo,
+            pr_number,
+            action,
+            reason,
+            request_key,
+            expected_preview_sha256,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
+async def factory_configure_delivery_landing(
+    operation: Literal["preview", "apply"],
+    enabled: bool,
+    expected_version: Annotated[MCPInteger, Field(ge=0)],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    max_landings: Annotated[MCPInteger | None, Field(ge=1, le=50)] = None,
+    request_key: str | None = None,
+    expected_preview_sha256: str | None = None,
+) -> dict:
+    """Preview or apply standing landing authority for ordinary deliveries.
+
+    Standing operators only. Default off. Read factory_status for version,
+    preview, review the deny rules and bounds, then apply identical arguments
+    with the preview digest and a new request_key. Replay the same key after a
+    lost response. Enabling requires max_landings from 1 to 50, the cap on new
+    derivations per rolling 24 hours. Disabling requires it omitted.
+
+    While enabled, the landing owner may derive exact-head authority for an
+    intake-admitted delivery on its own factory task branch. The independent
+    typed review must classify the complete diff as private, internal and
+    reversible with every public, security, credential and destructive flag
+    false. Every changed path must fall outside the previewed deny rules, with
+    at most forty regular files. The issue must be open, unassigned and unheld.
+    Required CI, receipt holds, unknown-execution fences and the protected merge
+    queue all still apply. Each task gets at most three derivations.
+
+    Repair tasks, owner PRs and explicit per-head operator grants keep their own
+    owners and never fall through to this one. The previewed deny rules exclude
+    the factory and its framework packages, deployment and schema, credential
+    and isolation code, public routes, agent instructions and
+    projects/monolith/ARCHITECTURE.md with its delivery measure and stop
+    condition. Other private project code is eligible, including
+    projects/monolith/BUILD. Review path_limitations: the deny-list is a second
+    check, not isolation. Eligible monolith code runs in the factory process,
+    and binary regular blobs remain eligible, so safety relies on the typed
+    review, required CI and the merge queue. Excluded paths need a per-head
+    grant. Joe set this boundary on 2026-11-10. Widening the exclusions to whole
+    projects or domains needs his decision.
+    Policy replacement or a deny-rule change invalidates authorization.
+    Disabling revokes future arming and
+    the landing observer fences queued grants on its next tick. Nothing is
+    dispatched, merged or resumed by this operation. Re-read
+    factory_status.delivery_landing afterwards.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from factory.orchestration import delivery_landing_delegation
+
+    try:
+        return await asyncio.to_thread(
+            delivery_landing_delegation.configure,
+            principal,
+            operation,
+            enabled,
+            expected_version,
+            reason,
+            max_landings=max_landings,
+            request_key=request_key,
+            expected_preview_sha256=expected_preview_sha256,
         )
     except ValueError as exc:
         return {"ok": False, "reason": str(exc)}

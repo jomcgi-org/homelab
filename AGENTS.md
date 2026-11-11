@@ -14,6 +14,18 @@ maintenance policy authorizes implementation, review, merge and rollout.
 Routine human review or a separate "merge" instruction is unnecessary.
 Existing approval covers the same action and scope.
 
+Routine autonomous maintenance includes model choice and IDs, and supported
+CLI/runtime version bumps. Use proportionate compatibility checks, including
+the service's dev conformance gate where applicable. Preserve the review, CI,
+merge queue and verified rollout evidence below. Diagnose failed gates and
+repair or roll back within scope. A model or version change alone needs no new
+human decision.
+
+The public `jomcgi-org/homelab` repository is the authorized publication
+destination for reviewed homelab model/runtime changes and their accompanying
+infrastructure documentation. Joe confirmed this standing permission on
+2026-11-07.
+
 Escalate only conflicting goals, a human-owned constraint exception, unapproved
 destructive work, or an explicit human-owned decision/hold. Name the decision
 and the rule requiring it. Keep independent work moving. If Joe may be away,

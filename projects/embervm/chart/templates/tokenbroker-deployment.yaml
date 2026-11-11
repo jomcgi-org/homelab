@@ -2,6 +2,22 @@
 {{- if and .Values.tokenBroker.plaintext.retireProtectedRoutes (not .Values.tokenBroker.spiffe.enabled) }}
 {{- fail "tokenBroker.plaintext.retireProtectedRoutes requires tokenBroker.spiffe.enabled" }}
 {{- end }}
+{{- if not (kindIs "bool" .Values.tokenBroker.loginAuth.required) }}
+{{- fail "tokenBroker.loginAuth.required must be a boolean" }}
+{{- end }}
+{{- if .Values.tokenBroker.loginAuth.required }}
+{{- if not .Values.tokenBroker.spiffe.enabled }}
+{{- fail "tokenBroker.loginAuth.required requires tokenBroker.spiffe.enabled" }}
+{{- end }}
+{{- if eq (len .Values.tokenBroker.loginAuth.clientSpiffeIds) 0 }}
+{{- fail "tokenBroker.loginAuth.clientSpiffeIds must be nonempty when loginAuth.required" }}
+{{- end }}
+{{- range .Values.tokenBroker.loginAuth.clientSpiffeIds }}
+{{- if eq (trim .) "" }}
+{{- fail "tokenBroker.loginAuth.clientSpiffeIds entries must be nonempty" }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- $spiffeClientIDs := join "," .Values.tokenBroker.spiffe.clientSpiffeIds }}
 {{- if and .Values.tokenBroker.spiffe.enabled (eq (len .Values.tokenBroker.spiffe.clientSpiffeIds) 0) }}
 {{- $spiffeClientIDs = printf "spiffe://%s/ns/%s/sa/%s" .Values.tokenBroker.spiffe.trustDomain .Release.Namespace (include "embervm.noded.serviceAccountName" .) }}
@@ -56,9 +72,13 @@ spec:
             - { name: TOKENBROKER_GRANTS, value: {{ toJson .Values.tokenBroker.grants | quote }} }
             - { name: TOKENBROKER_CODEX_USAGE_REFRESH_SECONDS, value: {{ .Values.tokenBroker.codexUsageRefreshSeconds | quote }} }
             - { name: TOKENBROKER_QUOTA_CONFIGMAP, value: {{ printf "%s-quota" (include "embervm.tokenBroker.fullname" .) | quote }} }
-            # BROKER_LISTEN_ADDR is the plaintext health, metrics, and login listener.
+            # Plaintext health/metrics stay available when protected routes retire.
             - { name: BROKER_LISTEN_ADDR, value: ":8080" }
             - { name: BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES, value: {{ .Values.tokenBroker.plaintext.retireProtectedRoutes | quote }} }
+            {{- if .Values.tokenBroker.loginAuth.required }}
+            - { name: BROKER_LOGIN_AUTH_REQUIRED, value: "true" }
+            - { name: BROKER_LOGIN_SPIFFE_CLIENT_IDS, value: {{ join "," .Values.tokenBroker.loginAuth.clientSpiffeIds | quote }} }
+            {{- end }}
             {{- if .Values.tokenBroker.spiffe.enabled }}
             # BROKER_TLS_LISTEN_ADDR is the SPIFFE mTLS grants listener.
             - { name: BROKER_TLS_LISTEN_ADDR, value: {{ printf ":%v" .Values.tokenBroker.spiffe.tlsPort | quote }} }

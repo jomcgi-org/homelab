@@ -50,6 +50,7 @@ from factory.execution.mcp import (
 )
 from core.clock import as_utc, iso
 from core.db import get_session
+from core.github import async_github_get
 from core.identity import verified_email
 from faas.embervm_client import EmberVMTransportError
 from factory.execution.transport import EmberInterruptFailure
@@ -657,13 +658,20 @@ def list_offered_models() -> dict:
 
 
 @router.get("/codex-login/status")
-async def codex_login_status(grant: str = Query(default="codex-cluster")):
+async def codex_login_status(
+    grant: str = Query(default="codex-cluster"),
+    environment: str = Query(default="prod"),
+):
     try:
         grant = mcp._grant_or_raise(grant)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid grant name") from exc
     try:
-        return await mcp._broker_request("GET", f"/grants/{grant}/login/status")
+        mcp._login_environment_or_raise(environment, grant)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        return await mcp._broker_login_request("GET", grant, environment=environment)
     except Exception:
         return JSONResponse(
             status_code=502,
@@ -672,13 +680,20 @@ async def codex_login_status(grant: str = Query(default="codex-cluster")):
 
 
 @router.post("/codex-login/start")
-async def codex_login_start(grant: str = Query(default="codex-cluster")):
+async def codex_login_start(
+    grant: str = Query(default="codex-cluster"),
+    environment: str = Query(default="prod"),
+):
     try:
         grant = mcp._grant_or_raise(grant)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid grant name") from exc
     try:
-        data = await mcp._broker_request("POST", f"/grants/{grant}/login/start")
+        mcp._login_environment_or_raise(environment, grant)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        data = await mcp._broker_login_request("POST", grant, environment=environment)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 409:
             try:
@@ -711,6 +726,8 @@ async def codex_login_start(grant: str = Query(default="codex-cluster")):
             status_code=502,
             content={"error": "Codex login broker unavailable"},
         )
+    if environment == "dev":
+        return data
     return {
         "verification_url": data.get("verification_url"),
         "user_code": data.get("user_code"),
@@ -1246,14 +1263,11 @@ async def _start_session(
 
 
 async def _github_get(url: str) -> httpx.Response:
-    headers = {"Accept": "application/vnd.github+json"}
-    token = os.environ.get("GITHUB_API_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(url, headers=headers)
-        response.raise_for_status()
-        return response
+    response = await async_github_get(
+        url, timeout=10.0, follow_redirects=False, user_agent="monolith-execution"
+    )
+    response.raise_for_status()
+    return response
 
 
 @router.get("/repos")

@@ -1102,6 +1102,11 @@ def _schema(node_key: str, task_id: str | None = None) -> dict:
     if node_key.startswith("conductor_funding_"):
         from factory.orchestration.factory_funding import SCHEMA
 
+        if task_id:
+            from factory.orchestration.funding_profile import schema
+
+            return schema(task_id, node_key)
+
         return SCHEMA
     if node_key.startswith("conductor_"):
         return DECISION_SCHEMA
@@ -6551,6 +6556,23 @@ def _audit_once(task_id: str, key: str, action: str, detail: dict) -> bool:
     return True
 
 
+def _machine_paused(task_id: str) -> bool:
+    """Whether the factory, not an operator, took the task's current pause."""
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_funding_limits import _latest_pause
+
+    from factory.orchestration import factory_funding as funding
+
+    with controls._read_session() as db:
+        pause = _latest_pause(db, task_id)
+        # A funding pause that waits for an operator's approval or answer is
+        # that person's decision, whoever took the pause.
+        awaited = funding._awaiting_operator(
+            db, task_id, funding.latest(db, task_id, "funding_review_settled")
+        )
+    return pause is not None and pause.actor.startswith("factory:") and not awaited
+
+
 def _settle_paused_task(
     task: dict, policy: dict, runs: list[dict], *, merge_unknown: bool = False
 ) -> bool:
@@ -6624,12 +6646,36 @@ def _settle_paused_task(
             factory_pause.STOP
         ]:
             # This typed stop-only card is already an actionable restriction,
-            # not a planner's two-to-four-option escalation. Keep it and its
-            # pause owner; expiry is not authority to invent a continue choice.
+            # not a planner's two-to-four-option escalation. Expiry is not
+            # authority to invent a continue choice, but a machine pause's
+            # single option needs no person: apply it after its grace period.
+            factory_pause.expire_stop_card(task["id"])
+            return True
+        open_question = previous.get("resolved") is None and previous.get("question")
+        if (
+            not open_question
+            and not landing_held(snapshot)
+            and _machine_paused(task["id"])
+        ):
+            # A factory-owned pause with no question left to answer has nothing
+            # for a person to decide. Stop it and release the slot; the issue
+            # stays open. A new task is never started here, so attempts are
+            # not reset. An operator's own pause, a retained question and a
+            # landing hold (whose delivery may have merged) still ask.
+            controls.finish_task(
+                task["id"],
+                "cancelled",
+                ACTOR,
+                evidence={
+                    "state": "task_deadline",
+                    "reason": "Absolute task deadline elapsed while paused by the factory; all starts and runs are terminal.",
+                },
+                paused_trigger="deadline",
+            )
             return True
         decision = (
             previous
-            if previous.get("resolved") is None and previous.get("question")
+            if open_question
             else {
                 "reason": "Absolute task deadline elapsed while paused; all starts and runs are terminal.",
                 "question": "The paused task reached its deadline without a verified delivery. Continue with a new task or keep it on hold?",
@@ -6939,6 +6985,10 @@ def reconcile_task(
         # Outcome/issue reconciliation remains reachable while admissions are
         # paused or refill is disabled. Physical dispatch has its own fence.
         permission = can_start(task_id)
+        from factory.orchestration import backlog_refill_repair
+
+        if backlog_refill_repair.reconcile(task, policy, runs, permission):
+            return
         paused = not permission["ok"] and permission["reason"] == "task_paused"
         if paused:
             from factory.orchestration.factory_controls import (
@@ -7779,11 +7829,12 @@ def _dispatch_ready(
         if dispatched >= limit:
             break
         node_key = node["node_key"]
+        attempt = sum(r["node_key"] == node_key for r in runs) + 1
         refilling = node_key in {"backlog_refill_collect_1", "backlog_refill_review_1"}
         if refilling:
             from factory.orchestration.backlog_refill import dispatch_allowed
 
-            if not dispatch_allowed(task_id, node_key):
+            if not dispatch_allowed(task_id, node_key, attempt):
                 continue
         scouting = node_key in {"scout_collect_1", "scout_review_1"}
         if scouting:
@@ -7819,7 +7870,13 @@ def _dispatch_ready(
         )
         attempt = sum(r["node_key"] == node_key for r in runs) + 1
         key = f"factory-node:{task_id}:{node_key}:{attempt}"
-        artifact_schema = _schema(node_key, task_id) if refilling else _schema(node_key)
+        artifact_schema = (
+            _schema(node_key, task_id)
+            if refilling or node_key.startswith("conductor_funding_")
+            else _schema(node_key)
+        )
+        if "x-factory-funding-decision" in artifact_schema:
+            branch = task["base_branch"]
         from factory.orchestration import evidence_continuation
 
         try:

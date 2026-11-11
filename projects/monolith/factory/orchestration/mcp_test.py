@@ -642,6 +642,7 @@ def test_factory_tools_are_registered():
         "factory_configure_refill",
         "factory_configure_problem_issues",
         "factory_configure_owner_prs",
+        "factory_release_owner_pr_hold",
         "factory_reconcile",
         "factory_diagnostics",
         "factory_session_dispatch_diagnostics",
@@ -1561,6 +1562,82 @@ def test_status_landing_refusal_is_bounded_read_only_and_epoch_scoped(
         assert [
             r.model_dump() for r in session.exec(select(FactoryStart)).all()
         ] == starts_before
+
+
+@pytest.mark.parametrize(
+    "superseding",
+    [
+        None,
+        "merge_arm_refused",
+        "delivery_landing_authorized",
+        "owner_pr_landing_authorized",
+        "repair_landing_authorized",
+        "operator_scoped_landing_authorized",
+        "landing_recovery_requested",
+        "merge_armed",
+        "merged",
+    ],
+)
+def test_status_landing_wait_reads_latest_reason_until_answered(
+    db, monkeypatch, superseding
+):
+    from factory.orchestration import graph
+
+    monkeypatch.setattr(graph, "load_graph", lambda *a, **kw: [])
+    monkeypatch.setattr(graph, "node_runs", lambda *a, **kw: [])
+    with Session(db) as session, session.begin():
+        session.add(
+            SwarmTask(id="synthetic", task_text="work", conductor_model="astra")
+        )
+    seed_operator_rows(
+        db,
+        [
+            {
+                "issue_number": 7,
+                "task_id": "synthetic",
+                "state": "landing",
+                "policy_json": json.dumps(
+                    {
+                        "task_timeout_seconds": 3600,
+                        "task_budget_usd": 10,
+                        "max_turns_per_task": 9,
+                    }
+                ),
+            }
+        ],
+    )
+    with Session(db) as session, session.begin():
+        for reason in ("scoped_landing_authorization_missing", "path_denied"):
+            session.add(
+                FactoryAudit(
+                    actor="factory:landing",
+                    task_id="synthetic",
+                    action="landing_authorization_wait",
+                    detail_json=json.dumps(
+                        {"reason": reason, "pr_number": 17, "private": "hidden"}
+                    ),
+                )
+            )
+            session.flush()
+        if superseding:
+            session.add(
+                FactoryAudit(
+                    actor="factory:landing", task_id="synthetic", action=superseding
+                )
+            )
+    wait = mcp._status_payload(False)["active"][0]["landing_wait"]
+    if superseding in (None, "merge_arm_refused"):
+        assert wait["reason"] == "path_denied"
+        assert wait["pr_number"] == 17
+        assert set(wait) == {
+            "reason",
+            "pr_number",
+            "source",
+            "audit_id",
+            "observed_at",
+        }
+    else:
+        assert wait is None
 
 
 def test_status_payload_pages_each_bucket_and_keeps_queue_positions(db):
@@ -2794,6 +2871,18 @@ def test_permit_diagnostics_wire_schema_rejects_invalid_ids(monkeypatch):
             "evidence": "Inspected exact diff",
         },
         {"classification": "public_docs", "evidence": "Operator approved these docs"},
+        {
+            "classification": "requires_operator",
+            "evidence": "Exact security assessment",
+            "acknowledged_effects": {
+                "public_facing": False,
+                "security_sensitive": True,
+                "authentication_or_credentials": True,
+                "destructive": False,
+            },
+            "rollback_plan": "Reviewed revert",
+            "expires_at": "2026-11-08T16:00:00+00:00",
+        },
     ],
 )
 def test_landing_release_requires_human_operator_and_reviewed_preview(
@@ -2845,6 +2934,88 @@ def test_landing_release_requires_human_operator_and_reviewed_preview(
         "landing_release_requires_preview_and_request_key"
     )
     assert calls == []
+
+
+def test_operator_landing_preview_binds_authenticated_actor_and_revocation_is_human_only(
+    monkeypatch,
+):
+    import threading
+    from factory.orchestration import factory_landing_release as releases
+    from factory.orchestration import operator_landing_authorization as authorization
+
+    calls = []
+    caller = threading.get_ident()
+
+    def record(*args, **kwargs):
+        assert threading.get_ident() != caller
+        calls.append((args, kwargs))
+        return {"ok": True, "actor": kwargs["actor"]}
+
+    monkeypatch.setattr(releases, "preview", record)
+    monkeypatch.setattr(authorization, "revoke", record)
+
+    async def invoke(operation):
+        return await mcp.factory_release_landing_hold(
+            operation=operation,
+            receipt_id=17,
+            pr_number=7,
+            head_sha="a" * 40,
+            reason="Explicit operator decision",
+            request_key="revoke-1" if operation == "revoke" else None,
+            authorization_audit_id=42 if operation == "revoke" else None,
+        )
+
+    for operation in ("preview", "revoke"):
+        assert _as(_principal(), lambda: invoke(operation)) == {
+            "ok": True,
+            "actor": "joe",
+        }
+        for principal in (
+            _principal(groups=()),
+            _principal(authority=Authority.DELEGATED),
+            _principal(kind=PrincipalKind.WORKLOAD),
+        ):
+            assert not _as(principal, lambda: invoke(operation))["ok"]
+    assert len(calls) == 2
+    assert calls[1][1]["authorization_audit_id"] == 42
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"request_key": "revoke"},
+        {"authorization_audit_id": 42},
+        {"request_key": "revoke", "authorization_audit_id": 42, "scope": {}},
+        {
+            "request_key": "revoke",
+            "authorization_audit_id": 42,
+            "expected_preview_sha256": "a" * 64,
+        },
+    ],
+)
+def test_operator_landing_revoke_requires_exact_audit_target(monkeypatch, arguments):
+    from factory.orchestration import operator_landing_authorization as authorization
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("invalid request cannot reach the control")
+
+    monkeypatch.setattr(authorization, "revoke", forbidden)
+
+    async def invoke():
+        return await mcp.factory_release_landing_hold(
+            operation="revoke",
+            receipt_id=17,
+            pr_number=7,
+            head_sha="a" * 40,
+            reason="Revoke this grant",
+            **arguments,
+        )
+
+    assert _as(_principal(), invoke) == {
+        "ok": False,
+        "reason": "landing_revoke_requires_exact_authorization_and_request_key",
+    }
 
 
 def test_expired_task_recovery_requires_human_and_reviewed_preview(monkeypatch):
@@ -4579,6 +4750,145 @@ def test_owner_pr_landing_wire_binds_identity_and_preserves_unrelated_policy(db)
         _principal(kind=PrincipalKind.WORKLOAD),
     ):
         assert not _as(actor, lambda: mcp.factory_configure_refill(**args)).get("ok")
+
+
+def test_delivery_landing_wire_is_bounded_replay_safe_and_operator_only(db):
+    from fastmcp import Client
+    from core.mcp_app import mcp as shared
+    from factory.orchestration import delivery_landing_delegation as delegation
+
+    original = {
+        "repo": delegation.REPO,
+        "base_branch": "main",
+        "generation": 9,
+        "auto_merge": True,
+        "intake": {"enabled": True},
+    }
+    with Session(db) as session, session.begin():
+        control = session.get(FactoryControl, "factory")
+        control.state = "enabled"
+        control.policy_json = json.dumps(original)
+        version = control.version
+    tool = "factory_configure_delivery_landing"
+    args = dict(
+        operation="preview",
+        enabled=True,
+        expected_version=version,
+        reason="Land reviewed private deliveries",
+        max_landings=20,
+    )
+
+    async def exercise():
+        async with Client(shared) as client:
+            preview = (await client.call_tool(tool, args)).data
+            assert preview["deny_rules"] == delegation.DENY_RULES
+            assert (preview["max_landings"], preview["max_files"]) == (20, 40)
+            unbounded = (
+                await client.call_tool(tool, {**args, "max_landings": None})
+            ).data
+            assert unbounded["reason"] == "delivery_landing_limit_invalid"
+            apply = {
+                **args,
+                "operation": "apply",
+                "request_key": "delivery-landing",
+                "expected_preview_sha256": preview["preview_sha256"],
+            }
+            widened = (await client.call_tool(tool, {**apply, "max_landings": 50})).data
+            assert widened["reason"] == "delivery_landing_preview_changed"
+            applied = (await client.call_tool(tool, apply)).data
+            assert applied["ok"] and applied["enabled"]
+            assert not applied["dispatched"]
+            assert (await client.call_tool(tool, apply)).data == applied
+            stale = (
+                await client.call_tool(tool, {**apply, "request_key": "other"})
+            ).data
+            assert stale["reason"] == "delivery_landing_version_changed"
+            with Session(db) as session:
+                live = delegation.status(session)
+            assert live["enabled"] is True
+            assert live["derivations_remaining"] == 20
+            revoke = {
+                "operation": "preview",
+                "enabled": False,
+                "expected_version": applied["version"],
+                "reason": "Stop standing delivery landing",
+            }
+            preview = (await client.call_tool(tool, revoke)).data
+            result = (
+                await client.call_tool(
+                    tool,
+                    {
+                        **revoke,
+                        "operation": "apply",
+                        "request_key": "revoke-delivery-landing",
+                        "expected_preview_sha256": preview["preview_sha256"],
+                    },
+                )
+            ).data
+            assert result["ok"] and not result["enabled"]
+
+    _as(_principal(), exercise)
+    with Session(db) as session:
+        assert (
+            json.loads(session.get(FactoryControl, "factory").policy_json) == original
+        )
+        assert not delegation.status(session)["enabled"]
+        assert session.exec(select(FactoryReceipt)).all() == []
+    for actor in (
+        _principal(authority=Authority.DELEGATED),
+        _principal(kind=PrincipalKind.WORKLOAD),
+    ):
+        assert not _as(
+            actor, lambda: mcp.factory_configure_delivery_landing(**args)
+        ).get("ok")
+
+
+def test_owner_pr_hold_release_tool_requires_operator_and_preview(monkeypatch):
+    from factory.orchestration import owner_pr_hold_release
+
+    calls = []
+    monkeypatch.setattr(
+        owner_pr_hold_release,
+        "preview",
+        lambda *args: calls.append(args) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        owner_pr_hold_release, "apply", lambda *args: calls.append(args) or {"ok": 1}
+    )
+    guest = _principal(groups=())
+    refused = _as(
+        guest,
+        lambda: mcp.factory_release_owner_pr_hold("preview", "release", 7, "reason"),
+    )
+    assert refused["error"] == mcp.OPERATOR_REQUIRED and not calls
+    operator = _principal()
+    assert _as(
+        operator,
+        lambda: mcp.factory_release_owner_pr_hold("preview", "release", 7, "reason"),
+    ) == {"ok": True}
+    assert calls == [("jomcgi-org/homelab", 7, "release", "reason")]
+    assert (
+        _as(
+            operator,
+            lambda: mcp.factory_release_owner_pr_hold("apply", "revoke", 7, "reason"),
+        )["reason"]
+        == "owner_pr_hold_release_preview_required"
+    )
+    applied = _as(
+        operator,
+        lambda: mcp.factory_release_owner_pr_hold(
+            "apply", "revoke", 7, "reason", "jomcgi-org/homelab", "key", "a" * 64
+        ),
+    )
+    assert applied == {"ok": 1}
+    assert calls[-1][1:] == (
+        "jomcgi-org/homelab",
+        7,
+        "revoke",
+        "reason",
+        "key",
+        "a" * 64,
+    )
 
 
 def test_owner_pr_adapter_binds_actor_and_requires_preview(monkeypatch):

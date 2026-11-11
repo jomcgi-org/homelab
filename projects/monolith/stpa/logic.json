@@ -1,11 +1,11 @@
 {
   "lens": "logic",
-  "commit": "e9f64ef7d4",
+  "commit": "cbe0525ff",
   "scope": {
     "summary": "A single Postgres-backed personal platform served as two composed binaries: a private read-write binary (full app capabilities, private.jomcgi.dev) and an isolated public binary (jomcgi.dev via the separate monolith-public chart). The public binary is read-only for public datasets with two constrained write/invocation paths, the private binary now also serves an agent-session console, a six-language code sandbox, a screenshot tool, and MCP over native streamable HTTP; safety is governed data access, bounded public capabilities, the secret boundary, and correct claim/lease ownership of queued agent work.",
     "built": "framework/core.py composition and profiles, separate private/public module registries, Postgres leader-lease singletons (Discord bot, AIS ingest, outbox drain, message-lock sweep), the agent_sessions claim-lease turn engine (atomic per-message claiming across all replicas plus a leader-owned stale-claim sweep) backing both the Discord bot and the private /agents console HTTP API, goosecracker recipe/repo catalog, chat feature ACL with 30s grant cache, public_reader/public_writer roles with schema/view confinement, public/private HTTPRoutes, Turnstile secret isolation, public chat admission/concurrency limits, public FaaS identity gate, observability snapshot rollup, the shotter MCP domain (URL/host validation, EmberVM task dispatch, best-effort SeaweedFS PNG storage with a random per-call Idempotency-Key), the sandbox MCP domain (run_code, six per-language EmberVM task workloads, zero-egress except an optional scratch-Postgres credential), the native /mcp mount on stateless streamable HTTP with PrincipalMiddleware authenticating every message via cached JWKS, and the docs/posts manifest generators that publish an exact allowlist of committed repository documents to the public site. The factory knowledge-graph evidence lanes (#5527, ADR agents/063) add a shared raw-input write boundary (knowledge/raw_write.py persist_raw_with_status) reached by the generic POST /api/knowledge/raws endpoint, three MCP tools (report_knowledge, dispute_fact, report_distress), and a leader-owned Ember-session exporter (factory/execution/kg_feed.py), a daily-capped DBOS drainer (factory/orchestration/drainer.py) that runs Luna extraction in an EmberVM guest and writes atoms with server-side provenance (knowledge/extraction.py, knowledge/atoms.py), and a live disputed/verification_state signal on search results (knowledge/store.py). The shared CNPG backup checker publishes bounded observations through one precreated ConfigMap, the private monolith evaluates their freshness and 36-hour backup age as advisory health, and its leader queues transitions through the existing durable Discord outbox. The default-off backlog refill controller reserves advisory inventory work from fresh intake counts, validates the artifact, publishes through durable per-output intents and records conclusive yield separately from interrupted or uncertain runs. Focused historical learning cessation repair against 434907e17 with this diff: authenticated retained journal proof, fresh successor/restore and local lineage checks, digest/CAS/idempotent audit; no live recovery or activation is claimed.",
     "designed": "Strict per-domain database isolation and the ADR 010 cross-domain contract remain architectural goals; the Module/build_app framework itself is built. ADR 059 (Draft) proposes removing Context Forge entirely as the MCP entry point and serving /mcp directly behind Cloudflare; only the first, independently-sequenced slice (the stateless-HTTP transport switch) has landed, Context Forge is still deployed and still in the request path. The Context Forge tool-visibility reconcile pass (#4569) that would scope which principal may call which tool is designed, not built, so per-tool authorization beyond bearer-token authentication does not exist for any MCP tool yet.",
-    "note": "Focused #7002 backup-advisory activation analysis at e7905ea1c; the hub overlays opt in, but live operational acceptance remains open on #7002. Earlier findings retain their prior review scope and are not revalidated by this focused update. Focused #7376 refill analysis against 15550c9 with the accompanying repair diff; this feature remains omitted from shipped policy and its live drills remain open on #7376. Focused #7014 knowledge-lane analysis at 970f6df81: raw redaction, missed-enqueue repair, dead-letter retry and replay, and the session-collector producers re-grounded; findings outside that lane retain their prior review scope. Focused receipt model-restriction analysis at 68c9ca11c with the accompanying repair diff: operator amendment, effective-policy continuation, same-receipt readmission and native model admission. Live operational acceptance is not claimed. Focused refill role review against 631c56c59 with this repair: new starts require independent Astra planning and exact-role fresh quota, while existing receipt restriction findings and legacy ledgers are retained. The same focused change adds bounded native-registry feedback and authenticated restriction-to-continuation regression coverage; it makes no live activation or downstream client-visibility claim. Focused #7613 start-diagnostics analysis at 188286240: existing operator reads expose finite or unknown control-subgate observations and sanitized historical funding linkage. No control authority is added; transport, quota and physical capacity remain unevaluated, and deployment or autonomous recovery acceptance is not claimed. Focused landing analysis at ecf76742f adds standing decisions, separate owner/repair grants, durable policy-transition feedback and native queue controls. These controls are built and default-off; prior semantic keys and security.json are preserved. Activation and live acceptance remain on #7583, #7601 and #7597. Integration on bc1d4dfa2 preserves both approved focused models; the standing landing controls remain default-off and live acceptance is unchanged. Focused #7597/#7583 owner-PR hold-text analysis against 9f5051f01 with this repair: two exact unqualified absence assertions no longer fabricate a discussion hold. No scope, identity, review or landing authority changes, and no live hold release or operational acceptance is claimed. Focused #7614/#7583 required-recovery discovery analysis against 52a8dde2a with this correction: ordinary permitted per-account quota is distinct from optional scout surplus, and a five-hour or shorter window retains the existing 10 percent reserve even when reported alone. Source switches, history, paid-start authority and operational acceptance are unchanged; unrelated prior findings retain their reviewed scope. Focused #7583 receipt handoff analysis against e9f64ef7d4 with this diff: additive staged preparation, serialized attempt intent and mixed-version exclusion. The feature is shipped off pending migration, complete rollout and separate reviewed GitOps activation; existing uncertain executions are not repaired or reinterpreted."
+    "note": "Focused #7002 backup-advisory activation analysis at e7905ea1c; the hub overlays opt in, but live operational acceptance remains open on #7002. Earlier findings retain their prior review scope and are not revalidated by this focused update. Focused #7376 refill analysis against 15550c9 with the accompanying repair diff; this feature remains omitted from shipped policy and its live drills remain open on #7376. Focused #7014 knowledge-lane analysis at 970f6df81: raw redaction, missed-enqueue repair, dead-letter retry and replay, and the session-collector producers re-grounded; findings outside that lane retain their prior review scope. Focused receipt model-restriction analysis at 68c9ca11c with the accompanying repair diff: operator amendment, effective-policy continuation, same-receipt readmission and native model admission. Live operational acceptance is not claimed. Focused refill role review against 631c56c59 with this repair: new starts require independent Astra planning and exact-role fresh quota, while existing receipt restriction findings and legacy ledgers are retained. The same focused change adds bounded native-registry feedback and authenticated restriction-to-continuation regression coverage; it makes no live activation or downstream client-visibility claim. Focused #7613 start-diagnostics analysis at 188286240: existing operator reads expose finite or unknown control-subgate observations and sanitized historical funding linkage. No control authority is added; transport, quota and physical capacity remain unevaluated, and deployment or autonomous recovery acceptance is not claimed. Focused landing analysis at ecf76742f adds standing decisions, separate owner/repair grants, durable policy-transition feedback and native queue controls. These controls are built and default-off; prior semantic keys and security.json are preserved. Activation and live acceptance remain on #7583, #7601 and #7597. Integration on bc1d4dfa2 preserves both approved focused models; the standing landing controls remain default-off and live acceptance is unchanged. Focused #7597/#7583 owner-PR hold-text analysis against 9f5051f01 with this repair: two exact unqualified absence assertions no longer fabricate a discussion hold. No scope, identity, review or landing authority changes, and no live hold release or operational acceptance is claimed. Focused #7614/#7583 required-recovery discovery analysis against 52a8dde2a with this correction: ordinary permitted per-account quota is distinct from optional scout surplus, and a five-hour or shorter window retains the existing 10 percent reserve even when reported alone. Source switches, history, paid-start authority and operational acceptance are unchanged; unrelated prior findings retain their reviewed scope. Focused #7583 receipt handoff analysis against e9f64ef7d4 with this diff: additive staged preparation, serialized attempt intent and mixed-version exclusion. The feature is shipped off pending migration, complete rollout and separate reviewed GitOps activation; existing uncertain executions are not repaired or reinterpreted. Focused #7583 terminal-before-dispatch analysis at 3691fb768: exact native interactive capacity settlement from fresh terminal state and complete locked receipt history; unknown turns, costs and bindings persist. No retry authority or live recovery acceptance is claimed. Unrelated prior findings retain their reviewed scope. Focused #7583 drain-redispatch analysis at b6340b130: bounded complete retained receipt-chain enumeration and fresh cessation for every named guest; atomic exact capacity-only settlement preserves failed turns, results, holds, cost and binding. No retry authority or full self-recovery acceptance is claimed. Focused #7583 version-2 recovery against f5e07400e with this change: deterministic original-allocation retry after exact verified repair, without a paid judge or new credential. Existing landing scope, historical breakers and unrelated findings remain unchanged; natural useful-delivery acceptance remains open. Focused operator landing approval analysis against cbe0525ff with this local change: authenticated explicit consent, complete immutable diff proof, native typed review, finite expiry, audit-specific revocation and one durable factory arming attempt. No grant, queue action or live deployment is claimed; unrelated findings retain their earlier review scope."
   },
   "losses": [
     {
@@ -335,6 +335,45 @@
       "maturity": "built",
       "status": "shipped-off",
       "issue": "#7583"
+    },
+    {
+      "key": "permit-cessation.false-release",
+      "view": "logical",
+      "statement": "Incomplete or stale cessation evidence releases capacity while a different dispatch or replacement guest may still execute",
+      "losses": [
+        "L.integrity-loss"
+      ],
+      "maturity": "built"
+    },
+    {
+      "key": "permit-cessation.permanent-hold",
+      "view": "logical",
+      "statement": "Positively terminal guests predating a local restore failure leave an interactive permit indefinitely uncertain",
+      "losses": [
+        "L.liveness-loss"
+      ],
+      "maturity": "built"
+    },
+    {
+      "key": "native-repair-outside-original-authority",
+      "view": "logical",
+      "statement": "A repaired native role resumes outside its original unused allocation, current ownership, exact repair proof or finite deadline",
+      "losses": [
+        "L.integrity-loss",
+        "L.provenance-loss"
+      ],
+      "maturity": "built"
+    },
+    {
+      "key": "operator-landing-unapproved-effect",
+      "view": "logical",
+      "statement": "An explicit landing grant authorizes source or effects outside the authenticated operator decision and independent typed review",
+      "losses": [
+        "L.integrity-loss",
+        "L.provenance-loss",
+        "L.secret-exposure"
+      ],
+      "maturity": "built"
     }
   ],
   "ucas": [
@@ -554,7 +593,7 @@
       "hazards": [
         "landing-queued-with-stale-authority"
       ],
-      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:691; projects/monolith/factory/orchestration/factory_landing_release.py:211; projects/monolith/factory/orchestration/factory_landing_release.py:338"
+      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:691; projects/monolith/factory/orchestration/factory_landing_release.py:215; projects/monolith/factory/orchestration/factory_landing_release.py:346"
     },
     {
       "key": "factory-landing.dequeue.not-providing",
@@ -567,7 +606,7 @@
         "landing-authority-resurrected",
         "landing-queued-with-stale-authority"
       ],
-      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:902; projects/monolith/factory/orchestration/factory_landing_release.py:46"
+      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:926; projects/monolith/factory/orchestration/factory_landing_release.py:46"
     },
     {
       "key": "factory-landing.dequeue.wrong-timing",
@@ -579,7 +618,7 @@
       "hazards": [
         "landing-valid-authority-disarmed"
       ],
-      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:902"
+      "evidence": "projects/monolith/factory/orchestration/factory_landing.py:926"
     },
     {
       "key": "factory-required-recovery.publish.not-providing",
@@ -636,6 +675,95 @@
       "evidence": "projects/monolith/factory/execution/mcp.py:915,954,1483; projects/monolith/factory/execution/transport.py:1980",
       "status": "shipped-off",
       "issue": "#7583"
+    },
+    {
+      "key": "permit-supervisor.settle.providing",
+      "view": "logical",
+      "control_action": "permit-supervisor.settle",
+      "guideword": "providing",
+      "condition": "Incomplete receipt history or a live predecessor can release capacity unsafely; the native two-dispatch proof bounds complete history before the first POST, observes every guest terminal, and revalidates the identical locked chain and quiescent owner before exact capacity-only settlement",
+      "severity": "high",
+      "hazards": [
+        "permit-cessation.false-release"
+      ],
+      "evidence": "projects/monolith/factory/execution/permit_supervision.py:197,330,968",
+      "status": "enforced-dev",
+      "issue": "#7583"
+    },
+    {
+      "key": "permit-supervisor.settle.not-providing",
+      "view": "logical",
+      "control_action": "permit-supervisor.settle",
+      "guideword": "not-providing",
+      "condition": "Requiring terminal time after the local restore error rejects an already-terminal dispatch or drain continuation; complete terminal-before-dispatch or bounded all-guests-terminal chain proof releases only capacity, without granting retry authority",
+      "severity": "medium",
+      "hazards": [
+        "permit-cessation.permanent-hold"
+      ],
+      "evidence": "projects/monolith/factory/execution/permit_supervision.py:197,330,968",
+      "status": "enforced-dev",
+      "issue": "#7583"
+    },
+    {
+      "key": "factory-funding.resume-native-repair.providing",
+      "view": "logical",
+      "control_action": "factory-funding.resume-native-repair",
+      "guideword": "providing",
+      "condition": "Retrying without room for all remaining roles or with obsolete authority exceeds the original task; pre-pause and atomic grant checks reserve the original turns and cost ceilings, bind exact machine pause and rollout, and authorize one 1-to-2 renewal only",
+      "severity": "high",
+      "hazards": [
+        "native-repair-outside-original-authority"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/backlog_refill_repair/__init__.py:23,179; projects/monolith/factory/orchestration/factory_funding.py:2036"
+    },
+    {
+      "key": "factory-funding.resume-native-repair.wrong-duration",
+      "view": "logical",
+      "control_action": "factory-funding.resume-native-repair",
+      "guideword": "wrong-duration",
+      "condition": "Reusing a repaired-task grant after its 30-minute deadline or renewing it again would prolong authority; effective-policy dispatch and publication deadlines plus the single authorization and exact graph renewal prevent further starts or output",
+      "severity": "high",
+      "hazards": [
+        "native-repair-outside-original-authority"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/backlog_refill_repair/__init__.py:335; projects/monolith/factory/orchestration/backlog_refill.py:772; projects/monolith/factory/orchestration/backlog_refill_producer.py:73"
+    },
+    {
+      "key": "standing-landing-operator.authorize-delivery.providing",
+      "view": "logical",
+      "control_action": "standing-landing-operator.authorize-delivery",
+      "guideword": "providing",
+      "condition": "Accepting a supplied actor, untyped review or incomplete file evidence could authorize unapproved effects; standing-human access, actor-bound preview/apply, server-derived Git proof and typed exact-head review bind the audited decision",
+      "severity": "high",
+      "hazards": [
+        "operator-landing-unapproved-effect"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/mcp.py:1854; projects/monolith/factory/orchestration/operator_landing_authorization.py:283; projects/monolith/factory/orchestration/operator_landing_authorization.py:165"
+    },
+    {
+      "key": "standing-landing-operator.revoke-delivery.wrong-timing",
+      "view": "logical",
+      "control_action": "standing-landing-operator.revoke-delivery",
+      "guideword": "wrong-timing",
+      "condition": "Replaying revocation against a replacement grant or deleting explicit authority could revoke unrelated consent or expose a machine fallback; the locked operation targets one authorization audit and retains a tombstone with actor-scoped idempotency",
+      "severity": "high",
+      "hazards": [
+        "landing-authority-resurrected",
+        "landing-valid-authority-disarmed"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/operator_landing_authorization.py:448"
+    },
+    {
+      "key": "factory-landing.reserve-operator-arm.wrong-duration",
+      "view": "logical",
+      "control_action": "factory-landing.reserve-operator-arm",
+      "guideword": "wrong-duration",
+      "condition": "Reusing approval after an uncertain queue request or ejection could grant another factory arming attempt; an intent commits before external I/O and the same authorization cannot reserve a second attempt, while queue observations bind the first observed entry",
+      "severity": "high",
+      "hazards": [
+        "landing-queued-with-stale-authority"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/operator_landing_authorization.py:560; projects/monolith/factory/orchestration/operator_landing_authorization.py:600; projects/monolith/factory/orchestration/operator_landing_authorization.py:626"
     }
   ],
   "unsafe_feedback": [
@@ -848,7 +976,7 @@
       "hazards": [
         "landing-queued-with-stale-authority"
       ],
-      "evidence": "projects/monolith/factory/orchestration/factory_landing_release.py:211; projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:256; projects/monolith/factory/orchestration/repair_landing_delegation.py:391"
+      "evidence": "projects/monolith/factory/orchestration/factory_landing_release.py:215; projects/monolith/factory/orchestration/owner_pr_landing_delegation.py:256; projects/monolith/factory/orchestration/repair_landing_delegation.py:391"
     },
     {
       "key": "factory-owner-hold-text.absence.corrupted",
@@ -876,7 +1004,7 @@
       "hazards": [
         "factory-owner-hold-text.lost-veto"
       ],
-      "evidence": "projects/monolith/factory/orchestration/owner_prs.py:57,691; projects/monolith/factory/orchestration/factory_landing.py:1533; projects/monolith/factory/orchestration/factory_intake_loop_test.py:4347; projects/monolith/factory/orchestration/factory_landing_test.py:3422"
+      "evidence": "projects/monolith/factory/orchestration/owner_prs.py:57,691; projects/monolith/factory/orchestration/factory_landing.py:1563; projects/monolith/factory/orchestration/factory_intake_loop_test.py:4347; projects/monolith/factory/orchestration/factory_landing_test.py:3422"
     },
     {
       "key": "factory-required-recovery.quota.corrupted",
@@ -938,6 +1066,66 @@
       "evidence": "projects/monolith/factory/execution/transport.py:2014; projects/monolith/factory/execution/mcp.py:1483; projects/monolith/factory/execution/response_lost_test.py:1995,2042",
       "status": "shipped-off",
       "issue": "#7583"
+    },
+    {
+      "key": "permit-cessation.receipts.stale",
+      "view": "logical",
+      "from": "postgres",
+      "to": "permit-supervisor",
+      "signal": "Retained physical POST receipts and current ownership",
+      "guideword": "stale",
+      "condition": "A fresh second dispatch cannot prove older receipt retention; native drain proof requires session and permit age within retention, complete bounded enumeration including superseded identities, finished observers, fresh terminal observations for every guest and an unchanged chain under locks",
+      "severity": "high",
+      "hazards": [
+        "permit-cessation.false-release"
+      ],
+      "evidence": "projects/monolith/factory/execution/permit_supervision.py:197,330,968",
+      "status": "enforced-dev",
+      "issue": "#7583"
+    },
+    {
+      "key": "native-repair-authorization.stale",
+      "view": "logical",
+      "from": "postgres",
+      "to": "factory-refill",
+      "signal": "Original allocation, exact pause/resume, rollout and node renewal",
+      "guideword": "stale",
+      "condition": "Authority or accounting may change after grant; physical admission reauthenticates the grant and all remaining-role reservations, excludes its own exact reservation once, and refuses other unknown starts, changed holds, decision state or rollout",
+      "severity": "high",
+      "hazards": [
+        "native-repair-outside-original-authority"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/backlog_refill_repair/__init__.py:23,335; projects/monolith/factory/orchestration/backlog_refill.py:772"
+    },
+    {
+      "key": "operator-landing-git.corrupted",
+      "view": "logical",
+      "from": "github-pulls",
+      "to": "factory-landing",
+      "signal": "Current base ref, immutable merge base and complete regular-file manifest",
+      "guideword": "corrupted",
+      "condition": "Stale PR base metadata, omitted files or unsupported object kinds could hide an approved diff change; proof reads the actual branch ref, reconstructs changed Git trees, verifies bounded UTF-8 blob identities and confirms immutable inputs against the audited manifest",
+      "severity": "high",
+      "hazards": [
+        "operator-landing-unapproved-effect",
+        "landing-queued-with-stale-authority"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/operator_landing_evidence.py:340; projects/monolith/factory/orchestration/operator_landing_evidence.py:416; projects/monolith/factory/orchestration/operator_landing_authorization.py:336"
+    },
+    {
+      "key": "operator-landing-review.stale",
+      "view": "logical",
+      "from": "postgres",
+      "to": "factory-landing",
+      "signal": "Independent review identity, artifact digest, typed scope and operator effect acknowledgements",
+      "guideword": "stale",
+      "condition": "An untyped, replaced or stale review could conceal required operator effects; the explicit grant binds native review run/session identity, artifact digest, merge base and exact paths, checks every acknowledged true effect and revalidates before arming and queued observation",
+      "severity": "high",
+      "hazards": [
+        "operator-landing-unapproved-effect",
+        "landing-queued-with-stale-authority"
+      ],
+      "evidence": "projects/monolith/factory/orchestration/operator_landing_authorization.py:165; projects/monolith/factory/orchestration/operator_landing_authorization.py:388"
     }
   ],
   "non_ucas": [
@@ -1135,7 +1323,7 @@
     },
     {
       "item": "machine delegation replacing an explicit human grant or falling through to another delegate",
-      "reason": "delegation_owner returns no delegate whenever landing_authorization exists, including malformed authority. Owner-marked receipts select only the owner delegate; refusal cannot fall through to repair authority (projects/monolith/factory/orchestration/factory_landing_release.py:338)."
+      "reason": "delegation_owner returns no delegate whenever landing_authorization exists, including malformed authority. Owner-marked receipts select only the owner delegate; refusal cannot fall through to repair authority (projects/monolith/factory/orchestration/factory_landing_release.py:346)."
     },
     {
       "item": "an unrelated main advance invalidating an identical reviewed diff",
@@ -1156,6 +1344,34 @@
     {
       "item": "factory-required-recovery: fresh quota resets a historical event or bypasses publication bounds",
       "reason": "A refused quota observation skips the two recovery sources without changing their policy watermark or terminal history. A later permitting observation publishes the same source ID once under existing per-tick and rolling caps, deduplication, nonrecursive ownership and uncertain-write reconciliation (factory/orchestration/factory_problem_issues.py:564,938,964; factory_problem_issues_test.py: test_native_required_discovery_uses_ordinary_quota_with_existing_bounds and test_native_required_discovery_waits_for_single_window_reserve)."
+    },
+    {
+      "item": "A diagnostic error, historical breaker or unknown invocation must not grant a repair retry",
+      "reason": "Only two fresh distinct-task, exact native not-invoked proofs with allowlisted staged database metadata can produce the existing machine pause. The start's version and control epoch exclude historical work and policy disable/restore; permission/authentication failures are not repairable inputs."
+    },
+    {
+      "item": "A closed issue must not become generic execution authority",
+      "reason": "Only native charter #7366's exact recurring receipt and synchronized mirror may remain closed, with current ownership/hold checks at producer, funding, physical dispatch and settlement. Repair issues retain their ordinary open-source requirement."
+    },
+    {
+      "item": "A model must not choose a funding execution profile or mutate its request",
+      "reason": "The funding owner hashes request, prompt and schema into its admitted identity, verifies session/model at dispatch, and rejects stale or mismatched artifacts. Generic gate/read-only exceptions remain closed. Unsupported adapters cannot fall back to repository execution or explicit PR-review credentials."
+    },
+    {
+      "item": "Funding content must not reach a CLI before its capabilities are known",
+      "reason": "The pinned CLI's pre-input initialize response does not declare tools, so the decision profile never starts it. Subscription OAuth must not authenticate a bespoke Messages client. Native funding scheduling and physical starts are disabled, and the guest independently refuses before HTTP construction. No policy or ambient credential enables the route. Future dedicated API-key authority must bind the exact profile, request and dispatch before content is forwarded. Tests that mock that future route confer no production authority."
+    },
+    {
+      "item": "A repair ticket must not invent an owning scope or landing authority",
+      "reason": "Only reauthenticated native evidence selects fixed role, stage, SQLSTATE and paths; private identifiers and raw SQL/errors remain private. Execution admission and result-receipt repairs are outside the standing landing profiles and must retain `repair_landing_paths_require_operator`. Post-operator rollout fixtures cannot establish autonomous native landing reachability."
+    },
+    {
+      "item": "Rollout is necessary but insufficient: the funding grant retains original accounting and exact repair binding, permits only attempt two, and expires",
+      "reason": "Useful publication requires the fixed independent reviewer. Producer recovery observation waits for that publication, not merely a successful node or grant. Regression evidence is synthetic; independent security-aware exact-head review and real operational acceptance remain pending."
+    },
+    {
+      "item": "an expired or revoked operator grant silently falling back to standing delegation",
+      "reason": "Explicit authority remains in landing_authorization. Revocation targets its audit and retains a tombstone; scoped_refusal refuses it before delegate selection. Replay only acknowledges the prior request, and a new grant requires a fresh authenticated preview/apply (projects/monolith/factory/orchestration/factory_landing_release.py; projects/monolith/factory/orchestration/operator_landing_authorization.py:448)."
     }
   ],
   "open_questions": [
@@ -1171,7 +1387,7 @@
     "When the scratch-Postgres feature is re-enabled (embervm side), should run_code's docstring be corrected to stop claiming zero network for python, or should the DSN injection move behind a separate, explicitly-network-capable tool so the isolation claim stays true for the tool most callers reach for?",
     "#7002: verify fresh successful-backup timestamps, scheduled checker completion, metric/advisory arrival, runtime ConfigMap preservation and effective additive RBAC on the hub; live Cluster/RBAC reads and Honeycomb queries were unavailable to this activation session. Checker-absence notifications remain outside the current advisory contract.",
     "Default-off refill live acceptance remains on #7376: verify ordinary intake, inventory outputs, a restart and ambiguous-write drill, breaker reset, rolling-limit recovery and disable reconciliation before enablement.",
-    "Revocation cannot undo an already completed GitHub merge. The native observer disarms/dequeues on its next tick, and failed external calls retain errors for observation; confirm this external-action boundary during parent-owned operational acceptance (#7601, #7597)."
+    "Revocation cannot undo an already completed GitHub merge. The native observer disarms/dequeues on its next tick, and failed external calls retain errors for observation; confirm this external-action boundary during parent-owned operational acceptance (#7601, #7597). Explicit operator expiry and revocation have the same asynchronous limit: GitHub may merge before the next successful observation, and unobserved external requeue races cannot be ruled out by a polling fence. A stronger final-action guarantee needs a trusted required queue check or final merge owner."
   ],
   "system_dir": "projects/monolith"
 }

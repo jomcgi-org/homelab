@@ -74,6 +74,32 @@ Broker failure leaves quota unavailable while the rest of the board publishes.
 The cron job respects the broker's SPIFFE mode; missing workload credentials in
 that mode fail closed without an HTTP fallback.
 
+The existing private Codex login MCP tools and HTTP routes accept `environment`
+as `prod` (default) or `dev`. The dev bridge permits only `codex-cluster`
+`POST /login/start` and `GET /login/status` under `/grants/codex-cluster`.
+Its URL and exact server SPIFFE ID come from the private deployment values;
+callers cannot select either. The hub targets
+`https://embervm-dev-embervm-tokenbroker.embervm-dev.svc:8443` and pins
+`spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-tokenbroker`.
+It reuses the private Monolith's rotating
+`spiffe://embervm.jomcgi.dev/ns/monolith/sa/monolith` SVID with a request-local
+server pin, leaving the production broker target and pin unchanged. Missing
+configuration or SVIDs fail closed. Requests do not follow redirects, have a
+30-second deadline and read at most 1 MiB. Dev responses expose validated device
+approval fields or a fixed login-state description; provider error detail and
+token fields are omitted. No dev token, refresh or quota proxy is exposed.
+The dev broker separately authorizes this client for login only; its noded
+identity owns token delivery. The chart configures the bridge only on the private
+hub backend. This is source configuration, not evidence of a dev grant, deployed
+authorization or a completed live conformance turn (Refs #6471).
+(see: /projects/monolith/factory/execution/broker_client.py)
+(see: /projects/monolith/deploy/values-gke.yaml)
+
+The private page at `/factory/execution/codex-login` defaults to production;
+`?environment=dev` selects dev conformance. A button starts device approval,
+and **Check connection** reads its status. The execution console retains its
+production default.
+
 Routine-job reconciliation uses the narrow existing contracts in `factory.api`.
 The domain boundary test checks factory internals
 and requires its dependencies on other domains to pass through their APIs.
@@ -435,8 +461,15 @@ section 11 unchanged, including their owners, holds and unresolved live checks.
 The linked issues own current acceptance; a closed repository issue alone proves no rollout.
 See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-checks).
 
+Standing delivery landing remains default-off. Its
+[outstanding acceptance checklist](factory/orchestration/FACTORY.md#standing-delivery-landing-delegation)
+requires verified rollout, separately authorized operator preview/apply, one
+ordinary landing without a per-head grant, queued-grant revocation evidence,
+and the documented 72-hour measure and stop-condition verdict.
+
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Repair newly proven native refill infrastructure failures and observe useful same-node recovery | #7583 implementation contract | #7583 | original-allocation retry implemented without a paid judge; classified execution-owner repairs remain outside standing landing authority; rollout and live useful-delivery acceptance remain unproven |
 | Retire the merit runtime switch while preserving old-chart enabled behavior | section 4; proposed staged Conductor rescope | #7585, #7596 | repository correction; verified rollout remains on #7585; compatibility-key removal stays on #7596 until old charts leave rollback support |
 | Escalation cards survive the factory's own gate writes, declined landing recovery is named, and optimizer verdicts are final once the window ends and its attempts settle | section 4; evidence on the issue | #7495 | repository delivery; 72-hour before and after counts remain on the issue |
 | Per-sweep intake decisions, private backlog age and digest evidence | section 4; repository-only Conductor rescope | #7459 | staged repository delivery; rollout, first-sweep distribution and credential-backed follow-up remain on the issue |
@@ -656,6 +689,28 @@ implementation starts (#5956).
 
 ### Execution and recovery rationale
 
+**Why.** An interactive follow-up can POST to an already evicted guest and then
+fail while restoring it (#7583). The old terminal timestamp precedes the local
+error, so the general cessation ordering guard leaves its permit uncertain.
+The permit supervisor can settle this exact capacity reservation when a fresh
+terminal view predates its first dispatch and the complete retained receipt
+chain names only that guest. Terminal guest IDs cannot relight; a replacement
+POST would require another committed receipt. The proof keeps receipt locks,
+claim ownership, retention bounds and all result/hold checks. It preserves the
+turn, unknown outcome, cost and workspace binding, and grants no retry.
+
+**Why.** A drain continuation can target the same earlier invocation, then fail
+restoring after the guest is evicted. Neither the first-dispatch proof nor an
+invoke stamp inside the second dispatch covers this case (#7583). A separate
+native interactive proof enumerates the complete retained two-dispatch chain
+(at most three receipts and two guests), observes every guest positively
+terminal, and rechecks the unchanged chain under the capacity/session/receipt
+locks. Session and permit age bound completeness before the first possible
+POST. The latest receipt must be unobserved, result-free and released; earlier
+responses remain history. Missing, live, stale or contradictory evidence keeps
+uncertainty. Settlement changes only the exact capacity permit, not the failed
+turn, unknown marker, cost, receipt history, binding or continuation authority.
+
 **Why.** A truncated native error cannot distinguish staged receipt preparation,
 promotion and admission-recheck failures (#7583). The transport records a bounded
 phase, SQLSTATE, promotion attempt and intent flag with numeric dispatch identity
@@ -797,6 +852,239 @@ attempt authority; source holds and pause identity are rechecked at settlement.
 Legacy cards and uncertainty remain fenced. Public tickets carry only
 scoped code repairs and synthetic acceptance criteria.
 
+**Why native refill repair has its own narrow adapter.** Fresh starts pin a
+version-2 repair contract and the
+control-policy epoch. Two distinct fixed-role attempt-one failures within 24 hours
+must carry matching, positively proven native `not_invoked` receipts and a closed
+vocabulary of staged database failure metadata. Diagnostics or exception text
+alone grant nothing. The existing problem producer owns the recurring-blocker
+issue, daily bounds and nonrecursion. The
+funding owner owns its machine pause, exact accepted repair rollout, finite
+decision and single retry of the original exhausted node. Source #7366 may remain
+closed only under that exact admitted recurring contract and its synchronized
+GitHub mirror, with no human/security ownership. Historical starts and breakers
+are not enrolled. Policy disable/restore invalidates the epoch even if no refill
+tick observed the disabled interval.
+
+### Funding stays disabled
+
+The paid `factory-funding-v1` protocol remains staged. `PROVIDER_ROUTE_AVAILABLE`
+is false, with no environment or policy toggle. The funding owner refuses native
+paid reviews before changing a machine pause or preparing a paid start. Physical
+dispatch refuses pre-existing paid requests. The guest independently returns
+`funding_provider_route_unavailable` before constructing an HTTP client or starting
+a CLI. Ordinary funding and Claude Code sessions retain their existing paths.
+
+**Why deterministic recovery uses the original allocation.** A verified exact
+repair already establishes the machine's reason to retry its fixed read-only role.
+Version 2 therefore needs no additional model call or credential. The funding
+owner atomically resumes its exact machine pause, records a distinct authorization
+and renews only the failed node from one attempt to two. Every unfinished role
+must fit inside the original unused turns and reservation-cost budget, including
+independent review. Physical admission counts its already-reserved start exactly
+once and refuses other unknown starts, changed holds or stale proof. The task
+receives one finite 30-minute lease, with no dollar or turn increase. Expiry or a
+second failure ends this continuation; there is no grant renewal. Useful reviewed
+publication is still required for observed recovery. Version-1 waits, starts
+without a repair contract, historical breakers and standing landing scope are
+unchanged. The following API proposal remains separate and is not a prerequisite
+for version-2 recovery.
+
+The deployment injects `EMBER_ANTHROPIC_OAUTH_TOKEN` from `CLAUDE_AUTH_TOKEN` at
+`api.anthropic.com`. It is subscription OAuth. Anthropic's
+[authentication rules](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use)
+distinguish unmodified native Claude Code use from custom API clients; the
+[API overview](https://platform.claude.com/docs/en/api/overview) describes API-key
+authentication. The removed direct Messages client cannot reuse that grant.
+No subscription token, PR-review credential or alternate framework is a fallback.
+
+On November 6, 2026 a credential-free loopback probe used the installed unmodified
+Claude Code 2.1.284, the version pinned by `MODULE.bazel` (package SHA256
+`642690c3afaa22029c17341e520d8c35ca85857fce6dcc9ecd90ef5e3c7f1027`). It used a fresh
+configuration directory, an allowlisted process environment, synthetic OAuth text,
+a localhost API origin and rejecting localhost HTTP/HTTPS proxies. No provider
+request was forwarded. The relevant arguments were:
+
+```text
+--safe-mode --tools "" --disallowedTools '*' --disable-slash-commands
+--strict-mcp-config --mcp-config '{"mcpServers":{}}' --setting-sources ""
+--permission-mode dontAsk --no-session-persistence --max-turns 1
+--input-format stream-json --output-format stream-json --await-initialize
+```
+
+Before input, the initialize control response contained no tools declaration and
+the local provider saw zero requests. After synthetic input, `system/init` declared
+empty tools/MCP and one `/v1/messages?beta=true` request had `tools: []`; the fake
+provider rejected it with 403. This establishes the observed request shape only.
+The CLI did not supply a pre-input capability attestation. Its `--bare` help also
+states that OAuth is not read in that mode. A future CLI solution would need a
+trusted pre-forward request gate and pre-tool execution enforcement, including
+startup customizations and responses. This patch establishes neither for that pin
+and does not restore post-input checking. The fallback below remains a proposal.
+
+#### Proposed dedicated API authority
+
+Joe must approve provisioning a dedicated Claude Console workspace API key, its
+billing owner and trial limits. A new reviewed broker capability is required;
+the current host-only egress secret catalog cannot enforce this scope. Keep the
+native executor, result receipts and cumulative accounting. Add no model worker,
+generic API proxy or independent execution framework.
+
+- Proposed grant: `claude-factory-funding-v1`, stored through the 1Password
+  Operator in a dedicated `embervm-factory-funding-api` Secret. No key enters
+  a guest, prompt, environment of a CLI, or public projection. No OAuth refresh,
+  subscription quota or PR-review grant is reused. The key has its own workspace
+  rate/spend controls and revocation. Workload identity is a separate alternative
+  only after a supported provider endpoint and billing principal are reviewed.
+- Proposed broker route: `POST /grants/claude-factory-funding-v1/messages` on the
+  existing SPIFFE mTLS listener. Plaintext and `/token` access for this grant deny.
+  The authenticated native execution owner supplies an expiring, one-use binding
+  for receipt, task, run, session, dispatch, control epoch and request/prompt/schema
+  hashes. A guest-supplied role/profile is insufficient. The broker verifies that
+  binding against current owner authority and holds before forwarding content.
+  No other session, ordinary coding role or standing landing grant may select it.
+- Upstream is exactly `POST https://api.anthropic.com/v1/messages`, no query,
+  redirects or caller-selected host/path. The broker constructs the closed body:
+  `claude-opus-5-5`, `stream: false`, `max_tokens: 4096`, `tools: []`,
+  `tool_choice: {type: none}`, one plain-text user message and a fixed system
+  instruction. It injects `x-api-key` and `anthropic-version: 2023-06-01` only
+  after validation. No `Authorization`, OAuth beta, custom headers, containers,
+  MCP, skills, server tools or arbitrary provider kwargs cross this boundary.
+- Proposed initial limits: one in-flight call, three calls per rolling 24 hours
+  for the entire dedicated grant, one call per admitted dispatch, 64 KiB UTF-8
+  input, 4096 output tokens and 120 seconds total. Oversize evidence refuses,
+  without silent truncation. Reserve the conservative input/output price ceiling
+  under existing admission before transmission; settle reported usage once under
+  the same dispatch, including refusal responses with usage. Missing usage, timeout
+  or response loss stays charged/unknown with no automatic retry. Fresh API-key
+  quota/rate evidence must be independent of subscription quota. These proposed
+  trial limits do not change existing factory policy or its accounting rules.
+- Return only a bounded, complete text result with the exact model and valid
+  usage. Reject tool-bearing, partial, malformed or oversized responses before
+  artifact acceptance. No tool loop exists. Disabling the route or revoking the
+  grant increments its authorization epoch and denies queued/new calls. In-flight
+  calls retain their receipt and uncertainty; revocation never proves cessation
+  or refunds a reservation. Disable admission first, revoke/rotate the workspace
+  key, then reconcile outstanding results through the existing receipt owner.
+
+Before activation, fake-provider tests must cover exact body/header bytes, wrong
+identity/profile/epoch, replay, concurrent admission, every quota bound, changed
+holds, revocation, redirects, tool responses and lost-response accounting. Deploy
+broker and runtime with the route disabled, verify every serving replica and
+rendered credential isolation, and obtain independent exact-head security review.
+A separate operator-approved key-scoped canary may verify provider acceptance and
+usage accounting. Only a later reviewed activation can enable new native starts.
+Rollback disables the capability and revokes its dedicated grant, retaining history.
+No provisioning, policy change, canary or rollout occurs in this patch.
+
+### Native repair landing authority
+
+Typed `receipt_admission`, `prepared_admission` and `promotion_admission` failures
+map to `projects/monolith/factory/execution/admission.py` and `admission_test.py`.
+`receipt_prepare` and `receipt_promotion` map to `result_receipts.py` and
+`result_receipts_test.py` in that directory. The producer reauthenticates positive
+native `not_invoked` proof before publishing the bounded role/stage/SQLSTATE/path
+projection. Raw errors, SQL and private identities stay private. All four paths
+are outside both standing repair profiles and the owner-PR diagnostics profile.
+`repair_landing_paths_require_operator` remains binding.
+
+**Why stop-only cards expire:** on 2026-11-09, 8 of 29 open escalations were
+machine pauses whose only option was "stop". Some had held a delivery slot for
+ten days, and answering them needed no judgement. `factory_pause.expire_stop_card`
+applies the card's own option after the task deadline and a 24-hour grace. It
+cannot continue or re-fund work, so recovery limits are unchanged. Joe chose
+the same default on 2026-11-10 for a factory pause that reaches its deadline
+with no question left: stop and release the slot, never continue in a new task,
+because that would reset attempts. Operator pauses, open questions and landing
+holds still ask. Measure over
+72 hours either side of rollout: open stop-only cards older than 36 hours,
+expected zero. Revert if a stop is applied while a repair of that node is
+pending.
+
+**Why an operator can release a text hold:** on 2026-11-10, 42 of 83 open PRs
+were classed `explicit_hold`, most because their descriptions said "leave
+unmerged". Joe approved landing about 29 of them, and the only way to say so was
+to rewrite each description, because discovery deliberately does not interpret
+hold prose. `factory_release_owner_pr_hold` records the decision for one PR and
+waives the exact description read at release, its earlier comments and holds it
+only inherits from items it mentions, except a security label: on 2026-11-11, 13
+of the approved PRs were held solely by a mention, such as #7587 by its note
+about #7392. An edited description, labels, assignees, later comments, the
+closing objective issue and all review, CI and landing gates still bind.
+Standing landing delegations do not read a release, so a released PR still lands
+on a per-head grant and the control cannot land anything. Landing status also
+gains `landing_wait`, the current reason an approved delivery lacks authority,
+which was invisible for 22 receipts. Measure over 72 hours either side of
+rollout: owner PRs classed `explicit_hold` (baseline 42) and approved receipts
+in `landing` with no visible reason (baseline 22, expected zero). Revert the
+release control if a released PR lands while it carries a hold label.
+
+**Why a standing delivery owner:** on 2026-11-09, 23 intake-admitted deliveries
+sat in `landing` with independent exact-head approval and passing CI, most for
+four days. Per-head grants were the only authority for ordinary work, so every
+merge waited for a person and intake found no candidates behind the open PRs.
+`delivery_landing_delegation` lets a standing operator delegate that decision
+once, inside a previewed deny-list and rolling cap. The factory and its framework
+packages, deployment and schema, credential and isolation code, and public
+routes stay outside it. Domain packages the factory imports stay eligible.
+[The boundary](factory/orchestration/FACTORY.md#standing-delivery-landing-delegation)
+lists them.
+
+Joe set that boundary on 2026-11-10. Successive review rounds had excluded whole
+projects and every monolith domain, each for a defensible reason, until three
+of the 23 waiting deliveries still qualified: the fence-on-fence pattern that
+stalled landing in the first place. The deny-list is a second check, not
+isolation. Eligible monolith code runs in the factory's process, so its safety
+rests on the typed independent review, required CI and the merge queue. Revoke
+the delegation and return to per-head grants if the typed review's scope
+classification proves unreliable.
+
+Measure, over the 72 hours before and after the operator's activation: receipts
+in `landing` older than 24 hours (`factory_status`), and agent-authored merges
+(the public merges feed). Baseline on 2026-11-09: 23 in `landing`, 7
+agent-authored merges in seven days. Expected: the first falls and the second
+rises. Stop condition: disable the delegation on the first derived grant whose
+diff proves public-facing, security-sensitive, credential-bearing or
+destructive, or if neither number moves.
+
+An existing per-repair route is implemented by `factory_release_landing_hold` in
+`factory/orchestration/mcp.py` and `factory_landing_release.py`. It requires a
+standing human operator. For a genuinely private, internal, reversible repair
+that changes no security boundary or authority, the operator can:
+
+1. Read the exact repair receipt and owned PR. Require an unpaused, unheld
+   `succeeded` or `landing` receipt, an open non-draft PR and no unsettled execution,
+   competing branch owner, review-recovery hold or decision in flight. Record the
+   immutable base, current head, exact modified paths and independently reviewed
+   diff. A typed database stage alone never proves the change qualifies.
+2. Call `factory_release_landing_hold` with `operation: preview`, exact
+   `receipt_id`, `pr_number`, 40-character `head_sha`, and `reason`. Supply `scope`
+   with exactly `classification: private_internal_reversible` and `evidence`
+   (1–4000 characters). Evidence should name the base/head, exact owner paths,
+   bounded change, tests and independent review, and the operator's assessment
+   that public, credential, security and destructive effects are absent.
+3. Inspect an `authorize` preview. Apply identical target/reason/scope with
+   `operation: apply`, its `preview_sha256` as `expected_preview_sha256`, and a new
+   `request_key`. Retry a lost response only with that same request and key.
+   State or evidence drift requires a fresh preview. Read back authoritative state;
+   a replay acknowledgement alone is not current authority.
+4. The existing landing owner checks the audited exact-head grant, native
+   independent exact-head review, required CI, current holds and enabled merge
+   policy before the protected queue. Head changes require renewed authorization
+   and review. No direct merge, resume or acceptance is granted by this call.
+
+This explicit scope is human-attested and head-bound; it has no machine-verified
+private-path allowlist. It cannot release a private landing hold. The separate
+`public_docs` exception covers only two documentation files and cannot authorize
+these repairs. Changes to admission authority, credential boundaries or destructive
+semantics use the separate explicit operator approval below. Both standing
+delegation profiles retain their existing path and effect limits.
+
+Breaker 1155 and historical 1131, 1136, 1050 and 7640 remain untouched. No hold,
+historical lineage, workspace or volume is adopted, cleared or rewritten. Fixture
+rollouts exercise downstream contracts with the paid provider disabled;
+#7583 still requires natural useful work after a supported, authorized repair.
+
 **Why.** Backlog-refill completion does not prove repair discovery or recovery.
 The operator status nests the repair producer's own persisted policy observation,
 source watermarks/cursors, next event, pending publication and recovery checkpoints
@@ -804,6 +1092,64 @@ under `refill.problem_issues.recovery`. This read never advances the producer or
 infers quota, ownership, retry permission or delivery from enabled switches.
 It exposes bounded metadata, excluding prompts and raw audit payloads, so #7583's
 operational acceptance can distinguish missing signals from unfinished repairs.
+
+#### Explicit operator landing approval
+
+`factory_release_landing_hold` accepts `classification: requires_operator` for
+an already settled, unheld delivery. A standing human in `operators` supplies
+the exact receipt, PR and head. The server binds preview and apply to the
+authenticated subject. Service and delegated identities cannot record this
+approval. Existing holds, paused tasks, uncertain or claimed execution, competing
+owners and pending decisions retain their refusal paths.
+
+The scope has exactly five fields: `classification`, `evidence`,
+`acknowledged_effects`, `rollback_plan` and `expires_at`. The effects object has
+four explicit booleans: `public_facing`, `security_sensitive`,
+`authentication_or_credentials` and `destructive`. Every true effect in the
+native review must be acknowledged. The expiry is an absolute UTC time, in the
+future and at most 24 hours away when previewed and applied. Reason, evidence and
+rollback describe this delivery. They cannot supply a reviewer identity or a
+client-created file manifest.
+
+The server reads the actual base branch tip and records it separately from the
+immutable merge base and PR head. Complete GitHub comparison and tree evidence
+binds each path, change status, file mode, blob identity and content hash. The
+supported diff contains at most 64 added or modified regular UTF-8 files with
+mode `100644` or `100755`, each at most 512 KiB. Unsupported file kinds,
+renames, deletions, binary content and incomplete evidence refuse approval.
+Total decoded content is capped at 8 MiB, with bounded path traversal and GitHub
+reads. Audit records retain metadata and hashes, without source contents.
+
+Native independent review must approve this exact head and provide a typed
+`landing_scope` matching the immutable merge base and complete path set. The
+grant binds its run, session and artifact digest together with successful head
+CI. An older untyped review needs a real typed review before this scope can be
+authorized. A typed review requiring operator approval cannot be downgraded to
+the legacy private scope.
+
+Apply requires the preview digest and an idempotent request key. It records a
+schema-2 grant and returns its `authorization_audit_id`. Changed identity,
+policy, graph, base, head, review or CI evidence requires a fresh preview.
+The factory commits one arming intent before contacting GitHub. An unknown
+response or queue ejection cannot trigger another factory attempt under that
+grant. The observer binds the first queue entry it sees and refuses a replacement.
+The landing owner revalidates approval before arming and while observing queued
+work. Revocation targets the exact authorization audit, retains a tombstone and
+cannot fall through to standing machine delegation. Expiry and revocation do
+not renew approval or release a hold. Required CI, the protected queue and
+verified rollout remain separate delivery gates.
+
+The queue observer runs asynchronously. A revoked or expired entry is disarmed
+and dequeued on the next successful observation; GitHub can complete a merge
+before that observation. This path does not provide atomic revocation across
+the database and GitHub, or prove that an external caller never requeued between
+observations. Approval of source changes also does not establish that this
+capability is installed or authorize it to deploy itself.
+
+**Why.** Security-affecting deliveries need an explicit approval record that the
+landing owner can verify. The existing private and two-file documentation scopes
+cannot express that decision. This separate scope binds a standing operator's
+decision to independently reviewed source and preserves routine delivery policy.
 
 **Why.** Producer-created repairs need an authorization owner at native landing
 (#7601, follow-up to #7583). An operator can enable a finite trial or explicitly

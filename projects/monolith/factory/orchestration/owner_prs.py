@@ -15,6 +15,7 @@ import httpx
 from sqlmodel import select
 
 from factory.orchestration import factory_controls as controls
+from factory.orchestration import owner_pr_hold_release as hold_release
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt, WorkItem
 
 # Text can veto automatic action, never grant it. Historical staging directions
@@ -50,7 +51,10 @@ _RETRACTION_WORDS = re.compile(
 _QUOTED = re.compile(r"[\"'\u2018\u2019\u201c\u201d<>\\]|(?:^|\n)[ \t]{4}")
 SHA = re.compile(r"[0-9a-f]{40}")
 MAX_REFERENCES = 5
-MAX_REFERENCE_READS = 20
+# Distinct missing references read per sweep, shared by every owner PR.
+MAX_REFERENCE_READS = 100
+# Mentioned items whose hold an operator release never answers.
+SECURITY_LABELS = frozenset({"security", "security-finding"})
 
 
 class OwnerPRHold(ValueError):
@@ -151,8 +155,12 @@ def objective_references(body: str, repo: str) -> set[tuple[str, int]]:
     }
 
 
-def _resolve_references(pull, issues, repo, read_get, *, cache=None):
-    """Bound missing-reference reads; a truncated listing cannot erase a hold."""
+def _resolve_references(pull, issues, repo, read_get, *, cache=None, skip=()):
+    """Bound missing-reference reads; a truncated listing cannot erase a hold.
+
+    Numbers in ``skip`` are never read: discovery takes a closing objective
+    only from the open-issue listing, so a missing one stays unavailable.
+    """
     references = objective_references(pull.get("body") or "", repo)
     if len(references) > MAX_REFERENCES:
         raise ValueError("referenced_objective_limit")
@@ -161,7 +169,7 @@ def _resolve_references(pull, issues, repo, read_get, *, cache=None):
     resolved = {item["number"]: item for item in issues}
     cache = {} if cache is None else cache
     for _, number in sorted(references):
-        if number not in resolved:
+        if number not in resolved and number not in skip:
             if number not in cache:
                 if len(cache) >= MAX_REFERENCE_READS:
                     raise ValueError("referenced_objective_read_limit")
@@ -204,7 +212,7 @@ def identity_matches(pull: object, policy: dict) -> bool:
     )
 
 
-def _hold(item: dict, excluded: set[str]) -> str | None:
+def _hold(item: dict, excluded: set[str], *, release=None) -> str | None:
     from factory.orchestration.factory_intake_loop import _label_names
 
     labels = _label_names(item)
@@ -219,7 +227,8 @@ def _hold(item: dict, excluded: set[str]) -> str | None:
         re.search(r"hold|blocked|do-not-merge|manual|agent-skip", x) for x in labels
     ):
         return "explicit_hold"
-    if has_hold(item.get("body") or ""):
+    # An operator release waives wording only. Labels and assignees still bind.
+    if has_hold(item.get("body") or "") and not hold_release.waives(release, item):
         return "explicit_hold"
     return None
 
@@ -351,7 +360,12 @@ def _task_class(issue: dict) -> str:
 
 
 def _scope(
-    pull: dict, issues: list[dict], repo: str, policy: dict
+    pull: dict,
+    issues: list[dict],
+    repo: str,
+    policy: dict,
+    *,
+    released: bool = False,
 ) -> tuple[dict | None, str | None]:
     from factory.orchestration.factory_intake_loop import _label_names
 
@@ -378,7 +392,15 @@ def _scope(
         item = related.get(number)
         if item is None:
             return None, "referenced_objective_unavailable"
-        if _hold(item, excluded):
+        # A release of this exact description answers holds it only inherits
+        # from a mention, except a security label. The closing objective below
+        # still binds.
+        if released:
+            from factory.orchestration.factory_intake_loop import _label_names
+
+            if _label_names(item) & SECURITY_LABELS:
+                return item, "referenced_objective_held"
+        elif _hold(item, excluded):
             return item, "referenced_objective_held"
     if len(matching) != 1:
         return None, "scope_authority_missing" if not matching else "scope_ambiguous"
@@ -411,12 +433,16 @@ def candidates(
         if not identity_matches(pull, policy):
             continue
         try:
-            resolved[pull["number"]] = (
-                _resolve_references(
-                    pull, issues, repo, conductor.github_get, cache=cache
-                )
-                if not closing_references(pull.get("body") or "", repo)
-                else issues
+            # Read every missing reference, as receive does. Skipping them when
+            # the PR also closes an issue made any mention of a closed item
+            # read as unavailable.
+            resolved[pull["number"]] = _resolve_references(
+                pull,
+                issues,
+                repo,
+                conductor.github_get,
+                cache=cache,
+                skip={n for _, n in closing_references(pull.get("body") or "", repo)},
             )
         except (ValueError, RuntimeError, httpx.HTTPError):
             unavailable[pull["number"]] = "referenced_objective_unavailable"
@@ -426,8 +452,15 @@ def candidates(
         for pull in pulls:
             if not identity_matches(pull, policy):
                 continue
+            found = hold_release.release(db, repo, pull["number"])
+            # A release covers only the description it was taken on.
+            inherited = hold_release.waives(found, pull)
             issue, scope_reason = _scope(
-                pull, resolved.get(pull["number"], issues), repo, policy
+                pull,
+                resolved.get(pull["number"], issues),
+                repo,
+                policy,
+                released=inherited,
             )
             scope_reason = unavailable.get(pull["number"], scope_reason)
             direct = scope_reason == "scope_authority_missing"
@@ -449,13 +482,22 @@ def candidates(
             )
             reason = (
                 _identity_reason(pull, repo, policy)
-                or _hold(pull, excluded)
+                or _hold(pull, excluded, release=found)
                 or scope_reason
-                or _referenced_history(
-                    db,
-                    repo,
-                    {n for _, n in objective_references(pull.get("body") or "", repo)}
-                    - {issue["number"] if issue else None},
+                or (
+                    None
+                    if inherited
+                    else _referenced_history(
+                        db,
+                        repo,
+                        {
+                            n
+                            for _, n in objective_references(
+                                pull.get("body") or "", repo
+                            )
+                        }
+                        - {issue["number"] if issue else None},
+                    )
                 )
             )
             if (
@@ -474,7 +516,9 @@ def candidates(
                 .order_by(FactoryAudit.id.desc())
             ).all()
             if any(
-                json.loads(event.detail_json).get("repo") == repo
+                # A recorded discussion hold older than the release is answered.
+                (found is None or event.id > found.audit_id)
+                and json.loads(event.detail_json).get("repo") == repo
                 and json.loads(event.detail_json).get("pr_number") == pull["number"]
                 and json.loads(event.detail_json).get("pr_updated_at")
                 == pull.get("updated_at")
@@ -584,21 +628,31 @@ def receive(repo: str, number: int, policy: dict, *, generation: int) -> dict:
     if direct and closing_references(pull.get("body") or "", repo):
         raise ValueError("scope_changed")
     related = _resolve_references(pull, [issue], repo, conductor.github_get)
-    scoped, reason = _scope(pull, related, repo, policy)
+    released = hold_release.read_release(repo, number)
+    inherited = hold_release.waives(released, pull)
+    scoped, reason = _scope(pull, related, repo, policy, released=inherited)
     if direct and reason == "scope_authority_missing":
         scoped, reason = issue, None
     excluded = {x.lower() for x in controls.repos_map(policy)[repo]["exclude_labels"]}
-    reason = reason or _hold(pull, excluded) or _hold(issue, excluded)
+    reason = (
+        reason
+        or _hold(pull, excluded, release=released)
+        # A direct owner PR is its own objective: the same description, once.
+        or _hold(issue, excluded, release=released if direct else None)
+    )
     if reason or scoped is None or issue.get("number") != expected_issue:
         raise ValueError(reason or "scope_changed")
     reference_numbers = {
         n for _, n in objective_references(pull.get("body") or "", repo)
     }
-    for resource in (
-        f"issues/{n}/comments"
-        for n in sorted(reference_numbers | {number, expected_issue})
-    ):
-        comments = _pages(repo, resource, conductor.github_list)
+    # A released PR still reads its own thread and its closing objective's.
+    threads = {number, expected_issue}
+    if not inherited:
+        threads |= reference_numbers
+    for n in sorted(threads):
+        comments = _pages(repo, f"issues/{n}/comments", conductor.github_list)
+        if n == number:
+            comments = hold_release.binding_comments(comments, released)
         if any(has_hold(comment.get("body") or "") for comment in comments):
             raise OwnerPRHold("explicit_discussion_hold")
     # Evidence was fetched outside the control lock; all competing intake and
@@ -616,7 +670,15 @@ def receive(repo: str, number: int, policy: dict, *, generation: int) -> dict:
             or not identity_matches(pull, live)
         ):
             raise ValueError("owner_pr_intake_authority_changed")
-        if _referenced_history(db, repo, reference_numbers - {expected_issue}):
+        # Re-read under the lock: a revoke since the evidence read binds again.
+        locked_release = hold_release.release(db, repo, number)
+        if (released and released.audit_id) != (
+            locked_release and locked_release.audit_id
+        ):
+            raise ValueError("owner_pr_hold_release_changed")
+        if not inherited and _referenced_history(
+            db, repo, reference_numbers - {expected_issue}
+        ):
             raise ValueError("referenced_objective_held")
         if direct:
             issue = {
@@ -632,8 +694,12 @@ def receive(repo: str, number: int, policy: dict, *, generation: int) -> dict:
             ):
                 raise ValueError("refine_disabled")
         else:
-            scoped, reason = _scope(pull, related, repo, live)
-        if reason or _hold(pull, {x.lower() for x in entry["exclude_labels"]}):
+            scoped, reason = _scope(pull, related, repo, live, released=inherited)
+        if reason or _hold(
+            pull,
+            {x.lower() for x in entry["exclude_labels"]},
+            release=locked_release,
+        ):
             raise ValueError(reason or "explicit_hold")
         reason, owner = _history(db, repo, pull, issue, live)
         if reason:
@@ -718,10 +784,18 @@ def assert_unheld(
     pull = pull or read_get(task["repo"], f"pulls/{number}")
     if pull.get("user", {}).get("id") != task["owner_pr"]["author_id"]:
         raise ValueError("owner_pr_author_changed")
+    # Read the release only when wording would otherwise hold: the common
+    # unheld path stays free of a database read.
+    released = None
     if _hold(pull, set()):
-        raise OwnerPRHold("owner_pr_explicit_hold")
+        released = hold_release.read_release(task["repo"], number)
+        if _hold(pull, set(), release=released):
+            raise OwnerPRHold("owner_pr_explicit_hold")
     comments = _pages(task["repo"], f"issues/{number}/comments", read_list)
-    if any(has_hold(comment.get("body") or "") for comment in comments):
-        raise OwnerPRHold("owner_pr_explicit_discussion_hold")
+    held = [comment for comment in comments if has_hold(comment.get("body") or "")]
+    if held:
+        released = released or hold_release.read_release(task["repo"], number)
+        if hold_release.binding_comments(held, released):
+            raise OwnerPRHold("owner_pr_explicit_discussion_hold")
     if pull.get("state") != "open" and not pull.get("merged"):
         raise ValueError("owner_pr_closed_without_merge")

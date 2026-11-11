@@ -28,6 +28,7 @@ defmodule Embervm.OpLog.SQLite do
   use GenServer
   require Logger
 
+  alias Embervm.OpLog.Codec
   alias Embervm.OpLog.Op
   alias Exqlite.Sqlite3
 
@@ -840,7 +841,7 @@ defmodule Embervm.OpLog.SQLite do
     result = with :ok <- Sqlite3.execute(state.conn, "BEGIN") do
       try do
         query = fn sql, params -> cessation_query(state.conn, sql, params) end
-        Embervm.SessionCessationEvidence.read(query, :sqlite, &decode_payload/1, id, expected, principal)
+        Embervm.SessionCessationEvidence.read(query, :sqlite, &Codec.decode_payload/1, id, expected, principal)
       after
         :ok = Sqlite3.execute(state.conn, "ROLLBACK")
       end
@@ -865,7 +866,7 @@ defmodule Embervm.OpLog.SQLite do
               end
             _ -> throw(:recovery_append_failed)
           end
-          Embervm.SessionRecoveryFence.run(query, :sqlite, &decode_payload/1, id, request, principal, now, append)
+          Embervm.SessionRecoveryFence.run(query, :sqlite, &Codec.decode_payload/1, id, request, principal, now, append)
         rescue
           _ -> {:error, :recovery_store_unavailable, %{}}
         catch
@@ -1028,8 +1029,8 @@ defmodule Embervm.OpLog.SQLite do
              op.group_instance_id,
              Atom.to_string(op.kind),
              # An ETF {:blob, _}, not JSON, so a binary body persists byte-exact
-             # (see encode_payload/1).
-             encode_payload(op.payload)
+             # (see Codec.encode_payload/1).
+             {:blob, Codec.encode_payload(op.payload)}
            ]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt),
@@ -1198,7 +1199,7 @@ defmodule Embervm.OpLog.SQLite do
                bool_to_int(Map.get(payload, :truncated, false)),
                op.ts,
                Map.get(payload, :expires_at),
-               encode_headers(Map.get(payload, :headers, %{}))
+               Codec.encode_headers(Map.get(payload, :headers, %{}))
              ]),
            :done <- Sqlite3.step(conn, stmt),
            :ok <- Sqlite3.release(conn, stmt) do
@@ -2883,7 +2884,7 @@ defmodule Embervm.OpLog.SQLite do
           stateful_instance_id: stateful_instance_id,
           group_instance_id: group_instance_id,
           kind: String.to_existing_atom(kind),
-          payload: decode_payload(payload_json)
+          payload: Codec.decode_payload(payload_json)
         }
 
         collect_ops(conn, stmt, [op | acc])
@@ -3431,7 +3432,7 @@ defmodule Embervm.OpLog.SQLite do
                truncated: truncated == 1,
                created_at: created_at,
                expires_at: expires_at,
-               headers: decode_headers(headers)
+               headers: Codec.decode_headers(headers)
              }}
 
           :done ->
@@ -3465,7 +3466,7 @@ defmodule Embervm.OpLog.SQLite do
       result =
         case Sqlite3.step(conn, stmt) do
           {:row, [payload_json]} ->
-            {:ok, Map.get(decode_payload(payload_json), "request")}
+            {:ok, Map.get(Codec.decode_payload(payload_json), "request")}
 
           :done ->
             {:ok, nil}
@@ -4245,70 +4246,4 @@ defmodule Embervm.OpLog.SQLite do
   defp blob(nil), do: nil
   defp blob(bin) when is_binary(bin), do: {:blob, bin}
 
-  # -- payload codec ----------------------------------------------------
-
-  # Op payloads are stored as an Erlang External Term Format binary
-  # (:erlang.term_to_binary/1), bound as a {:blob, _} so SQLite keeps the exact
-  # bytes. This replaces the previous :json.encode/1: JSON cannot represent a
-  # non-UTF-8 binary, so a task whose result (or request) body was binary (e.g.
-  # a PNG, first byte 0x89 = 137) crashed the writer with {:invalid_byte, 137}
-  # and cascaded a control-plane restart. ETF round-trips ANY term, so a binary
-  # body persists byte-exact. Payloads are this node's own trusted data (never
-  # untrusted external input), so binary_to_term/1 on read is safe here.
-  defp encode_payload(payload) when is_map(payload) do
-    {:blob, :erlang.term_to_binary(payload)}
-  end
-
-  # An ETF blob begins with the version byte 131; legacy rows written before this
-  # change are JSON objects beginning with "{" (123). The first byte disambiguates
-  # the two formats during the retention overlap, so old and new rows both read
-  # back correctly. binary_to_term/1 restores the original atom-keyed map, which
-  # `stringify/1` coerces into the string-keyed shape :json.decode/1 produced, so
-  # every reader (the dispatcher's request envelope, replay) is unchanged.
-  defp decode_payload(<<131, _::binary>> = term) do
-    term |> :erlang.binary_to_term() |> stringify()
-  end
-
-  defp decode_payload(json) when is_binary(json) do
-    :json.decode(json)
-  end
-
-  # Coerces a binary_to_term result into the exact shape :json.decode/1 yields
-  # for a legacy row: string keys, non-boolean atom values stringified, and
-  # nil-valued map keys dropped (encode used to reject them before JSON encoding).
-  # Binaries, numbers, booleans and lists pass through, so a binary body survives
-  # intact while staying contract-compatible with the JSON path for all readers.
-  defp stringify(map) when is_map(map) do
-    for {k, v} <- map, not is_nil(v), into: %{}, do: {to_string(k), stringify(v)}
-  end
-
-  defp stringify(list) when is_list(list), do: Enum.map(list, &stringify/1)
-  defp stringify(v) when is_atom(v) and not is_boolean(v), do: Atom.to_string(v)
-  defp stringify(v), do: v
-
-  # Guest response headers (a string->string map) ride the `results.headers` column
-  # as a JSON object. An empty/absent map is stored as NULL so old rows and
-  # headerless results are indistinguishable and both read back as %{}.
-  defp encode_headers(headers) when is_map(headers) and map_size(headers) == 0, do: nil
-
-  defp encode_headers(headers) when is_map(headers) do
-    headers |> :json.encode() |> :erlang.iolist_to_binary()
-  end
-
-  defp encode_headers(_), do: nil
-
-  # NULL (old rows, headerless results) and a malformed blob both default to %{},
-  # so a read never crashes on a pre-migration record (backward compatibility).
-  defp decode_headers(nil), do: %{}
-
-  defp decode_headers(json) when is_binary(json) do
-    case :json.decode(json) do
-      map when is_map(map) -> map
-      _ -> %{}
-    end
-  rescue
-    _ -> %{}
-  end
-
-  defp decode_headers(_), do: %{}
 end

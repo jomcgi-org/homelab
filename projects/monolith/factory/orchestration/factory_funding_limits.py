@@ -15,6 +15,11 @@ from factory.orchestration.factory_models import (
 
 OBJECTIVE_CEILING_USD = 200.0
 REVIEW_COST_USD = 1.0
+RECOVERY_REPO = "jomcgi-org/homelab"
+# Ownership exclusions are shared with the physical native-refill fence.
+ROUTINE_HELD_LABELS = frozenset(
+    {"human", "needs-human", "needs-thought", "security-finding", "security"}
+)
 # Funding requests recorded before the judge model was recorded ran on Astra.
 LEGACY_REVIEW_MODEL = "astra"
 
@@ -173,9 +178,142 @@ def graph_budget(db, task, *, node_key=None, model=None, cost=None):
 def dispatch_prompt(db, task_id, node_key, prompt):
     grant = amendment(db, task_id)
     if grant and not node_key.startswith("conductor_funding_"):
+        label = (
+            "Verified repair retry within the original allocation"
+            if grant.get("grant_kind") == "native_repair_remaining_allowance"
+            else "Funding judge direction for this allocation"
+        )
         return (
             prompt
-            + "\nFunding judge direction for this allocation, within the original objective and review requirements:\n"
+            + "\n"
+            + label
+            + ", within the original objective and review requirements:\n"
             + grant["next_plan"]
         )
     return prompt
+
+
+def _recovery_held(db, task_id):
+    from factory.orchestration.evidence_continuation import recovery_grant
+
+    if recovery_grant(db, task_id) is not None:
+        return True
+    return controls.review_recovery_held(
+        task_id, session=db
+    ) or controls._landing_recovery_expired(db, task_id)
+
+
+def routine_hold(db, row, task_id, *, machine_pause=False):
+    """The shared human or operator restriction that keeps a pause with a
+    person, or None. Read under the caller's session; request and settle call
+    it again under the control lock, so a hold set meanwhile still wins."""
+    from factory.orchestration.factory_models import WorkItem
+
+    direction = json.loads(row.direction_json or "{}") if row is not None else {}
+    if row is None:
+        return "receipt_missing"
+    if (row.task_paused and not machine_pause) or row.cancellation_requested:
+        return "task_held"
+    if controls.nonrenewable_recovery(row):
+        return "nonrenewable_recovery"
+    if "landing_hold" in direction:
+        return "landing_hold"
+    if controls.review_recovery_held(task_id, session=db):
+        return "review_recovery_held"
+    # The webhook- and sweep-synchronized work-item labels, read in the
+    # caller's (locked) session: the mirror the human-handoff fence trusts.
+    # It is current to webhook latency, not to GitHub itself; a receipt with
+    # no mirror cannot be revalidated under the lock and is never routine.
+    item = db.get(WorkItem, row.work_item_id) if row.work_item_id else None
+    if item is None:
+        return "no_label_mirror"
+    if {str(label).lower() for label in item.labels or []} & ROUTINE_HELD_LABELS:
+        return "held_label"
+    if (
+        db.exec(
+            select(FactoryAudit.id).where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "human_handoff",
+            )
+        ).first()
+        is not None
+    ):
+        return "human_handoff"
+    return None
+
+
+def _latest_pause(db, task_id):
+    rows = db.exec(
+        select(FactoryAudit)
+        .where(FactoryAudit.task_id == task_id, FactoryAudit.action == "pause_task")
+        .order_by(FactoryAudit.id.desc())
+    )
+    return next((row for row in rows if json.loads(row.detail_json).get("ok")), None)
+
+
+def _repair_rollout_valid(db, proof):
+    """Revalidate exact factory-accepted delivery and its verified rollout."""
+    import re
+
+    from factory.orchestration.factory_models import FactoryControl
+
+    control = db.get(FactoryControl, "factory")
+    live = json.loads(control.policy_json or "{}") if control else {}
+    block = controls.problem_issues_policy(live)
+    if (
+        control is None
+        or control.state != "enabled"
+        or not block["enabled"]
+        or not block["sources"]["recurring_blocker"]
+        or not recovery_delivery_enabled(live)
+    ):
+        return False
+    repair = controls._receipt(db, proof["repair_task_id"])
+    rollout = db.get(FactoryAudit, proof["rollout_audit_id"])
+    if (
+        repair is None
+        or repair.state != "succeeded"
+        or repair.task_class != "bug-fix"
+        or repair.repo != proof["repo"]
+        or repair.issue_number != proof["repair_issue"]
+        or rollout is None
+        or rollout.task_id != repair.task_id
+        or rollout.action != "rollout_verified"
+        or rollout.actor != "factory:landing"
+    ):
+        return False
+    detail = json.loads(rollout.detail_json)
+    merged = latest(db, repair.task_id, "merged")
+    return bool(
+        detail.get("verified") is True
+        and merged
+        and db.get(FactoryAudit, merged["audit_id"]).actor == "factory:landing"
+        and re.fullmatch(r"[0-9a-f]{40}", detail.get("approved_head_sha") or "")
+        and re.fullmatch(r"[0-9a-f]{40}", detail.get("merge_commit_sha") or "")
+        and detail.get("merge_commit_sha") == merged.get("merge_commit_sha")
+        and detail.get("pr_number") == merged.get("pr_number")
+        and controls.digest(detail) == proof["rollout_sha256"]
+    )
+
+
+def recovery_delivery_enabled(policy: dict) -> bool:
+    from factory.orchestration import factory_controls as controls
+
+    if policy.get("repo") != RECOVERY_REPO:
+        return False
+    intake = controls.intake_policy(policy)
+    if not intake["enabled"] or intake["refinement_batch"]:
+        return False
+    entry = controls.repo_entry(policy, RECOVERY_REPO)
+    labels = {
+        label.lower() for label in controls.problem_issues_policy(policy)["labels"]
+    }
+    return bool(
+        entry["enabled"]
+        and not entry["paused"]
+        and (
+            intake["refine_enabled"]
+            or labels.intersection(label.lower() for label in entry["labels"])
+        )
+        and not labels.intersection(label.lower() for label in entry["exclude_labels"])
+    )

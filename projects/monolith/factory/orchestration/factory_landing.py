@@ -747,7 +747,10 @@ def _arm(repo: str, item: dict) -> None:
         if owner is not None and (
             refusal == "scoped_landing_authorization_missing"
             or (
-                refusal and refusal.startswith(("repair_landing_", "owner_pr_landing_"))
+                refusal
+                and refusal.startswith(
+                    ("repair_landing_", "owner_pr_landing_", "delivery_landing_")
+                )
             )
         ):
             refusal = owner.prepare(item["task_id"], number, head)
@@ -762,6 +765,26 @@ def _arm(repo: str, item: dict) -> None:
             evidence.head_sha,
         ) != (repo, number, head):
             _scope_wait(item, "current_independent_review_missing")
+            return
+        from factory.orchestration import operator_landing_authorization
+
+        with _read_session() as db:
+            requires_operator = (
+                operator_landing_authorization._grant(_receipt(db, item["task_id"]))
+                is not None
+            )
+        # The explicit exception gets one durable attempt before network I/O.
+        # A failed or unknown response never grants an automatic second try.
+        try:
+            reservation = (
+                operator_landing_authorization.reserve_arm(
+                    item["task_id"], number, head, node_id
+                )
+                if requires_operator
+                else None
+            )
+        except ValueError as exc:
+            _scope_wait(item, str(exc))
             return
         from factory.orchestration.factory_controls import _locked_session
 
@@ -802,6 +825,10 @@ def _arm(repo: str, item: dict) -> None:
                 repo, item, pr=current, session=db
             ):
                 refusal = item.pop("owner_pr_hold_reason", "owner_pr_hold")
+            if not refusal:
+                refusal = operator_landing_authorization.arm_refusal(
+                    db, row, number, head, node_id, reservation
+                )
             if not refusal:
                 github_graphql(
                     _ARM_AUTO_MERGE, {"pullRequestId": node_id, "expectedHeadOid": head}
@@ -851,12 +878,33 @@ def _scope_wait(item: dict, reason: str) -> None:
     # Missing authority is a wait for an explicit grant, not permission to
     # erase an unrelated permanent refusal. Existing refusal handling is intact.
     item["refused"] = True
-    _record(
-        item["task_id"],
-        "landing_authorization_wait",
-        reason=reason,
-        pr_number=item["pr_number"],
-    )
+    # One row per change of reason: status reads the latest, so a wait that
+    # moves from "no delegation" to "path denied" must not keep the old answer.
+    with _locked_session() as (db, _control):
+        last = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == item["task_id"],
+                FactoryAudit.action == "landing_authorization_wait",
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(1)
+        ).first()
+        if last is not None:
+            detail = json.loads(last.detail_json)
+            if (detail.get("reason"), detail.get("pr_number")) == (
+                reason,
+                item["pr_number"],
+            ):
+                return
+        _audit(
+            db,
+            ACTOR,
+            "landing_authorization_wait",
+            task_id=item["task_id"],
+            reason=reason,
+            pr_number=item["pr_number"],
+        )
 
 
 def _fence_operator_queue_entry(repo, item):
@@ -939,6 +987,12 @@ def _fence_ungranted_queue_entry(repo: str, item: dict, pr: dict | None = None) 
                     evidence.head_sha,
                 ) != (repo, item["pr_number"], head):
                     refusal = "current_independent_review_missing"
+            if not refusal:
+                from factory.orchestration import operator_landing_authorization
+
+                refusal = operator_landing_authorization.queue_refusal(
+                    db, _receipt(db, item["task_id"]), pr
+                )
             if not refusal:
                 return False
             if pr.get("auto_merge") is not None and not _disarm(repo, pr):

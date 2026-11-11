@@ -6,9 +6,10 @@ The async handlers delegate their DB work to synchronous cores
 session; the cores take an explicit session so they are testable against the
 in-memory fixture. The thin async wrappers are not unit tested here.
 
-Window tuples are [ts_unix_seconds, temp_c, precip_mm, wind_kmh, cloud_pct],
-exactly what hikes.forecast.compute_windows emits and what _write_walk_hours
-maps into typed WalkHour rows.
+Production compute_hours rows contain the seven HOUR_FIELDS values, including
+fog and low cloud. _write_walk_hours also intentionally supports five-field
+fixtures [ts_unix_seconds, temp_c, precip_mm, wind_kmh, cloud_pct], mapping
+missing extras to None in typed WalkHour rows.
 """
 
 from datetime import datetime, timedelta, timezone

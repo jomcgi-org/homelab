@@ -405,6 +405,12 @@ tokenBroker:
     # Health and metrics stay operational. Keep false through staged mTLS
     # validation and arm only in a separately authorized values change.
     retireProtectedRoutes: false
+  loginAuth:
+    # Opt in per environment: login/start and login/status require one of these
+    # exact SPIFFE identities. Login identities gain no token, refresh or quota
+    # access. Requires spiffe.enabled and a nonempty login identity list.
+    required: false
+    clientSpiffeIds: []
   spiffe:
     # Phase 2 of ADR embervm/041: serve /token only over SPIFFE mTLS on a
     # second port. Off by default; the hub overlay flips it after this
@@ -412,7 +418,8 @@ tokenBroker:
     enabled: false
     trustDomain: embervm.jomcgi.dev
     tlsPort: 8443
-    # SPIFFE IDs allowed on the mTLS port. Empty means the noded
+    # Token, refresh and quota client IDs (also login when loginAuth is off).
+    # Empty means the noded
     # ServiceAccount's ID, because the egress-proxy sidecar that fetches
     # tokens runs in the noded pods.
     clientSpiffeIds: []
@@ -475,6 +482,14 @@ conformance:
   idleBankSeconds: 20
   sweepGraceSeconds: 15
   minPassingInvariants: 4
+  # S9 uses one native Claude-runtime session to exercise Codex before and
+  # after park/rejoin. Stage the live probe separately from runtime updates.
+  codex:
+    enabled: false
+    workload: claude-runtime
+    model: terra
+    providerModel: gpt-6.1-terra
+    cliVersion: "0.167.0"
   budgets:
     s1: 90s
     # The guest shim's inner init read timeout is 90s. A 180s outer budget safely
@@ -489,6 +504,7 @@ conformance:
     # count toward the dev verdictTimeout arithmetic in dev/deploy/values.yaml.
     s7: 15s
     s8: 20s
+    s9: 5m
   # S7 jailer and admission facts (#5255), staged default-off like s6. True
   # makes the runner read GET /v1/capacity before S1 and again after the
   # suite, and pass only when every brick reports jailer_armed, no brick's
@@ -1197,6 +1213,10 @@ rootfsBuilder:
   # digest-only local files and remote objects are the implicit legacy b1 and
   # remain untouched for banked sessions.
   bakeFormatVersion: b2
+  # Dev opt-in: stamp the immutable guest digest inside the baked rootfs.
+  # The effective cache format becomes b3; retain the generic b2 value so
+  # charts without stamp support keep their original cache namespace.
+  stampImageDigest: false
   # Opt-in only until Linux and live validation complete. False preserves the
   # legacy one-init-container-per-workload sequence, including baking every
   # image on every brick. True renders one driver that runs independent bakes

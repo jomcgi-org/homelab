@@ -5,6 +5,8 @@ export async function GET({ url }) {
     const upstream = new URL(`${API_BASE}/api/agents/codex-login/status`);
     const grant = url.searchParams.get("grant");
     if (grant) upstream.searchParams.set("grant", grant);
+    const environment = url.searchParams.get("environment");
+    if (environment) upstream.searchParams.set("environment", environment);
     const res = await fetch(upstream, {
       signal: AbortSignal.timeout(10000),
     });

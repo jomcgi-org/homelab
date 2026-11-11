@@ -70,6 +70,21 @@ belong in `tars`. The build-only per-domain image scaffold was retired under
 
 Digests are reproducible: `.bazelrc` pins `SOURCE_DATE_EPOCH` to a constant so apko stops stamping a wall-clock `created` time, and `--stamp` is applied only by the push job, never by `--config=ci`, because a stamped graph turns every image's digest rule into a cache miss. On main, `bazel/images/push/push-changed.sh` builds everything, reads each image's content digest from `//bazel/images/digests:manifest`, and pushes only what the registry does not already hold; PR branches `bazel build` the images and push nothing.
 
+Before the first selected image is pushed, the publisher checks every selected
+push target's real runfiles with `bazel run --run_under` and the same CI flags.
+The read-only wrapper takes the actual image path from the generated push script,
+walks index/manifest/config/layer descriptors, and checks readable files and sizes.
+It logs digests and broken-link paths without executing the push. Images already
+proven present remain skipped. OCI and Claude-runtime changes also exercise this
+check on the Claude push target in PR and queue CI.
+
+**Why.** After #7681, main's tests and image builds passed but publication failed
+opening a Claude image layer blob. A later runner could read all 17 referenced
+blobs; the original failure was not reproduced. Checking the runner's actual push
+closure catches this class of failure before registry writes, without changing
+cache policy or downloading images that would otherwise be skipped. Successful
+publication and verified rollout remain separate requirements.
+
 Lock maintenance: `update-apko-locks.sh` re-resolves a lock (needs Bazel, and pins the host's execution platform so a registered foreign execution platform cannot hand it the wrong apko binary, as the aarch64 OCaml platform once did), `fix-apko-checksum.sh` re-hashes a config-only edit without Bazel, and the Renovate apko-lock CronWorkflow refreshes every lock weekly on its own PR. The lock checksums the whole YAML file, so a comment edit invalidates it.
 
 (see: `bazel/tools/oci/`, `bazel/images/README.md`, `bazel/images/push/push-changed.sh`, `bazel/tools/format/update-apko-locks.sh`, `bazel/tools/format/fix-apko-checksum.sh`, `projects/platform/renovate/`)

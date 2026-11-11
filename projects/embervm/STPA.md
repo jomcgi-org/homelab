@@ -257,3 +257,23 @@ flowchart TD
 - Whether per-workload egress allowlist scoping (ADR embervm/035 open question 1) should be implemented to prevent shared-egress-allowlist-widening
 - Whether request-scoped GitHub tool mediation (ADR agents/055) should replace host-keyed egress credential injection
 - shared egress allowlist provides no per-workload isolation (ADR embervm/035), making destinations added for one workload reachable by all egress-enabled workloads with no per-workload authorization check
+
+### Decision-only guest profile (#7583)
+
+- Unsafe action: a bespoke funding client reuses subscription OAuth, or sends
+  content to a CLI before establishing its capabilities. The versioned endpoint
+  refuses all valid funding profiles before HTTP construction or CLI startup.
+  Ambient API keys cannot enable it. The pinned pre-input handshake does not
+  attest tools, and a later empty-tools init event cannot authorize delivery.
+  Any future dedicated API route must validate native dispatch authority and
+  the closed no-tool request before credential injection or upstream content.
+- Unsafe race/replay: an ordinary request races profile selection or restores a
+  spent decision guest. Profile selection is checked under the mount lock and
+  persisted before invocation; a decision guest cannot execute another turn.
+  Lost responses retain native receipt/uncertainty handling. A versioned path
+  ensures an old guest cannot silently ignore the profile and run coding tools.
+- Unsafe feedback: a response claims a different request/schema/model profile.
+  Runtime metadata travels with the native artifact and authenticated receipt;
+  the orchestration owner rechecks it against its immutable pin before funding.
+  Deployment compatibility and security-aware review are required; unit tests
+  with a fake provider are not a live capability or recovery acceptance claim.

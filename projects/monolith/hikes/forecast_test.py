@@ -1,9 +1,9 @@
 """Unit tests for the pure met.no forecast logic (no network).
 
-compute_windows ports the viability ladder from the legacy
-update_forecast/update.py, so these tests pin the threshold edges
-(precip 2.0 mm, wind 80 km/h), the past/horizon drops, the None defaults,
-and the emitted tuple rounding. The daylight gate is the one intentional
+compute_hours keeps every daylight hour, including nonviable weather. These
+tests pin the seven-field tuples, wind precision, past/horizon drops and None
+defaults. Separate is_viable assertions pin the threshold edges (precip 2.0 mm,
+wind 80 km/h). The daylight gate is the one intentional
 divergence: it now follows real sunrise/sunset at the walk's coordinates
 (see TestDaylightGate and TestSunTimes) rather than a fixed 07:00-19:00 band.
 """
@@ -16,7 +16,6 @@ import hikes.forecast as forecast_module
 from hikes.forecast import (
     HOUR_FIELDS,
     compute_hours,
-    compute_windows,
     is_daylight,
     is_viable,
     parse_hourly,
@@ -66,8 +65,8 @@ def _entry(
     }
 
 
-def _windows(entry: dict) -> list[list]:
-    return compute_windows([entry], NOW, LAT, LON)
+def _hours(entry: dict) -> list[list]:
+    return compute_hours([entry], NOW, LAT, LON)
 
 
 # A safely in-range slot: next day, midday, within the 7-day horizon.
@@ -76,23 +75,32 @@ VIABLE_TIME = "2026-06-14T12:00:00Z"
 
 class TestViabilityThresholds:
     def test_precip_exactly_2_0_mm_is_viable(self):
-        assert len(_windows(_entry(VIABLE_TIME, precip=2.0))) == 1
+        assert is_viable(2.0, 0)
 
     def test_precip_above_2_0_mm_is_not_viable(self):
-        assert _windows(_entry(VIABLE_TIME, precip=2.1)) == []
+        assert not is_viable(2.1, 0)
+        assert _hours(_entry(VIABLE_TIME, precip=2.1))[0][2] == 2.1
 
     def test_wind_just_below_80_kmh_is_viable(self):
         # 22.2 m/s * 3.6 = 79.92 km/h, under the threshold.
-        windows = _windows(_entry(VIABLE_TIME, wind_ms=22.2))
-        assert len(windows) == 1
-        assert windows[0][3] == 80  # round(79.92)
+        hours = _hours(_entry(VIABLE_TIME, wind_ms=22.2))
+        assert len(hours) == 1
+        assert hours[0][3] == 79.92
+        assert is_viable(hours[0][2], hours[0][3])
+
+    def test_wind_exactly_80_kmh_is_viable(self):
+        assert is_viable(2.0, 80.0)
 
     def test_wind_above_80_kmh_is_not_viable(self):
         # 22.3 m/s * 3.6 = 80.28 km/h, over the threshold.
-        assert _windows(_entry(VIABLE_TIME, wind_ms=22.3)) == []
+        hours = _hours(_entry(VIABLE_TIME, wind_ms=22.3))
+        assert len(hours) == 1
+        assert hours[0][3] == 80.28
+        assert not is_viable(hours[0][2], hours[0][3])
+        assert not is_viable(0, 80.01)
 
     def test_none_wind_treated_as_zero(self):
-        windows = _windows(_entry(VIABLE_TIME, wind_ms=None))
+        windows = _hours(_entry(VIABLE_TIME, wind_ms=None))
         assert len(windows) == 1
         assert windows[0][3] == 0
 
@@ -104,55 +112,65 @@ class TestDaylightGate:
     # old fixed band wrongly dropped, and still reject true darkness.
     def test_before_sunrise_is_not_viable(self):
         # 03:00 UTC, a few minutes before the ~03:28 sunrise.
-        assert _windows(_entry("2026-06-14T03:00:00Z")) == []
+        assert _hours(_entry("2026-06-14T03:00:00Z")) == []
 
     def test_early_summer_morning_is_viable(self):
         # 04:00 UTC (05:00 BST) is daylight in June but dark under the old band.
-        assert len(_windows(_entry("2026-06-14T04:00:00Z"))) == 1
+        assert len(_hours(_entry("2026-06-14T04:00:00Z"))) == 1
 
     def test_late_summer_evening_is_viable(self):
         # 20:00 UTC ends before the ~21:14 sunset.
-        assert len(_windows(_entry("2026-06-14T20:00:00Z"))) == 1
+        assert len(_hours(_entry("2026-06-14T20:00:00Z"))) == 1
 
     def test_after_sunset_is_not_viable(self):
         # 22:00 UTC, after the sun has set.
-        assert _windows(_entry("2026-06-14T22:00:00Z")) == []
+        assert _hours(_entry("2026-06-14T22:00:00Z")) == []
 
 
 class TestTimeBounds:
     def test_past_hour_is_dropped(self):
-        assert _windows(_entry("2026-06-13T10:00:00Z")) == []
+        assert _hours(_entry("2026-06-13T10:00:00Z")) == []
 
     def test_hour_at_now_is_kept(self):
-        assert len(_windows(_entry("2026-06-13T12:00:00Z"))) == 1
+        assert len(_hours(_entry("2026-06-13T12:00:00Z"))) == 1
 
     def test_hour_at_exact_horizon_is_kept(self):
         # now + 7 days exactly; the ladder only drops dt > horizon.
-        assert len(_windows(_entry("2026-06-20T12:00:00Z"))) == 1
+        assert len(_hours(_entry("2026-06-20T12:00:00Z"))) == 1
 
     def test_hour_beyond_7_days_is_dropped(self):
-        assert _windows(_entry("2026-06-20T13:00:00Z")) == []
+        assert _hours(_entry("2026-06-20T13:00:00Z")) == []
 
 
 class TestTupleEmission:
     def test_none_temp_defaults_to_zero(self):
-        windows = _windows(_entry(VIABLE_TIME, temp_c=None))
+        windows = _hours(_entry(VIABLE_TIME, temp_c=None))
         assert windows[0][1] == 0
 
     def test_none_cloud_defaults_to_50(self):
-        windows = _windows(_entry(VIABLE_TIME, cloud=None))
+        windows = _hours(_entry(VIABLE_TIME, cloud=None))
         assert windows[0][4] == 50
 
     def test_zero_precip_emitted_as_int_zero(self):
-        windows = _windows(_entry(VIABLE_TIME, precip=0.0))
+        windows = _hours(_entry(VIABLE_TIME, precip=0.0))
         assert windows[0][2] == 0
 
     def test_rounding_of_emitted_tuple(self):
-        windows = _windows(
+        windows = _hours(
             _entry(VIABLE_TIME, temp_c=10.34, wind_ms=4.7, precip=1.44, cloud=87.6)
         )
         expected_ts = int(datetime(2026, 6, 14, 12, 0, tzinfo=UTC).timestamp())
-        assert windows == [[expected_ts, 10.3, 1.4, 17, 88]]
+        assert HOUR_FIELDS == (
+            "ts",
+            "temp_c",
+            "precip_mm",
+            "wind_kmh",
+            "cloud_pct",
+            "fog_pct",
+            "low_cloud_pct",
+        )
+        assert windows == [[expected_ts, 10.3, 1.4, 16.92, 88, None, None]]
+        assert len(windows[0]) == len(HOUR_FIELDS) == 7
 
 
 class TestParseHourly:
@@ -308,8 +326,6 @@ class TestCompleteForecast:
         assert h["fog_pct"] == 0
         assert h["low_cloud_pct"] == 62
         assert not is_viable(h["precip_mm"], h["wind_kmh"])
-        # compute_windows still emits viable hours only, in the legacy shape.
-        assert compute_windows(parse_hourly(forecast), NOW, LAT, LON) == []
 
     def test_missing_extras_are_none(self):
         hours = compute_hours(parse_hourly(self._complete()), NOW, LAT, LON)
@@ -336,8 +352,12 @@ class TestWholeDaylightHours:
         now = datetime(2026, 10, 22, tzinfo=UTC)
         entries = [_entry(f"2026-10-22T{h:02}:00:00Z") for h in range(13, 19)]
         hours = compute_hours(entries, now, 56.82, -5.1)
-        windows = compute_windows(entries, now, 56.82, -5.1)
-        assert [h[0] for h in hours] == [h[0] for h in windows]
+        assert [datetime.fromtimestamp(h[0], UTC).hour for h in hours] == [
+            13,
+            14,
+            15,
+            16,
+        ]
         assert len(hours) == 4
         assert datetime.fromtimestamp(hours[-1][0], UTC).hour == 16
 
