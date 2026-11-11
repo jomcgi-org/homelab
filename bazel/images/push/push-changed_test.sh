@@ -454,7 +454,7 @@ export STUB_LAYERED_IMAGE="//projects/beta:image.push"
 export STUB_LAYERS="//bazel/tools/image:prettier_tar"
 OUT=$(run_script)
 EXPECTED=$(printf '%s\n' \
-	"build --config=ci --stamp --remote_download_toplevel //bazel/tools/image:prettier_tar" \
+	"build --config=ci --stamp --experimental_check_output_files --remote_download_toplevel //bazel/tools/image:prettier_tar" \
 	"check //projects/beta:image.push" \
 	"push //projects/beta:image.push" \
 	"push //bazel/images:push_charts")
@@ -462,6 +462,12 @@ if [ "$(cat "$STUB_ORDER_LOG")" = "$EXPECTED" ]; then
 	pass "layer tars are downloaded before the layout check"
 else
 	fail "layer tars are downloaded before the layout check" "$(cat "$STUB_ORDER_LOG")"
+fi
+# The push itself must also re-check outputs, or its runfiles stay remote.
+if grep -q -- "--experimental_check_output_files" "$STUB_ARGV_LOG"; then
+	pass "image push re-checks remote outputs"
+else
+	fail "image push re-checks remote outputs" "$(cat "$STUB_ARGV_LOG")"
 fi
 unset STUB_LAYERED_IMAGE STUB_LAYERS
 teardown
