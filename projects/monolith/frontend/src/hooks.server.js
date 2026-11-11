@@ -83,23 +83,6 @@ export async function handle({ event, resolve }) {
     response.headers.delete("etag");
   }
 
-  // Campaign pages contain private roster data and one-time invitation action
-  // results. Apply at the response boundary so action failures, navigation
-  // payloads and redirects cannot be cached even when no page load runs.
-  if (
-    event.route?.id === "/friends/grimoire" ||
-    event.route?.id?.startsWith("/friends/grimoire/")
-  ) {
-    response.headers.set("cache-control", "private, no-store");
-    response.headers.set("cloudflare-cdn-cache-control", "no-store");
-    // Native form POSTs need their same-origin Origin for CSRF checks.
-    // no-referrer makes navigation POST Origin null (Fetch section 3.2).
-    // same-origin still omits referrers to other origins; invitation fragments
-    // are cleared by the standalone landing before it sends any request.
-    response.headers.set("referrer-policy", "same-origin");
-    response.headers.delete("etag");
-  }
-
   // HEAD must not have its body materialised; pass through untouched.
   if (event.request.method === "HEAD" || !response.body) return response;
   // Respect anything upstream already encoded.

@@ -138,6 +138,18 @@ typescript_bin.tsc_test(
     data = [":test_src"],
 )
 
+# Golden reveal projections and the DM-only route list: read by this app's
+# vitest (via :src) and by //projects/monolith:grimoire_visibility_test, so a
+# server change and a renderer change each fail the side that owns it.
+filegroup(
+    name = "reveal_projection_fixture",
+    srcs = [
+        "src/lib/fixtures/dm-only-routes.json",
+        "src/lib/fixtures/reveal-projections.json",
+    ],
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 # The anonymous invitation landing's browser script. grimoire/join_landing.py
 # embeds it in the page it serves; its DOM tests run in :test.
 filegroup(

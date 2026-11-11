@@ -6897,7 +6897,7 @@ py_test(
 py_test(
     name = "grimoire_visibility_test",
     srcs = ["grimoire/visibility_test.py"],
-    data = ["//projects/monolith/frontend:reveal_projection_fixture"],
+    data = ["//projects/monolith/web/grimoire:reveal_projection_fixture"],
     imports = ["."],
     deps = [
         ":pkg_grimoire",

@@ -275,7 +275,7 @@ def test_dm_projection_includes_everything_and_grant_annotation(session: Session
 
 # Golden projections shared with the frontend renderer test. A server change
 # fails here; a renderer change fails the vitest that reads the same file.
-_FIXTURE_DIR = "projects/monolith/frontend/src/lib/grimoire/fixtures"
+_FIXTURE_DIR = "projects/monolith/web/grimoire/src/lib/fixtures"
 
 
 def _load_fixture(name: str) -> dict:
