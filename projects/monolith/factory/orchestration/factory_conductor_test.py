@@ -23142,7 +23142,8 @@ def test_head_moved_recovery_verifies_new_head_and_reviews_it_fresh(
     assert "authorized operator push" in prompt
     assert f"Read every commit between {HEAD_ONE} and {moved}" in prompt
     assert "no conflict markers" in prompt
-    assert "never force-push" in prompt
+    assert "lands by rebase" in prompt
+    assert "force-with-lease" in prompt
     assert "force-with-lease" not in prompt
     assert "Report the exact resulting PR head" in prompt
     assert nodes["review_1"]["deps"] == ["correct_1"]
