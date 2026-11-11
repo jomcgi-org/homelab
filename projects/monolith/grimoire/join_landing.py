@@ -110,13 +110,10 @@ PRIVATE_HEADERS = {
 # The landing's browser script lives in the web app, where its DOM tests run
 # (web/grimoire/src/lib/join-landing.test.js). It is a module exporting one
 # function; the page embeds it as a plain script that calls that function.
+# The path is not resolved: Bazel places the script beside this module's
+# runfiles path, and following a symlink out of that tree would lose it.
 _SCRIPT_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "web"
-    / "grimoire"
-    / "src"
-    / "lib"
-    / "join-landing.js"
+    Path(__file__).parents[1] / "web" / "grimoire" / "src" / "lib" / "join-landing.js"
 )
 _SCRIPT_EXPORT = "export async function startJoinLanding()"
 

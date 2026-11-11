@@ -114,7 +114,7 @@ function TableView({ table }: { table: Table }) {
   const [ending, setEnding] = useState(false);
   const [tool, setTool] = useState<"dice" | "handout" | null>(null);
   const { behind, toLatest } = useFollowFeed(
-    table.events.at(-1)?.seq ?? 0,
+    table.events.length,
     tab === "story",
   );
   const journal = useJournal(
