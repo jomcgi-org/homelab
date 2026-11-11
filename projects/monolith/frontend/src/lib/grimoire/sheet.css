@@ -1,0 +1,68 @@
+/* Friends presentation only. The private character workspace keeps its legacy
+ * container. Explicit type and controls keep the session independent of the
+ * stylesheet SvelteKit happens to preload from the root error boundary. */
+.grimoire-sheet {
+  font-family: var(--font-ui);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.grimoire-sheet *,
+.grimoire-sheet *::before,
+.grimoire-sheet *::after {
+  box-sizing: border-box;
+}
+
+.grimoire-sheet .content {
+  min-width: 0;
+}
+
+.grimoire-sheet .content :is(h1, h2, h3) {
+  font-family: var(--font-ui);
+}
+
+.grimoire-sheet .content :is(button, input, select, textarea) {
+  min-height: 44px;
+  max-width: 100%;
+  border: 1px solid var(--stroke);
+  border-radius: 0;
+  padding: 0.65rem 0.8rem;
+  background: var(--sheet);
+  color: var(--ink);
+  font: inherit;
+  font-size: 1rem;
+}
+
+.grimoire-sheet button {
+  cursor: pointer;
+}
+
+.grimoire-sheet button:disabled {
+  cursor: not-allowed;
+}
+
+.grimoire-sheet .content input[type="checkbox"] {
+  min-height: 1rem;
+  accent-color: var(--accent-ink);
+}
+
+.grimoire-sheet
+  .content
+  :is(article, section, aside, nav, details, summary, blockquote, a) {
+  border-width: 1px;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.grimoire-sheet .edition > :is(h1, h2, p, form, details, ul),
+.grimoire-sheet .ed-body {
+  margin-inline: 1rem;
+}
+
+.grimoire-sheet .ed-head {
+  margin: 0;
+}
+
+.grimoire-sheet .edition {
+  min-width: 0;
+}

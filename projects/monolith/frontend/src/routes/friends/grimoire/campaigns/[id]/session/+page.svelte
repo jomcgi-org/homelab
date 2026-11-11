@@ -1,4 +1,5 @@
 <script>
+  import GrimoireSheet from "$lib/grimoire/GrimoireSheet.svelte";
   import { onMount, untrack, tick } from "svelte";
   import { sheetRolls } from "$lib/grimoire/sheet-rolls.js";
   import { composeMessage } from "$lib/grimoire/session-compose.js";
@@ -374,509 +375,522 @@
 
 <svelte:head><title>{state.campaign.name} · Grimoire</title></svelte:head>
 
-<main class="grimoire table">
-  <header>
-    <a href="/grimoire">← Your campaigns</a>
-    <p class="eyebrow">
-      {dm ? "Dungeon master" : state.characters[0]?.character_name || "Player"}
-    </p>
-    <h1>{state.campaign.name}</h1>
-    <div class="status">
-      <span>{state.session?.status || "Not started"}</span><span
-        role="status"
-        aria-label="Session connection">{connection}</span
-      >
-    </div>
-  </header>
-
-  {#key `${state.campaign.id}:${state.session?.id}`}
-    <ReadAloud
-      campaignId={state.campaign.id}
-      role={state.campaign.role}
-      pcId={state.campaign.player_character_id}
-      events={state.events}
-      voices={state.voices || []}
-    />
-  {/key}
-
-  {#if !dm}<KnowledgeSearch campaignId={state.campaign.id} />{/if}
-  <nav class="table-tabs" aria-label="Session sections">
-    <button
-      class="secondary"
-      aria-pressed={activeTab === "story"}
-      onclick={() => (activeTab = "story")}>Story</button
-    ><button
-      class="secondary"
-      aria-pressed={activeTab === "notes"}
-      onclick={() => (activeTab = "notes")}>Notes</button
-    >
-    <button
-      class="secondary"
-      aria-pressed={activeTab === "inventory"}
-      onclick={() => (activeTab = "inventory")}>Inventory</button
-    >
-    <button
-      class="secondary"
-      aria-pressed={activeTab === "journal"}
-      onclick={() => (activeTab = "journal")}>Journal</button
-    >
-  </nav>
-  {#if activeTab === "inventory"}
-    <InventoryPanel
-      endpoint={endpoint()}
-      {dm}
-      characters={state.characters}
-      prefill={inventoryPrefill}
-      openKnowledge={(id) => (selectedEntity = id)}
-    />
-  {/if}
-  <div hidden={activeTab !== "notes"}>
-    <SessionNotesPanel
-      endpoint={endpoint()}
-      {dm}
-      {showEvent}
-      openKnowledge={(id) => (selectedEntity = id)}
-    />
-  </div>
-  {#if activeTab === "journal"}<div>
-      {#if journal}
-        <JournalPanel
-          {journal}
-          view={journalView}
-          onViewChange={(next) => (journalView = next)}
-          {showEvent}
-          openKnowledge={(id) => (selectedEntity = id)}
-        />
-      {:else}
-        <p class="journal-empty">
-          {state.session
-            ? "The journal is unavailable right now. It will return on the next refresh."
-            : "Your journal starts when the session does."}
-        </p>
-      {/if}
-    </div>{/if}
-  <div class="layout" hidden={activeTab !== "story"}>
-    <section aria-label="Session feed" class="feed">
-      {#if !dm}<YourTurnBanner
-          entries={turnEntries}
-          activeIndex={turnOrder?.active_index ?? null}
-          characterIds={ownCharacterIds}
-        />{/if}
-      <TurnStrip
-        entries={turnEntries}
-        round={turnOrder?.round ?? 1}
-        activeIndex={turnOrder?.active_index ?? null}
-        {dm}
-      />
-      {#if dm && playing}
-        <details class="initiative-panel">
-          <summary>Initiative order</summary>
-          <InitiativeEditor
-            initiative={state.initiative}
-            characters={state.characters}
-            events={state.events}
-            members={state.members}
-            {busy}
-            act={(input) => act(input)}
-          />
-        </details>
-      {/if}
-      {#if !state.events.length}
-        <div class="empty">
-          <h2>
-            {state.session?.status === "ended"
-              ? "No messages were recorded."
-              : "The story begins here."}
-          </h2>
-          <p>
-            {state.session?.status === "ended"
-              ? "This session has no story entries."
-              : dm
-                ? state.session?.status === "active"
-                  ? "Set the scene for your players."
-                  : "Start the session, then set the scene for your players."
-                : "Take your seat. Your DM will set the scene shortly."}
-          </p>
-        </div>
-      {/if}
-      {#each state.events as event (event.id)}
-        <article
-          id={`event-${event.id}`}
-          class:private-event={event.audience !== "table"}
+<GrimoireSheet current={state.campaign.name}>
+  <div class="table">
+    <header class="edition ed-lead">
+      <a href="/grimoire">← Your campaigns</a>
+      <p class="eyebrow">
+        {dm
+          ? "Dungeon master"
+          : state.characters[0]?.character_name || "Player"}
+      </p>
+      <h1>{state.campaign.name}</h1>
+      <div class="status">
+        <span>{state.session?.status || "Not started"}</span><span
+          role="status"
+          aria-label="Session connection">{connection}</span
         >
-          <span id={`session-${state.session.id}-event-${event.seq}`}></span>
-          <div class="event-meta">
-            <strong
-              >{event.kind === "narration"
-                ? "The DM"
-                : event.kind === "roll"
-                  ? "Dice roll"
-                  : event.kind === "reveal"
-                    ? "New knowledge"
-                    : event.kind === "handout"
-                      ? "Handout"
-                      : event.kind === "system"
-                        ? "Table update"
-                        : event.kind === "turn"
-                          ? "Turn order"
-                          : "Player action"}</strong
-            >
-            <span
-              >{event.audience === "table"
-                ? "Everyone"
-                : event.audience === "dm"
-                  ? "DM and sender"
-                  : "Selected player and DM"}</span
-            >
+      </div>
+    </header>
+
+    {#key `${state.campaign.id}:${state.session?.id}`}
+      <ReadAloud
+        campaignId={state.campaign.id}
+        role={state.campaign.role}
+        pcId={state.campaign.player_character_id}
+        events={state.events}
+        voices={state.voices || []}
+      />
+    {/key}
+
+    {#if !dm}<KnowledgeSearch campaignId={state.campaign.id} />{/if}
+    <nav class="table-tabs divided" aria-label="Session sections">
+      <button
+        class="secondary"
+        aria-pressed={activeTab === "story"}
+        onclick={() => (activeTab = "story")}>Story</button
+      ><button
+        class="secondary"
+        aria-pressed={activeTab === "notes"}
+        onclick={() => (activeTab = "notes")}>Notes</button
+      >
+      <button
+        class="secondary"
+        aria-pressed={activeTab === "inventory"}
+        onclick={() => (activeTab = "inventory")}>Inventory</button
+      >
+      <button
+        class="secondary"
+        aria-pressed={activeTab === "journal"}
+        onclick={() => (activeTab = "journal")}>Journal</button
+      >
+    </nav>
+    {#if activeTab === "inventory"}
+      <InventoryPanel
+        endpoint={endpoint()}
+        {dm}
+        characters={state.characters}
+        prefill={inventoryPrefill}
+        openKnowledge={(id) => (selectedEntity = id)}
+      />
+    {/if}
+    <div hidden={activeTab !== "notes"}>
+      <SessionNotesPanel
+        endpoint={endpoint()}
+        {dm}
+        {showEvent}
+        openKnowledge={(id) => (selectedEntity = id)}
+      />
+    </div>
+    {#if activeTab === "journal"}<div>
+        {#if journal}
+          <JournalPanel
+            {journal}
+            view={journalView}
+            onViewChange={(next) => (journalView = next)}
+            {showEvent}
+            openKnowledge={(id) => (selectedEntity = id)}
+          />
+        {:else}
+          <p class="journal-empty">
+            {state.session
+              ? "The journal is unavailable right now. It will return on the next refresh."
+              : "Your journal starts when the session does."}
+          </p>
+        {/if}
+      </div>{/if}
+    <div class="layout" hidden={activeTab !== "story"}>
+      <section aria-label="Session feed" class="feed edition ed-body">
+        {#if !dm}<YourTurnBanner
+            entries={turnEntries}
+            activeIndex={turnOrder?.active_index ?? null}
+            characterIds={ownCharacterIds}
+          />{/if}
+        <TurnStrip
+          entries={turnEntries}
+          round={turnOrder?.round ?? 1}
+          activeIndex={turnOrder?.active_index ?? null}
+          {dm}
+        />
+        {#if dm && playing}
+          <details class="initiative-panel">
+            <summary>Initiative order</summary>
+            <InitiativeEditor
+              initiative={state.initiative}
+              characters={state.characters}
+              events={state.events}
+              members={state.members}
+              {busy}
+              act={(input) => act(input)}
+            />
+          </details>
+        {/if}
+        {#if !state.events.length}
+          <div class="empty">
+            <h2>
+              {state.session?.status === "ended"
+                ? "No messages were recorded."
+                : "The story begins here."}
+            </h2>
+            <p>
+              {state.session?.status === "ended"
+                ? "This session has no story entries."
+                : dm
+                  ? state.session?.status === "active"
+                    ? "Set the scene for your players."
+                    : "Start the session, then set the scene for your players."
+                  : "Take your seat. Your DM will set the scene shortly."}
+            </p>
           </div>
-          {#if event.kind === "roll" && !event.retracted_at}
-            <div class="roll-result">
-              <strong>{event.body.total}</strong><span
-                >{event.body.label || "Roll"} · {event.body.formula}<small
-                  >Dice: {event.body.rolls.join(", ")} · Kept: {event.body.kept.join(
-                    ", ",
-                  )}</small
-                ></span
+        {/if}
+        {#each state.events as event (event.id)}
+          <article
+            id={`event-${event.id}`}
+            class:private-event={event.audience !== "table"}
+          >
+            <span id={`session-${state.session.id}-event-${event.seq}`}></span>
+            <div class="event-meta">
+              <strong
+                >{event.kind === "narration"
+                  ? "The DM"
+                  : event.kind === "roll"
+                    ? "Dice roll"
+                    : event.kind === "reveal"
+                      ? "New knowledge"
+                      : event.kind === "handout"
+                        ? "Handout"
+                        : event.kind === "system"
+                          ? "Table update"
+                          : event.kind === "turn"
+                            ? "Turn order"
+                            : "Player action"}</strong
+              >
+              <span
+                >{event.audience === "table"
+                  ? "Everyone"
+                  : event.audience === "dm"
+                    ? "DM and sender"
+                    : "Selected player and DM"}</span
               >
             </div>
-          {:else if event.kind === "reveal" && !event.retracted_at}
-            {#each (event.body?.reveals || [event.body]).filter((item) => !item?.silent && !event.body?.retracted_entity_ids?.includes(item.entity_id)) as knowledge}
-              <div class="knowledge-entry">
-                {#if knowledge.retracted}<p>
-                    Knowledge retracted: {knowledge.name}.
-                  </p>{:else}
-                  <RevealProjection {knowledge} />
-                {/if}
-                {#if !knowledge.retracted && knowledge.grant_scope !== "name_only"}
-                  <button
-                    class="secondary"
-                    onclick={() => (selectedEntity = knowledge.entity_id)}
-                    >Explore {knowledge.name}</button
-                  >
-                  <a
-                    href={`/grimoire/campaigns/${state.campaign.id}/entities/${knowledge.entity_id}`}
-                    >Open knowledge page</a
-                  >
-                {/if}
-                {#if dm && !knowledge.retracted}
-                  <button
-                    class="secondary"
-                    onclick={() => giveItem(event, knowledge)}
-                    aria-label={`Give item ${knowledge.name}`}>Give item</button
+            {#if event.kind === "roll" && !event.retracted_at}
+              <div class="roll-result">
+                <strong>{event.body.total}</strong><span
+                  >{event.body.label || "Roll"} · {event.body.formula}<small
+                    >Dice: {event.body.rolls.join(", ")} · Kept: {event.body.kept.join(
+                      ", ",
+                    )}</small
+                  ></span
+                >
+              </div>
+            {:else if event.kind === "reveal" && !event.retracted_at}
+              {#each (event.body?.reveals || [event.body]).filter((item) => !item?.silent && !event.body?.retracted_entity_ids?.includes(item.entity_id)) as knowledge}
+                <div class="knowledge-entry">
+                  {#if knowledge.retracted}<p>
+                      Knowledge retracted: {knowledge.name}.
+                    </p>{:else}
+                    <RevealProjection {knowledge} />
+                  {/if}
+                  {#if !knowledge.retracted && knowledge.grant_scope !== "name_only"}
+                    <button
+                      class="secondary"
+                      onclick={() => (selectedEntity = knowledge.entity_id)}
+                      >Explore {knowledge.name}</button
+                    >
+                    <a
+                      href={`/grimoire/campaigns/${state.campaign.id}/entities/${knowledge.entity_id}`}
+                      >Open knowledge page</a
+                    >
+                  {/if}
+                  {#if dm && !knowledge.retracted}
+                    <button
+                      class="secondary"
+                      onclick={() => giveItem(event, knowledge)}
+                      aria-label={`Give item ${knowledge.name}`}
+                      >Give item</button
+                    >
+                  {/if}
+                </div>
+              {/each}
+            {:else if event.kind === "handout"}
+              <HandoutCard
+                handout={event}
+                campaignId={state.campaign.id}
+                sessionId={state.session.id}
+                {dm}
+                {busy}
+                {pin}
+                openKnowledge={(id) => (selectedEntity = id)}
+              />
+            {:else if event.kind === "turn" && !event.retracted_at}
+              <p>{turnSummary(event.body)}</p>
+            {:else}<p>
+                {event.retracted_at
+                  ? "This message was retracted."
+                  : event.body?.text || event.body?.summary || "Session update"}
+              </p>
+            {/if}
+            {#if dm && event.kind === "handout" && !event.retracted_at && !event.body?.retracted}
+              <button
+                class="secondary"
+                onclick={() => giveItem(event)}
+                aria-label={`Give item from ${event.body?.title || event.body?.text?.split("\n")[0] || "handout"}`}
+                >Give item</button
+              >
+            {/if}
+            {#if event.kind === "action" && event.audience === "dm" && !event.retracted_at}
+              <div class="private-action">
+                <small
+                  >{isResolved(event) ? "Resolved" : "Waiting for DM"}</small
+                >
+                {#if dm && actionCharacter(event) && !isResolved(event) && playing}
+                  <button class="secondary" onclick={() => reply(event)}
+                    >Reply privately to {actionCharacter(event)
+                      .character_name}</button
                   >
                 {/if}
               </div>
-            {/each}
-          {:else if event.kind === "handout"}
-            <HandoutCard
-              handout={event}
-              campaignId={state.campaign.id}
-              sessionId={state.session.id}
-              {dm}
-              {busy}
-              {pin}
-              openKnowledge={(id) => (selectedEntity = id)}
-            />
-          {:else if event.kind === "turn" && !event.retracted_at}
-            <p>{turnSummary(event.body)}</p>
-          {:else}<p>
-              {event.retracted_at
-                ? "This message was retracted."
-                : event.body?.text || event.body?.summary || "Session update"}
-            </p>
-          {/if}
-          {#if dm && event.kind === "handout" && !event.retracted_at && !event.body?.retracted}
-            <button
-              class="secondary"
-              onclick={() => giveItem(event)}
-              aria-label={`Give item from ${event.body?.title || event.body?.text?.split("\n")[0] || "handout"}`}
-              >Give item</button
-            >
-          {/if}
-          {#if event.kind === "action" && event.audience === "dm" && !event.retracted_at}
-            <div class="private-action">
-              <small>{isResolved(event) ? "Resolved" : "Waiting for DM"}</small>
-              {#if dm && actionCharacter(event) && !isResolved(event) && playing}
-                <button class="secondary" onclick={() => reply(event)}
-                  >Reply privately to {actionCharacter(event)
-                    .character_name}</button
-                >
-              {/if}
-            </div>
-          {/if}
-          {#if !event.retracted_at && !event.body?.retracted && event.kind !== "handout" && event.kind !== "turn"}{#if !dm}<button
-                class="secondary"
-                disabled={busy}
-                onclick={() => pin(event)}
-                aria-label={`Pin ${event.body?.name || event.body?.reveals?.map((item) => item.name).join(", ") || event.body?.text || event.kind} to notes`}
-                >Pin to notes</button
-              >{/if}{/if}
-        </article>
-      {/each}
-      {#if failure}<p role="alert" class="failure">{failure}</p>{/if}
-      {#if signedOut}<p role="alert" class="failure signed-out">
-          {signedOut}<button
-            type="button"
-            class="secondary"
-            onclick={() => location.reload()}>Reload</button
-          >
-        </p>{/if}
-      {#if playing}
-        <form onsubmit={post} class="composer">
-          {#if dm}
-            <label
-              >Speaker <select
-                aria-label="Narration speaker"
-                bind:value={speakerKey}
-              >
-                <option value="narrator">Narrator</option>
-                {#each speakers as speaker}<option value={speaker.key}
-                    >{speaker.name}</option
-                  >{/each}
-                <option value={FREE_LABEL}>Free label</option>
-              </select></label
-            >
-            {#if speakerKey === FREE_LABEL}<label
-                >Speaker label <input
-                  aria-label="Speaker label"
-                  bind:value={speakerLabel}
-                  maxlength="64"
-                  pattern="(?!\.+$)[A-Za-z0-9 _'.\-]+"
-                  required
-                /></label
-              >{/if}
-          {/if}
-          {#if replyTo}<div class="reply-context">
-              <span>Replying privately to {replyTo.name}</span><button
-                type="button"
-                class="secondary"
-                onclick={() => {
-                  replyTo = null;
-                  audience = "table";
-                }}>Cancel reply</button
-              >
-            </div>{/if}
-          <label for="message">{dm ? "Set the scene" : "What do you do?"}</label
-          >
-          <textarea
-            id="message"
-            bind:value={draft}
-            placeholder={dm
-              ? "The lantern flickers as someone knocks…"
-              : "I approach the door…"}
-            maxlength="8000"
-            rows="3"
-            required></textarea>
-          <div class="compose-actions">
-            <label
-              >Send to <select
-                bind:value={audience}
-                aria-label="Send to"
-                disabled={Boolean(replyTo)}
-              >
-                <option value="table">Everyone</option>
-                <option value="dm">{dm ? "DM notes" : "DM privately"}</option>
-                {#if dm}{#each state.characters as character}<option
-                      value={`pc:${character.id}`}
-                      >{character.character_name} and DM</option
-                    >{/each}{/if}
-              </select></label
-            >
-            <button disabled={busy || !draft.trim()}
-              >{busy ? "Sending…" : "Send"}</button
-            >
-          </div>
-          {#if replyTo}<label class="resolve-choice"
-              ><input type="checkbox" bind:checked={resolved} />Mark action
-              resolved</label
-            >{/if}
-        </form>
-        {#if dm}<VoicePresets
-            presets={state.voices || []}
-            endpoint={endpoint()}
-            {act}
-            {busy}
-          />{/if}
-        {#if dm}<details class="dice-tray">
-            <summary>Send a handout</summary>
-            <HandoutComposer
-              campaignId={state.campaign.id}
-              characters={state.characters}
-              {busy}
-              send={act}
-            />
-          </details>{/if}
-        <details class="dice-tray">
-          <summary>Roll dice</summary>
-          <div class="quick-dice">
-            {#if !dm && state.characters[0]?.approved}
-              <select bind:value={rollKind} aria-label="Sheet roll type"
-                ><option value="checks">Ability checks</option><option
-                  value="saves">Saving throws</option
-                ><option value="attacks">Attacks</option></select
-              >
             {/if}
-            <div class="roll-mode" role="radiogroup" aria-label="Roll mode">
-              <label
-                ><input
-                  type="radio"
-                  name="roll-mode"
-                  value="normal"
-                  bind:group={rollMode}
-                />Normal</label
-              >
-              <label
-                ><input
-                  type="radio"
-                  name="roll-mode"
-                  value="adv"
-                  bind:group={rollMode}
-                />Advantage</label
-              >
-              <label
-                ><input
-                  type="radio"
-                  name="roll-mode"
-                  value="dis"
-                  bind:group={rollMode}
-                />Disadvantage</label
-              >
-            </div>
-          </div>
-          {#if !dm && state.characters[0]?.approved}
-            <div class="quick-dice" aria-label="Approved sheet rolls">
-              {#each sheetRolls(state.characters[0].approved, rollKind, rollMode) as preset}
-                <button
+            {#if !event.retracted_at && !event.body?.retracted && event.kind !== "handout" && event.kind !== "turn"}{#if !dm}<button
                   class="secondary"
                   disabled={busy}
-                  onclick={() =>
-                    act({
-                      operation: "roll",
-                      formula: preset.formula,
-                      label: preset.label,
-                      visibility: rollVisibility,
-                    })}>{preset.label}</button
-                >
-              {/each}
-            </div>
-          {/if}
-          <div class="quick-dice" aria-label="Quick rolls">
-            <button
+                  onclick={() => pin(event)}
+                  aria-label={`Pin ${event.body?.name || event.body?.reveals?.map((item) => item.name).join(", ") || event.body?.text || event.kind} to notes`}
+                  >Pin to notes</button
+                >{/if}{/if}
+          </article>
+        {/each}
+        {#if failure}<p role="alert" class="failure">{failure}</p>{/if}
+        {#if signedOut}<p role="alert" class="failure signed-out">
+            {signedOut}<button
+              type="button"
               class="secondary"
-              disabled={busy}
-              onclick={() =>
-                act({
-                  operation: "roll",
-                  formula: initiativeFormula(),
-                  label: "Initiative",
-                  visibility: rollVisibility,
-                })}>Initiative</button
+              onclick={() => location.reload()}>Reload</button
             >
-            {#each [4, 6, 8, 10, 12, 20, 100] as sides}<button
+          </p>{/if}
+        {#if playing}
+          <form onsubmit={post} class="composer">
+            {#if dm}
+              <label
+                >Speaker <select
+                  aria-label="Narration speaker"
+                  bind:value={speakerKey}
+                >
+                  <option value="narrator">Narrator</option>
+                  {#each speakers as speaker}<option value={speaker.key}
+                      >{speaker.name}</option
+                    >{/each}
+                  <option value={FREE_LABEL}>Free label</option>
+                </select></label
+              >
+              {#if speakerKey === FREE_LABEL}<label
+                  >Speaker label <input
+                    aria-label="Speaker label"
+                    bind:value={speakerLabel}
+                    maxlength="64"
+                    pattern="(?!\.+$)[A-Za-z0-9 _'.\-]+"
+                    required
+                  /></label
+                >{/if}
+            {/if}
+            {#if replyTo}<div class="reply-context">
+                <span>Replying privately to {replyTo.name}</span><button
+                  type="button"
+                  class="secondary"
+                  onclick={() => {
+                    replyTo = null;
+                    audience = "table";
+                  }}>Cancel reply</button
+                >
+              </div>{/if}
+            <label for="message"
+              >{dm ? "Set the scene" : "What do you do?"}</label
+            >
+            <textarea
+              id="message"
+              bind:value={draft}
+              placeholder={dm
+                ? "The lantern flickers as someone knocks…"
+                : "I approach the door…"}
+              maxlength="8000"
+              rows="3"
+              required></textarea>
+            <div class="compose-actions">
+              <label
+                >Send to <select
+                  bind:value={audience}
+                  aria-label="Send to"
+                  disabled={Boolean(replyTo)}
+                >
+                  <option value="table">Everyone</option>
+                  <option value="dm">{dm ? "DM notes" : "DM privately"}</option>
+                  {#if dm}{#each state.characters as character}<option
+                        value={`pc:${character.id}`}
+                        >{character.character_name} and DM</option
+                      >{/each}{/if}
+                </select></label
+              >
+              <button disabled={busy || !draft.trim()}
+                >{busy ? "Sending…" : "Send"}</button
+              >
+            </div>
+            {#if replyTo}<label class="resolve-choice"
+                ><input type="checkbox" bind:checked={resolved} />Mark action
+                resolved</label
+              >{/if}
+          </form>
+          {#if dm}<VoicePresets
+              presets={state.voices || []}
+              endpoint={endpoint()}
+              {act}
+              {busy}
+            />{/if}
+          {#if dm}<details class="dice-tray">
+              <summary>Send a handout</summary>
+              <HandoutComposer
+                campaignId={state.campaign.id}
+                characters={state.characters}
+                {busy}
+                send={act}
+              />
+            </details>{/if}
+          <details class="dice-tray">
+            <summary>Roll dice</summary>
+            <div class="quick-dice">
+              {#if !dm && state.characters[0]?.approved}
+                <select bind:value={rollKind} aria-label="Sheet roll type"
+                  ><option value="checks">Ability checks</option><option
+                    value="saves">Saving throws</option
+                  ><option value="attacks">Attacks</option></select
+                >
+              {/if}
+              <div class="roll-mode" role="radiogroup" aria-label="Roll mode">
+                <label
+                  ><input
+                    type="radio"
+                    name="roll-mode"
+                    value="normal"
+                    bind:group={rollMode}
+                  />Normal</label
+                >
+                <label
+                  ><input
+                    type="radio"
+                    name="roll-mode"
+                    value="adv"
+                    bind:group={rollMode}
+                  />Advantage</label
+                >
+                <label
+                  ><input
+                    type="radio"
+                    name="roll-mode"
+                    value="dis"
+                    bind:group={rollMode}
+                  />Disadvantage</label
+                >
+              </div>
+            </div>
+            {#if !dm && state.characters[0]?.approved}
+              <div class="quick-dice" aria-label="Approved sheet rolls">
+                {#each sheetRolls(state.characters[0].approved, rollKind, rollMode) as preset}
+                  <button
+                    class="secondary"
+                    disabled={busy}
+                    onclick={() =>
+                      act({
+                        operation: "roll",
+                        formula: preset.formula,
+                        label: preset.label,
+                        visibility: rollVisibility,
+                      })}>{preset.label}</button
+                  >
+                {/each}
+              </div>
+            {/if}
+            <div class="quick-dice" aria-label="Quick rolls">
+              <button
                 class="secondary"
                 disabled={busy}
                 onclick={() =>
                   act({
                     operation: "roll",
-                    formula: quickFormula(sides),
+                    formula: initiativeFormula(),
+                    label: "Initiative",
                     visibility: rollVisibility,
-                  })}>d{sides}</button
-              >{/each}
-          </div>
-          <form onsubmit={roll}>
-            <label
-              >Dice formula<input
-                bind:value={formula}
-                maxlength="64"
-                placeholder="d20, 2d6+3, 1d20adv"
-                required
-              /></label
-            >
-            <label
-              >Roll label<input
-                bind:value={rollLabel}
-                maxlength="200"
-                placeholder="Search for traps"
-              /></label
-            >
-            <div class="compose-actions">
-              <label
-                >Roll visibility<select
-                  bind:value={rollVisibility}
-                  aria-label="Roll visibility"
-                >
-                  <option value="table">Everyone</option><option value="dm"
-                    >{dm ? "DM only" : "DM and me"}</option
-                  ><option value="self"
-                    >{dm ? "Just me" : "My character and DM"}</option
-                  >
-                </select></label
-              ><button disabled={busy}>Roll</button>
+                  })}>Initiative</button
+              >
+              {#each [4, 6, 8, 10, 12, 20, 100] as sides}<button
+                  class="secondary"
+                  disabled={busy}
+                  onclick={() =>
+                    act({
+                      operation: "roll",
+                      formula: quickFormula(sides),
+                      visibility: rollVisibility,
+                    })}>d{sides}</button
+                >{/each}
             </div>
-          </form>
-        </details>
-      {:else if state.session}
-        <p class="closed">This session has ended. Your story is saved here.</p>
-      {/if}
-    </section>
-
-    <aside>
-      {#if dm && playing}<RevealPanel
-          endpoint={endpoint()}
-          characters={state.characters}
-          changed={refresh}
-        />{/if}
-      <h2>{dm ? "At your table" : "Your character"}</h2>
-      {#each state.characters as character}<div class="character">
-          <strong>{character.character_name}</strong>
-          <p>
-            Level {character.level || 1}
-            {character.class_name || "adventurer"}
+            <form onsubmit={roll}>
+              <label
+                >Dice formula<input
+                  bind:value={formula}
+                  maxlength="64"
+                  placeholder="d20, 2d6+3, 1d20adv"
+                  required
+                /></label
+              >
+              <label
+                >Roll label<input
+                  bind:value={rollLabel}
+                  maxlength="200"
+                  placeholder="Search for traps"
+                /></label
+              >
+              <div class="compose-actions">
+                <label
+                  >Roll visibility<select
+                    bind:value={rollVisibility}
+                    aria-label="Roll visibility"
+                  >
+                    <option value="table">Everyone</option><option value="dm"
+                      >{dm ? "DM only" : "DM and me"}</option
+                    ><option value="self"
+                      >{dm ? "Just me" : "My character and DM"}</option
+                    >
+                  </select></label
+                ><button disabled={busy}>Roll</button>
+              </div>
+            </form>
+          </details>
+        {:else if state.session}
+          <p class="closed">
+            This session has ended. Your story is saved here.
           </p>
-          {#if character.approved}<p>
-              HP {character.approved.max_hit_points} · AC {character.approved
-                .unarmored_armor_class}
-            </p>{/if}
-        </div>{/each}
-      <a href="/grimoire/sheets">Open character sheets</a>
-      {#if dm}<a href={`/grimoire/campaigns/${state.campaign.id}/grants`}
-          >Manage knowledge grants</a
-        >{/if}
-      {#if dm}
-        <div class="controls">
-          {#if !playing}<button
-              disabled={busy}
-              onclick={() => act({ operation: "start" })}>Start session</button
-            >
-          {:else}
-            <button
-              disabled={busy}
-              onclick={() =>
-                act({
-                  operation: "status",
-                  status:
-                    state.session.status === "paused" ? "active" : "paused",
-                })}
-              >{state.session.status === "paused"
-                ? "Resume session"
-                : "Pause session"}</button
-            >
-            <button
-              class="secondary"
-              disabled={busy}
-              onclick={() => {
-                if (
-                  confirm("End this session? The story will remain available.")
-                )
-                  act({ operation: "status", status: "ended" });
-              }}>End session</button
-            >
-          {/if}
-        </div>
-      {/if}
-    </aside>
+        {/if}
+      </section>
+
+      <aside>
+        {#if dm && playing}<RevealPanel
+            endpoint={endpoint()}
+            characters={state.characters}
+            changed={refresh}
+          />{/if}
+        <h2>{dm ? "At your table" : "Your character"}</h2>
+        {#each state.characters as character}<div class="character">
+            <strong>{character.character_name}</strong>
+            <p>
+              Level {character.level || 1}
+              {character.class_name || "adventurer"}
+            </p>
+            {#if character.approved}<p>
+                HP {character.approved.max_hit_points} · AC {character.approved
+                  .unarmored_armor_class}
+              </p>{/if}
+          </div>{/each}
+        <a href="/grimoire/sheets">Open character sheets</a>
+        {#if dm}<a href={`/grimoire/campaigns/${state.campaign.id}/grants`}
+            >Manage knowledge grants</a
+          >{/if}
+        {#if dm}
+          <div class="controls">
+            {#if !playing}<button
+                disabled={busy}
+                onclick={() => act({ operation: "start" })}
+                >Start session</button
+              >
+            {:else}
+              <button
+                disabled={busy}
+                onclick={() =>
+                  act({
+                    operation: "status",
+                    status:
+                      state.session.status === "paused" ? "active" : "paused",
+                  })}
+                >{state.session.status === "paused"
+                  ? "Resume session"
+                  : "Pause session"}</button
+              >
+              <button
+                class="secondary"
+                disabled={busy}
+                onclick={() => {
+                  if (
+                    confirm(
+                      "End this session? The story will remain available.",
+                    )
+                  )
+                    act({ operation: "status", status: "ended" });
+                }}>End session</button
+              >
+            {/if}
+          </div>
+        {/if}
+      </aside>
+    </div>
   </div>
-</main>
+</GrimoireSheet>
 {#if selectedEntity}{#key selectedEntity}<KnowledgeDrawer
       endpoint={endpoint()}
       entityId={selectedEntity}
@@ -906,10 +920,8 @@
     margin: 20px 0;
   }
   .table {
-    min-height: 100vh;
-    background: var(--grim-paper);
-    color: var(--grim-ink);
-    padding: clamp(20px, 4vw, 48px);
+    min-width: 0;
+    font-family: var(--font-ui);
   }
   header,
   .layout {
@@ -922,13 +934,13 @@
     margin-bottom: 28px;
   }
   h1 {
-    font-family: Georgia, serif;
+    font-family: var(--font-ui);
     font-size: clamp(28px, 5vw, 44px);
     line-height: 1.15;
     margin: 10px 0 16px;
   }
   h2 {
-    font-family: Georgia, serif;
+    font-family: var(--font-ui);
     font-size: 23px;
   }
   .eyebrow,

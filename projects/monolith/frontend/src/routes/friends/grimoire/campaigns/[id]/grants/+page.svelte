@@ -1,5 +1,5 @@
 <script>
-  import "$lib/grimoire/theme.css";
+  import GrimoireSheet from "$lib/grimoire/GrimoireSheet.svelte";
   import { onMount } from "svelte";
   import { invalidateAll } from "$app/navigation";
   import GrantEditor from "$lib/grimoire/GrantEditor.svelte";
@@ -43,82 +43,82 @@
 
 <svelte:head><title>Knowledge grants · {data.campaign.name}</title></svelte:head
 >
-<main class="grimoire grants">
-  <a href={`/grimoire/campaigns/${data.campaign.id}/session`}
-    >← Back to the table</a
-  >
-  <h1>Knowledge at your table</h1>
-  <p>{data.campaign.name}</p>
-  <RevealPanel
-    endpoint={`/grimoire/campaigns/${data.campaign.id}/session/state`}
-    characters={data.characters}
-    changed={invalidateAll}
-  />
-  <div class="filters">
-    <label>Find knowledge<input bind:value={query} /></label><label
-      >Entity type<select bind:value={type}
-        ><option value="">All types</option>{#each types as item}<option
-            value={item}>{item}</option
-          >{/each}</select
-      ></label
-    ><label
-      >Granted in session<select bind:value={session}
-        ><option value="">All sessions</option
-        >{#each data.sessions as item}<option value={item.id}
-            >{new Date(item.started_at).toLocaleDateString()} · {item.status}</option
-          >{/each}</select
-      ></label
+<GrimoireSheet current="Knowledge grants">
+  <div class="grants edition ed-lead">
+    <a href={`/grimoire/campaigns/${data.campaign.id}/session`}
+      >← Back to the table</a
     >
-  </div>
-  {#if selection}{#key `${selection.entity.id}:${selection.pc.id}`}<GrantEditor
-        endpoint={`/grimoire/campaigns/${data.campaign.id}/session/state`}
-        entityId={selection.entity.id}
-        character={selection.pc}
-        grant={grantFor(selection.entity, selection.pc)}
-        {saved}
-        cancel={() => (selection = null)}
-      />{/key}{/if}
-  <div class="matrix">
-    <table>
-      <caption
-        >Choose a character's scope to edit or retract their knowledge.</caption
-      ><thead
-        ><tr
-          ><th>Knowledge</th>{#each data.characters as pc}<th
-              >{pc.character_name}</th
-            >{/each}</tr
-        ></thead
-      ><tbody
-        >{#each entities as entity}<tr
-            ><th>{entity.name}<small>{entity.entity_type}</small></th
-            >{#each data.characters as pc}<td
-                ><button
-                  disabled={!ready}
-                  aria-label={`Edit ${entity.name} for ${pc.character_name}`}
-                  onclick={() => (selection = { entity, pc })}
-                  >{#if grantFor(entity, pc)}<span
-                      class="badge"
-                      data-scope={grantFor(entity, pc).grant_scope}
-                      >{scopeLabel(grantFor(entity, pc).grant_scope)}</span
-                    >{:else if entity.is_global}<span
-                      class="badge"
-                      data-scope="full">Full by default</span
-                    >{:else}<span class="badge" data-scope="none"
-                      >Not granted</span
-                    >{/if}</button
-                ></td
-              >{/each}</tr
-          >{/each}</tbody
+    <h1>Knowledge at your table</h1>
+    <p>{data.campaign.name}</p>
+    <RevealPanel
+      endpoint={`/grimoire/campaigns/${data.campaign.id}/session/state`}
+      characters={data.characters}
+      changed={invalidateAll}
+    />
+    <div class="filters">
+      <label>Find knowledge<input bind:value={query} /></label><label
+        >Entity type<select bind:value={type}
+          ><option value="">All types</option>{#each types as item}<option
+              value={item}>{item}</option
+            >{/each}</select
+        ></label
+      ><label
+        >Granted in session<select bind:value={session}
+          ><option value="">All sessions</option
+          >{#each data.sessions as item}<option value={item.id}
+              >{new Date(item.started_at).toLocaleDateString()} · {item.status}</option
+            >{/each}</select
+        ></label
       >
-    </table>
+    </div>
+    {#if selection}{#key `${selection.entity.id}:${selection.pc.id}`}<GrantEditor
+          endpoint={`/grimoire/campaigns/${data.campaign.id}/session/state`}
+          entityId={selection.entity.id}
+          character={selection.pc}
+          grant={grantFor(selection.entity, selection.pc)}
+          {saved}
+          cancel={() => (selection = null)}
+        />{/key}{/if}
+    <div class="matrix">
+      <table>
+        <caption
+          >Choose a character's scope to edit or retract their knowledge.</caption
+        ><thead
+          ><tr
+            ><th>Knowledge</th>{#each data.characters as pc}<th
+                >{pc.character_name}</th
+              >{/each}</tr
+          ></thead
+        ><tbody
+          >{#each entities as entity}<tr
+              ><th>{entity.name}<small>{entity.entity_type}</small></th
+              >{#each data.characters as pc}<td
+                  ><button
+                    disabled={!ready}
+                    aria-label={`Edit ${entity.name} for ${pc.character_name}`}
+                    onclick={() => (selection = { entity, pc })}
+                    >{#if grantFor(entity, pc)}<span
+                        class="badge"
+                        data-scope={grantFor(entity, pc).grant_scope}
+                        >{scopeLabel(grantFor(entity, pc).grant_scope)}</span
+                      >{:else if entity.is_global}<span
+                        class="badge"
+                        data-scope="full">Full by default</span
+                      >{:else}<span class="badge" data-scope="none"
+                        >Not granted</span
+                      >{/if}</button
+                  ></td
+                >{/each}</tr
+            >{/each}</tbody
+        >
+      </table>
+    </div>
   </div>
-</main>
+</GrimoireSheet>
 
 <style>
   .grants {
-    max-width: 1100px;
-    margin: 40px auto;
-    padding: 0 20px;
+    min-width: 0;
   }
   .filters {
     display: flex;
@@ -166,7 +166,7 @@
     font-size: 0.875rem;
     color: var(--grim-ink);
     background: var(--grim-accent-soft);
-    border: 2px solid var(--grim-accent);
+    border: 1px solid var(--grim-accent);
   }
   .badge[data-scope="partial"] {
     border-style: dashed;

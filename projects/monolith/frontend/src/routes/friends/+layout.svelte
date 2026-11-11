@@ -4,22 +4,12 @@
   // $lib/grimoire/theme.css), and the reader's persisted scheme applies
   // before paint, as on the public tier.
   import "$lib/public/styles/technical-drawing.css";
+  // The session carries its font without the root error stylesheet or a
+  // third-party font request. Reuse the licensed face the previews exercise.
+  import "$lib/grimoire/fonts.css";
   import SchemePreference from "$lib/public/components/SchemePreference.svelte";
   let { children } = $props();
 </script>
-
-<svelte:head>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link
-    rel="preconnect"
-    href="https://fonts.gstatic.com"
-    crossorigin="anonymous"
-  />
-  <link
-    href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&display=swap"
-    rel="stylesheet"
-  />
-</svelte:head>
 
 <SchemePreference />
 <div class="td friends">{@render children()}</div>

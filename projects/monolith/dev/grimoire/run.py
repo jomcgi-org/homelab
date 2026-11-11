@@ -182,7 +182,9 @@ def main():
                         *(["--join-links"] if args.join_links else []),
                     ],
                     check=True,
-                    timeout=180,
+                    # Cold Vite compilation and the explicit screenshots belong
+                    # to setup/evidence, not the unchanged feed latency checks.
+                    timeout=600,
                 )
                 return
             while all(child.poll() is None for child in children):

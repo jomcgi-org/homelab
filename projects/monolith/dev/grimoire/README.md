@@ -53,6 +53,29 @@ Run and inspect the browser rehearsal:
 grimoire.venv/bin/python projects/monolith/dev/grimoire/run.py --rehearse
 ```
 
+The initial browser poll allows 60 seconds for cold Vite compilation; the
+launcher allows ten minutes for the complete run. Feed recovery and action
+deadlines stay unchanged. Traces retain actions, network and source, while the
+explicit screenshots retain checked views. Automatic trace DOM snapshots and
+filmstrips are omitted to avoid contention between three polling seats in small
+development guests. Held writes replay through the real IPv4 loopback route,
+with their original Host and identity, as the response-loss checks already do.
+
+For the sheet migration matrix, leave a fresh local table running and use:
+
+```bash
+grimoire.venv/bin/python projects/monolith/dev/grimoire/capture_sheets.py --output /tmp/grimoire-sheets
+```
+
+This captures the lobby and its campaign controls, session, character sheets,
+notes, journal and entity detail for DM and player, plus DM-only grants, at 390
+and 1440 pixels in both schemes. It measures document overflow, loaded session
+type and phone button heights, and exercises scheme persistence and table
+navigation. The report records source SHA, frontend tree and each PNG digest.
+Inspect every image before publishing synthetic-only evidence; do not publish
+traces, local sign-in cookies or single-use invitation links. These local
+captures do not establish rollout or real-host acceptance.
+
 Rehearse single-use links for registered players in a fresh local campaign:
 
 ```bash

@@ -56,7 +56,7 @@
   </dl>
 {/snippet}
 
-<section class="journal" aria-label="Session journal">
+<section class="session-journal" aria-label="Session journal">
   {#if showViewToggle}
     <form method="GET" aria-label="Journal audience">
       {#each ["mine", "party"] as audience}
@@ -163,7 +163,7 @@
 </section>
 
 <style>
-  .journal {
+  .session-journal {
     display: grid;
     gap: 1.5rem;
     overflow-wrap: anywhere;

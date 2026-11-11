@@ -1,7 +1,6 @@
 <script>
-  import Sheets from "../../../private/grimoire/+page.svelte";
+  import CharacterSheets from "$lib/grimoire/CharacterSheets.svelte";
   let { data, form } = $props();
 </script>
 
-<a href="/grimoire">← Your campaigns</a>
-<Sheets {data} {form} />
+<CharacterSheets {data} {form} friends />

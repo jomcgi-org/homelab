@@ -118,18 +118,27 @@ def main():
                 context = browser.new_context(viewport={"width": width, "height": 844})
                 contexts.append((role, context))
                 use_loopback_requests(context)
-                context.tracing.start(screenshots=True, snapshots=True, sources=True)
+                # Keep network/action traces and explicit screenshots below.
+                # Automatic per-action DOM snapshots contend with three polling
+                # seats in small development guests; they are not assertions.
+                context.tracing.start(sources=True)
                 page = context.new_page()
                 observe_page(page, report)
-                page.goto(f"http://friends.localhost:8177/__local/login/{role}")
-                page.get_by_role("link", name="Open session", exact=True).click()
+                page.goto(
+                    f"http://friends.localhost:8177/__local/login/{role}",
+                    wait_until="domcontentloaded",
+                )
+                page.bring_to_front()
                 # Wait for the mounted UI's first poll before interacting with
                 # SSR-visible controls, including while Vite warms its modules.
-                page.wait_for_event(
-                    "response",
-                    predicate=lambda response: response.url.endswith("/session/state"),
-                    timeout=10000,
-                )
+                # Subscribe before navigation so a fast poll cannot race the
+                # click. Cold Vite module compilation is setup, not the live
+                # feed latency measured below; allow it the navigation budget.
+                with page.expect_response(
+                    lambda response: response.url.endswith("/session/state"),
+                    timeout=60000,
+                ):
+                    page.get_by_role("link", name="Open session", exact=True).click()
                 pages.append(page)
             dm, a, b = pages
             dm.bring_to_front()
@@ -168,7 +177,7 @@ def main():
             assert len(held_write) == 1
             next_draft = "A new scene drafted while the previous message sends"
             dm.get_by_label("Set the scene", exact=True).fill(next_draft)
-            held_write[0].continue_()
+            held_write[0].fulfill(response=fetch_loopback_route(held_write[0]))
             dm.unroute("**/session/state", hold_first_write)
             expect(dm.get_by_role("button", name="Send", exact=True)).to_be_visible()
             report["checks"].append(
@@ -618,7 +627,7 @@ def main():
                 a.get_by_role("button", name="My notes", exact=True)
             ).to_be_disabled()
             assert len(held_write) == 1
-            held_write[0].continue_()
+            held_write[0].fulfill(response=fetch_loopback_route(held_write[0]))
             a.unroute("**/session/state", hold_first_write)
             expect(a.get_by_label("Note title", exact=True)).to_be_enabled()
             report["checks"].append(

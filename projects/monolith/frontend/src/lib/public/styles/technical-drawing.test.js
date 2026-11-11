@@ -100,6 +100,27 @@ describe("design-system bridge", () => {
 });
 
 describe("sheet vocabulary", () => {
+  it("keeps Grimoire's sheet extensions friends-scoped with explicit phone controls and type", () => {
+    const friends = readFileSync(
+      new URL("../../grimoire/sheet.css", import.meta.url),
+      "utf8",
+    );
+    const rules = friends.replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const rule of rules.split("}")) {
+      if (!rule.trim()) continue;
+      for (const selector of rule.split("{")[0].split(/,(?![^()]*\))/)) {
+        expect(selector.trim()).toMatch(/^\.grimoire-sheet(?:\s|$)/);
+      }
+    }
+    expect(rules).toContain("min-height: 44px");
+    expect(rules).toContain("font-family: var(--font-ui)");
+    expect(rules).toContain("font-size: 1rem");
+    expect(rules).not.toMatch(/#[0-9a-f]{3,8}\b|gradient\(/i);
+    for (const [, radius] of rules.matchAll(/border-radius:\s*([^;]+)/g))
+      expect(radius).toBe("0");
+    for (const [, shadow] of rules.matchAll(/box-shadow:\s*([^;]+)/g))
+      expect(shadow).toBe("none");
+  });
   it("scopes the shared page classes under .sheet, never bare .td", () => {
     for (const cls of [
       "frame",
