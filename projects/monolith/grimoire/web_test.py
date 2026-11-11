@@ -30,7 +30,9 @@ def client_fixture(tmp_path, monkeypatch):
 
 def test_base_path_comes_from_the_bundle():
     assert web.web_base(INDEX) == "/grimoire"
-    assert web.web_base(INDEX.replace("/grimoire/", "/grimoire/next/")) == "/grimoire/next"
+    assert (
+        web.web_base(INDEX.replace("/grimoire/", "/grimoire/next/")) == "/grimoire/next"
+    )
     with pytest.raises(ValueError):
         web.web_base("<html></html>")
 
