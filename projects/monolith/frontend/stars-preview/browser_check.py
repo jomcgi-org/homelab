@@ -5,6 +5,7 @@ import functools
 import http.server
 import json
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -28,13 +29,52 @@ def settle_ui(page):
     )
 
 
+def check_basemap(page, scheme):
+    # Independent oracle from technical-drawing.css's sheet contract. Do not
+    # resolve CSS variables or call readSheetPalette to derive expectations.
+    expected = [255, 255, 255, 255] if scheme == "light" else [24, 26, 32, 255]
+    settle_ui(page)
+    page.wait_for_function("window.starsFixtureMap.loaded()")
+    measured = page.evaluate("""() => new Promise(resolve => {
+      const map = window.starsFixtureMap;
+      map.once('render', () => {
+        const source = map.getCanvas();
+        const copy = document.createElement('canvas');
+        copy.width = source.width; copy.height = source.height;
+        const ctx = copy.getContext('2d', {willReadFrequently: true});
+        // Read during the real WebGL render, before its drawing buffer clears.
+        ctx.drawImage(source, 0, 0);
+        const pixels = [];
+        for (const x of [.1, .5, .9]) for (const y of [.1, .5, .9]) {
+          const point = [source.clientWidth*x, source.clientHeight*y];
+          // Avoid the synthetic data overlays. In CI the blank offline style
+          // leaves only the production-painted background at these points.
+          if (!map.queryRenderedFeatures(point).length) pixels.push({
+            point, rgba: [...ctx.getImageData(Math.floor(source.width*x), Math.floor(source.height*y), 1, 1).data]
+          });
+        }
+        resolve({paint: map.getPaintProperty('background', 'background-color'), pixels});
+      });
+      map.triggerRepaint();
+    })""")
+    assert measured["pixels"], (
+        "No unobscured basemap samples; use the documented offline CI profile"
+    )
+    assert all(sample["rgba"] == expected for sample in measured["pixels"]), measured
+    assert (
+        measured["paint"] == f"rgba({expected[0]}, {expected[1]}, {expected[2]}, 1)"
+    ), measured
+    return {"scheme": scheme, "expected": expected, **measured}
+
+
 def check(root, output, chromium_path=None, expected_sha=None):
     source_sha = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], text=True
     ).strip()
     if expected_sha and source_sha != expected_sha:
         raise ValueError(f"Expected {expected_sha}, checked out {source_sha}")
-    built_sha = json.loads((root / "build.json").read_text())["commit"]
+    build = json.loads((root / "build.json").read_text())
+    built_sha = build["commit"]
     if built_sha != source_sha:
         raise ValueError(
             f"Preview was built from {built_sha}, checked out {source_sha}"
@@ -79,6 +119,8 @@ def check(root, output, chromium_path=None, expected_sha=None):
                             "mode": mode,
                             "source_sha": source_sha,
                             "browser": browser.version,
+                            "build": build,
+                            "invocation": sys.argv,
                         }
                         evidence.append(record)
                         try:
@@ -97,6 +139,7 @@ def check(root, output, chromium_path=None, expected_sha=None):
                             assert page.locator("main.td.sheet").count() == 1
                             assert page.locator(".md-nav").count() == 0
                             settle_ui(page)
+                            record["basemap_pixels"] = [check_basemap(page, scheme)]
                             record["collapsed_width"] = page.evaluate(
                                 "document.documentElement.scrollWidth"
                             )
@@ -180,7 +223,7 @@ def check(root, output, chromium_path=None, expected_sha=None):
                             original_url = page.url
                             paints = []
                             toggle = page.locator("button.scheme")
-                            for _ in range(4):
+                            for flip in range(4):
                                 toggle.focus()
                                 assert (
                                     toggle.evaluate(
@@ -190,6 +233,14 @@ def check(root, output, chromium_path=None, expected_sha=None):
                                 )
                                 toggle.press("Enter")
                                 settle_ui(page)
+                                active_scheme = (
+                                    ("dark" if scheme == "light" else "light")
+                                    if flip % 2 == 0
+                                    else scheme
+                                )
+                                record["basemap_pixels"].append(
+                                    check_basemap(page, active_scheme)
+                                )
                                 current = page.evaluate("""() => {
                                   const m = window.starsFixtureMap;
                                   if (m !== window.originalStarsMap || m.getSource('sites-cells') !== window.originalSource || m.getCanvas() !== window.originalCanvas) throw Error('map identity changed');

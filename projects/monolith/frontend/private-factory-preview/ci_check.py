@@ -62,6 +62,11 @@ def main():
         )
 
         subprocess.run(
+            ["node", "private-factory-preview/scheme_ssr_check.js", artifact],
+            cwd=frontend,
+            check=True,
+        )
+        subprocess.run(
             [
                 sys.executable,
                 str(frontend / "private-factory-preview/dashboard_browser_check.py"),
