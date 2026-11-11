@@ -3963,11 +3963,48 @@ def test_owner_pr_release_answers_inherited_holds_not_the_objective(db, monkeypa
     ready = issue(1, ["agent-ready"])
     assert blocker(ready) == "referenced_objective_held"
     release_owner_hold(monkeypatch, body=body)
-    assert blocker(ready) != "referenced_objective_held"
+    assert blocker(ready) not in ("referenced_objective_held", "explicit_hold")
     # The closing objective is the scope, so its own hold still binds.
     assert blocker(issue(1, ["agent-ready", "human"])) == "explicit_hold"
+
+    def blocker_for(pull_body, listed):
+        owner_prs.candidates(
+            "owner/repo", [owner_pull(body=pull_body)], listed, owner_policy()
+        )
+        return json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"][0][
+            "blocker"
+        ]
+
+    # A security label on a mentioned item is never answered by a release.
+    assert blocker_for(body, [ready, issue(2, ["security"])]) == (
+        "referenced_objective_held"
+    )
+    # An edited description is not the one released: new mentions bind again.
+    edited = blocker_for(body + ", #3", [ready, mentioned, issue(3, ["needs-human"])])
+    assert edited == "referenced_objective_held"
     release_owner_hold(monkeypatch, action="revoke", key="revoke-1", body=body)
     assert blocker(ready) == "referenced_objective_held"
+
+
+def test_owner_pr_missing_closing_objective_stays_unavailable_when_mentions_resolve(
+    db, monkeypatch
+):
+    from factory.orchestration import factory_conductor as conductor, owner_prs
+
+    reads = []
+
+    def read(_repo, suffix):
+        reads.append(suffix)
+        return issue(int(suffix.rsplit("/", 1)[1]), ["agent-ready"], state="closed")
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    owner_prs.candidates(
+        "owner/repo", [owner_pull(body="Closes #1. Refs #2")], [], owner_policy()
+    )
+    item = json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"][0]
+    assert item["blocker"] == "scope_reference_unavailable"
+    # The mention is read; the closing objective never is.
+    assert reads == ["issues/2"]
 
 
 def test_owner_pr_new_human_hold_fences_further_delivery(db, monkeypatch):
@@ -4386,18 +4423,18 @@ def test_owner_pr_reference_budget_covers_a_large_owner_backlog(db, monkeypatch)
         return issue(number, ["agent-ready"], state="closed")
 
     monkeypatch.setattr(conductor, "github_get", read)
-    # 60 PRs, each mentioning two distinct closed items outside the listing.
+    # 45 PRs, each mentioning two distinct closed items outside the listing.
     pulls = [
         owner_pull(
             number=1000 + n, body=f"Closes #1. Refs #{2 * n + 10}, #{2 * n + 11}"
         )
-        for n in range(60)
+        for n in range(45)
     ]
     owner_prs.candidates(
         "owner/repo", pulls, [issue(1, ["agent-ready"])], owner_policy()
     )
     items = json.loads(audits(db, "owner_pr_backlog")[-1].detail_json)["items"]
-    assert len(items) == 60
+    assert len(items) == 45
     assert not [i for i in items if i["blocker"] == "referenced_objective_unavailable"]
 
 

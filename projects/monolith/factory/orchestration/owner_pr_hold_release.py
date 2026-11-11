@@ -1,14 +1,15 @@
 """Operator release of text holds on one owner PR.
 
-Owner PR discovery treats hold wording in a PR description or its discussion
-as an explicit hold, deliberately without interpreting the prose. This control
+Owner PR discovery treats hold wording in a PR description or its discussion as
+an explicit hold, deliberately without interpreting the prose. This control
 records a standing operator's decision that the wording on one PR no longer
 binds. It waives the exact description read at release, the comments written
 before the release, and holds the PR only inherits from issues or PRs its
-description mentions. An edited description, its labels and assignees, a
-later comment, the closing objective issue and every review, CI and landing
-gate still apply. Standing landing delegations do not read a release, so a released PR
-lands on an explicit per-head grant. It starts no work.
+description mentions, unless one carries a security label. An edited
+description, its labels and assignees, a later comment, the closing objective
+issue and every review, CI and landing gate still apply. Standing landing
+delegations do not read a release, so a released PR lands on an explicit
+per-head grant. It starts no work.
 """
 
 import hashlib

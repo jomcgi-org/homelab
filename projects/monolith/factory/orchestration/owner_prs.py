@@ -52,7 +52,9 @@ _QUOTED = re.compile(r"[\"'\u2018\u2019\u201c\u201d<>\\]|(?:^|\n)[ \t]{4}")
 SHA = re.compile(r"[0-9a-f]{40}")
 MAX_REFERENCES = 5
 # Distinct missing references read per sweep, shared by every owner PR.
-MAX_REFERENCE_READS = 200
+MAX_REFERENCE_READS = 100
+# Mentioned items whose hold an operator release never answers.
+SECURITY_LABELS = frozenset({"security", "security-finding"})
 
 
 class OwnerPRHold(ValueError):
@@ -390,9 +392,15 @@ def _scope(
         item = related.get(number)
         if item is None:
             return None, "referenced_objective_unavailable"
-        # An operator release of this PR answers holds it only inherits from a
-        # mention. The closing objective below still binds.
-        if not released and _hold(item, excluded):
+        # A release of this exact description answers holds it only inherits
+        # from a mention, except a security label. The closing objective below
+        # still binds.
+        if released:
+            from factory.orchestration.factory_intake_loop import _label_names
+
+            if _label_names(item) & SECURITY_LABELS:
+                return item, "referenced_objective_held"
+        elif _hold(item, excluded):
             return item, "referenced_objective_held"
     if len(matching) != 1:
         return None, "scope_authority_missing" if not matching else "scope_ambiguous"
@@ -445,12 +453,14 @@ def candidates(
             if not identity_matches(pull, policy):
                 continue
             found = hold_release.release(db, repo, pull["number"])
+            # A release covers only the description it was taken on.
+            inherited = hold_release.waives(found, pull)
             issue, scope_reason = _scope(
                 pull,
                 resolved.get(pull["number"], issues),
                 repo,
                 policy,
-                released=found is not None,
+                released=inherited,
             )
             scope_reason = unavailable.get(pull["number"], scope_reason)
             direct = scope_reason == "scope_authority_missing"
@@ -476,7 +486,7 @@ def candidates(
                 or scope_reason
                 or (
                     None
-                    if found is not None
+                    if inherited
                     else _referenced_history(
                         db,
                         repo,
@@ -619,7 +629,8 @@ def receive(repo: str, number: int, policy: dict, *, generation: int) -> dict:
         raise ValueError("scope_changed")
     related = _resolve_references(pull, [issue], repo, conductor.github_get)
     released = hold_release.read_release(repo, number)
-    scoped, reason = _scope(pull, related, repo, policy, released=released is not None)
+    inherited = hold_release.waives(released, pull)
+    scoped, reason = _scope(pull, related, repo, policy, released=inherited)
     if direct and reason == "scope_authority_missing":
         scoped, reason = issue, None
     excluded = {x.lower() for x in controls.repos_map(policy)[repo]["exclude_labels"]}
@@ -636,7 +647,7 @@ def receive(repo: str, number: int, policy: dict, *, generation: int) -> dict:
     }
     # A released PR still reads its own thread and its closing objective's.
     threads = {number, expected_issue}
-    if released is None:
+    if not inherited:
         threads |= reference_numbers
     for n in sorted(threads):
         comments = _pages(repo, f"issues/{n}/comments", conductor.github_list)
@@ -661,9 +672,11 @@ def receive(repo: str, number: int, policy: dict, *, generation: int) -> dict:
             raise ValueError("owner_pr_intake_authority_changed")
         # Re-read under the lock: a revoke since the evidence read binds again.
         locked_release = hold_release.release(db, repo, number)
-        if (released is None) != (locked_release is None):
+        if (released and released.audit_id) != (
+            locked_release and locked_release.audit_id
+        ):
             raise ValueError("owner_pr_hold_release_changed")
-        if released is None and _referenced_history(
+        if not inherited and _referenced_history(
             db, repo, reference_numbers - {expected_issue}
         ):
             raise ValueError("referenced_objective_held")
@@ -681,9 +694,7 @@ def receive(repo: str, number: int, policy: dict, *, generation: int) -> dict:
             ):
                 raise ValueError("refine_disabled")
         else:
-            scoped, reason = _scope(
-                pull, related, repo, live, released=locked_release is not None
-            )
+            scoped, reason = _scope(pull, related, repo, live, released=inherited)
         if reason or _hold(
             pull,
             {x.lower() for x in entry["exclude_labels"]},
