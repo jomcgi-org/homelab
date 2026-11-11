@@ -433,7 +433,7 @@ describe("InventoryPanel", () => {
       },
       `/campaigns/${ids.owned}/session`,
     );
-    await user.click(await screen.findByRole("button", { name: "Inventory" }));
+    await user.click(await screen.findByRole("tab", { name: "Inventory" }));
     const pack = await screen.findByRole("region", { name: "Brannoch Stone" });
     expect(within(pack).getByText("Silk rope")).toBeTruthy();
   });
