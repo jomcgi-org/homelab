@@ -16,6 +16,8 @@ interface FormDialogProps {
   isInvalid: boolean;
   onSubmit: () => void;
   onClose: () => void;
+  /** A lesser action, kept apart from Cancel and the submit button. */
+  secondaryAction?: ReactNode;
   children: ReactNode;
 }
 
@@ -30,6 +32,7 @@ export function FormDialog({
   isInvalid,
   onSubmit,
   onClose,
+  secondaryAction,
   children,
 }: FormDialogProps) {
   return (
@@ -49,6 +52,11 @@ export function FormDialog({
         footer={
           <LayoutFooter>
             <HStack gap={2} hAlign="end" wrap="wrap">
+              {secondaryAction && (
+                <span className="inventory-footer-start">
+                  {secondaryAction}
+                </span>
+              )}
               <Button label="Cancel" variant="ghost" onClick={onClose} />
               <Button
                 label={submitLabel}

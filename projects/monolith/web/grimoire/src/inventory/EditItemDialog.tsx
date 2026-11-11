@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { NumberInput } from "@astryxdesign/core/NumberInput";
 import { TextArea } from "@astryxdesign/core/TextArea";
@@ -21,6 +22,8 @@ interface EditItemDialogProps {
   item: InventoryItem;
   dm: boolean;
   onClose: () => void;
+  /** Set for the DM: leaves this form to confirm deleting the item. */
+  onDelete?: () => void;
 }
 
 /**
@@ -32,6 +35,7 @@ export function EditItemDialog({
   item,
   dm,
   onClose,
+  onDelete,
 }: EditItemDialogProps) {
   const [name, setName] = useState(item.name);
   const [notes, setNotes] = useState(item.notes);
@@ -66,6 +70,17 @@ export function EditItemDialog({
       isInvalid={!valid}
       onSubmit={submit}
       onClose={onClose}
+      secondaryAction={
+        onDelete && (
+          <Button
+            label={`Delete ${item.name}`}
+            variant="ghost"
+            onClick={onDelete}
+          >
+            Delete
+          </Button>
+        )
+      }
     >
       {dm && (
         <>

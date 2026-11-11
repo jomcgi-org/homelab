@@ -39,25 +39,99 @@ describe("JournalPanel", () => {
       "Rolls",
       "Open threads",
     ]);
-    const learned = section("Learned");
-    expect(
-      within(learned).getByRole("heading", { name: "Old Tam" }),
-    ).toBeTruthy();
-    expect(within(learned).getByText("Scope: partial")).toBeTruthy();
-    expect(learned.textContent).toContain("Ferryman");
     const people = section("People and places");
     expect(
       within(people)
         .getAllByRole("listitem")
         .map((item) => item.textContent),
     ).toEqual(["Old Tamnpc", "The Gilded Eellocation"]);
-    expect(section("Rolls").textContent).toContain("1d20+3");
-    expect(section("Rolls").textContent).toContain("17");
-    expect(section("Open threads").textContent).toContain(
-      "I check the cellar door for a draught.",
-    );
     expect(fetch).not.toHaveBeenCalled();
     expect(root.querySelectorAll("a")).toHaveLength(0);
+  });
+
+  it("never prints scopes, raw JSON, booleans or internal keys", () => {
+    const text = panel({ journal: sessionJournal }).textContent ?? "";
+    for (const dump of [
+      "revealed details",
+      "revealed_details",
+      "{",
+      "Scope",
+      "name_only",
+      "partial",
+      "recognition only",
+      "true",
+      "false",
+      "homebrew",
+      "is global",
+      "created at",
+      "visibility",
+      "modifier",
+      "formula",
+      "label",
+      "total",
+      "text",
+      journalIds.ferryman,
+      journalIds.cellar,
+    ])
+      expect(text).not.toContain(dump);
+  });
+
+  it("shows a partial reveal as its labelled details and a full one as its fields", () => {
+    panel({ journal: sessionJournal });
+    const [partial, , , full] = within(section("Learned"))
+      .getAllByRole("listitem")
+      .map((item) => within(item));
+    expect(partial!.getByRole("heading", { name: "Old Tam" })).toBeTruthy();
+    expect(partial!.getByText("npc")).toBeTruthy();
+    expect(partial!.getByText("occupation")).toBeTruthy();
+    expect(partial!.getByText("Ferryman")).toBeTruthy();
+    for (const [label, value] of [
+      ["location type", "Tavern"],
+      ["region", "Harbour ward"],
+      ["description", "A low room that smells of tar and eels."],
+    ]) {
+      expect(full!.getByText(label!)).toBeTruthy();
+      expect(full!.getByText(value!)).toBeTruthy();
+    }
+  });
+
+  it("shows a roll as its total, what was rolled, and the dice", () => {
+    panel({ journal: sessionJournal });
+    const rolls = within(section("Rolls")).getAllByRole("listitem");
+    expect(rolls).toHaveLength(1);
+    const roll = within(rolls[0]!);
+    expect(roll.getByText("17")).toBeTruthy();
+    expect(roll.getByText("Perception · 2d20kh1+3")).toBeTruthy();
+    expect(roll.getByText("Dice: 6, 14 · Kept: 14")).toBeTruthy();
+  });
+
+  it("names an unlabelled roll Roll and leaves out dice it was not sent", () => {
+    panel({
+      journal: {
+        rolls: [
+          {
+            id: journalIds.roll,
+            kind: "roll",
+            body: { formula: "1d6", total: 4, rolls: [4], kept: [4] },
+          },
+          { id: journalIds.action, kind: "roll", body: { total: 9 } },
+        ],
+      },
+    });
+    const [plain, bare] = within(section("Rolls")).getAllByRole("listitem");
+    expect(within(plain!).getByText("Roll · 1d6")).toBeTruthy();
+    // Kept repeats the dice when none were dropped.
+    expect(within(plain!).getByText("Dice: 4")).toBeTruthy();
+    expect(bare!.textContent).toBe("9Roll");
+  });
+
+  it("shows an open thread as the action's own words", () => {
+    panel({ journal: sessionJournal });
+    expect(
+      within(section("Open threads"))
+        .getAllByRole("listitem")
+        .map((item) => item.textContent),
+    ).toEqual(["I check the cellar door for a draught."]);
   });
 
   it("renders a received handout as its title and inert markdown", () => {
@@ -103,67 +177,109 @@ describe("JournalPanel", () => {
     });
     expect(screen.getByRole("heading", { name: "Known person" })).toBeTruthy();
     expect(screen.getByText("Retracted")).toBeTruthy();
+    expect(within(section("Learned")).getByRole("listitem").textContent).toBe(
+      "Known personnpcRetracted",
+    );
     expect(root.textContent).not.toContain("must-never-survive");
-    expect(root.textContent).not.toContain("Scope:");
     expect(screen.queryByRole("button", { name: /Explore/ })).toBeNull();
   });
 
-  it("says a name is only recognised and offers nothing to explore", () => {
+  it("shows a name-only entry as its name and recognition, and nothing else", () => {
     panel({
-      journal: { learned: [sessionJournal.learned![2]!] },
+      journal: {
+        learned: [
+          {
+            ...sessionJournal.learned![2]!,
+            // Nothing beyond the name is shown, whatever the snapshot holds.
+            entity: { recognition_only: true, occupation: "must-never-show" },
+          },
+        ],
+      },
+      showViewToggle: false,
       onOpenKnowledge: vi.fn(),
     });
-    expect(screen.getByText("You recognize this name.")).toBeTruthy();
+    const learned = section("Learned");
+    expect(
+      within(learned).getByRole("heading", { name: "Sister Orla" }),
+    ).toBeTruthy();
+    expect(within(learned).getByRole("listitem").textContent).toBe(
+      "Sister OrlaYou recognize this name.",
+    );
     expect(screen.queryByRole("button", { name: /Explore/ })).toBeNull();
   });
 
-  it("tells the DM which character learned an entry, by name when known", () => {
+  it("treats a snapshot marked recognition-only as name-only without a scope", () => {
+    panel({
+      journal: {
+        learned: [
+          {
+            entity_id: journalIds.stranger,
+            name: "Sister Orla",
+            entity: { recognition_only: true },
+          },
+        ],
+      },
+      onOpenKnowledge: vi.fn(),
+    });
+    expect(screen.getAllByText("You recognize this name.")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /Explore/ })).toBeNull();
+  });
+
+  it("tells the DM which character learned an entry, and never prints an id", () => {
     const pc = "c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3";
     const journal: Journal = {
       learned: [{ ...sessionJournal.learned![0]!, player_character_id: pc }],
     };
-    panel({ journal, characterNames: { [pc]: "Aria Fenn" } });
-    expect(screen.getByText("Character: Aria Fenn")).toBeTruthy();
+    const known = panel({ journal, characterNames: { [pc]: "Aria Fenn" } });
+    expect(screen.getByText("Shown to Aria Fenn")).toBeTruthy();
+    expect(known.textContent).not.toContain(pc);
+    const unknown = panel({ journal });
+    expect(unknown.textContent).not.toContain("Shown to");
+    expect(unknown.textContent).not.toContain(pc);
   });
 
-  it("shows an empty state for every section, including missing ones", () => {
-    const root = panel({ journal: { learned: [] } });
-    for (const text of [
-      "No discoveries yet.",
-      "No handouts received yet.",
-      "No people or places recorded yet.",
-      "No rolls recorded yet.",
-      "No open threads.",
-    ])
-      expect(screen.getByText(text)).toBeTruthy();
+  it("says once that nothing is recorded, with no empty sections", () => {
+    const root = panel({ journal: { learned: [] }, showViewToggle: false });
+    expect(root.textContent).toBe("Nothing recorded yet.");
+    expect(screen.queryAllByRole("heading")).toHaveLength(0);
     expect(root.querySelectorAll("li")).toHaveLength(0);
+  });
+
+  it("shows only the sections that have entries", () => {
+    const root = panel({
+      journal: { rolls: sessionJournal.rolls, open_threads: [] },
+    });
+    expect(
+      screen.getAllByRole("heading").map((heading) => heading.textContent),
+    ).toEqual(["Rolls"]);
+    expect(root.textContent).not.toContain("Nothing recorded yet.");
+    expect(root.textContent).not.toMatch(/No .* yet/);
   });
 
   it("shows a loading placeholder, not empty sections, while there is no journal", () => {
     const root = panel({ journal: null });
     expect(root.querySelector('[aria-busy="true"]')).not.toBeNull();
-    expect(root.textContent).not.toContain("No discoveries yet.");
+    expect(root.textContent).not.toContain("Nothing recorded yet.");
   });
 
-  it("warns that a truncated journal is incomplete and qualifies empty states", () => {
-    const root = panel({ journal: { truncated: true } });
+  it("warns that a truncated journal is incomplete", () => {
+    const root = panel({
+      journal: { truncated: true, rolls: sessionJournal.rolls },
+    });
     expect(screen.getByText("This journal is incomplete")).toBeTruthy();
     expect(root.textContent).toContain("Open threads may already");
-    for (const text of [
-      "No discoveries yet in the events shown.",
-      "No handouts received yet in the events shown.",
-      "No people or places recorded yet in the events shown.",
-      "No rolls recorded yet in the events shown.",
-      "No open threads in the events shown.",
-    ])
-      expect(screen.getByText(text)).toBeTruthy();
-    expect(screen.queryByText("No open threads.")).toBeNull();
+    expect(section("Rolls")).toBeTruthy();
+  });
+
+  it("keeps the warning above the single empty line", () => {
+    panel({ journal: { truncated: true } });
+    expect(screen.getByText("This journal is incomplete")).toBeTruthy();
+    expect(screen.getByText("Nothing recorded yet.")).toBeTruthy();
   });
 
   it("shows no partial warning for a complete journal", () => {
-    const root = panel({ journal: { truncated: false } });
+    panel({ journal: { truncated: false } });
     expect(screen.queryByText("This journal is incomplete")).toBeNull();
-    expect(root.textContent).not.toContain("in the events shown");
   });
 
   it.each(["mine", "party"] as const)(
@@ -205,7 +321,11 @@ describe("JournalPanel", () => {
             retracted: false,
           },
         ],
-        received: [{ id: journalIds.handout, body: { text: canary } }],
+        received: [
+          { id: journalIds.handout, body: { title: canary, markdown: canary } },
+        ],
+        rolls: [{ id: journalIds.roll, body: { label: canary, total: 3 } }],
+        open_threads: [{ id: journalIds.action, body: { text: canary } }],
         people_and_places: [{ id: journalIds.cellar, name: canary }],
       },
     });
@@ -229,14 +349,21 @@ describe("JournalPanel", () => {
         onOpenKnowledge,
       });
       expect(buttonNames()).toEqual([
-        "Show in story",
         "Explore Old Tam",
         "Show in story",
+        "Show in story",
+        "Show in story",
+        "Explore The Gilded Eel",
         "Show in story",
         "Show in story",
         "Show in story",
         "Show in story",
       ]);
+      expect(
+        screen.getByRole("button", {
+          name: "Show I check the cellar door for a draught. in story",
+        }),
+      ).toBeTruthy();
       // Each "Show in story" names what it shows.
       expect(
         screen.getByRole("button", {
@@ -249,11 +376,15 @@ describe("JournalPanel", () => {
         journalIds.reveal,
         journalIds.retractedReveal,
         journalIds.recognition,
+        journalIds.fullReveal,
         journalIds.handout,
         journalIds.roll,
         journalIds.action,
       ]);
-      expect(onOpenKnowledge.mock.calls).toEqual([[journalIds.ferryman]]);
+      expect(onOpenKnowledge.mock.calls).toEqual([
+        [journalIds.ferryman],
+        [journalIds.cellar],
+      ]);
     });
 
     it("offers story links without knowledge links when only onShowEvent is given", () => {
@@ -263,7 +394,7 @@ describe("JournalPanel", () => {
         onShowEvent: vi.fn(),
       });
       const names = buttonNames();
-      expect(names).toHaveLength(6);
+      expect(names).toHaveLength(7);
       expect(names.every((name) => name === "Show in story")).toBe(true);
     });
   });

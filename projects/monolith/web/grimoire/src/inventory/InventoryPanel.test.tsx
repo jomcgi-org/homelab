@@ -110,10 +110,13 @@ describe("InventoryPanel", () => {
       .getByRole("heading", { name: /Smuggler's ledger/ })
       .closest("li")!;
     expect(within(ledger).getByText("Hidden from party")).toBeTruthy();
-    for (const name of ["Give item", "Move Silk rope", "Delete Silk rope"])
+    for (const name of ["Give item", "Move Silk rope", "History for Silk rope"])
       expect(button(name)).toBeTruthy();
+    // Deleting is not a row action: it lives in the edit form.
+    expect(noButton("Delete Silk rope")).toBeNull();
     await user.click(button("Edit Silk rope"));
     const form = within(dialog());
+    expect(form.getByRole("button", { name: "Delete Silk rope" })).toBeTruthy();
     expect(form.getByLabelText(/^Name/)).toHaveProperty("value", "Silk rope");
     expect(form.getByLabelText("Hidden from party")).toBeTruthy();
   });
@@ -159,6 +162,8 @@ describe("InventoryPanel", () => {
     await user.click(
       mine.getByRole("button", { name: "Adjust quantity for Silk rope" }),
     );
+    // A player's quantity form offers no delete.
+    expect(noButton("Delete Silk rope")).toBeNull();
     await setNumber(user, /^Quantity/, "0");
     await user.type(within(dialog()).getByLabelText(/^Reason/), "Consumed");
     await user.click(within(dialog()).getByRole("button", { name: "Save" }));
@@ -393,13 +398,18 @@ describe("InventoryPanel", () => {
     const pack = screen.getByRole("region", { name: "Wren Ashdown" });
     expect(await within(pack).findByText("Long rope")).toBeTruthy();
 
+    await user.click(button("Edit Long rope"));
     await user.click(button("Delete Long rope"));
     const confirm = within(screen.getByRole("alertdialog"));
     expect(confirm.getByText("Delete Long rope?")).toBeTruthy();
     expect(confirm.getByText("Its audit history is retained.")).toBeTruthy();
+    // The confirmation replaces the edit form and saves nothing.
+    expect(screen.queryByRole("dialog")).toBeNull();
     await user.click(confirm.getByRole("button", { name: "Cancel" }));
     expect(backend.callsTo(DELETE)).toHaveLength(0);
+    expect(backend.callsTo(PATCH)).toHaveLength(1);
 
+    await user.click(button("Edit Long rope"));
     await user.click(button("Delete Long rope"));
     await user.click(
       within(screen.getByRole("alertdialog")).getByRole("button", {

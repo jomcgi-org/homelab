@@ -4,6 +4,11 @@
   overflow-wrap: anywhere;
 }
 
+/* Pushes Cancel and the submit button to the far edge. */
+.inventory-footer-start {
+  margin-inline-end: auto;
+}
+
 .inventory-list {
   display: grid;
   gap: var(--spacing-3);

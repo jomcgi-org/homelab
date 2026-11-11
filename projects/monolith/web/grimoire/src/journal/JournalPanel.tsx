@@ -7,10 +7,6 @@ import { Item } from "@astryxdesign/core/Item";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { List } from "@astryxdesign/core/List";
 import {
-  MetadataList,
-  MetadataListItem,
-} from "@astryxdesign/core/MetadataList";
-import {
   SegmentedControl,
   SegmentedControlItem,
 } from "@astryxdesign/core/SegmentedControl";
@@ -18,11 +14,15 @@ import { Skeleton } from "@astryxdesign/core/Skeleton";
 import { Text } from "@astryxdesign/core/Text";
 import {
   journalSections,
+  type JournalEntity,
   type JournalEvent,
   type LearnedEntry,
 } from "../api/journal";
+import type { EntityProjection } from "../api/knowledge";
 import type { Journal } from "../api/schema";
 import { HandoutText } from "../handouts/HandoutText";
+import { fieldLabel, KnowledgeDetails } from "../knowledge/KnowledgeDetails";
+import { projectionOf, scopeOf } from "../lib/knowledge-fields.js";
 import "./journal.css";
 
 export type JournalView = "mine" | "party";
@@ -39,7 +39,7 @@ export interface JournalPanelProps {
   showViewToggle?: boolean;
   /** The level of the section headings; entries sit one below. */
   headingLevel?: 2 | 3;
-  /** Character names by id, so the DM reads a name instead of an id. */
+  /** Character names by id, so the DM reads who learned an entry. */
   characterNames?: Record<string, string>;
 }
 
@@ -58,12 +58,6 @@ export function JournalPanel({
 }: JournalPanelProps) {
   const sections = journal && journalSections(journal);
   const entryLevel = (headingLevel + 1) as Level;
-  // A truncated journal folds only the earliest events, so an empty section
-  // is "nothing yet in the part shown", never a claim about the whole session.
-  const empty = (text: string) =>
-    sections?.truncated
-      ? `${text.replace(/\.$/, "")} in the events shown.`
-      : text;
   const source = (eventId: string | undefined, subject: string) =>
     onShowEvent && eventId ? (
       <Button
@@ -75,15 +69,14 @@ export function JournalPanel({
         Show in story
       </Button>
     ) : null;
-  const events = (entries: JournalEvent[]) =>
-    entries.map((entry) => (
-      <Card as="li" key={entry.id}>
-        <VStack gap={2}>
-          <EventBody entry={entry} level={entryLevel} />
-          {source(entry.id, eventSubject(entry))}
-        </VStack>
-      </Card>
-    ));
+  const nothing =
+    sections &&
+    sections.learned.length +
+      sections.received.length +
+      sections.people_and_places.length +
+      sections.rolls.length +
+      sections.open_threads.length ===
+      0;
 
   return (
     <VStack gap={5} as="section" aria-label="Session journal">
@@ -114,229 +107,248 @@ export function JournalPanel({
               description="The session has more events than can be shown, so later handouts, rolls and replies are missing. Open threads may already have been answered."
             />
           )}
-          <JournalSection
-            title="Learned"
-            level={headingLevel}
-            empty={empty("No discoveries yet.")}
-          >
-            {sections.learned.map((entry) => (
-              <Card
-                as="li"
-                key={`${entry.player_character_id ?? ""}:${entry.entity_id}`}
-              >
-                <VStack gap={2}>
-                  <Learned
-                    entry={entry}
-                    level={entryLevel}
-                    characterNames={characterNames}
-                  />
-                  {((onShowEvent && entry.event_id) ||
-                    (onOpenKnowledge && explorable(entry))) && (
-                    <HStack gap={2} wrap="wrap">
-                      {source(entry.event_id, entry.name || "this discovery")}
-                      {onOpenKnowledge && explorable(entry) && (
-                        <Button
-                          label={`Explore ${entry.name || "knowledge"}`}
-                          size="sm"
-                          onClick={() => onOpenKnowledge(entry.entity_id)}
-                        />
+          {nothing && (
+            <Text type="body" color="secondary">
+              Nothing recorded yet.
+            </Text>
+          )}
+          <JournalSection title="Learned" level={headingLevel}>
+            {sections.learned.map((entry) => {
+              const explore = onOpenKnowledge && explorable(entry);
+              const shown = source(
+                entry.event_id,
+                entry.name || "this discovery",
+              );
+              return (
+                <li
+                  key={`${entry.player_character_id ?? ""}:${entry.entity_id}`}
+                >
+                  <Card>
+                    <VStack gap={2}>
+                      <Learned
+                        entry={entry}
+                        level={entryLevel}
+                        learner={
+                          entry.player_character_id &&
+                          characterNames[entry.player_character_id]
+                        }
+                      />
+                      {(shown || explore) && (
+                        <HStack gap={2} wrap="wrap">
+                          {explore && (
+                            <Button
+                              label={`Explore ${entry.name || "knowledge"}`}
+                              size="sm"
+                              onClick={() => onOpenKnowledge(entry.entity_id)}
+                            />
+                          )}
+                          {shown}
+                        </HStack>
                       )}
-                    </HStack>
-                  )}
-                </VStack>
-              </Card>
+                    </VStack>
+                  </Card>
+                </li>
+              );
+            })}
+          </JournalSection>
+          <JournalSection title="Received" level={headingLevel}>
+            {sections.received.map((entry) => {
+              const title = text(entry.body?.title) || "Handout";
+              return (
+                <li key={entry.id}>
+                  <Card>
+                    <VStack gap={2}>
+                      <Heading level={entryLevel}>{title}</Heading>
+                      <HandoutText
+                        markdown={text(entry.body?.markdown)}
+                        headingLevel={(entryLevel + 1) as 4 | 5 | 6}
+                      />
+                      {onShowEvent && (
+                        <HStack>{source(entry.id, title)}</HStack>
+                      )}
+                    </VStack>
+                  </Card>
+                </li>
+              );
+            })}
+          </JournalSection>
+          <Rows title="People and places" level={headingLevel}>
+            {sections.people_and_places.map((entity: JournalEntity) => (
+              <Item
+                key={entity.id}
+                as="li"
+                label={entity.name}
+                description={
+                  entity.entity_type
+                    ? fieldLabel(entity.entity_type)
+                    : undefined
+                }
+              />
             ))}
-          </JournalSection>
-          <JournalSection
-            title="Received"
-            level={headingLevel}
-            empty={empty("No handouts received yet.")}
-          >
-            {events(sections.received)}
-          </JournalSection>
-          <PeopleAndPlaces
-            people={sections.people_and_places}
-            level={headingLevel}
-            empty={empty("No people or places recorded yet.")}
-          />
-          <JournalSection
-            title="Rolls"
-            level={headingLevel}
-            empty={empty("No rolls recorded yet.")}
-          >
-            {events(sections.rolls)}
-          </JournalSection>
-          <JournalSection
-            title="Open threads"
-            level={headingLevel}
-            empty={empty("No open threads.")}
-          >
-            {events(sections.open_threads)}
-          </JournalSection>
+          </Rows>
+          <Rows title="Rolls" level={headingLevel}>
+            {sections.rolls.map((entry) => (
+              <Roll key={entry.id} entry={entry}>
+                {source(entry.id, text(entry.body?.label) || "this roll")}
+              </Roll>
+            ))}
+          </Rows>
+          <Rows title="Open threads" level={headingLevel}>
+            {sections.open_threads.map((entry) => {
+              const action = text(entry.body?.text).trim();
+              return (
+                <Item
+                  key={entry.id}
+                  as="li"
+                  align="start"
+                  label={
+                    <Text type="body">
+                      <span className="journal-prose">{action}</span>
+                    </Text>
+                  }
+                  endContent={source(
+                    entry.id,
+                    action.split("\n")[0]!.slice(0, 80) || "this action",
+                  )}
+                />
+              );
+            })}
+          </Rows>
         </>
       )}
     </VStack>
   );
 }
+
+const text = (value: unknown) => (typeof value === "string" ? value : "");
 
 /** A name the viewer only recognises has no knowledge page to open. */
 const explorable = (entry: LearnedEntry) =>
   Boolean(entry.entity_id) &&
   !entry.retracted &&
-  entry.grant_scope !== "name_only" &&
-  !entry.entity?.recognition_only;
-
-/** What an event is known by, for the accessible name of its button. */
-function eventSubject(entry: JournalEvent): string {
-  const body = entry.body ?? {};
-  for (const key of ["title", "label", "text"]) {
-    const value = body[key];
-    if (typeof value === "string" && value.trim())
-      return value.trim().split("\n")[0]!.slice(0, 80);
-  }
-  return entry.kind === "roll" ? "this roll" : "this entry";
-}
+  scopeOf(entry) !== "name_only";
 
 interface SectionProps {
   title: string;
   level: 2 | 3;
-  empty: string;
-  /** One list item per entry. */
+  /** One list item per entry; a section with none is not shown. */
   children: ReactNode[];
 }
 
-function JournalSection({ title, level, empty, children }: SectionProps) {
+/** Entries that carry prose: a card each. */
+function JournalSection({ title, level, children }: SectionProps) {
   const id = useId();
+  if (children.length === 0) return null;
   return (
     <VStack gap={3} as="section" aria-labelledby={id}>
       <Heading level={level} id={id}>
         {title}
       </Heading>
-      {children.length === 0 ? (
-        <Text type="body" color="secondary">
-          {empty}
-        </Text>
-      ) : (
-        <VStack gap={3} as="ul" className="journal-list">
-          {children}
-        </VStack>
-      )}
+      <VStack gap={3} as="ul" className="journal-list">
+        {children}
+      </VStack>
     </VStack>
   );
 }
 
-function PeopleAndPlaces({
-  people,
-  level,
-  empty,
-}: {
-  people: Array<{ id: string; name: string; entity_type?: string | null }>;
-  level: 2 | 3;
-  empty: string;
-}) {
+/** Entries that fit a line: divided rows. */
+function Rows({ title, level, children }: SectionProps) {
   const id = useId();
+  if (children.length === 0) return null;
   return (
-    <VStack gap={3} as="section" aria-labelledby={id}>
+    <VStack gap={2} as="section" aria-labelledby={id}>
       <Heading level={level} id={id}>
-        People and places
+        {title}
       </Heading>
-      {people.length === 0 ? (
-        <Text type="body" color="secondary">
-          {empty}
-        </Text>
-      ) : (
-        <List hasDividers>
-          {people.map((entity) => (
-            <Item
-              key={entity.id}
-              as="li"
-              label={entity.name}
-              description={entity.entity_type ?? undefined}
-            />
-          ))}
-        </List>
-      )}
+      <List hasDividers edge="flush">
+        {children}
+      </List>
     </VStack>
   );
 }
 
+/**
+ * One reveal as the viewer saw it, through the renderer the feed and the
+ * knowledge page use, so the journal shows exactly what the entry carries.
+ */
 function Learned({
   entry,
   level,
-  characterNames,
+  learner,
 }: {
   entry: LearnedEntry;
   level: Level;
-  characterNames: Record<string, string>;
+  learner?: string;
 }) {
-  const character = entry.player_character_id;
+  const recognised = scopeOf(entry) === "name_only";
   return (
     <>
-      {entry.name && <Heading level={level}>{entry.name}</Heading>}
-      {entry.entity_type && (
-        <Text type="label" color="secondary">
-          {entry.entity_type}
+      <HStack gap={2} vAlign="center" wrap="wrap">
+        {entry.name && <Heading level={level}>{entry.name}</Heading>}
+        {entry.entity_type && !recognised && (
+          <Text type="label" color="secondary">
+            {fieldLabel(entry.entity_type)}
+          </Text>
+        )}
+      </HStack>
+      {learner && (
+        <Text type="body" size="sm" color="secondary">
+          Shown to {learner}
         </Text>
       )}
       {entry.retracted ? (
         // Nothing of a retracted reveal is shown beyond its identity.
-        <Text type="body" weight="semibold">
+        <Text type="body" color="secondary">
           Retracted
         </Text>
+      ) : recognised ? (
+        <Text type="body">You recognize this name.</Text>
       ) : (
-        <>
-          {(entry.grant_scope === "name_only" ||
-            entry.entity?.recognition_only) && (
-            <Text type="body">You recognize this name.</Text>
-          )}
-          {entry.grant_scope && (
-            <Text type="body">Scope: {entry.grant_scope}</Text>
-          )}
-          {character && (
-            <Text type="body">
-              Character: {characterNames[character] ?? character}
-            </Text>
-          )}
-          {entry.entity && <Fields value={entry.entity} />}
-        </>
+        <KnowledgeDetails entity={projectionOf(entry) as EntityProjection} />
       )}
     </>
   );
 }
 
-function EventBody({ entry, level }: { entry: JournalEvent; level: Level }) {
+/** A roll as the feed shows it: the total, then what was rolled. */
+function Roll({
+  entry,
+  children,
+}: {
+  entry: JournalEvent;
+  children: ReactNode;
+}) {
   const body = entry.body ?? {};
-  if (entry.kind !== "handout") return <Fields value={body} />;
-  const title = typeof body.title === "string" && body.title;
-  const markdown = typeof body.markdown === "string" ? body.markdown : "";
+  const dice = numbers(body.rolls);
+  const kept = numbers(body.kept);
+  const detail = [
+    dice.length > 0 && `Dice: ${dice.join(", ")}`,
+    // Kept repeats the dice unless the formula dropped some.
+    kept.length > 0 && kept.length < dice.length && `Kept: ${kept.join(", ")}`,
+  ].filter(Boolean);
   return (
-    <>
-      <Heading level={level}>{title || "Handout"}</Heading>
-      <HandoutText
-        markdown={markdown}
-        headingLevel={(level + 1) as 4 | 5 | 6}
-      />
-    </>
+    <Item
+      as="li"
+      startContent={
+        <Text type="large" weight="bold" hasTabularNumbers>
+          {typeof body.total === "number" ? body.total : "–"}
+        </Text>
+      }
+      // A string label is cut to one line; a long formula must wrap instead.
+      label={
+        <Text type="body">
+          {[text(body.label) || "Roll", text(body.formula)]
+            .filter(Boolean)
+            .join(" · ")}
+        </Text>
+      }
+      description={detail.length > 0 ? detail.join(" · ") : undefined}
+      endContent={children}
+    />
   );
 }
 
-/** A record shown field by field; every value renders as text. */
-function Fields({ value }: { value: Record<string, unknown> }) {
-  const entries = Object.entries(value);
-  if (entries.length === 0) return null;
-  return (
-    <MetadataList>
-      {entries.map(([key, detail]) => (
-        <MetadataListItem key={key} label={key.replaceAll("_", " ")}>
-          {typeof detail === "object" && detail !== null ? (
-            <pre className="journal-json">
-              {JSON.stringify(detail, null, 2)}
-            </pre>
-          ) : (
-            String(detail ?? "")
-          )}
-        </MetadataListItem>
-      ))}
-    </MetadataList>
-  );
-}
+const numbers = (value: unknown): number[] =>
+  Array.isArray(value)
+    ? value.filter((item): item is number => typeof item === "number")
+    : [];

@@ -10,10 +10,8 @@
   overflow-wrap: anywhere;
 }
 
-/* Structured values read as prose, not as a code sample. */
-.journal-json {
-  margin: 0;
-  font: inherit;
+/* An action is typed with line breaks, and a long token must not widen a phone. */
+.journal-prose {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

@@ -155,152 +155,152 @@ export function Feed({
         const waiting =
           event.kind === "action" && event.audience === "dm" && !gone;
         return (
-          <Card
-            key={event.id}
-            as="li"
-            id={`event-${event.id}`}
-            variant={event.audience === "table" ? "default" : "muted"}
-          >
-            <VStack gap={2}>
-              <HStack gap={2} wrap="wrap">
-                <Text type="label">{KIND_LABEL[event.kind]}</Text>
-                <Text type="label" color="secondary">
-                  {AUDIENCE_LABEL[event.audience]}
-                </Text>
-              </HStack>
-
-              {event.kind === "roll" && !gone ? (
-                <HStack gap={3} vAlign="center">
-                  <Text type="large" weight="bold" hasTabularNumbers>
-                    {body.total}
-                  </Text>
-                  <VStack gap={0}>
-                    <Text type="body">
-                      {body.label || "Roll"} · {body.formula}
-                    </Text>
-                    <Text type="body" size="sm" color="secondary">
-                      Dice: {body.rolls?.join(", ")} · Kept:{" "}
-                      {body.kept?.join(", ")}
-                    </Text>
-                  </VStack>
-                </HStack>
-              ) : event.kind === "reveal" && !gone ? (
-                (body.reveals ?? [body as RevealedKnowledge])
-                  .filter(
-                    (item) =>
-                      !item.silent &&
-                      !body.retracted_entity_ids?.includes(item.entity_id),
-                  )
-                  .map((knowledge) => (
-                    <VStack gap={2} key={knowledge.entity_id}>
-                      {knowledge.retracted ? (
-                        <Text type="body" color="secondary">
-                          Knowledge retracted: {knowledge.name}.
-                        </Text>
-                      ) : (
-                        <RevealProjection knowledge={knowledge} />
-                      )}
-                      <HStack gap={2} wrap="wrap" vAlign="center">
-                        {!knowledge.retracted &&
-                          knowledge.grant_scope !== "name_only" && (
-                            <>
-                              <Button
-                                label={`Explore ${knowledge.name}`}
-                                size="sm"
-                                onClick={() =>
-                                  onOpenKnowledge(knowledge.entity_id)
-                                }
-                              />
-                              <Link
-                                href={paths.entity(
-                                  viewer.campaign.id,
-                                  knowledge.entity_id,
-                                )}
-                                isStandalone
-                                size="sm"
-                              >
-                                Open knowledge page
-                              </Link>
-                            </>
-                          )}
-                        {dm && !knowledge.retracted && (
-                          <Button
-                            label={`Give item ${knowledge.name}`}
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => give(event, knowledge)}
-                          >
-                            Give item
-                          </Button>
-                        )}
-                      </HStack>
-                    </VStack>
-                  ))
-              ) : event.kind === "handout" ? (
-                <HandoutCard
-                  campaignId={viewer.campaign.id}
-                  sessionId={session.id}
-                  handout={event}
-                  dm={dm}
-                  onPin={onPin}
-                  onOpenKnowledge={onOpenKnowledge}
-                />
-              ) : event.kind === "turn" && !gone ? (
-                <Text type="body">{turnSummary(body)}</Text>
-              ) : (
-                <Text type="body" color={gone ? "secondary" : "primary"}>
-                  {gone
-                    ? "This message was retracted."
-                    : body.text || body.summary || "Session update"}
-                </Text>
-              )}
-
-              <HStack gap={2} wrap="wrap" vAlign="center">
-                {waiting && (
+          <li key={event.id} id={`event-${event.id}`}>
+            <Card variant={event.audience === "table" ? "default" : "muted"}>
+              <VStack gap={2}>
+                <HStack gap={2} wrap="wrap">
+                  <Text type="label">{KIND_LABEL[event.kind]}</Text>
                   <Text type="label" color="secondary">
-                    {isResolved(event) ? "Resolved" : "Waiting for DM"}
+                    {AUDIENCE_LABEL[event.audience]}
+                  </Text>
+                </HStack>
+
+                {event.kind === "roll" && !gone ? (
+                  <HStack gap={3} vAlign="center">
+                    <Text type="large" weight="bold" hasTabularNumbers>
+                      {body.total}
+                    </Text>
+                    <VStack gap={0}>
+                      <Text type="body">
+                        {body.label || "Roll"} · {body.formula}
+                      </Text>
+                      <Text type="body" size="sm" color="secondary">
+                        Dice: {body.rolls?.join(", ")} · Kept:{" "}
+                        {body.kept?.join(", ")}
+                      </Text>
+                    </VStack>
+                  </HStack>
+                ) : event.kind === "reveal" && !gone ? (
+                  (body.reveals ?? [body as RevealedKnowledge])
+                    .filter(
+                      (item) =>
+                        !item.silent &&
+                        !body.retracted_entity_ids?.includes(item.entity_id),
+                    )
+                    .map((knowledge) => (
+                      <VStack gap={2} key={knowledge.entity_id}>
+                        {knowledge.retracted ? (
+                          <Text type="body" color="secondary">
+                            Knowledge retracted: {knowledge.name}.
+                          </Text>
+                        ) : (
+                          <RevealProjection knowledge={knowledge} />
+                        )}
+                        <HStack gap={2} wrap="wrap" vAlign="center">
+                          {!knowledge.retracted &&
+                            knowledge.grant_scope !== "name_only" && (
+                              <>
+                                <Button
+                                  label={`Explore ${knowledge.name}`}
+                                  size="sm"
+                                  onClick={() =>
+                                    onOpenKnowledge(knowledge.entity_id)
+                                  }
+                                />
+                                <Link
+                                  href={paths.entity(
+                                    viewer.campaign.id,
+                                    knowledge.entity_id,
+                                  )}
+                                  isStandalone
+                                  size="sm"
+                                >
+                                  Open knowledge page
+                                </Link>
+                              </>
+                            )}
+                          {dm && !knowledge.retracted && (
+                            <Button
+                              label={`Give item ${knowledge.name}`}
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => give(event, knowledge)}
+                            >
+                              Give item
+                            </Button>
+                          )}
+                        </HStack>
+                      </VStack>
+                    ))
+                ) : event.kind === "handout" ? (
+                  <HandoutCard
+                    campaignId={viewer.campaign.id}
+                    sessionId={session.id}
+                    handout={event}
+                    dm={dm}
+                    onPin={onPin}
+                    onOpenKnowledge={onOpenKnowledge}
+                  />
+                ) : event.kind === "turn" && !gone ? (
+                  <Text type="body">{turnSummary(body)}</Text>
+                ) : (
+                  <Text type="body" color={gone ? "secondary" : "primary"}>
+                    {gone
+                      ? "This message was retracted."
+                      : body.text || body.summary || "Session update"}
                   </Text>
                 )}
-                {waiting && dm && author && !isResolved(event) && playing && (
-                  <Button
-                    label={`Reply privately to ${author.character_name}`}
-                    size="sm"
-                    onClick={() =>
-                      onReply({
-                        id: event.id,
-                        name: author.character_name,
-                        characterId: author.id,
-                      })
-                    }
-                  />
-                )}
-                {dm && event.kind === "handout" && !gone && !body.retracted && (
-                  <Button
-                    label={`Give item from ${subject(event)}`}
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => give(event)}
-                  >
-                    Give item
-                  </Button>
-                )}
-                {!dm &&
-                  !gone &&
-                  !body.retracted &&
-                  event.kind !== "handout" &&
-                  event.kind !== "turn" && (
-                    <Button
-                      label={`Pin ${subject(event)} to notes`}
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => onPin(event)}
-                    >
-                      Pin to notes
-                    </Button>
+
+                <HStack gap={2} wrap="wrap" vAlign="center">
+                  {waiting && (
+                    <Text type="label" color="secondary">
+                      {isResolved(event) ? "Resolved" : "Waiting for DM"}
+                    </Text>
                   )}
-              </HStack>
-            </VStack>
-          </Card>
+                  {waiting && dm && author && !isResolved(event) && playing && (
+                    <Button
+                      label={`Reply privately to ${author.character_name}`}
+                      size="sm"
+                      onClick={() =>
+                        onReply({
+                          id: event.id,
+                          name: author.character_name,
+                          characterId: author.id,
+                        })
+                      }
+                    />
+                  )}
+                  {dm &&
+                    event.kind === "handout" &&
+                    !gone &&
+                    !body.retracted && (
+                      <Button
+                        label={`Give item from ${subject(event)}`}
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => give(event)}
+                      >
+                        Give item
+                      </Button>
+                    )}
+                  {!dm &&
+                    !gone &&
+                    !body.retracted &&
+                    event.kind !== "handout" &&
+                    event.kind !== "turn" && (
+                      <Button
+                        label={`Pin ${subject(event)} to notes`}
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => onPin(event)}
+                      >
+                        Pin to notes
+                      </Button>
+                    )}
+                </HStack>
+              </VStack>
+            </Card>
+          </li>
         );
       })}
     </VStack>
