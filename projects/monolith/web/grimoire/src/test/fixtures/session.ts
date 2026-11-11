@@ -78,6 +78,8 @@ export const sessionRoutes: Routes = {
     story.filter((row) => row.seq > Number(call.query.get("after") ?? 0)),
   "GET /campaigns/{campaign_id}/sessions/{session_id}/initiative": {},
   "GET /campaigns/{campaign_id}/sessions/{session_id}/journal": {},
+  // The notes panel stays mounted behind the Story tab.
+  "GET /campaigns/{campaign_id}/notes": [],
   "GET /campaigns/{campaign_id}/members": [
     members[0]!,
     {
