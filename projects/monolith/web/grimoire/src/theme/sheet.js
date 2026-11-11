@@ -6,7 +6,7 @@
  * Core: @astryxdesign/core@0.7.11
  */
 
-import { neutralTheme } from "@astryxdesign/theme-neutral";
+import { neutralTheme } from '@astryxdesign/theme-neutral';
 const themeIcons = neutralTheme["icons"];
 /**
  * sheet theme — built by `pnpm exec astryx theme build`
@@ -16,7 +16,7 @@ const themeIcons = neutralTheme["icons"];
  *   import './sheet.css';
  */
 export const sheetTheme = {
-  name: "sheet",
+  name: 'sheet',
   __built: true,
   tokens: {
     "--font-size-4xs": "0.375rem",
@@ -92,11 +92,9 @@ export const sheetTheme = {
     "--_astryx-pre-tempo-duration-slow": "240ms",
     "--_astryx-pre-tempo-duration-slow-max": "320ms",
     "--_astryx-motion-tempo": "1",
-    "--font-family-body":
-      '"Schibsted Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif',
-    "--font-family-heading":
-      '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif',
-    "--font-family-code": 'ui-monospace, "SF Mono", "Cascadia Mono", monospace',
+    "--font-family-body": "\"Schibsted Grotesk\", \"Avenir Next\", \"Segoe UI\", system-ui, sans-serif",
+    "--font-family-heading": "\"Iowan Old Style\", \"Palatino Linotype\", Palatino, Georgia, serif",
+    "--font-family-code": "ui-monospace, \"SF Mono\", \"Cascadia Mono\", monospace",
     "--color-syntax-keyword": "light-dark(#6b187c, #efa8ff)",
     "--color-syntax-string": "light-dark(#0b5615, #a4d6a3)",
     "--color-syntax-comment": "light-dark(#525252, #b9b9b9)",
@@ -111,10 +109,8 @@ export const sheetTheme = {
     "--color-syntax-property": "light-dark(#005348, #90d7c8)",
     "--color-syntax-punctuation": "light-dark(#525252, #b9b9b9)",
     "--color-syntax-background": "light-dark(#ffffff, #111111)",
-    "--color-syntax-added":
-      "color-mix(in srgb, var(--color-success-muted) 25%, transparent)",
-    "--color-syntax-removed":
-      "color-mix(in srgb, var(--color-error-muted) 25%, transparent)",
+    "--color-syntax-added": "color-mix(in srgb, var(--color-success-muted) 25%, transparent)",
+    "--color-syntax-removed": "color-mix(in srgb, var(--color-error-muted) 25%, transparent)",
     "--color-syntax-diff-header": "transparent",
     "--color-syntax-added-marker": "var(--color-syntax-punctuation)",
     "--color-syntax-removed-marker": "var(--color-syntax-punctuation)",
@@ -221,297 +217,296 @@ export const sheetTheme = {
     "--shadow-inset-error": "inset 0px 0px 0px 2px #de47454D",
     "--radius-chat": "0px",
     "--focus-outline-color": "light-dark(#1f4f9f, #d3a45f)",
-    "--focus-outline-width": "2px",
+    "--focus-outline-width": "2px"
   },
   localTokens: {
-    "--astryx-theme-neutral-color-status-fill-accent":
-      "light-dark(#0074e2, #6d9cfe)",
+    "--astryx-theme-neutral-color-status-fill-accent": "light-dark(#0074e2, #6d9cfe)"
   },
   __localTokenOwners: {
-    "--astryx-theme-neutral-color-status-fill-accent": "neutral",
+    "--astryx-theme-neutral-color-status-fill-accent": "neutral"
   },
-  __localTokenLineage: ["neutral", "sheet"],
+  __localTokenLineage: ["neutral","sheet"],
   components: {
-    heading: {
+    "heading": {
       "level:1": {
-        fontFamily: "var(--font-family-heading)",
-        fontSize: "var(--text-heading-1-size)",
-        fontWeight: "var(--text-heading-1-weight)",
-        lineHeight: "var(--text-heading-1-leading)",
+        "fontFamily": "var(--font-family-heading)",
+        "fontSize": "var(--text-heading-1-size)",
+        "fontWeight": "var(--text-heading-1-weight)",
+        "lineHeight": "var(--text-heading-1-leading)"
       },
       "level:2": {
-        fontFamily: "var(--font-family-heading)",
-        fontSize: "var(--text-heading-2-size)",
-        fontWeight: "var(--text-heading-2-weight)",
-        lineHeight: "var(--text-heading-2-leading)",
+        "fontFamily": "var(--font-family-heading)",
+        "fontSize": "var(--text-heading-2-size)",
+        "fontWeight": "var(--text-heading-2-weight)",
+        "lineHeight": "var(--text-heading-2-leading)"
       },
       "level:3": {
-        fontFamily: "var(--font-family-heading)",
-        fontSize: "var(--text-heading-3-size)",
-        fontWeight: "var(--text-heading-3-weight)",
-        lineHeight: "var(--text-heading-3-leading)",
+        "fontFamily": "var(--font-family-heading)",
+        "fontSize": "var(--text-heading-3-size)",
+        "fontWeight": "var(--text-heading-3-weight)",
+        "lineHeight": "var(--text-heading-3-leading)"
       },
       "level:4": {
-        fontFamily: "var(--font-family-heading)",
-        fontSize: "var(--text-heading-4-size)",
-        fontWeight: "var(--text-heading-4-weight)",
-        lineHeight: "var(--text-heading-4-leading)",
+        "fontFamily": "var(--font-family-heading)",
+        "fontSize": "var(--text-heading-4-size)",
+        "fontWeight": "var(--text-heading-4-weight)",
+        "lineHeight": "var(--text-heading-4-leading)"
       },
       "level:5": {
-        fontFamily: "var(--font-family-heading)",
-        fontSize: "var(--text-heading-5-size)",
-        fontWeight: "var(--text-heading-5-weight)",
-        lineHeight: "var(--text-heading-5-leading)",
+        "fontFamily": "var(--font-family-heading)",
+        "fontSize": "var(--text-heading-5-size)",
+        "fontWeight": "var(--text-heading-5-weight)",
+        "lineHeight": "var(--text-heading-5-leading)"
       },
       "level:6": {
-        fontFamily: "var(--font-family-heading)",
-        fontSize: "var(--text-heading-6-size)",
-        fontWeight: "var(--text-heading-6-weight)",
-        lineHeight: "var(--text-heading-6-leading)",
+        "fontFamily": "var(--font-family-heading)",
+        "fontSize": "var(--text-heading-6-size)",
+        "fontWeight": "var(--text-heading-6-weight)",
+        "lineHeight": "var(--text-heading-6-leading)"
       },
       "type:display-1": {
-        fontFamily: "var(--font-family-heading)",
-        fontSize: "var(--text-display-1-size)",
-        lineHeight: "var(--text-display-1-leading)",
+        "fontFamily": "var(--font-family-heading)",
+        "fontSize": "var(--text-display-1-size)",
+        "lineHeight": "var(--text-display-1-leading)"
       },
       "type:display-2": {
-        fontFamily: "var(--font-family-heading)",
-        fontSize: "var(--text-display-2-size)",
-        lineHeight: "var(--text-display-2-leading)",
+        "fontFamily": "var(--font-family-heading)",
+        "fontSize": "var(--text-display-2-size)",
+        "lineHeight": "var(--text-display-2-leading)"
       },
       "type:display-3": {
-        fontFamily: "var(--font-family-heading)",
-        fontSize: "var(--text-display-3-size)",
-        lineHeight: "var(--text-display-3-leading)",
-      },
+        "fontFamily": "var(--font-family-heading)",
+        "fontSize": "var(--text-display-3-size)",
+        "lineHeight": "var(--text-display-3-leading)"
+      }
     },
-    text: {
+    "text": {
       "type:body": {
-        fontFamily: "var(--font-family-body)",
-        fontSize: "var(--text-body-size)",
-        lineHeight: "var(--text-body-leading)",
+        "fontFamily": "var(--font-family-body)",
+        "fontSize": "var(--text-body-size)",
+        "lineHeight": "var(--text-body-leading)"
       },
       "type:large": {
-        fontFamily: "var(--font-family-body)",
-        fontSize: "var(--text-large-size)",
-        lineHeight: "var(--text-large-leading)",
+        "fontFamily": "var(--font-family-body)",
+        "fontSize": "var(--text-large-size)",
+        "lineHeight": "var(--text-large-leading)"
       },
       "type:label": {
-        fontFamily: "var(--font-family-body)",
-        fontSize: "var(--text-label-size)",
-        lineHeight: "var(--text-label-leading)",
+        "fontFamily": "var(--font-family-body)",
+        "fontSize": "var(--text-label-size)",
+        "lineHeight": "var(--text-label-leading)"
       },
       "type:code": {
-        fontFamily: "var(--font-family-code)",
-        fontSize: "var(--text-code-size)",
-        lineHeight: "var(--text-code-leading)",
+        "fontFamily": "var(--font-family-code)",
+        "fontSize": "var(--text-code-size)",
+        "lineHeight": "var(--text-code-leading)"
       },
       "type:supporting": {
-        fontFamily: "var(--font-family-body)",
-        fontSize: "var(--text-supporting-size)",
-        lineHeight: "var(--text-supporting-leading)",
+        "fontFamily": "var(--font-family-body)",
+        "fontSize": "var(--text-supporting-size)",
+        "lineHeight": "var(--text-supporting-leading)"
       },
       "type:display-1": {
-        fontFamily: "var(--font-family-heading)",
-        fontSize: "var(--text-display-1-size)",
-        lineHeight: "var(--text-display-1-leading)",
+        "fontFamily": "var(--font-family-heading)",
+        "fontSize": "var(--text-display-1-size)",
+        "lineHeight": "var(--text-display-1-leading)"
       },
       "type:display-2": {
-        fontFamily: "var(--font-family-heading)",
-        fontSize: "var(--text-display-2-size)",
-        lineHeight: "var(--text-display-2-leading)",
+        "fontFamily": "var(--font-family-heading)",
+        "fontSize": "var(--text-display-2-size)",
+        "lineHeight": "var(--text-display-2-leading)"
       },
       "type:display-3": {
-        fontFamily: "var(--font-family-heading)",
-        fontSize: "var(--text-display-3-size)",
-        lineHeight: "var(--text-display-3-leading)",
-      },
+        "fontFamily": "var(--font-family-heading)",
+        "fontSize": "var(--text-display-3-size)",
+        "lineHeight": "var(--text-display-3-leading)"
+      }
     },
-    item: {
-      selected: {
-        "--color-text-secondary": "light-dark(#474747, #c6c6c6)",
-      },
+    "item": {
+      "selected": {
+        "--color-text-secondary": "light-dark(#474747, #c6c6c6)"
+      }
     },
     "tree-list-item": {
-      selected: {
-        "--color-text-secondary": "light-dark(#474747, #c6c6c6)",
-      },
+      "selected": {
+        "--color-text-secondary": "light-dark(#474747, #c6c6c6)"
+      }
     },
     "file-input": {
       "mode:dropzone": {
-        "--color-text-secondary": "light-dark(#474747, #c6c6c6)",
-      },
+        "--color-text-secondary": "light-dark(#474747, #c6c6c6)"
+      }
     },
-    citation: {
+    "citation": {
       "variant:number": {
-        "--color-text-secondary": "light-dark(#474747, #c6c6c6)",
-      },
+        "--color-text-secondary": "light-dark(#474747, #c6c6c6)"
+      }
     },
-    button: {
+    "button": {
       "variant:destructive": {
-        backgroundColor: "var(--color-error-muted)",
-        color: "var(--color-on-error-muted)",
-      },
+        "backgroundColor": "var(--color-error-muted)",
+        "color": "var(--color-on-error-muted)"
+      }
     },
-    badge: {
+    "badge": {
       "variant:neutral": {
-        backgroundColor: "var(--color-background-gray)",
-        color: "var(--color-text-gray)",
+        "backgroundColor": "var(--color-background-gray)",
+        "color": "var(--color-text-gray)"
       },
       "variant:red": {
-        backgroundColor: "var(--color-background-red)",
-        color: "var(--color-text-red)",
+        "backgroundColor": "var(--color-background-red)",
+        "color": "var(--color-text-red)"
       },
       "variant:orange": {
-        backgroundColor: "var(--color-background-orange)",
-        color: "var(--color-text-orange)",
+        "backgroundColor": "var(--color-background-orange)",
+        "color": "var(--color-text-orange)"
       },
       "variant:yellow": {
-        backgroundColor: "var(--color-background-yellow)",
-        color: "var(--color-text-yellow)",
+        "backgroundColor": "var(--color-background-yellow)",
+        "color": "var(--color-text-yellow)"
       },
       "variant:green": {
-        backgroundColor: "var(--color-background-green)",
-        color: "var(--color-text-green)",
+        "backgroundColor": "var(--color-background-green)",
+        "color": "var(--color-text-green)"
       },
       "variant:teal": {
-        backgroundColor: "var(--color-background-teal)",
-        color: "var(--color-text-teal)",
+        "backgroundColor": "var(--color-background-teal)",
+        "color": "var(--color-text-teal)"
       },
       "variant:cyan": {
-        backgroundColor: "var(--color-background-cyan)",
-        color: "var(--color-text-cyan)",
+        "backgroundColor": "var(--color-background-cyan)",
+        "color": "var(--color-text-cyan)"
       },
       "variant:blue": {
-        backgroundColor: "var(--color-background-blue)",
-        color: "var(--color-text-blue)",
+        "backgroundColor": "var(--color-background-blue)",
+        "color": "var(--color-text-blue)"
       },
       "variant:purple": {
-        backgroundColor: "var(--color-background-purple)",
-        color: "var(--color-text-purple)",
+        "backgroundColor": "var(--color-background-purple)",
+        "color": "var(--color-text-purple)"
       },
       "variant:pink": {
-        backgroundColor: "var(--color-background-pink)",
-        color: "var(--color-text-pink)",
+        "backgroundColor": "var(--color-background-pink)",
+        "color": "var(--color-text-pink)"
       },
       "variant:gray": {
-        backgroundColor: "var(--color-background-gray)",
-        color: "var(--color-text-gray)",
-      },
+        "backgroundColor": "var(--color-background-gray)",
+        "color": "var(--color-text-gray)"
+      }
     },
     "segmented-control": {
-      base: {
-        padding: "var(--spacing-1)",
-      },
+      "base": {
+        "padding": "var(--spacing-1)"
+      }
     },
     "segmented-control-item": {
       "size:sm": {
-        height: "calc(var(--size-element-sm) - 8px)",
+        "height": "calc(var(--size-element-sm) - 8px)"
       },
       "size:md": {
-        height: "calc(var(--size-element-md) - 8px)",
+        "height": "calc(var(--size-element-md) - 8px)"
       },
       "size:lg": {
-        height: "calc(var(--size-element-lg) - 8px)",
+        "height": "calc(var(--size-element-lg) - 8px)"
       },
-      selected: {
-        boxShadow: "none",
-      },
+      "selected": {
+        "boxShadow": "none"
+      }
     },
-    switch: {
-      base: {
-        "--color-background-gray": "var(--color-border-emphasized)",
-      },
+    "switch": {
+      "base": {
+        "--color-background-gray": "var(--color-border-emphasized)"
+      }
     },
     "progress-bar": {
-      base: {
-        "--color-background-muted": "var(--color-border-emphasized)",
-      },
+      "base": {
+        "--color-background-muted": "var(--color-border-emphasized)"
+      }
     },
-    card: {
-      base: {
-        padding: "var(--spacing-3)",
-      },
+    "card": {
+      "base": {
+        "padding": "var(--spacing-3)"
+      }
     },
-    section: {
-      base: {
-        padding: "var(--spacing-3)",
-      },
-    },
+    "section": {
+      "base": {
+        "padding": "var(--spacing-3)"
+      }
+    }
   },
   __onDark: {
-    tokens: {
+    "tokens": {
       "color-scheme": "dark",
       "--color-text-primary": "var(--color-on-dark)",
       "--color-icon-primary": "var(--color-on-dark)",
-      "--color-accent": "var(--color-on-dark)",
-    },
+      "--color-accent": "var(--color-on-dark)"
+    }
   },
   __onLight: {
-    tokens: {
+    "tokens": {
       "color-scheme": "light",
       "--color-text-primary": "var(--color-on-light)",
       "--color-icon-primary": "var(--color-on-light)",
-      "--color-accent": "var(--color-on-light)",
-    },
+      "--color-accent": "var(--color-on-light)"
+    }
   },
   __adaptations: {
-    widthBreakpoints: {
-      sm: 640,
-      md: 768,
-      lg: 1024,
-      xl: 1280,
-      "2xl": 1536,
+    "widthBreakpoints": {
+      "sm": 640,
+      "md": 768,
+      "lg": 1024,
+      "xl": 1280,
+      "2xl": 1536
     },
-    rules: [
+    "rules": [
       {
-        when: {
-          pointer: "coarse",
-          width: {
-            below: "lg",
-          },
+        "when": {
+          "pointer": "coarse",
+          "width": {
+            "below": "lg"
+          }
         },
-        value: {
-          typography: {
-            scale: {
-              base: 16,
-              ratio: 1.1736,
-            },
-          },
-        },
-      },
-    ],
+        "value": {
+          "typography": {
+            "scale": {
+              "base": 16,
+              "ratio": 1.1736
+            }
+          }
+        }
+      }
+    ]
   },
   __axes: {
-    typography: {
-      scale: {
-        base: 16,
-        ratio: 1.2,
+    "typography": {
+      "scale": {
+        "base": 16,
+        "ratio": 1.2
       },
-      body: {
-        family: "Schibsted Grotesk",
-        fallbacks: '"Avenir Next", "Segoe UI", system-ui, sans-serif',
+      "body": {
+        "family": "Schibsted Grotesk",
+        "fallbacks": "\"Avenir Next\", \"Segoe UI\", system-ui, sans-serif"
       },
-      heading: {
-        family: "Iowan Old Style",
-        fallbacks: '"Palatino Linotype", Palatino, Georgia, serif',
-        weight: "semibold",
+      "heading": {
+        "family": "Iowan Old Style",
+        "fallbacks": "\"Palatino Linotype\", Palatino, Georgia, serif",
+        "weight": "semibold"
       },
-      code: {
-        family: "ui-monospace",
-        fallbacks: '"SF Mono", "Cascadia Mono", monospace',
-      },
+      "code": {
+        "family": "ui-monospace",
+        "fallbacks": "\"SF Mono\", \"Cascadia Mono\", monospace"
+      }
     },
-    radius: {
-      base: 4,
-      multiplier: 0,
+    "radius": {
+      "base": 4,
+      "multiplier": 0
     },
-    motion: {
-      fast: 60,
-      medium: 100,
-      slow: 240,
-      ratio: 0.75,
-    },
+    "motion": {
+      "fast": 60,
+      "medium": 100,
+      "slow": 240,
+      "ratio": 0.75
+    }
   },
   icons: themeIcons,
 };

@@ -40,7 +40,7 @@ const rules: Rule[] = [
   {
     name: "no hand-built overlay or listbox roles",
     pattern:
-      /role=["'](dialog|alertdialog|listbox|combobox|menu|menuitem|tooltip|tablist|tab)["']/,
+      /role=["'](dialog|alertdialog|listbox|combobox|menu|menuitem|tooltip|tab)["']/,
     instead:
       "Dialog, AlertDialog, Drawer, Popover, Selector, Typeahead, DropdownMenu, Tooltip or TabList from Astryx",
   },

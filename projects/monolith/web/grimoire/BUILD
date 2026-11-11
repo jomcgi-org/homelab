@@ -35,7 +35,10 @@ _BUILD_DEPS = [
 js_library(
     name = "src",
     srcs = glob(
-        ["src/**/*"],
+        [
+            "public/**/*",
+            "src/**/*",
+        ],
         exclude = [
             "src/**/*.test.js",
             "src/**/*.test.ts",
