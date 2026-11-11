@@ -50,7 +50,8 @@ async def get_authenticated_identity(
 ) -> Principal:
     """Return a verified human identity whose proxy projection is consistent.
 
-    The friend BFF carries a dedicated signed ID token in X-Grimoire-Token.
+    Tests and the local rehearsal carry a dedicated signed ID token in
+    X-Grimoire-Token; no deployed component sends that header any more.
     The friends lane's browser UI carries the same token in its session cookie.
     Private gateway requests carry a signed Cloudflare Access assertion and an
     ``X-Auth-Email`` projection. Direct callers carry a standing bearer token.

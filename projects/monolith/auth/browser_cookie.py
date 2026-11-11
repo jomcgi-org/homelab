@@ -2,8 +2,8 @@
 
 The client-only friends UI calls private APIs from the browser. Envoy's OIDC
 filter decrypts the session cookie before forwarding, so the API port receives
-the signed ID token the Svelte BFF used to relay as a header. Each API still
-verifies that token against its own audience.
+the signed ID token in that cookie. Each API still verifies the token against
+its own audience.
 """
 
 import os

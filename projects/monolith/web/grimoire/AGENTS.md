@@ -59,6 +59,7 @@ recalling an API.
 | `src/api/`            | `client.ts`, the generated `schema.ts`, one module per area |
 | `src/app/`            | Providers, `Page`, `Loaded`, `useAction`, sign-in state     |
 | `src/screens/<name>/` | One directory per route                                     |
+| `src/<feature>/`      | Panels shared across screens: `handouts`, `inventory`, `journal`, `knowledge`, `notes`, `turns`, `voices` |
 | `src/lib/`            | Framework-free logic with its own tests                     |
 | `src/theme/`          | `sheetTheme.ts` and its compiled output                     |
 | `src/test/`           | Fixture backend, fixtures, test entry                       |
@@ -85,7 +86,10 @@ pnpm theme            # recompile src/theme/sheet.* after editing sheetTheme.ts
   `findToast`.
 - **A Selector's listbox stays in the DOM while closed.** Tests use
   `chooseOption`.
-- **The app's base path is `GRIMOIRE_BASE`** (default `/grimoire/next/`). Paths
+- **The app's base path is `GRIMOIRE_BASE`** (default `/grimoire/`). Paths
   in `src/app/paths.ts` are relative to it. Gateway paths such as sign-out are
   absolute and listed in `gateway`.
+- **Endpoints outside `/api/grimoire` use `requestJson`** from
+  `src/api/client.ts`: the join landing under `/grimoire/join` and the account
+  API under `/api/auth/platform`.
 - **No server code.** No React Server Components, server actions or SSR.
