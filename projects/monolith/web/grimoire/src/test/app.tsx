@@ -8,7 +8,12 @@ import { MemoryRouter } from "react-router";
 import { afterEach } from "vitest";
 import { App } from "../App";
 import { createQueryClient, Providers } from "../app/Providers";
-import { installBackend, type Backend, type Routes } from "./backend";
+import {
+  installBackend,
+  type Backend,
+  type OtherRoutes,
+  type Routes,
+} from "./backend";
 
 let current: Backend | undefined;
 afterEach(() => {
@@ -16,8 +21,8 @@ afterEach(() => {
   current = undefined;
 });
 
-export function openApp(routes: Routes, path = "/") {
-  current = installBackend(routes);
+export function openApp(routes: Routes, path = "/", other: OtherRoutes = {}) {
+  current = installBackend(routes, other);
   render(
     <MemoryRouter initialEntries={[path]}>
       <Providers client={createQueryClient()}>
