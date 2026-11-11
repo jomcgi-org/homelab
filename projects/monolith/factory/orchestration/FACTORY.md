@@ -425,6 +425,8 @@ The health loop reports landing/observed-merged work waiting over 30 minutes wit
 
 A request-bound engine edit proves a bounded correction round exists. Completion still needs the paired recovery audit and fresh independent review of the delivered head. The landing-recovery deadline is a fixed cap that funding cannot extend. A refused request that is neither waiting for capacity nor at `recovery_limit` writes `landing_recovery_declined` with its reason whenever the reason changes or a new recovery round starts; the delivery stays eligible for the next tick.
 
+Landing refuses `head_moved` when the PR head differs from the approved head and never recovers that on its own. A standing operator can request reason `head_moved` through [`factory_request_landing_rereview`](../MCP.md#landing-re-review-after-a-moved-head). The request names the approved head and the moved head. Its correction round verifies the moved head without rewriting history, and the fresh exact-head review still gates landing. It needs automatic landing policy and every other recovery guard.
+
 #### Review publisher
 
 The landing path contains a trusted `factory/review` check publisher, off by default. It accepts only a validated approval from a session distinct from every implementation session at that head, and uses only `FACTORY_REVIEW_PUBLISHER_TOKEN`. Activation lives on [issue #3835](https://github.com/jomcgi-org/homelab/issues/3835#issuecomment-6545692966).

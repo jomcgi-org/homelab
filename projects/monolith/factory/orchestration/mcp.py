@@ -2804,6 +2804,60 @@ async def factory_release_owner_pr_hold(
 
 
 @mcp.tool
+async def factory_request_landing_rereview(
+    operation: Literal["preview", "apply"],
+    receipt_id: Annotated[MCPInteger, Field(ge=1)],
+    pr_number: Annotated[MCPInteger, Field(ge=1)],
+    head_sha: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")],
+    reason: Annotated[str, Field(min_length=1, max_length=4000)],
+    request_key: str | None = None,
+    expected_preview_sha256: str | None = None,
+) -> dict:
+    """Re-review a delivery after an authorized head move. Standing operators only.
+
+    Use it when landing refuses head_moved, for example after an operator
+    merged the base branch into the PR to resolve conflicts. Give the
+    receipt, the PR number and its exact current head. Preview first, then
+    apply identical arguments with the preview digest and a new request_key.
+    Replay the same key after a lost response.
+
+    Preview refuses a receipt that is not succeeded or landing, a landing
+    hold (release it separately with factory_release_landing_hold), an
+    unmoved head, a closed PR, a different head and a branch that is not
+    the delivery branch. Apply reopens the delivery through bounded landing
+    recovery: one correction round verifies the moved head without
+    rewriting history, then a fresh independent review of the exact current
+    head must approve before landing can re-arm. It grants no landing
+    authority and never waives review, CI, holds or recovery limits.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from factory.orchestration import landing_rereview
+
+    try:
+        if operation == "preview":
+            return await asyncio.to_thread(
+                landing_rereview.preview, receipt_id, pr_number, head_sha, reason
+            )
+        if not request_key or not expected_preview_sha256:
+            return {"ok": False, "reason": "landing_rereview_preview_required"}
+        return await asyncio.to_thread(
+            landing_rereview.apply,
+            principal.subject,
+            receipt_id,
+            pr_number,
+            head_sha,
+            reason,
+            request_key,
+            expected_preview_sha256,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@mcp.tool
 async def factory_configure_delivery_landing(
     operation: Literal["preview", "apply"],
     enabled: bool,

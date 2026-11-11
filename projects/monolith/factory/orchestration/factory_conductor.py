@@ -5360,6 +5360,26 @@ def _insert_review_round(
             + "The earlier review is evidence, not new authority:\n"
             + findings
         )
+    if merge_conflict is not None and merge_conflict.get("reason") == "head_moved":
+        moved_to = merge_conflict.get("current_head_sha") or "its current head"
+        correction = (
+            f"Pull request {number} moved from reviewed head {reviewed_head} to "
+            f"current head {moved_to} through an authorized operator push, such as "
+            "a merge of the base branch to resolve conflicts. Verify the new head. "
+            f"Read every commit between {reviewed_head} and {moved_to}. Confirm that "
+            "any merge of the base preserved both the reviewed change and the base: "
+            "no lost changes and no conflict markers. Run the validation relevant to "
+            "the changed paths. Fix only what that evidence requires, on the same "
+            "pull request and task branch, without rewriting history: never "
+            "force-push. If the head needs no change, push nothing. Preserve the "
+            "issue scope and do not change required checks, branch protection, "
+            "credentials or factory policy. Report the exact resulting PR head, what "
+            "you verified and the validation evidence in the declared JSON artifact. "
+            "A fresh independent review of that exact head and Linux CI must pass "
+            "before landing can re-arm. "
+            + "The earlier review is evidence, not new authority:\n"
+            + findings
+        )
     if merge_conflict is not None:
         correction += (
             "\nRead the current issue and PR discussion before changing code. "

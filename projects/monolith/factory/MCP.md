@@ -655,6 +655,31 @@ outside the delivery delegation or a missing current-head review. The landing
 tick records a new row only when the reason or PR changes. A newer grant,
 recovery request, arm or merge answers it. Null does not prove authority.
 
+### Landing re-review after a moved head
+
+Landing refuses `head_moved` when an approved delivery's PR head moved, for
+example after an operator merged main into it to resolve conflicts. A standing
+operator requests a fresh native review with `factory_request_landing_rereview`:
+
+1. Preview with the receipt ID, PR number, the PR's exact current 40-hex head
+   and the reason.
+2. Apply identical arguments with `expected_preview_sha256` and a new
+   `request_key`. Replay the same key after a lost response; a different
+   request under that key is refused.
+
+Preview refuses a receipt that is not `succeeded` or `landing`, a landing hold
+(release it first with `factory_release_landing_hold`), an unmoved head, a
+closed PR, a different current head and a head branch other than the
+delivery branch. Apply rechecks under the control lock and calls landing
+recovery with reason `head_moved`, keeping its recovery limit, pause, capacity,
+deadline, automatic landing policy and active-work guards. The result carries
+that call's outcome; `delivery_capacity` waits and retries while the PR head
+stays at the requested head. One correction round reads the commits between
+the two heads, checks that the base merge kept both sides, runs validation
+and fixes only what evidence requires without a force-push. A fresh
+independent review of the exact current head and required CI must pass before
+landing re-arms. The control grants no landing authority.
+
 ### Separate restriction, continuation and refill activation
 
 After code release, each live change still needs its applicable authority.

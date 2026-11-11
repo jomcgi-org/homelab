@@ -3664,3 +3664,201 @@ def test_direct_owner_pr_preserves_exact_head_gates_without_self_closing_keyword
     else:
         with pytest.raises(ValueError, match="exact-head|integrated PR checks"):
             conductor.verify_delivery(task, 3, runs, issue_number=3)
+
+
+MOVED = "c" * 40
+
+
+def test_head_moved_recovery_names_both_heads_and_needs_merge_policy(db):
+    delivered(db, "t-1", 11, 3)
+    with pytest.raises(ValueError, match="invalid current_head_sha"):
+        controls.request_landing_recovery(
+            "t-1", 3, HEAD, "delivered_pr", "test", reason="head_moved"
+        )
+    with pytest.raises(ValueError, match="head_not_moved"):
+        controls.request_landing_recovery(
+            "t-1",
+            3,
+            HEAD,
+            "delivered_pr",
+            "test",
+            reason="head_moved",
+            current_head_sha=HEAD,
+        )
+    with pytest.raises(ValueError, match="requires head_moved"):
+        controls.request_landing_recovery(
+            "t-1", 3, HEAD, "delivered_pr", "test", current_head_sha=MOVED
+        )
+    with controls._locked_session() as (_session, control):
+        control.policy_json = json.dumps({**POLICY, "auto_merge": False})
+    # No conflict-repair shortcut: a moved head needs the merge policy.
+    assert controls.request_landing_recovery(
+        "t-1",
+        3,
+        HEAD,
+        "delivered_pr",
+        "test",
+        reason="head_moved",
+        current_head_sha=MOVED,
+    ) == {"ok": False, "reason": "factory_disabled"}
+    with controls._locked_session() as (_session, control):
+        control.policy_json = json.dumps(POLICY)
+    assert controls.request_landing_recovery(
+        "t-1",
+        3,
+        HEAD,
+        "delivered_pr",
+        "test",
+        reason="head_moved",
+        current_head_sha=MOVED,
+    ) == {"ok": True, "replayed": False, "state": "admitted"}
+    [request] = audits(db, "landing_recovery_requested", "t-1")
+    assert request["reason"] == "head_moved"
+    assert request["head_sha"] == HEAD
+    assert request["current_head_sha"] == MOVED
+
+
+@pytest.mark.parametrize("guard", ["held", "paused", "limit"])
+def test_head_moved_recovery_keeps_existing_guards(db, monkeypatch, guard):
+    delivered(db, "t-1", 11, 3)
+    with Session(db) as session, session.begin():
+        row = session.exec(select(FactoryReceipt)).one()
+        if guard == "held":
+            row.direction_json = json.dumps({"landing_hold": None})
+        elif guard == "paused":
+            row.task_paused = True
+    if guard == "limit":
+        monkeypatch.setattr(controls, "MAX_LANDING_RECOVERIES", 0)
+    result = controls.request_landing_recovery(
+        "t-1",
+        3,
+        HEAD,
+        "delivered_pr",
+        "test",
+        reason="head_moved",
+        current_head_sha=MOVED,
+    )
+    assert (
+        result["reason"]
+        == {
+            "held": "receipt_landing_held",
+            "paused": "task_paused",
+            "limit": "recovery_limit",
+        }[guard]
+    )
+    assert receipt_state(db, "t-1") == "succeeded"
+    assert not audits(db, "landing_recovery_requested")
+
+
+def test_pending_head_moved_recovery_retries_when_capacity_opens(db, monkeypatch):
+    pulls, calls = recovery_at_capacity(db, monkeypatch, "chart")
+    pulls[3] = pull(3, head=MOVED)
+    assert controls.request_landing_recovery(
+        "t-1",
+        3,
+        HEAD,
+        "delivered_pr",
+        "test",
+        reason="head_moved",
+        current_head_sha=MOVED,
+    ) == {"ok": False, "reason": "delivery_capacity", "pending": True}
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-1") == "landing"
+    assert not audits(db, "merge_arm_refused", "t-1")
+    assert not audits(db, "landing_recovery_skipped", "t-1")
+    with Session(db) as session, session.begin():
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == "t-2")
+        ).one()
+        row.state = "cancelled"
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-1") == "admitted"
+    assert len(audits(db, "landing_recovery_requested", "t-1")) == 1
+    assert calls["graphql"] == []
+
+
+def _rereview_case(db, monkeypatch, *, head_sha=MOVED, **pull_fields):
+    from factory.orchestration import factory_conductor as conductor
+
+    delivered(db, "t-1", 11, 3)
+    pulls = {3: {**pull(3, head=head_sha), **pull_fields}}
+    monkeypatch.setattr(conductor, "github_get", lambda _repo, _s: dict(pulls[3]))
+    with Session(db) as session:
+        receipt_id = session.exec(select(FactoryReceipt.id)).one()
+    return receipt_id, pulls
+
+
+def test_landing_rereview_preview_then_apply_requests_head_moved_recovery(
+    db, monkeypatch
+):
+    from factory.orchestration import landing_rereview
+
+    receipt_id, _pulls = _rereview_case(db, monkeypatch)
+    preview = landing_rereview.preview(receipt_id, 3, MOVED, "merged main")
+    proposal = preview["preview"]
+    assert proposal["approved_head_sha"] == HEAD
+    assert proposal["head_sha"] == MOVED
+    assert proposal["branch"] == "factory/t-1"
+    args = ("joe", receipt_id, 3, MOVED, "merged main", "key-1")
+    with pytest.raises(ValueError, match="landing_rereview_preview_changed"):
+        landing_rereview.apply(*args, "0" * 64)
+    result = landing_rereview.apply(*args, proposal["preview_sha256"])
+    assert result["ok"] is True
+    assert result["recovery"] == {"ok": True, "replayed": False, "state": "admitted"}
+    assert receipt_state(db, "t-1") == "admitted"
+    [request] = audits(db, "landing_recovery_requested", "t-1")
+    assert request["reason"] == "head_moved"
+    assert request["source"] == "delivered_pr"
+    assert (request["head_sha"], request["current_head_sha"]) == (HEAD, MOVED)
+    [row] = audits(db, landing_rereview.ACTION, "t-1")
+    assert row["request"]["request_key"] == "key-1"
+    assert row["proposal"] == proposal
+    assert row["result"] == result
+    # A lost response replays the stored result without a second request.
+    assert landing_rereview.apply(*args, proposal["preview_sha256"]) == result
+    assert len(audits(db, landing_rereview.ACTION)) == 1
+    assert len(audits(db, "landing_recovery_requested")) == 1
+    with pytest.raises(ValueError, match="landing_rereview_request_conflict"):
+        landing_rereview.apply(
+            "joe", receipt_id, 3, MOVED, "other", "key-1", proposal["preview_sha256"]
+        )
+
+
+@pytest.mark.parametrize(
+    "case,refusal",
+    [
+        ("unmoved", "landing_rereview_head_not_moved"),
+        ("held", "landing_rereview_landing_held"),
+        ("branch", "landing_rereview_branch_mismatch"),
+        ("closed", "landing_rereview_pr_not_open"),
+        ("malformed", "landing_rereview_head_invalid"),
+        ("stale", "landing_rereview_head_changed"),
+        ("admitted", "landing_rereview_receipt_not_settled"),
+        ("other_pr", "landing_rereview_pr_mismatch"),
+    ],
+)
+def test_landing_rereview_preview_refusals(db, monkeypatch, case, refusal):
+    from factory.orchestration import landing_rereview
+
+    head = HEAD if case == "unmoved" else MOVED
+    fields = {}
+    if case == "branch":
+        fields["head"] = {**pull(3)["head"], "sha": MOVED, "ref": "feature/other"}
+    if case == "closed":
+        fields["state"] = "closed"
+    receipt_id, pulls = _rereview_case(db, monkeypatch, head_sha=head, **fields)
+    sha = {"malformed": "C" * 40, "stale": "d" * 40}.get(case, head)
+    number = 3
+    if case == "other_pr":
+        number = 4
+        pulls[3] = {**pulls[3], "number": 4}
+    if case in ("held", "admitted"):
+        with Session(db) as session, session.begin():
+            row = session.get(FactoryReceipt, receipt_id)
+            if case == "held":
+                row.direction_json = json.dumps({"landing_hold": None})
+            else:
+                row.state = "admitted"
+    with pytest.raises(ValueError, match=refusal):
+        landing_rereview.preview(receipt_id, number, sha, "merged main")
+    assert not audits(db, "landing_recovery_requested")
