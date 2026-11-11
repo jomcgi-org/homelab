@@ -9,11 +9,17 @@ lane's Cloudflare Access session is their gate), so they must stay unrouted.
 ``chart/grimoire_browser_lane_test.py`` pins the rendered list to this one.
 """
 
-BROWSER_API_PREFIXES = (
+from auth.browser_cookie import PLATFORM_BROWSER_API_PREFIXES
+
+GRIMOIRE_API_PREFIXES = (
     "/api/grimoire/lobby",
     "/api/grimoire/campaigns",
     "/api/grimoire/invitations",
 )
+
+# Everything the gateway routes to the API port from the friends lane: the
+# campaign API above and the account API the platform pages call.
+BROWSER_API_PREFIXES = (*GRIMOIRE_API_PREFIXES, *PLATFORM_BROWSER_API_PREFIXES)
 
 
 def is_browser_path(path: str) -> bool:

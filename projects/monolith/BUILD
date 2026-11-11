@@ -1227,6 +1227,9 @@ py_library(
             "*/tests/**/*.py",
         ],
     ),
+    # join_landing.py reads this inline landing script at import time; the
+    # "grimoire/**/*.py" glob does not capture it.
+    data = ["//projects/monolith/web/grimoire:join_landing_script"],
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
@@ -2233,6 +2236,21 @@ alias(
 py_test(
     name = "platform_auth_service_test",
     srcs = ["//projects/monolith/auth:platform/service_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_platform_auth",
+        "@pip//cryptography",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pyjwt",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "platform_auth_browser_identity_test",
+    srcs = ["//projects/monolith/auth:platform/browser_identity_test.py"],
     imports = ["."],
     deps = [
         ":pkg_platform_auth",
@@ -7016,6 +7034,24 @@ py_test(
 py_test(
     name = "grimoire_browser_lane_test",
     srcs = ["grimoire/browser_lane_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_core",
+        ":pkg_grimoire",
+        "@pip//cryptography",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pyjwt",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+# The anonymous invitation landing and its signed-in acceptance endpoints.
+py_test(
+    name = "grimoire_join_landing_test",
+    srcs = ["grimoire/join_landing_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",

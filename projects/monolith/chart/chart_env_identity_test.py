@@ -37,6 +37,17 @@ from pathlib import Path
 import pytest
 import yaml
 
+# Must equal BROWSER_API_PREFIXES in projects/monolith/grimoire/browser_lane.py.
+GRIMOIRE_BROWSER_API_PREFIXES = [
+    "/api/grimoire/lobby",
+    "/api/grimoire/campaigns",
+    "/api/grimoire/invitations",
+    "/api/auth/platform/commands",
+    "/api/auth/platform/invitations",
+    "/api/auth/platform/management",
+    "/api/auth/platform/self",
+]
+
 # Kinds with no namespace: two Applications rendering the same name means one
 # object with two owners, not two objects.
 CLUSTER_SCOPED = {
@@ -2036,13 +2047,9 @@ def test_grimoire_friend_routes_are_isolated_and_backend_revalidates(renders):
         for rule in route["spec"]["rules"]
         for match in rule["matches"]
     ] == [
-        "/grimoire/_app",
         # The client-only UI calls these from the browser. The list is exact:
-        # grimoire/browser_lane_test.py proves each enforces Grimoire identity.
-        "/api/grimoire/lobby",
-        "/api/grimoire/campaigns",
-        "/api/grimoire/invitations",
-        "/grimoire/next",
+        # grimoire/browser_lane_test.py proves each enforces a verified identity.
+        *GRIMOIRE_BROWSER_API_PREFIXES,
         "/grimoire",
     ]
     assert policies[name]["spec"]["targetRefs"][0]["name"] == name
@@ -2090,7 +2097,9 @@ def test_friends_assets_use_each_existing_oidc_lane(renders, environment):
     # The unauthenticated root route only redirects or returns a static 404.
     # It cannot serve upstream bytes,
     # including if a caller supplies a forged Referer or Cookie header.
-    assert len(dispatch["spec"]["rules"]) == 3
+    # Only the moving app is SvelteKit now. Grimoire's assets live under
+    # /grimoire/assets on its own gated route, so it needs no dispatch.
+    assert len(dispatch["spec"]["rules"]) == 2
     assert dispatch["metadata"]["name"] not in policies
     _assert_friends_assets_not_found(docs, dispatch)
     for rule in dispatch["spec"]["rules"][:-1]:
@@ -2103,7 +2112,7 @@ def test_friends_assets_use_each_existing_oidc_lane(renders, environment):
         assert redirect["statusCode"] == 302
         assert redirect["path"]["type"] == "ReplacePrefixMatch"
         prefix = redirect["path"]["replacePrefixMatch"]
-        assert prefix in {"/moving/_app", "/grimoire/_app"}
+        assert prefix == "/moving/_app"
         app = prefix.split("/")[1]
         assert rule["matches"] == [
             {
@@ -2259,7 +2268,7 @@ def test_disabled_friends_app_has_no_asset_dispatch(tmp_path, moving, grimoire):
         ),
         None,
     )
-    if not moving and not grimoire:
+    if not moving:
         assert dispatch is None
         assert not any(
             doc["metadata"]["name"].endswith("-friends-assets-not-found")

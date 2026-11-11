@@ -756,12 +756,10 @@ spec:
               value: {{ .Values.cfIngress.grimoire.clientID | quote }}
             - name: GRIMOIRE_AUTH_JWKS_URL
               value: {{ printf "%s/application/o/grimoire/jwks/" .Values.grimoire.authentikBaseUrl | quote }}
-            {{- if .Values.cfIngress.grimoire.browserUi.enabled }}
             # The one origin whose pages may present the session cookie. Unset,
             # the backend never treats the cookie as a credential.
             - name: GRIMOIRE_BROWSER_ORIGIN
               value: {{ printf "https://%s" .Values.cfIngress.friends.hostname | quote }}
-            {{- end }}
             {{- end }}
             - name: AUTH_AUTHENTIK_JWKS_URL
               value: {{ .Values.auth.authentik.jwksUrl | quote }}

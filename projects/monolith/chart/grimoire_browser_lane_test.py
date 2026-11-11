@@ -1,4 +1,4 @@
-"""The friends lane routes the client-only UI and only its listed API paths."""
+"""The friends lane serves the client-only UI and only its listed API paths."""
 
 import os
 import subprocess
@@ -16,6 +16,10 @@ API_PREFIXES = [
     "/api/grimoire/lobby",
     "/api/grimoire/campaigns",
     "/api/grimoire/invitations",
+    "/api/auth/platform/commands",
+    "/api/auth/platform/invitations",
+    "/api/auth/platform/management",
+    "/api/auth/platform/self",
 ]
 
 
@@ -64,36 +68,43 @@ def backend_env(docs):
     }
 
 
-def test_off_by_default_leaves_only_the_bff_reachable():
-    docs = render()
-    paths = set(rules_by_path(grimoire_route(docs)))
-    assert paths == {"/grimoire/_app", "/grimoire"}
-    assert "GRIMOIRE_BROWSER_ORIGIN" not in backend_env(docs)
-
-
-@pytest.mark.parametrize("deploy", (False, True))
-def test_enabled_routes_the_ui_and_exactly_the_listed_api_prefixes(deploy):
-    docs = render("cfIngress.grimoire.browserUi.enabled=true", deploy=deploy)
-    route = grimoire_route(docs)
-    rules = rules_by_path(route)
-    api = sorted(path for path in rules if path.startswith("/api"))
-    assert api == sorted(API_PREFIXES)
-    # Never the whole API, and never the unguarded library reads.
-    assert "/api/grimoire" not in rules
-    assert not any("books" in path or "chunks" in path for path in rules)
-
-    api_port = next(
-        port
+def api_port(docs):
+    return next(
+        port["containerPort"]
         for doc in docs
         if doc["kind"] == "Deployment"
         for container in doc["spec"]["template"]["spec"]["containers"]
         if container["name"] == "backend"
-        for port in [
-            p["containerPort"] for p in container["ports"] if p["name"] == "api"
-        ]
+        for port in container["ports"]
+        if port["name"] == "api"
     )
-    for path in [*API_PREFIXES, "/grimoire/next"]:
-        assert [ref["port"] for ref in rules[path]["backendRefs"]] == [api_port]
+
+
+def test_a_disabled_lane_routes_nothing_and_sets_no_origin():
+    docs = render("cfIngress.grimoire.enabled=false")
+    assert not [
+        doc
+        for doc in docs
+        if doc["kind"] == "HTTPRoute" and "grimoire" in doc["metadata"]["name"]
+    ]
+    assert "GRIMOIRE_BROWSER_ORIGIN" not in backend_env(docs)
+
+
+@pytest.mark.parametrize("deploy", (False, True))
+def test_the_lane_routes_the_ui_and_exactly_the_listed_api_prefixes(deploy):
+    docs = render(deploy=deploy)
+    rules = rules_by_path(grimoire_route(docs))
+    assert sorted(rules) == sorted([*API_PREFIXES, "/grimoire"])
+    # Never the whole API, and never the unguarded library reads.
+    assert "/api/grimoire" not in rules
+    # Nor the account API whole: its enrollment routes check no identity.
+    assert "/api/auth/platform" not in rules
+    assert not any("enrollment" in path for path in rules)
+    assert not any("books" in path or "chunks" in path for path in rules)
+    # Everything is served by the API port: the Svelte frontend is not on
+    # this lane any more.
+    for path, rule in rules.items():
+        assert [ref["port"] for ref in rule["backendRefs"]] == [api_port(docs)], path
     for path in API_PREFIXES:
         headers = {
             header["name"]: header["value"]
@@ -104,13 +115,11 @@ def test_enabled_routes_the_ui_and_exactly_the_listed_api_prefixes(deploy):
             "Cloudflare-CDN-Cache-Control": "no-store",
             "Cache-Control": "private, no-store",
         }
-    # The Svelte UI keeps every other path on the lane until cutover.
-    assert [ref["port"] for ref in rules["/grimoire"]["backendRefs"]] != [api_port]
 
 
 @pytest.mark.parametrize("deploy", (False, True))
 def test_every_rule_stays_behind_the_one_security_policy(deploy):
-    docs = render("cfIngress.grimoire.browserUi.enabled=true", deploy=deploy)
+    docs = render(deploy=deploy)
     route = grimoire_route(docs)
     policy = next(
         doc
@@ -125,24 +134,51 @@ def test_every_rule_stays_behind_the_one_security_policy(deploy):
             "name": route["metadata"]["name"],
         }
     ]
-    # No other route on the hostname may answer for the UI or its API.
+    # No other route on the hostname may answer for the API or the app.
     for doc in docs:
         if doc["kind"] != "HTTPRoute" or doc is route:
             continue
         for rule in doc["spec"].get("rules", []):
             for match in rule.get("matches", []):
-                value = match.get("path", {}).get("value", "")
-                assert not value.startswith("/api/grimoire/lobby")
-                assert not value.startswith("/api/grimoire/campaigns")
-                assert not value.startswith("/grimoire/next")
+                path = match.get("path", {})
+                value = path.get("value", "")
+                assert not any(value.startswith(prefix) for prefix in API_PREFIXES)
+                if value.startswith("/grimoire"):
+                    # The one anonymous path: the invitation landing, exactly.
+                    assert path == {"type": "Exact", "value": "/grimoire/join"}
+
+
+@pytest.mark.parametrize("deploy", (False, True))
+def test_only_the_exact_invitation_landing_is_anonymous(deploy):
+    docs = render(deploy=deploy)
+    landing = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "HTTPRoute"
+        and doc["metadata"]["name"].endswith("-grimoire-invitation")
+    )
+    assert [
+        (match["path"], [ref["port"] for ref in rule["backendRefs"]])
+        for rule in landing["spec"]["rules"]
+        for match in rule["matches"]
+    ] == [({"type": "Exact", "value": "/grimoire/join"}, [api_port(docs)])]
+    # No login policy targets it, and it is rate limited.
+    name = landing["metadata"]["name"]
+    assert not [
+        doc
+        for doc in docs
+        if doc["kind"] == "SecurityPolicy"
+        and any(ref["name"] == name for ref in doc["spec"]["targetRefs"])
+    ]
+    assert [
+        doc
+        for doc in docs
+        if doc["kind"] == "BackendTrafficPolicy"
+        and any(ref["name"] == name for ref in doc["spec"]["targetRefs"])
+        and doc["spec"]["rateLimit"]["local"]["rules"]
+    ]
 
 
 def test_backend_accepts_the_cookie_from_the_friends_origin_only():
-    docs = render("cfIngress.grimoire.browserUi.enabled=true", deploy=True)
+    docs = render(deploy=True)
     assert backend_env(docs)["GRIMOIRE_BROWSER_ORIGIN"] == "https://friends.jomcgi.dev"
-
-
-def test_production_serves_the_ui_beside_the_svelte_pages():
-    rules = rules_by_path(grimoire_route(render(deploy=True)))
-    assert "/grimoire/next" in rules
-    assert "/grimoire" in rules

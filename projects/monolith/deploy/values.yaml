@@ -131,9 +131,6 @@ cfIngress:
   #      path on this hostname still 404s
   grimoire:
     enabled: true
-    # The React UI at /grimoire/next, beside the Svelte UI until cutover.
-    browserUi:
-      enabled: true
   friends:
     enabled: true
     authentik:
