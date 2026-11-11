@@ -2813,23 +2813,26 @@ async def factory_request_landing_rereview(
     request_key: str | None = None,
     expected_preview_sha256: str | None = None,
 ) -> dict:
-    """Re-review a delivery after an authorized head move. Standing operators only.
+    """Re-review a delivery's exact current head. Standing operators only.
 
     Use it when landing refuses head_moved, for example after an operator
-    merged the base branch into the PR to resolve conflicts. Give the
-    receipt, the PR number and its exact current head. Preview first, then
-    apply identical arguments with the preview digest and a new request_key.
-    Replay the same key after a lost response.
+    merged the base branch into the PR to resolve conflicts, or when landing
+    waits because the approval of an unmoved head has no valid typed landing
+    scope. Give the receipt, the PR number and its exact current head.
+    Preview first, then apply identical arguments with the preview digest
+    and a new request_key. Replay the same key after a lost response.
 
     Preview refuses a receipt that is not succeeded or landing, a landing
     hold (release it separately with factory_release_landing_hold), an
-    unmoved head, a closed PR, a different head and a branch that is not
-    the delivery branch. Apply reopens the delivery through bounded landing
-    recovery: one correction round verifies the moved head and rebuilds a
-    head with a merge commit as linear commits for the rebase queue, then a
-    fresh independent review of the exact current
-    head must approve before landing can re-arm. It grants no landing
-    authority and never waives review, CI, holds or recovery limits.
+    unmoved head whose approval already has a valid scope, a closed PR, a
+    different head and a branch that is not the delivery branch. Apply
+    reopens the delivery through bounded landing recovery. For a moved head
+    one correction round verifies it and rebuilds a head with a merge commit
+    as linear commits for the rebase queue. For an unmoved head the round
+    confirms the head and pushes nothing. Then a fresh independent review of
+    the exact current head must approve before landing can re-arm. It grants
+    no landing authority and never waives review, CI, holds or recovery
+    limits.
     """
     principal = current_principal()
     refusal = _refuse(principal)

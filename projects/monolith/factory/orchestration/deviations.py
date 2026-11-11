@@ -236,6 +236,13 @@ def factory_deviation(
                 f"then moved, after {review_rounds_used} engine-owned correction "
                 "rounds. Verify the moved head before further recovery or escalation."
             )
+        if pending_reason == "review_stale":
+            text = (
+                f"{pending_review} approved a head without a valid typed landing "
+                f"scope, after {review_rounds_used} engine-owned correction "
+                "rounds. Confirm the head and obtain a scoped review before "
+                "further recovery or escalation."
+            )
         if failed is not None:
             # Without this the planner reads an exhausted loop as "the reviewer
             # kept objecting" when the last round never produced a head to

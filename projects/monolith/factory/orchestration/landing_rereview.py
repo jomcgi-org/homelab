@@ -1,19 +1,24 @@
-"""Operator request for a fresh native review after an authorized head move.
+"""Operator request for a fresh native review of a delivery's current head.
 
 Landing refuses ``head_moved`` when a delivery's PR head differs from the head
 its independent review approved, for example after an operator merged the base
-branch into the PR to resolve conflicts. Nothing automatic recovers that state.
+branch into the PR to resolve conflicts. It also waits when the approving review
+of an unmoved head carries no valid typed ``landing_scope``, as reviews recorded
+before that field existed do. Nothing automatic recovers either state.
 This control reopens one such delivery through the existing bounded landing
-recovery with reason ``head_moved``: one correction round verifies the moved
-head and rebuilds a head with a merge commit as linear commits for the rebase
-queue, then a fresh native review of the exact current
-head must approve before landing can re-arm. It grants no landing authority,
-waives no review or CI and releases no hold.
+recovery. A moved head uses reason ``head_moved``: one correction round
+verifies the moved head and rebuilds a head with a merge commit as linear
+commits for the rebase queue. An unmoved head uses reason ``review_stale``:
+one correction round confirms the head and pushes nothing. Either way a fresh
+native review of the exact current head must approve before landing can re-arm.
+It grants no landing authority, waives no review or CI and releases no hold.
 """
 
 import hashlib
 import json
 import re
+
+import jsonschema
 
 from core.jsonio import dumps
 from sqlmodel import select
@@ -47,6 +52,32 @@ def _read_pull(receipt_id, pr_number) -> dict:
     return pull
 
 
+def _review_scope_current(db, task_id, repo, pr_number, head_sha) -> bool:
+    """Whether the approving review of this exact head carries a valid scope."""
+    from factory import review_publisher
+    from factory.orchestration.models import SwarmNodeRun
+    from factory.orchestration.repair_landing_delegation import SCOPE_SCHEMA
+
+    review = review_publisher.collect(task_id, session=db)
+    if not isinstance(review, review_publisher.ReviewEvidence) or (
+        review.repo,
+        review.pr_number,
+        review.head_sha,
+    ) != (repo, pr_number, head_sha):
+        return False
+    run = db.get(SwarmNodeRun, review.review_run_id)
+    if run is None:
+        return False
+    valid, artifact = review_publisher._artifact(run)
+    if valid != "ok":
+        return False
+    try:
+        jsonschema.validate(artifact.get("landing_scope"), SCOPE_SCHEMA)
+    except jsonschema.ValidationError:
+        return False
+    return True
+
+
 def _plan(db, control, receipt_id, pr_number, head_sha, reason, pull):
     from factory.orchestration import factory_conductor as conductor
     from factory.orchestration.factory_landing import _delivery_prs
@@ -72,8 +103,14 @@ def _plan(db, control, receipt_id, pr_number, head_sha, reason, pull):
         raise ValueError("landing_rereview_pr_not_open")
     if (pull.get("head") or {}).get("sha") != head_sha:
         raise ValueError("landing_rereview_head_changed")
+    reason_code = "head_moved"
     if head_sha == approved:
-        raise ValueError("landing_rereview_head_not_moved")
+        # An unmoved head qualifies only while its approval lacks a valid
+        # typed landing scope. A scoped approval needs a landing decision, not
+        # another review.
+        if _review_scope_current(db, row.task_id, row.repo, pr_number, head_sha):
+            raise ValueError("landing_rereview_review_current")
+        reason_code = "review_stale"
     task = db.get(SwarmTask, row.task_id)
     if task is None:
         raise ValueError("landing_rereview_task_missing")
@@ -115,7 +152,7 @@ def _plan(db, control, receipt_id, pr_number, head_sha, reason, pull):
         # Binds the digest to this delivery's settlement and recovery history.
         "latest_audit_id": latest,
         "control_version": control.version,
-        "requests": "landing_recovery reason head_moved",
+        "requests": f"landing_recovery reason {reason_code}",
         "still_binding": [
             "fresh_native_review_at_exact_current_head",
             "required_ci",
@@ -189,6 +226,7 @@ def apply(
         proposal = _plan(db, control, receipt_id, pr_number, head_sha, reason, pull)
         if proposal["preview_sha256"] != expected_preview_sha256:
             raise ValueError("landing_rereview_preview_changed")
+        moved = head_sha != proposal["approved_head_sha"]
         recovery = controls.request_landing_recovery(
             proposal["task_id"],
             pr_number,
@@ -196,8 +234,8 @@ def apply(
             "delivered_pr",
             actor,
             session=db,
-            reason="head_moved",
-            current_head_sha=head_sha,
+            reason="head_moved" if moved else "review_stale",
+            current_head_sha=head_sha if moved else None,
         )
         result = {
             "ok": bool(recovery.get("ok")),

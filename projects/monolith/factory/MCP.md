@@ -670,7 +670,8 @@ operator requests a fresh native review with `factory_request_landing_rereview`:
 Preview refuses a receipt that is not `succeeded` or `landing`, a landing hold
 (release it first with `factory_release_landing_hold`), an unmoved head, a
 closed PR, a different current head and a head branch other than the
-delivery branch. Apply rechecks under the control lock and calls landing
+delivery branch. An unmoved head is refused only when its approval already has
+a valid typed `landing_scope`. Apply rechecks under the control lock and calls landing
 recovery with reason `head_moved`, keeping its recovery limit, pause, capacity,
 deadline, automatic landing policy and active-work guards. The result carries
 that call's outcome; `delivery_capacity` waits and retries while the PR head
@@ -681,6 +682,12 @@ head with a merge commit is rebuilt as linear commits with the same net change
 and pushed with force-with-lease against the observed head. A fresh
 independent review of the exact current head and required CI must pass before
 landing re-arms. The control grants no landing authority.
+
+The same control serves an unmoved head whose approval has no valid typed
+`landing_scope`, as with reviews recorded before that field existed. Landing
+then waits with `delivery_landing_scope_missing_or_invalid`. Apply requests
+reason `review_stale`. Its correction round confirms the head and pushes
+nothing, and the fresh review records the scope that landing authority needs.
 
 ### Separate restriction, continuation and refill activation
 

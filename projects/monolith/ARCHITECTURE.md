@@ -1044,6 +1044,17 @@ A fresh native review of the exact resulting head gates landing as before. Measu
 refused `head_moved` with no recovery requested, baseline 5, expected 0.
 Revert if a `head_moved` recovery lands a head without a fresh native review.
 
+**Why the re-review control also accepts an unmoved head:** on 2026-11-11,
+#7547 and #7593 sat in `landing` with approvals recorded before reviews carried
+a typed `landing_scope`. Landing waited on
+`delivery_landing_scope_missing_or_invalid` and the control refused them as
+unmoved. Reason `review_stale` reopens such a delivery when its approval has no
+valid scope. Its correction round pushes nothing, and the fresh review supplies
+the scope. A scoped approval is still refused, since it needs a landing
+decision rather than another review. Measure over 72 hours: receipts waiting on
+a missing scope, baseline 2, expected 0. Revert if a `review_stale` recovery
+changes a branch.
+
 **Why a standing delivery owner:** on 2026-11-09, 23 intake-admitted deliveries
 sat in `landing` with independent exact-head approval and passing CI, most for
 four days. Per-head grants were the only authority for ordinary work, so every
