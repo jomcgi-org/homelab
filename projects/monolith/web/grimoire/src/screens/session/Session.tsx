@@ -228,6 +228,9 @@ function TableView({ table }: { table: Table }) {
             onViewChange={setJournalView}
             onShowEvent={showEvent}
             onOpenKnowledge={setEntity}
+            characterNames={Object.fromEntries(
+              characters.map((row) => [row.id, row.character_name]),
+            )}
           />
         ) : (
           <Text type="body" color="secondary">

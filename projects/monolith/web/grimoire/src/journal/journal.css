@@ -1,0 +1,19 @@
+/* Journal entries are a list of cards; the cards carry the spacing. */
+.journal-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.journal-list > li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Structured values read as prose, not as a code sample. */
+.journal-json {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
