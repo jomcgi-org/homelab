@@ -1,7 +1,5 @@
 """Tests for _build_embed_text helper in chat.store."""
 
-import pytest
-
 from chat.store import _build_embed_text
 
 

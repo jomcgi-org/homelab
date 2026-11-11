@@ -17,6 +17,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/embervm/noded/unixsock"
 )
 
 const defaultControlTimeout = 30 * time.Second
@@ -39,8 +41,7 @@ func New(socketPath string) *Client {
 func newWithControlTimeout(socketPath string, controlTimeout time.Duration) *Client {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", socketPath)
+			return unixsock.Dial(ctx, socketPath)
 		},
 	}
 	client := &Client{
@@ -57,11 +58,10 @@ func newWithControlTimeout(socketPath string, controlTimeout time.Duration) *Cli
 
 // MachineConfig is the body of PUT /machine-config.
 type MachineConfig struct {
-	VCPUCount       int    `json:"vcpu_count"`
-	MemSizeMib      int    `json:"mem_size_mib"`
-	SMT             bool   `json:"smt"`
-	TrackDirtyPages bool   `json:"track_dirty_pages,omitempty"`
-	HugePages       string `json:"huge_pages,omitempty"`
+	VCPUCount  int    `json:"vcpu_count"`
+	MemSizeMib int    `json:"mem_size_mib"`
+	SMT        bool   `json:"smt"`
+	HugePages  string `json:"huge_pages,omitempty"`
 }
 
 // BootSource is the body of PUT /boot-source.
@@ -139,7 +139,6 @@ type SnapshotLoad struct {
 	SnapshotPath        string         `json:"snapshot_path"`
 	MemBackend          *MemBackend    `json:"mem_backend,omitempty"`
 	EnableDiffSnapshots bool           `json:"enable_diff_snapshots,omitempty"`
-	TrackDirtyPages     bool           `json:"track_dirty_pages,omitempty"`
 	ResumeVM            bool           `json:"resume_vm"`
 	VsockOverride       *VsockOverride `json:"vsock_override,omitempty"`
 }

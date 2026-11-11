@@ -35,6 +35,12 @@ The deployed application has distinct audience surfaces:
   protected by its own Authentik policy. Grimoire supports invitation-only
   account registration, campaign ownership, and player invitations.
 
+The obsolete DR jobs and Canada Campsites frontend pages are retired. Their
+former `/app/dr-jobs` and `/app/campsites` URLs use the standard path-aware
+404 page, including saved filter links. The backend domains, records, refresh
+jobs and backups remain available independently. The retained DR jobs digest
+still includes its former page link, which now resolves to that 404.
+
 The retired private Firecracker and Qwen demo pages, the Semgrep performance
 dashboard, the Semgrep MCP tool and the public Semgrep exhibit are not part of
 any tier. Public EmberVM pages and their probes remain independent. The
@@ -78,7 +84,8 @@ becomes corrective training data. Current state:
 | `factory/`                                                                                 | Factory execution, task planning, DAG orchestration, operator controls, and public snapshots |
 | `scheduler/`                                                                               | Postgres-backed job scheduler shared by all domains                                        |
 | `shared/`                                                                                  | Cross-domain database session/engine setup and test helpers                                |
-| `grimoire/`, `hikes/`, `ships/`, `stars/`, `trips/`, `worldcup/`, `campsites/`, `dr_jobs/` | Individual apps, each with its own routes and models                       |
+| `grimoire/`, `hikes/`, `ships/`, `stars/`, `trips/`, `worldcup/` | Individual apps, each with its own routes and models                       |
+| `campsites/`, `dr_jobs/` | Retained backend APIs, data models and jobs; frontend pages retired |
 | `e2e/`                                                                                     | End-to-end tests spanning the frontend and backend together                                |
 
 ## Deployment
@@ -88,8 +95,8 @@ artifact. Images are built amd64-only with apko in CI. A
 merge to `main` publishes the chart and writes its new version back to the
 repository. Production runs on the GKE hub, where Kargo promotes new chart
 versions to the `monolith` and `monolith-public` ArgoCD Applications. The home
-deployment is dormant, and its pinned revision remains a revert record rather
-than the production source of truth. See
+deployment was retired in #6914; `deploy/application.yaml` remains only as
+publication metadata for chart-version write-back. See
 [Platform architecture: GitOps and delivery](../platform/ARCHITECTURE.md#4-gitops-and-delivery)
 for the current pipeline.
 

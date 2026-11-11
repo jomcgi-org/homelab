@@ -10,23 +10,25 @@ from factory.execution.constants import KG_NODE_KEY as KG_NODE_KEY
 from factory.execution.reconciliation import (
     adopt_completed_factory_receipt as adopt_completed_factory_receipt,
     cancel_queued_factory_attempt as cancel_queued_factory_attempt,
+    accept_review_recomputation as accept_review_recomputation,
     confirm_reconciled_guest_cessation as confirm_reconciled_guest_cessation,
     confirm_reconciled_unbound_attempt as confirm_reconciled_unbound_attempt,
     factory_attempt_never_posted as factory_attempt_never_posted,
-    drain_relay_continuation_enabled as drain_relay_continuation_enabled,
     fence_bound_zero_turn_factory_attempt as fence_bound_zero_turn_factory_attempt,
     inspect_lost_before_guest_factory_attempt as inspect_lost_before_guest_factory_attempt,
     inspect_lost_before_session_factory_attempt as inspect_lost_before_session_factory_attempt,
     lock_cessation_session as lock_cessation_session,
+    read_review_cessation_observation as read_review_cessation_observation,
     read_bound_zero_turn_factory_attempt as read_bound_zero_turn_factory_attempt,
     read_drained_lost_factory_attempt as read_drained_lost_factory_attempt,
     read_interrupted_factory_continuation as read_interrupted_factory_continuation,
-    read_factory_dispatch as read_factory_dispatch,
+    read_factory_dispatch as _read_factory_dispatch,
     read_interrupted_retry_not_invoked_factory_attempt as read_interrupted_retry_not_invoked_factory_attempt,
     read_lost_before_guest_factory_attempt as read_lost_before_guest_factory_attempt,
     read_never_dispatched_factory_attempt as read_never_dispatched_factory_attempt,
     read_not_invoked_factory_attempt as read_not_invoked_factory_attempt,
     read_provider_error_factory_attempt as read_provider_error_factory_attempt,
+    read_refill_preflight_factory_attempt as read_refill_preflight_factory_attempt,
     read_stranded_factory_attempt as read_stranded_factory_attempt,
     read_uncertain_factory_attempt as read_uncertain_factory_attempt,
     release_bound_zero_turn_factory_fence as release_bound_zero_turn_factory_fence,
@@ -37,6 +39,7 @@ from factory.execution.reconciliation import (
     settle_lost_before_session_factory_attempt as settle_lost_before_session_factory_attempt,
     settle_never_dispatched_factory_attempt as settle_never_dispatched_factory_attempt,
     settle_provider_error_factory_attempt as settle_provider_error_factory_attempt,
+    settle_refill_preflight_factory_attempt as settle_refill_preflight_factory_attempt,
     settle_stranded_factory_attempt as settle_stranded_factory_attempt,
     settle_uncertain_factory_attempt as settle_uncertain_factory_attempt,
 )
@@ -59,16 +62,18 @@ _EXECUTION_EXPORTS = frozenset(
 )
 
 
+def read_factory_dispatch(db, pin: dict, session_id: int) -> dict:
+    # Keep the durable DBOS step identity and checkpoint ordering unchanged.
+    # The observer uses its own session before this read starts a transaction.
+    from factory.execution.capacity_wait import observe_handoff
+
+    observe_handoff(session_id, engine=db.get_bind())
+    return _read_factory_dispatch(db, pin, session_id)
+
+
 def lock_capacity_pool(session) -> None:
     """Lock shared capacity without committing the caller's transaction."""
     _admission.lock_pool(session)
-
-
-def response_lost_recovery_enabled() -> bool:
-    """Whether response-loss recovery is enabled for this process."""
-    from factory.execution import store
-
-    return store.response_lost_recovery_enabled()
 
 
 def read_response_lost_hold(session_id: int):
@@ -116,3 +121,34 @@ def __getattr__(name: str):
     from factory.execution import execution_api
 
     return getattr(execution_api, name)
+
+
+def observe_guest_for_recomputation(guest_id: str) -> dict | None:
+    """Fresh read-only control-plane metadata for explicit operator recovery."""
+    import asyncio
+    from datetime import datetime, timezone
+    from factory.execution.transport import EmberVmShimTransport
+
+    async def observe():
+        return await asyncio.wait_for(EmberVmShimTransport().get_session(guest_id), 5)
+
+    try:
+        view = asyncio.run(observe())
+    except Exception:  # Missing/unreachable guest cannot release its capacity.
+        return None
+    if not isinstance(view, dict):
+        return None
+    return {
+        **{
+            key: view.get(key)
+            for key in (
+                "session_id",
+                "state",
+                "generation",
+                "invoke_started_at",
+                "last_invoke_at",
+                "updated_at",
+            )
+        },
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+    }

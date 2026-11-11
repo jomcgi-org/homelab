@@ -3,7 +3,7 @@
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 
 # A Bazel package boundary excludes these helpers from every ancestor glob,
-# including the private, public, jobs, and domain-image production closures.
+# including the private, public, and jobs production closures.
 py_library(
     name = "pkg_grimoire_testing",
     testonly = True,

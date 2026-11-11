@@ -27,11 +27,6 @@ if [[ "$COMMAND" == ci\ * ]] || [[ "$COMMAND" == ci ]] || [[ "$COMMAND" == */ci\
 	exit 0
 fi
 
-# Allow format / fast-format (legacy; prefer `ci lint`)
-if [[ "$COMMAND" == format* ]] || [[ "$COMMAND" == *fast-format.sh* ]]; then
-	exit 0
-fi
-
 # Allow bb commands (BuildBuddy CLI, including `bb remote`)
 if [[ "$COMMAND" == bb\ * ]] || [[ "$COMMAND" == */bb\ * ]]; then
 	exit 0
@@ -45,7 +40,7 @@ if [[ "$COMMAND" == bazel\ * ]] || [[ "$COMMAND" == bazelisk\ * ]] || [[ "$COMMA
 		Use the unified gate (BuildBuddy Remote Bazel under the hood):
 		  ci              # lint + selective regen + bb remote test
 		  ci lint         # format only files changed vs origin/main
-		  ci regen        # generators/gazelle only when inputs changed
+		  ci regen        # selective generators; BUILD generation is CI-only
 		  ci test         # exact buildbuddy.yaml Test argv via bb remote
 
 		ci test runs the same flags as Workflows Test so the remote action

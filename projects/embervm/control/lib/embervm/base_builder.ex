@@ -326,11 +326,6 @@ defmodule Embervm.BaseBuilder do
   restorable so a live or banked session can always relight from its birth base.
   Unknown/absent refs are ignored (the ref was never superseded, or already
   evicted). A synchronous call so a test can assert eviction ordering.
-
-  The legacy `:serving` count is still accepted for compatibility, but serving
-  lineage is reconciled directly from `ServingStore` during the disk-driven
-  retention sweep. That arm compares every non-terminal instance's recorded
-  birth base with BaseBuilder's published current base.
   """
   @spec report_base_refs(GenServer.server(), String.t(), keyword()) :: :ok
   def report_base_refs(server \\ __MODULE__, ref, counts) do
@@ -2788,7 +2783,6 @@ defmodule Embervm.BaseBuilder do
     %BuildBaseRequest{
       trace: %Trace{workload: w.name},
       workload_revision: base_revision(w),
-      guest_port: w.guest_port || 0,
       ready_path: w.ready_path,
       resources: %ResourceSpec{vcpus: w.vcpus || 0, mem_mib: w.mem_mib || 0},
       init_env: w.init_env,
@@ -2814,7 +2808,6 @@ defmodule Embervm.BaseBuilder do
       trace: %Trace{workload: w.name},
       image_ref: w.image_ref,
       workload_revision: base_revision(w),
-      guest_port: w.guest_port || 0,
       ready_path: w.ready_path,
       resources: %ResourceSpec{vcpus: w.vcpus || 0, mem_mib: w.mem_mib || 0},
       init_env: w.init_env,
@@ -4112,10 +4105,6 @@ defmodule Embervm.BaseBuilder do
     entry
     |> maybe_put_count(:primed, Keyword.get(counts, :primed))
     |> maybe_put_count(:sessions, Keyword.get(counts, :sessions))
-    # Kept for compatibility with callers of the older report_base_refs seam.
-    # Serving safety now comes from the retention reconcile's direct ServingStore
-    # lineage read, not from this event-driven count.
-    |> maybe_put_count(:serving, Keyword.get(counts, :serving))
   end
 
   defp maybe_put_count(entry, _key, nil), do: entry

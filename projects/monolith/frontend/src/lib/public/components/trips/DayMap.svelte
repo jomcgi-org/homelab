@@ -1,10 +1,16 @@
 <script>
   import { onMount } from "svelte";
+  import { dayColor as routeColor } from "$lib/trips/trip.js";
+  import {
+    mapPalette,
+    themeBasemap,
+    watchMapScheme,
+  } from "$lib/trips/map-theme.js";
   import "maplibre-gl/dist/maplibre-gl.css";
 
   // Single-day route map, a faithful port of the original React DayMap. The
-  // basemap is the light Carto Positron style, drawn in its normal light form
-  // (no CSS inversion), with a neo-brutalist high-contrast route on top. Layers,
+  // basemap starts from Carto Positron and receives resolved sheet-token paint
+  // in either scheme (no CSS inversion), with an ink route casing on top. Layers,
   // in z-order: a thick ink `route-line` casing, a thin `route-color-accent`
   // (the real day colour) down its centre, and a wide transparent
   // `route-hit-area` for click-to-select. DOM markers mark the start, end and
@@ -19,7 +25,7 @@
   // that to the closest photo.
   let {
     points = [],
-    dayColor = "#2563eb",
+    dayColor = routeColor(0),
     height = "280px",
     currentCoords = null,
     sunPosition = null,
@@ -34,6 +40,26 @@
   let maplibre = null;
   let photoMarker = null;
   let mapReady = $state(false);
+
+  function applyScheme() {
+    if (!map || !mapReady) return;
+    const palette = mapPalette(mapContainer);
+    themeBasemap(map, palette);
+    if (map.getLayer("route-line"))
+      map.setPaintProperty("route-line", "line-color", palette.ink);
+    if (map.getLayer("hillshade")) {
+      map.setPaintProperty(
+        "hillshade",
+        "hillshade-shadow-color",
+        palette.muted,
+      );
+      map.setPaintProperty(
+        "hillshade",
+        "hillshade-highlight-color",
+        palette.sheet,
+      );
+    }
+  }
 
   function geoPoints() {
     return points.filter((p) => p.lat != null && p.lng != null);
@@ -74,13 +100,13 @@
     return ((azimuthDeg % 360) + 360) % 360;
   }
 
-  // Subtle, standard (non-inverted) hillshade: shadows dark, highlights light.
-  // The sun still sets the illumination direction (azimuth) and the relief
-  // exaggeration (terrain reads stronger at low sun); the colours are fixed
-  // normals so the shading sits quietly under the light Positron basemap.
+  // Hillshade uses the sheet's ink and ground colours. The sun still sets the
+  // illumination direction (azimuth) and the relief
+  // exaggeration (terrain reads stronger at low sun); the sheet supplies the
+  // colours without changing the solar direction or exaggeration.
   function sunIntensity(sun) {
-    const shadowColor = "#5a5a5a";
-    const highlightColor = "#ffffff";
+    const { muted: shadowColor, sheet: highlightColor } =
+      mapPalette(mapContainer);
     if (!sun) {
       return { exaggeration: 0.8, shadowColor, highlightColor };
     }
@@ -103,6 +129,7 @@
   $effect(() => {
     const coords = currentCoords;
     if (!mapReady || !map || !maplibre) return;
+    let frame;
     if (coords) {
       if (photoMarker) {
         const start = photoMarker.getLngLat();
@@ -114,13 +141,13 @@
           const lng = start.lng + (coords[0] - start.lng) * eased;
           const lat = start.lat + (coords[1] - start.lat) * eased;
           photoMarker.setLngLat([lng, lat]);
-          if (t < 1) requestAnimationFrame(animate);
+          if (t < 1) frame = requestAnimationFrame(animate);
         };
-        requestAnimationFrame(animate);
+        frame = requestAnimationFrame(animate);
       } else {
         const el = document.createElement("div");
-        // Day-colour square with a chunky ink border (neo-brutalist).
-        el.style.cssText = `width:24px;height:24px;background:${dayColor};border:3px solid #1a1a1a;cursor:pointer;`;
+        // DOM markers inherit sheet tokens and follow scheme changes directly.
+        el.style.cssText = `width:24px;height:24px;background:${dayColor};border:1px solid var(--ink);cursor:pointer;`;
         photoMarker = new maplibre.Marker({ element: el })
           .setLngLat(coords)
           .addTo(map);
@@ -135,6 +162,8 @@
       photoMarker.remove();
       photoMarker = null;
     }
+    // Navigation and a new scrub target cancel the previous interpolation.
+    return () => cancelAnimationFrame(frame);
   });
 
   // Relight the hillshade when the sun position changes.
@@ -167,6 +196,7 @@
   onMount(() => {
     let destroyed = false;
     let cleanup = () => {};
+    const unwatch = watchMapScheme(applyScheme);
 
     (async () => {
       maplibre = await import("maplibre-gl");
@@ -231,14 +261,14 @@
               geometry: { type: "LineString", coordinates },
             },
           });
-          // Thick ink casing: reads boldly on the light Positron basemap.
+          // Ink casing separates the route from the basemap in either scheme.
           map.addLayer({
             id: "route-line",
             type: "line",
             source: "route",
             layout: { "line-join": "round", "line-cap": "round" },
             paint: {
-              "line-color": "#1a1a1a",
+              "line-color": mapPalette(mapContainer).ink,
               "line-width": 6,
               "line-opacity": 1,
             },
@@ -293,14 +323,13 @@
           }
         }
 
-        // Start / end DOM markers: start = solid ink dot with a white ring,
-        // end = white dot with an ink ring. The square current-photo marker is
+        // Start / end DOM markers use opposite sheet/ink fills. The square current-photo marker is
         // created by the $effect.
         const pts = geoPoints();
         if (pts.length > 0) {
           const startEl = document.createElement("div");
           startEl.style.cssText =
-            "width:16px;height:16px;background:#1a1a1a;border:3px solid #ffffff;border-radius:50%;"; /* nosemgrep: svelte-hardcoded-color-in-style */
+            "width:16px;height:16px;background:var(--ink);border:1px solid var(--sheet);border-radius:50%;";
           new maplibre.Marker({ element: startEl })
             .setLngLat([pts[0].lng, pts[0].lat])
             .addTo(map);
@@ -313,7 +342,7 @@
           if (distance > 0.01) {
             const endEl = document.createElement("div");
             endEl.style.cssText =
-              "width:14px;height:14px;background:#ffffff;border:3px solid #1a1a1a;border-radius:50%;"; /* nosemgrep: svelte-hardcoded-color-in-style */
+              "width:14px;height:14px;background:var(--sheet);border:1px solid var(--ink);border-radius:50%;";
             new maplibre.Marker({ element: endEl })
               .setLngLat([last.lng, last.lat])
               .addTo(map);
@@ -321,6 +350,7 @@
         }
 
         mapReady = true;
+        applyScheme();
       });
 
       cleanup = () => {
@@ -334,6 +364,7 @@
 
     return () => {
       destroyed = true;
+      unwatch();
       cleanup();
     };
   });
@@ -342,14 +373,11 @@
 <div class="map" style={`height:${height}`} bind:this={mapContainer}></div>
 
 <style>
-  /* Light Positron basemap framed as a neo-brutalist card: chunky ink border
-     and a hard offset drop-shadow (no blur). box-sizing keeps the framed box at
-     its given height so the border does not change the outer dimensions. */
+  /* The map viewport shares the sheet's one-pixel panel outline. */
   .map {
     width: 100%;
     box-sizing: border-box;
     overflow: hidden;
-    border: 3px solid #1a1a1a;
-    box-shadow: 5px 5px 0 0 #1a1a1a;
+    border: 1px solid var(--ink);
   }
 </style>

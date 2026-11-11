@@ -1,7 +1,3 @@
-globals:
-  logging:
-    format: json
-
 # Path-based private ingress. The connection details below are the same on both
 # clusters; each cluster's values file only toggles the two routes on or off.
 #
@@ -39,6 +35,21 @@ cfIngress:
     rewritePrefix: /api/webhook
 
 argo-cd:
+  # Supported 3.3 patch line includes upstream #28201 (live status replay).
+  # The 9.5 chart line supplies matching 3.3 CRDs; keep its patch image current.
+  global:
+    image:
+      repository: quay.io/argoproj/argocd
+      tag: v3.3.18
+  # Keep unrelated image and license changes outside this controller repair.
+  redis:
+    image:
+      repository: ecr-public.aws.com/docker/library/redis
+      tag: 7.2.11-alpine
+  dex:
+    image:
+      repository: ghcr.io/dexidp/dex
+      tag: v2.44.0
   configs:
     cm:
       accounts.mcp-agent: apiKey
@@ -62,7 +73,7 @@ argo-cd:
       #
       # Do NOT reintroduce these as a startswith("OTEL_") match if injection ever
       # returns: charts define their own OTEL vars (monolith sets
-      # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT and OTEL_COLLECTOR_HTTP_URL), and a
+      # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT), and a
       # prefix match would strip those from the live side and manufacture a fresh
       # diff.
       #

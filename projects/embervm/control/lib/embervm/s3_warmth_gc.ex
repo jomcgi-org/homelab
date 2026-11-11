@@ -25,7 +25,9 @@ defmodule Embervm.S3WarmthGc do
     * The periodic sweep ALWAYS computes and logs the plan (and persists a
       manifest to `gc-manifests/<ts>.json` for audit); the destructive arm is
       gated by `EMBERVM_WARMTH_S3_GC` (default off, values-flipped like every
-      other retention gate).
+      other retention gate). The separate default-off `capture_evidence_enabled`
+      gate can authorize only expired, explicitly marked capture workspaces;
+      it filters before caps and cannot authorize other artifact classes.
     * ANY list/pagination error aborts the whole sweep: a partial listing is
       indistinguishable from absence, and absence is what we delete on.
     * Fleet-freshness precondition: EVERY live or recently expired instance held
@@ -107,6 +109,7 @@ defmodule Embervm.S3WarmthGc do
   use GenServer
   require Logger
 
+  alias Embervm.CaptureEvidenceRetention
   alias Embervm.{GroupState, GroupStore, NodeCapacity, NodeRegistry, S3Client, SessionState, SessionStore, ServingState, ServingStore, StatefulState, StatefulStore}
 
   # Slow-moving reconcile: an S3 orphan is born rarely (a binding lost across a
@@ -185,6 +188,16 @@ defmodule Embervm.S3WarmthGc do
     GenServer.call(server, :sweep_now, 120_000)
   end
 
+  @doc "Register a new capture before its first archive; never relabel old evidence."
+  def register_capture(server \\ __MODULE__, identity, ttl_ms \\ CaptureEvidenceRetention.default_ttl_ms()) do
+    GenServer.call(server, {:capture_retention, :register, identity, ttl_ms}, 30_000)
+  end
+
+  @doc "Extend active review only within the original capture's hard expiry."
+  def lease_capture(server \\ __MODULE__, identity, lease_ms) do
+    GenServer.call(server, {:capture_retention, :lease, identity, lease_ms}, 30_000)
+  end
+
   # -- GenServer callbacks -----------------------------------------------------
 
   @impl true
@@ -234,6 +247,7 @@ defmodule Embervm.S3WarmthGc do
     state = %{
       s3: s3,
       enabled: Keyword.get(opts, :enabled, false),
+      capture_evidence_enabled: Keyword.get(opts, :capture_evidence_enabled, false),
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
       stateful_store: stateful_store,
       session_store: Keyword.get(opts, :session_store, SessionStore),
@@ -267,6 +281,12 @@ defmodule Embervm.S3WarmthGc do
 
     schedule_sweep(state)
     {:ok, state}
+  end
+
+  @impl true
+  def handle_call({:capture_retention, operation, identity, duration}, _from, state) do
+    result = capture_retention_write(state, operation, identity, duration)
+    {:reply, result, state}
   end
 
   @impl true
@@ -313,12 +333,13 @@ defmodule Embervm.S3WarmthGc do
       {candidates, shadowed, ambiguous} = parse_candidates(state, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys)
       {eligible, held} = build_plan(state, snapshot, candidates)
       held = shadowed ++ held
+      eligible = if not state.enabled and state.capture_evidence_enabled, do: Enum.filter(eligible, &capture_marked?/1), else: eligible
       plan = apply_caps(state, eligible)
       log_plan(state, plan, eligible, held, ambiguous)
 
       case persist_manifest(state, plan, eligible, held, ambiguous) do
         :ok ->
-          deleted = if state.enabled, do: apply_deletes(state, fleet, plan), else: []
+          deleted = if state.enabled or state.capture_evidence_enabled, do: apply_deletes(state, fleet, plan), else: []
           {:ok, %{plan: plan, eligible: eligible, held: held, ambiguous: ambiguous, deleted: deleted}}
 
         {:error, reason} ->
@@ -811,7 +832,13 @@ defmodule Embervm.S3WarmthGc do
     Enum.reduce(candidates, {[], []}, fn cand, {eligible, held} ->
       case classify(state, snapshot, cand, created, protected, now) do
         {:eligible, tier, created_at} ->
-          {[Map.merge(cand, %{tier: tier, created_at_ms: created_at}) | eligible], held}
+          planned = Map.merge(cand, %{tier: tier, created_at_ms: created_at})
+          planned = if capture_marked?(cand), do: Map.put(planned, :capture_meta_sha256,
+            case state.s3.get.(cand.prefix <> "/meta.json") do
+              {:ok, body} -> capture_digest(body)
+              _ -> nil
+            end), else: planned
+          {[planned | eligible], held}
 
         {:held, reason} ->
           {eligible, [%{prefix: cand.prefix, kind: cand.kind, bytes: cand.bytes, reason: reason} | held]}
@@ -875,12 +902,15 @@ defmodule Embervm.S3WarmthGc do
 
   defp classify(state, snapshot, %{kind: :session_workspace} = cand, created, _protected, now) do
     created_at = Map.get(created, cand.prefix)
+    retention = capture_retention_state(state, cand, created_at, now)
 
     cond do
       created_at == :error -> {:held, "meta_unreadable"}
       MapSet.member?(snapshot.referenced_lineages, cand.lineage) -> {:held, "lineage_referenced"}
       MapSet.member?(snapshot.reported_lineages, cand.lineage) -> {:held, "node_reported"}
       parked_session_not_expired?(snapshot, cand.lineage, now, :lineage) -> {:held, "session_not_expired"}
+      match?({:held, _}, retention) -> retention
+      retention == :expired -> {:eligible, 1, created_at}
       now - created_at < ttl(state, :session_workspace) -> {:held, "younger_than_age_floor"}
       true -> {:eligible, 1, created_at}
     end
@@ -898,6 +928,79 @@ defmodule Embervm.S3WarmthGc do
       now - created_at < ttl(state, :group) -> {:held, "younger_than_age_floor"}
       true -> {:eligible, 1, created_at}
     end
+  end
+
+  defp capture_retention_state(state, candidate, archive_created_at, now) do
+    key = candidate.prefix <> "/" <> CaptureEvidenceRetention.filename()
+    marked = Enum.any?(candidate.files, &(&1.key == key))
+    if marked do
+      with {:ok, body} <- state.s3.get.(key),
+           policy when is_map(policy) <- safe_json_decode(body),
+           :ok <- CaptureEvidenceRetention.eligible?(policy,
+             %{lineage_id: candidate.lineage, workload: candidate.workload, principal: policy["principal"]}, archive_created_at, now) do
+        :expired
+      else
+        _ -> {:held, "capture_retention_held"}
+      end
+    else
+      :legacy
+    end
+  end
+
+  defp capture_retention_write(%{s3: nil}, _operation, _identity, _duration), do: {:error, :store_unavailable}
+  defp capture_retention_write(%{enabled: false, capture_evidence_enabled: false}, _operation, _identity, _duration), do: {:error, :capture_cleanup_disabled}
+  defp capture_retention_write(state, operation, identity, duration) do
+    now = state.wall_clock.()
+    with {:ok, _proposed} <- CaptureEvidenceRetention.new(identity, now),
+         rows <- SessionStore.all(state.session_store),
+         [latest | _] <- rows |> Enum.filter(&(&1.lineage_id == identity.lineage_id)) |> Enum.sort_by(& &1.created_at, :desc),
+         true <- latest.session_id == identity.session_id and latest.workload == identity.workload and latest.principal == identity.principal do
+      prefix = "session-workspace/#{identity.workload}/#{identity.lineage_id}"
+      key = prefix <> "/" <> CaptureEvidenceRetention.filename()
+      result = case {operation, state.s3.get.(key)} do
+        {:register, {:ok, body}} ->
+          policy = safe_json_decode(body)
+          with :ok <- CaptureEvidenceRetention.validate(policy),
+               true <- policy["session_id"] == identity.session_id and CaptureEvidenceRetention.same_lineage?(policy, identity),
+               true <- now < CaptureEvidenceRetention.deadline(policy) do
+            {:existing, policy}
+          else
+            _ -> {:error, :capture_retention_mismatch}
+          end
+        {:register, {:error, :not_found}} ->
+          with true <- latest.generation == 0 and not SessionState.terminal?(latest.state),
+               true <- Enum.count(rows, &(&1.lineage_id == identity.lineage_id)) == 1,
+               {:error, :not_found} <- state.s3.get.(prefix <> "/meta.json"),
+               {:ok, []} <- state.s3.list.(prefix <> "/"),
+               {:ok, policy} <- CaptureEvidenceRetention.new(identity, now, duration) do
+            {:write, policy}
+          else
+            _ -> {:error, :capture_must_be_new_unarchived_lineage}
+          end
+        {:lease, {:ok, body}} ->
+          case CaptureEvidenceRetention.renew(safe_json_decode(body), identity, now, duration) do
+            {:ok, policy} -> {:write, policy}
+            error -> error
+          end
+        _ -> {:error, :capture_retention_unavailable}
+      end
+      case result do
+        {:existing, policy} -> {:ok, policy}
+        {:write, policy} ->
+          case state.s3.put.(key, :json.encode(policy) |> IO.iodata_to_binary()) do
+            :ok -> {:ok, policy}
+            {:ok, _} -> {:ok, policy}
+            _ -> {:error, :capture_retention_write_failed}
+          end
+        error -> error
+      end
+    else
+      _ -> {:error, :capture_retention_owner_mismatch}
+    end
+  rescue
+    _ -> {:error, :capture_retention_unavailable}
+  catch
+    _, _ -> {:error, :capture_retention_unavailable}
   end
 
   defp ttl(state, kind), do: Map.fetch!(state.ttls, kind)
@@ -1045,7 +1148,7 @@ defmodule Embervm.S3WarmthGc do
   # -- logging + manifest ------------------------------------------------------
 
   defp log_plan(state, plan, eligible, held, ambiguous) do
-    mode = if state.enabled, do: "ARMED", else: "DRY RUN"
+    mode = cleanup_mode(state)
     total_bytes = plan |> Enum.map(& &1.bytes) |> Enum.sum()
 
     Logger.info(
@@ -1070,7 +1173,7 @@ defmodule Embervm.S3WarmthGc do
 
     manifest = %{
       "ts_unix_ms" => ts,
-      "mode" => if(state.enabled, do: "armed", else: "dry_run"),
+      "mode" => cleanup_mode(state),
       "ttls_ms" => Map.new(state.ttls, fn {kind, ttl_ms} -> {Atom.to_string(kind), ttl_ms} end),
       "generation_retention_cap" => state.generation_retention_cap,
       "caps" => %{"max_prefixes" => state.max_prefixes, "max_bytes" => state.max_bytes},
@@ -1166,7 +1269,12 @@ defmodule Embervm.S3WarmthGc do
 
   defp recheck_and_delete(state, entry) do
     case recheck_live(state, entry) do
-      :ok -> delete_prefix(state, entry)
+      :ok ->
+        cond do
+          capture_marked?(entry) -> delete_capture_prefix(state, entry)
+          state.enabled -> delete_prefix(state, entry)
+          true -> {:blocked, "capture_only_scope"}
+        end
       other -> other
     end
   end
@@ -1242,6 +1350,10 @@ defmodule Embervm.S3WarmthGc do
         now = state.wall_clock.()
 
         cond do
+          kind == :session_workspace and
+              match?({:held, _}, capture_retention_state(state, entry, entry.created_at_ms, now)) ->
+            {:blocked, "capture retention lease or policy became held"}
+
           kind == :session and parked_session_not_expired?(parked, entry.ref, now) ->
             {:blocked, "session parked expiry became held"}
 
@@ -1297,6 +1409,99 @@ defmodule Embervm.S3WarmthGc do
   catch
     _, _ -> :unknown
   end
+
+  defp cleanup_mode(%{enabled: true}), do: "armed"
+  defp cleanup_mode(%{capture_evidence_enabled: true}), do: "capture_only"
+  defp cleanup_mode(_), do: "dry_run"
+
+  defp capture_marked?(%{kind: :session_workspace} = entry),
+    do: Enum.any?(entry.files, &(&1.key == entry.prefix <> "/" <> CaptureEvidenceRetention.filename()))
+  defp capture_marked?(_), do: false
+
+  # Called only while holding the lineage fence. The durable intent binds the
+  # precise object inventory and metadata generation; retries never absorb new
+  # keys. The policy survives all payload deletion attempts.
+  defp delete_capture_prefix(state, entry) do
+    policy_key = entry.prefix <> "/" <> CaptureEvidenceRetention.filename()
+    intent_key = entry.prefix <> "/evidence-delete-intent.json"
+    meta_key = entry.prefix <> "/meta.json"
+    with true <- state.enabled or state.capture_evidence_enabled,
+         {:ok, policy_body} <- state.s3.get.(policy_key),
+         policy when is_map(policy) <- safe_json_decode(policy_body),
+         :ok <- CaptureEvidenceRetention.eligible?(policy,
+           %{lineage_id: entry.lineage, workload: entry.workload, principal: policy["principal"]},
+           entry.created_at_ms, state.wall_clock.()),
+         {:ok, listed} <- state.s3.list.(entry.prefix <> "/"),
+         {:ok, intent} <- capture_delete_intent(state, entry, listed, policy_body, intent_key, meta_key),
+         true <- intent["policy_sha256"] == capture_digest(policy_body),
+         true <- intent["prefix"] == entry.prefix,
+         true <- capture_inventory_matches?(listed, intent, intent_key),
+         :ok <- capture_meta_matches(state, meta_key, intent) do
+      keys = Enum.map(listed, & &1.key)
+      ordered = Enum.filter(keys, &(&1 == meta_key)) ++
+        Enum.reject(keys, &(&1 in [meta_key, policy_key, intent_key])) ++ [intent_key, policy_key]
+      delete_prefix(state, %{entry | files: Enum.map(ordered, &%{key: &1})})
+    else
+      _ -> {:blocked, "capture_delete_identity_or_inventory_changed"}
+    end
+  end
+
+  defp capture_delete_intent(state, entry, listed, policy_body, intent_key, meta_key) do
+    case state.s3.get.(intent_key) do
+      {:ok, body} ->
+        case safe_json_decode(body) do
+          %{"version" => 1, "files" => files} = intent when is_list(files) -> {:ok, intent}
+          _ -> {:error, :invalid_intent}
+        end
+      {:error, :not_found} ->
+        # An initial intent requires the original complete archive and exact
+        # planned inventory. A missing meta without an intent cannot authorize
+        # a fresh deletion of a partially written or different generation.
+        with {:ok, meta} <- capture_initial_meta(state, meta_key, listed, entry),
+             true <- (meta == "" and entry.capture_meta_sha256 == nil) or capture_digest(meta) == entry.capture_meta_sha256,
+             true <- capture_descriptors(listed) == capture_descriptors(entry.files) do
+          intent = %{"version" => 1, "prefix" => entry.prefix,
+            "policy_sha256" => capture_digest(policy_body), "meta_sha256" => capture_digest(meta),
+            "files" => capture_descriptors(listed)}
+          case state.s3.put.(intent_key, :json.encode(intent) |> IO.iodata_to_binary()) do
+            :ok -> {:ok, intent}
+            {:ok, _} -> {:ok, intent}
+            _ -> {:error, :intent_write_failed}
+          end
+        else
+          _ -> {:error, :capture_generation_changed}
+        end
+      _ -> {:error, :intent_unavailable}
+    end
+  end
+
+  defp capture_initial_meta(state, meta_key, listed, entry) do
+    case state.s3.get.(meta_key) do
+      {:error, :not_found} ->
+        # A policy-only prefix has no bulky data: either capture never exported,
+        # or the last policy delete failed after the completed intent was removed.
+        if Enum.map(listed, & &1.key) == [entry.prefix <> "/" <> CaptureEvidenceRetention.filename()],
+          do: {:ok, ""}, else: {:error, :missing_complete_archive}
+      result -> result
+    end
+  end
+
+  defp capture_inventory_matches?(listed, intent, intent_key) do
+    Enum.all?(capture_descriptors(Enum.reject(listed, &(&1.key == intent_key))), &(&1 in intent["files"]))
+  end
+
+  defp capture_meta_matches(state, key, intent) do
+    case state.s3.get.(key) do
+      {:ok, body} -> if capture_digest(body) == intent["meta_sha256"], do: :ok, else: :changed
+      {:error, :not_found} -> :ok
+      _ -> :unreadable
+    end
+  end
+
+  defp capture_descriptors(files), do: files |> Enum.map(fn f ->
+    %{"key" => f.key, "size" => f.size, "last_modified_ms" => f.last_modified_ms}
+  end) |> Enum.sort_by(& &1["key"])
+  defp capture_digest(body), do: :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
 
   defp delete_prefix(state, entry) do
     keys = Enum.map(entry.files, & &1.key)

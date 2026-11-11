@@ -8,6 +8,7 @@ import os
 import httpx
 
 import shared.inference
+from shared.async_retry import async_retry
 
 logger = logging.getLogger(__name__)
 
@@ -73,53 +74,45 @@ class VisionClient:
         }
 
         timeout = httpx.Timeout(VISION_READ_TIMEOUT, connect=VISION_CONNECT_TIMEOUT)
-        elapsed = 0.0
-        last_exc: Exception | None = None
 
-        for attempt in range(VISION_MAX_RETRIES):
-            try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    resp = await client.post(
-                        f"{self.base_url}/v1/chat/completions",
-                        headers=shared.inference.auth_headers(self.base_url),
-                        json=payload,
-                    )
-                    resp.raise_for_status()
-                    try:
-                        response_data = resp.json()
-                        content = response_data["choices"][0]["message"]["content"]
-                    except (KeyError, IndexError) as e:
-                        raise ValueError(
-                            f"unexpected vision response shape: {e}"
-                        ) from e
-                    if not content:
-                        raise ValueError("vision response returned empty content")
-                    shared.inference.record_usage(
-                        response_data.get("usage"),
-                        shared.inference.META_SPARK_MODEL,
-                        "vision",
-                    )
-                    return content
-            except Exception as exc:
-                last_exc = exc
-                if not _is_retryable(exc):
-                    raise
-
-                delay = min(
-                    VISION_RETRY_BASE_DELAY * (2**attempt),
-                    VISION_RETRY_MAX_DELAY,
+        async def operation() -> str:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(
+                    f"{self.base_url}/v1/chat/completions",
+                    headers=shared.inference.auth_headers(self.base_url),
+                    json=payload,
                 )
-                elapsed += delay
-                if elapsed > VISION_RETRY_TIMEOUT:
-                    break
-
-                logger.warning(
-                    "Vision call failed (attempt %d/%d), retrying in %.1fs: %s",
-                    attempt + 1,
-                    VISION_MAX_RETRIES,
-                    delay,
-                    exc,
+                resp.raise_for_status()
+                try:
+                    response_data = resp.json()
+                    content = response_data["choices"][0]["message"]["content"]
+                except (KeyError, IndexError) as e:
+                    raise ValueError(f"unexpected vision response shape: {e}") from e
+                if not content:
+                    raise ValueError("vision response returned empty content")
+                shared.inference.record_usage(
+                    response_data.get("usage"),
+                    shared.inference.META_SPARK_MODEL,
+                    "vision",
                 )
-                await asyncio.sleep(delay)
+                return content
 
-        raise last_exc  # type: ignore[misc]
+        def on_retry(attempt: int, delay: float, exc: Exception) -> None:
+            logger.warning(
+                "Vision call failed (attempt %d/%d), retrying in %.1fs: %s",
+                attempt,
+                VISION_MAX_RETRIES,
+                delay,
+                exc,
+            )
+
+        return await async_retry(
+            operation,
+            is_retryable=_is_retryable,
+            max_attempts=VISION_MAX_RETRIES,
+            base_delay=VISION_RETRY_BASE_DELAY,
+            max_delay=VISION_RETRY_MAX_DELAY,
+            sleep_budget=VISION_RETRY_TIMEOUT,
+            on_retry=on_retry,
+            sleep=asyncio.sleep,
+        )

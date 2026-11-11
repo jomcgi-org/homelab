@@ -10,10 +10,11 @@ is what wedged monolith-public's rollout on 2026-08-11 (chart 0.287.0, commit
 95eb93de7, where both public images were content-identical so neither push ran).
 
 This reads the PACKAGED tarball rather than the library source on purpose. The
-tarball under ``charts/`` is what Bazel globs and ships, and ``sync-helm-deps.sh``
-only rebuilds it when the library *version* changes, never on content. So a
-source fix that was never re-synced would look correct in the diff and deploy
-the old template. Asserting on the shipped artifact closes that gap.
+tarball under ``charts/`` is what Bazel globs and ships. ``sync-helm-deps.sh``
+checks both dependency versions and content drift; run it directly after a
+library-template-only edit. A source fix that was never re-synced would look
+correct in the diff and deploy the old template. Asserting on the shipped
+artifact closes that gap.
 
 The templates are Go-templated (not valid YAML on their own), so the assertions
 are over the raw template text.
@@ -26,7 +27,7 @@ import tarfile
 from pathlib import Path
 
 # Templates that render a container image and must route through the helper.
-_IMAGE_RENDERING_TEMPLATES = ("_deployment.tpl", "_statefulset.tpl")
+_IMAGE_RENDERING_TEMPLATES = ("_deployment.tpl",)
 
 
 def _packaged_library() -> Path:

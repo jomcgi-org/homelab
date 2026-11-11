@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+import hashlib
 from threading import Barrier
 
 import pytest
@@ -123,6 +124,337 @@ def enable(policy):
     assert controls.set_control("enable", "operator")["ok"]
 
 
+@pytest.mark.parametrize("same_age, expected", [(False, 2), (True, 1)])
+def test_autonomous_receipt_queue_preserves_issue_age_and_ties(
+    db, policy, same_age, expected
+):
+    from datetime import datetime, timezone
+
+    policy.update(issue_numbers=[], intake={"enabled": True})
+    enable(policy)
+    # Newer issue was received first. Equal creation times break by issue
+    # identity, independent of receipt insertion order.
+    for number in (3, 1, 2):
+        snapshot = github_issue(number)
+        snapshot["created_at"] = (
+            "2026-09-01T00:00:00Z"
+            if same_age or number == 2
+            else "2026-09-02T00:00:00Z"
+        )
+        receive_issue(
+            "owner/repo",
+            number,
+            snapshot["title"],
+            "body",
+            snapshot["html_url"],
+            INTAKE_ACTOR,
+            issue=snapshot,
+        )
+    with Session(db) as session:
+        receipts = session.exec(
+            select(FactoryReceipt).order_by(FactoryReceipt.id)
+        ).all()
+        assert [row.issue_number for row in receipts] == [3, 1, 2]
+        # Receipt timestamps deliberately disagree with issue age.
+        receipts[0].created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        session.commit()
+    admitted = admit_next("test")
+    assert admitted["ok"], admitted
+    with Session(db) as session:
+        assert (
+            session.get(FactoryReceipt, admitted["receipt_id"]).issue_number == expected
+        )
+
+
+def test_full_repo_autonomous_queue_cannot_overtake_operator_receipts(
+    db, policy, monkeypatch
+):
+    from datetime import UTC, datetime, timedelta
+
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "3")
+    policy.update(
+        max_tasks={"delivery": 3, "advisory": 0},
+        intake={"enabled": True},
+        repos={
+            "owner/repo": {"max_tasks": {"delivery": 1, "advisory": 0}},
+            "owner/other": {
+                "enabled": True,
+                "max_tasks": {"delivery": 1, "advisory": 0},
+            },
+        },
+    )
+    enable(policy)
+    issue(1, repo="owner/other")
+    occupied = admit_next("test")
+    assert occupied["ok"], occupied
+
+    queued = []
+    for repo, number, actor in (
+        ("owner/other", 3, INTAKE_ACTOR),
+        ("owner/repo", 1, "operator"),
+        ("owner/repo", 2, "operator"),
+        ("owner/repo", 3, INTAKE_ACTOR),
+    ):
+        snapshot = github_issue(number)
+        snapshot["html_url"] = f"https://github.com/{repo}/issues/{number}"
+        received = receive_issue(
+            repo,
+            number,
+            snapshot["title"],
+            "body",
+            snapshot["html_url"],
+            actor,
+            issue=snapshot,
+        )
+        queued.append(received["receipt"]["id"])
+    with Session(db) as session:
+        for offset, receipt_id in enumerate(queued):
+            session.get(FactoryReceipt, receipt_id).created_at = datetime(
+                2026, 1, 1, tzinfo=UTC
+            ) + timedelta(minutes=offset)
+        session.commit()
+
+    # The oldest autonomous receipt cannot run while its repo is full. It
+    # must not lend that queue position to newer work in the other repo.
+    for receipt_id in queued[1:]:
+        admitted = admit_next("test")
+        assert admitted["ok"], admitted
+        assert admitted["receipt_id"] == receipt_id
+        with Session(db) as session:
+            assert session.get(FactoryReceipt, queued[0]).state == "queued"
+            assert (
+                session.get(FactoryReceipt, occupied["receipt_id"]).state == "admitted"
+            )
+        assert controls.finish_task(admitted["task_id"], "succeeded", "test")["ok"]
+
+
+@pytest.mark.parametrize("identity", ["canonical", "alias", "legacy"])
+@pytest.mark.parametrize("history", ["cancelled", "held", "failed_refinement"])
+def test_natural_history_fence_rechecks_receiving_and_claim_without_blocking_others(
+    db, policy, history, identity
+):
+    policy.update(issue_numbers=[], intake={"enabled": True})
+    enable(policy)
+    if identity != "canonical":
+        with Session(db) as session, session.begin():
+            session.add(
+                WorkItem(
+                    id=100001,
+                    title="shared",
+                    state="open",
+                    source_kind="github",
+                    trust="trusted",
+                    github_repo="owner/repo",
+                    github_issue_number=7 if identity == "alias" else 1,
+                )
+            )
+    first = receive_issue(
+        "owner/repo",
+        1,
+        "first",
+        "body",
+        "https://github.com/owner/repo/issues/1",
+        INTAKE_ACTOR,
+        work_item_id=100001 if identity != "canonical" else None,
+    )
+    with Session(db) as session, session.begin():
+        historical = FactoryReceipt(
+            repo="owner/repo",
+            issue_number=7 if identity == "alias" else 1,
+            work_item_id=100001 if identity == "alias" else None,
+            generation=99,
+            task_class="refine",
+            title="earlier",
+            body="body",
+            url="https://github.com/owner/repo/issues/1",
+            actor="operator",
+            state={
+                "held": "succeeded",
+                "cancelled": "cancelled",
+                "failed_refinement": "failed",
+            }[history],
+            direction_json=json.dumps({"landing_hold": {"reason": "operator hold"}})
+            if history == "held"
+            else None,
+        )
+        session.add(historical)
+        session.flush()
+        historical_id = historical.id
+    with Session(db) as session:
+        before = session.get(FactoryReceipt, historical_id).model_dump(mode="json")
+    with pytest.raises(ValueError, match="natural_intake_"):
+        receive_issue(
+            "owner/repo",
+            1,
+            "different class",
+            "body",
+            "https://github.com/owner/repo/issues/1",
+            INTAKE_ACTOR,
+            task_class="docs",
+            work_item_id=100001 if identity != "canonical" else None,
+        )
+    second = receive_issue(
+        "owner/repo",
+        2,
+        "second",
+        "body",
+        "https://github.com/owner/repo/issues/2",
+        INTAKE_ACTOR,
+    )
+    admitted = admit_next("scheduler")
+    assert admitted["ok"] and admitted["receipt_id"] == second["receipt"]["id"]
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, first["receipt"]["id"]).state == "cancelled"
+        assert (
+            session.get(FactoryReceipt, historical_id).model_dump(mode="json") == before
+        )
+        assert session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "natural_intake_history_fenced"
+            )
+        ).one()
+
+
+@pytest.mark.parametrize("alias", [False, True])
+def test_explicit_delivery_keeps_refinement_landing_hold(db, policy, alias):
+    enable(policy)
+    if alias:
+        with Session(db) as session, session.begin():
+            session.add(
+                WorkItem(
+                    id=100001,
+                    title="shared",
+                    state="open",
+                    source_kind="github",
+                    trust="trusted",
+                    github_repo="owner/repo",
+                    github_issue_number=7,
+                )
+            )
+    with Session(db) as session, session.begin():
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=7 if alias else 1,
+                work_item_id=100001 if alias else None,
+                generation=99,
+                task_class="refine",
+                title="earlier",
+                body="body",
+                url="https://github.com/owner/repo/issues/1",
+                actor="operator",
+                state="succeeded",
+                direction_json=json.dumps(
+                    {"landing_hold": {"reason": "leave unmerged"}}
+                ),
+            )
+        )
+    receive_issue(
+        "owner/repo",
+        1,
+        "delivery",
+        "body",
+        "https://github.com/owner/repo/issues/1",
+        "operator",
+        work_item_id=100001 if alias else None,
+    )
+    admitted = admit_next("scheduler")
+    assert admitted["ok"]
+    assert controls.task_snapshot(admitted["task_id"])["direction"]["landing_hold"] == {
+        "reason": "leave unmerged"
+    }
+
+
+@pytest.mark.parametrize("task_class", ["bug-fix", "refine"])
+@pytest.mark.parametrize("evidence", ["exact", "different_gate", "operator", "unknown"])
+def test_hold_inheritance_requires_exact_refused_planner_provenance(
+    db, policy, monkeypatch, task_class, evidence
+):
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    enable(policy)
+    hold = {"actor": "factory:conductor", "cause": "planner:test", "reason": "stage"}
+    direction = {
+        "landing_hold": hold,
+        "landing_hold_provenance": {
+            "origin": "operator" if evidence == "operator" else "planner",
+            "cause": "planner:test",
+            "gate_id": "exact",
+            "hold": hold,
+        },
+        "landing_hold_refusals": [
+            {
+                "cause": "planner:test",
+                "gate_id": "other" if evidence == "different_gate" else "exact",
+            }
+        ],
+    }
+    if evidence == "unknown":
+        direction.pop("landing_hold_provenance")
+    with Session(db) as session, session.begin():
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=1,
+                generation=99,
+                task_class=task_class,
+                title="earlier",
+                body="body",
+                url="https://github.com/owner/repo/issues/1",
+                actor="operator",
+                state="succeeded",
+                direction_json=json.dumps(direction),
+            )
+        )
+    receive_issue(
+        "owner/repo",
+        1,
+        "delivery",
+        "body",
+        "https://github.com/owner/repo/issues/1",
+        "operator",
+    )
+    result = admit_next("scheduler")
+    assert result["ok"], result
+    received = controls.task_snapshot(result["task_id"])["direction"] or {}
+    assert ("landing_hold" in received) is (evidence != "exact")
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_waiting_receipt_retains_issue_and_branch_but_releases_repo_capacity(
+    db, policy, monkeypatch, held
+):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    policy["repos"] = {"owner/repo": {"max_tasks": 1}, "owner/other": {"enabled": True}}
+    enable(policy)
+    issue(1)
+    task = admit_next("scheduler")["task_id"]
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, task)
+        row.task_paused = not held
+        row.direction_json = json.dumps({"landing_hold": None} if held else {})
+    assert controls.set_control(
+        "configure", "operator", policy={**policy, "generation": 1}
+    )["ok"]
+    # Cross-generation ownership excludes the same issue while distinct work
+    # in the same repository can use the released execution slot.
+    duplicate = issue(1, generation=1)
+    same_repo = issue(2, generation=1)
+    other_repo = issue(1, repo="owner/other", generation=1)
+    result = admit_next("scheduler")
+    assert result["ok"] and result["receipt_id"] == same_repo["receipt"]["id"]
+    result = admit_next("scheduler")
+    assert result["ok"] and result["receipt_id"] == other_repo["receipt"]["id"]
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, duplicate["receipt"]["id"]).state == "queued"
+        assert (
+            session.get(FactoryReceipt, same_repo["receipt"]["id"]).state == "admitted"
+        )
+        assert (
+            controls.delivery_branch_owner(session, "owner/repo", f"factory/{task}")
+            == task
+        )
+
+
 @pytest.mark.parametrize(
     "issue_number,actor,intake_enabled,expected",
     [
@@ -162,6 +494,51 @@ def test_admission_eligibility_sql_matches_python(
     assert [row.issue_number for row in found] == ([issue_number] if expected else [])
 
 
+@pytest.mark.parametrize(
+    "number,actor,task_class,expected",
+    [
+        (7, "operator", "bug-fix", True),
+        (9, INTAKE_ACTOR, "refine", True),
+        (9, INTAKE_ACTOR, "bug-fix", False),
+        (10, INTAKE_ACTOR, "refine", False),
+        (9, "operator", "refine", False),
+    ],
+)
+@pytest.mark.parametrize("repo", ["owner/repo", "owner/other"])
+def test_refinement_batch_sql_matches_python(
+    db, number, actor, task_class, expected, repo
+):
+    configured = {
+        "repo": "owner/repo",
+        "issue_numbers": [7],
+        "intake": {"enabled": True, "refine_enabled": True, "refinement_batch": [9]},
+    }
+    expected = expected and (number == 7 or repo == "owner/repo")
+    assert (
+        admission_eligible(configured, number, actor, task_class=task_class, repo=repo)
+        is expected
+    )
+    with Session(db) as session, session.begin():
+        session.add(
+            FactoryReceipt(
+                repo=repo,
+                issue_number=number,
+                generation=0,
+                title="candidate",
+                body="",
+                url=f"https://github.com/owner/repo/issues/{number}",
+                actor=actor,
+                state="queued",
+                task_class=task_class,
+            )
+        )
+    with Session(db) as session:
+        found = session.exec(
+            select(FactoryReceipt).where(_eligible_clause(configured))
+        ).all()
+        assert bool(found) is expected
+
+
 def test_duplicate_receipt_preserves_first_payload_and_link_across_restart(
     db, policy, monkeypatch
 ):
@@ -197,7 +574,6 @@ def test_admission_recall_reuses_sqlite_session(db, policy, monkeypatch, caplog)
     from knowledge import recall_cache
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.setenv("KNOWLEDGE_RECALL_ENABLED", "true")
     engine_calls = []
     submissions = []
 
@@ -1155,6 +1531,7 @@ def _dependency_reads(monkeypatch, pull=None):
                     "status": "modified",
                     "additions": 1,
                     "deletions": 1,
+                    "sha": "e" * 40,
                 }
             ]
         if endpoint.startswith("dependency-graph/compare/"):
@@ -1173,6 +1550,11 @@ def _dependency_reads(monkeypatch, pull=None):
 
     monkeypatch.setattr(deps, "github_list", read)
     monkeypatch.setattr(deps, "github_get", lambda repo, endpoint: pull)
+    monkeypatch.setattr(
+        deps,
+        "read_advisory",
+        lambda _query: {"vulns": []},
+    )
     return deps, pull, read
 
 
@@ -1181,6 +1563,28 @@ def _dependency_runs(evidence):
         "safe": True,
         "base_sha": evidence["base_sha"],
         "evidence_sha256": evidence["evidence_sha256"],
+        "reviewed_files": [row["filename"] for row in evidence["files"]],
+        "advisory_sources": {
+            "base_sha": evidence["base_sha"],
+            "head_sha": evidence["head_sha"],
+            "complete": True,
+            **{
+                side: [
+                    {
+                        "key": "requirements/example",
+                        "artifact_sha256": hashlib.sha256(version.encode()).hexdigest(),
+                        "exposure_sha256": "e" * 64,
+                        "files": [row["filename"] for row in evidence["files"]],
+                        "query": {
+                            "package": {"name": "example", "ecosystem": "PyPI"},
+                            "version": version,
+                        },
+                        "response_sha256": hashlib.sha256(b'{"vulns":[]}').hexdigest(),
+                    }
+                ]
+                for side, version in (("base", "1.0"), ("head", "2.0"))
+            },
+        },
     }
     from factory.orchestration.dependency_prs import ASSESSMENTS
 
@@ -1307,7 +1711,7 @@ def test_dependency_receive_adopts_original_pr_without_trusting_its_text(
 
 @pytest.mark.parametrize(
     "failure",
-    ["unavailable", "empty_graph", "vulnerable", "missing_files", "truncated"],
+    ["unavailable", "null_graph", "vulnerable", "missing_files", "truncated"],
 )
 def test_dependency_evidence_fails_closed(monkeypatch, failure):
     deps, pull, read = _dependency_reads(monkeypatch)
@@ -1316,8 +1720,8 @@ def test_dependency_evidence_fails_closed(monkeypatch, failure):
         if endpoint.startswith("dependency-graph"):
             if failure == "unavailable":
                 raise ValueError("unavailable")
-            if failure == "empty_graph":
-                return []
+            if failure == "null_graph":
+                return None
             if failure == "vulnerable":
                 return [
                     {
@@ -1350,6 +1754,7 @@ def test_dependency_evidence_fails_closed(monkeypatch, failure):
         "no_reviewer",
         "unsafe",
         "missing_dimension",
+        "missing_authorization_scope",
         "old_digest",
         "failed_worker",
         "unapproved",
@@ -1382,6 +1787,8 @@ def test_dependency_gate_rejects_bypasses(monkeypatch, failure):
         runs[1]["outcome"]["value"]["dependency_assessment"]["safe"] = False
     elif failure == "missing_dimension":
         del runs[1]["outcome"]["value"]["dependency_assessment"]["provenance"]
+    elif failure == "missing_authorization_scope":
+        del runs[1]["outcome"]["value"]["dependency_assessment"]["authorization_scope"]
     elif failure == "old_digest":
         runs[1]["outcome"]["value"]["dependency_assessment"]["evidence_sha256"] = (
             "d" * 64
@@ -1446,4 +1853,156 @@ def test_dependency_schemas_and_guidance_require_adversarial_evidence():
     assert "potential supply-chain attack" in text
     assert "independently challenge" in text
     assert "without production credentials" in text
+    assert "authorization_scope" in deps.ASSESSMENT_SCHEMA["required"]
+    assert "credential, access, security-policy, budget or audience changes" in text
+    assert "cite exact existing authority or set safe=false" in text
+    assert "including majors" in text
     assert deps.guidance({}) == ""
+
+
+def test_refinement_provenance_refusal_precedes_task_creation(db, policy):
+    from factory.orchestration.factory_refinement_delivery import MARKER
+
+    enable(policy)
+    receipt = issue(1)
+    with Session(db) as session, session.begin():
+        row = session.get(FactoryReceipt, receipt["receipt"]["id"])
+        row.direction_json = json.dumps({MARKER: {"source_receipt_id": 999}})
+    result = admit_next("scheduler")
+    assert result == {"ok": False, "reason": "refinement_delivery_provenance_missing"}
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt["receipt"]["id"])
+        assert row.state == "queued" and row.task_id is None
+        assert session.exec(select(SwarmTask)).all() == []
+
+
+def test_selected_refinement_failure_race_does_not_block_other_issues(
+    db, policy, monkeypatch
+):
+    from factory.orchestration import factory_conductor as conductor, factory_intake
+
+    monkeypatch.setattr(conductor, "get_engine", lambda: db)
+    policy.update(issue_numbers=[1, 2])
+    enable(policy)
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda _repo, path: github_issue(int(path.split("/")[-1])),
+    )
+    monkeypatch.setattr(
+        conductor.factory_gates, "receive_delivery_target", lambda *_: None
+    )
+    original = factory_intake.receive_issue
+
+    def receive(repo, number, *args, **kwargs):
+        if number == 1:
+            with Session(db) as session, session.begin():
+                session.add(
+                    FactoryReceipt(
+                        repo=repo,
+                        issue_number=number,
+                        generation=0,
+                        task_class="refine",
+                        title="failed brief",
+                        body="body",
+                        url="https://github.com/owner/repo/issues/1",
+                        actor=INTAKE_ACTOR,
+                        state="failed",
+                    )
+                )
+        return original(repo, number, *args, **kwargs)
+
+    monkeypatch.setattr(factory_intake, "receive_issue", receive)
+    conductor.ingest_eligible(policy)
+    with Session(db) as session:
+        rows = session.exec(select(FactoryReceipt).order_by(FactoryReceipt.id)).all()
+        assert [(row.issue_number, row.state, row.task_class) for row in rows] == [
+            (1, "failed", "refine"),
+            (2, "queued", "bug-fix"),
+        ]
+
+
+def test_explicit_operator_delivery_after_failed_refinement_remains_available(
+    db, policy
+):
+    enable(policy)
+    with Session(db) as session, session.begin():
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=1,
+                generation=0,
+                task_class="refine",
+                title="failed brief",
+                body="body",
+                url="https://github.com/owner/repo/issues/1",
+                actor=INTAKE_ACTOR,
+                state="failed",
+            )
+        )
+    receipt = receive_issue(
+        "owner/repo",
+        1,
+        "approved repository scope",
+        "body",
+        "https://github.com/owner/repo/issues/1",
+        "operator",
+    )
+    admitted = admit_next("scheduler")
+    assert admitted["ok"] and admitted["receipt_id"] == receipt["receipt"]["id"]
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_selected_class_drift_needs_new_generation_and_keeps_holds(
+    db, policy, monkeypatch, held
+):
+    from factory.orchestration import factory_conductor as conductor
+
+    monkeypatch.setattr(conductor, "get_engine", lambda: db)
+    policy.update(issue_numbers=[1])
+    enable(policy)
+    first = issue(1)
+    with Session(db) as session, session.begin():
+        row = session.get(FactoryReceipt, first["receipt"]["id"])
+        row.state = "succeeded" if held else "cancelled"
+        row.direction_json = (
+            json.dumps({"landing_hold": {"reason": "leave unmerged"}}) if held else None
+        )
+    live = github_issue(1)
+    live["labels"] = [{"name": "documentation"}]
+    monkeypatch.setattr(conductor, "github_get", lambda *_: live)
+    monkeypatch.setattr(
+        conductor.factory_gates,
+        "receive_delivery_target",
+        lambda *_: pytest.fail("protected work reached discovery"),
+    )
+    conductor.ingest_eligible(policy)
+    with Session(db) as session:
+        assert len(session.exec(select(FactoryReceipt)).all()) == 1
+    # A policy version change alone does not grant another generation.
+    controls.set_control("pause_admissions", "operator")
+    controls.set_control("enable", "operator")
+    conductor.ingest_eligible(policy)
+    with pytest.raises(ValueError, match="natural_intake_"):
+        receive_issue(
+            "owner/repo",
+            1,
+            "drift",
+            "body",
+            live["html_url"],
+            conductor.ACTOR,
+            task_class="docs",
+        )
+    # Explicitly newer selected generations keep existing holds.
+    policy["generation"] = 1
+    enable(policy)
+    monkeypatch.setattr(
+        conductor.factory_gates, "receive_delivery_target", lambda *_: None
+    )
+    conductor.ingest_eligible(policy)
+    admitted = admit_next("scheduler")
+    assert admitted["ok"]
+    if held:
+        assert controls.task_snapshot(admitted["task_id"])["direction"][
+            "landing_hold"
+        ] == {"reason": "leave unmerged"}

@@ -384,6 +384,8 @@ py_test(
         "//projects/monolith:module_configs",
         "//projects/monolith/deploy:deploy_values",
         "//projects/monolith/deploy:gke_values",
+        "//projects/monolith/dev/deploy:deploy_values",
+        "//projects/monolith/dev/deploy:recovery_gke_values",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -477,4 +479,45 @@ py_test(
         "@pip//pytest",
         "@pip//pyyaml",
     ],
+)
+
+py_test(
+    name = "grimoire_session_auth_test",
+    srcs = ["grimoire_session_auth_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/monolith/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
+    name = "stars_aurora_job_test",
+    srcs = ["stars_aurora_job_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = ["@pip//pyyaml"],
 )

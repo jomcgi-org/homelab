@@ -9,10 +9,6 @@ from opentelemetry import trace
 
 tracer = trace.get_tracer("knowledge.gardener")
 
-# Version stamp recorded on every provenance row the gardener produces.
-# Bump this when the prompt or model changes to trigger a manual reprocess.
-GARDENER_VERSION = "claude-sonnet-4-6@v1"
-
 MAX_GARDENER_RETRIES = 3
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")

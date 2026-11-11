@@ -2,7 +2,6 @@
   "comment": "Backend grants, sessions, inventory and initiative routes guarded by _require_dm that the session BFF can reach, and the BFF operations a player may send. grimoire/visibility_test.py derives the routes from router.py; the reveal isolation vitest replays every player request through the real BFF and fails on any of them.",
   "routes": [
     ["GET", "/api/grimoire/campaigns/{campaign_id}/grants"],
-    ["POST", "/api/grimoire/campaigns/{campaign_id}/grants"],
     ["POST", "/api/grimoire/campaigns/{campaign_id}/grants/bulk"],
     ["POST", "/api/grimoire/campaigns/{campaign_id}/grants/preview"],
     ["PATCH", "/api/grimoire/campaigns/{campaign_id}/grants/{grant_id}"],

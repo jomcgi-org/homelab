@@ -66,12 +66,6 @@ helm_chart(
         # egress allowlist, so moving this pin is what changes the destination
         # policy.
         "shotter.guestImage": "//projects/embervm/runtimes/shotter:image.info",
-        # ADR embervm/010 (Skyframe snapshot demo): the bazel-query base image (a
-        # warm Bazel server over Abseil). Distinct FLAT top-level key (D14a.6),
-        # digest-pinned from its .info so the pushed image identity
-        # (EMBERVM_NODE_IMAGE_IDENTITY), the rootfs-builder GUEST_IMAGE, and the
-        # Workload CR's source.image.ref all resolve to the same pinned digest.
-        "bazelQuery.guestImage": "//projects/embervm/runtimes/bazel:image.info",
         "scratchPrep.image": "//projects/embervm/scratch-prep:image.info",
         "tokenBroker.image": "//projects/embervm/tokenbroker/image:image.info",
         # Dev-only deployed scenario runner. Kept beside tokenBroker.image as
@@ -347,26 +341,6 @@ py_test(
 )
 
 py_test(
-    name = "chart_github_broker_test",
-    srcs = ["chart_github_broker_test.py"],
-    data = [
-        "Chart.yaml",
-        "values.yaml",
-        "@multitool//tools/helm",
-    ] + glob([
-        "templates/**/*",
-        "crds/**/*",
-    ]),
-    env = {
-        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
-    },
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
-)
-
-py_test(
     name = "chart_sync_wave_test",
     srcs = ["chart_sync_wave_test.py"],
     data = [
@@ -418,11 +392,10 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
-# Pins the two ADR-014-style control-plane gates (#5230) to their chart keys:
-# EMBERVM_PLACEMENT_RETRY (dispatcher.placementRetry) and
-# EMBERVM_ASYNC_LIFECYCLE_WRITES (asyncLifecycleWrites) must always render,
-# defaulting "false" and flipping via --set alone. See
-# chart_control_env_gate_test.py.
+# Pins surviving control-plane gates (#5230) to their chart keys, defaulting
+# "false" and flipping via --set alone. The retired async lifecycle environment
+# variable must never render, even when its obsolete chart key is supplied.
+# See chart_control_env_gate_test.py.
 py_test(
     name = "chart_control_env_gate_test",
     srcs = ["chart_control_env_gate_test.py"],
@@ -530,6 +503,37 @@ py_test(
         "RECOVERY_VALUES": "$(rootpath //projects/embervm/dev/deploy:recovery_values)",
         "S6_IMAGE_TEST": "$(rootpath //projects/embervm/conformance:s6_tlc_image_test.go)",
         "S6_LAYER_MTREE": "$(rootpath //projects/embervm/conformance:tla_layer_mtree.sh)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
+    name = "chart_conformance_codex_test",
+    srcs = ["chart_conformance_codex_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/embervm/deploy:deploy_values",
+        "//projects/embervm/deploy:gke_values",
+        "//projects/embervm/dev/deploy:deploy_values",
+        "//projects/embervm/dev/deploy:gke_values",
+        "//projects/embervm/dev/deploy:recovery_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "files/**/*",
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "DEV_GKE_VALUES": "$(rootpath //projects/embervm/dev/deploy:gke_values)",
+        "DEV_VALUES": "$(rootpath //projects/embervm/dev/deploy:deploy_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "PROD_GKE_VALUES": "$(rootpath //projects/embervm/deploy:gke_values)",
+        "PROD_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
+        "RECOVERY_VALUES": "$(rootpath //projects/embervm/dev/deploy:recovery_values)",
     },
     deps = [
         "@pip//pytest",

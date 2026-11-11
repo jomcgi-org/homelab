@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
+from core.env import flag
+from core.clock import as_utc
 from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, or_, text
@@ -37,7 +39,7 @@ from knowledge.models import (
 )
 from knowledge.recall import _get_repo_scope
 
-AUDIT_PROMPT_VERSION = "kg-audit/luna@v1"
+AUDIT_PROMPT_VERSION = "kg-audit/luna@v3"
 AUDIT_JOB_NAME = "kg-audit"
 WEIGHTED_POOL_SIZE = 512
 _TRACER = trace.get_tracer("monolith.knowledge.audit")
@@ -78,7 +80,7 @@ def record_retrievals(session: Session, note_ids: list[str]) -> None:
 
 
 def audit_enabled() -> bool:
-    return os.environ.get("KG_AUDIT_ENABLED", "false").lower() == "true"
+    return flag("KG_AUDIT_ENABLED")
 
 
 @dataclass(frozen=True)
@@ -157,14 +159,6 @@ def ensure_audit_job(session: Session) -> bool:
     return result.rowcount > 0
 
 
-def _utc(value: datetime) -> datetime:
-    return (
-        value.replace(tzinfo=timezone.utc)
-        if value.tzinfo is None
-        else value.astimezone(timezone.utc)
-    )
-
-
 def _eligible(now: datetime, settings: AuditSettings):
     disputed = select(Dispute.note_id).where(
         Dispute.state.in_(("open", "resolution_failed"))
@@ -220,7 +214,7 @@ def sample_notes(
     if not audit_enabled():
         return []
     settings = audit_settings()
-    now = _utc(now or datetime.now(timezone.utc))
+    now = as_utc(now or datetime.now(timezone.utc))
     rng = random.Random(seed)
     half = settings.samples_per_day // 2
     eligible = _eligible(now, settings)
@@ -243,7 +237,7 @@ def sample_notes(
                 AtomRawProvenance.atom_fk == note.id,
             )
         ).one()
-        age = min(365, max(0, (now - _utc(note.observed_at or note.created_at)).days))
+        age = min(365, max(0, (now - as_utc(note.observed_at or note.created_at)).days))
         weight = (
             (1 + math.log1p(max(0, retrievals)))
             * (1 + age / 30)
@@ -279,7 +273,9 @@ def _note_data(session: Session, note: Note) -> dict:
         "body": note.content,
         "scope": note.scope,
         "verification_state": note.verification_state,
-        "observed_at": _utc(note.observed_at).isoformat() if note.observed_at else None,
+        "observed_at": as_utc(note.observed_at).isoformat()
+        if note.observed_at
+        else None,
         "entities": [
             {"kind": entity.kind, "slug": entity.slug, "role": edge.role}
             for entity, edge in entities
@@ -692,7 +688,16 @@ def build_audit_prompt(
         '[{"note_id":"id","correctness":"holds","clarity":"clear",'
         '"clarity_score":1.0,"placement":"ok","cause":null,'
         '"rationale":"evidence explanation","evidence":["file:line"]}]}.\n\n'
-        + "\n\n".join(blocks)
+        + "Output contract (validate every verdict before returning):\n"
+        + json.dumps(AuditOutput.model_json_schema(), sort_keys=True)
+        + "\nEvery verdict must contain all required fields, including correctness. "
+        "Do not substitute clarity or placement for correctness. If correctness cannot "
+        "be established, omit the entire verdict rather than omitting a field or "
+        "inventing a healthy value. Any correctness other than holds (including confirmed), "
+        "unclear clarity, or misplaced placement requires a non-null cause. Do not invent "
+        "a cause to satisfy the schema; omit the verdict if it cannot be established. "
+        "Check the complete output against this contract "
+        "before returning the single fenced JSON block.\n\n" + "\n\n".join(blocks)
     )
     run.metrics = {**run.metrics, "prompt": prompt}
     session.commit()
@@ -700,7 +705,22 @@ def build_audit_prompt(
 
 
 class AuditVerdict(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+    # Pydantic's custom validator is not represented in generated JSON Schema.
+    # Publish its conditional cause rule for the generator without weakening it.
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        json_schema_extra={
+            "if": {
+                "anyOf": [
+                    {"properties": {"correctness": {"not": {"const": "holds"}}}},
+                    {"properties": {"clarity": {"const": "unclear"}}},
+                    {"properties": {"placement": {"const": "misplaced"}}},
+                ]
+            },
+            "then": {"properties": {"cause": {"not": {"type": "null"}}}},
+        },
+    )
     note_id: str = Field(min_length=1, max_length=500)
     correctness: Literal["holds", "confirmed", "narrowed", "superseded", "invalidated"]
     clarity: Literal["clear", "unclear"]
@@ -750,9 +770,9 @@ def compute_audit_metrics(
     Wilson intervals describe only uniform draws, not targeted discovery rows.
     Resolver outcomes are read from disputes, never inferred from audit verdicts.
     """
-    lower = _utc(now) - timedelta(days=window_days)
+    lower = as_utc(now) - timedelta(days=window_days)
     selected = [
-        item for item in findings if lower <= _utc(item["created_at"]) <= _utc(now)
+        item for item in findings if lower <= as_utc(item["created_at"]) <= as_utc(now)
     ]
     metrics = {
         "window_days": window_days,
@@ -816,11 +836,11 @@ def compute_audit_metrics(
         metrics["repairs"][outcome] = sum(disputes.get(id_) == outcome for id_ in ids)
     for item in selected:
         if item.get("cause"):
-            day = _utc(item["created_at"]).date().isoformat()
+            day = as_utc(item["created_at"]).date().isoformat()
             daily = metrics["causes_over_time"].setdefault(day, {})
             daily[item["cause"]] = daily.get(item["cause"], 0) + 1
     for run in runs:
-        if lower <= _utc(run["started_at"]) <= _utc(now):
+        if lower <= as_utc(run["started_at"]) <= as_utc(now):
             metrics["cost_per_run"][str(run["id"])] = run["cost_usd"]
     return metrics
 

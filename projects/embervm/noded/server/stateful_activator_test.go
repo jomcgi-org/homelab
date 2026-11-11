@@ -47,14 +47,13 @@ func statefulActivatorEchoServer(t *testing.T) uint32 {
 
 func enableStatefulActivatorWorkload(s *Server, workload string, listenPort, guestPort uint32) {
 	s.registry.sync([]workloadEntry{{
-		Workload:             workload,
-		NodeLocalWake:        true,
-		StatefulListenPort:   listenPort,
-		StatefulPort:         guestPort,
-		StatefulVolumeMount:  "/var/lib/postgresql/data",
-		StatefulBootImageRef: "img-a",
-		VCPUs:                1,
-		MemMib:               128,
+		Workload:            workload,
+		NodeLocalWake:       true,
+		StatefulListenPort:  listenPort,
+		StatefulPort:        guestPort,
+		StatefulVolumeMount: "/var/lib/postgresql/data",
+		VCPUs:               1,
+		MemMib:              128,
 	}})
 }
 
@@ -62,14 +61,13 @@ func enableStatefulActivatorFromPushedRegistry(s *Server, workload string, liste
 	s.cfg.Images = map[string]config.Image{}
 	s.registry.sync([]workloadEntry{
 		{
-			Workload:             workload,
-			NodeLocalWake:        true,
-			StatefulListenPort:   listenPort,
-			StatefulPort:         guestPort,
-			StatefulVolumeMount:  "/var/lib/postgresql/data",
-			StatefulBootImageRef: "not-a-node-local-base-key",
-			VCPUs:                1,
-			MemMib:               128,
+			Workload:            workload,
+			NodeLocalWake:       true,
+			StatefulListenPort:  listenPort,
+			StatefulPort:        guestPort,
+			StatefulVolumeMount: "/var/lib/postgresql/data",
+			VCPUs:               1,
+			MemMib:              128,
 		},
 		{Workload: "image:img-a", ImageRef: "img-a", RootfsRef: "/registry/rootfs-a", HarnessInit: "/init"},
 	})

@@ -4,12 +4,12 @@ onepassword:
 
 environment: homelab-hub
 
-# Staged only. Enable checker and handoff with monolith's advisory reader in
-# a separately authorized PR after the #7002 operational checks are arranged.
+# Shared hub backup observations and private advisory alerts (#7002).
+# Loom remains gated separately until its activation checks pass.
 backupCheck:
-  enabled: false
+  enabled: true
   status:
-    enabled: false
+    enabled: true
 
 # Same opt-in as home production: without entries the otlp receiver is not
 # rendered at all, and every configured sender times out its span exports.

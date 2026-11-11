@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
+from core.clock import as_utc
 from auth.api import Authority, Principal, PrincipalKind
 from auth.jwks import JwksCache
 from auth.platform.models import PlatformIdentity, PlatformInvitation, PlatformUser, now
@@ -21,7 +22,6 @@ from auth.platform.service import (
     identifier,
     identity_user,
     user_view,
-    utc,
 )
 
 AUDIENCE = "platform-registration"
@@ -164,7 +164,7 @@ def activate(session, completion: Completion):
                 "activation_pending": not row.identity_activated,
             }
         raise HTTPException(403, "Invitation belongs to another or disabled identity.")
-    if row.status != "pending" or utc(row.expires_at) <= now():
+    if row.status != "pending" or as_utc(row.expires_at) <= now():
         raise HTTPException(410, "Invitation expired or revoked.")
     if user is not None and (not user.active or user.username != completion.username):
         raise HTTPException(403, "Platform identity is disabled or does not match.")

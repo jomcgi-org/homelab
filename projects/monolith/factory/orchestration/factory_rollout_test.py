@@ -2,11 +2,14 @@
 
 import asyncio
 import base64
+import gc
+import weakref
 from copy import deepcopy
 from types import SimpleNamespace
 
 import httpx
 import pytest
+from aiohttp import ClientConnectorError
 
 from factory.orchestration import factory_rollout as rollout
 
@@ -419,6 +422,168 @@ def test_short_cache_expires_and_shares_failures_without_turning_them_into_succe
     assert rollout._cached(("snapshot",), lambda: {"recovered": True}) == {
         "recovered": True
     }
+
+
+@pytest.mark.parametrize("kind", ["pending", "http", "cooldown", "connector"])
+def test_cached_failures_release_reader_and_caller_frames(monkeypatch, kind):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    monkeypatch.setattr(rollout, "_recent", {})
+    references, reads = [], []
+
+    class Payload:
+        pass
+
+    def payload():
+        value = Payload()
+        references.append(weakref.ref(value))
+        return value
+
+    request = httpx.Request("GET", "https://example.invalid/snapshot")
+    response = httpx.Response(503, request=request)
+    connection = SimpleNamespace(host="example.invalid", port=443, ssl=True)
+
+    def failed():
+        _reader_state = payload()
+        reads.append(True)
+        try:
+            if kind == "connector":
+                raise ConnectionRefusedError(111, "unavailable")
+            raise ValueError("inner read failure")
+        except Exception as cause:
+            if kind == "pending":
+                raise rollout.Pending(
+                    "unavailable", application="demo", resource="Deployment/demo"
+                ) from cause
+            if kind == "http":
+                raise httpx.HTTPStatusError(
+                    "unavailable", request=request, response=response
+                ) from cause
+            if kind == "connector":
+                raise ClientConnectorError(connection, cause) from cause
+            raise GitHubReadDeferred("unavailable") from cause
+
+    def call():
+        _caller_state = payload()
+        try:
+            rollout._cached(("snapshot",), failed)
+        except Exception as failure:
+            assert "unavailable" in str(failure)
+            if kind == "pending":
+                assert isinstance(failure, rollout.Pending)
+                assert failure.application == "demo"
+                assert failure.resource == "Deployment/demo"
+            elif kind == "http":
+                assert isinstance(failure, httpx.HTTPStatusError)
+                assert failure.request is request
+                assert failure.response is response
+            elif kind == "cooldown":
+                assert isinstance(failure, GitHubReadDeferred)
+            else:
+                assert isinstance(failure, ClientConnectorError)
+                assert failure.os_error.errno == 111
+                assert failure.os_error.strerror == "unavailable"
+                assert failure.args[1] is failure.os_error
+                assert failure.host == "example.invalid"
+        else:
+            pytest.fail("an unavailable read must remain a failure")
+
+    for _ in range(3):
+        call()
+        gc.collect()
+        assert all(reference() is None for reference in references)
+    assert len(reads) == 1
+    cached = rollout._recent[("snapshot",)][1]
+    assert cached.__traceback__ is None
+    assert cached.__cause__ is None
+    assert cached.__context__ is None
+
+
+@pytest.mark.parametrize("copy_behavior", ["raises", "same_object"])
+def test_uncopyable_failure_remains_an_uncached_failure(monkeypatch, copy_behavior):
+    monkeypatch.setattr(rollout, "_recent", {})
+    reads = []
+
+    class Uncopyable(ValueError):
+        def __copy__(self):
+            if copy_behavior == "raises":
+                raise TypeError("cannot copy")
+            return self
+
+    def failed():
+        reads.append(True)
+        raise Uncopyable("original failure")
+
+    for _ in range(2):
+        with pytest.raises(Uncopyable, match="original failure"):
+            rollout._cached(("snapshot",), failed)
+        assert ("snapshot",) not in rollout._recent
+    assert len(reads) == 2
+
+
+@pytest.mark.parametrize("shape", ["wide", "deep", "cycle"])
+def test_unbounded_failure_metadata_is_not_cached(monkeypatch, shape):
+    monkeypatch.setattr(rollout, "_recent", {})
+    metadata = list(range(300))
+    if shape == "deep":
+        metadata = []
+        for _ in range(12):
+            metadata = [metadata]
+    elif shape == "cycle":
+        metadata = []
+        metadata.append(metadata)
+
+    def failed():
+        exc = ValueError("unavailable")
+        exc.detail = metadata
+        raise exc
+
+    with pytest.raises(ValueError, match="unavailable"):
+        rollout._cached(("snapshot",), failed)
+    assert ("snapshot",) not in rollout._recent
+
+
+def test_repeated_large_publication_history_keeps_ancestry_after_content_reads(
+    monkeypatch,
+):
+    from factory.orchestration import factory_landing
+
+    reads = []
+
+    def read(_repo, path):
+        reads.append(path)
+        return (
+            {"status": "ahead"}
+            if path.startswith("compare/")
+            else {"content": "manifest"}
+        )
+
+    monkeypatch.setattr(factory_landing, "github_get", read)
+    rollout._immutable_get.cache_clear()
+    rollout._ancestry_status.cache_clear()
+    paths = [f"compare/{i:040x}...{'f' * 40}?per_page=1&page=2" for i in range(330)]
+    for path in paths:
+        assert rollout._get("history/repo", path)["status"] == "ahead"
+    for i in range(330):
+        rollout._get("history/repo", f"contents/path{i}?ref={'a' * 40}")
+    for path in paths:
+        assert rollout._get("history/repo", path)["status"] == "ahead"
+    assert len([path for path in reads if path.startswith("compare/")]) == 330
+    # A different immutable source pair is new evidence, never a cached verdict.
+    rollout._get("history/repo", f"compare/{'e' * 40}...{'f' * 40}?per_page=1&page=2")
+    assert len(reads) == 661
+
+
+def test_unknown_ancestry_is_not_cached_as_a_rollout_fact(monkeypatch):
+    from factory.orchestration import factory_landing
+
+    replies = iter([{}, {"status": "ahead"}])
+    monkeypatch.setattr(factory_landing, "github_get", lambda *_: next(replies))
+    rollout._ancestry_status.cache_clear()
+    path = f"compare/{'1' * 40}...{'2' * 40}?per_page=1&page=2"
+    with pytest.raises(rollout.Pending, match="comparison_status_unknown"):
+        rollout._get("unknown/repo", path)
+    assert rollout._get("unknown/repo", path) == {"status": "ahead"}
 
 
 def test_external_tagged_sidecar_does_not_require_our_publication_digest():
@@ -1638,3 +1803,294 @@ def test_stale_filter_does_not_hide_active_unhealthy_or_wrong_revision():
             active["spec"]["containers"][0]["image"] = "old:image"
             reason = "running_image_unconfirmed"
         assert verify(state)["reason"] == reason
+
+
+@pytest.fixture
+def covering_publications():
+    """An original, a deployed descendant, and a newer chart behind a gate."""
+    deployed_source, deployed_receipt = "1" * 40, "2" * 40
+    newer_source, newer_receipt = "3" * 40, "4" * 40
+    commits = []
+    for source, receipt, version in (
+        (newer_source, newer_receipt, "1.2.5"),
+        (deployed_source, deployed_receipt, "1.2.4"),
+        (SOURCE, RECEIPT, "1.2.3"),
+    ):
+        value = fleet_commit()
+        value["sha"] = receipt
+        value["commit"]["message"] = (
+            value["commit"]["message"].replace(SOURCE, source).replace("1.2.3", version)
+        )
+        commits.append(value)
+    order = [
+        MERGE,
+        SOURCE,
+        RECEIPT,
+        deployed_source,
+        deployed_receipt,
+        newer_source,
+        newer_receipt,
+    ]
+    reads = []
+    ci = {}
+    comparisons = {}
+    fallback = fleet_github(moved=("monolith",))
+
+    def get(repo, path):
+        reads.append(path)
+        if path.startswith("compare/"):
+            older, newer = path.removeprefix("compare/").split("?")[0].split("...")
+            return {
+                "status": comparisons.get(
+                    (older, newer),
+                    "ahead" if order.index(older) < order.index(newer) else "behind",
+                )
+            }
+        if path.endswith("/status"):
+            state = ci.get(path.split("/")[1], "success")
+            return {
+                "statuses": [{"context": "pr-checks", "state": state}] if state else []
+            }
+        return fallback(repo, path)
+
+    state = fleet()
+    app = state["applications"][0]
+    for source in (
+        app["spec"]["sources"][0],
+        app["status"]["sync"]["comparedTo"]["sources"][0],
+    ):
+        source["targetRevision"] = "1.2.4"
+    app["status"]["sync"]["revisions"] = ["1.2.4", deployed_source]
+    return SimpleNamespace(
+        commits=commits,
+        state=state,
+        get=get,
+        reads=reads,
+        ci=ci,
+        comparisons=comparisons,
+        order=order,
+        deployed_source=deployed_source,
+        deployed_receipt=deployed_receipt,
+        newer_source=newer_source,
+        newer_receipt=newer_receipt,
+    )
+
+
+@pytest.mark.parametrize("old_ci", ["success", "failure", "pending", None])
+@pytest.mark.parametrize("new_ci", ["success", "failure", "pending", None])
+def test_deployed_covering_publication_does_not_chase_newer_gate(
+    covering_publications, old_ci, new_ci
+):
+    f = covering_publications
+    f.ci.update({SOURCE: old_ci, f.newer_source: new_ci})
+    # A later unrelated chart must not change the original delivery's scope.
+    f.state["applications"][1]["status"]["health"]["status"] = "Progressing"
+    result = scoped_verify(
+        ["projects/monolith/app/main.py"], f.state, get=f.get, commits=f.commits
+    )
+    assert result["verified"] is True
+    assert result["scoped_applications"] == ["monolith"]
+    assert result["scope_publication_commit_sha"] == RECEIPT
+    assert result["publication_commit_sha"] == f.deployed_receipt
+    assert result["source_commit_sha"] == f.deployed_source
+    assert result["git_source_commit_sha"] == (
+        SOURCE if old_ci == "success" else f.deployed_source
+    )
+    assert result["applications"][0]["publication_commit_sha"] == f.deployed_receipt
+    assert f"commits/{f.newer_source}/status" not in f.reads
+
+
+@pytest.mark.parametrize(
+    "blocker,reason",
+    [
+        ("divergent_merge", "published_chart_not_deployed"),
+        ("off_main", "publication_source_not_on_main"),
+        ("missing_publication", "published_chart_not_deployed"),
+        ("missing_ci", "publication_ci_not_successful"),
+        ("failed_ci", "publication_ci_not_successful"),
+        ("stale_git", "git_revision_not_deployed"),
+        ("missing_revision", "deployed_revision_missing"),
+        ("missing_workload", "workload_missing"),
+        ("unhealthy", "application_not_healthy_and_synced"),
+        ("not_ready", "workload_not_ready"),
+        ("wrong_digest", "running_digest_mismatch"),
+    ],
+)
+def test_older_deployed_candidate_retains_every_evidence_gate(
+    covering_publications, blocker, reason
+):
+    f = covering_publications
+    app = f.state["applications"][0]
+    if blocker == "divergent_merge":
+        f.comparisons[MERGE, f.deployed_source] = "diverged"
+    elif blocker == "off_main":
+        f.comparisons[f.deployed_source, f.deployed_receipt] = "diverged"
+    elif blocker == "missing_publication":
+        del f.commits[1]
+    elif blocker in {"missing_ci", "failed_ci"}:
+        f.ci[f.deployed_source] = None if blocker == "missing_ci" else "failure"
+    elif blocker == "stale_git":
+        f.ci[SOURCE] = "failure"
+        app["status"]["sync"]["revisions"][1] = SOURCE
+    elif blocker == "missing_revision":
+        del app["status"]["sync"]["revisions"]
+    elif blocker == "missing_workload":
+        f.state["workloads"] = {}
+    elif blocker == "unhealthy":
+        app["status"]["health"]["status"] = "Progressing"
+    elif blocker == "not_ready":
+        f.state["workloads"]["Deployment", "monolith", "backend"]["status"][
+            "readyReplicas"
+        ] = 0
+    elif blocker == "wrong_digest":
+        f.state["pods"]["monolith"][0]["status"]["containerStatuses"][0]["imageID"] = (
+            IMAGE[:-1] + "0"
+        )
+    result = scoped_verify(
+        ["projects/monolith/app/main.py"], f.state, get=f.get, commits=f.commits
+    )
+    assert result["verified"] is False
+    assert result["reason"] == reason
+
+
+def test_relevant_applications_can_deploy_different_covering_chart_versions(
+    covering_publications,
+):
+    f = covering_publications
+    dev = deepcopy(f.state["applications"][0])
+    dev["metadata"].update(name="monolith-dev", uid="dev-uid")
+    for source in (
+        dev["spec"]["sources"][0],
+        dev["status"]["sync"]["comparedTo"]["sources"][0],
+    ):
+        source["targetRevision"] = "1.2.5"
+    dev["status"]["sync"]["revisions"] = ["1.2.5", f.newer_source]
+    f.state["applications"].append(dev)
+    result = scoped_verify(
+        ["projects/monolith/app/main.py"], f.state, get=f.get, commits=f.commits
+    )
+    assert result["verified"] is True
+    assert result["scoped_applications"] == ["monolith", "monolith-dev"]
+    assert result["publication_commit_sha"] is None
+    assert result["source_commit_sha"] is None
+    assert [app["publication_commit_sha"] for app in result["applications"]] == [
+        f.deployed_receipt,
+        f.newer_receipt,
+    ]
+    dev["status"]["sync"]["revisions"][0] = "1.2.6"
+    result = scoped_verify(
+        ["projects/monolith/app/main.py"], f.state, get=f.get, commits=f.commits
+    )
+    assert result["verified"] is False
+    assert result["application"] == "monolith-dev"
+    assert result["reason"] == "published_chart_not_deployed"
+
+
+def test_many_newer_versions_do_not_poll_unused_catalogs_or_ci(covering_publications):
+    f = covering_publications
+    for i in range(30):
+        source, receipt = f"{100 + i * 2:040x}", f"{101 + i * 2:040x}"
+        value = deepcopy(f.commits[0])
+        value["sha"] = receipt
+        value["commit"]["message"] = (
+            value["commit"]["message"]
+            .replace(f.newer_source, source)
+            .replace("1.2.5", f"1.3.{i}")
+        )
+        f.commits.insert(0, value)
+        f.order.extend([source, receipt])
+    # Identical app evidence shares all GitHub reads in this verification.
+    for i in range(10):
+        app = deepcopy(f.state["applications"][0])
+        app["metadata"]["name"] = f"monolith-{i}"
+        f.state["applications"].append(app)
+    result = scoped_verify(
+        ["projects/monolith/app/main.py"], f.state, get=f.get, commits=f.commits
+    )
+    assert result["verified"] is True
+    assert len(result["applications"]) == 11
+    assert len(f.reads) == len(set(f.reads))
+    assert {p for p in f.reads if p.endswith("/status")} == {
+        f"commits/{SOURCE}/status",
+        f"commits/{f.deployed_source}/status",
+    }
+    catalog_reads = [
+        p for p in f.reads if p.startswith("contents/") and not p.endswith(MERGE)
+    ]
+    assert len(catalog_reads) == 4  # two charts each for scope and deployed publication
+
+
+def test_matching_candidate_budget_is_bounded_and_truthfully_pending(
+    covering_publications,
+):
+    f = covering_publications
+    # These no-op publications all reuse the deployed version, but lack CI.
+    f.commits[0]["commit"]["message"] = f.commits[0]["commit"]["message"].replace(
+        "1.2.5", "1.2.4"
+    )
+    f.ci[f.newer_source] = "pending"
+    for i in range(10):
+        source, receipt = f"{100 + i * 2:040x}", f"{101 + i * 2:040x}"
+        value = deepcopy(f.commits[0])
+        value["sha"] = receipt
+        value["commit"]["message"] = value["commit"]["message"].replace(
+            f.commits[0]["commit"]["message"].split("Chart-Source-Commit: ")[1][:40],
+            source,
+        )
+        f.ci[source] = "pending"
+        f.commits.insert(0, value)
+        f.order.extend([source, receipt])
+    result = scoped_verify(
+        ["projects/monolith/app/main.py"], f.state, get=f.get, commits=f.commits
+    )
+    assert result["verified"] is False
+    assert result["reason"] == "publication_candidate_limit"
+    assert result["application"] == "monolith"
+    assert len([p for p in f.reads if p.endswith("/status")]) == 8
+    assert f"commits/{f.deployed_source}/status" not in f.reads
+
+
+def test_matching_version_on_wrong_chart_is_not_publication_proof(
+    covering_publications,
+):
+    f = covering_publications
+    f.commits[1]["commit"]["message"] = f.commits[1]["commit"]["message"].replace(
+        "Chart-Published: projects/monolith/chart 1.2.4\n", ""
+    )
+    result = scoped_verify(
+        ["projects/monolith/app/main.py"], f.state, get=f.get, commits=f.commits
+    )
+    assert result["verified"] is False
+    assert result["reason"] == "published_chart_not_deployed"
+
+
+def test_one_application_cannot_mix_charts_from_different_receipts(
+    covering_publications,
+):
+    f = covering_publications
+    app = f.state["applications"][0]
+    extra = {"repoURL": rollout.REGISTRY, "chart": "embervm", "targetRevision": "1.2.5"}
+    app["spec"]["sources"].append(extra)
+    app["status"]["sync"]["comparedTo"]["sources"].append(deepcopy(extra))
+    app["status"]["sync"]["revisions"].append("1.2.5")
+    result = scoped_verify(
+        ["projects/monolith/app/main.py"], f.state, get=f.get, commits=f.commits
+    )
+    assert result["verified"] is False
+    assert result["reason"] == "published_chart_not_deployed"
+
+
+def test_candidate_ci_is_refreshed_between_verifications(covering_publications):
+    f = covering_publications
+    assert (
+        scoped_verify(
+            ["projects/monolith/app/main.py"], f.state, get=f.get, commits=f.commits
+        )["verified"]
+        is True
+    )
+    f.ci[f.deployed_source] = "failure"
+    result = scoped_verify(
+        ["projects/monolith/app/main.py"], f.state, get=f.get, commits=f.commits
+    )
+    assert result["verified"] is False
+    assert result["reason"] == "publication_ci_not_successful"

@@ -1,9 +1,9 @@
-"""Private backup advisory staging and reuse of the ConfigMap read grant."""
+"""Private backup advisory activation and reuse of the ConfigMap read grant."""
 
 import json
 import os
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
 import yaml
@@ -11,7 +11,7 @@ import yaml
 CHART = Path(__file__).resolve().parent
 
 
-def render(enabled=False, extra=()):
+def render(enabled=None, extra=()):
     result = subprocess.run(
         [
             os.environ.get("HELM_BIN", "helm"),
@@ -24,10 +24,17 @@ def render(enabled=False, extra=()):
             "jobs.image.repository=registry.invalid/jobs",
             "--set-string",
             "jobs.image.digest=sha256:test",
-            "--set",
-            f"healthAlerts.cnpgBackups.enabled={str(enabled).lower()}",
+            *(
+                []
+                if enabled is None
+                else [
+                    "--set",
+                    f"healthAlerts.cnpgBackups.enabled={str(enabled).lower()}",
+                ]
+            ),
             *extra,
         ],
+        check=False,
         capture_output=True,
         text=True,
         timeout=120,
@@ -51,25 +58,46 @@ def backend_env(docs):
     return {e["name"]: e.get("value") for e in backend["env"]}
 
 
-def test_reader_defaults_off_in_chart_and_checked_in_deploy_overlays():
+def test_reader_defaults_off_outside_hub():
     for path in (
         CHART / "values.yaml",
         CHART.parent / "deploy/values.yaml",
-        CHART.parent / "deploy/values-gke.yaml",
     ):
         assert (
             yaml.safe_load(path.read_text())["healthAlerts"]["cnpgBackups"]["enabled"]
             is False
         )
     env = backend_env(render())
-    assert env["CNPG_BACKUP_HEALTH_ENABLED"] == "false"
+    assert "CNPG_BACKUP_HEALTH_ENABLED" not in env
     assert "CNPG_BACKUP_STATUS_CONFIGMAP" not in env
+
+
+def test_hub_reader_is_enabled_with_the_required_backup_targets():
+    env = backend_env(
+        render(
+            extra=[
+                "--values",
+                str(CHART.parent / "deploy/values.yaml"),
+                "--values",
+                str(CHART.parent / "deploy/values-gke.yaml"),
+            ]
+        )
+    )
+    assert env["CNPG_BACKUP_STATUS_NAMESPACE"] == "otel-collector"
+    assert env["CNPG_BACKUP_STATUS_CONFIGMAP"] == "cnpg-backup-status"
+    assert json.loads(env["CNPG_BACKUP_TARGETS"]) == [
+        {"namespace": "monolith", "cluster": "monolith-pg"},
+        {"namespace": "authentik", "cluster": "authentik-pg"},
+        {"namespace": "mcp", "cluster": "context-forge-pg"},
+    ]
+    assert json.loads(env["CNPG_BACKUP_OPTIONAL_TARGETS"]) == [
+        {"namespace": "loom", "cluster": "loom-pg"}
+    ]
 
 
 def test_reader_enablement_wires_targets_and_reuses_existing_read_permission():
     off, on = render(), render(True)
     env = backend_env(on)
-    assert env["CNPG_BACKUP_HEALTH_ENABLED"] == "true"
     assert env["CNPG_BACKUP_STATUS_NAMESPACE"] == "otel-collector"
     assert env["CNPG_BACKUP_STATUS_CONFIGMAP"] == "cnpg-backup-status"
     assert json.loads(env["CNPG_BACKUP_TARGETS"]) == [

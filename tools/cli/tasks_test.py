@@ -441,15 +441,15 @@ class TestRequestReauth:
         mock_client = MagicMock()
         mock_client.get.side_effect = [redirect_resp, final_resp]
 
-        # _request uses `with _client() as client:` twice, so _client() must
+        # _request uses `with client() as http:` twice, so client() must
         # return a fresh context manager on every invocation.
         @contextmanager
         def make_ctx():
             yield mock_client
 
         with (
-            patch("tools.cli.tasks_cmd._client", side_effect=make_ctx),
-            patch("tools.cli.tasks_cmd.clear_cf_token") as mock_clear,
+            patch("tools.cli.api.client", side_effect=make_ctx),
+            patch("tools.cli.api.clear_cf_token") as mock_clear,
         ):
             result = _request("get", "/api/knowledge/tasks/daily")
 
@@ -469,8 +469,8 @@ class TestRequestReauth:
             yield mock_client
 
         with (
-            patch("tools.cli.tasks_cmd._client", side_effect=make_ctx),
-            patch("tools.cli.tasks_cmd.clear_cf_token") as mock_clear,
+            patch("tools.cli.api.client", side_effect=make_ctx),
+            patch("tools.cli.api.clear_cf_token") as mock_clear,
         ):
             result = _request("get", "/api/knowledge/tasks")
 

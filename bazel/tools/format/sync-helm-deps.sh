@@ -4,6 +4,7 @@
 # Reads the version from projects/shared/helm/homelab-library/chart/Chart.yaml
 # and updates any consuming chart whose dependency version doesn't match.
 # Rebuilds Chart.lock and charts/*.tgz when a mismatch is found.
+# ci regen invokes this when Chart.yaml, Chart.lock or charts/*.tgz changes.
 #
 # Usage:
 #   sync-helm-deps.sh          # Check and fix all charts
@@ -39,6 +40,7 @@ fi
 # Find all Chart.yaml files that depend on homelab-library (excluding the library itself)
 MISMATCHED=()
 while IFS= read -r chart_file; do
+	[[ -z "$chart_file" ]] && continue
 	[[ "$chart_file" == "$LIBRARY_CHART" ]] && continue
 
 	# Extract the version after "name: homelab-library"
@@ -46,7 +48,7 @@ while IFS= read -r chart_file; do
 	if [[ -n "$dep_version" && "$dep_version" != "$LIBRARY_VERSION" ]]; then
 		MISMATCHED+=("$chart_file")
 	fi
-done < <(grep -rl 'name: homelab-library' --include='Chart.yaml' projects/ 2>/dev/null || true)
+done <<<"$(grep -rl 'name: homelab-library' --include='Chart.yaml' projects/ 2>/dev/null || true)"
 
 if $CHECK_ONLY; then
 	if [[ ${#MISMATCHED[@]} -gt 0 ]]; then
@@ -63,10 +65,12 @@ fi
 
 if [[ ${#MISMATCHED[@]} -gt 0 ]]; then
 	log "Syncing homelab-library $LIBRARY_VERSION to ${#MISMATCHED[@]} chart(s)..."
+	sed_in_place=(-i)
+	[[ "$(uname -s)" != Darwin ]] || sed_in_place=(-i '')
 
 	for chart_file in "${MISMATCHED[@]}"; do
 		# Update the version in Chart.yaml (line after "name: homelab-library")
-		sed -i '' "/name: homelab-library/{n;s/version: \"[^\"]*\"/version: \"$LIBRARY_VERSION\"/;}" "$chart_file"
+		sed "${sed_in_place[@]}" "/name: homelab-library/{n;s/version: \"[^\"]*\"/version: \"$LIBRARY_VERSION\"/;}" "$chart_file"
 		log "  Updated $chart_file"
 	done
 fi
@@ -84,13 +88,15 @@ if ! command -v helm &>/dev/null; then
 	# Local-only by design: the CI format runner has no helm CLI. CI enforces
 	# the same invariant read-only via check_helm_deps.py, so a missing helm
 	# here means "cannot fix", never "nothing was wrong".
-	exit 0
+	err "helm is required to sync chart dependencies (run ./bootstrap.sh && direnv allow)"
+	exit 1
 fi
 
+stale_output="$(python3 ./bazel/tools/format/helm_deps/check_helm_deps.py --root . --list-stale)"
 STALE=()
 while IFS= read -r chart_dir; do
 	[[ -n "$chart_dir" ]] && STALE+=("$chart_dir")
-done < <(python3 ./bazel/tools/format/helm_deps/check_helm_deps.py --root . --list-stale 2>/dev/null || true)
+done <<<"$stale_output"
 
 if [[ ${#STALE[@]} -eq 0 ]]; then
 	exit 0
@@ -98,6 +104,6 @@ fi
 
 log "Rebuilding ${#STALE[@]} chart(s) whose vendored tarballs drifted from source..."
 for chart_dir in "${STALE[@]}"; do
-	helm dependency update "$chart_dir" >/dev/null 2>&1 || true
+	helm dependency update "$chart_dir"
 	log "  Rebuilt $chart_dir"
 done

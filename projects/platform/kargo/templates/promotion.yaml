@@ -58,10 +58,10 @@ subscribe to Warehouses instead of other, upstream Stages", which is an
 argument for gating prod rather than a prohibition.
 
 WHETHER PROD AUTO-PROMOTES IS PER-STAGE DATA, not a property of this template.
-Both pipelines are `true` today, and embervm's was briefly `false` on a scratch
-argument that turned out to be wrong (a base rebuilds on a SIGNATURE change, not
-on every chart version, and batching only defers a digest change rather than
-avoiding it). The rationale lives beside each `autoPromotion` in values.yaml.
+The stages have `autoPromotion: true` today, and embervm's was briefly `false`
+on a scratch argument that turned out to be wrong (a base rebuilds on a
+SIGNATURE change, not on every chart version, and batching only defers a digest
+change rather than avoiding it). The rationale lives beside each `autoPromotion` in values.yaml.
 Read the value, not this comment, to know what a given environment does.
 
 Flipping the value is both the hold lever and the manual promotion path.
@@ -155,17 +155,12 @@ private chart repositories opt into credentialItemPath. ADR 009 called the git
 write credential "the
 main new surface"; this design removes it.
 
-THE COST, stated plainly: targetRevision stops being git truth. It lives in the
-live Application, and the `canada` root app must be told to ignore that one
-field per Application or it will revert every promotion. Those patches are
-manual and documented in this chart's README, because `canada` is a bootstrap
-resource and is not in this repo.
-
-That is also the REVERT LEVER, and the reason the CI write-back is being left
-in place for now rather than deleted alongside this. It keeps writing a correct
-value into production's application.yaml, so removing canada's
-ignoreDifferences entry hands production straight back to git with no
-scramble.
+Kargo owns targetRevision on the live Application. The hub root preserves it
+with ignoreDifferences and RespectIgnoreDifferences=true, configured in
+projects/gke-cluster/root/root-application.yaml and reconciled by hub-root.
+Land and reconcile that ownership configuration before arming a new pipeline.
+Git pins remain bootstrap/revert floors; see the README for the source-array
+drift caveat and Git-based ownership changes.
 */}}
 apiVersion: kargo.akuity.io/v1alpha1
 kind: Stage
@@ -368,7 +363,14 @@ spec:
             method: GET
             url: {{ $stage.verdictURL | quote }}
             timeout: 10s
-            successExpression: "response.status == 200 && response.body.chart_version == '{{ $pipeline.desiredRevisionExpr }}' && response.body.verdict == 'pass'"
+            {{- $success := printf "response.status == 200 && response.body.chart_version == '%s' && response.body.verdict == 'pass'" $pipeline.desiredRevisionExpr }}
+            {{- range $scenario := $stage.verdictRequiredScenarios | default (list) }}
+            {{- if not (regexMatch "^S[0-9]+$" $scenario) }}
+            {{- fail "verdictRequiredScenarios entries must be scenario IDs such as S9" }}
+            {{- end }}
+            {{- $success = printf "%s && response.body.scenarios != nil && any(response.body.scenarios, { .id == '%s' && .verdict == 'pass' })" $success $scenario }}
+            {{- end }}
+            successExpression: {{ $success | quote }}
             failureExpression: "response.status == 200 && response.body.chart_version == '{{ $pipeline.desiredRevisionExpr }}' && response.body.verdict == 'fail' && response.body.previous != nil && response.body.previous.verdict == 'fail'"
             errorExpression: "'conformance suite failed on chart ' + response.body.chart_version + ': ' + toJSON(response.body.scenarios)"
         {{- end }}

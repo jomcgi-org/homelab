@@ -3,7 +3,13 @@
   import { goto, invalidateAll } from "$app/navigation";
   import { page } from "$app/stores";
   import HikesMap from "$lib/public/components/hikes/HikesMap.svelte";
-  import BrutalistSelect from "$lib/public/components/BrutalistSelect.svelte";
+  import Button from "@homelab/design-system/components/Button.svelte";
+  import {
+    SiteIndex,
+    TechnicalDrawingChrome,
+    Trail,
+  } from "$lib/public/components";
+  import "$lib/public/styles/technical-drawing.css";
   import {
     filterWalksByCharacteristics,
     filterWalksByLocation,
@@ -41,8 +47,8 @@
     { key: "torridon", label: "Wester Ross", lat: 57.5841, lon: -5.5325 },
   ];
   const GEO_SENTINEL = "__me__";
-  // Flat option list for the brutalist "Near" dropdown: the two specials first,
-  // then the density-ordered region presets.
+  // Flat option list for the "Near" select: the two specials first, then the
+  // density-ordered region presets.
   const NEAR_OPTIONS = [
     { value: "", label: "Anywhere" },
     { value: GEO_SENTINEL, label: "My location" },
@@ -288,378 +294,345 @@
   });
 </script>
 
-<div class="hikes-page">
-  <HikesMap
-    walks={filtered}
-    {selectedDay}
-    {maxima}
-    initialUuid={initial.selectedWalk}
-    onSelectWalk={handleSelectWalk}
-  />
+{#snippet trail()}
+  <Trail crumbs={[{ label: "hikes" }]} label="Breadcrumb" />
+{/snippet}
 
-  <!-- Floating controls: day chips always visible, the rest expands on demand. -->
-  <div class="controls">
-    <div class="panel control-head">
-      <div class="crumb-row">
-        <nav class="crumb" aria-label="Breadcrumb">
-          <a class="crumb-home" href="/"
-            >jomcgi.dev<span class="crumb-arrow" aria-hidden="true"
-              >&nearr;</span
-            ></a
+<TechnicalDrawingChrome {trail} />
+<main class="td sheet hikes-page">
+  <div class="frame">
+    <div class="journal">
+      <aside class="spine">
+        <div class="trail-dock">{@render trail()}</div>
+        <div class="controls">
+          <div class="edition control-head">
+            <div class="ed-head">
+              <p class="stats">
+                {walks.length} walks &middot; {viableTodayCount} viable today &middot;
+                {filtered.length} shown
+              </p>
+            </div>
+          </div>
+
+          <!-- Where: a region preset or the device location, in one select. -->
+          <div class="edition near">
+            <label class="near-field">
+              <span class="field-label">Near</span>
+              <select bind:value={nearKey} onchange={onNearChange}>
+                {#each NEAR_OPTIONS as option (option.value)}
+                  <option value={option.value}>{option.label}</option>
+                {/each}
+              </select>
+            </label>
+            {#if geoError}
+              <p class="note" role="alert">{geoError}</p>
+            {/if}
+          </div>
+
+          <!-- When: one chip per upcoming UK day with forecast coverage. -->
+          <div
+            class="edition days"
+            role="group"
+            aria-label="Filter by viable day"
           >
-          <span class="crumb-sep">/</span>
-          <span class="crumb-name">hikes</span>
-        </nav>
-        <p class="stats">
-          {walks.length} walks &middot; {viableTodayCount} viable today &middot;
-          {filtered.length} shown
-        </p>
-      </div>
+            <button
+              type="button"
+              class="day-chip day-chip-all"
+              class:is-off={selectedDay != null}
+              aria-pressed={selectedDay == null}
+              onclick={() => (selectedDay = null)}>Any day</button
+            >
+            {#each dayKeys as key (key)}
+              <button
+                type="button"
+                class="day-chip"
+                class:is-off={selectedDay !== key}
+                aria-pressed={selectedDay === key}
+                onclick={() => (selectedDay = selectedDay === key ? null : key)}
+                >{dayLabel(key)}</button
+              >
+            {/each}
+          </div>
 
-      <div class="field near-field">
-        <span class="field-label" id="near-label">Near</span>
-        <BrutalistSelect
-          id="near"
-          label="Near"
-          options={NEAR_OPTIONS}
-          bind:value={nearKey}
-          onchange={onNearChange}
+          <!-- How far: the numeric limits collapse by default so the map keeps
+               the screen; the toggle shows a mark while a hidden one is set. -->
+          <div class="edition limits">
+            <button
+              type="button"
+              class="filter-toggle"
+              aria-expanded={filtersOpen}
+              onclick={() => (filtersOpen = !filtersOpen)}
+            >
+              <span class="filter-label">Limits</span>
+              <span class="filter-current"
+                >{filtersActive ? "set" : "none"}</span
+              >
+              <span
+                class="filter-caret"
+                class:open={filtersOpen}
+                aria-hidden="true">&#9662;</span
+              >
+            </button>
+            {#if filtersOpen}
+              <div class="num-grid">
+                <label class="field"
+                  >Min duration (h)
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    bind:value={minDuration}
+                  />
+                </label>
+                <label class="field"
+                  >Max duration (h)
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    bind:value={maxDuration}
+                  />
+                </label>
+                <label class="field"
+                  >Min distance (km)
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    bind:value={minDistance}
+                  />
+                </label>
+                <label class="field"
+                  >Max distance (km)
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    bind:value={maxDistance}
+                  />
+                </label>
+                <label class="field field-wide"
+                  >Max ascent (m)
+                  <input
+                    type="number"
+                    min="0"
+                    step="50"
+                    bind:value={maxAscent}
+                  />
+                </label>
+              </div>
+              <div class="reset-row">
+                <Button variant="secondary" class="reset" onclick={resetFilters}
+                  >Reset</Button
+                >
+              </div>
+            {/if}
+          </div>
+
+          {#if walks.length > 0 && filtered.length === 0}
+            <div class="edition empty-state" role="status">
+              No walks match these filters. Reset the limits to see them all.
+            </div>
+          {/if}
+        </div>
+        <SiteIndex here="hikes" />
+      </aside>
+      <div class="content edition map-edition">
+        <HikesMap
+          walks={filtered}
+          {selectedDay}
+          {maxima}
+          initialUuid={initial.selectedWalk}
+          onSelectWalk={handleSelectWalk}
         />
       </div>
-      {#if geoError}
-        <p class="geo-error" role="alert">{geoError}</p>
-      {/if}
-
-      <div class="day-strip" role="group" aria-label="Filter by viable day">
-        <button
-          type="button"
-          class="day-chip"
-          class:active={selectedDay == null}
-          onclick={() => (selectedDay = null)}>Any day</button
-        >
-        {#each dayKeys as key (key)}
-          <button
-            type="button"
-            class="day-chip"
-            class:active={selectedDay === key}
-            onclick={() => (selectedDay = selectedDay === key ? null : key)}
-            >{dayLabel(key)}</button
-          >
-        {/each}
-      </div>
-
-      <button
-        type="button"
-        class="more-toggle"
-        class:on={filtersOpen}
-        aria-expanded={filtersOpen}
-        onclick={() => (filtersOpen = !filtersOpen)}
-      >
-        Filters{#if filtersActive && !filtersOpen}<span
-            class="dot"
-            aria-hidden="true"
-          ></span>{/if}
-        <span class="chev" aria-hidden="true">{filtersOpen ? "▴" : "▾"}</span>
-      </button>
-      {#if walks.length > 0 && filtered.length === 0}
-        <p class="geo-error">
-          No walks match these filters. Open Filters and hit Reset to see them
-          all.
-        </p>
-      {/if}
     </div>
-
-    {#if filtersOpen}
-      <div class="panel control-more">
-        <div class="num-grid">
-          <label class="field"
-            >Min duration (h)
-            <input type="number" min="0" step="0.5" bind:value={minDuration} />
-          </label>
-          <label class="field"
-            >Max duration (h)
-            <input type="number" min="0" step="0.5" bind:value={maxDuration} />
-          </label>
-          <label class="field"
-            >Min distance (km)
-            <input type="number" min="0" step="1" bind:value={minDistance} />
-          </label>
-          <label class="field"
-            >Max distance (km)
-            <input type="number" min="0" step="1" bind:value={maxDistance} />
-          </label>
-          <label class="field field-wide"
-            >Max ascent (m)
-            <input type="number" min="0" step="50" bind:value={maxAscent} />
-          </label>
-        </div>
-
-        <button type="button" class="reset" onclick={resetFilters}>Reset</button
-        >
-      </div>
-    {/if}
   </div>
-</div>
+</main>
 
 <style>
-  /* Full-bleed, map-first (same shell as /app/ships): the map owns the viewport
-     and every control floats over it. HikesMap's .map-wrap is absolutely
-     positioned, so this is its containing block. */
   .hikes-page {
-    position: relative;
-    height: 100vh;
-    height: 100dvh;
-    overflow: hidden;
-    background: var(--cream);
-    color: var(--ink);
+    padding-bottom: 2rem;
   }
 
-  /* Floating control stack, top-left, clear of the map's own chrome. */
+  /* The map wants the measure; the spine stays a control column. */
+  .hikes-page .journal {
+    grid-template-columns: minmax(13em, 16em) minmax(0, 1fr);
+    gap: 1.5rem;
+  }
+
   .controls {
-    position: absolute;
-    top: 16px;
-    left: 16px;
-    z-index: 5;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    width: min(420px, calc(100% - 32px));
-  }
-
-  /* Flat sharp-bordered overlay, matching the ships map overlays: paper bg,
-     2px ink border, no border-radius, no drop shadow. */
-  .panel {
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    padding: 12px;
-  }
-
-  .control-head {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-
-  .crumb-row {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px 14px;
-    flex-wrap: wrap;
-  }
-
-  .crumb {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-
-  .crumb-home {
-    color: var(--ink);
-    text-decoration: underline;
-    text-decoration-color: var(--blue);
-    text-decoration-thickness: 2px;
-    text-decoration-skip-ink: none;
-    text-underline-offset: 2px;
-    padding: 0 2px;
-    transition: background 140ms ease;
-  }
-
-  .crumb-home:hover,
-  .crumb-home:focus-visible {
-    background: linear-gradient(transparent 56%, var(--accent) 56%);
-    text-decoration-color: var(--ink);
-  }
-
-  .crumb-arrow {
-    font-size: 0.85em;
-    margin-left: 1px;
-  }
-
-  .crumb-sep {
-    color: var(--ink-3);
+    display: grid;
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
   }
 
   .stats {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
+    margin: 0;
+    font: 0.75rem/1.6 var(--font-code);
+    color: var(--ink-2);
+  }
+
+  .near-field {
+    display: grid;
+    gap: 0.35rem;
+    padding: 0.6rem 0.75rem;
+  }
+
+  .field-label,
+  .field {
+    font: 0.68rem var(--font-code);
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--ink-2);
   }
 
-  /* Day chips wrap, and scroll horizontally only if they truly overflow on a
-     very narrow screen. */
-  .day-strip {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
+  /* Native controls, drawn as the sheet's: one hairline, the band as ground,
+     the page's own type. The select keeps the platform's picker. */
+  .near-field select,
+  .field input {
+    width: 100%;
+    min-height: 44px;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--stroke);
+    background: var(--band);
+    color: var(--ink);
+    font: 0.85rem var(--font-ui);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  .near-field select {
+    cursor: pointer;
+  }
+
+  .note {
+    margin: 0;
+    padding: 0 0.75rem 0.6rem;
+    font: 0.72rem/1.5 var(--font-code);
+    color: var(--ink-2);
+  }
+
+  /* Day choices form one divided value; the chosen day uses the accent and
+     an underline, the same marker the stars night picker uses. */
+  .days {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .day-chip {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    padding: 6px 9px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    color: var(--ink);
+    min-width: 0;
+    min-height: 44px;
+    padding: 0.5rem 0.2rem;
+    background: var(--band);
+    color: var(--accent-ink);
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    font: 0.75rem var(--font-code);
+    text-align: center;
+    text-decoration: underline;
+    text-underline-offset: 0.25em;
     cursor: pointer;
-    white-space: nowrap;
-    transition:
-      transform 110ms ease,
-      box-shadow 110ms ease;
   }
 
-  .day-chip:hover {
-    transform: translate(-2px, -2px);
-    box-shadow: 2px 2px 0 var(--ink);
+  .day-chip.is-off {
+    background: var(--sheet);
+    color: var(--ink-2);
+    text-decoration: none;
   }
 
-  .day-chip.active {
-    background: var(--ink);
-    color: var(--paper);
-  }
-
-  .more-toggle {
-    align-self: flex-start;
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    padding: 7px 11px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
+  .day-chip:hover,
+  .filter-toggle:hover {
+    background: var(--band);
     color: var(--ink);
-    cursor: pointer;
-    transition:
-      transform 110ms ease,
-      box-shadow 110ms ease;
   }
 
-  .more-toggle:hover {
-    transform: translate(-2px, -2px);
-    box-shadow: 2px 2px 0 var(--ink);
+  .day-chip-all {
+    grid-column: 1 / -1;
   }
 
-  .more-toggle.on {
-    background: var(--ink);
-    color: var(--paper);
-  }
-
-  .more-toggle .dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--blue);
-  }
-
-  .more-toggle .chev {
-    font-size: 10px;
-  }
-
-  .control-more {
+  .filter-toggle {
     display: flex;
-    flex-direction: column;
-    gap: 10px;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    min-height: 44px;
+    padding: 0.65rem 0.8rem;
+    background: var(--sheet);
+    border: 0;
+    cursor: pointer;
+    font: 0.75rem var(--font-code);
+    color: var(--ink);
+  }
+
+  .filter-label {
+    color: var(--ink-2);
+  }
+
+  .filter-current {
+    margin-left: auto;
+  }
+
+  .filter-caret.open {
+    transform: rotate(180deg);
   }
 
   .num-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 10px;
+    gap: 0.6rem;
+    padding: 0.6rem 0.75rem;
+    border-top: 1px solid var(--stroke);
+  }
+
+  .field {
+    display: grid;
+    gap: 0.3rem;
   }
 
   .field-wide {
     grid-column: 1 / -1;
   }
 
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--ink-3);
+  .reset-row {
+    padding: 0 0.75rem 0.75rem;
   }
 
-  .field input {
-    font-family: var(--mono);
-    font-size: 13px;
-    padding: 7px 8px;
-    background: var(--cream);
-    border: 2px solid var(--ink);
-    color: var(--ink);
-    width: 100%;
+  .reset-row :global(.reset) {
+    font: 0.75rem var(--font-code);
   }
 
-  .geo-error {
-    margin: 0;
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 0.04em;
-    color: var(--blue);
+  .empty-state {
+    padding: 0.8rem;
+    font: 0.75rem/1.6 var(--font-code);
+    color: var(--ink-2);
   }
 
-  .reset {
-    align-self: flex-start;
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    padding: 9px 16px;
-    background: var(--blue);
-    border: 2px solid var(--ink);
-    color: var(--ink);
-    cursor: pointer;
-    transition:
-      transform 120ms ease,
-      box-shadow 120ms ease;
+  .map-edition {
+    align-self: start;
+    overflow: visible;
   }
 
-  .reset:hover {
-    transform: translate(-2px, -2px);
-    box-shadow: 2px 2px 0 var(--ink);
-  }
-
-  @media (max-width: 640px) {
-    .controls {
-      top: 12px;
-      left: 12px;
-      width: calc(100% - 24px);
+  @media (max-width: 760px) {
+    .hikes-page .journal {
+      display: block;
     }
 
-    /* Keep the day strip on one swipeable line so the panel stays short. */
-    .day-strip {
-      flex-wrap: nowrap;
+    .controls {
+      margin-bottom: 1rem;
+    }
+
+    /* Keep the day strip to one row of chips on a phone; it scrolls if it
+       truly overflows. */
+    .days {
+      display: flex;
       overflow-x: auto;
       scrollbar-width: none;
     }
 
-    .day-strip::-webkit-scrollbar {
-      display: none;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .day-chip,
-    .more-toggle,
-    .reset {
-      transition: none;
+    .day-chip {
+      flex: 1 0 auto;
+      padding-inline: 0.8rem;
     }
   }
 </style>

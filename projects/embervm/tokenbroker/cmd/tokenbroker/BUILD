@@ -4,8 +4,6 @@ go_library(
     name = "tokenbroker_lib",
     srcs = [
         "codex_usage.go",
-        "github.go",
-        "github_canary.go",
         "main.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/tokenbroker/cmd/tokenbroker",
@@ -16,7 +14,6 @@ go_library(
         "//projects/embervm/tokenbroker/internal/provider",
         "//projects/embervm/tokenbroker/internal/provider/authentik",
         "//projects/embervm/tokenbroker/internal/provider/codexchatgpt",
-        "//projects/embervm/tokenbroker/internal/provider/githubapp",
         "//projects/embervm/tokenbroker/internal/quota",
         "//projects/embervm/tokenbroker/internal/store",
         "@com_github_prometheus_client_golang//prometheus",
@@ -40,8 +37,6 @@ go_test(
     name = "tokenbroker_test",
     srcs = [
         "codex_usage_test.go",
-        "github_canary_test.go",
-        "github_test.go",
         "main_test.go",
         "spiffe_test.go",
     ],

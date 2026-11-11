@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Field, Session, SQLModel
 
+from core.clock import aware
 from core.db import get_engine
 
 logger = logging.getLogger(__name__)
@@ -111,17 +112,14 @@ def probe_health(name: str, staleness_s: float):
 
         now = datetime.now(timezone.utc)
 
-        def _utc(dt: datetime) -> datetime:
-            return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
-
         if not row.ok:
             detail = row.detail or "not ok"
             if row.last_ok_at is not None:
-                down_s = max(0.0, (now - _utc(row.last_ok_at)).total_seconds())
+                down_s = max(0.0, (now - aware(row.last_ok_at)).total_seconds())
                 detail = f"{detail}, down for {down_s / 60:.0f}m"
             return {"ok": False, "detail": detail}
 
-        age_s = (now - _utc(row.checked_at)).total_seconds()
+        age_s = (now - aware(row.checked_at)).total_seconds()
         if age_s > staleness_s:
             return {
                 "ok": False,

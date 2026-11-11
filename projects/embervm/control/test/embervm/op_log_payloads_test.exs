@@ -31,8 +31,7 @@ defmodule Embervm.OpLogPayloadsTest do
         op_log: op_log,
         name: nil,
         clock: clock(),
-        on_queued: fn _ -> :ok end,
-        async_lifecycle_writes: false
+        on_queued: fn _ -> :ok end
       )
 
     {:ok, :created, task_id} = TaskStore.submit(store, %{tenant: "t", principal: "p", workload: "w"})
@@ -50,7 +49,7 @@ defmodule Embervm.OpLogPayloadsTest do
 
   test "session_created payload contains vm_id and node_id", %{path: path} do
     {:ok, op_log} = SQLite.start_link(path: path, name: nil)
-    {:ok, store} = SessionStore.start_link(op_log: op_log, name: nil, clock: clock(), async_lifecycle_writes: false)
+    {:ok, store} = SessionStore.start_link(op_log: op_log, name: nil, clock: clock())
 
     {:ok, created} =
       SessionStore.create(store, %{
@@ -69,7 +68,7 @@ defmodule Embervm.OpLogPayloadsTest do
 
   test "sync session_relit preserves residency and relight metadata", %{path: path} do
     {:ok, op_log} = SQLite.start_link(path: path, name: nil)
-    {:ok, store} = SessionStore.start_link(op_log: op_log, name: nil, clock: clock(), async_lifecycle_writes: false)
+    {:ok, store} = SessionStore.start_link(op_log: op_log, name: nil, clock: clock())
 
     {:ok, created} =
       SessionStore.create(store, %{
@@ -85,14 +84,13 @@ defmodule Embervm.OpLogPayloadsTest do
     {:ok, _} = SessionStore.mark(store, created.session_id, :relight)
 
     {:ok, _} =
-      SessionStore.transition_lifecycle(
+      SessionStore.transition(
         store,
         created.session_id,
         :relight_ready,
         :session_relit,
         %{snapshot_ref: "snap-2", generation: 4, relight_ms: 27, vm_id: "vm-2", node_id: "node-2"},
-        %{snapshot_ref: "snap-2", generation: 4, vm_id: "vm-2", node_id: "node-2"},
-        "vm-2"
+        %{snapshot_ref: "snap-2", generation: 4, vm_id: "vm-2", node_id: "node-2"}
       )
 
     op = read_kind(op_log, :session_relit)
@@ -105,7 +103,7 @@ defmodule Embervm.OpLogPayloadsTest do
 
   test "rejoin appends session_rejoined with filesystem lineage payload only", %{path: path} do
     {:ok, op_log} = SQLite.start_link(path: path, name: nil)
-    {:ok, store} = SessionStore.start_link(op_log: op_log, name: nil, clock: clock(), async_lifecycle_writes: false)
+    {:ok, store} = SessionStore.start_link(op_log: op_log, name: nil, clock: clock())
 
     {:ok, created} =
       SessionStore.create(store, %{
@@ -161,7 +159,7 @@ defmodule Embervm.OpLogPayloadsTest do
   # split exists to remove.
   test "memory relight appends session_relit WITH the pairing fields", %{path: path} do
     {:ok, op_log} = SQLite.start_link(path: path, name: nil)
-    {:ok, store} = SessionStore.start_link(op_log: op_log, name: nil, clock: clock(), async_lifecycle_writes: false)
+    {:ok, store} = SessionStore.start_link(op_log: op_log, name: nil, clock: clock())
 
     {:ok, created} =
       SessionStore.create(store, %{

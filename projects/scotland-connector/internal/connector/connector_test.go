@@ -1,0 +1,958 @@
+package connector_test
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/connector"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/fixture"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/stars"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
+)
+
+func f(v float64) *float64 { return &v }
+func i(v int) *int         { return &v }
+func s(v string) *string   { return &v }
+
+func plan(t *testing.T, p connector.PlanParams) (*connector.Envelope, connector.PlanResult) {
+	t.Helper()
+	env, err := fixture.Service(true).Plan(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return env, env.Data.(connector.PlanResult)
+}
+
+func check(t *testing.T, items ...connector.CheckItem) (*connector.Envelope, []connector.CheckResultItem) {
+	t.Helper()
+	env, err := fixture.Service(true).Check(connector.CheckParams{Items: items})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return env, env.Data.(connector.CheckResult).Items
+}
+
+func TestEntityFreshnessAcrossCheckAndCombinedPlan(t *testing.T) {
+	// The real snapshot shapes carry independent times. A newer entity
+	// keeps dataset metadata fresh while the requested entity expires.
+	for _, stamp := range []string{`"2026-10-18T00:00:00Z"`, `null`} {
+		walkBody := strings.Replace(fixture.Walks, `"forecast_fetched_at":"2026-10-19T14:20:00Z"`, `"forecast_fetched_at":`+stamp, 1)
+		starBody := strings.Replace(fixture.Sites, `"forecast_fetched_at":"2026-10-19T14:05:00Z"`, `"forecast_fetched_at":`+stamp, 1)
+		wd, err := walks.Parse([]byte(walkBody), "walks")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sd, err := stars.Parse([]byte(starBody), []byte(fixture.History), "stars")
+		if err != nil {
+			t.Fatal(err)
+		}
+		svc := fixture.Service(true)
+		svc.Walks, svc.Data = fixture.WalkSource{DS: wd}, fixture.Source{DS: sd}
+		env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{
+			{Activity: "walk", Date: "2026-10-20", WalkID: "wh-meall-a-bhuachaille"},
+			{Activity: "stargaze", Date: "2026-10-20", Lat: f(57.30), Lon: f(-3.70)},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range env.Data.(connector.CheckResult).Items {
+			if item.Verdict != verdict.Unknown || strings.Contains(item.Why, "0001") {
+				t.Fatalf("%s: %+v", stamp, item)
+			}
+		}
+		plan, err := svc.Plan(connector.PlanParams{Lat: f(57.30), Lon: f(-3.70), From: s("2026-10-20"), To: s("2026-10-20")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		day := plan.Data.(connector.PlanResult).Days[0]
+		if len(day.Walks) != 0 || len(day.Stargazing) != 0 || day.WalkNote == "" || day.StarNote == "" {
+			t.Fatalf("%s: %+v", stamp, day)
+		}
+	}
+}
+
+func TestUnknownSiteOutsideStarShortlist(t *testing.T) {
+	for _, stamp := range []string{`null`, `"2026-10-17T00:00:00Z"`, `"2026-10-19T00:00:00Z"`} {
+		var sites []string
+		for n := 0; n < 50; n++ {
+			sites = append(sites, fmt.Sprintf(`{"id":"cloudy-%d","lat":57.3,"lon":-3.7,"lp_zone":"rural","forecast_fetched_at":"2026-10-19T14:05:00Z","best_hours":[]}`, n))
+		}
+		sites = append(sites, `{"id":"unknown","lat":57.35,"lon":-3.7,"lp_zone":"rural","forecast_fetched_at":`+stamp+`,"best_hours":[]}`)
+		body := `{"fetched_at":"2026-10-19T14:05:00Z","sites":[` + strings.Join(sites, ",") + `]}`
+		ds, err := stars.Parse([]byte(body), []byte(`{"sites":[]}`), "mixed")
+		if err != nil {
+			t.Fatal(err)
+		}
+		svc := fixture.Service(true)
+		svc.Data = fixture.Source{DS: ds}
+		env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "stargaze", Date: "2026-10-20", Lat: f(57.3), Lon: f(-3.7)}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		item := env.Data.(connector.CheckResult).Items[0]
+		if item.Verdict != verdict.Unknown || strings.Contains(item.Why, "0001") {
+			t.Fatalf("%s: excluded unknown site: %+v", stamp, item)
+		}
+		env, err = svc.Plan(connector.PlanParams{Lat: f(57.3), Lon: f(-3.7), From: s("2026-10-20"), To: s("2026-10-20")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		day := env.Data.(connector.PlanResult).Days[0]
+		if len(day.Stargazing) != 0 || day.StarNote == "" || strings.Contains(day.StarNote, "Cloudy at every") || strings.Contains(day.StarNote, "0001") {
+			t.Fatalf("%s: excluded unknown site: %+v", stamp, day)
+		}
+	}
+}
+
+func sourceNames(m connector.Meta) string {
+	var names []string
+	for _, src := range m.Sources {
+		names = append(names, src.Name)
+	}
+	return strings.Join(names, ",")
+}
+
+// A plan defaults to three days from today with both activities, and every
+// day carries the sun and moon at the point.
+func TestPlanDefaults(t *testing.T) {
+	env, res := plan(t, connector.PlanParams{Lat: f(57.191), Lon: f(-3.834)})
+	q := res.Query
+	if q.Lat != 57.19 || q.Lon != -3.83 || q.RadiusKm != connector.DefaultRadiusKm || q.From != "2026-10-19" || q.To != "2026-10-21" ||
+		strings.Join(q.Activities, ",") != "walk,stargaze" || q.Limit != connector.DefaultOptions {
+		t.Fatalf("query = %+v", q)
+	}
+	if len(res.Days) != 3 {
+		t.Fatalf("days = %d", len(res.Days))
+	}
+	for _, d := range res.Days {
+		if d.Sunrise == nil || d.Sunset == nil || *d.Sunrise >= *d.Sunset || d.MoonIllumination <= 0 || d.MoonIllumination > 1 {
+			t.Errorf("%s sky = %v %v %v", d.Date, d.Sunrise, d.Sunset, d.MoonIllumination)
+		}
+	}
+	if env.Meta.DataVersion != `"s1"|"h1"|"w1"` || env.Meta.ForecastFetchedAt == nil || *env.Meta.ForecastFetchedAt != "2026-10-19T14:05:00Z" {
+		t.Fatalf("meta = %+v", env.Meta)
+	}
+	if !strings.Contains(sourceNames(env.Meta), "Walkhighlands") || !strings.Contains(sourceNames(env.Meta), "CERRA") || len(env.Meta.Notes) != 2 {
+		t.Fatalf("meta = %+v", env.Meta)
+	}
+}
+
+// Only options that fit come back, go before marginal; when none fit, the
+// day says why instead.
+func TestPlanVerdicts(t *testing.T) {
+	env, res := plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83)})
+	today, tomorrow, after := res.Days[0], res.Days[1], res.Days[2]
+	if len(today.Walks) != 0 || !strings.Contains(today.WalkNote, "None of the 2 walks") {
+		t.Errorf("today walks = %+v %q", today.Walks, today.WalkNote)
+	}
+	if len(tomorrow.Walks) != 1 || tomorrow.Walks[0].WalkID != "wh-meall-a-bhuachaille" || tomorrow.Walks[0].Verdict != verdict.Go ||
+		tomorrow.Walks[0].StartBy == nil || *tomorrow.Walks[0].StartBy != "2026-10-20T11:00:00Z" || tomorrow.WalkNote != "" {
+		t.Errorf("tomorrow walks = %+v", tomorrow.Walks)
+	}
+	// scotland-0002 lists 1 of its 30 clear hours, so tonight it cannot say
+	// and is left out.
+	if len(today.Stargazing) != 1 || today.Stargazing[0].SiteID != "scotland-0001" {
+		t.Errorf("tonight = %+v", today.Stargazing)
+	}
+	for _, o := range today.Stargazing {
+		if o.Verdict != verdict.Go && o.Verdict != verdict.Marginal {
+			t.Errorf("tonight %s verdict %s", o.SiteID, o.Verdict)
+		}
+	}
+	if len(after.Walks) != 0 || len(after.Stargazing) != 0 || !strings.Contains(after.StarNote, "Beyond the hourly forecast") || !strings.Contains(after.WalkNote, "hourly forecast reaches only") {
+		t.Errorf("day 3 = %+v", after)
+	}
+	if env.Results != 1+1+1 {
+		t.Errorf("results = %d", env.Results)
+	}
+}
+
+func TestPlanFilters(t *testing.T) {
+	env, res := plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"stargaze"}, From: s("2026-10-20"), To: s("2026-10-20")})
+	if len(res.Days) != 1 || res.Days[0].Walks != nil || res.Days[0].WalkNote != "" || len(res.Days[0].Stargazing) != 1 {
+		t.Fatalf("stargaze only = %+v", res.Days)
+	}
+	if strings.Contains(sourceNames(env.Meta), "Walkhighlands") || len(env.Meta.Notes) != 1 || env.Meta.DataVersion != `"s1"|"h1"` {
+		t.Fatalf("stargaze only meta = %+v", env.Meta)
+	}
+	env, res = plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}, WalkFilter: connector.WalkFilter{MaxAscentM: i(500)}, From: s("2026-10-20"), To: s("2026-10-20")})
+	if res.Days[0].Walks != nil || !strings.Contains(res.Days[0].WalkNote, "No walk starts within 30 km") || res.Days[0].Stargazing != nil {
+		t.Fatalf("max ascent = %+v", res.Days[0])
+	}
+	if strings.Contains(sourceNames(env.Meta), "CERRA") {
+		t.Fatalf("walk only meta = %+v", env.Meta)
+	}
+}
+
+func TestPlanValidation(t *testing.T) {
+	svc := fixture.Service(true)
+	for param, p := range map[string]connector.PlanParams{
+		"lat":            {Lon: f(-3.8)},
+		"lat ":           {Lat: f(51.5), Lon: f(-0.12)},
+		"radius_km":      {Lat: f(57), Lon: f(-3.8), RadiusKm: f(101)},
+		"from":           {Lat: f(57), Lon: f(-3.8), From: s("2026-10-18")},
+		"from ":          {Lat: f(57), Lon: f(-3.8), From: s("2026-11-02")},
+		"to":             {Lat: f(57), Lon: f(-3.8), From: s("2026-10-20"), To: s("2026-10-27")},
+		"to ":            {Lat: f(57), Lon: f(-3.8), From: s("2026-10-20"), To: s("2026-10-19")},
+		"activities":     {Lat: f(57), Lon: f(-3.8), Activities: []string{"ski"}},
+		"max_duration_h": {Lat: f(57), Lon: f(-3.8), WalkFilter: connector.WalkFilter{MaxDurationH: f(0)}},
+		"max_ascent_m":   {Lat: f(57), Lon: f(-3.8), WalkFilter: connector.WalkFilter{MaxAscentM: i(3001)}},
+		"limit":          {Lat: f(57), Lon: f(-3.8), Limit: i(connector.MaxOptions + 1)},
+	} {
+		_, err := svc.Plan(p)
+		var pe *connector.ParamError
+		if !errors.As(err, &pe) || pe.Param != strings.TrimSpace(param) {
+			t.Errorf("%s: err = %v", param, err)
+		}
+	}
+	// The span may reach the last day ahead, but no further.
+	if _, err := svc.Plan(connector.PlanParams{Lat: f(57), Lon: f(-3.8), From: s("2026-11-01"), To: s("2026-11-01")}); err != nil {
+		t.Errorf("last day: %v", err)
+	}
+	if _, err := svc.Plan(connector.PlanParams{Lat: f(57), Lon: f(-3.8), From: s(" "), To: s("")}); err != nil {
+		t.Errorf("blank dates are absent: %v", err)
+	}
+}
+
+func TestUnavailable(t *testing.T) {
+	svc := fixture.Service(false)
+	if _, err := svc.Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83)}); !errors.Is(err, connector.ErrUnavailable) {
+		t.Errorf("plan: %v", err)
+	}
+	if _, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "stargaze", Date: "2026-10-19", Lat: f(57.3), Lon: f(-3.7)}}}); !errors.Is(err, connector.ErrUnavailable) {
+		t.Errorf("check: %v", err)
+	}
+}
+
+// The walk snapshot is optional: without it a plan or check still answers
+// its stargazing, and only a walks-only question is unavailable.
+func TestWithoutWalks(t *testing.T) {
+	svc := fixture.Service(true)
+	svc.Walks = fixture.WalkSource{}
+	env, err := svc.Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := env.Data.(connector.PlanResult).Days[0]
+	if day.Walks != nil || !strings.Contains(day.WalkNote, "not loaded yet") || len(day.Stargazing) == 0 || strings.Contains(sourceNames(env.Meta), "Walkhighlands") {
+		t.Fatalf("plan without walks = %+v", day)
+	}
+	env, err = svc.Check(connector.CheckParams{Items: []connector.CheckItem{
+		{Activity: "walk", Date: "2026-10-20", WalkName: "gorm"},
+		{Activity: "stargaze", Date: "2026-10-19", Lat: f(57.3), Lon: f(-3.7)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := env.Data.(connector.CheckResult).Items
+	if !strings.Contains(items[0].Error, "not loaded yet") || items[1].Verdict != verdict.Marginal || env.Results != 1 {
+		t.Fatalf("check without walks = %+v", items)
+	}
+	if _, err := svc.Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}}); !errors.Is(err, connector.ErrUnavailable) {
+		t.Errorf("walk-only plan: %v", err)
+	}
+	if _, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-10-20", WalkName: "gorm"}}}); !errors.Is(err, connector.ErrUnavailable) {
+		t.Errorf("walk-only check: %v", err)
+	}
+}
+
+// Equal questions share an ETag; a different one does not.
+func TestETags(t *testing.T) {
+	a, _ := plan(t, connector.PlanParams{Lat: f(57.191), Lon: f(-3.834), Activities: []string{"stargaze", "walk"}})
+	b, _ := plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), To: s("2026-10-21")})
+	c, _ := plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Limit: i(2)})
+	if a.ETag != b.ETag || a.ETag == c.ETag {
+		t.Errorf("plan etags %s %s %s", a.ETag, b.ETag, c.ETag)
+	}
+	// check is a POST, which no cache keys on.
+	if d, _ := check(t, connector.CheckItem{Activity: "walk", Date: "2026-10-20", WalkName: "gorm"}); d.ETag != "" {
+		t.Errorf("check etag %s", d.ETag)
+	}
+}
+
+// A walk that does not fit says why and offers a nearby walk that does.
+func TestCheckWalk(t *testing.T) {
+	env, items := check(t,
+		connector.CheckItem{Activity: "walk", Date: "2026-10-20", WalkName: "Cairn Gorm"},
+		connector.CheckItem{Activity: "walk", Date: "2026-10-20", WalkID: "wh-meall-a-bhuachaille"},
+	)
+	no, yes := items[0], items[1]
+	if no.Verdict != verdict.No || !strings.Contains(no.Why, "longest good spell is 2 h") || no.Walk == nil || no.Walk.WalkID != "wh-cairn-gorm" || no.Walk.Slot != nil {
+		t.Fatalf("cairn gorm = %+v", no)
+	}
+	// Meall a' Bhuachaille fits, but at 3 h it is no substitute for 9 h.
+	if no.NearbyWalks != nil {
+		t.Fatalf("cairn gorm nearby = %+v", no.NearbyWalks)
+	}
+	if yes.Verdict != verdict.Go || yes.Walk.Slot == nil || yes.Walk.StartFrom == nil || yes.NearbyWalks != nil || yes.Sky == nil || yes.Sky.Sunrise == nil {
+		t.Fatalf("meall = %+v", yes)
+	}
+	if strings.Contains(sourceNames(env.Meta), "CERRA") || env.Results != 2 {
+		t.Fatalf("meta %+v results %d", env.Meta, env.Results)
+	}
+}
+
+// A better walk nearby is one of similar length that fits the same day.
+func TestCheckNearbyWalksAreSubstitutes(t *testing.T) {
+	hours := func(n int) string {
+		var h []string
+		for i := 0; i < n; i++ {
+			h = append(h, fmt.Sprintf("[%d,7,0.0,15,30]", 1792483200+i*3600))
+		}
+		return strings.Join(h, ",")
+	}
+	body := `{"schema_version":1,"fetched_at":"2026-10-19T14:20:00+00:00","walks":[` +
+		`{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"asked","name":"Asked","url":"https://www.walkhighlands.co.uk/a.shtml","lat":57.1,"lon":-3.7,"distance_km":12,"ascent_m":800,"duration_h":6,"hours":[` + hours(2) + `]},` +
+		`{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"similar","name":"Similar","url":"https://www.walkhighlands.co.uk/s.shtml","lat":57.12,"lon":-3.7,"distance_km":11,"ascent_m":700,"duration_h":5,"hours":[` + hours(6) + `]},` +
+		`{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"short","name":"Short","url":"https://www.walkhighlands.co.uk/b.shtml","lat":57.1,"lon":-3.71,"distance_km":3,"ascent_m":50,"duration_h":1,"hours":[` + hours(6) + `]},` +
+		`{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"far","name":"Far","url":"https://www.walkhighlands.co.uk/f.shtml","lat":57.5,"lon":-3.7,"distance_km":12,"ascent_m":800,"duration_h":6,"hours":[` + hours(6) + `]}]}`
+	wk, err := walks.Parse([]byte(body), "w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := fixture.Service(true)
+	svc.Walks = fixture.WalkSource{DS: wk}
+	env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-10-20", WalkID: "asked"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it := env.Data.(connector.CheckResult).Items[0]
+	if it.Verdict != verdict.No || len(it.NearbyWalks) != 1 || it.NearbyWalks[0].WalkID != "similar" {
+		t.Fatalf("nearby = %+v", it)
+	}
+}
+
+// A walk_name several routes match equally well checks the shortest name and
+// says so ("ben" was Ben Ledi with nothing to say it was a tie-break); a
+// name that is a walk's whole name, a single match, or one route listed
+// twice under two ids (as Beinn Eighe is live) carries no note.
+func TestCheckSaysWhenWalkNameIsATieBreak(t *testing.T) {
+	walk := func(id, name string) string {
+		return `{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"` + id + `","name":"` + name + `","url":"https://www.walkhighlands.co.uk/` + id + `.shtml","lat":57.1,"lon":-3.7,"distance_km":8,"ascent_m":600,"duration_h":4,"hours":[]}`
+	}
+	body := `{"schema_version":1,"fetched_at":"2026-10-19T14:20:00+00:00","walks":[` +
+		walk("ledi", "Ben Ledi") + `,` + walk("hope", "Ben Hope") + `,` + walk("nevis", "Ben Nevis by the Mountain Track") + `,` + walk("vrackie", "Ben Vrackie") + `,` +
+		strings.Replace(walk("eighe-a", "Beinn Eighe (western summits)"), "eighe-a.shtml", "eighe.shtml", 1) + `,` +
+		strings.Replace(walk("eighe-b", "Beinn Eighe (western summits)"), "eighe-b.shtml", "eighe.shtml", 1) + `]}`
+	wk, err := walks.Parse([]byte(body), "w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := fixture.Service(true)
+	svc.Walks = fixture.WalkSource{DS: wk}
+	for _, c := range []struct{ name, walk, note string }{
+		{"ben", "Ben Hope", `4 walks match "ben" equally well; Ben Hope was checked`},
+		{"Ben Ledi", "Ben Ledi", ""},
+		{"nevis", "Ben Nevis by the Mountain Track", ""},
+		{"beinn eighe western", "Beinn Eighe (western summits)", ""},
+	} {
+		env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-10-20", WalkName: c.name}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		it := env.Data.(connector.CheckResult).Items[0]
+		if it.Walk == nil || it.Walk.Name != c.walk {
+			t.Fatalf("%q checked %+v, want %s", c.name, it.Walk, c.walk)
+		}
+		if c.note == "" && it.Walk.MatchNote != "" || !strings.Contains(it.Walk.MatchNote, c.note) {
+			t.Errorf("%q note = %q, want %q", c.name, it.Walk.MatchNote, c.note)
+		}
+		for _, other := range it.Walk.AlsoMatched {
+			if other == c.walk {
+				t.Errorf("%q also matched the same route: %v", c.name, it.Walk.AlsoMatched)
+			}
+		}
+	}
+}
+
+// Before 09:00 the night under way is yesterday's: check accepts its date,
+// and a plan with stargazing starts on it.
+func TestTonightAfterMidnight(t *testing.T) {
+	svc := fixture.Service(true)
+	svc.Now = func() time.Time { return time.Date(2026, 10, 19, 23, 30, 0, 0, time.UTC) } // 00:30 BST on the 20th
+	env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "stargaze", Date: "2026-10-19", Lat: f(57.10), Lon: f(-3.90)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it := env.Data.(connector.CheckResult).Items[0]; it.Error != "" || it.Night == nil || it.Night.SiteID != "scotland-0002" {
+		t.Fatalf("tonight = %+v", it)
+	}
+	// A walk on that date is over.
+	if _, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-10-19", WalkName: "gorm"}}}); err == nil {
+		t.Fatal("a walk yesterday was accepted")
+	}
+	env, err = svc.Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := env.Data.(connector.PlanResult)
+	// It still covers three days of walks: today and the two after.
+	if res.Query.From != "2026-10-19" || res.Query.To != "2026-10-22" || res.Days[0].Walks != nil || !strings.Contains(res.Days[0].WalkNote, "This day is over") {
+		t.Fatalf("plan = %+v", res.Query)
+	}
+	// A walk-only plan cannot start on a night it does not plan.
+	if _, err := svc.Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}, From: s("2026-10-19")}); err == nil {
+		t.Fatal("a walk-only plan accepted yesterday")
+	}
+	env, err = svc.Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}})
+	if err != nil || env.Data.(connector.PlanResult).Query.From != "2026-10-20" {
+		t.Fatalf("walk plan from = %v %v", env, err)
+	}
+}
+
+// Windows ranks on listed hours, so a capped site whose list stops before
+// the night can fall outside the top sites; the answer is still unknown.
+func TestCappedSiteOutsideTheTopIsStillUnknown(t *testing.T) {
+	var sites []string
+	for i := 0; i < 60; i++ {
+		sites = append(sites, fmt.Sprintf(`{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"near-%02d","lat":%.3f,"lon":-3.8,"lp_zone":"rural","clear_dark_hours":0,"clear_twilight_hours":0,"best_hours":[]}`, i, 57.0+float64(i)*0.001))
+	}
+	sites = append(sites, `{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"capped","lat":57.08,"lon":-3.8,"lp_zone":"rural","clear_dark_hours":30,"clear_twilight_hours":30,"best_hours":[{"time":"2026-10-19T22:00:00+00:00","cloud_area_fraction":1,"dark":true}]}`)
+	sky, err := stars.Parse([]byte(`{"fetched_at":"2026-10-19T14:05:00+00:00","sites":[`+strings.Join(sites, ",")+`]}`), []byte(`{"sites":[]}`), "v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := fixture.Service(true)
+	svc.Data = fixture.Source{DS: sky}
+	env, err := svc.Plan(connector.PlanParams{Lat: f(57.0), Lon: f(-3.8), Activities: []string{"stargaze"}, From: s("2026-10-20"), To: s("2026-10-20")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note := env.Data.(connector.PlanResult).Days[0].StarNote; !strings.HasPrefix(note, "At site capped, 8.9 km away:") || !strings.Contains(note, "not counted yet") {
+		t.Fatalf("plan note = %q", note)
+	}
+	env, err = svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "stargaze", Date: "2026-10-20", Lat: f(57.0), Lon: f(-3.8)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it := env.Data.(connector.CheckResult).Items[0]; it.Verdict != verdict.Unknown || it.Night.SiteID != "capped" || it.Night.FromPointKm < 8.5 {
+		t.Fatalf("check = %+v", it)
+	}
+}
+
+// A plan filters walks by time, length and ascent, and checks a minimum
+// against its maximum.
+func TestPlanWalkFilters(t *testing.T) {
+	day := connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}, From: s("2026-10-20"), To: s("2026-10-20")}
+	for name, c := range map[string]struct {
+		f    connector.WalkFilter
+		want int
+	}{
+		"none":         {connector.WalkFilter{}, 1},
+		"long walks":   {connector.WalkFilter{MinDurationH: f(5)}, 0},
+		"short walks":  {connector.WalkFilter{MaxDurationH: f(4)}, 1},
+		"length range": {connector.WalkFilter{MinLengthKm: f(5), MaxLengthKm: f(10)}, 1},
+		"too long":     {connector.WalkFilter{MinLengthKm: f(8)}, 0},
+	} {
+		p := day
+		p.WalkFilter = c.f
+		_, res := plan(t, p)
+		if got := len(res.Days[0].Walks); got != c.want {
+			t.Errorf("%s: %d walks %q", name, got, res.Days[0].WalkNote)
+		}
+	}
+	p := day
+	p.WalkFilter = connector.WalkFilter{MinDurationH: f(5), MaxDurationH: f(4)}
+	var pe *connector.ParamError
+	if _, err := fixture.Service(true).Plan(p); !errors.As(err, &pe) || pe.Param != "min_duration_h" {
+		t.Fatalf("min above max: %v", err)
+	}
+	p.WalkFilter = connector.WalkFilter{MaxLengthKm: f(101)}
+	if _, err := fixture.Service(true).Plan(p); !errors.As(err, &pe) || pe.Param != "max_length_km" {
+		t.Fatalf("length cap: %v", err)
+	}
+}
+
+// Weather limits tighten the good hours: a dry walk drops the drizzly
+// hours, and the slot says how wet it is. check shows the slot hour by
+// hour; plan stays compact.
+func TestWeatherLimits(t *testing.T) {
+	walk := connector.CheckItem{Activity: "walk", Date: "2026-10-20", WalkID: "wh-meall-a-bhuachaille"}
+	_, items := check(t, walk)
+	slot := items[0].Walk.Slot
+	if items[0].Verdict != verdict.Go || slot.WetHours != 2 || slot.MaxRainMMH != 0.2 || len(slot.Hours) != 6 {
+		t.Fatalf("default slot = %+v", slot)
+	}
+	if h := slot.Hours[1]; !h.Good || h.RainMM == nil || *h.RainMM != 0.1 || h.WindKmh == nil || h.TempC == nil || h.CloudPct == nil {
+		t.Fatalf("hour = %+v", h)
+	}
+	// Dry only: 09:00Z (0.1 mm) and 12:00Z (0.2 mm) drop out, leaving 08:00Z,
+	// 10:00Z and 11:00Z with one bad hour between: fits, but marginal.
+	env, err := fixture.Service(true).Check(connector.CheckParams{Items: []connector.CheckItem{walk}, WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(0)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := env.Data.(connector.CheckResult)
+	dry := res.Items[0]
+	// The hour turned away keeps its known weather, so an agent can see it
+	// was drizzle, and the why names it.
+	gap := dry.Walk.Slot.Hours[1]
+	if dry.Verdict != verdict.Marginal || dry.Walk.Slot.WetHours != 0 || gap.Good || len(gap.Fails) != 1 || gap.Fails[0] != "rain" || gap.RainMM == nil || *gap.RainMM != 0.1 ||
+		!strings.Contains(dry.Why, "one wet hour") || !strings.Contains(dry.Why, "otherwise dry") {
+		t.Fatalf("dry = %+v %+v", dry, gap)
+	}
+	if res.Limits == nil || *res.Limits.MaxRainMMH != 0 {
+		t.Fatalf("limits echo = %+v", res.Limits)
+	}
+	// Calm only: every hour is windier than 10 km/h.
+	env, err = fixture.Service(true).Check(connector.CheckParams{Items: []connector.CheckItem{walk}, WeatherLimits: connector.WeatherLimits{MaxWindKmh: f(10)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calm := env.Data.(connector.CheckResult).Items[0]; calm.Verdict != verdict.No || !strings.Contains(calm.Why, "within the limits") {
+		t.Fatalf("calm = %+v", calm)
+	}
+	// plan applies the same limits, echoes them, and leaves out the hours.
+	pe, res2 := plan(t, connector.PlanParams{
+		Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}, From: s("2026-10-20"), To: s("2026-10-20"),
+		WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(0)},
+	})
+	if w := res2.Days[0].Walks; len(w) != 1 || w[0].Verdict != verdict.Marginal || w[0].Slot.Hours != nil || res2.Query.MaxRainMMH == nil {
+		t.Fatalf("plan = %+v %+v", res2.Days[0], res2.Query)
+	}
+	if def, _ := plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"walk"}, From: s("2026-10-20"), To: s("2026-10-20")}); def.ETag == pe.ETag {
+		t.Fatal("limits do not change the plan's ETag")
+	}
+	// Limits round to the data's 0.1 in their strict direction, never
+	// admitting an hour the caller ruled out.
+	for _, c := range []struct {
+		in   connector.WeatherLimits
+		want connector.WeatherLimits
+	}{
+		{connector.WeatherLimits{MaxRainMMH: f(0.05), MaxWindKmh: f(15.56), MinTempC: f(2.41)}, connector.WeatherLimits{MaxRainMMH: f(0), MaxWindKmh: f(15.5), MinTempC: f(2.5)}},
+		{connector.WeatherLimits{MaxRainMMH: f(0.3), MinTempC: f(9.5)}, connector.WeatherLimits{MaxRainMMH: f(0.3), MinTempC: f(9.5)}},
+		{connector.WeatherLimits{MinTempC: f(-0.05)}, connector.WeatherLimits{MinTempC: f(0)}},
+	} {
+		_, r := plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), WeatherLimits: c.in})
+		got, want := r.Query.WeatherLimits, c.want
+		eq := func(a, b *float64) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }
+		if !eq(got.MaxRainMMH, want.MaxRainMMH) || !eq(got.MaxWindKmh, want.MaxWindKmh) || !eq(got.MinTempC, want.MinTempC) {
+			t.Errorf("limits %v rounded to %+v", c.in, got)
+		}
+	}
+	_, negZero := plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), WeatherLimits: connector.WeatherLimits{MinTempC: f(-0.05)}})
+	if b, _ := json.Marshal(negZero.Query); !strings.Contains(string(b), `"min_temp_c":0`) {
+		t.Errorf("-0.05 echoes as %s", b)
+	}
+	// A check of stargazing alone echoes no walk limits.
+	if env, err := fixture.Service(true).Check(connector.CheckParams{
+		Items:         []connector.CheckItem{{Activity: "stargaze", Date: "2026-10-19", Lat: f(57.3), Lon: f(-3.7)}},
+		WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(0)},
+	}); err != nil || env.Data.(connector.CheckResult).Limits != nil {
+		t.Errorf("stargaze-only limits echo: %v", err)
+	}
+	for param, l := range map[string]connector.WeatherLimits{
+		"max_rain_mm_h": {MaxRainMMH: f(10.5)},
+		"max_wind_kmh":  {MaxWindKmh: f(-1)},
+		"min_temp_c":    {MinTempC: f(31)},
+	} {
+		var perr *connector.ParamError
+		if _, err := fixture.Service(true).Check(connector.CheckParams{Items: []connector.CheckItem{walk}, WeatherLimits: l}); !errors.As(err, &perr) || perr.Param != param {
+			t.Errorf("check %s: %v", param, err)
+		}
+		if _, err := fixture.Service(true).Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), WeatherLimits: l}); !errors.As(err, &perr) || perr.Param != param {
+			t.Errorf("plan %s: %v", param, err)
+		}
+	}
+}
+
+// v2Walks is a version 2 walk snapshot: one 3 h walk near Aviemore whose
+// daylight on 20 October runs 08:00Z to 15:00Z, every hour present. 10:00Z
+// and 11:00Z are wet (3 mm) and 13:00Z is breezier (45 km/h); fog is not
+// forecast and low cloud is 40%.
+func v2Walks(t *testing.T) *walks.Dataset {
+	t.Helper()
+	var hours []string
+	for i := 0; i < 8; i++ {
+		rain, wind := 0.0, 20
+		if i == 2 || i == 3 {
+			rain = 3
+		}
+		if i == 5 {
+			wind = 45
+		}
+		hours = append(hours, fmt.Sprintf("[%d,8,%g,%d,50,null,40]", 1792483200+i*3600, rain, wind))
+	}
+	body := `{"schema_version":2,"fetched_at":"2026-10-19T14:20:00+00:00","walks":[` +
+		`{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":"wet","name":"Wet Walk","url":"https://www.walkhighlands.co.uk/w.shtml","lat":57.17,"lon":-3.67,"distance_km":9,"ascent_m":400,"duration_h":3,"hours":[` + strings.Join(hours, ",") + `]}]}`
+	ds, err := walks.Parse([]byte(body), "w2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ds
+}
+
+// With every daylight hour in the data, limits loosen as well as tighten,
+// and a slot's hours carry their full weather and what a bad hour failed.
+func TestV2WeatherLimits(t *testing.T) {
+	svc := fixture.Service(true)
+	svc.Walks = fixture.WalkSource{DS: v2Walks(t)}
+	walk := connector.CheckItem{Activity: "walk", Date: "2026-10-20", WalkID: "wet"}
+	run := func(l connector.WeatherLimits) connector.CheckResultItem {
+		t.Helper()
+		env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{walk}, WeatherLimits: l})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return env.Data.(connector.CheckResult).Items[0]
+	}
+	// Defaults: the 3 mm hours are bad, leaving 12:00Z to 16:00Z.
+	def := run(connector.WeatherLimits{})
+	if def.Verdict != verdict.Go || def.Walk.Slot.Start != "2026-10-20T12:00:00Z" || def.Walk.Slot.MaxWindKmh != 45 {
+		t.Fatalf("default = %+v %+v", def, def.Walk.Slot)
+	}
+	h := def.Walk.Slot.Hours[0]
+	if h.WindKmh == nil || *h.WindKmh != 20 || h.LowCloudPct == nil || *h.LowCloudPct != 40 || h.FogPct != nil || h.Fails != nil {
+		t.Fatalf("hour = %+v", h)
+	}
+	// Loosened to 4 mm, the whole day is good from 08:00Z.
+	if wet := run(connector.WeatherLimits{MaxRainMMH: f(4)}); wet.Verdict != verdict.Go || wet.Walk.Slot.Start != "2026-10-20T08:00:00Z" || wet.Walk.Slot.WetHours != 2 {
+		t.Fatalf("loosened = %+v %+v", wet, wet.Walk.Slot)
+	}
+	// Wind at most 40: 13:00Z is now the slot's one bad hour, named.
+	g := run(connector.WeatherLimits{MaxWindKmh: f(40)})
+	if g.Verdict != verdict.Marginal || !strings.Contains(g.Why, "one windy hour") {
+		t.Fatalf("wind = %+v", g)
+	}
+	var bad *connector.SlotHour
+	for i := range g.Walk.Slot.Hours {
+		if !g.Walk.Slot.Hours[i].Good {
+			bad = &g.Walk.Slot.Hours[i]
+		}
+	}
+	if bad == nil || len(bad.Fails) != 1 || bad.Fails[0] != "wind" || bad.WindKmh == nil || *bad.WindKmh != 45 {
+		t.Fatalf("bad hour = %+v", bad)
+	}
+	// At least 9 C: every hour is 8 C, so nothing is good.
+	if c := run(connector.WeatherLimits{MinTempC: f(9)}); c.Verdict != verdict.No {
+		t.Fatalf("cold = %+v", c)
+	}
+}
+
+// On data with good hours only, limits looser than the defaults cannot
+// apply, and the answer says so rather than ignoring them.
+func TestLoosenedLimitsNeedTheFullData(t *testing.T) {
+	var pe *connector.ParamError
+	_, err := fixture.Service(true).Check(connector.CheckParams{
+		Items:         []connector.CheckItem{{Activity: "walk", Date: "2026-10-20", WalkName: "gorm"}},
+		WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(5)},
+	})
+	if !errors.As(err, &pe) || pe.Param != "max_rain_mm_h" || !strings.Contains(pe.Message, "not available yet") {
+		t.Fatalf("loosened rain on v1: %v", err)
+	}
+	_, err = fixture.Service(true).Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), WeatherLimits: connector.WeatherLimits{MaxWindKmh: f(90)}})
+	if !errors.As(err, &pe) || pe.Param != "max_wind_kmh" {
+		t.Fatalf("loosened wind on v1: %v", err)
+	}
+	// Tightening, and limits at the default, still work on v1.
+	if _, err := fixture.Service(true).Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(2), MaxWindKmh: f(50)}}); err != nil {
+		t.Fatalf("tightened on v1: %v", err)
+	}
+	// Stargazing alone does not need walk data, so the limit is moot there.
+	if _, err := fixture.Service(true).Plan(connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), Activities: []string{"stargaze"}, WeatherLimits: connector.WeatherLimits{MaxRainMMH: f(5)}}); err != nil {
+		t.Fatalf("stargaze plan: %v", err)
+	}
+}
+
+// An item that cannot be resolved is an item error; the rest still answer.
+func TestCheckItemErrors(t *testing.T) {
+	env, items := check(t,
+		connector.CheckItem{Activity: "walk", Date: "2026-10-20", WalkName: "Ben Nevis"},
+		connector.CheckItem{Activity: "walk", Date: "2026-10-20", WalkID: "wh-nope"},
+		connector.CheckItem{Activity: "stargaze", Date: "2026-10-19", Lat: f(55.95), Lon: f(-3.19)},
+		connector.CheckItem{Activity: "walk", Date: "2026-10-20", WalkName: "gorm"},
+	)
+	for _, it := range items[:3] {
+		if it.Error == "" || it.Verdict != "" || it.Walk != nil || it.Night != nil {
+			t.Errorf("item = %+v", it)
+		}
+	}
+	if items[3].Error != "" || items[3].Verdict != verdict.No {
+		t.Errorf("good item = %+v", items[3])
+	}
+	if env.Results != 1 {
+		t.Errorf("results = %d", env.Results)
+	}
+}
+
+func TestCheckNight(t *testing.T) {
+	_, items := check(t,
+		connector.CheckItem{Activity: "stargaze", Date: "2026-10-19", Lat: f(57.3), Lon: f(-3.7)},
+		connector.CheckItem{Activity: "stargaze", Date: "2026-10-19", Lat: f(57.45), Lon: f(-3.7)},
+	)
+	at, far := items[0], items[1]
+	if at.Verdict != verdict.Marginal || at.Night == nil || at.Night.SiteID != "scotland-0001" || at.Night.FromPointKm != 0 || at.Night.SiteNote != "" {
+		t.Fatalf("at site = %+v", at)
+	}
+	if at.Night.ClearFrom == nil || *at.Night.ClearFrom != "2026-10-19T20:00:00Z" || at.Night.ClearSkyOdds == nil || *at.Night.ClearSkyOdds != 0.25 {
+		t.Fatalf("at site night = %+v", at.Night)
+	}
+	if len(at.OtherDays) != 1 || at.OtherDays[0].Date != "2026-10-20" {
+		t.Fatalf("other days = %+v", at.OtherDays)
+	}
+	if far.Night == nil || !strings.Contains(far.Night.SiteNote, "No dark-sky site within 10 km") || far.Night.FromPointKm < 10 {
+		t.Fatalf("far = %+v", far)
+	}
+}
+
+func TestCheckValidation(t *testing.T) {
+	svc := fixture.Service(true)
+	walk := func(it connector.CheckItem) connector.CheckParams {
+		return connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-10-20", WalkName: "gorm"}, it}}
+	}
+	for param, p := range map[string]connector.CheckParams{
+		"items":                {},
+		"items ":               {Items: make([]connector.CheckItem, connector.MaxCheckItems+1)},
+		"items[1].activity":    walk(connector.CheckItem{Activity: "ski", Date: "2026-10-20"}),
+		"items[1].date":        walk(connector.CheckItem{Activity: "walk", Date: "tomorrow", WalkName: "gorm"}),
+		"items[1].date ":       walk(connector.CheckItem{Activity: "walk", Date: "2026-11-02", WalkName: "gorm"}),
+		"items[1].walk_name":   walk(connector.CheckItem{Activity: "walk", Date: "2026-10-20"}),
+		"items[1].walk_name ":  walk(connector.CheckItem{Activity: "walk", Date: "2026-10-20", WalkName: "--"}),
+		"items[1].walk_name  ": walk(connector.CheckItem{Activity: "walk", Date: "2026-10-20", WalkName: strings.Repeat("é", connector.MaxNameLength+1)}),
+		"items[1].lat":         walk(connector.CheckItem{Activity: "stargaze", Date: "2026-10-20"}),
+		"items[1].lat ":        walk(connector.CheckItem{Activity: "stargaze", Date: "2026-10-20", Lat: f(51.5), Lon: f(-0.12)}),
+	} {
+		_, err := svc.Check(p)
+		var pe *connector.ParamError
+		if !errors.As(err, &pe) || pe.Param != strings.TrimSpace(param) {
+			t.Errorf("%q: err = %v", param, err)
+		}
+	}
+	// A name of exactly the cap, in runes, is allowed.
+	if _, err := svc.Check(walk(connector.CheckItem{Activity: "walk", Date: "2026-10-20", WalkName: strings.Repeat("é", connector.MaxNameLength)})); err != nil {
+		t.Errorf("name at the cap: %v", err)
+	}
+}
+
+// The wire shape: field names agents read, and verdicts as plain strings.
+func TestWireShape(t *testing.T) {
+	_, res := plan(t, connector.PlanParams{Lat: f(57.19), Lon: f(-3.83), From: s("2026-10-20"), To: s("2026-10-20")})
+	b, err := json.Marshal(res.Days[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{
+		`"date":"2026-10-20"`, `"sunrise":`, `"sunset":`, `"moon_illumination":`, `"walks":[`, `"verdict":"go"`, `"why":`,
+		`"start_from":`, `"start_by":`, `"slot":{`, `"url":"https://www.walkhighlands.co.uk/`, `"stargazing":[`, `"clear_sky_odds":`,
+		`"clear_from":`, `"moonless_clear_dark_hours":`, `"light_pollution_zone":`,
+	} {
+		if !strings.Contains(string(b), k) {
+			t.Errorf("day lacks %s: %s", k, b)
+		}
+	}
+}
+
+func TestCloudyPlanKeepsMoonContext(t *testing.T) {
+	sky, err := stars.Parse([]byte(`{"fetched_at":"2026-10-20T14:00:00+00:00","sites":[{"forecast_fetched_at":"2026-10-20T14:00:00Z","id":"cloudy","lat":57,"lon":-4,"best_hours":[]}]}`), []byte(`{"sites":[]}`), "synthetic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := fixture.Service(true)
+	svc.Data = fixture.Source{DS: sky}
+	env, err := svc.Plan(connector.PlanParams{Lat: f(57), Lon: f(-4), Activities: []string{"stargaze"}, From: s("2026-10-20"), To: s("2026-10-20")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	note := env.Data.(connector.PlanResult).Days[0].StarNote
+	if !strings.Contains(note, "Cloudy at every") || !strings.Contains(note, "Moon illumination") || !strings.Contains(note, "The moon is up") {
+		t.Fatal(note)
+	}
+}
+
+// Labelled synthetic city/hill profiles with identical qualifying hours. This
+// is not the user's unspecified original request or forecast.
+func refinementWalks(t *testing.T) *walks.Dataset {
+	t.Helper()
+	var rows []string
+	for _, r := range []struct {
+		id          string
+		lat, length float64
+		ascent      int
+		duration    float64
+	}{
+		{"urban", 57, 4, 50, 2},
+		{"long", 57.03, 17, 380, 5},
+		{"canal", 57.04, 16, 140, 5},
+		{"hill", 57.4, 12, 990, 5.5},
+		{"bad", 57.01, 12, 990, 5.5},
+	} {
+		var hours []string
+		for h := 0; h < 8; h++ {
+			low := "90"
+			if h >= 4 {
+				low = "10"
+			}
+			if r.id == "canal" && h == 0 {
+				low = "null"
+			}
+			rain := 0.2
+			if r.id == "bad" {
+				rain = 3
+			}
+			hours = append(hours, fmt.Sprintf("[%d,10,%.1f,20,90,0,%s]", 1792483200+h*3600, rain, low))
+		}
+		rows = append(rows, fmt.Sprintf(`{"forecast_fetched_at":"2026-10-19T14:20:00Z","id":%q,"name":%q,"url":"https://example.com/walk","lat":%g,"lon":-4,"distance_km":%g,"ascent_m":%d,"duration_h":%g,"hours":[%s]}`, r.id, r.id, r.lat, r.length, r.ascent, r.duration, strings.Join(hours, ",")))
+	}
+	ds, err := walks.Parse([]byte(`{"schema_version":2,"fetched_at":"2026-10-19T14:20:00Z","walks":[`+strings.Join(rows, ",")+`]}`), "synthetic-refinements")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ds
+}
+
+func TestRefinedPlanDiversityAndFilters(t *testing.T) {
+	svc := fixture.Service(true)
+	svc.Walks = fixture.WalkSource{DS: refinementWalks(t)}
+	base := connector.PlanParams{Lat: f(57), Lon: f(-4), RadiusKm: f(50), From: s("2026-10-20"), To: s("2026-10-20"), Activities: []string{"walk"}, Limit: i(3)}
+	for _, tc := range []struct {
+		name     string
+		edit     func(*connector.PlanParams)
+		wantHill bool
+	}{
+		{"full radius", func(*connector.PlanParams) {}, true},
+		{"radius", func(p *connector.PlanParams) { p.RadiusKm = f(30) }, false},
+		{"ascent", func(p *connector.PlanParams) { p.MaxAscentM = i(400) }, false},
+		{"duration", func(p *connector.PlanParams) { p.MaxDurationH = f(3) }, false},
+		{"length", func(p *connector.PlanParams) { p.MaxLengthKm = f(5) }, false},
+		{"rain", func(p *connector.PlanParams) { p.MaxRainMMH = f(0) }, false},
+		{"unknown day", func(p *connector.PlanParams) { p.From = s("2026-10-22"); p.To = p.From }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := base
+			tc.edit(&p)
+			env, err := svc.Plan(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := env.Data.(connector.PlanResult)
+			found := false
+			for _, w := range res.Days[0].Walks {
+				found = found || w.WalkID == "hill"
+				if w.WalkID == "bad" || w.Verdict == verdict.No || w.Verdict == verdict.Unknown {
+					t.Fatal(w)
+				}
+			}
+			if found != tc.wantHill {
+				t.Fatalf("%+v", res.Days[0])
+			}
+			notes := strings.Join(env.Meta.Notes, " ")
+			if strings.Count(notes, "cloud base or summit visibility") != 1 {
+				t.Fatal(notes)
+			}
+		})
+	}
+}
+
+func TestRefinedAdviceMetadataAndSize(t *testing.T) {
+	svc := fixture.Service(true)
+	svc.Walks = fixture.WalkSource{DS: refinementWalks(t)}
+	env, err := svc.Plan(connector.PlanParams{Lat: f(57), Lon: f(-4), RadiusKm: f(50), From: s("2026-10-20"), To: s("2026-10-20"), Activities: []string{"walk"}, Limit: i(3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := env.Data.(connector.PlanResult)
+	for _, w := range res.Days[0].Walks {
+		if strings.Contains(w.Why, "cloud base") || strings.Contains(w.Why, "8 of 8 qualifying hours known") || len(w.Why) > 340 {
+			t.Fatal(w.Why)
+		}
+	}
+	data, _ := json.Marshal(env.Data)
+	if len(data) > 3500 {
+		t.Fatalf("compact three-walk plan is %d bytes", len(data))
+	}
+	checked, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{
+		{Activity: "walk", Date: "2026-10-20", WalkID: "urban"},
+		{Activity: "walk", Date: "2026-10-20", WalkID: "canal"},
+		{Activity: "walk", Date: "2026-10-22", WalkID: "hill"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := checked.Data.(connector.CheckResult).Items
+	if strings.Contains(items[0].Why, "Prefer ") || !strings.Contains(items[1].Why, "7 of 8 qualifying hours known") || items[2].Verdict != verdict.Unknown {
+		t.Fatalf("%+v", items)
+	}
+	serialized, _ := json.Marshal(checked)
+	if strings.Count(string(serialized), "cloud base or summit visibility") != 1 {
+		t.Fatal("cloud caveat must occur once in metadata")
+	}
+	// Loaded but empty data still gives the common uncertainty note.
+	svc.Walks = fixture.WalkSource{DS: &walks.Dataset{}}
+	empty, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "walk", Date: "2026-10-20", WalkID: "missing"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(strings.Join(empty.Meta.Notes, " "), "cloud base or summit visibility") != 1 {
+		t.Fatal(empty.Meta.Notes)
+	}
+	sky, err := svc.Plan(connector.PlanParams{Lat: f(57), Lon: f(-4), Activities: []string{"stargaze"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(sky.Meta.Notes, " "), "cloud base") {
+		t.Fatal(sky.Meta.Notes)
+	}
+}
+
+func TestCheckNightAlternativesAreDistinct(t *testing.T) {
+	// The checked point has one clear hour. Better sites are outside its
+	// inner 10 km search, with the first two less than 1 km apart.
+	site := func(id string, lat float64, count int, fetched string) string {
+		var hours []string
+		for h := 0; h < count; h++ {
+			stamp := time.Date(2026, 10, 19, 20+h, 0, 0, 0, time.UTC).Format(time.RFC3339)
+			hours = append(hours, fmt.Sprintf(`{"time":%q,"cloud_area_fraction":0,"dark":true}`, stamp))
+		}
+		return fmt.Sprintf(`{"id":%q,"lat":%f,"lon":-4,"lp_zone":"pristine","forecast_fetched_at":%q,"clear_dark_hours":%d,"clear_twilight_hours":%d,"best_hours":[%s]}`, id, lat, fetched, count, count, strings.Join(hours, ","))
+	}
+	fresh := "2026-10-19T14:05:00Z"
+	checked := site("checked", 57, 1, fresh)
+	a, b := site("a", 57.11, 8, fresh), site("b", 57.115, 8, fresh)
+	far := site("far", 57.19, 8, fresh)
+	for _, tc := range []struct {
+		name  string
+		sites []string
+		want  []string
+	}{
+		{"cluster", []string{a, b, far}, []string{"a", "far"}},
+		{"sparse", []string{a, b}, []string{"a"}},
+		{"quality before proximity", []string{site("closer", 57.11, 7, fresh), far}, []string{"far", "closer"}},
+		{"equal rank permutation", []string{site("z", 57.11, 8, fresh), a, far}, []string{"a", "far"}},
+		{"equal rank reversed", []string{far, a, site("z", 57.11, 8, fresh)}, []string{"a", "far"}},
+		{"no unsuitable filler", []string{a, b, site("cloudy", 57.19, 0, fresh), site("stale", 57.20, 8, "2026-10-16T14:05:00Z")}, []string{"a"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"fetched_at":"2026-10-19T14:05:00Z","sites":[` + strings.Join(append([]string{checked}, tc.sites...), ",") + `]}`
+			ds, err := stars.Parse([]byte(body), []byte(`{"sites":[]}`), "spacing")
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc := fixture.Service(true)
+			svc.Data = fixture.Source{DS: ds}
+			env, err := svc.Check(connector.CheckParams{Items: []connector.CheckItem{{Activity: "stargaze", Date: "2026-10-19", Lat: f(57), Lon: f(-4)}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := env.Data.(connector.CheckResult).Items[0]
+			if item.Verdict != verdict.Marginal || item.Night.SiteID != "checked" {
+				t.Fatalf("checked point changed: %+v", item)
+			}
+			if len(item.NearbyNights) != len(tc.want) {
+				t.Fatalf("alternatives: %+v, want IDs %v", item.NearbyNights, tc.want)
+			}
+			for i, id := range tc.want {
+				if item.NearbyNights[i].SiteID != id {
+					t.Fatalf("alternative %d = %s, want %s", i, item.NearbyNights[i].SiteID, id)
+				}
+				if item.NearbyNights[i].Verdict != verdict.Go {
+					t.Fatalf("unsuitable alternative: %+v", item.NearbyNights[i])
+				}
+			}
+		})
+	}
+}

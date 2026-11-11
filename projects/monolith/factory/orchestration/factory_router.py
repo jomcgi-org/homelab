@@ -4,14 +4,56 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from sqlmodel import Session
 
 from auth.api import Principal
-from core.db import get_session
 from factory.access import operator
 from goosecracker.api import REPO_CATALOG
+from factory.orchestration.recovery_delegation import (
+    Request as RecoveryAuthorizationRequest,
+)
 
 router = APIRouter(prefix="/api/swarm/factory", tags=["factory"])
+
+
+@router.post("/recovery-authorizations")
+async def factory_recovery_authorization(
+    body: RecoveryAuthorizationRequest, principal: Principal = Depends(operator)
+) -> dict:
+    from factory.orchestration.recovery_delegation import request_authorization
+
+    try:
+        return await request_authorization(principal, body)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/recovery-authorizations/{grant_id}")
+def factory_recovery_authorization_status(
+    grant_id: int, principal: Principal = Depends(operator)
+) -> dict:
+    from factory.orchestration.recovery_delegation import status
+
+    try:
+        return status(grant_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+class RecoveryRevokeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_preview_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+@router.post("/recovery-authorizations/{grant_id}/revoke")
+def factory_recovery_revoke(
+    grant_id: int, body: RecoveryRevokeRequest, principal: Principal = Depends(operator)
+) -> dict:
+    from factory.orchestration.recovery_delegation import revoke
+
+    try:
+        return revoke(principal, grant_id, body.expected_preview_sha256)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 class ControlRequest(BaseModel):
@@ -34,6 +76,39 @@ class ReceiptRequest(BaseModel):
     repo: str
     issue_number: int = Field(gt=0)
     generation: int = Field(default=0, ge=0)
+
+
+class SyntheticRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
+    chart_version: str = Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")
+    image: str = Field(min_length=1, max_length=256)
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    promotion: str = Field(pattern=r"^[a-z0-9][a-z0-9.-]{0,252}$")
+
+
+@router.post("/synthetics")
+def factory_synthetics(
+    body: SyntheticRequest, principal: Principal = Depends(operator)
+) -> dict:
+    """Manual, default-off fixture reads. Never admits work or rolls back."""
+    import os
+
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from core.db import get_engine
+    from factory.orchestration.synthetic_actions import Inconclusive, verify
+
+    if os.environ.get("FACTORY_SYNTHETICS_ENABLED") != "true":
+        raise HTTPException(404, "factory synthetics are disabled")
+    try:
+        return verify(get_engine(), **body.model_dump())
+    except (Inconclusive, SQLAlchemyError, ValueError) as exc:
+        # Never return SQL, parameters, fixture bodies or connection details.
+        return {
+            "verdict": "inconclusive",
+            "reason": str(exc) if isinstance(exc, Inconclusive) else type(exc).__name__,
+        }
 
 
 class DecisionRequest(BaseModel):
@@ -67,55 +142,6 @@ def factory_status(principal: Principal = Depends(operator)) -> dict:
             receipt["graph"] = graph.load_graph(receipt["task_id"])
             receipt["node_runs"] = graph.node_runs(receipt["task_id"])
     return result
-
-
-@router.get("/work-items")
-def factory_work_items(
-    state: str | None = None,
-    authority: str | None = None,
-    limit: int = 50,
-    session: Session = Depends(get_session),
-    principal: Principal = Depends(operator),
-) -> dict:
-    """List durable work items for the private factory surface."""
-    from factory.orchestration.work_items import list_work_items
-
-    return {
-        "work_items": list_work_items(
-            session, state=state, authority=authority, limit=limit
-        )
-    }
-
-
-@router.get("/work-items/{item_id}")
-def factory_work_item(
-    item_id: int,
-    session: Session = Depends(get_session),
-    principal: Principal = Depends(operator),
-) -> dict:
-    """Read one durable work item with edges and recent events."""
-    from factory.orchestration.work_items import work_item_document
-
-    document = work_item_document(session, item_id)
-    if document is None:
-        raise HTTPException(404, "work item not found")
-    return document
-
-
-@router.get("/attempt-stop")
-def attempt_stop_preview(
-    task_id: str,
-    node_key: str,
-    attempt: int,
-    session_id: int,
-    principal: Principal = Depends(operator),
-) -> dict:
-    from factory.orchestration.factory_attempt_stop import read_attempt_stop
-
-    try:
-        return read_attempt_stop(task_id, node_key, attempt, session_id)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post("/control")
@@ -225,17 +251,6 @@ def factory_control(
     return result
 
 
-@router.get("/escalations")
-def factory_escalations(principal: Principal = Depends(operator)) -> dict:
-    """Every escalation the lane has raised, open ones first."""
-    from factory.orchestration.factory_controls import escalations, status
-
-    state = status()
-    if not state.get("ok"):
-        return {"ok": False, "reason": state.get("reason"), "escalations": []}
-    return {"ok": True, "escalations": escalations(state["receipts"])}
-
-
 @router.post("/decisions/{receipt_id}")
 def factory_decision(
     receipt_id: int,
@@ -273,10 +288,8 @@ def factory_decision(
     return with_request_knowledge(result, principal.subject, body.request_key)
 
 
-@router.post("/issues")
-def factory_receipt(
-    body: ReceiptRequest, principal: Principal = Depends(operator)
-) -> dict:
+def factory_receipt(body: ReceiptRequest, principal: Principal) -> dict:
+    """Validate and receive MCP issue submissions, without an HTTP registration."""
     from factory.orchestration.factory_conductor import github_get
     from factory.orchestration.factory_intake import receive_issue
 
@@ -302,3 +315,36 @@ def factory_receipt(
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+class ImprovementRequest(BaseModel):
+    """A bounded scouting batch after reviewing exact current context."""
+
+    model_config = ConfigDict(extra="forbid")
+    review_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    rules_reviewed: bool
+    dedup_reviewed: bool
+    subscription_caps: dict
+    findings: list[dict] = Field(max_length=20)
+
+
+@router.get("/improvements/context")
+def improvement_context(principal: Principal = Depends(operator)) -> dict:
+    from factory.orchestration.factory_improvements import context
+
+    try:
+        return context()
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/improvements")
+def improvement_submit(
+    body: ImprovementRequest, principal: Principal = Depends(operator)
+) -> dict:
+    from factory.orchestration.factory_improvements import submit
+
+    try:
+        return submit(body.model_dump(), actor=principal.subject)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc

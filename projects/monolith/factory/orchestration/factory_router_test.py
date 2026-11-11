@@ -76,24 +76,26 @@ def test_factory_controls_require_verified_standing_operator(authority, kind, gr
         authority=authority,
     )
     client = TestClient(app)
+    assert (
+        client.post("/api/swarm/factory/recovery-authorizations", json={}).status_code
+        == 403
+    )
+    assert client.get("/api/swarm/factory/recovery-authorizations/1").status_code == 403
+    assert (
+        client.post(
+            "/api/swarm/factory/recovery-authorizations/1/revoke", json={}
+        ).status_code
+        == 403
+    )
+    assert client.get("/api/swarm/factory/improvements/context").status_code == 403
+    assert client.post("/api/swarm/factory/improvements", json={}).status_code == 403
+    assert client.post("/api/swarm/factory/synthetics", json={}).status_code == 403
     response = client.post(
         "/api/swarm/factory/control",
         json={"action": "enable"},
         headers={"Cf-Access-Authenticated-User-Email": "spoof@example.test"},
     )
     assert response.status_code == 403
-    assert (
-        client.get(
-            "/api/swarm/factory/attempt-stop",
-            params={
-                "task_id": "task",
-                "node_key": "node",
-                "attempt": 1,
-                "session_id": 1,
-            },
-        ).status_code
-        == 403
-    )
     assert (
         client.post(
             "/api/swarm/factory/control",
@@ -157,6 +159,64 @@ def operator_client(subject="operator:test"):
         authority=Authority.STANDING,
     )
     return TestClient(app)
+
+
+def test_synthetics_are_default_off_and_reject_unbounded_input(monkeypatch):
+    from factory.orchestration import synthetic_actions
+
+    client = operator_client()
+    body = {
+        "run_id": "00000000-0000-0000-0000-000000000001",
+        "chart_version": "1.2.3",
+        "image": "example@sha256:" + "b" * 64,
+        "source_commit": "a" * 40,
+        "promotion": "prod.synthetic",
+    }
+    monkeypatch.delenv("FACTORY_SYNTHETICS_ENABLED", raising=False)
+    monkeypatch.setattr(
+        synthetic_actions, "verify", lambda *a, **kw: pytest.fail("ran while disabled")
+    )
+    assert client.post("/api/swarm/factory/synthetics", json=body).status_code == 404
+    monkeypatch.setenv("FACTORY_SYNTHETICS_ENABLED", "true")
+    assert (
+        client.post(
+            "/api/swarm/factory/synthetics", json={**body, "samples": 10000}
+        ).status_code
+        == 422
+    )
+    seen = {}
+
+    def verify(_engine, **kwargs):
+        seen.update(kwargs)
+        return {"verdict": "pass"}
+
+    monkeypatch.setattr(synthetic_actions, "verify", verify)
+    assert client.post("/api/swarm/factory/synthetics", json=body).json() == {
+        "verdict": "pass"
+    }
+    assert seen == body
+
+
+def test_synthetic_database_errors_do_not_expose_sql_or_credentials(monkeypatch):
+    from sqlalchemy.exc import SQLAlchemyError
+    from factory.orchestration import synthetic_actions
+
+    def failed(*args, **kwargs):
+        raise SQLAlchemyError("connection secret and SQL parameters")
+
+    monkeypatch.setenv("FACTORY_SYNTHETICS_ENABLED", "true")
+    monkeypatch.setattr(synthetic_actions, "verify", failed)
+    response = operator_client().post(
+        "/api/swarm/factory/synthetics",
+        json={
+            "run_id": "00000000-0000-0000-0000-000000000001",
+            "chart_version": "1.2.3",
+            "image": "example",
+            "source_commit": "a" * 40,
+            "promotion": "prod.synthetic",
+        },
+    )
+    assert response.json() == {"verdict": "inconclusive", "reason": "SQLAlchemyError"}
 
 
 def test_http_controls_use_the_versioned_request_owner(monkeypatch):
@@ -276,7 +336,7 @@ def test_http_stale_control_refusal_is_durable_after_version_advances(receipt_db
         assert len(records) == 1
 
 
-def test_issue_endpoint_links_receipt_to_fetched_work_item(receipt_db, monkeypatch):
+def test_mcp_intake_helper_links_receipt_to_fetched_work_item(receipt_db, monkeypatch):
     from factory.orchestration import factory_conductor
 
     issue = {
@@ -292,11 +352,19 @@ def test_issue_endpoint_links_receipt_to_fetched_work_item(receipt_db, monkeypat
     monkeypatch.setattr(factory_router, "REPO_CATALOG", {"owner/repo": {}})
     monkeypatch.setattr(factory_conductor, "github_get", lambda *_args: issue)
     monkeypatch.setattr(factory_conductor, "github_list", lambda *_args: [])
-    response = operator_client().post(
-        "/api/swarm/factory/issues",
-        json={"repo": "owner/repo", "issue_number": 12},
+    result = factory_router.factory_receipt(
+        factory_router.ReceiptRequest(repo="owner/repo", issue_number=12),
+        Principal(
+            subject="operator:test",
+            actor=(),
+            scope=(),
+            groups=("operators",),
+            email=None,
+            kind=PrincipalKind.HUMAN,
+            authority=Authority.STANDING,
+        ),
     )
-    assert response.status_code == 200
+    assert result["ok"]
     with Session(receipt_db) as session:
         receipt = session.exec(select(FactoryReceipt)).one()
         assert receipt.work_item_id == session.exec(select(WorkItem.id)).one()
@@ -336,7 +404,6 @@ def test_decisions_require_verified_standing_operator(authority, kind, groups):
         ).status_code
         == 403
     )
-    assert client.get("/api/swarm/factory/escalations").status_code == 403
 
 
 @pytest.mark.parametrize(
@@ -455,3 +522,85 @@ def test_a_decision_error_becomes_its_own_status(monkeypatch):
     )
     assert response.status_code == 409
     assert response.json()["detail"] == "already decided as close"
+
+
+def test_improvement_routes_use_existing_operator_and_bounded_request(monkeypatch):
+    from factory.orchestration import factory_improvements
+
+    seen = {}
+    monkeypatch.setattr(
+        factory_improvements, "context", lambda: {"review_digest": "a" * 64}
+    )
+
+    def submit(batch, *, actor):
+        seen.update(batch=batch, actor=actor)
+        return {"mode": "audit_candidate", "reason": "no_actionable_findings"}
+
+    monkeypatch.setattr(factory_improvements, "submit", submit)
+    client = operator_client("operator:joe")
+    assert client.get("/api/swarm/factory/improvements/context").json() == {
+        "review_digest": "a" * 64
+    }
+    body = {
+        "review_digest": "a" * 64,
+        "rules_reviewed": True,
+        "dedup_reviewed": True,
+        "subscription_caps": {},
+        "findings": [],
+    }
+    assert client.post("/api/swarm/factory/improvements", json=body).status_code == 200
+    assert seen == {"batch": body, "actor": "operator:joe"}
+    assert (
+        client.post(
+            "/api/swarm/factory/improvements", json={**body, "findings": [{}] * 21}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            "/api/swarm/factory/improvements", json={**body, "history": []}
+        ).status_code
+        == 422
+    )
+
+
+def test_improvement_source_refusal_is_observable(monkeypatch):
+    from factory.orchestration import factory_improvements
+
+    def refused(*args, **kwargs):
+        raise ValueError("improvement_source_disabled")
+
+    monkeypatch.setattr(factory_improvements, "submit", refused)
+    response = operator_client().post(
+        "/api/swarm/factory/improvements",
+        json={
+            "review_digest": "a" * 64,
+            "rules_reviewed": True,
+            "dedup_reviewed": True,
+            "subscription_caps": {},
+            "findings": [],
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "improvement_source_disabled"
+
+
+@pytest.mark.parametrize("action", ["enable_auto_merge", "disable_auto_merge"])
+def test_http_merge_control_uses_versioned_owner(monkeypatch, action):
+    calls = []
+    monkeypatch.setattr(
+        factory_controls,
+        "request_control",
+        lambda *a, **kw: calls.append((a, kw)) or {"ok": True},
+    )
+    response = operator_client("operator:joe").post(
+        "/api/swarm/factory/control",
+        json={"action": action, "request_key": "merge-control", "expected_version": 9},
+    )
+    assert response.status_code == 200
+    assert calls == [
+        (
+            (action, "operator:joe"),
+            {"request_key": "merge-control", "expected_version": 9, "task_id": None},
+        )
+    ]

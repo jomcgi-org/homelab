@@ -3,10 +3,10 @@
 import asyncio
 import logging
 
+from core.db import get_engine
 from sqlalchemy import or_
 from sqlmodel import Session, select
 
-from core.db import get_engine
 from factory.execution import execution_api, store
 from factory.execution.models import AgentSession
 
@@ -54,7 +54,10 @@ async def sweep_once(after_id=0):
 
 
 async def _loop():
+    from factory import completed_probe_cleanup
+
     after_id = 0
+    probe_after_id = 0
     while True:
         try:
             after_id = await sweep_once(after_id)
@@ -63,6 +66,10 @@ async def _loop():
                 logger.info("Guest cleanup sweep deferred: pool busy")
             else:
                 logger.exception("Guest cleanup sweep failed")
+        try:
+            probe_after_id = await completed_probe_cleanup.sweep_once(probe_after_id)
+        except Exception:
+            logger.exception("Completed quota probe cleanup sweep failed")
         await asyncio.sleep(INTERVAL_SECONDS)
 
 

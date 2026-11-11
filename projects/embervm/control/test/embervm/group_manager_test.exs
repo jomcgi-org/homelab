@@ -221,7 +221,6 @@ defmodule Embervm.GroupManagerTest do
       evict_snapshot_fun: evict_snapshot_fun,
       get_secret_fun: get_secret_fun,
       secret_fun: Keyword.get(opts, :secret_fun, fn -> "minted-secret" end),
-      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
       clock: fn -> 1_000 end
     ]
 
@@ -379,7 +378,7 @@ defmodule Embervm.GroupManagerTest do
     assert {:error, _reason} = GroupManager.create_group(ctx.mgr)
 
     # The dead shared channel was dropped (node "node-4", channel :ch), so the next
-    # safe_channel/2 re-dials instead of every member start wedging on a dead
+    # NodeChannel.safe_dial/2 re-dials instead of every member start wedging on a dead
     # ConnectionProcess until the control plane restarts (D-R2.7.2).
     assert_receive {:invalidated, "node-4", :ch}, 1_000
   end
@@ -568,11 +567,10 @@ defmodule Embervm.GroupManagerTest do
     assert Enum.take(fresh, -3) |> Enum.sort() == ["leader", "worker-0", "worker-1"]
   end
 
-  test "gated relight cleanup defers fresh boot when a member teardown is unconfirmed" do
+  test "relight cleanup defers fresh boot when a member teardown is unconfirmed" do
     ctx =
       start_group(
         relight_fail_member: "worker-1",
-        node_confirmed_destroy: true,
         destroy_confirmed: false
       )
 

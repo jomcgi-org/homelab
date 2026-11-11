@@ -1,11 +1,9 @@
-import { error, json } from "@sveltejs/kit";
+import { json } from "@sveltejs/kit";
 import { grimoireJson } from "$lib/server/grimoire-auth.js";
 import { sessionState } from "$lib/server/grimoire-session.js";
 import { handoutEvent } from "$lib/grimoire/handout.js";
 
 export async function GET({ fetch, cookies, params, url }) {
-  if (process.env.GRIMOIRE_PLAY_ENABLED !== "true")
-    error(404, "Session play is not enabled.");
   try {
     if (url.searchParams.has("inventory")) {
       const view = url.searchParams.get("inventory");
@@ -70,6 +68,8 @@ export async function GET({ fetch, cookies, params, url }) {
       });
       if (url.searchParams.get("notGrantedTo"))
         query.set("not_granted_to", url.searchParams.get("notGrantedTo"));
+      // The voice preset NPC search; any other type value is ignored.
+      if (url.searchParams.get("type") === "npc") query.set("type", "npc");
       return json(
         await grimoireJson(
           fetch,
@@ -93,10 +93,14 @@ export async function GET({ fetch, cookies, params, url }) {
   } catch (error) {
     return json(
       { error: error.message || "Could not refresh the session." },
-      { status: 400 },
+      { status: signInStatus(error) },
     );
   }
 }
+
+// A missing or rejected sign-in stays a 401, so the page can renew it.
+// Everything else, including a 403 membership denial, stays a 400.
+const signInStatus = (error) => (error?.status === 401 ? 401 : 400);
 
 const UUID = /^[0-9a-f-]{36}$/i;
 
@@ -135,8 +139,6 @@ function initiativeBody(input) {
 }
 
 export async function POST({ request, fetch, cookies, params }) {
-  if (process.env.GRIMOIRE_PLAY_ENABLED !== "true")
-    error(404, "Session play is not enabled.");
   try {
     const input = await request.json();
     const base = `/campaigns/${params.id}/sessions`;
@@ -321,7 +323,7 @@ export async function POST({ request, fetch, cookies, params }) {
   } catch (error) {
     return json(
       { error: error.message || "Could not save. Your draft is still here." },
-      { status: 400 },
+      { status: signInStatus(error) },
     );
   }
 }

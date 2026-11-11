@@ -240,6 +240,49 @@ func TestLoadStoreCredentialsBothOrNeither(t *testing.T) {
 	})
 }
 
+// TestLoadStoreRequiresEncryptionInputs pins the fail-loud startup posture: a
+// configured store always encrypts principal exports and always enforces
+// restore capabilities, so the inputs both need are mandatory.
+func TestLoadStoreRequiresEncryptionInputs(t *testing.T) {
+	setStore := func(t *testing.T) {
+		t.Setenv("EMBERVM_NODED_STORE_ENDPOINT", "http://store.invalid:8333")
+		t.Setenv("EMBERVM_NODED_CONTROL_PLANE_URL", "http://embervm.invalid:8080")
+		t.Setenv("EMBERVM_NODED_RESTORE_CAPABILITY_KEY", "capability-key")
+		t.Setenv("EMBERVM_NODED_BEARER_TOKEN", "")
+	}
+	t.Run("missing control plane URL", func(t *testing.T) {
+		setStore(t)
+		t.Setenv("EMBERVM_NODED_CONTROL_PLANE_URL", "")
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "EMBERVM_NODED_CONTROL_PLANE_URL") {
+			t.Fatalf("Load error = %v, want missing control-plane URL", err)
+		}
+	})
+	t.Run("missing capability verifier", func(t *testing.T) {
+		setStore(t)
+		t.Setenv("EMBERVM_NODED_RESTORE_CAPABILITY_KEY", "")
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "EMBERVM_NODED_RESTORE_CAPABILITY_KEY") {
+			t.Fatalf("Load error = %v, want missing capability verifier", err)
+		}
+	})
+	t.Run("bearer token verifies capabilities", func(t *testing.T) {
+		setStore(t)
+		t.Setenv("EMBERVM_NODED_RESTORE_CAPABILITY_KEY", "")
+		t.Setenv("EMBERVM_NODED_BEARER_TOKEN", "token")
+		if _, err := Load(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("store disabled needs neither", func(t *testing.T) {
+		t.Setenv("EMBERVM_NODED_STORE_ENDPOINT", "")
+		t.Setenv("EMBERVM_NODED_CONTROL_PLANE_URL", "")
+		t.Setenv("EMBERVM_NODED_RESTORE_CAPABILITY_KEY", "")
+		t.Setenv("EMBERVM_NODED_BEARER_TOKEN", "")
+		if _, err := Load(); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 func stringPtr(value string) *string {
 	return &value
 }
@@ -435,8 +478,7 @@ func TestLoadDefaults(t *testing.T) {
 		"EMBERVM_NODED_MAX_LIVE_VMS", "EMBERVM_NODED_IMAGES", "EMBERVM_NODED_IMAGES_FILE",
 		"EMBERVM_NODED_BOOT_READY_TIMEOUT", "EMBERVM_NODED_RESTORE_READY_TIMEOUT",
 		"EMBERVM_NODED_DRAIN_TIMEOUT", "EMBERVM_NODED_PREEMPTION_NOTICE_ENABLED",
-		"EMBERVM_NODED_DRAIN_EXPORTS_OUTLIVE_SIGNAL",
-		"EMBERVM_NODED_PREEMPTION_DRAIN_TIMEOUT", "EMBERVM_NODED_DIFF_BANKING", "EMBERVM_NODED_DIFF_BANKING_WORKLOADS",
+		"EMBERVM_NODED_PREEMPTION_DRAIN_TIMEOUT",
 		"EMBERVM_NODED_ENFORCE_BUNDLE_ROOTFS_IDENTITY",
 		"EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL", "EMBERVM_NODED_WARMTH_STALE_AFTER",
 		"EMBERVM_NODED_REAP_UNCLAIMED_WARMTH",
@@ -471,9 +513,6 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.MaxLiveVMs != 8 {
 		t.Errorf("MaxLiveVMs = %d, want 8", c.MaxLiveVMs)
-	}
-	if c.DiffBanking {
-		t.Error("DiffBanking should default false")
 	}
 	if c.EnforceBundleRootfsIdentity {
 		t.Error("EnforceBundleRootfsIdentity should default false")
@@ -514,9 +553,6 @@ func TestLoadDefaults(t *testing.T) {
 	if c.PreemptionNoticeEnabled {
 		t.Error("PreemptionNoticeEnabled should default false")
 	}
-	if c.DrainExportsOutliveSignal {
-		t.Error("DrainExportsOutliveSignal should default false")
-	}
 	if c.PreemptionDrainTimeout != 20*time.Second {
 		t.Errorf("PreemptionDrainTimeout = %v, want 20s", c.PreemptionDrainTimeout)
 	}
@@ -549,14 +585,8 @@ func TestLoadDefaults(t *testing.T) {
 	if c.GroupUnhealthyThreshold != 3 {
 		t.Errorf("GroupUnhealthyThreshold = %d, want 3", c.GroupUnhealthyThreshold)
 	}
-	if c.StoreEncrypt {
-		t.Error("StoreEncrypt should default false for the two-phase rollout")
-	}
 	if c.UnexportableTTL != 24*time.Hour {
 		t.Errorf("UnexportableTTL = %v, want 24h", c.UnexportableTTL)
-	}
-	if c.RequireRestoreCapability {
-		t.Error("RequireRestoreCapability should default false for the two-phase rollout")
 	}
 	if c.RestoreCapabilityKey != "" {
 		t.Errorf("RestoreCapabilityKey = %q, want empty when env is unset", c.RestoreCapabilityKey)
@@ -639,21 +669,6 @@ func TestLoadJailerEscapeHatch(t *testing.T) {
 	}
 }
 
-func TestLoadDiffBankingOverride(t *testing.T) {
-	t.Setenv("EMBERVM_NODED_DIFF_BANKING", "true")
-	t.Setenv("EMBERVM_NODED_DIFF_BANKING_WORKLOADS", "sandbox-session,another-session")
-	c, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if !c.DiffBanking {
-		t.Error("DiffBanking should be true when EMBERVM_NODED_DIFF_BANKING=true")
-	}
-	if got, want := strings.Join(c.DiffBankingWorkloads, ","), "sandbox-session,another-session"; got != want {
-		t.Errorf("DiffBankingWorkloads = %q, want %q", got, want)
-	}
-}
-
 func TestLoadBundleRootfsIdentityEnforcementOverride(t *testing.T) {
 	t.Setenv("EMBERVM_NODED_ENFORCE_BUNDLE_ROOTFS_IDENTITY", "true")
 	c, err := Load()
@@ -662,17 +677,6 @@ func TestLoadBundleRootfsIdentityEnforcementOverride(t *testing.T) {
 	}
 	if !c.EnforceBundleRootfsIdentity {
 		t.Error("EnforceBundleRootfsIdentity should follow the environment gate")
-	}
-}
-
-func TestLoadDrainExportsOutliveSignalOverride(t *testing.T) {
-	t.Setenv("EMBERVM_NODED_DRAIN_EXPORTS_OUTLIVE_SIGNAL", "true")
-	c, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if !c.DrainExportsOutliveSignal {
-		t.Error("DrainExportsOutliveSignal = false, want true")
 	}
 }
 
@@ -692,19 +696,11 @@ func TestLoadPreemptionOverrides(t *testing.T) {
 }
 
 func TestLoadArtifactEncryptionOverrides(t *testing.T) {
-	t.Setenv("EMBERVM_NODED_STORE_ENCRYPT", "true")
-	t.Setenv("EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY", "true")
 	t.Setenv("EMBERVM_NODED_RESTORE_CAPABILITY_KEY", "dedicated-capability-key")
 	t.Setenv("EMBERVM_NODED_UNEXPORTABLE_TTL", "90m")
 	c, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
-	}
-	if !c.StoreEncrypt {
-		t.Error("StoreEncrypt should parse EMBERVM_NODED_STORE_ENCRYPT=true")
-	}
-	if !c.RequireRestoreCapability {
-		t.Error("RequireRestoreCapability should parse EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY=true")
 	}
 	if c.RestoreCapabilityKey != "dedicated-capability-key" {
 		t.Errorf("RestoreCapabilityKey = %q, want dedicated-capability-key", c.RestoreCapabilityKey)
@@ -911,36 +907,49 @@ func TestInstanceSegmentDeterministicAndDistinct(t *testing.T) {
 // exact worst-case path the driver builds and assert it is comfortably under the
 // limit.
 func TestWorstCaseSocketPathUnderSunLen(t *testing.T) {
-	// The real production NVMe scratch snapshot root (the longest root in the
-	// fleet), a realistic pod UID, and the longest per-op thread id (thread- +
-	// 16 hex chars = 8 random bytes) with the longest socket basename.
-	const snapshotRoot = "/var/lib/embervm/scratch/embervm-noded/snapshots"
+	// Both fleet snapshot roots: production's NVMe scratch root and dev's, which
+	// nests one segment deeper (scratch/dev) and is therefore the longest. A
+	// realistic pod UID and the longest per-op thread id (thread- + 16 hex chars
+	// = 8 random bytes) with the longest socket basename.
+	//
+	// The hard limit binds direct-exec launches, where Firecracker bind(2)s these
+	// host paths itself. A jailed launch binds a short chroot path, and noded
+	// dials the long host alias through unixsock, so it has no limit; the
+	// 2026-10-19 dev preflight failure was a 110-byte alias dialled directly.
+	roots := map[string]string{
+		"production": "/var/lib/embervm/scratch/embervm-noded/snapshots",
+		"dev":        "/var/lib/embervm/scratch/dev/embervm-noded/snapshots",
+	}
 	const podUID = "a1b2c3d4-e5f6-4788-9abc-def012345678"
 	const threadDir = "thread-0123456789abcdef" // driver: "thread-" + 16 hex
 
-	t.Setenv("EMBERVM_NODED_SNAPSHOT_ROOT", snapshotRoot)
-	t.Setenv("EMBERVM_NODED_SIZE_CLASS", "16gi")
-	t.Setenv("EMBERVM_POD_UID", podUID)
-	c, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+	for env, snapshotRoot := range roots {
+		t.Run(env, func(t *testing.T) {
+			t.Setenv("EMBERVM_NODED_SNAPSHOT_ROOT", snapshotRoot)
+			t.Setenv("EMBERVM_NODED_SIZE_CLASS", "16gi")
+			t.Setenv("EMBERVM_POD_UID", podUID)
+			c, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
 
-	// SUN_LEN is 108 on Linux; a NUL terminator eats one byte, so the usable path
-	// is <= 107. We assert a hard margin (< 100) so a future root/threadid tweak
-	// cannot silently creep back over the cliff.
-	paths := map[string]string{
-		"restore API":  filepath.Join(c.WarmthRoot, threadDir, "restore.sock"),
-		"vsock egress": fmt.Sprintf("%s_%d", filepath.Join(c.WarmthRoot, threadDir, vsockproto.HostUDSName), vsockproto.EgressPort),
-	}
-	for name, path := range paths {
-		if len(path) >= 108 {
-			t.Fatalf("%s socket path OVERFLOWS SUN_LEN: %d bytes: %q", name, len(path), path)
-		}
-		if len(path) >= 100 {
-			t.Errorf("%s socket path %d bytes (want < 100 for margin): %q", name, len(path), path)
-		}
-		t.Logf("worst-case brick %s socket path is %d bytes: %q", name, len(path), path)
+			// SUN_LEN is 108 on Linux; a NUL terminator eats one byte, so the usable
+			// path is <= 107. Production also keeps a hard margin (< 100) so a future
+			// root or thread id tweak cannot silently creep back over the cliff.
+			paths := map[string]string{
+				"restore API":  filepath.Join(c.WarmthRoot, threadDir, "restore.sock"),
+				"vsock egress": fmt.Sprintf("%s_%d", filepath.Join(c.WarmthRoot, threadDir, vsockproto.HostUDSName), vsockproto.EgressPort),
+			}
+			for name, path := range paths {
+				if len(path) >= 108 {
+					t.Fatalf("%s socket path OVERFLOWS SUN_LEN: %d bytes: %q", name, len(path), path)
+				}
+				if env == "production" && len(path) >= 100 {
+					t.Errorf("%s socket path %d bytes (want < 100 for margin): %q", name, len(path), path)
+				}
+				t.Logf("worst-case %s brick %s socket path is %d bytes: %q", env, name, len(path), path)
+			}
+		})
 	}
 }
 

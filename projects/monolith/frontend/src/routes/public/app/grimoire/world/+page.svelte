@@ -328,8 +328,9 @@
   }
 </script>
 
-<div class="world-page">
-  <div class="world-head">
+<div class="world-page edition">
+  <h1 class="sr-only">World</h1>
+  <div class="world-head ed-head">
     <div class="head-search">
       <EntitySearch onselect={onSearchSelect} />
     </div>
@@ -395,7 +396,7 @@
                 <span
                   class="sw"
                   aria-hidden="true"
-                  style={`background: var(--grim-type-${t}, var(--grim-text-faint))`}
+                  style={`background: var(--grim-type-${t}, var(--ink-2))`}
                 ></span>
                 {t.replaceAll("_", " ")}
               </div>
@@ -433,7 +434,7 @@
     flex-direction: column;
     gap: 12px;
     padding: 18px 24px;
-    border-bottom: 1px solid var(--grim-line);
+    border-bottom: 1px solid var(--stroke);
   }
 
   .head-search {
@@ -450,9 +451,9 @@
   .lens-switch {
     display: flex;
     gap: 2px;
-    background: var(--grim-surface-2);
-    border: 1px solid var(--grim-line);
-    border-radius: 9px;
+    background: var(--band);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     padding: 3px;
   }
 
@@ -461,27 +462,26 @@
     border: 0;
     cursor: pointer;
     padding: 7px 14px;
-    border-radius: 6px;
+    border-radius: 0;
     font-family: inherit;
     font-size: 12px;
     font-weight: 600;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
   }
 
   .lens-switch button.on {
-    background: var(--grim-surface);
-    color: var(--grim-accent);
-    box-shadow: 0 1px 2px rgba(20, 30, 50, 0.1);
+    background: var(--sheet);
+    color: var(--accent-ink);
   }
 
   .lens-switch button:disabled {
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     opacity: 0.5;
     cursor: not-allowed;
   }
 
   .lens-switch button:not(:disabled):hover {
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .world-main {
@@ -496,7 +496,7 @@
     flex: 1 1 auto;
     min-width: 0;
     min-height: 0;
-    background: var(--grim-surface);
+    background: var(--sheet);
     overflow: hidden;
   }
 
@@ -516,7 +516,7 @@
 
   .world-main.wide .codex-dock.open {
     width: 360px;
-    border-left: 1px solid var(--grim-line);
+    border-left: 1px solid var(--stroke);
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -532,8 +532,8 @@
     width: 100%;
     border-left: 0;
     transform: none;
-    backdrop-filter: none;
-    background: var(--grim-surface);
+
+    background: var(--sheet);
     height: 100%;
   }
 
@@ -552,7 +552,7 @@
     width: 100%;
     height: min(70dvh, 560px);
     border-left: 0;
-    border-top: 1px solid var(--grim-line);
+    border-top: 1px solid var(--stroke);
     transform: translateY(100%);
   }
 
@@ -565,13 +565,13 @@
     top: 14px;
     right: 14px;
     max-width: 32ch;
-    background: color-mix(in srgb, var(--grim-surface) 80%, transparent);
-    backdrop-filter: blur(8px);
-    border: 1px solid var(--grim-line);
-    border-radius: 9px;
+    background: color-mix(in srgb, var(--sheet) 80%, transparent);
+
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     padding: 8px 12px;
     font-size: 11.5px;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     pointer-events: none;
   }
 
@@ -582,10 +582,10 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    background: color-mix(in srgb, var(--grim-surface) 80%, transparent);
-    backdrop-filter: blur(8px);
-    border: 1px solid var(--grim-line);
-    border-radius: 9px;
+    background: color-mix(in srgb, var(--sheet) 80%, transparent);
+
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     padding: 11px 13px;
     pointer-events: none;
   }
@@ -595,13 +595,13 @@
     align-items: center;
     gap: 8px;
     font-size: 11.5px;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
   }
 
   .sw {
     width: 9px;
     height: 9px;
-    border-radius: 50%;
+    border-radius: 0;
     flex: none;
   }
 
@@ -622,7 +622,7 @@
 
   .empty-help {
     max-width: 46ch;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
   }
 
   .status-error {
@@ -637,13 +637,8 @@
 
   .skeleton {
     height: 100%;
-    border-radius: 8px;
-    background: linear-gradient(
-      90deg,
-      var(--grim-surface-2) 25%,
-      transparent 37%,
-      var(--grim-surface-2) 63%
-    );
+    border-radius: 0;
+    background: var(--band);
     background-size: 400% 100%;
     animation: shimmer 1.4s ease infinite;
   }

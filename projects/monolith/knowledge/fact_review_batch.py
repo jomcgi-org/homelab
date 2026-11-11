@@ -38,7 +38,10 @@ def _batch(session, key, *, lock=False):
     query = select(FactReviewBatch).where(FactReviewBatch.invocation_key == key)
     if lock:
         query = query.with_for_update()
-    return session.exec(query.execution_options(populate_existing=True)).one()
+    batch = session.exec(query.execution_options(populate_existing=True)).one()
+    if batch.status == "abandoned":
+        raise ExtractionOutputInvalid("review batch abandoned by operator recovery")
+    return batch
 
 
 def _members(session, keys):
@@ -94,15 +97,17 @@ def _reserve(session, key, now):
     return keys
 
 
-def _failure(session, key, status, reason, now, *, commit=True):
+def _failure(session, key, status, reason, now, *, commit=True, identity=None):
     run = session.exec(
         select(FactReviewRun)
         .where(FactReviewRun.invocation_key == key)
         .with_for_update()
         .execution_options(populate_existing=True)
     ).one()
+    if run.status == "abandoned":
+        raise ExtractionOutputInvalid("review member abandoned by operator recovery")
     if run.status != "complete":
-        record_outcome(
+        outcome = record_outcome(
             session,
             note_id=run.note_id,
             revision=run.revision,
@@ -110,6 +115,10 @@ def _failure(session, key, status, reason, now, *, commit=True):
             reason=review.PREFIX + reason,
             now=now,
         )
+        if status == "unsupported" and identity:
+            from knowledge.review_source_blocks import record_block
+
+            record_block(session, run, outcome, identity, now)
         run.status = "complete"
         run.completed_at = now
         run.result = {
@@ -120,6 +129,27 @@ def _failure(session, key, status, reason, now, *, commit=True):
         }
     if commit:
         session.commit()
+
+
+def _defer(session, key, reason, now):
+    """Close only an untouched reservation, without inventing a source outcome."""
+    run = session.exec(
+        select(FactReviewRun)
+        .where(FactReviewRun.invocation_key == key)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    if run.status == "abandoned":
+        raise ExtractionOutputInvalid("review member abandoned by operator recovery")
+    if run.status != "complete" and not run.sources:
+        run.status, run.completed_at = "complete", now
+        run.result = {
+            "note_id": run.note_id,
+            "outcome": "deferred",
+            "summary": "Source review: untouched reservation deferred",
+            "reason": reason[:300],
+        }
+    session.commit()
 
 
 def _prompt(runs):
@@ -183,8 +213,10 @@ def _finish(session, key, now, *, transaction_guard=None, commit=True):
     batch.result = {
         "summary": f"Source review: {len(runs)} facts, {counts}",
         "facts": len(runs),
+        "attempted_facts": len(runs) - counts.get("deferred", 0),
+        "deferred_facts": counts.get("deferred", 0),
         "outcomes": counts,
-        "retry_required": bool(counts) and set(counts) <= {"unavailable"},
+        "retry_required": bool(counts) and set(counts) <= {"unavailable", "deferred"},
     }
     result = dict(batch.result)
     if commit:
@@ -193,14 +225,17 @@ def _finish(session, key, now, *, transaction_guard=None, commit=True):
 
 
 def prepare(session: Session, key: str, *, fetch=None, now=None) -> str:
-    if not review.enabled():
-        return review.NO_REVIEW
     fixed_now = now
 
     def completed_now():
         return utc(fixed_now or datetime.now(UTC))
 
     now = completed_now()
+    from knowledge import review_coverage as coverage
+    from knowledge.review_source_blocks import probe
+
+    if coverage.enabled() and session.get(FactReviewBatch, key) is None:
+        probe(session, now, fetch=fetch)
     keys = _reserve(session, key, now)
     if not keys:
         _finish(session, key, completed_now())
@@ -224,7 +259,7 @@ def prepare(session: Session, key: str, *, fetch=None, now=None) -> str:
             session.commit()
         except EvidenceUnavailable as exc:
             for member in keys:
-                _failure(session, member, "unavailable", str(exc), now)
+                _defer(session, member, str(exc), now)
             batch = _batch(session, key, lock=True)
             batch.metrics = {
                 k: batch.metrics.get(k, 0) + v for k, v in collector.metrics().items()
@@ -239,6 +274,10 @@ def prepare(session: Session, key: str, *, fetch=None, now=None) -> str:
                 continue
             claim = dict(run.claim)
             session.commit()
+            if collector.stopped:
+                _defer(session, member, collector.stopped, now)
+                continue
+            before_reads = (collector.requests, collector.cache_hits)
             try:
                 if observed is None or now - observed > review.MAX_EVIDENCE_AGE:
                     raise EvidenceUnavailable("batch evidence is stale")
@@ -259,6 +298,12 @@ def prepare(session: Session, key: str, *, fetch=None, now=None) -> str:
                     for source in sources
                 ]
             except EvidenceUnavailable as exc:
+                if collector.stopped and before_reads == (
+                    collector.requests,
+                    collector.cache_hits,
+                ):
+                    _defer(session, member, str(exc), now)
+                    continue
                 _failure(
                     session,
                     member,
@@ -267,6 +312,7 @@ def prepare(session: Session, key: str, *, fetch=None, now=None) -> str:
                     else "unavailable",
                     str(exc),
                     now,
+                    identity=getattr(exc, "identity", None),
                 )
                 continue
             run = session.exec(
@@ -275,6 +321,10 @@ def prepare(session: Session, key: str, *, fetch=None, now=None) -> str:
                 .with_for_update()
                 .execution_options(populate_existing=True)
             ).one()
+            if run.status == "abandoned":
+                raise ExtractionOutputInvalid(
+                    "review member abandoned by operator recovery"
+                )
             if not run.sources and run.status != "complete":
                 run.sources, run.observed_at = sources, observed
                 session.flush()
@@ -346,8 +396,6 @@ def apply(
     cost_usd=None,
 ) -> dict:
     now = utc(now or datetime.now(UTC))
-    if not review.enabled():
-        return {"summary": "Source review disabled"}
     if transaction_guard:
         transaction_guard(session)
     batch = _batch(session, key, lock=True)
@@ -417,7 +465,7 @@ def fail(
     """Release claims only after a known failure; unknown invocations never call this."""
     now = utc(now or datetime.now(UTC))
     batch = session.get(FactReviewBatch, key)
-    if batch is None or batch.status == "complete":
+    if batch is None or batch.status in {"complete", "abandoned"}:
         return
     keys = list(batch.member_keys)
     if commit:
@@ -435,6 +483,7 @@ def status(session: Session, *, now: datetime) -> dict:
         FactReviewRun.completed_at >= now - timedelta(hours=1),
         FactReviewRun.completed_at <= now,
         FactReviewRun.note_id.is_not(None),
+        review.attempted_receipt(),
     )
     completed = session.exec(
         select(func.count(func.distinct(FactReviewRun.note_id))).where(*hour)
@@ -500,4 +549,44 @@ def status(session: Session, *, now: datetime) -> dict:
             }
             for row in recent
         ],
+    }
+
+
+def abandon_for_recomputation(session: Session, key: str) -> dict:
+    """Release unfinished claims without inventing verdicts or removing receipts.
+
+    Used only by explicit audited operator recovery under the routine job lock.
+    The caller owns commit. Completed members and source evidence are unchanged.
+    """
+    batch = _batch(session, key, lock=True)
+    keys = list(batch.member_keys)
+    if (
+        not keys
+        or len(keys) > MAX_BATCH_SIZE
+        or keys != [f"{key}:fact:{i + 1}" for i in range(len(keys))]
+    ):
+        raise ValueError("Exact bounded review membership required")
+    runs = session.exec(
+        select(FactReviewRun)
+        .where(FactReviewRun.invocation_key.in_(keys))
+        .order_by(FactReviewRun.invocation_key)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    if (
+        len(runs) != len(keys)
+        or batch.status != "prepared"
+        or any(run.status not in {"prepared", "complete"} for run in runs)
+    ):
+        raise ValueError("Review batch is not an unfinished prepared batch")
+    unfinished = [run for run in runs if run.status == "prepared"]
+    if not unfinished:
+        raise ValueError("No unfinished review members to recompute")
+    for run in unfinished:
+        run.status = "abandoned"
+    batch.status = "abandoned"
+    session.flush()
+    return {
+        "abandoned_members": len(unfinished),
+        "retained_completed_members": len(runs) - len(unfinished),
     }

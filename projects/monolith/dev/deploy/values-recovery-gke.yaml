@@ -76,13 +76,13 @@ agents:
     enabled: true
     jobKinds: [qwen-drain]
     maxJobsPerCycle: 1
-    notifyFailures: false
     docFixEnabled: false
     docFixAutoMerge: false
     kgMaxJobsPerDay: 0
     repo: jomcgi-org/homelab
     branch: main
 swarm:
+  factoryPlannerHoldRefusalEnabled: false
   enabled: false
 
 semgrep:
@@ -96,8 +96,6 @@ tokenBroker:
     serverId: "spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-tokenbroker"
 sandbox:
   workloadPrefix: "sandbox-dev-"
-emberDurability:
-  url: ""
 
 # Planned dedicated Authentik provider identity. It must be provisioned and
 # joined to the dev broker's principal before activation. No public ingress
@@ -144,8 +142,6 @@ onepassword:
 imgproxySigning:
   enabled: false
 
-frontend:
-  otelCollectorUrl: ""
 tailnet:
   enabled: false
 cfIngress:

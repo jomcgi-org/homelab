@@ -5,6 +5,7 @@ go_library(
     srcs = ["client.go"],
     importpath = "github.com/jomcgi/homelab/projects/embervm/noded/fcvm/fcclient",
     visibility = ["//projects/embervm/noded:__subpackages__"],
+    deps = ["//projects/embervm/noded/unixsock"],
 )
 
 go_test(

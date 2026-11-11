@@ -89,6 +89,10 @@ apko_image(
         # claude runtime package as built artifacts so both images ship byte
         # identical copies.
         "//projects/embervm/runtimes/claude:shim_tar",
+        "//projects/embervm/runtimes/claude:formatters_linux_amd64",
+        "//projects/embervm/runtimes/claude:gazelle_tar",
+        "//bazel/tools/image:prettier_tar",
+        "//bazel/tools/image:node_tar_linux_amd64",
         "//projects/embervm/runtimes/claude:guest_config_tar",
         "//projects/embervm/runtimes/claude:guest_init_tar_amd64",
         ":web_research_extension_tar",

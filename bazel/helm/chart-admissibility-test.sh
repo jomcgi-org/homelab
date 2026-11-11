@@ -35,11 +35,10 @@ if ! "$CRD_EXTRACTOR" "$CRD_SCHEMA_ROOT" "${CRD_SOURCES[@]}" "${MANIFESTS[@]}"; 
 	exit 1
 fi
 
-# These are the custom kinds called out by #4831. Other CRDs found in the
+# These are the still-used custom kinds called out by #4831. Other CRDs found in the
 # rendered charts are extracted and validated by the same mechanism.
 REQUIRED_CRD_SCHEMAS=(
 	"argoproj.io/application_v1alpha1.json"
-	"cilium.io/ciliumnetworkpolicy_v2.json"
 	"db.atlasgo.io/atlasmigration_v1alpha1.json"
 	"gateway.envoyproxy.io/backendtrafficpolicy_v1alpha1.json"
 	"gateway.networking.k8s.io/httproute_v1.json"

@@ -69,8 +69,3 @@ ALL_MODULES: tuple[Module, ...] = (
     sandbox.module.MODULE,
     shotter.module.MODULE,
 )
-
-# Domain names composable as standalone binaries via app/main_domain.py.
-# Kept in sync with MONOLITH_DOMAINS in projects/monolith/domain_images.bzl
-# (the Bazel image fan-out); app/main_domain_test.py smoke-composes each.
-DOMAIN_NAMES: tuple[str, ...] = tuple(m.name for m in ALL_MODULES)

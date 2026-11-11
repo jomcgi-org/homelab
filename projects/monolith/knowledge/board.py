@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -23,7 +22,8 @@ from typing import Iterator
 from sqlalchemy import update
 from sqlmodel import Session, select
 
-from core.clock import aware
+from core.env import flag
+from core.clock import aware, utc_now as _now
 from auth.api import Authority, Principal, current_principal
 from core.db import get_engine
 from knowledge.models import AgentBoardMessage
@@ -112,11 +112,7 @@ def resolve_trusted_binding(principal: Principal) -> TrustedAgentBinding | None:
 
 
 def board_enabled() -> bool:
-    return os.getenv(BOARD_ENABLED_ENV, "false").lower() == "true"
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return flag(BOARD_ENABLED_ENV)
 
 
 def _binding_error(
@@ -547,7 +543,6 @@ __all__ = [
     "TrustedAgentBinding",
     "ack_message",
     "active_blocker_topics_for_poll",
-    "board_enabled",
     "mirror_distress",
     "post_message",
     "read_board",

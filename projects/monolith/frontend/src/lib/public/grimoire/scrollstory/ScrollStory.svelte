@@ -1,4 +1,5 @@
 <script>
+  import { observeScheme } from "../observe-scheme.js";
   // "From scan to query": the public Grimoire landing's scroll-scrubbed
   // explainer. A tall scroller wraps a position: sticky full-viewport stage;
   // one rAF loop maps scroll progress to a master fraction t in [0, 1], and the
@@ -258,11 +259,11 @@
   // tokens to concrete colors off the (in-.grimoire) canvas element, and
   // re-resolve when the theme class flips. Same trick as ExploreCanvas.
   let typeColors = {};
-  let faintColor = "#8a94a2";
+  let faintColor = "";
   function refreshTypeColors() {
     if (!canvasEl) return;
     const cs = getComputedStyle(canvasEl);
-    faintColor = cs.getPropertyValue("--grim-text-faint").trim() || faintColor;
+    faintColor = cs.getPropertyValue("--ink-2").trim() || faintColor;
     const next = {};
     for (const t of Object.keys(story.corpus.byType)) {
       next[t] = cs.getPropertyValue(`--grim-type-${t}`).trim() || faintColor;
@@ -577,15 +578,12 @@
       if (pen <= 0) {
         m.style.background = "transparent";
         m.style.color = "inherit";
+        m.style.textDecoration = "none";
         return;
       }
-      const pct = pen * 100;
-      const tint = `color-mix(in srgb, ${c} 34%, transparent)`;
-      // hard trailing edge with a small feather ahead of it = a marker tip
-      // leading the fill from the left. The text stays ink (never recoloured to
-      // the entity hue): a real highlighter is dark text on a colour fill, and
-      // same-hue text on a same-hue tint is low-contrast and hard to read.
-      m.style.background = `linear-gradient(90deg, ${tint} ${pct.toFixed(1)}%, transparent ${Math.min(100, pct + 5).toFixed(1)}%)`;
+      // The entity tone underlines the source phrase; text remains sheet ink.
+      m.style.background = "transparent";
+      m.style.textDecoration = `underline ${c}`;
     });
 
     // chips fly from the card column to their graph nodes; edges draw in
@@ -831,15 +829,10 @@
     document.addEventListener("click", onDocClick);
     window.addEventListener("keydown", onKey);
 
-    const root = canvasEl.closest(".grimoire");
-    let mo = null;
-    if (root) {
-      mo = new MutationObserver(() => {
-        refreshTypeColors();
-        queue();
-      });
-      mo.observe(root, { attributes: true, attributeFilter: ["class"] });
-    }
+    const stopScheme = observeScheme(() => {
+      refreshTypeColors();
+      queue();
+    });
 
     // The stage is displayed now (ready flipped): measure and paint the first
     // frame after the browser has laid it out.
@@ -858,7 +851,7 @@
       window.removeEventListener("resize", onResize);
       document.removeEventListener("click", onDocClick);
       window.removeEventListener("keydown", onKey);
-      mo?.disconnect();
+      stopScheme();
       if (raf) cancelAnimationFrame(raf);
     };
   });
@@ -1294,7 +1287,7 @@
        the bar animated (the "janky, scrolls things off" feel on phones). */
     height: 100dvh;
     overflow: hidden;
-    background: var(--grim-paper);
+    background: var(--sheet);
   }
 
   /* hero copy */
@@ -1317,23 +1310,23 @@
     display: block;
   }
   .hero-copy h1 .accent {
-    color: var(--grim-accent);
+    color: var(--accent-ink);
     font-size: 0.62em;
     margin-top: 6px;
   }
   .hero-copy p {
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font-size: 16px;
     line-height: 1.6;
     margin-top: 16px;
   }
   .cue {
     margin-top: 26px;
-    color: var(--grim-ink-soft);
+    color: var(--ink-2);
     font-size: 12.5px;
     font-weight: 600;
     letter-spacing: 0.18em;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
   }
   .cue .arrow {
     display: inline-block;
@@ -1357,9 +1350,8 @@
     pointer-events: none;
     padding: 12px 16px 14px;
     margin: -12px -16px;
-    border-radius: 12px;
-    background: color-mix(in srgb, var(--grim-paper) 80%, transparent);
-    backdrop-filter: blur(3px);
+    border-radius: 0;
+    background: color-mix(in srgb, var(--sheet) 80%, transparent);
   }
   /* layout + entities scenes: the left column is free, so the caption sits
      vertically centred beside the page, mirroring the hero composition. The
@@ -1371,17 +1363,17 @@
   }
   .caption .num {
     font-size: 12.5px;
-    color: var(--grim-accent);
+    color: var(--accent-ink);
     font-weight: 700;
     letter-spacing: 0.16em;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
   }
   .caption .txt {
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: clamp(18px, 2vw, 25px);
     line-height: 1.4;
     margin-top: 8px;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   /* the page scan */
@@ -1389,15 +1381,14 @@
     position: absolute;
     z-index: 2;
     will-change: transform, opacity;
-    filter: drop-shadow(0 18px 40px rgba(10, 14, 22, 0.4));
   }
   .page-wrap img {
     width: 100%;
     height: 100%;
     display: block;
-    border-radius: 3px;
+    border-radius: 0;
     /* light frame so the scan reads against the dark paper too */
-    outline: 1px solid var(--grim-line);
+    outline: 1px solid var(--stroke);
   }
   .overlay {
     position: absolute;
@@ -1405,8 +1396,8 @@
   }
   .bbox {
     position: absolute;
-    border: 1.5px solid;
-    border-radius: 2px;
+    border: 1px solid;
+    border-radius: 0;
     opacity: 0;
     will-change: transform, opacity;
   }
@@ -1442,9 +1433,9 @@
     left: 2px;
     bottom: -26px;
     font-size: 11px;
-    color: var(--grim-ink-soft);
+    color: var(--ink-2);
     white-space: nowrap;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
   }
 
   /* chunk cards: right column, clear of the rail gutter */
@@ -1460,27 +1451,26 @@
     z-index: 3;
   }
   .chunk-card {
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line);
-    border-radius: 8px;
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     padding: 10px 14px;
     opacity: 0;
     will-change: transform, opacity;
-    box-shadow: 0 4px 14px rgba(10, 14, 22, 0.12);
   }
   .chunk-card .path {
     font-size: 9.5px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--grim-accent);
+    color: var(--accent-ink);
     font-weight: 700;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
   }
   .chunk-card .body {
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: 12.5px;
     line-height: 1.45;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     margin-top: 5px;
     display: -webkit-box;
     -webkit-line-clamp: 3;
@@ -1491,7 +1481,7 @@
   .chunk-card :global(mark) {
     background: transparent;
     color: inherit;
-    border-radius: 3px;
+    border-radius: 0;
     padding: 0 2px;
   }
 
@@ -1509,7 +1499,7 @@
     height: 100%;
   }
   .edges :global(line) {
-    stroke: var(--grim-text-faint);
+    stroke: var(--ink-2);
     stroke-opacity: 0;
     stroke-width: 1;
   }
@@ -1520,19 +1510,19 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line);
-    border-radius: 999px;
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     padding: 3px 10px 3px 6px;
     font-size: 10.5px;
     font-weight: 600;
     opacity: 0;
     will-change: transform, opacity;
     white-space: nowrap;
-    box-shadow: 0 2px 8px rgba(10, 14, 22, 0.16);
+
     cursor: pointer;
-    color: var(--grim-ink);
-    font-family: var(--font-mono);
+    color: var(--ink);
+    font-family: var(--font-code);
   }
   .chip .dot,
   .tchip .dot,
@@ -1540,17 +1530,12 @@
   .static-roster .dot {
     width: 8px;
     height: 8px;
-    border-radius: 50%;
+    border-radius: 0;
     flex: none;
   }
   .chip.lit {
-    box-shadow:
-      0 0 0 3px color-mix(in srgb, var(--grim-accent) 35%, transparent),
-      0 2px 8px rgba(10, 14, 22, 0.2);
   }
   .chip.open {
-    box-shadow: 0 0 0 3px
-      color-mix(in srgb, var(--grim-accent) 45%, transparent);
   }
 
   /* entity pop-out */
@@ -1558,11 +1543,11 @@
     position: absolute;
     z-index: 12;
     width: 280px;
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line);
-    border-radius: 10px;
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     padding: 14px 16px;
-    box-shadow: 0 14px 44px rgba(10, 14, 22, 0.35);
+
     opacity: 0;
     pointer-events: none;
     transform: translateY(6px) scale(0.97);
@@ -1581,15 +1566,15 @@
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    border-radius: 4px;
+    border-radius: 0;
     padding: 2px 7px;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
   }
   .popout .pname {
     font-size: 19px;
     font-weight: 600;
     margin-top: 7px;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
   .popout .prels {
     margin: 10px 0 0;
@@ -1598,25 +1583,25 @@
   }
   .popout .prels li {
     font-size: 10.5px;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     padding: 4px 0;
-    border-top: 1px solid var(--grim-surface-2);
+    border-top: 1px solid var(--band);
     display: flex;
     gap: 6px;
     align-items: baseline;
   }
   .popout .rel {
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     font-size: 9px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     flex: none;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
   }
   .popout .pfoot {
     margin-top: 10px;
     font-size: 9.5px;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
 
   /* scale phase: stat panel up top, constellation behind */
@@ -1636,11 +1621,11 @@
     opacity: 0;
     width: min(92vw, 860px);
     padding: 24px 28px 22px;
-    border-radius: 18px;
-    background: color-mix(in srgb, var(--grim-paper) 94%, transparent);
-    backdrop-filter: blur(8px);
-    border: 1px solid var(--grim-line);
-    box-shadow: 0 12px 44px rgba(10, 14, 22, 0.16);
+    border-radius: 0;
+    background: color-mix(in srgb, var(--sheet) 94%, transparent);
+
+    border: 1px solid var(--stroke);
+
     pointer-events: none;
   }
   .chat-head {
@@ -1651,7 +1636,7 @@
     font-size: clamp(24px, 3.2vw, 40px);
     font-weight: 600;
     text-wrap: balance;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
   /* The two panel hooks ("Unearthed from this page" / "The entire compendium
      contains") are one matched pair: a repeated [heading -> counts] rhythm.
@@ -1669,16 +1654,16 @@
     font-weight: 600;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--grim-ink);
+    color: var(--ink);
     display: flex;
     justify-content: center;
     align-items: baseline;
     gap: 10px;
     flex-wrap: wrap;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
   }
   .this-page .k {
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font-weight: 700;
     font-size: 12px;
   }
@@ -1692,20 +1677,20 @@
     text-align: center;
   }
   .counter .n {
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: clamp(28px, 4vw, 50px);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
   .counter .l {
     font-size: 13px;
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: var(--grim-ink);
+    color: var(--ink);
     margin-top: 6px;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
   }
   .type-chips {
     display: flex;
@@ -1719,31 +1704,31 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line);
-    border-radius: 999px;
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     padding: 6px 14px 6px 9px;
     font-size: 14px;
     font-weight: 600;
-    box-shadow: 0 2px 8px rgba(10, 14, 22, 0.12);
-    color: var(--grim-ink);
-    font-family: var(--font-mono);
+
+    color: var(--ink);
+    font-family: var(--font-code);
   }
   .tchip .dot {
     width: 10px;
     height: 10px;
   }
   .tchip .n {
-    color: var(--grim-ink);
+    color: var(--ink);
     font-variant-numeric: tabular-nums;
     font-weight: 700;
   }
 
   .chat-sub {
     margin-top: 8px;
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: clamp(14px, 1.6vw, 18px);
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
   }
 
   .chat {
@@ -1753,21 +1738,21 @@
     transform: translate(-50%, 120vh);
     width: min(90vw, 720px);
     z-index: 7;
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line);
-    border-radius: 16px;
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     padding: 22px 26px 20px;
-    box-shadow: 0 18px 60px rgba(10, 14, 22, 0.35);
+
     will-change: transform;
   }
   /* Accent-tinted rather than accent-filled: white-on-blue at this size read
      poorly (Joe, 2026-07 UX pass), so the bubble keeps its "user message"
      shape while the text stays full-contrast ink on a light tint. */
   .bubble-q {
-    background: var(--grim-accent-soft);
-    color: var(--grim-ink);
-    border: 1px solid color-mix(in srgb, var(--grim-accent) 35%, transparent);
-    border-radius: 12px 12px 3px 12px;
+    background: var(--band);
+    color: var(--ink);
+    border: 1px solid color-mix(in srgb, var(--accent-ink) 35%, transparent);
+    border-radius: 0;
     padding: 9px 13px;
     font-size: 14px;
     max-width: 80%;
@@ -1775,12 +1760,12 @@
     width: fit-content;
   }
   .bubble-a {
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: 15.5px;
     line-height: 1.55;
     margin-top: 14px;
     min-height: 8em;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
   /* sentence-level reveal: the scrubbed scene drives .sent opacity per frame
      (plain inline spans so text flow and wrapping stay natural); the static
@@ -1807,22 +1792,22 @@
   .grounded .lbl {
     font-size: 11.5px;
     letter-spacing: 0.18em;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font-weight: 700;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
   }
   .gchip {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    border: 1px solid var(--grim-line);
-    border-radius: 999px;
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     padding: 3px 11px 3px 7px;
     font-size: 12px;
     font-weight: 600;
-    background: var(--grim-surface-2);
-    font-family: var(--font-mono);
-    color: var(--grim-ink);
+    background: var(--band);
+    font-family: var(--font-code);
+    color: var(--ink);
     cursor: pointer;
   }
   .gchip .dot {
@@ -1839,33 +1824,33 @@
     flex: 1;
     text-align: center;
     padding: 12px 10px;
-    border-radius: 7px;
+    border-radius: 0;
     font-size: 13px;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     text-decoration: none;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
   }
   /* No accent-filled buttons: light-on-blue mono caps read poorly at button
      sizes (Joe, 2026-07 UX pass, round 2). The primary keeps top billing via
      a stronger tint + solid accent border; ghosts stay lighter-bordered. */
   .cta.primary {
-    background: color-mix(in srgb, var(--grim-accent) 12%, var(--grim-surface));
-    color: var(--grim-accent);
-    border: 1.5px solid var(--grim-accent);
+    background: color-mix(in srgb, var(--accent-ink) 12%, var(--sheet));
+    color: var(--accent-ink);
+    border: 1px solid var(--accent-ink);
   }
   .cta.ghost {
-    border: 1.5px solid color-mix(in srgb, var(--grim-accent) 45%, transparent);
-    color: var(--grim-accent);
+    border: 1px solid color-mix(in srgb, var(--accent-ink) 45%, transparent);
+    color: var(--accent-ink);
   }
   .mock-note {
     position: absolute;
     right: 10px;
     top: 8px;
     font-size: 9px;
-    color: var(--grim-text-faint);
-    font-family: var(--font-mono);
+    color: var(--ink-2);
+    font-family: var(--font-code);
   }
 
   /* progress rail */
@@ -1885,26 +1870,26 @@
     align-items: center;
     gap: 8px;
     flex-direction: row-reverse;
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 9px;
     letter-spacing: 0.14em;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
   }
   .rail button::before {
     content: "";
     width: 7px;
     height: 7px;
-    border-radius: 50%;
-    border: 1.5px solid var(--grim-text-faint);
+    border-radius: 0;
+    border: 1px solid var(--ink-2);
     flex: none;
   }
   .rail button.on {
-    color: var(--grim-accent);
+    color: var(--accent-ink);
     font-weight: 700;
   }
   .rail button.on::before {
-    background: var(--grim-accent);
-    border-color: var(--grim-accent);
+    background: var(--accent-ink);
+    border-color: var(--accent-ink);
   }
   .rail .lbl {
     opacity: 0;
@@ -1933,30 +1918,30 @@
     display: block;
   }
   .static-hero h1 .accent {
-    color: var(--grim-accent);
+    color: var(--accent-ink);
     font-size: 0.62em;
     margin-top: 6px;
   }
   .static-hero p {
     margin-top: 16px;
     max-width: 60ch;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font-size: 15px;
     line-height: 1.6;
   }
   .static-scene {
     padding: 28px 0;
-    border-top: 1px solid var(--grim-line-soft);
+    border-top: 1px solid var(--line);
   }
   .static-cap {
     margin: 0 0 18px;
     max-width: 64ch;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     font-size: 14px;
     line-height: 1.55;
   }
   .static-cap b {
-    color: var(--grim-ink);
+    color: var(--ink);
   }
   .static-page {
     position: relative;
@@ -1966,15 +1951,15 @@
   .static-attr {
     margin: 10px 0 0;
     font-size: 10px;
-    color: var(--grim-text-faint);
-    font-family: var(--font-mono);
+    color: var(--ink-2);
+    font-family: var(--font-code);
   }
   .static-page img {
     width: 100%;
     height: 100%;
     display: block;
-    border-radius: 3px;
-    outline: 1px solid var(--grim-line);
+    border-radius: 0;
+    outline: 1px solid var(--stroke);
   }
   .static-page .bbox {
     opacity: 1;
@@ -1994,7 +1979,7 @@
     display: block;
   }
   .static-graph line {
-    stroke: var(--grim-text-faint);
+    stroke: var(--ink-2);
     stroke-opacity: 0.4;
     stroke-width: 0.3;
   }
@@ -2010,14 +1995,14 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line);
-    border-radius: 999px;
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     padding: 3px 10px 3px 7px;
     font-size: 10.5px;
     font-weight: 600;
-    color: var(--grim-ink);
-    font-family: var(--font-mono);
+    color: var(--ink);
+    font-family: var(--font-code);
   }
   .static-counters {
     display: flex;
@@ -2100,7 +2085,7 @@
     top: 8vh;
     width: 92vw;
     padding: 18px;
-    border-radius: 16px;
+    border-radius: 0;
   }
   .scrollstory.mobile .chat-head {
     top: 7vh;
@@ -2140,10 +2125,8 @@
     flex-direction: row;
     gap: 12px;
     padding: 8px 14px;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--grim-paper) 78%, transparent);
-    backdrop-filter: blur(4px);
-    box-shadow: 0 2px 10px rgba(10, 14, 22, 0.1);
+    border-radius: 0;
+    background: color-mix(in srgb, var(--sheet) 78%, transparent);
   }
   .scrollstory.mobile .rail .lbl {
     display: none;

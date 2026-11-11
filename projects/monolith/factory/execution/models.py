@@ -81,6 +81,10 @@ class AgentSession(SQLModel, table=True):
     # is established (set_ember_session), so a stale prior never shadows one.
     prior_ember_lineage_id: str | None = Field(default=None)
     prior_cli_session_id: str | None = Field(default=None)
+    # Trusted server-only evidence restore context, committed with first turn.
+    # Never populated from guest JSON or an interactive API request.
+    workspace_handoff_json: str | None = Field(default=None)
+    capture_evidence_ttl_seconds: int | None = Field(default=None)
     progress_token: str | None = Field(default=None)
     # The CALLER's system prompt for this session, appended to the guest shim's
     # own sandbox prompt. Only the MCP lane sets it (to the voice instruction);
@@ -227,6 +231,14 @@ class PendingMessage(SQLModel, table=True):
     last_dispatch_at: datetime | None = Field(
         default=None, sa_type=DateTime(timezone=True)
     )
+    capacity_started_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
+    capacity_state: str | None = Field(default=None)
+    capacity_intent_json: str | None = Field(default=None)
+    capacity_next_poll_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -254,6 +266,10 @@ class AgentResultReceipt(SQLModel, table=True):
     superseded_at: datetime | None = Field(
         default=None, sa_type=DateTime(timezone=True)
     )
+    # NULL is the legacy immediate-attempt protocol. A prepared row carries
+    # superseded_at until its exact owner records attempt intent, so an older
+    # binary cannot consume it or use it as lease-recovery evidence.
+    attempt_phase: str | None = None
     received_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     response_observed_at: datetime | None = Field(
         default=None, sa_type=DateTime(timezone=True)

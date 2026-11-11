@@ -1,0 +1,13 @@
+# The connector takes unauthenticated internet traffic, so it gets its own
+# namespace: restricted Pod Security, its own NetworkPolicy, and nothing else
+# running beside it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  labels:
+    {{- include "scotland-connector.labels" . | nindent 4 }}
+    pod-security.kubernetes.io/enforce: {{ .Values.podSecurity }}
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: {{ .Values.podSecurity }}
+    pod-security.kubernetes.io/audit: {{ .Values.podSecurity }}

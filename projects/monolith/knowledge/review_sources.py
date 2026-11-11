@@ -42,23 +42,59 @@ class EvidenceUnavailable(ValueError):
 
 
 class EvidenceUnsupported(EvidenceUnavailable):
-    """Coverage cannot improve by retrying the same claim revision."""
+    """Coverage cannot improve without a claim or relevant source change."""
+
+    def __init__(self, message, *, identity=None):
+        super().__init__(message)
+        self.identity = identity
 
 
 def collect_sources(
-    claim: dict, *, fetch=None, repo: str = GITHUB_REPO, main_sha: str | None = None
+    claim: dict,
+    *,
+    fetch=None,
+    bounded_fetch=None,
+    initial_bytes=0,
+    repo: str = GITHUB_REPO,
+    main_sha: str | None = None,
 ) -> tuple[list[dict], datetime | None]:
-    """No retries; one shared request, byte and elapsed-time bound per claim."""
+    """Bound each claim; initial_bytes includes a batch's already-fetched pin."""
+    from knowledge import review_coverage as coverage
+
+    staged = coverage.enabled()
     if fetch is None:
         with httpx.Client(timeout=10, follow_redirects=False) as client:
+            deadline_at = time.monotonic() + DEADLINE_SECONDS
+            wire_bytes = 0
 
-            def read(path):
+            def charge(size):
+                nonlocal wire_bytes
+                wire_bytes += size
+                if wire_bytes > coverage.MAX_TRANSFER_BYTES:
+                    raise EvidenceUnsupported("source transport byte bound exceeded")
+
+            def read(path, max_bytes=coverage.MAX_RESPONSE_BYTES):
+                if staged:
+                    return coverage.read_response(
+                        client,
+                        path,
+                        deadline_at=deadline_at,
+                        charge=charge,
+                        max_bytes=max_bytes,
+                    )
                 response = client.get(GITHUB_API + path, headers=_github_headers())
                 if response.status_code != 200:
                     raise EvidenceUnavailable(f"GitHub returned {response.status_code}")
                 return response.json()
 
-            return collect_sources(claim, fetch=read, repo=repo, main_sha=main_sha)
+            return collect_sources(
+                claim,
+                fetch=read,
+                bounded_fetch=read,
+                initial_bytes=initial_bytes,
+                repo=repo,
+                main_sha=main_sha,
+            )
     prose = f"{claim['title']}\n{claim.get('content') or ''}"
     if claim.get("scope") not in (None, f"repo:{repo}"):
         raise EvidenceUnsupported("claim scope does not match the evidence repository")
@@ -74,6 +110,12 @@ def collect_sources(
         {int(n) for n in _REF.findall(prose)} | {int(n) for _, n in urls + named}
     )
     paths = sorted(set(_FILE.findall(prose)) | set(_URL_FILE.findall(prose)))
+    literal_clauses = coverage.literal_clauses(claim) if staged else None
+    if literal_clauses is not None:
+        # Strings inside a literal are evidence to locate, not additional
+        # repository pointers or GitHub lifecycle subjects.
+        numbers = []
+        paths = sorted({path for path, _ in literal_clauses})
     if len(numbers) > 3 or len(paths) > 4:
         raise EvidenceUnsupported("claim exceeds source coverage bounds")
     if any(".." in PurePosixPath(path).parts for path in paths):
@@ -81,21 +123,42 @@ def collect_sources(
     sources = []
     started = time.monotonic()
     requests = 0
+    transferred = initial_bytes
     observed = None
 
-    def get(path):
-        nonlocal requests, observed
+    def get(path, max_bytes=None):
+        nonlocal requests, observed, transferred
+        if staged and requests >= MAX_REQUESTS:
+            raise EvidenceUnsupported("source collection request bound exceeded")
         if requests >= MAX_REQUESTS or time.monotonic() - started >= DEADLINE_SECONDS:
             raise EvidenceUnavailable("source collection budget exhausted")
         requests += 1
         before = datetime.now(UTC)
         observed = observed or before
         try:
-            result = fetch(path)
+            result = (
+                bounded_fetch(path, max_bytes=max_bytes)
+                if bounded_fetch is not None and max_bytes is not None
+                else fetch(path)
+            )
+        except EvidenceUnavailable:
+            raise
         except (httpx.HTTPError, ValueError) as exc:
             raise EvidenceUnavailable(str(exc)) from exc
         if not isinstance(result, dict):
             raise EvidenceUnavailable("malformed GitHub response")
+        if staged:
+            size = coverage.response_size(result)
+            transferred += size
+            if (
+                size > coverage.MAX_RESPONSE_BYTES
+                or max_bytes is not None
+                and size > max_bytes
+                or transferred > coverage.MAX_TRANSFER_BYTES
+            ):
+                raise EvidenceUnsupported("source response byte bound exceeded")
+            if time.monotonic() - started >= DEADLINE_SECONDS:
+                raise EvidenceUnavailable("source collection deadline exhausted")
         return result
 
     def add(subject, url, body):
@@ -218,6 +281,61 @@ def collect_sources(
         ).get("sha")
         if not re.fullmatch(r"[0-9a-f]{40}", str(main)):
             raise EvidenceUnavailable("missing main commit")
+        if staged:
+            try:
+                identity = coverage.file_identity(
+                    paths, main, lambda suffix: get(f"/repos/{repo}" + suffix)
+                )
+            except EvidenceUnsupported as exc:
+                raise EvidenceUnsupported(
+                    str(exc),
+                    identity={
+                        "version": coverage.VERSION,
+                        "files": dict.fromkeys(paths),
+                    },
+                ) from exc
+            try:
+                # A rejected streaming response still charges its final chunk.
+                projected = transferred + coverage.STREAM_CHUNK_BYTES
+                for item in identity["files"].values():
+                    if item["type"] != "blob" or item["mode"] not in {
+                        "100644",
+                        "100755",
+                    }:
+                        raise EvidenceUnsupported("unsupported source file type")
+                    if item["size"] > coverage.MAX_FILE_BYTES:
+                        raise EvidenceUnsupported("source decode byte bound exceeded")
+                    projected += coverage.blob_response_bound(item)
+                if projected > coverage.MAX_TRANSFER_BYTES:
+                    raise EvidenceUnsupported(
+                        "source aggregate transport byte bound exceeded"
+                    )
+                contents = {}
+                for path, item in identity["files"].items():
+                    body = get(
+                        f"/repos/{repo}/git/blobs/{item['sha']}",
+                        max_bytes=coverage.blob_response_bound(item),
+                    )
+                    contents[path] = coverage.decode_blob(body, item)
+                complete = [
+                    {
+                        "id": f"s{len(sources) + index}",
+                        "subject": f"file:{path}",
+                        "url": f"https://github.com/{repo}/blob/{main}/{path}",
+                        "text": content,
+                    }
+                    for index, (path, content) in enumerate(contents.items(), 1)
+                ]
+                if coverage.serialized_size(sources + complete) > MAX_BYTES:
+                    complete = coverage.witnesses(claim, contents, identity, repo, main)
+                if (
+                    len(sources + complete) > MAX_SOURCES
+                    or coverage.serialized_size(sources + complete) > MAX_BYTES
+                ):
+                    raise EvidenceUnsupported("source evidence exceeds byte bound")
+                return sources + complete, observed
+            except EvidenceUnsupported as exc:
+                raise EvidenceUnsupported(str(exc), identity=identity) from exc
         for path in paths:
             body = get(f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={main}")
             if (

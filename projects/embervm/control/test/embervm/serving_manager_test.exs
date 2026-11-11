@@ -85,7 +85,6 @@ defmodule Embervm.ServingManagerTest do
         op_log: op_log,
         reconcile_interval_ms: 0,
         id_fun: id_seq(suffix),
-        node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
         destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000)
       ] ++ Keyword.take(opts, [:wake_max, :wake_window_ms, :park_cap, :restore_artifact_fun])
 
@@ -521,7 +520,9 @@ defmodule Embervm.ServingManagerTest do
   end
 
   test "adoption SKIPS a :destroying instance even though the node still reports its live VM" do
-    ctx = start_stack()
+    # An unconfirming teardown keeps the redrive from terminalizing the row, so the
+    # assertion below observes adoption alone.
+    ctx = start_stack(destroy_confirmed: false)
     serving_workload(ctx, "wl-a")
 
     {:ok, _} =
@@ -548,7 +549,7 @@ defmodule Embervm.ServingManagerTest do
 
     :ok = ServingManager.reconcile(ctx.mgr)
 
-    # NOT re-adopted to :published; stays destroying for the (gated) redrive to own.
+    # NOT re-adopted to :published; stays destroying for the redrive to own.
     {:ok, inst} = ServingStore.get(ctx.store, "srv-destroying")
     assert inst.state == :destroying
     assert ServingStore.published_endpoints(ctx.store, "wl-a") == []
@@ -613,7 +614,7 @@ defmodule Embervm.ServingManagerTest do
   end
 
   test "node-confirmed reconcile leaves an unconfirmed destroy intent and re-drives it" do
-    ctx = start_stack(node_confirmed_destroy: true, destroy_confirmed: false)
+    ctx = start_stack(destroy_confirmed: false)
     serving_workload(ctx, "wl-a")
 
     {:ok, _} =
@@ -656,7 +657,7 @@ defmodule Embervm.ServingManagerTest do
   end
 
   test "node-confirmed reconcile confirms a destroying serving VM by reported absence" do
-    ctx = start_stack(node_confirmed_destroy: true)
+    ctx = start_stack()
     serving_workload(ctx, "wl-a")
 
     {:ok, _} =
@@ -691,7 +692,7 @@ defmodule Embervm.ServingManagerTest do
   end
 
   test "node-confirmed reconcile destroys a rowless reported serving VM" do
-    ctx = start_stack(node_confirmed_destroy: true)
+    ctx = start_stack()
     serving_workload(ctx, "wl-a")
 
     serving_node(ctx, "node-4",
@@ -705,10 +706,10 @@ defmodule Embervm.ServingManagerTest do
   end
 
   test "ADR embervm/018: reconcile ADOPTS an origin-ACTIVATOR serving VM instead of orphan-destroying it" do
-    # node_confirmed_destroy on so the orphan-destroy pass is live: an ordinary
+    # The orphan-destroy pass is live: an ordinary
     # rowless VM would be destroyed here (the test above), but an ACTIVATOR VM is
     # adopted and skipped, never double-killed.
-    ctx = start_stack(node_confirmed_destroy: true)
+    ctx = start_stack()
     serving_workload(ctx, "wl-a")
 
     # The brick woke a VM during a CP gap: reported origin ACTIVATOR with a vm_id

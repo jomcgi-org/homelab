@@ -5,8 +5,8 @@
  *  - The sandboxed iframe is the primary security boundary.
  *  - allow-same-origin would re-grant the jomcgi.dev origin to artifact code,
  *    defeating the sandbox entirely.
- *  - A regex over the source is deterministic and does not require a JSDOM
- *    render of SvelteKit-specific syntax ($app/stores, reactive $: labels).
+ *  - Source checks independently guard the literal permissions, alongside
+ *    page.dom.test.js exercising the mounted iframe and version polling.
  *
  * These tests MUST NOT be deleted or weakened without an explicit ADR revision.
  */

@@ -1,7 +1,7 @@
 {
   "system": "embervm",
   "system_dir": "projects/embervm",
-  "commit": "b1514fe38",
+  "commit": "94db62486",
   "nodes": [
     {
       "key": "dispatcher",
@@ -121,6 +121,22 @@
       "view": "physical",
       "layer": "external",
       "maturity": "built"
+    },
+    {
+      "key": "egress-ca-volume",
+      "label": "Optional projected egress CA Secret",
+      "view": "physical",
+      "layer": "secret_delivery",
+      "maturity": "built",
+      "evidence": "projects/embervm/chart/templates/_noded-pod.tpl:957-975"
+    },
+    {
+      "key": "session-manager",
+      "label": "Serialized session lifecycle and recovery admission",
+      "view": "logical",
+      "layer": "control",
+      "maturity": "built",
+      "evidence": "projects/embervm/control/lib/embervm/session_manager.ex"
     }
   ],
   "control_actions": [
@@ -231,6 +247,42 @@
       "to": "egress-proxy",
       "maturity": "built",
       "evidence": "projects/embervm/runtimes/shotter/guest-init/cmd/proxy.go:391-405"
+    },
+    {
+      "key": "egress-proxy.load_initial_ca",
+      "label": "Retry initial CA load and retain the first successful keypair",
+      "view": "physical",
+      "from": "egress-proxy",
+      "to": "egress-proxy",
+      "maturity": "built",
+      "evidence": "projects/firecracker/substrate/egress-proxy/cmd/swap.go:801-839"
+    },
+    {
+      "key": "api.read-historical-cessation",
+      "label": "Read exact bounded original-dispatch cessation proof without restoring execution",
+      "view": "logical",
+      "from": "caller",
+      "to": "api",
+      "maturity": "built",
+      "evidence": "projects/embervm/control/lib/embervm/router.ex"
+    },
+    {
+      "key": "api.recovery_fence",
+      "label": "Seal exact verified terminal lineage against restoration",
+      "view": "logical",
+      "from": "api",
+      "to": "session-manager",
+      "maturity": "built",
+      "evidence": "projects/embervm/control/lib/embervm/router.ex"
+    },
+    {
+      "key": "session-manager.commit_recovery_fence",
+      "label": "Compare-and-set immutable recovery fence and journal audit",
+      "view": "logical",
+      "from": "session-manager",
+      "to": "op-log",
+      "maturity": "built",
+      "evidence": "projects/embervm/control/lib/embervm/session_recovery_fence.ex"
     }
   ],
   "feedback": [
@@ -269,6 +321,24 @@
       "from": "shotter-guest-init",
       "to": "noded",
       "signal": "GET /shim/ready 200 (CDP /json/version answered and one real trial capture produced non-empty PNG bytes)"
+    },
+    {
+      "view": "physical",
+      "from": "egress-ca-volume",
+      "to": "egress-proxy",
+      "signal": "Configured certificate and key files from the optional Secret; missing, partial or malformed pairs fail loading"
+    },
+    {
+      "view": "logical",
+      "from": "op-log",
+      "to": "api",
+      "signal": "Complete retained positive parking/eviction history and absence of surviving successor/restore authority"
+    },
+    {
+      "view": "logical",
+      "from": "op-log",
+      "to": "session-manager",
+      "signal": "Fresh durable restore authority: recovery-fenced, unknown lineage, or retained unfenced holder; read errors deny admission"
     }
   ]
 }

@@ -30,7 +30,9 @@ try {
   await server.listen();
   // Use the running server's optimizer, after Svelte's buildStart hook has
   // invalidated any stale metadata. A separate `vite optimize` skips that hook.
-  await server.transformRequest("/src/hooks.client.js");
+  // The factory markdown renderer is a real client module importing marked.
+  // Transform it before readiness even when route scanning has already run.
+  await server.transformRequest("/src/lib/public/factory/markdown.js");
   await server.waitForRequestsIdle();
   const optimizer = server.environments.client.depsOptimizer;
   if (!optimizer) throw new Error("Client dependency optimizer is unavailable");

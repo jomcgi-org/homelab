@@ -57,7 +57,7 @@ spec:
             - name: RENOVATE_PLATFORM
               value: github
             - name: RENOVATE_REPOSITORIES
-              value: jomcgi/homelab
+              value: jomcgi-org/homelab
             - name: RENOVATE_AUTODISCOVER
               value: "false"
             - name: RENOVATE_ONBOARDING
@@ -66,10 +66,13 @@ spec:
               value: required
             - name: RENOVATE_ALLOW_SCRIPTS
               value: "false"
+            # uv lock can run build backends even with lifecycle scripts off.
+            - name: RENOVATE_CUSTOM_ENV_VARIABLES
+              value: '{"UV_NO_BUILD":"true"}'
             - name: RENOVATE_ALLOW_PLUGINS
               value: "false"
             - name: RENOVATE_ALLOWED_COMMANDS
-              value: '["^bash projects/platform/renovate/scripts/bump-renovated-chart\\.sh projects/.+$", "^bazel/tools/format/update-python-requirements\\.sh$"]'
+              value: '["^bazel/tools/format/update-python-requirements\\.sh$"]'
             - name: RENOVATE_ALLOWED_UNSAFE_EXECUTIONS
               value: '["bazelModDeps"]'
             - name: RENOVATE_BASE_DIR

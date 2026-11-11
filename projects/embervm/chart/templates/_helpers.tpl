@@ -268,15 +268,34 @@ be used by BOTH the rootfs-builder BASE_ROOTFS_PATH and the pushed
 image-identity rootfsPath (EMBERVM_NODE_IMAGE_IDENTITY), so the built file and
 the path noded attaches are byte-identical.
 */}}
-{{- define "embervm.noded.rootfsPath" -}}
-{{- $digest := required "guestImage.digest is required to name a base rootfs (Bazel pins it via helm_chart images=). An empty suffix would collide across guest versions and swap bytes under banked snapshots." .top.guestImage.digest -}}
-{{- $size := required "rootfsBuilder.rootfsSize is required to name a base rootfs." .rootfsBuilder.rootfsSize | toString -}}
-{{- $format := required "rootfsBuilder.bakeFormatVersion is required to name a base rootfs." .rootfsBuilder.bakeFormatVersion | toString -}}
-{{- if or (gt (len $size) 16) (not (regexMatch "^[1-9][0-9]*[KMGTP]?$" $size)) -}}
-{{- fail "rootfsBuilder.rootfsSize must match ^[1-9][0-9]*[KMGTP]?$" -}}
+{{- define "embervm.rootfs.bakeFormatVersion" -}}
+{{- $format := required "rootfsBuilder.bakeFormatVersion is required to name a base rootfs." .bakeFormatVersion | toString -}}
+{{- if and (hasKey . "stampImageDigest") (not (kindIs "bool" .stampImageDigest)) -}}
+{{- fail "rootfsBuilder.stampImageDigest must be a boolean" -}}
+{{- end -}}
+{{- if .stampImageDigest -}}
+{{- if ne $format "b2" -}}
+{{- fail "rootfsBuilder.stampImageDigest requires bakeFormatVersion b2 for old-chart compatibility" -}}
+{{- end -}}
+{{- $format = "b3" -}}
 {{- end -}}
 {{- if not (regexMatch "^[a-z][a-z0-9-]{0,31}$" $format) -}}
 {{- fail "rootfsBuilder.bakeFormatVersion must start with a lowercase letter and contain at most 32 lowercase letters, digits, or hyphens" -}}
+{{- end -}}
+{{- $format -}}
+{{- end -}}
+
+{{/* A b3 pod must never mount a pre-stamp script during a ConfigMap roll. */}}
+{{- define "embervm.rootfs.builderConfigMap" -}}
+{{- include "embervm.noded.fullname" . -}}-rootfs-builder{{- if .Values.rootfsBuilder.stampImageDigest -}}-b3{{- end -}}
+{{- end -}}
+
+{{- define "embervm.noded.rootfsPath" -}}
+{{- $digest := required "guestImage.digest is required to name a base rootfs (Bazel pins it via helm_chart images=). An empty suffix would collide across guest versions and swap bytes under banked snapshots." .top.guestImage.digest -}}
+{{- $size := required "rootfsBuilder.rootfsSize is required to name a base rootfs." .rootfsBuilder.rootfsSize | toString -}}
+{{- $format := include "embervm.rootfs.bakeFormatVersion" .rootfsBuilder -}}
+{{- if or (gt (len $size) 16) (not (regexMatch "^[1-9][0-9]*[KMGTP]?$" $size)) -}}
+{{- fail "rootfsBuilder.rootfsSize must match ^[1-9][0-9]*[KMGTP]?$" -}}
 {{- end -}}
 {{- $suffix := $digest | toString | replace ":" "-" | replace "@" "-" | replace "/" "-" -}}
 {{- printf "%s-%s-size-%s-format-%s.ext4" (trimSuffix ".ext4" .wl.rootfsPath) $suffix $size $format -}}
@@ -305,8 +324,6 @@ Input: (dict "ctx" $ctx "name" $name).
 {{- $ctx.Values.pingWorkload.memMib -}}
 {{- else if eq $name "scratchPostgres" -}}
 {{- min ($ctx.Values.scratchPostgres.memMib | int) ($ctx.Values.demoPostgres.memMib | int) -}}
-{{- else if eq $name "bazelQuery" -}}
-{{- $ctx.Values.bazelQueryWorkload.memMib -}}
 {{- else if eq $name "shotter" -}}
 {{- $ctx.Values.shotterWorkload.memMib -}}
 {{- end -}}

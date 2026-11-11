@@ -7,38 +7,44 @@ import logging
 import json
 from datetime import timezone, timedelta
 
-from sqlalchemy import or_
+from sqlalchemy import String, case, cast, func, or_
 from sqlmodel import Session, select
 
+from core.jsonio import dumps
 from factory.orchestration.factory_controls import (
     _audit,
     _integer,
-    _json,
     _locked_session,
     _read_session,
     _now,
     _snapshot,
     _text,
     ADMISSION_CANDIDATE_SCAN_LIMIT,
+    ADVISORY_CLASSES,
     admission_eligible as admission_eligible,
     DEFAULT_TASK_CLASS,
     delivery_branch_owner,
     enabled_repos,
+    execution_slot_holders,
     factory_max_concurrent_tasks,
     granted_delivery_surface,
     INTAKE_ACTOR,
     LANES,
     intake_policy,
     lane_for,
+    landing_held,
     lane_limits,
     lane_max_tasks,
     normalize_repo,
+    natural_history_exclusion,
     receipt_task_class,
     repo_effective_policy,
     repo_lane_limits,
+    retry_capacity_releases,
     TASK_CLASSES,
     validate_task_class,
     validate_policy,
+    unresolved_start_task_ids,
 )
 from factory.orchestration.factory_models import (  # noqa: F401 - same_work re-exported
     FactoryControl,
@@ -52,6 +58,59 @@ from factory.orchestration.models import SwarmTask, mint_task_id
 
 
 logger = logging.getLogger(__name__)
+
+
+def protected_work_history(
+    db: Session, repo: str, issue_number: int, work_item_id: int | None = None
+) -> list[FactoryReceipt]:
+    """Include canonical, aliased and legacy receipts when preserving authority."""
+    mapped_ids = select(WorkItem.id).where(
+        WorkItem.github_repo == repo,
+        WorkItem.github_issue_number == issue_number,
+    )
+    identities = [
+        (FactoryReceipt.repo == repo) & (FactoryReceipt.issue_number == issue_number),
+        FactoryReceipt.work_item_id.in_(mapped_ids),
+    ]
+    if work_item_id is not None:
+        identities.append(FactoryReceipt.work_item_id == work_item_id)
+    return list(
+        db.exec(
+            select(FactoryReceipt)
+            .where(or_(*identities))
+            .order_by(FactoryReceipt.id.desc())
+        ).all()
+    )
+
+
+def operator_readmission_queued(db: Session, receipt_id: int) -> bool:
+    """A server-recorded operator continuation applies to one queue lifecycle."""
+    events = db.exec(
+        select(FactoryAudit)
+        .where(FactoryAudit.action.in_(("operator_readmission_queued", "admit_next")))
+        .order_by(FactoryAudit.id.desc())
+    )
+    for event in events:
+        if json.loads(event.detail_json).get("receipt_id") == receipt_id:
+            return event.action == "operator_readmission_queued"
+    return False
+
+
+def automatic_history_exclusion(
+    db: Session,
+    repo: str,
+    issue_number: int,
+    actor: str,
+    generation: int,
+    work_item_id: int | None = None,
+) -> str | None:
+    if actor not in (INTAKE_ACTOR, "factory:reconciler"):
+        return None
+    history = protected_work_history(db, repo, issue_number, work_item_id)
+    if actor == "factory:reconciler":
+        # A selected recurrence requires a newer explicit policy generation.
+        history = [row for row in history if row.generation >= generation]
+    return natural_history_exclusion(history)
 
 
 def receipts_for_work(
@@ -105,6 +164,7 @@ def get_issue_receipt(
                 FactoryReceipt.issue_number == issue_number,
                 FactoryReceipt.generation == generation,
                 FactoryReceipt.task_class == task_class,
+                FactoryReceipt.recurrence_key == "",
             )
         ).one_or_none()
         return (
@@ -169,10 +229,16 @@ def receive_issue(
                 FactoryReceipt.issue_number == issue_number,
                 FactoryReceipt.generation == generation,
                 FactoryReceipt.task_class == task_class,
+                FactoryReceipt.recurrence_key == "",
             )
         ).first()
         if existing is not None:
             return {"ok": True, "created": False, "receipt": _snapshot(db, existing)}
+        protected = automatic_history_exclusion(
+            db, repo, issue_number, actor, generation, work_item_id
+        )
+        if protected:
+            raise ValueError(f"natural_intake_{protected}")
         if delivery_target is not None:
             owner = delivery_branch_owner(db, repo, branch)
             if owner is not None:
@@ -224,7 +290,7 @@ def receive_issue(
             url=url,
             actor=actor,
             task_class=task_class,
-            direction_json=_json(delivery_target) if delivery_target else None,
+            direction_json=dumps(delivery_target) if delivery_target else None,
         )
         db.add(row)
         db.flush()
@@ -279,7 +345,7 @@ def ceiling_below_lanes(policy: dict) -> dict | None:
     }
 
 
-def open_lanes(policy: dict, rows, lanes=LANES) -> dict:
+def open_lanes(policy: dict, rows, lanes=LANES, *, unresolved_task_ids=None) -> dict:
     """Room left per lane, given the receipts already holding slots in them.
 
     The chart owns one ceiling for the whole factory and the policy asks for a
@@ -295,9 +361,9 @@ def open_lanes(policy: dict, rows, lanes=LANES) -> dict:
     first slot, because delivery is what the lane exists to do and a ceiling an
     operator set low must never leave it unable to start anything.
     """
-    from factory.orchestration.factory_controls import execution_slot_holders
-
-    rows = execution_slot_holders(policy, rows, include_queued=True)
+    rows = execution_slot_holders(
+        policy, rows, include_queued=True, unresolved_task_ids=unresolved_task_ids
+    )
     wanted = lane_max_tasks(policy)
     held = {lane: 0 for lane in LANES}
     for row in rows:
@@ -333,12 +399,45 @@ def open_lanes(policy: dict, rows, lanes=LANES) -> dict:
 
 def _eligible_clause(policy: dict):
     """The SQL twin of admission_eligible for the queued-receipt query."""
-    eligible = FactoryReceipt.issue_number.in_(policy["issue_numbers"])
-    if intake_policy(policy)["enabled"]:
+    eligible = FactoryReceipt.issue_number.in_(policy["issue_numbers"]) & (
+        FactoryReceipt.actor != "factory:backlog-refill"
+    )
+    intake = intake_policy(policy)
+    if intake["enabled"]:
         # Intake receipts are not in the operator allowlist by construction.
         # They are admissible only while intake is on, so turning intake off
         # leaves the allowlist exactly as it was.
-        eligible = or_(eligible, FactoryReceipt.actor == INTAKE_ACTOR)
+        automatic = FactoryReceipt.actor == INTAKE_ACTOR
+        if intake["refinement_batch"]:
+            automatic = (
+                automatic
+                & FactoryReceipt.issue_number.in_(intake["refinement_batch"])
+                & (FactoryReceipt.task_class == "refine")
+                & (FactoryReceipt.repo == policy["repo"])
+                & intake["refine_enabled"]
+            )
+        eligible = or_(eligible, automatic)
+    from factory.orchestration.factory_controls import problem_issues_policy
+
+    block = problem_issues_policy(policy)
+    from factory.orchestration.backlog_refill_policy import normalize as refill_policy
+
+    if refill_policy(policy)["enabled"] and not intake["refinement_batch"]:
+        eligible = or_(
+            eligible,
+            (FactoryReceipt.actor == "factory:backlog-refill")
+            & (FactoryReceipt.issue_number == 7366)
+            & (FactoryReceipt.task_class == "advisory-diagnosis")
+            & (FactoryReceipt.recurrence_key != "")
+            & (FactoryReceipt.repo == policy["repo"]),
+        )
+    scout = block["improvement_scout"]
+    if block["enabled"] and block["sources"]["quota_improvement"] and scout["enabled"]:
+        eligible = or_(
+            eligible,
+            (FactoryReceipt.actor == "factory:improvement-scout")
+            & (FactoryReceipt.issue_number == scout["issue_number"]),
+        )
     return eligible
 
 
@@ -360,10 +459,8 @@ def current_operator_allowlist(*, session: Session | None = None) -> set[int] | 
         except ValueError:
             return None
     issues = policy.get("issue_numbers") if isinstance(policy, dict) else None
-    if (
-        not isinstance(issues, list)
-        or not issues
-        or any(type(number) is not int for number in issues)
+    if not isinstance(issues, list) or any(
+        type(number) is not int for number in issues
     ):
         return None
     return set(issues)
@@ -453,6 +550,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
     with _locked_session(session) as (db, control):
         if control.state != "enabled":
             return {"ok": False, "reason": control.state}
+        retry_capacity_releases(session=db)
         policy = validate_policy(json.loads(control.policy_json))
         limits = lane_limits(policy)
         active = db.exec(
@@ -460,21 +558,25 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             .where(FactoryReceipt.state.in_(("admitted", "uncertain")))
             .order_by(FactoryReceipt.id)
         ).all()
-        room = open_lanes(policy, active, lanes)
+        unresolved = unresolved_start_task_ids(db)
+        occupying = execution_slot_holders(
+            policy, active, unresolved_task_ids=unresolved
+        )
+        room = open_lanes(policy, occupying, lanes, unresolved_task_ids=unresolved)
         available = [lane for lane in lanes if room[lane] > 0]
         if not available:
-            held = [row.task_id for row in active]
+            held = [row.task_id for row in occupying]
             return {
                 "ok": False,
                 "reason": "wip_limit",
                 "task_id": held[0] if held else None,
                 "active_task_ids": held,
-                "active": len(active),
+                "active": len(occupying),
                 "limit": sum(limits[lane] for lane in lanes),
                 "lanes": {
                     lane: {
                         "limit": limits[lane] if lane in lanes else 0,
-                        "active": sum(1 for row in active if lane_of(row) == lane),
+                        "active": sum(1 for row in occupying if lane_of(row) == lane),
                     }
                     for lane in LANES
                 },
@@ -558,7 +660,56 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             .exists()
         )
 
-        ordered = base_query.order_by(FactoryReceipt.created_at, FactoryReceipt.id)
+        # Autonomous receipts may have waited in the queue across sweeps.
+        # Reorder only equal repo/lane/rank autonomous work by issue age. Each
+        # group's original queue position and operator FIFO remain unchanged.
+        natural = FactoryReceipt.actor == INTAKE_ACTOR
+        issue_age = (
+            select(
+                case(
+                    (
+                        WorkItem.github_created_at.is_not(None),
+                        WorkItem.github_created_at,
+                    ),
+                    (WorkItem.authority == "local", WorkItem.created_at),
+                    else_=None,
+                )
+            )
+            .where(WorkItem.id == FactoryReceipt.work_item_id)
+            .correlate(FactoryReceipt)
+            .scalar_subquery()
+        )
+        issue_rank = (
+            select(
+                case(
+                    (cast(WorkItem.labels, String).like('%"critical"%'), 0),
+                    (cast(WorkItem.labels, String).like('%"bug"%'), 1),
+                    else_=2,
+                )
+            )
+            .where(WorkItem.id == FactoryReceipt.work_item_id)
+            .correlate(FactoryReceipt)
+            .scalar_subquery()
+        )
+        age = case((natural, issue_age), else_=FactoryReceipt.created_at)
+        lane_rank = case((FactoryReceipt.task_class.in_(ADVISORY_CLASSES), 1), else_=0)
+        rank = func.coalesce(issue_rank, 2)
+        queue_position = func.min(FactoryReceipt.created_at).over(
+            partition_by=(
+                case((natural, 0), else_=FactoryReceipt.id),
+                FactoryReceipt.repo,
+                lane_rank,
+                rank,
+            )
+        )
+        ordered = base_query.order_by(
+            queue_position,
+            age.is_(None),
+            age,
+            FactoryReceipt.repo,
+            FactoryReceipt.issue_number,
+            FactoryReceipt.id,
+        )
         candidates = db.exec(
             ordered.where(blocker_predicate).limit(ADMISSION_CANDIDATE_SCAN_LIMIT)
         ).all()
@@ -569,10 +720,8 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         # later receipt was admitted past it.
         blocked_head = db.exec(ordered.where(~blocker_predicate)).first()
         if blocked_head is not None and (first is None or blocked_head.id != first.id):
-            head_is_first = first is None or (
-                blocked_head.created_at,
-                blocked_head.id,
-            ) < (first.created_at, first.id)
+            head = db.exec(ordered.limit(1)).first()
+            head_is_first = head is not None and head.id == blocked_head.id
             if head_is_first:
                 blockers = db.exec(
                     select(WorkItem).where(
@@ -596,6 +745,33 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         # only a tier with room in `available` admits anything.
         row = None
         for candidate in candidates:
+            if candidate.actor in (
+                INTAKE_ACTOR,
+                "factory:reconciler",
+            ) and not operator_readmission_queued(db, candidate.id):
+                protected = automatic_history_exclusion(
+                    db,
+                    candidate.repo,
+                    candidate.issue_number,
+                    candidate.actor,
+                    candidate.generation,
+                    candidate.work_item_id,
+                )
+                if protected:
+                    from factory.orchestration.factory_controls import (
+                        _cancel_queued_receipt,
+                    )
+
+                    _cancel_queued_receipt(db, candidate.id, actor)
+                    _audit(
+                        db,
+                        actor,
+                        "natural_intake_history_fenced",
+                        receipt_id=candidate.id,
+                        issue_number=candidate.issue_number,
+                        reason=protected,
+                    )
+                    continue
             item = (
                 db.get(WorkItem, candidate.work_item_id)
                 if candidate.work_item_id
@@ -622,7 +798,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             repo_limits = repo_lane_limits(policy, candidate.repo)
             held = sum(
                 1
-                for item in active
+                for item in occupying
                 if item.repo == candidate.repo and lane_of(item) == tier
             )
             if held >= repo_limits[tier]:
@@ -639,31 +815,51 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                     "ok": False,
                     "reason": "wip_limit",
                     "repos": full,
-                    "active": len(active),
+                    "active": len(occupying),
                     "limit": sum(limits[lane] for lane in lanes),
                 }
             if blocked_head is not None:
                 return {"ok": False, "reason": "blocked"}
             return {"ok": False, "reason": "no_eligible_issue"}
 
+        from factory.orchestration.factory_refinement_delivery import admission_refusal
+
+        refinement_refusal = admission_refusal(db, row, policy)
+        if refinement_refusal:
+            return {"ok": False, "reason": refinement_refusal}
+
         route = routes[receipt_task_class(row)]
         direction = json.loads(row.direction_json) if row.direction_json else {}
-        if route["tier"] == "delivery" and not direction.get("conductor_gates"):
-            refined = db.exec(
-                select(FactoryReceipt)
-                .where(
-                    FactoryReceipt.repo == row.repo,
-                    FactoryReceipt.issue_number == row.issue_number,
-                    FactoryReceipt.task_class == "refine",
-                    FactoryReceipt.state == "succeeded",
+        if route["tier"] == "delivery":
+            history = protected_work_history(
+                db, row.repo, row.issue_number, row.work_item_id
+            )
+            held_prior = next((prior for prior in history if landing_held(prior)), None)
+            if held_prior is not None:
+                direction.setdefault(
+                    "landing_hold",
+                    json.loads(held_prior.direction_json)["landing_hold"],
                 )
-                .order_by(FactoryReceipt.id.desc())
-            ).first()
+                row.direction_json = dumps(direction)
+            refined = next(
+                (
+                    prior
+                    for prior in history
+                    if prior.task_class == "refine" and prior.state == "succeeded"
+                ),
+                None,
+            )
             if refined and refined.direction_json:
-                gates = json.loads(refined.direction_json).get("conductor_gates", [])
-                if gates:
+                refined_direction = json.loads(refined.direction_json)
+                gates = refined_direction.get("conductor_gates", [])
+                if gates and not direction.get("conductor_gates"):
                     direction["conductor_gates"] = gates
-                    row.direction_json = _json(direction)
+                if landing_held(refined):
+                    direction.setdefault(
+                        "landing_hold", refined_direction["landing_hold"]
+                    )
+                if direction:
+                    row.direction_json = dumps(direction)
         try:
             granted_branch, _granted_pr = granted_delivery_surface(direction)
         except ValueError as exc:
@@ -709,12 +905,31 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             **pinned_policy,
             **(dispatch_grant["policy_overlay"] if dispatch_grant else {}),
         }
+        restriction = direction.get("model_restriction")
+        if restriction:
+            from factory.orchestration.factory_funding_limits import restrict_models
+
+            effective_policy = restrict_models(
+                effective_policy, restriction["removed_models"]
+            )
+            try:
+                # Requeue keeps receipt restrictions. A newly configured scalar
+                # or emptied pool must refuse before a new task is created.
+                validate_policy(effective_policy)
+            except ValueError as exc:
+                return {
+                    "ok": False,
+                    "reason": "model_restriction_invalid",
+                    "detail": str(exc),
+                }
         task_id = mint_task_id()
         task = SwarmTask(
             id=task_id,
             task_text=(
                 f"GitHub dependency pull request {row.url}\n\n{row.title}\n\n{row.body}"
                 if direction.get("dependency_review")
+                else f"GitHub pull request {row.url}\n\n{row.title}\n\n{row.body}"
+                if direction.get("owner_pr")
                 else f"GitHub issue {row.url}\n\n{row.title}\n\n{row.body}"
             ),
             repo=row.repo,
@@ -733,7 +948,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         row.task_id, row.state, row.policy_json = (
             task_id,
             "admitted",
-            _json(pinned_policy),
+            dumps(pinned_policy),
         )
         row.routing_tier = route["tier"]
         store_class_route(receipt_task_class(row), route, session=db)
@@ -745,6 +960,16 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         if dispatch_grant:
             factory_funding.inherit_dispatch_grant(
                 db, row, task, dispatch_grant, policy
+            )
+        from factory.orchestration.factory_controls import brief_only_refinement
+
+        if brief_only_refinement(row):
+            _audit(
+                db,
+                actor,
+                "brief_only_refinement_admitted",
+                task_id=task_id,
+                receipt_id=row.id,
             )
         _audit(
             db,

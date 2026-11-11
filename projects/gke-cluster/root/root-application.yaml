@@ -79,8 +79,8 @@ spec:
   # will NOT apply, and ArgoCD will keep reporting success. That is the trade
   # for having promotions survive, and it is why
   # bazel/tools/ci/check-application-drift.sh exists: run it after changing any
-  # source field on monolith, monolith-agents, monolith-public, embervm or
-  # embervm-dev.
+  # source field on monolith, monolith-agents, monolith-public, embervm,
+  # embervm-dev or scotland-connector.
   ignoreDifferences:
     - group: argoproj.io
       kind: Application
@@ -107,6 +107,12 @@ spec:
     - group: argoproj.io
       kind: Application
       name: embervm-dev
+      jsonPointers:
+        - /spec/sources/0/targetRevision
+    # The public Scotland connector (#7242). Same trade as the entries above.
+    - group: argoproj.io
+      kind: Application
+      name: scotland-connector
       jsonPointers:
         - /spec/sources/0/targetRevision
   syncPolicy:

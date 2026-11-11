@@ -1,8 +1,13 @@
 """Evidence, replay, scope, bounds and concurrent-change contracts for prose review."""
 
+import base64
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from functools import partial
+from pathlib import Path
 
+import httpx
 import pytest
 from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -25,8 +30,7 @@ SOURCE = {
 
 
 @pytest.fixture
-def db(tmp_path, monkeypatch):
-    monkeypatch.setenv("KG_FACT_REVIEW_ENABLED", "true")
+def db(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'facts.db'}").execution_options(
         schema_translate_map={
             table.schema: None for table in SQLModel.metadata.tables.values()
@@ -135,6 +139,37 @@ def test_renewal_preserves_original_observation_and_labels(db):
     assert (row.revision, row.verification_state, row.confidence) == before
     outcome = db.exec(select(ReviewOutcome)).one()
     assert outcome.status == "success" and SOURCE["url"] in outcome.evidence[1]
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_witness_prompt_instructions_are_default_off(db, monkeypatch, staged):
+    from knowledge import fact_review_batch
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", str(staged).lower())
+    note(db)
+    single = prepare(db)
+    batched = fact_review_batch._prompt([db.get(FactReviewRun, "invocation")])
+    for prompt in (single, batched):
+        assert ("A literal-witness source" in prompt) is staged
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_response_byte_limit_preserves_flag_off_character_limit(
+    db, monkeypatch, staged
+):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", str(staged).lower())
+    note(db)
+    quote = "é" * 1800
+    prepare(db, sources=[SOURCE | {"text": quote}])
+    result = output(db, citations=[{"source_id": "s1", "quote": quote}] * 10).replace(
+        "\\u00e9", "é"
+    )
+    assert len(result) < 32_000 < len(result.encode("utf-8"))
+    if staged:
+        with pytest.raises(ExtractionOutputInvalid, match="bounded JSON"):
+            review.apply(db, "invocation", result, now=NOW)
+    else:
+        assert review.apply(db, "invocation", result, now=NOW)["outcome"] == "renewed"
 
 
 def test_replay_uses_pinned_sources_and_commits_only_once(db):
@@ -318,7 +353,7 @@ def test_missing_sources_and_outage_never_grant_freshness(db):
     assert row.last_reviewed_at is None
 
 
-def test_daily_limit_and_kill_switch(db, monkeypatch):
+def test_daily_limit(db, monkeypatch):
     monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "3")
     note(db)
     db.add_all(
@@ -331,9 +366,6 @@ def test_daily_limit_and_kill_switch(db, monkeypatch):
     assert prepare(db) == review.NO_REVIEW
     monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "20000")
     assert prepare(db, "raised-limit") != review.NO_REVIEW
-    monkeypatch.setenv("KG_FACT_REVIEW_ENABLED", "false")
-    assert prepare(db, "disabled") == review.NO_REVIEW
-    assert db.get(FactReviewRun, "disabled") is None
 
 
 def test_limit_is_rolling_and_replays_do_not_spend_it_again(db, monkeypatch):
@@ -440,6 +472,13 @@ def test_throughput_counts_attempts_and_distinct_facts_separately(db):
             "unavailable": {"attempts": 2, "distinct_facts": 1},
             "renewed": {"attempts": 2, "distinct_facts": 1},
         },
+        "unavailable_by_cause": {
+            "unrecorded": {
+                "attempts": 2,
+                "distinct_facts": 1,
+                "repeat_attempts": 1,
+            }
+        },
     }
 
 
@@ -455,6 +494,377 @@ def test_invalid_configuration_is_refused(monkeypatch, key, value):
     monkeypatch.setenv(key, value)
     with pytest.raises(ValueError):
         review.settings()
+
+
+LARGE_PATH = "projects/monolith/knowledge/extraction.py"
+
+
+def large_fetch(raw=None, *, revision="a" * 40, calls=None, failure=None):
+    raw = (
+        raw
+        if raw is not None
+        else Path(__file__).with_name("extraction.py").read_bytes()
+    )
+    sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+
+    def fetch(url):
+        if calls is not None:
+            calls.append(url)
+        if failure:
+            raise failure
+        if "/git/ref/" in url:
+            return {"object": {"sha": revision}}
+        if "/git/trees/" in url:
+            return {
+                "truncated": False,
+                "tree": [
+                    {
+                        "path": "extraction.py",
+                        "size": len(raw),
+                        "sha": sha,
+                        "type": "blob",
+                        "mode": "100644",
+                    }
+                ],
+            }
+        assert url.endswith("/git/blobs/" + sha)
+        return {
+            "size": len(raw),
+            "sha": sha,
+            "encoding": "base64",
+            "content": base64.b64encode(raw).decode(),
+        }
+
+    return fetch
+
+
+def literal_note(db, name="literal", *, two=False):
+    title = f"`{LARGE_PATH}` contains the exact text `RAW_BODY_CAP = 60_000`."
+    body = (
+        f"`{LARGE_PATH}` contains the exact text `DOC_DRIFT_CAP = 10`." if two else None
+    )
+    return note(db, name, title=title, content=body)
+
+
+def production_prepare(db, key, *, fetch=None, now=NOW):
+    from knowledge.review_sources import collect_sources
+
+    fetch = fetch or large_fetch()
+    return review.prepare(
+        db,
+        key,
+        collector=lambda claim: collect_sources(claim, fetch=fetch),
+        probe_fetch=fetch,
+        now=now,
+    )
+
+
+def witness_output(db, key, **changes):
+    run = db.get(FactReviewRun, key)
+    citations = [
+        {"source_id": source["id"], "quote": source["text"]} for source in run.sources
+    ]
+    return output(db, key, **({"citations": citations} | changes))
+
+
+def test_large_source_real_collector_prepare_apply_and_restart_replay(db, monkeypatch):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    literal_note(db, two=True)
+    now = datetime.now(UTC)
+    prompt = production_prepare(db, "large", now=now)
+    assert "omitted_bytes" in prompt
+    engine = db.get_bind()
+    db.commit()
+    with Session(engine) as restarted:
+        assert (
+            review.prepare(
+                restarted,
+                "large",
+                collector=lambda _: pytest.fail("refetch"),
+                probe_fetch=lambda _: pytest.fail("reprobe"),
+                now=now,
+            )
+            == prompt
+        )
+        answer = witness_output(restarted, "large")
+        assert (
+            review.apply(restarted, "large", answer, now=now + timedelta(minutes=1))[
+                "outcome"
+            ]
+            == "renewed"
+        )
+    with Session(engine) as restarted:
+        result = review.apply(restarted, "large", "malformed replay", now=now)
+        assert result["replayed"] and result["outcome"] == "renewed"
+        assert len(restarted.exec(select(ReviewOutcome)).all()) == 1
+
+
+@pytest.mark.parametrize(
+    "case", ["partial", "changed", "fabricated", "stale", "revision", "dispute"]
+)
+def test_witnesses_cannot_bypass_complete_claim_or_freshness_guards(
+    db, monkeypatch, case
+):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    row = literal_note(db, two=True)
+    now = datetime.now(UTC)
+    production_prepare(db, "large", now=now)
+    run = db.get(FactReviewRun, "large")
+    changes = {}
+    if case == "partial":
+        changes["citations"] = [
+            {"source_id": run.sources[0]["id"], "quote": run.sources[0]["text"]}
+        ]
+    if case == "changed":
+        changes["verdict"] = "changed"
+    if case == "fabricated":
+        changes["citations"] = [
+            {"source_id": run.sources[0]["id"], "quote": "fabricated source quote"}
+        ]
+    if case == "revision":
+        row.revision += 1
+        db.commit()
+    if case == "dispute":
+        db.add(Dispute(note_id=row.note_id, reason="pending correction", state="open"))
+        db.commit()
+    clock = now + timedelta(hours=1) if case == "stale" else now + timedelta(minutes=1)
+    answer = witness_output(db, "large", **changes)
+    if case == "fabricated":
+        with pytest.raises(ExtractionOutputInvalid):
+            review.apply(db, "large", answer, now=clock)
+    else:
+        result = review.apply(db, "large", answer, now=clock)
+        assert result["outcome"] != "renewed"
+        if case in {"partial", "changed"}:
+            assert result["outcome"] == "unsupported"
+            assert not db.exec(select(Dispute)).all()
+    db.refresh(row)
+    assert utc(row.review_after) == NOW - timedelta(days=10)
+
+
+def test_unchanged_blocks_survive_restarts_without_spending_selection_allowance(
+    db, monkeypatch
+):
+    from knowledge.models import FactReviewSourceBlock
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    note(db, content="Behavior of " + LARGE_PATH)
+    assert production_prepare(db, "blocked") == review.NO_REVIEW
+    assert db.get(FactReviewSourceBlock, "fact").identity["files"][LARGE_PATH]
+    engine = db.get_bind()
+    db.commit()
+    for index in range(4):
+        with Session(engine) as restarted:
+            calls = []
+            assert (
+                production_prepare(
+                    restarted,
+                    f"poll-{index}",
+                    fetch=large_fetch(calls=calls),
+                    now=NOW + timedelta(minutes=index + 1),
+                )
+                == review.NO_REVIEW
+            )
+            assert calls == []
+            assert (
+                review.throughput(restarted, now=NOW + timedelta(minutes=5))["attempts"]
+                == 1
+            )
+    with Session(engine) as restarted:
+        calls = []
+        # Main and its directory tree moved, but the cited blob did not.
+        assert (
+            production_prepare(
+                restarted,
+                "unrelated",
+                fetch=large_fetch(revision="b" * 40, calls=calls),
+                now=NOW + timedelta(hours=7),
+            )
+            == review.NO_REVIEW
+        )
+        assert len(calls) == 2 and not any("/git/blobs/" in call for call in calls)
+        assert (
+            review.throughput(restarted, now=NOW + timedelta(hours=7))["attempts"] == 1
+        )
+    with Session(engine) as restarted:
+        # Relevant source coverage can now fit completely. No outcome clearing.
+        prompt = production_prepare(
+            restarted,
+            "changed-source",
+            fetch=large_fetch(b"bounded complete source", revision="c" * 40),
+            now=NOW + timedelta(hours=14),
+        )
+        assert "bounded complete source" in prompt
+        assert len(restarted.exec(select(ReviewOutcome)).all()) == 1
+        assert (
+            review.throughput(restarted, now=NOW + timedelta(hours=14))["attempts"] == 2
+        )
+        assert (
+            review._candidate(restarted, NOW + timedelta(hours=14)) is None
+        )  # pending fence
+
+
+def test_unresolved_identity_cannot_be_released_by_a_fresh_probe(db, monkeypatch):
+    from knowledge import review_sources
+    from knowledge.models import FactReviewSourceBlock
+    from knowledge.review_source_blocks import probe
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    # The claim's pin exhausts its request allowance before identity collection.
+    # The independent probe has a fresh allowance and can resolve that same tree.
+    monkeypatch.setattr(review_sources, "MAX_REQUESTS", 1)
+    note(db, content="Behavior of " + LARGE_PATH)
+    assert production_prepare(db, "blocked") == review.NO_REVIEW
+    block = db.get(FactReviewSourceBlock, "fact")
+    assert block.identity["files"] == {LARGE_PATH: None}
+    db.commit()
+    with Session(db.get_bind()) as restarted:
+        for index in range(1, 4):
+            now = NOW + timedelta(hours=7 * index)
+            probe(restarted, now, fetch=large_fetch())
+            assert not restarted.get(FactReviewSourceBlock, "fact").released
+            assert (
+                production_prepare(restarted, f"poll-{index}", now=now)
+                == review.NO_REVIEW
+            )
+            assert len(restarted.exec(select(ReviewOutcome)).all()) == 1
+            assert review.throughput(restarted, now=now)["attempts"] == 1
+
+
+@pytest.mark.parametrize("change", ["claim", "policy", "hash"])
+@pytest.mark.parametrize("unresolved", [False, True])
+def test_changed_claim_or_coverage_policy_is_eligible_without_probe(
+    db, monkeypatch, change, unresolved
+):
+    from knowledge import review_coverage, review_sources
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    if unresolved:
+        monkeypatch.setattr(review_sources, "MAX_REQUESTS", 1)
+    row = note(db, content="Behavior of " + LARGE_PATH)
+    production_prepare(db, "blocked")
+    assert review._candidate(db, NOW) is None
+    if change == "claim":
+        row.revision += 1
+    elif change == "hash":
+        row.content_hash = "changed"
+    else:
+        monkeypatch.setattr(review_coverage, "VERSION", "literal-witness/v2")
+    db.commit()
+    assert review._candidate(db, NOW).note_id == row.note_id
+
+
+def test_probe_failure_is_bounded_and_does_not_starve_valid_candidates(db, monkeypatch):
+    from knowledge.models import FactReviewSourceBlock
+    from knowledge.review_source_blocks import probe
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    for index in range(4):
+        note(db, f"blocked-{index}", content="Behavior of " + LARGE_PATH)
+        production_prepare(db, f"blocked-run-{index}")
+    now = NOW + timedelta(hours=7)
+    calls = []
+    probe(
+        db,
+        now,
+        fetch=large_fetch(calls=calls, failure=EvidenceUnavailable("provider offline")),
+    )
+    assert len(calls) == 1
+    engine = db.get_bind()
+    db.commit()
+    with Session(engine) as restarted:
+        probe(
+            restarted,
+            now + timedelta(minutes=1),
+            fetch=lambda _: pytest.fail("global probe cooldown"),
+        )
+        assert len(restarted.exec(select(FactReviewRun)).all()) == 4
+        assert (
+            sum(
+                block.last_probe_at is not None
+                for block in restarted.exec(select(FactReviewSourceBlock)).all()
+            )
+            == 2
+        )
+        assert not any(
+            block.released
+            for block in restarted.exec(select(FactReviewSourceBlock)).all()
+        )
+        note(restarted, "valid")
+        assert review._candidate(restarted, now).note_id == "valid"
+
+
+def test_transient_large_source_failures_keep_existing_backoff(db, monkeypatch):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    literal_note(db)
+    production_prepare(
+        db, "outage", fetch=large_fetch(failure=EvidenceUnavailable("provider offline"))
+    )
+    outcome = db.exec(select(ReviewOutcome)).one()
+    assert outcome.status == "unavailable"
+    assert review._candidate(db, NOW) is None
+    assert (
+        review._candidate(db, utc(outcome.next_attempt_at) + timedelta(seconds=1))
+        is not None
+    )
+
+
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("stage", ["/git/ref/", "/git/trees/", "/git/blobs/"])
+@pytest.mark.parametrize("anomaly", ["json", "utf8", "encoding", "serialization"])
+def test_response_envelope_anomalies_remain_retryable(
+    db, monkeypatch, batched, stage, anomaly
+):
+    from knowledge import fact_review_batch as batch
+    from knowledge.models import FactReviewSourceBlock
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    literal_note(db)
+    healthy = large_fetch()
+    calls = []
+    failing = True
+
+    def transport(request):
+        path = request.url.path
+        calls.append(path)
+        headers = {}
+        if failing and stage in path:
+            raw = {
+                "json": b"not JSON",
+                "utf8": b"\xff",
+                "encoding": b"{}",
+                "serialization": json.dumps(
+                    {"x": "é" * 40_000}, ensure_ascii=False
+                ).encode(),
+            }[anomaly]
+            if anomaly == "encoding":
+                headers["Content-Encoding"] = "gzip"
+        else:
+            raw = json.dumps(healthy(path)).encode()
+        return httpx.Response(200, stream=httpx.ByteStream(raw), headers=headers)
+
+    monkeypatch.setattr(
+        httpx, "Client", partial(httpx.Client, transport=httpx.MockTransport(transport))
+    )
+    prepare_review = batch.prepare if batched else review.prepare
+    prepare_review(db, "outage", now=NOW)
+    if batched and stage == "/git/ref/":
+        assert db.exec(select(ReviewOutcome)).all() == []
+        assert review._candidate(db, NOW) is not None
+        retry_at = NOW + timedelta(minutes=15)
+    else:
+        outcome = db.exec(select(ReviewOutcome)).one()
+        assert outcome.status == "unavailable"
+        assert utc(outcome.next_attempt_at) > NOW
+        assert review._candidate(db, NOW) is None
+        retry_at = utc(outcome.next_attempt_at) + timedelta(seconds=1)
+    assert db.exec(select(FactReviewSourceBlock)).all() == []
+    assert len(calls) == {"/git/ref/": 1, "/git/trees/": 2, "/git/blobs/": 3}[stage]
+    assert review._candidate(db, retry_at) is not None
+    failing = False
+    prompt = prepare_review(db, "recovered", now=retry_at)
+    assert "omitted_bytes" in prompt
+    assert db.exec(select(FactReviewSourceBlock)).all() == []
 
 
 @pytest.mark.parametrize("state", ["scheduled", "leased", "held", "unknown", "stopped"])
@@ -497,3 +907,212 @@ def test_registration_scales_only_unlocked_scheduled_jobs(db, monkeypatch, state
     )
     assert after == expected
     assert not review.ensure_job(db)
+
+
+def test_unavailable_cause_counts_are_redacted_and_distinguish_repeats(db):
+    inputs = [
+        ("one", "unsupported file representation", "file_representation"),
+        ("one", "unsupported file representation", "file_representation"),
+        ("two", "source collection budget exhausted", "collection_bound"),
+        ("three", "GitHub returned 403", "source_http_403"),
+        ("four", "GitHub returned 429", "source_rate_limit"),
+        ("five", "GitHub returned 503", "source_server_error"),
+        ("six", "PRIVATE_URL_TOKEN_ERROR", "other"),
+        ("seven", None, "unrecorded"),
+        ("eight", "incomplete check runs", "incomplete_checks"),
+        ("nine", "invalid source file", "invalid_source_response"),
+    ]
+    rows = [
+        FactReviewRun(
+            invocation_key=f"cause-{i}",
+            note_id=note,
+            created_at=NOW,
+            status="complete",
+            result={"outcome": "unavailable", "reason": reason},
+        )
+        for i, (note, reason, _) in enumerate(inputs)
+    ]
+    rows.append(
+        FactReviewRun(
+            invocation_key="model",
+            note_id="ten",
+            created_at=NOW,
+            status="complete",
+            result={
+                "outcome": "unavailable",
+                "summary": "Source review: unavailable (invalid reviewer output)",
+            },
+        )
+    )
+    db.add_all(rows)
+    db.commit()
+    counts = review.throughput(db, now=NOW)["unavailable_by_cause"]
+    assert counts["file_representation"] == {
+        "attempts": 2,
+        "distinct_facts": 1,
+        "repeat_attempts": 1,
+    }
+    assert counts["unrecorded"] == {
+        "attempts": 1,
+        "distinct_facts": 1,
+        "repeat_attempts": 0,
+    }
+    assert counts["invalid_reviewer_output"]["attempts"] == 1
+    for _, _, cause in inputs[2:6] + inputs[8:]:
+        assert counts[cause]["attempts"] == 1
+    assert sum(v["attempts"] for v in counts.values()) == 11
+    assert "PRIVATE_" not in json.dumps(counts)
+
+
+def test_eligible_count_uses_worker_scope_pending_and_backoff_rules(db):
+    note(db, "eligible")
+    note(db, "private-scope", scope="repo:other/repo")
+    note(db, "not-due", observed_at=NOW, review_after=NOW + timedelta(days=1))
+    waiting = note(db, "waiting")
+    unsupported = note(db, "unsupported")
+    pending = note(db, "pending")
+    record_outcome(
+        db,
+        note_id=waiting.note_id,
+        revision=waiting.revision,
+        status="unavailable",
+        reason=review.PREFIX + "source collection budget exhausted",
+        now=NOW,
+    )
+    record_outcome(
+        db,
+        note_id=unsupported.note_id,
+        revision=unsupported.revision,
+        status="unsupported",
+        reason=review.PREFIX + "unsupported claim",
+        now=NOW,
+    )
+    db.add(
+        FactReviewRun(
+            invocation_key="pending-count",
+            note_id=pending.note_id,
+            revision=pending.revision,
+            created_at=NOW,
+            status="prepared",
+        )
+    )
+    db.commit()
+    assert review.eligible_count(db, now=NOW) == 1
+    assert review.eligible_count(db, now=NOW) == len(
+        review._candidates(db, NOW, limit=100)
+    )
+    assert review.eligible_count(db, now=NOW + timedelta(minutes=6)) == 2
+    assert db.get(FactReviewRun, "pending-count").status == "prepared"
+
+
+@pytest.mark.parametrize(
+    "reason,category",
+    [
+        ("batch source deadline exhausted", "batch_deadline_bound"),
+        ("batch source request budget exhausted", "batch_request_bound"),
+        ("batch source byte budget exhausted", "batch_cache_byte_bound"),
+        ("batch source transport byte budget exhausted", "batch_transport_byte_bound"),
+        ("batch source transport unavailable", "source_transport"),
+        ("batch evidence is stale", "stale_batch_evidence"),
+        ("GitHub returned 401", "source_http_401"),
+        ("GitHub returned 403", "source_http_403"),
+        ("GitHub returned 404", "source_http_404"),
+        ("unrecognized PRIVATE_ERROR", "other"),
+        ("", "unrecorded"),
+        (None, "unrecorded"),
+    ],
+)
+def test_batch_failure_categories_do_not_guess_or_export_reasons(db, reason, category):
+    db.add(
+        FactReviewRun(
+            invocation_key="batch-cause",
+            note_id="one",
+            created_at=NOW,
+            status="complete",
+            result={"outcome": "unavailable", "reason": reason},
+        )
+    )
+    db.commit()
+    assert review.throughput(db, now=NOW)["unavailable_by_cause"] == {
+        category: {"attempts": 1, "distinct_facts": 1, "repeat_attempts": 0}
+    }
+
+
+def test_single_and_batch_prompt_preserve_decoded_source_text(db):
+    from knowledge import fact_review_batch
+
+    note(db)
+    raw = (
+        '**Guard** refuses empty inputs.\r\n// Keep\t"quotes", \\paths and café.\n'
+        + "padding\n" * 5000
+    )
+    prompt = prepare(db, sources=[SOURCE | {"text": raw}])
+    run = db.get(FactReviewRun, "invocation")
+    for rendered in (prompt, fact_review_batch._prompt([run])):
+        assert "Literal citation contract:" in rendered
+        assert "not rendered Markdown or reformatted code" in rendered
+        payload = json.loads(
+            rendered.split("BEGIN UNTRUSTED REVIEW DATA\n")[1].split(
+                "\nEND UNTRUSTED REVIEW DATA"
+            )[0]
+        )
+        assert payload["sources"][0]["text"] == run.sources[0]["text"] == raw
+        assert payload["sources"][0]["id"] == "s1"
+    assert run.status == "prepared"
+
+
+@pytest.mark.parametrize(
+    "raw,rendered",
+    [
+        (
+            "**Guard** refuses empty inputs before dispatch.",
+            "Guard refuses empty inputs before dispatch.",
+        ),
+        (
+            "// Empty inputs are refused\n// before dispatch.",
+            "Empty inputs are refused before dispatch.",
+        ),
+        (
+            '\tthrow Error("café\\path");\r\n\treturn;',
+            'throw Error("café\\path"); return;',
+        ),
+    ],
+)
+@pytest.mark.parametrize("literal", [True, False])
+def test_citations_preserve_markup_comments_and_escaping_without_repair(
+    db, raw, rendered, literal
+):
+    row = note(db)
+    prepare(db, sources=[SOURCE | {"text": raw}])
+    run = db.get(FactReviewRun, "invocation")
+    sources = list(run.sources)
+    answer = output(
+        db, citations=[{"source_id": "s1", "quote": raw if literal else rendered}]
+    )
+    if literal:
+        assert review.apply(db, "invocation", answer, now=NOW)["outcome"] == "renewed"
+    else:
+        with pytest.raises(ExtractionOutputInvalid, match="citation is not a quote"):
+            review.apply(db, "invocation", answer, now=NOW)
+        saved = dict(run.result)
+        assert saved["outcome"] == "unavailable"
+        assert row.last_reviewed_at is None
+        # Even a later valid citation cannot replace this rejected receipt.
+        corrected = output(db, citations=[{"source_id": "s1", "quote": raw}])
+        replay = review.apply(db, "invocation", corrected, now=NOW)
+        assert replay == {**saved, "replayed": True}
+        assert run.result == saved
+    assert run.sources == sources
+    assert len(db.exec(select(ReviewOutcome)).all()) == 1
+
+
+@pytest.mark.parametrize("coverage_enabled", [False, True])
+def test_operator_status_reports_actual_source_policy(
+    db, monkeypatch, coverage_enabled
+):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", str(coverage_enabled).lower())
+    monkeypatch.setattr("core.db.get_engine", lambda: db.get_bind())
+    result = review.status()
+    assert result["enabled"] is True
+    assert result["source_coverage_enabled"] is coverage_enabled
+    assert result["throughput"]["attempts"] == 0

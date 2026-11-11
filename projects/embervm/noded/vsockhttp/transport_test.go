@@ -1,6 +1,7 @@
 package vsockhttp
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"net"
@@ -10,6 +11,47 @@ import (
 	"testing"
 	"time"
 )
+
+// BuildBase no longer carries a guest_port: the production handshake must keep
+// dialing the frozen guest HTTP port, independent of workload entry ports.
+func TestDialConnUsesFixedGuestHTTPPort(t *testing.T) {
+	path := t.TempDir() + "/vsock.sock"
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	type handshake struct {
+		line string
+		err  error
+	}
+	done := make(chan handshake, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			done <- handshake{err: err}
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		line, err := bufio.NewReader(conn).ReadString('\n')
+		if err == nil {
+			_, err = io.WriteString(conn, "OK 1027\n")
+		}
+		done <- handshake{line, err}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := NewTransport().dialConn(ctx, &net.Dialer{}, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	result := <-done
+	if result.err != nil || result.line != "CONNECT 1027\n" {
+		t.Fatalf("handshake = %q, %v; want fixed CONNECT 1027", result.line, result.err)
+	}
+}
 
 // echoHandler echoes "ok:" prepended to the request body as a 200 response.
 // It is the workload handler used across these tests.

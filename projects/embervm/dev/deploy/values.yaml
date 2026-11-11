@@ -88,11 +88,6 @@ noded:
     enabled: true
     onepassword:
       itemPath: "vaults/k8s-homelab/items/embervm-noded-token"
-  # Step 3 of the #4691 rollout (2026-08-23): an enveloped artifact restores
-  # only with a valid control-plane capability. Dev's first banked session
-  # exported with aes-256-gcm-v1 files and a 168-byte envelope; this flip rolls
-  # the brick, so the next relight must restore from S3 through a capability.
-  requireRestoreCapability: true
   # The wildcard DaemonSet, off. See the scratchPrep note below for why this
   # matters: it selects homelab.io/firecracker=true, which all four nodes carry
   # including the three etcd masters.
@@ -106,11 +101,6 @@ noded:
       enabled: true
       onepassword:
         itemPath: "vaults/k8s-homelab/items/embervm-store"
-    # Envelope encryption of principal artifacts (ADR embervm/033, #4691):
-    # dev armed the writer first. The reader is unconditional, plaintext
-    # artifacts stay restorable, and capability enforcement followed above
-    # (requireRestoreCapability).
-    encrypt: true
 
 # nvmeRoot lives UNDER node-4's NVMe mount so it inherits that capacity bound,
 # production's shared node-4 NVMe scratch. Scratch is shared metal; the split
@@ -159,9 +149,6 @@ noded:
 #
 # Everything below is disabled for SIZE, not for safety. Dev exercises lifecycle
 # with one small task-class workload rather than the production fleet.
-bazelQueryWorkload:
-  enabled: false
-
 # The website snapshotter (ADR embervm/035), off in dev. It also has no egress
 # lane here: dev inherits egress.enabled false, so even enabled it could not
 # reach a frontend.
@@ -300,29 +287,16 @@ conformance:
   # healthy cycle.
   #
   # Must stay strictly BELOW the dev stage's verdictTimeout in
-  # projects/platform/kargo/values.yaml (1h15m0s), which also has to cover the
-  # 6m10s suite after this wait ends (s1 60s + s2 180s + s3 60s + s4 10s +
-  # s5 60s, summed as totalBudget in conformance/main.go) and, when the first
-  # cycle is red, one more runInterval plus suite. It is a bound on waiting for bricks,
+  # projects/platform/kargo/values.yaml (1h30m0s), which also covers the hub
+  # suite's 795s budget (S1-S9, including S9's 5m) and, when the first cycle is
+  # red, another runInterval plus suite: 1800 + 795 + 1800 + 795 = 5190s.
+  # It is a bound on waiting for bricks,
   # not a budget for the suite, so a fast roll is unaffected: readiness is
   # polled, not slept.
   readyWait: 30m0s
 
 usageAdmins:
   - system:serviceaccount:embervm-dev:embervm-dev-embervm
-
-# ARMED in dev, and this is the point of the environment.
-#
-# #4758: EMBERVM_NODE_CONFIRMED_DESTROY has been read by the control plane since
-# ADR embervm/014 landed and rendered by no template, so the node-confirmed
-# ordering has never executed anywhere. adoption.tla's NoDestroyBeforeConfirm
-# and DestroyIntentPrecedesRecord model behaviour production has never run.
-#
-# Dev is where that ordering ran for the first time, under the conformance
-# harness, with EMBERVM_SPEC_TRACE on so the destroy invariants have data.
-# Production armed the same day the drill passed, 2026-08-22 (see
-# deploy/values.yaml).
-nodeConfirmedDestroy: true
 
 # rootfsPath is a SEPARATE key from noded.firecracker.nvmeRoot, and overriding
 # only the latter is not enough.
@@ -370,8 +344,6 @@ workloads:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/runtime-pi/rootfs.ext4
   scratchPostgres:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/scratch-postgres/rootfs.ext4
-  bazelQuery:
-    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/bazel-query/rootfs.ext4
   # MANDATORY even though dev does not run the shotter workload: the Workload CR
   # and the base BUILDER are gated separately, so a path left at the inherited
   # production value is UNBACKED inside the container (only nvmeRoot is mounted)
@@ -430,10 +402,6 @@ runtimeClaude:
 # scratchPostgres belongs in this list too, but its entry lives with its
 # `enabled: false` in the workload block above: one key, both settings. Do not
 # re-add a `scratchPostgres:` block here.
-
-bazelQuery:
-  guestImage:
-    repository: ""
 
 # Empty repository skips the shotter base builder entirely. Disabling the
 # Workload CR above turns off the cheap switch; this is the expensive one, and

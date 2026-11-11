@@ -23,9 +23,8 @@
 //   WatchNode   server-streamed capacity heartbeat; the daemon is the health
 //               authority and this is the control plane's only source of node
 //               truth.
-//   GetNodeStatus  unary snapshot of the same facts. The daemon implements it,
-//               but it is reserved for future control-plane polling or
-//               reconciliation; the current control plane uses WatchNode.
+//   GetNodeStatus  test-only unary snapshot of the same facts. Production
+//               consumers use WatchNode.
 //
 // Concurrency is owned by the control plane, NOT the daemon: the per-workload
 // semaphore of fc-invoke is deliberately dropped on the fork. The daemon
@@ -67,8 +66,6 @@ const (
 	NodeService_WatchNode_FullMethodName          = "/embervm.node.v1.NodeService/WatchNode"
 	NodeService_GetNodeStatus_FullMethodName      = "/embervm.node.v1.NodeService/GetNodeStatus"
 	NodeService_SyncRegistry_FullMethodName       = "/embervm.node.v1.NodeService/SyncRegistry"
-	NodeService_RegisterWorkload_FullMethodName   = "/embervm.node.v1.NodeService/RegisterWorkload"
-	NodeService_DeregisterWorkload_FullMethodName = "/embervm.node.v1.NodeService/DeregisterWorkload"
 	NodeService_SessionAssign_FullMethodName      = "/embervm.node.v1.NodeService/SessionAssign"
 	NodeService_SessionInterrupt_FullMethodName   = "/embervm.node.v1.NodeService/SessionInterrupt"
 	NodeService_Bank_FullMethodName               = "/embervm.node.v1.NodeService/Bank"
@@ -135,10 +132,8 @@ type NodeServiceClient interface {
 	// stream drops. The daemon sends an initial NodeStatus immediately on
 	// subscribe, then on every material change and at a liveness interval.
 	WatchNode(ctx context.Context, in *WatchNodeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[NodeStatus], error)
-	// GetNodeStatus is a unary snapshot of the same facts WatchNode streams. The
-	// daemon implements this RPC, but the current control plane has no caller for
-	// it and uses WatchNode for node status. It is reserved for a future polling
-	// fallback or reconciliation path.
+	// GetNodeStatus is a test-only convenience for a unary snapshot of the facts
+	// WatchNode streams. Production node-status consumers use WatchNode.
 	GetNodeStatus(ctx context.Context, in *GetNodeStatusRequest, opts ...grpc.CallOption) (*NodeStatus, error)
 	// SyncRegistry pushes the AUTHORITATIVE full workload set. The daemon converges
 	// its in-memory registry to EXACTLY the pushed entries: an entry present locally
@@ -149,17 +144,6 @@ type NodeServiceClient interface {
 	// no-op. The response echoes the resulting entry count for the control plane's
 	// own correlation.
 	SyncRegistry(ctx context.Context, in *SyncRegistryRequest, opts ...grpc.CallOption) (*SyncRegistryResponse, error)
-	// RegisterWorkload adds-or-updates ONE registry entry. The daemon implements
-	// this idempotent operation, but the current control plane has no caller for
-	// it; it is reserved for a future incremental optimization. Re-registering the
-	// same entry overwrites in place. SyncRegistry remains the current control-
-	// plane convergence path.
-	RegisterWorkload(ctx context.Context, in *RegisterWorkloadRequest, opts ...grpc.CallOption) (*RegisterWorkloadResponse, error)
-	// DeregisterWorkload removes ONE registry entry by workload name. The daemon
-	// implements this idempotent operation, but the current control plane has no
-	// caller for it; it is reserved for the future incremental counterpart of
-	// RegisterWorkload. Deregistering an absent workload is a no-op.
-	DeregisterWorkload(ctx context.Context, in *DeregisterWorkloadRequest, opts ...grpc.CallOption) (*DeregisterWorkloadResponse, error)
 	// SessionAssign delivers exactly one HTTP-semantics request (same GuestRequest
 	// message, same 8 MiB body cap) to a LIVE session vm_id over vsock and returns
 	// the guest response plus usage stats. Unlike Assign, the VM SURVIVES: this is
@@ -461,26 +445,6 @@ func (c *nodeServiceClient) SyncRegistry(ctx context.Context, in *SyncRegistryRe
 	return out, nil
 }
 
-func (c *nodeServiceClient) RegisterWorkload(ctx context.Context, in *RegisterWorkloadRequest, opts ...grpc.CallOption) (*RegisterWorkloadResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RegisterWorkloadResponse)
-	err := c.cc.Invoke(ctx, NodeService_RegisterWorkload_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeServiceClient) DeregisterWorkload(ctx context.Context, in *DeregisterWorkloadRequest, opts ...grpc.CallOption) (*DeregisterWorkloadResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(DeregisterWorkloadResponse)
-	err := c.cc.Invoke(ctx, NodeService_DeregisterWorkload_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *nodeServiceClient) SessionAssign(ctx context.Context, in *SessionAssignRequest, opts ...grpc.CallOption) (*SessionAssignResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SessionAssignResponse)
@@ -734,10 +698,8 @@ type NodeServiceServer interface {
 	// stream drops. The daemon sends an initial NodeStatus immediately on
 	// subscribe, then on every material change and at a liveness interval.
 	WatchNode(*WatchNodeRequest, grpc.ServerStreamingServer[NodeStatus]) error
-	// GetNodeStatus is a unary snapshot of the same facts WatchNode streams. The
-	// daemon implements this RPC, but the current control plane has no caller for
-	// it and uses WatchNode for node status. It is reserved for a future polling
-	// fallback or reconciliation path.
+	// GetNodeStatus is a test-only convenience for a unary snapshot of the facts
+	// WatchNode streams. Production node-status consumers use WatchNode.
 	GetNodeStatus(context.Context, *GetNodeStatusRequest) (*NodeStatus, error)
 	// SyncRegistry pushes the AUTHORITATIVE full workload set. The daemon converges
 	// its in-memory registry to EXACTLY the pushed entries: an entry present locally
@@ -748,17 +710,6 @@ type NodeServiceServer interface {
 	// no-op. The response echoes the resulting entry count for the control plane's
 	// own correlation.
 	SyncRegistry(context.Context, *SyncRegistryRequest) (*SyncRegistryResponse, error)
-	// RegisterWorkload adds-or-updates ONE registry entry. The daemon implements
-	// this idempotent operation, but the current control plane has no caller for
-	// it; it is reserved for a future incremental optimization. Re-registering the
-	// same entry overwrites in place. SyncRegistry remains the current control-
-	// plane convergence path.
-	RegisterWorkload(context.Context, *RegisterWorkloadRequest) (*RegisterWorkloadResponse, error)
-	// DeregisterWorkload removes ONE registry entry by workload name. The daemon
-	// implements this idempotent operation, but the current control plane has no
-	// caller for it; it is reserved for the future incremental counterpart of
-	// RegisterWorkload. Deregistering an absent workload is a no-op.
-	DeregisterWorkload(context.Context, *DeregisterWorkloadRequest) (*DeregisterWorkloadResponse, error)
 	// SessionAssign delivers exactly one HTTP-semantics request (same GuestRequest
 	// message, same 8 MiB body cap) to a LIVE session vm_id over vsock and returns
 	// the guest response plus usage stats. Unlike Assign, the VM SURVIVES: this is
@@ -1002,12 +953,6 @@ func (UnimplementedNodeServiceServer) GetNodeStatus(context.Context, *GetNodeSta
 func (UnimplementedNodeServiceServer) SyncRegistry(context.Context, *SyncRegistryRequest) (*SyncRegistryResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SyncRegistry not implemented")
 }
-func (UnimplementedNodeServiceServer) RegisterWorkload(context.Context, *RegisterWorkloadRequest) (*RegisterWorkloadResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method RegisterWorkload not implemented")
-}
-func (UnimplementedNodeServiceServer) DeregisterWorkload(context.Context, *DeregisterWorkloadRequest) (*DeregisterWorkloadResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method DeregisterWorkload not implemented")
-}
 func (UnimplementedNodeServiceServer) SessionAssign(context.Context, *SessionAssignRequest) (*SessionAssignResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SessionAssign not implemented")
 }
@@ -1207,42 +1152,6 @@ func _NodeService_SyncRegistry_Handler(srv interface{}, ctx context.Context, dec
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(NodeServiceServer).SyncRegistry(ctx, req.(*SyncRegistryRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeService_RegisterWorkload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RegisterWorkloadRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeServiceServer).RegisterWorkload(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeService_RegisterWorkload_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeServiceServer).RegisterWorkload(ctx, req.(*RegisterWorkloadRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeService_DeregisterWorkload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(DeregisterWorkloadRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeServiceServer).DeregisterWorkload(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeService_DeregisterWorkload_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeServiceServer).DeregisterWorkload(ctx, req.(*DeregisterWorkloadRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1655,14 +1564,6 @@ var NodeService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SyncRegistry",
 			Handler:    _NodeService_SyncRegistry_Handler,
-		},
-		{
-			MethodName: "RegisterWorkload",
-			Handler:    _NodeService_RegisterWorkload_Handler,
-		},
-		{
-			MethodName: "DeregisterWorkload",
-			Handler:    _NodeService_DeregisterWorkload_Handler,
 		},
 		{
 			MethodName: "SessionAssign",

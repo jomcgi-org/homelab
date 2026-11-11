@@ -9,12 +9,12 @@ resources:
   - ./cloudnative-pg # CloudNativePG operator for PostgreSQL clusters
   - ./authentik # Identity provider, live on the hub since the 2026-08-31 cutover
   - ./argo-workflows # CronWorkflow executor for the monolith jobs, live since the cutover
-  - ./renovate # Staged dependency and apko lock writers, both suspended until the operator cutover
+  - ./renovate # Hub-only dependency and apko lock writers, both suspended pending verification and enablement (#7068, #7001)
   - ./otel-collector # GKE telemetry export to Honeycomb
   - ./cloudflare-gateway # Envoy Gateway plus the Cloudflare Tunnel; two connectors since the 2026-08-31 ingress flip
   - ./tailscale # Tailscale operator and tailnet egress services
   - ./kyverno # Secret cloning into monolith-workflows (job pods were secretless on the hub)
   - ./priority-classes # Cluster-scoped tiers (embervm's disposable tier depends on homelab-disposable)
   - ./kargo # Promotion controller; owns targetRevision for the apps in its pipelines
-  - ./spire # SPIFFE identity control plane (ADR embervm/041, #5706); server plus ClusterSPIFFEIDs live, no consumer validates an SVID yet (#5759)
+  - ./spire # SPIFFE identity control plane (ADR embervm/041, #5706); server plus ClusterSPIFFEIDs live, no consumer validates an SVID yet
   - ./polylane # Polylane's read-only kube-API agent behind an outbound Cloudflare Tunnel

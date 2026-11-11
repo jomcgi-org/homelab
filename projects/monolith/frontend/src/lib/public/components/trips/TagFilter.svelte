@@ -1,6 +1,7 @@
 <script>
-  // Tag toggle chips. `selected` is a bindable array of active (lowercased) tags;
-  // clicking a chip adds/removes it.
+  import { Button } from "@homelab/design-system/components";
+  // Tag toggle controls. `selected` is a bindable array of active (lowercased) tags;
+  // clicking a tag adds/removes it.
   let { tags = [], selected = $bindable([]) } = $props();
 
   function toggle(tag) {
@@ -14,15 +15,15 @@
 {#if tags.length}
   <div class="tagfilter" role="group" aria-label="Filter photos by tag">
     {#each tags as tag (tag)}
-      <button
+      <Button
         type="button"
         class="chip"
-        class:active={selected.includes(tag.toLowerCase())}
+        variant={selected.includes(tag.toLowerCase()) ? "primary" : "secondary"}
         aria-pressed={selected.includes(tag.toLowerCase())}
         onclick={() => toggle(tag)}
       >
         {tag}
-      </button>
+      </Button>
     {/each}
   </div>
 {/if}
@@ -31,22 +32,7 @@
   .tagfilter {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-  }
-  .chip {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    padding: 6px 10px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    color: var(--ink);
-    cursor: pointer;
-  }
-  .chip.active {
-    background: var(--ink);
-    color: var(--paper);
+    gap: 1px;
+    font: 0.75rem var(--font-code);
   }
 </style>

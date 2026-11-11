@@ -7,7 +7,7 @@
 #   - CI + `bazel run //bazel/tools/format:format` run it via the :run_generators
 #     target in the format multirun; the Format check action auto-commits any
 #     drift like a formatting fix.
-#   - local pre-commit runs it via bazel/tools/format/fast-format.sh.
+#   - local ci regen runs it when generator inputs change.
 #
 # Generators covered (each self-locates via BUILD_WORKSPACE_DIRECTORY, so this
 # wrapper only cd's to the workspace and invokes them):
@@ -28,12 +28,13 @@
 #
 # Deliberately NOT here: sync-helm-deps and atlas-checksum generation. They need
 # helm/atlas CLIs that are not in the CI format runner and have their own gates;
-# fast-format.sh runs them locally. Keep this list to pure python/grep generators
-# that are safe in CI.
+# ci regen syncs Helm dependencies when chart inputs change; pre-commit runs
+# update-atlas-sum.sh for migrations. Keep this list to pure python/grep
+# generators that are safe in CI.
 #
 # Failure handling: generators run in parallel (they write disjoint files); a
 # non-zero exit from any one fails this script so CI catches a broken generator.
-# fast-format.sh wraps the call so a local generator hiccup never blocks a commit.
+# ci regen also propagates generator failures.
 set -uo pipefail
 
 cd "${BUILD_WORKSPACE_DIRECTORY:-$(git rev-parse --show-toplevel)}"

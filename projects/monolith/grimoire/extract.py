@@ -72,6 +72,7 @@ from grimoire.models import (
     KnowledgeChunk,
     Relationship,
 )
+from grimoire.names import LEADING_ARTICLE_RE, MAP_KEY_PREFIX_RE, QUOTE_NORMALIZE
 import shared.inference
 
 logger = logging.getLogger("monolith.grimoire.extract")
@@ -932,11 +933,6 @@ PROMPT_VERSIONS: dict[str, PromptVersion] = {
 # honored per run.
 ACTIVE_PROMPT_VERSION = os.environ.get("GRIMOIRE_PROMPT_VERSION", "v6")
 
-# Backward-compatible alias: the active version's system text. The
-# self-correction turn and any caller referencing EXTRACTION_PROMPT get the live
-# prompt without knowing the registry.
-EXTRACTION_PROMPT = PROMPT_VERSIONS[ACTIVE_PROMPT_VERSION].text
-
 
 class OpenRouterError(Exception):
     """Raised when an OpenRouter call fails after exhausting retries."""
@@ -1482,22 +1478,6 @@ def _create_or_enrich_detail(
             setattr(existing, field_name, value)
 
 
-# A map-key / catalog prefix on a heading-derived name: an optional 1-2 letter
-# area code, digits, an optional trailing letter, then "." or ":" and a space
-# (e.g. "L17. ", "P2. ", "17. ", "A1: "). Stripped so "L17. Surgery" dedupes with
-# "Surgery" (spec #3 map-key defect). Conservative: it must have a digit and a
-# delimiter+space, so real names ("St. Cuthbert") are left alone.
-_MAP_KEY_PREFIX_RE = re.compile(r"^[A-Za-z]{0,2}\d+[A-Za-z]?[.:]\s+")
-_LEADING_ARTICLE_RE = re.compile(r"^(the|a|an)\s+", re.IGNORECASE)
-# Curly quotes / apostrophes -> straight, so "Uk’otoa" dedupes with "Uk'otoa".
-_QUOTE_NORMALIZE = {
-    "‘": "'",
-    "’": "'",
-    "“": '"',
-    "”": '"',
-}
-
-
 def _canonicalize_name(name: str) -> str:
     """Belt-and-suspenders canonicalization of an entity name (spec #3).
 
@@ -1511,10 +1491,10 @@ def _canonicalize_name(name: str) -> str:
     not be de-pluralized, "von"/"of" must not be Title-cased) and unsafe to force
     in code.
     """
-    for curly, straight in _QUOTE_NORMALIZE.items():
+    for curly, straight in QUOTE_NORMALIZE.items():
         name = name.replace(curly, straight)
-    name = _MAP_KEY_PREFIX_RE.sub("", name)
-    name = _LEADING_ARTICLE_RE.sub("", name)
+    name = MAP_KEY_PREFIX_RE.sub("", name)
+    name = LEADING_ARTICLE_RE.sub("", name)
     name = re.sub(r"\s+", " ", name).strip()
     return name
 

@@ -2,7 +2,6 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 MANIFESTS = [
     "cnpg-cluster.yaml",
-    "cnpg-metrics-service.yaml",
     "cnpg-scheduledbackup.yaml",
     "httproute.yaml",
     "image-pull-secret.yaml",

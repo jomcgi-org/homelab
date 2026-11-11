@@ -144,6 +144,7 @@ defmodule Embervm.StatefulStore do
   use GenServer
   require Logger
 
+  alias Embervm.InstanceTable
   alias Embervm.OpLog.Op
   alias Embervm.StatefulState
 
@@ -370,18 +371,6 @@ defmodule Embervm.StatefulStore do
   end
 
   @doc """
-  The publisher fact: every workload that has at least one instance in the hot set
-  (live, banked, or terminal), so the publisher can enumerate the stateful
-  clusters. The publisher actually enumerates from the CATALOG (a workload with no
-  instance still needs an activator-backed listener to wake it), so this is a
-  supplementary "has any instance" set, not the sole source.
-  """
-  @spec stateful_workloads(GenServer.server()) :: [String.t()]
-  def stateful_workloads(store \\ __MODULE__) do
-    GenServer.call(store, :stateful_workloads)
-  end
-
-  @doc """
   Live and banked counts, `%{workload => %{live, banked}}` over every workload in
   the hot set (the O(1) capacity/GC read). Live is any non-terminal, non-banked
   instance; banked is the `banked` state. Reads the maintained per-workload
@@ -455,9 +444,6 @@ defmodule Embervm.StatefulStore do
 
   def blessing_watermark(store \\ __MODULE__, workload) do
     GenServer.call(store, {:blessing_watermark, workload})
-  end
-  def grant_blessing_lease(store \\ __MODULE__, workload, node_id, size \\ @blessing_lease_size) do
-    GenServer.call(store, {:grant_blessing_lease, workload, node_id, size})
   end
 
   @doc """
@@ -860,27 +846,15 @@ defmodule Embervm.StatefulStore do
   end
 
   def handle_call({:set_health, instance_id, healthy?}, _from, state) do
-    case fetch(state, instance_id) do
-      {:ok, instance} ->
-        updated = %{instance | healthy: healthy?, updated_at: state.clock.()}
-        :ets.insert(state.instances, {instance_id, updated})
-        {:reply, {:ok, updated}, state}
+    reply =
+      InstanceTable.update(state.instances, instance_id, &%{&1 | healthy: healthy?, updated_at: state.clock.()})
 
-      {:error, _} ->
-        {:reply, :error, state}
-    end
+    {:reply, reply, state}
   end
 
   def handle_call({:touch_active, instance_id, ts}, _from, state) do
-    case fetch(state, instance_id) do
-      {:ok, instance} ->
-        updated = %{instance | last_active_at: ts, updated_at: ts}
-        :ets.insert(state.instances, {instance_id, updated})
-        {:reply, {:ok, updated}, state}
-
-      {:error, _} ->
-        {:reply, :error, state}
-    end
+    reply = InstanceTable.update(state.instances, instance_id, &%{&1 | last_active_at: ts, updated_at: ts})
+    {:reply, reply, state}
   end
 
   def handle_call({:get, instance_id}, _from, state) do
@@ -888,22 +862,11 @@ defmodule Embervm.StatefulStore do
   end
 
   def handle_call(:all, _from, state) do
-    all = :ets.foldl(fn {_id, instance}, acc -> [instance | acc] end, [], state.instances)
-    {:reply, all, state}
+    {:reply, InstanceTable.all(state.instances), state}
   end
 
   def handle_call({:list, workload}, _from, state) do
-    items =
-      :ets.foldl(
-        fn {_id, instance}, acc ->
-          if instance.workload == workload, do: [instance | acc], else: acc
-        end,
-        [],
-        state.instances
-      )
-      |> Enum.sort_by(& &1.created_at, :desc)
-
-    {:reply, items, state}
+    {:reply, InstanceTable.list(state.instances, workload), state}
   end
 
   def handle_call({:published_endpoint, workload}, _from, state) do
@@ -924,18 +887,6 @@ defmodule Embervm.StatefulStore do
       )
 
     {:reply, endpoint, state}
-  end
-
-  def handle_call(:stateful_workloads, _from, state) do
-    workloads =
-      :ets.foldl(
-        fn {_id, instance}, acc -> MapSet.put(acc, instance.workload) end,
-        MapSet.new(),
-        state.instances
-      )
-      |> MapSet.to_list()
-
-    {:reply, workloads, state}
   end
 
   def handle_call(:counts, _from, state) do
@@ -1190,13 +1141,6 @@ defmodule Embervm.StatefulStore do
     {:reply, leases, state}
   end
 
-  def handle_call({:grant_blessing_lease, workload, node_id, size}, _from, state) do
-    case append_blessing_lease(state, workload, node_id, size) do
-      {:ok, lease, state} -> {:reply, {:ok, lease}, state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
-    end
-  end
-
   def handle_call({:ensure_blessing_lease, workload, node_id}, _from, state) do
     should_grant =
       case fetch_volume(state, workload) do
@@ -1213,8 +1157,8 @@ defmodule Embervm.StatefulStore do
       end
 
     if should_grant and lease_low_or_absent?(state, workload, node_id) do
-      case append_blessing_lease(state, workload, node_id, @blessing_lease_size) do
-        {:ok, _lease, state} ->
+      case append_blessing_lease(state, workload, node_id) do
+        {:ok, state} ->
           {:reply, {:ok, blessing_leases_for_node_workload(state, node_id, workload)}, state}
 
         {:error, reason} ->
@@ -1505,9 +1449,9 @@ defmodule Embervm.StatefulStore do
   end
 
   def handle_call({:adopt_endpoint, instance_id, node_id, vm_id, endpoint}, _from, state) do
-    case fetch(state, instance_id) do
-      {:ok, instance} ->
-        updated = %{
+    _ =
+      InstanceTable.update(state.instances, instance_id, fn instance ->
+        %{
           instance
           | node_id: node_id,
             vm_id: vm_id,
@@ -1515,13 +1459,9 @@ defmodule Embervm.StatefulStore do
             port: Map.get(endpoint, :port),
             healthy: Map.get(endpoint, :healthy, instance.healthy)
         }
+      end)
 
-        :ets.insert(state.instances, {instance_id, updated})
-        {:reply, :ok, state}
-
-      {:error, _} ->
-        {:reply, :ok, state}
-    end
+    {:reply, :ok, state}
   end
 
   # -- start -----------------------------------------------------------------
@@ -1835,26 +1775,13 @@ defmodule Embervm.StatefulStore do
   # prior bucket and increment the next. A terminal state is neither live nor
   # banked, so it decrements without a matching increment.
   defp bump_counts(state, prior, next, workload) do
-    counts = Map.get(state.counts, workload, %{live: 0, banked: 0})
-
-    counts =
-      counts
-      |> dec_bucket(bucket_of(prior))
-      |> inc_bucket(bucket_of(next))
-
-    %{state | counts: Map.put(state.counts, workload, counts)}
+    %{state | counts: InstanceTable.bump_counts(state.counts, workload, bucket_of(prior), bucket_of(next))}
   end
 
   defp bucket_of(nil), do: nil
   defp bucket_of(:banked), do: :banked
   defp bucket_of(state) when state in [:starting, :serving, :banking, :checkpointed, :relighting, :cold_booting], do: :live
   defp bucket_of(_terminal), do: nil
-
-  defp inc_bucket(counts, nil), do: counts
-  defp inc_bucket(counts, bucket), do: Map.update!(counts, bucket, &(&1 + 1))
-
-  defp dec_bucket(counts, nil), do: counts
-  defp dec_bucket(counts, bucket), do: Map.update!(counts, bucket, &max(&1 - 1, 0))
 
   # -- helpers ---------------------------------------------------------------
 
@@ -1931,7 +1858,7 @@ defmodule Embervm.StatefulStore do
     Enum.max([current + 1, reported_generation + 1 | ends])
   end
 
-  defp append_blessing_lease(state, workload, node_id, size) do
+  defp append_blessing_lease(state, workload, node_id) do
     current = fetch_blessing(state, workload) |> Map.get(:blessed_generation, 0) || 0
     reported_generation = Map.get(fetch_volume(state, workload) || %{}, :generation, 0) || 0
 
@@ -1941,7 +1868,7 @@ defmodule Embervm.StatefulStore do
         current + 1,
         reported_generation + 1
       ])
-    lease_end = start + max(size, 1)
+    lease_end = start + @blessing_lease_size
 
     op = %Op{
       kind: :blessing_lease_granted,
@@ -1964,7 +1891,7 @@ defmodule Embervm.StatefulStore do
         }
 
         :ets.insert(state.blessing_leases, {{workload, node_id}, row})
-        {:ok, %{start_generation: start, next_generation: start, lease_end: lease_end}, state}
+        {:ok, state}
 
       {:error, reason} ->
         {:error, reason}
@@ -2320,12 +2247,7 @@ defmodule Embervm.StatefulStore do
 
   defp bump_volume_ets(state, _workload, _node_id, _generation), do: state
 
-  defp fetch(state, instance_id) do
-    case :ets.lookup(state.instances, instance_id) do
-      [{^instance_id, instance}] -> {:ok, instance}
-      [] -> {:error, {:not_found, instance_id}}
-    end
-  end
+  defp fetch(state, instance_id), do: InstanceTable.fetch(state.instances, instance_id)
 
   defp get_view(state, instance_id) do
     case fetch(state, instance_id) do

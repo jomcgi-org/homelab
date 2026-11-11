@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/unixsock"
 	"github.com/jomcgi/homelab/projects/embervm/noded/vsockproto"
 )
 
@@ -32,7 +33,6 @@ import (
 // connection reuse is disabled so separate microVMs never share state.
 type Transport struct {
 	directDial bool
-	dialer     *net.Dialer
 }
 
 // Option configures a Transport.
@@ -46,14 +46,6 @@ type Option func(*Transport)
 func WithDirectDial() Option {
 	return func(t *Transport) {
 		t.directDial = true
-	}
-}
-
-// WithDialer returns an Option that substitutes d for the default net.Dialer.
-// Useful in tests that need to control dial timing or inject failures.
-func WithDialer(d *net.Dialer) Option {
-	return func(t *Transport) {
-		t.dialer = d
 	}
 }
 
@@ -82,10 +74,7 @@ func NewTransport(opts ...Option) *Transport {
 // If ctx carries a deadline it is applied to the underlying connection so all
 // I/O is bounded.
 func (t *Transport) RoundTrip(ctx context.Context, udsPath string, req *http.Request) (*http.Response, error) {
-	d := t.dialer
-	if d == nil {
-		d = &net.Dialer{}
-	}
+	d := &net.Dialer{}
 
 	tr := &http.Transport{
 		DialContext: func(dialCtx context.Context, _, _ string) (net.Conn, error) {
@@ -335,7 +324,7 @@ func (t *Transport) setClockAttempt(ctx context.Context, udsPath string, epochMs
 // mode it performs the Firecracker host-initiated vsock CONNECT handshake. With
 // directDial (test mode) it returns the raw UDS connection directly.
 func (t *Transport) dialConn(ctx context.Context, d *net.Dialer, udsPath string) (net.Conn, error) {
-	conn, err := d.DialContext(ctx, "unix", udsPath)
+	conn, err := unixsock.DialWith(ctx, d, udsPath)
 	if err != nil {
 		return nil, fmt.Errorf("vsockhttp: dial uds %s: %w", udsPath, err)
 	}

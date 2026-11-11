@@ -7,12 +7,9 @@ Other domains must import from
 
 from __future__ import annotations
 
-from goosecracker.recipe_catalog import CATALOG, enabled_enum  # re-exported
 from goosecracker.repo_catalog import REPO_CATALOG, describe_repos  # re-exported
 
 __all__ = [
-    "CATALOG",
     "REPO_CATALOG",
     "describe_repos",
-    "enabled_enum",
 ]

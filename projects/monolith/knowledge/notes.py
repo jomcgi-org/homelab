@@ -125,7 +125,7 @@ def set_note_visibility(
 
     Updates the column and flips ``visibility_verified=True`` because the
     caller (a human) explicitly took an action — same convention as
-    ``reject_gap`` / ``answer_gap``. Visibility lives only in the column
+    ``reject_gap`` / ``verify_gap``. Visibility lives only in the column
     now (ADR 006): ``content`` carries no frontmatter, so there is nothing
     to rewrite on disk.
 

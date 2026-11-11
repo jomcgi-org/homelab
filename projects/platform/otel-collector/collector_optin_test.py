@@ -77,7 +77,9 @@ def _run_render(
     for name in values_names:
         argv += ["--values", str(_values(name))]
     argv += extra or []
-    return subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    return subprocess.run(
+        argv, check=False, capture_output=True, text=True, timeout=120
+    )
 
 
 def _render_overlay(values_name: str, extra: list[str] | None = None) -> list[dict]:
@@ -640,7 +642,15 @@ def test_loom_is_default_off_in_every_overlay(values_name):
         .get("targets", [])
     )
     assert not any("loom" in target["endpoint"] for target in targets)
-    assert not any(d["kind"] in ("CronJob", "Role", "RoleBinding") for d in docs)
+    for doc in docs:
+        if doc["kind"] in ("Role", "RoleBinding"):
+            assert doc["metadata"]["namespace"] != "loom"
+        if doc["kind"] == "CronJob":
+            pod = doc["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+            env = {e["name"]: e["value"] for e in pod["containers"][0]["env"]}
+            assert all(
+                t["namespace"] != "loom" for t in json.loads(env["CNPG_TARGETS"])
+            )
     assert not any("loom" in d["metadata"]["name"] for d in docs)
 
 
@@ -673,7 +683,13 @@ def test_loom_default_off_preserves_collector_config(values_name, expected_sha25
 
 
 def test_gke_loom_monitoring_has_scoped_rbac_and_hardened_job():
-    docs = _render_overlay("values-gke", ["--set", "loom.enabled=true"])
+    docs = _render_overlay(
+        "values-gke",
+        [
+            "--set",
+            "loom.enabled=true,backupCheck.enabled=false,backupCheck.status.enabled=false",
+        ],
+    )
     config = _collector_config(docs)
     assert config["receivers"]["http_check"]["targets"] == [
         {"endpoint": "https://jomcgi.dev/health", "method": "GET"},
@@ -810,6 +826,8 @@ def test_loom_checker_follows_release_and_cluster_overrides():
             "loom.namespace=restored-loom",
             "--set",
             "loom.cnpgCluster=loom-pg-r1",
+            "--set",
+            "backupCheck.enabled=false,backupCheck.status.enabled=false",
         ],
         capture_output=True,
         text=True,
@@ -896,18 +914,18 @@ def _checker_can(docs, sa, verb, group, resource, namespace, name):
                 (verb in rule["verbs"] or "*" in rule["verbs"])
                 and (group in rule["apiGroups"] or "*" in rule["apiGroups"])
                 and (resource in rule["resources"] or "*" in rule["resources"])
+                and ("resourceNames" not in rule or name in rule["resourceNames"])
             ):
-                if "resourceNames" not in rule or name in rule["resourceNames"]:
-                    return True
+                return True
     return False
 
 
 @pytest.mark.parametrize(
-    "shared,loom", [(False, False), (True, False), (False, True), (True, True)]
+    "shared,loom",
+    [(False, False), (True, False), (False, True), (True, True), (None, None)],
 )
 def test_shared_checker_matrix_and_effective_permissions(shared, loom):
-    docs = _render_overlay(
-        "values-gke",
+    extra = (
         [
             "--set",
             f"backupCheck.enabled={str(shared).lower()}",
@@ -915,8 +933,13 @@ def test_shared_checker_matrix_and_effective_permissions(shared, loom):
             f"loom.enabled={str(loom).lower()}",
             "--set",
             f"backupCheck.status.enabled={str(shared).lower()}",
-        ],
+        ]
+        if shared is not None
+        else []
     )
+    docs = _render_overlay("values-gke", extra)
+    if shared is None:
+        shared, loom = True, False
     jobs = [d for d in docs if d["kind"] == "CronJob"]
     if not shared and not loom:
         assert jobs == []
@@ -983,8 +1006,8 @@ def test_shared_checker_matrix_and_effective_permissions(shared, loom):
         assert "CNPG_STATUS_CONFIGMAP" not in env
 
 
-@pytest.mark.parametrize("overlay", ["values", "values-gke", "values-prod"])
-def test_shared_checker_defaults_off(overlay):
+@pytest.mark.parametrize("overlay", ["values", "values-prod"])
+def test_shared_checker_defaults_off_outside_hub(overlay):
     base = yaml.safe_load(_values("values").read_text())
     override = yaml.safe_load(_values(overlay).read_text())
     assert base["backupCheck"]["enabled"] is False
@@ -1012,7 +1035,10 @@ def test_shared_checker_rejects_invalid_configuration(setting):
 
 
 def test_status_enablement_requires_shared_checker():
-    result = _run_render(["values-gke"], ["--set", "backupCheck.status.enabled=true"])
+    result = _run_render(
+        ["values-gke"],
+        ["--set", "backupCheck.enabled=false,backupCheck.status.enabled=true"],
+    )
     assert result.returncode != 0
     assert "backupCheck.status.enabled requires" in result.stderr
 

@@ -11,7 +11,11 @@ on `(chunk_id, model, prompt_version)`, so a new version re-extracts only what
 you point it at (`GRIMOIRE_EXTRACT_BOOK`); the full corpus costs ~$8, the seven
 rulebooks alone under $3.
 
-## v6 candidate: class_feature recall on 2024-format class chapters
+## Addressed in v6: class_feature recall on 2024-format class chapters
+
+v6, the default `ACTIVE_PROMPT_VERSION` in `extract.py`, adds a class-feature
+heading clarification matching the fix shape below. No post-v6 recall audit is
+recorded here.
 
 **Observed (v5, live run):** named PC class features in players-handbook-2024
 returned empty instead of a `class_feature` entity. Spot-check of empty-marked
@@ -69,11 +73,10 @@ bump.
 
 ## Smaller carried items
 
-- **`adventure-anthology` book kind is un-evaluated in the prompt.** The genre
-  guidance names "adventure module or setting guide" but not the anthology
-  kind added for the adventure layer; the model infers from the substring. If
-  anthology extractions look off in audits, add the kind to the genre section
-  explicitly.
+- **`adventure-anthology` book kind (addressed in v6).** The v5 genre
+  guidance named "adventure module or setting guide" but not the anthology
+  kind; v6 adds an adventure-anthology section. If anthology extractions look
+  off in audits, start from that section.
 - **RELATED_TO share.** ~20% of stored edges in the final eval were
   RELATED_TO (safety-net downgrades plus the model's own fallback). Mostly
   harmless mush; if it grows, consider prompting harder for typed edges or

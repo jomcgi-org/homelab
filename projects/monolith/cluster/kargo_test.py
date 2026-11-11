@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from cluster.kargo import PromotionRefused, plan_promotion
+from cluster.kargo import REQUESTER_ANNOTATION, PromotionRefused, plan_promotion
 
 NOW = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
 REPO = "oci://ghcr.io/jomcgi/homelab/charts/embervm"
@@ -50,7 +50,7 @@ def _plan(stage, freights, version="0.6.0", **kwargs):
         chart="embervm",
         version=version,
         now=NOW,
-        **kwargs,
+        **{"requester": "subject-alice", **kwargs},
     )
 
 
@@ -62,7 +62,11 @@ def test_plans_the_stage_template_for_the_exact_version():
     assert body == {
         "apiVersion": "kargo.akuity.io/v1alpha1",
         "kind": "Promotion",
-        "metadata": {"generateName": "prod-", "namespace": "kargo-embervm"},
+        "metadata": {
+            "generateName": "prod-",
+            "namespace": "kargo-embervm",
+            "annotations": {"monolith.jomcgi.dev/requested-by": "subject-alice"},
+        },
         "spec": {
             "stage": "prod",
             "freight": "f1",
@@ -70,6 +74,31 @@ def test_plans_the_stage_template_for_the_exact_version():
             "vars": [{"name": "x", "value": "1"}],
         },
     }
+
+
+def test_records_each_requester_in_a_project_owned_annotation():
+    alice = _plan(_stage(), [_freight()], requester="subject-alice")
+    bob = _plan(_stage(), [_freight()], requester="subject-bob")
+    assert REQUESTER_ANNOTATION == "monolith.jomcgi.dev/requested-by"
+    assert alice["metadata"]["annotations"] == {REQUESTER_ANNOTATION: "subject-alice"}
+    assert bob["metadata"]["annotations"] == {REQUESTER_ANNOTATION: "subject-bob"}
+    # Kargo's own actor annotations are stamped by its webhook, never by us.
+    assert not any(
+        k.startswith("kargo.akuity.io/") for k in alice["metadata"]["annotations"]
+    )
+
+
+def test_requester_is_required():
+    with pytest.raises(TypeError, match="requester"):
+        plan_promotion(
+            _stage(),
+            [_freight()],
+            namespace="kargo-embervm",
+            stage_name="prod",
+            chart="embervm",
+            version="0.6.0",
+            now=NOW,
+        )
 
 
 def test_refuses_while_a_promotion_runs():

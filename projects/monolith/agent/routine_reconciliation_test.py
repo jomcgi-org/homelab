@@ -1,17 +1,11 @@
 """File-backed integration tests for explicit routine cessation reconciliation."""
 
-from concurrent.futures import ThreadPoolExecutor
 import asyncio
-from datetime import datetime, timedelta, timezone
 import json
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import text
-from sqlmodel import Session, SQLModel, create_engine, select
-
-from agent import routine_jobs
-from agent import routine_reconciliation as reconciliation
-from agent.routine_reconciliation_models import RoutineReconciliation
 from factory.execution import admission, store
 from factory.execution.constants import UNKNOWN_INVOCATION
 from factory.execution.models import (
@@ -20,7 +14,16 @@ from factory.execution.models import (
     AgentSession,
     AgentTurn,
     PendingMessage,
+    ProbeObservation,
 )
+from factory.orchestration.factory_models import FactoryAudit
+from factory.orchestration.models import SwarmTask
+from sqlalchemy import text
+from sqlmodel import Session, SQLModel, create_engine, select
+
+from agent import routine_jobs
+from agent import routine_reconciliation as reconciliation
+from agent.routine_reconciliation_models import RoutineReconciliation
 
 
 @pytest.fixture
@@ -29,7 +32,11 @@ def database(tmp_path, monkeypatch):
         f"sqlite:///{tmp_path / 'reconcile.db'}",
         connect_args={"check_same_thread": False, "timeout": 10},
         execution_options={
-            "schema_translate_map": {"agent_sessions": None, "claude_agent": None}
+            "schema_translate_map": {
+                "agent_sessions": None,
+                "claude_agent": None,
+                "swarm": None,
+            }
         },
     )
     SQLModel.metadata.create_all(
@@ -43,6 +50,8 @@ def database(tmp_path, monkeypatch):
                 AgentTurn,
                 PendingMessage,
                 RoutineReconciliation,
+                FactoryAudit,
+                SwarmTask,
             )
         ],
     )
@@ -722,9 +731,7 @@ def test_supervision_recovers_held_kg_correction_atomically(
             )
         ],
     )
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
-    monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     request, _ = held(engine, applied=True, delivery_error=True)
     sid = request["session_id"]
@@ -1281,11 +1288,12 @@ def test_factory_supervision_atomically_reconciles_terminal_held_job(
     database, monkeypatch, applied, guest_state, review_mode, early_terminal
 ):
     import asyncio
+
     from factory.execution import permit_supervision as supervision
     from factory.execution.models import ProbeObservation
     from factory.execution.review_leases import ReservationReview
     from factory.orchestration.factory_models import FactoryStart
-    from factory.orchestration.models import SwarmTask, SwarmNodeRun
+    from factory.orchestration.models import SwarmNodeRun, SwarmTask
 
     request, before = held(database, delivery_error=True, applied=applied)
     engine = database.execution_options(
@@ -1309,7 +1317,6 @@ def test_factory_supervision_atomically_reconciles_terminal_held_job(
         ],
     )
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     now = datetime.now(timezone.utc)
 
@@ -1483,7 +1490,6 @@ def test_predispatch_review_stop_prevents_routine_failure_retry_and_next_claim(
 ):
     from factory import reservation_reviews as reviews
     from factory.execution import review_leases as leases
-
     from factory.execution.models import ProbeObservation
 
     SQLModel.metadata.create_all(
@@ -1593,7 +1599,7 @@ def unbound_held(database, monkeypatch, *, applied=False, outcome="lease_expired
     from factory.execution.models import ProbeObservation
     from factory.execution.review_leases import ReservationReview
     from factory.orchestration.factory_models import FactoryStart
-    from factory.orchestration.models import SwarmTask, SwarmNodeRun
+    from factory.orchestration.models import SwarmNodeRun, SwarmTask
 
     request, _ = held(database, delivery_error=True, applied=applied)
     engine = database.execution_options(
@@ -1617,7 +1623,6 @@ def unbound_held(database, monkeypatch, *, applied=False, outcome="lease_expired
         ],
     )
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     with Session(engine) as db, db.begin():
         agent = db.get(AgentSession, request["session_id"])
@@ -1662,6 +1667,7 @@ def test_supervision_recovers_unbound_job_atomically(
     database, monkeypatch, applied, outcome
 ):
     import asyncio
+
     from factory.execution import permit_supervision as supervision
 
     engine, request, pid = unbound_held(
@@ -1809,11 +1815,12 @@ class NoGuestTransport:
 @pytest.fixture
 def interrupted_dispatch(database, monkeypatch):
     """Compose the real writers, cancelling before the binding callback runs."""
-    from factory.execution import mcp, permit_supervision as supervision
+    from factory.execution import mcp
+    from factory.execution import permit_supervision as supervision
     from factory.execution.models import ProbeObservation
     from factory.execution.review_leases import ReservationReview
     from factory.orchestration.factory_models import FactoryStart
-    from factory.orchestration.models import SwarmTask, SwarmNodeRun
+    from factory.orchestration.models import SwarmNodeRun, SwarmTask
 
     engine = database.execution_options(
         schema_translate_map={
@@ -1857,7 +1864,6 @@ def interrupted_dispatch(database, monkeypatch):
     for module in (store, admission, reconciliation):
         monkeypatch.setattr(module, "datetime", Clock)
     monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervision, "_now", lambda: attempt["clock"])
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _: None)
 
@@ -1925,8 +1931,18 @@ def interrupted_dispatch(database, monkeypatch):
         }
     with Session(engine) as db:
         store.create_pending_message(db, attempt["sid"], attempt["prompt"], "luna")
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(mcp._execute_pending_message(attempt["sid"]))
+
+    # A cancellation before any POST is normally recorded not_invoked and
+    # settles at once. These cases cover the fallback when that bounded write
+    # fails inside the termination grace: the turn is left as an unknown
+    # outcome for supervision to settle.
+    def not_invoked_write_fails(*_args, **_kwargs):
+        raise TimeoutError("lock timeout inside the termination grace")
+
+    with monkeypatch.context() as during_shutdown:
+        during_shutdown.setattr(store, "mark_turn_error_sync", not_invoked_write_fails)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(mcp._execute_pending_message(attempt["sid"]))
     assert routine_jobs.hold_job_for_unknown_outcome(
         attempt["name"], attempt["sid"], "executor cancelled", **attempt["guard"]
     )
@@ -2215,3 +2231,972 @@ def test_composed_interruption_old_notifications_preserve_new_attempt(
         assert before_permit["state"] == "running"
     assert routine_jobs.claim_job("duplicate-scheduler", 2100, kind="kg-drain") is None
     assert_interrupted_evidence(attempt, settled=True, active_count=1)
+
+
+def held_review(engine, *, complete=True):
+    request, _ = held(engine, scout=True)
+    key = "cycle:kg-drain:kg-fact-review"
+    member = key + ":fact:1"
+    with Session(engine) as db, db.begin():
+        db.execute(
+            text("UPDATE routine_jobs SET name='kg-fact-review', payload=:payload"),
+            {"payload": json.dumps({"mode": "fact-review", "review_protocol": 3})},
+        )
+        agent = db.get(AgentSession, request["session_id"])
+        agent.local_session_id = key
+        db.add(agent)
+        db.execute(
+            text(
+                "CREATE TABLE fact_review_batches (invocation_key TEXT PRIMARY KEY, member_keys TEXT, status TEXT, completed_at TEXT)"
+            )
+        )
+        db.execute(
+            text(
+                "CREATE TABLE fact_review_runs (invocation_key TEXT PRIMARY KEY, status TEXT, completed_at TEXT)"
+            )
+        )
+        params = {
+            "key": key,
+            "keys": json.dumps([member]),
+            "status": "complete" if complete else "prepared",
+            "done": "2026-10-18" if complete else None,
+        }
+        db.execute(
+            text("INSERT INTO fact_review_batches VALUES (:key,:keys,:status,:done)"),
+            params,
+        )
+        db.execute(
+            text("INSERT INTO fact_review_runs VALUES (:key,:status,:done)"),
+            {**params, "key": member},
+        )
+    request["job_name"] = "kg-fact-review"
+    with Session(engine) as db:
+        before = reconciliation.read_reconciliation_state(
+            db, request["job_name"], request["session_id"]
+        )
+    request["expected_state_sha256"] = before["state_sha256"]
+    return request, before
+
+
+def test_completed_review_rearms_without_replaying_or_changing_receipts(database):
+    request, before = held_review(database)
+    result = reconciliation.reconcile_held_job(**request)
+    assert result["next_run_at"]
+    assert reconciliation.reconcile_held_job(**request) == result
+    with Session(database) as db:
+        after = reconciliation.read_reconciliation_state(
+            db, request["job_name"], request["session_id"]
+        )
+    assert after["review_batch"] == before["review_batch"]
+    assert after["turns_sha256"] == before["turns_sha256"]
+    assert after["session_status"] == "failed"
+    assert after["guest_id"] is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "prepared",
+        "missing",
+        "member_missing",
+        "member_incomplete",
+        "wrong_membership",
+        "wrong_payload",
+        "wrong_guest",
+    ],
+)
+def test_review_uncertainty_or_identity_mismatch_preserves_hold(database, change):
+    request, _ = held_review(database, complete=change != "prepared")
+    with Session(database) as db, db.begin():
+        if change == "missing":
+            db.execute(text("DELETE FROM fact_review_batches"))
+        elif change == "member_missing":
+            db.execute(text("DELETE FROM fact_review_runs"))
+        elif change == "member_incomplete":
+            db.execute(
+                text("UPDATE fact_review_runs SET status='prepared', completed_at=NULL")
+            )
+        elif change == "wrong_membership":
+            db.execute(
+                text("UPDATE fact_review_batches SET member_keys='[\"other:fact:1\"]'")
+            )
+        elif change == "wrong_payload":
+            db.execute(text("UPDATE routine_jobs SET payload='{}'"))
+    if change == "wrong_guest":
+        request["cessation"]["session_id"] = "other-guest"
+    if change not in {"wrong_membership", "wrong_payload"}:
+        with Session(database) as db:
+            request["expected_state_sha256"] = reconciliation.read_reconciliation_state(
+                db, request["job_name"], request["session_id"]
+            )["state_sha256"]
+    with pytest.raises(ValueError):
+        reconciliation.reconcile_held_job(**request)
+    with Session(database) as db:
+        assert db.execute(
+            text("SELECT last_status,next_run_at FROM routine_jobs")
+        ).one() == (UNKNOWN_INVOCATION, None)
+        assert db.get(AgentSession, request["session_id"]).ember_session_id == "guest"
+        assert db.exec(select(RoutineReconciliation)).all() == []
+
+
+def test_completed_review_requires_fresh_cessation(database):
+    request, _ = held_review(database)
+    request["cessation"]["observed_at"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=5)
+    ).isoformat()
+    with pytest.raises(ValueError):
+        reconciliation.reconcile_held_job(**request)
+    with Session(database) as db:
+        assert db.execute(text("SELECT next_run_at FROM routine_jobs")).scalar() is None
+        assert db.get(AgentSession, request["session_id"]).ember_session_id == "guest"
+
+
+def recomputation_attempt(engine):
+    from knowledge.models import FactReviewBatch, FactReviewRun
+
+    request, _ = held(engine, scout=True)
+    key = "cycle:kg-drain:kg-fact-review"
+    engine = engine.execution_options(
+        schema_translate_map={
+            "agent_sessions": None,
+            "claude_agent": None,
+            "knowledge": None,
+        }
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            FactReviewBatch.__table__,
+            FactReviewRun.__table__,
+            ProbeObservation.__table__,
+        ],
+    )
+    with Session(engine) as db, db.begin():
+        db.execute(
+            text("UPDATE routine_jobs SET name='kg-fact-review',payload=:payload"),
+            {"payload": json.dumps({"mode": "fact-review", "review_protocol": 3})},
+        )
+        agent = db.get(AgentSession, request["session_id"])
+        agent.local_session_id = key
+        permit = AgentCapacityReservation(
+            local_session_id=key,
+            session_id=agent.id,
+            pending_seq=1,
+            tier="kg",
+            state="uncertain",
+            outcome="response_lost_guest_ceased",
+            routine_job_name="kg-fact-review",
+        )
+        db.add_all(
+            [
+                permit,
+                FactReviewBatch(
+                    invocation_key=key, member_keys=[key + ":fact:1", key + ":fact:2"]
+                ),
+                FactReviewRun(
+                    invocation_key=key + ":fact:1",
+                    status="complete",
+                    completed_at=datetime.now(timezone.utc),
+                    result={"outcome": "supported", "evidence": "retained"},
+                ),
+                FactReviewRun(
+                    invocation_key=key + ":fact:2",
+                    sources=[{"text": "retained source"}],
+                ),
+            ]
+        )
+        db.flush()
+        pid = permit.id
+    return (
+        engine,
+        {"mode": "preview", "session_id": request["session_id"], "permit_id": pid},
+        key,
+    )
+
+
+def apply_request(db, preview):
+    result = reconciliation.recover_review_job(
+        actor="operator", recovery=preview, session=db
+    )
+    return {
+        **preview,
+        "mode": "apply",
+        "reconciliation_key": "exact-review-recovery",
+        "expected_state_sha256": result["expected_state_sha256"],
+        "acknowledgment": "accept_duplicate_compute_and_writes",
+    }
+
+
+def test_operator_recomputation_preserves_unknown_history_and_completed_receipts(
+    database,
+):
+    from knowledge.models import FactReviewBatch, FactReviewRun
+
+    engine, preview, key = recomputation_attempt(database)
+    with Session(engine) as db:
+        before = reconciliation.read_reconciliation_state(
+            db, "kg-fact-review", preview["session_id"]
+        )
+        completed = db.get(FactReviewRun, key + ":fact:1").model_dump()
+        unfinished = db.get(FactReviewRun, key + ":fact:2").model_dump()
+        permit_before = db.get(
+            AgentCapacityReservation, preview["permit_id"]
+        ).model_dump()
+        request = apply_request(db, preview)
+        db.commit()
+        assert db.get(FactReviewRun, key + ":fact:1").model_dump() == completed
+        assert db.get(FactReviewRun, key + ":fact:2").model_dump() == unfinished
+        assert db.get(FactReviewBatch, key).status == "prepared"
+        assert (
+            db.get(AgentCapacityReservation, preview["permit_id"]).model_dump()
+            == permit_before
+        )
+        assert db.exec(select(RoutineReconciliation)).all() == []
+        assert (
+            reconciliation.read_reconciliation_state(
+                db, "kg-fact-review", preview["session_id"]
+            )
+            == before
+        )
+        result = reconciliation.recover_review_job(
+            actor="operator", recovery=request, session=db
+        )
+        db.commit()
+        assert result["abandoned_members"] == result["retained_completed_members"] == 1
+        assert not result["guest_cessation_confirmed"]
+        assert result["capacity_reservation_retained"]
+        assert db.get(FactReviewRun, key + ":fact:1").model_dump() == completed
+        assert db.get(FactReviewRun, key + ":fact:2").model_dump() == {
+            **unfinished,
+            "status": "abandoned",
+        }
+        assert db.get(FactReviewBatch, key).status == "abandoned"
+        after = reconciliation.read_reconciliation_state(
+            db, "kg-fact-review", preview["session_id"]
+        )
+        for field in ("session_sha256", "turns_sha256", "payload_sha256", "guest_id"):
+            assert after[field] == before[field]
+        permit = db.get(AgentCapacityReservation, preview["permit_id"])
+        assert permit.state == "uncertain" and permit.settled_at is None
+        assert permit.outcome == "operator_recompute_unknown"
+        assert "kg-fact-review" not in admission.reserved_routine_jobs(db)
+        assert db.exec(select(RoutineReconciliation)).one().actor == "operator"
+        assert (
+            reconciliation.recover_review_job(
+                actor="operator", recovery=request, session=db
+            )
+            == result
+        )
+        with pytest.raises(ValueError, match="conflicts"):
+            reconciliation.recover_review_job(
+                actor="another", recovery=request, session=db
+            )
+        assert db.exec(select(RoutineReconciliation)).one()
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["digest", "permit", "pending", "workflow", "lock", "ack", "fence", "new_permit"],
+)
+def test_operator_recomputation_refuses_changed_or_active_ownership(database, change):
+    from knowledge.models import FactReviewBatch
+
+    engine, preview, key = recomputation_attempt(database)
+    with Session(engine) as db:
+        request = apply_request(db, preview)
+        if change == "digest":
+            request["expected_state_sha256"] = "0" * 64
+        elif change == "permit":
+            request["permit_id"] += 1
+        elif change == "pending":
+            db.add(
+                PendingMessage(
+                    session_id=preview["session_id"],
+                    seq=2,
+                    message_text="active",
+                    model="luna",
+                )
+            )
+        elif change == "workflow":
+            db.execute(text("UPDATE workflow_status SET status='PENDING'"))
+        elif change == "lock":
+            db.execute(text("UPDATE routine_jobs SET locked_by='new-owner'"))
+        elif change == "ack":
+            request["acknowledgment"] = "yes"
+        elif change == "fence":
+            db.get(
+                AgentSession, preview["session_id"]
+            ).result_receipt_fence_id = "active-recovery"
+        elif change == "new_permit":
+            db.add(
+                AgentCapacityReservation(
+                    local_session_id="new",
+                    pending_seq=1,
+                    tier="kg",
+                    routine_job_name="kg-fact-review",
+                )
+            )
+        db.commit()
+        with pytest.raises(ValueError):
+            reconciliation.recover_review_job(
+                actor="operator", recovery=request, session=db
+            )
+        assert db.get(FactReviewBatch, key).status == "prepared"
+        assert (
+            db.get(AgentCapacityReservation, preview["permit_id"]).outcome
+            == "response_lost_guest_ceased"
+        )
+        assert db.exec(select(RoutineReconciliation)).first() is None
+        assert db.execute(text("SELECT next_run_at FROM routine_jobs")).scalar() is None
+
+
+def test_operator_recomputation_rolls_back_with_outer_transaction(database):
+    from knowledge.models import FactReviewBatch
+
+    engine, preview, key = recomputation_attempt(database)
+    with Session(engine) as db:
+        request = apply_request(db, preview)
+        reconciliation.recover_review_job(
+            actor="operator", recovery=request, session=db
+        )
+        db.rollback()
+    with Session(engine) as db:
+        assert db.get(FactReviewBatch, key).status == "prepared"
+        assert (
+            db.get(AgentCapacityReservation, preview["permit_id"]).state == "uncertain"
+        )
+        assert db.exec(select(RoutineReconciliation)).first() is None
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "missing",
+        "wrong_guest",
+        "wrong_owner",
+        "wrong_dispatch",
+        "stale",
+        "future",
+        "active",
+        "generation_regression",
+        "invoke_changed",
+        "cp_regression",
+        "bad_completion",
+    ],
+)
+def test_operator_recomputation_releases_capacity_only_for_exact_fresh_cessation(
+    database, monkeypatch, fault
+):
+    import factory.api
+
+    engine, preview, key = recomputation_attempt(database)
+    monkeypatch.setattr(reconciliation, "get_engine", lambda: engine)
+    now = datetime.now(timezone.utc)
+    dispatched = now - timedelta(minutes=3)
+    started = dispatched + timedelta(seconds=1)
+    stopped = now - timedelta(minutes=2)
+    with Session(engine) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, preview["permit_id"])
+        permit.owner = "original-owner"
+        turn = db.exec(select(AgentTurn)).one()
+        turn.usage_json = json.dumps(
+            {
+                "recovery": {
+                    "claim_owner": "original-owner",
+                    "dispatch_count": 1,
+                    "last_dispatch_at": dispatched.isoformat(),
+                }
+            }
+        )
+    observation = {
+        "session_id": "guest",
+        "state": "evicted",
+        "generation": 0,
+        "invoke_started_at": int(started.timestamp() * 1000),
+        "updated_at": int(stopped.timestamp() * 1000),
+        "observed_at": now.isoformat(),
+    }
+    if fault == "missing":
+        observation = None
+    elif fault == "wrong_guest":
+        observation["session_id"] = "different"
+    elif fault == "wrong_owner":
+        with Session(engine) as db, db.begin():
+            db.get(
+                AgentCapacityReservation, preview["permit_id"]
+            ).owner = "another-owner"
+    elif fault == "wrong_dispatch":
+        observation["invoke_started_at"] = int(
+            (dispatched - timedelta(seconds=1)).timestamp() * 1000
+        )
+    elif fault == "stale":
+        observation["observed_at"] = (now - timedelta(minutes=1)).isoformat()
+    elif fault == "future":
+        observation["updated_at"] = int((now + timedelta(minutes=1)).timestamp() * 1000)
+    elif fault == "active":
+        observation["state"] = "running"
+    if fault in {"generation_regression", "invoke_changed", "cp_regression"}:
+        with Session(engine) as db, db.begin():
+            db.add(
+                ProbeObservation(
+                    permit_id=preview["permit_id"],
+                    guest_id="guest",
+                    checked_at=now,
+                    generation=1 if fault == "generation_regression" else 0,
+                    invoke_started_at=int(started.timestamp() * 1000)
+                    + (1 if fault == "invoke_changed" else 0),
+                    cp_updated_at=int(stopped.timestamp() * 1000)
+                    + (1 if fault == "cp_regression" else 0),
+                )
+            )
+    elif fault == "bad_completion":
+        observation["last_invoke_at"] = observation["updated_at"] + 1
+    calls = []
+
+    def observe(guest):
+        calls.append(guest)
+        return observation
+
+    monkeypatch.setattr(factory.api, "observe_guest_for_recomputation", observe)
+    result = reconciliation.recover_review_job(actor="operator", recovery=preview)
+    request = {
+        **preview,
+        "mode": "apply",
+        "reconciliation_key": "cessation-recompute",
+        "expected_state_sha256": result["expected_state_sha256"],
+        "acknowledgment": "accept_duplicate_compute_and_writes",
+    }
+    result = reconciliation.recover_review_job(actor="operator", recovery=request)
+    assert calls == ["guest", "guest"]
+    assert result["guest_cessation_confirmed"] is (fault is None)
+    assert result["capacity_reservation_retained"] is (fault is not None)
+    with Session(engine) as db:
+        permit = db.get(AgentCapacityReservation, preview["permit_id"])
+        assert permit.state == ("settled" if fault is None else "uncertain")
+        assert permit.outcome == (
+            "operator_recompute_ceased_unknown"
+            if fault is None
+            else "operator_recompute_unknown"
+        )
+        assert db.exec(select(AgentTurn)).one().stop_reason == UNKNOWN_INVOCATION
+        assert db.get(AgentSession, preview["session_id"]).status == "failed"
+        audit = json.loads(db.exec(select(RoutineReconciliation)).one().evidence_json)
+        assert audit["observation"] == observation
+    assert (
+        reconciliation.recover_review_job(actor="operator", recovery=request) == result
+    )
+    assert calls == ["guest", "guest"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        None,
+        "no_audit",
+        "owner",
+        "turn",
+        "guest",
+        "ack",
+        "digest",
+        "receipt_owner",
+        "receipt_guest",
+        "receipt_missing",
+        "result",
+        "superseded",
+        "old_terminal",
+        "new_invoke",
+        "running",
+        "stale",
+        "malformed_completion",
+        "generation_regression",
+        "late_receipt",
+        "race",
+    ],
+)
+def test_recovered_review_redispatch_settles_only_exact_audited_attempt(
+    database, monkeypatch, change
+):
+    from factory.execution import permit_supervision as supervision
+    from factory.execution.models import AgentResultReceipt
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmNodeRun, SwarmTask
+
+    engine, preview, key = recomputation_attempt(database)
+    engine = engine.execution_options(
+        schema_translate_map={
+            "agent_sessions": None,
+            "claude_agent": None,
+            "knowledge": None,
+            "swarm": None,
+        }
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            m.__table__
+            for m in (AgentResultReceipt, FactoryStart, SwarmNodeRun, SwarmTask)
+        ],
+    )
+    monkeypatch.setattr(supervision, "get_engine", lambda: engine)
+    monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
+    now = datetime.now(timezone.utc)
+
+    def at(seconds):
+        return now - timedelta(seconds=seconds)
+
+    with Session(engine) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, preview["permit_id"])
+        permit.owner = "worker-two"
+        turn = db.exec(
+            select(AgentTurn).where(AgentTurn.session_id == preview["session_id"])
+        ).one()
+        turn.created_at = at(10)
+        turn.usage_json = json.dumps(
+            {
+                "recovery": {
+                    "claim_owner": "worker-two",
+                    "dispatch_count": 2,
+                    "last_dispatch_at": at(100).isoformat(),
+                }
+            }
+        )
+        db.add_all(
+            [
+                AgentResultReceipt(
+                    id=f"receipt-{i}",
+                    token_sha256=f"token-{i}",
+                    session_id=preview["session_id"],
+                    local_session_id=key,
+                    seq=1,
+                    dispatch_count=i,
+                    claim_owner="worker-one" if i == 1 else "worker-two",
+                    guest_id="guest",
+                    request_sha256=f"request-{i}",
+                    created_at=at(150 if i == 1 else 98),
+                    accept_until=at(5),
+                    retain_until=now + timedelta(days=1),
+                    superseded_at=at(98) if i == 1 else None,
+                    response_observer_released_at=at(19) if i == 2 else None,
+                )
+                for i in (1, 2)
+            ]
+        )
+    candidate_before = supervision._prepare(preview["permit_id"])
+    assert candidate_before is not None
+    with Session(engine) as db, db.begin():
+        request = apply_request(db, preview)
+        reconciliation.recover_review_job(
+            actor="operator", recovery=request, session=db
+        )
+        row = db.exec(select(RoutineReconciliation)).one()
+        original_audit = row.model_dump()
+        if change == "no_audit":
+            db.delete(row)
+        elif change in {"ack", "digest"}:
+            data = json.loads(row.evidence_json)
+            data["request"][
+                "acknowledgment" if change == "ack" else "expected_state_sha256"
+            ] = "wrong"
+            row.evidence_json = json.dumps(data)
+        elif change == "owner":
+            db.get(AgentCapacityReservation, preview["permit_id"]).owner = "other"
+        elif change == "turn":
+            db.exec(select(AgentTurn)).one().result_text = "changed"
+        elif change == "guest":
+            db.get(AgentSession, preview["session_id"]).ember_session_id = "other"
+        elif (change or "").startswith("receipt_") or change in {
+            "result",
+            "superseded",
+            "late_receipt",
+        }:
+            receipt = db.get(AgentResultReceipt, "receipt-2")
+            if change == "receipt_missing":
+                db.delete(receipt)
+            elif change == "receipt_owner":
+                receipt.claim_owner = "other"
+            elif change == "receipt_guest":
+                receipt.guest_id = "other"
+            elif change == "result":
+                receipt.result_sha256 = "result"
+            elif change == "late_receipt":
+                receipt.created_at = at(15)
+            else:
+                receipt.superseded_at = now
+    candidate = supervision._prepare(preview["permit_id"])
+    if change in {"no_audit", "owner", "turn", "guest", "ack", "digest"}:
+        assert candidate is None
+    else:
+        assert candidate == candidate_before
+        observed = {
+            "session_id": "guest",
+            "state": "running" if change == "running" else "evicted",
+            "generation": 0,
+            "invoke_started_at": int(
+                at(140 if change != "new_invoke" else 5).timestamp() * 1000
+            ),
+            "last_invoke_at": None,
+            "updated_at": int(
+                at(20 if change != "old_terminal" else 110).timestamp() * 1000
+            ),
+        }
+        if change == "malformed_completion":
+            observed["last_invoke_at"] = True
+        if change == "generation_regression":
+            with Session(engine) as db, db.begin():
+                audit = db.get(ProbeObservation, preview["permit_id"])
+                audit.generation = 1
+                audit.invoke_started_at = observed["invoke_started_at"]
+        if change == "race":
+            with Session(engine) as db, db.begin():
+                db.get(AgentCapacityReservation, preview["permit_id"]).owner = "raced"
+        supervision._record(candidate, observed, at(60) if change == "stale" else now)
+    with Session(engine) as db:
+        permit = db.get(AgentCapacityReservation, preview["permit_id"])
+        assert permit.state == ("settled" if change is None else "uncertain")
+        assert permit.outcome == (
+            "operator_recompute_ceased_unknown"
+            if change is None
+            else "operator_recompute_unknown"
+        )
+        if change is None:
+            assert (
+                db.exec(select(RoutineReconciliation)).one().model_dump()
+                == original_audit
+            )
+            assert db.exec(select(AgentTurn)).one().stop_reason == UNKNOWN_INVOCATION
+            assert (
+                db.get(AgentSession, preview["session_id"]).ember_session_id == "guest"
+            )
+            assert supervision._prepare(preview["permit_id"]) is None
+
+
+@pytest.fixture
+def completed_raw(database, monkeypatch):
+    from knowledge.entities import Entity, NoteEntity
+    from knowledge.models import (
+        AtomRawProvenance,
+        Chunk,
+        Dispute,
+        Note,
+        NoteLink,
+        RawInput,
+    )
+
+    held_request, _ = held(database)
+    name, sid = held_request["job_name"], held_request["session_id"]
+    database = database.execution_options(
+        schema_translate_map={
+            "agent_sessions": None,
+            "claude_agent": None,
+            "knowledge": None,
+        }
+    )
+    monkeypatch.setattr(reconciliation, "get_engine", lambda: database)
+    with Session(database) as db:
+        db.execute(text("DROP TABLE raw_inputs"))
+        db.execute(text("DROP TABLE atom_raw_provenance"))
+        db.commit()
+    SQLModel.metadata.create_all(
+        database,
+        tables=[
+            m.__table__
+            for m in (
+                RawInput,
+                AtomRawProvenance,
+                Note,
+                Chunk,
+                NoteLink,
+                Dispute,
+                Entity,
+                NoteEntity,
+            )
+        ],
+    )
+    with Session(database) as db:
+        db.add(
+            RawInput(
+                raw_id="raw",
+                path="raws/raw.md",
+                source="ember-session",
+                content_hash="content",
+                extra={"scope": "repo:jomcgi-org/homelab"},
+            )
+        )
+        agent = db.get(AgentSession, sid)
+        agent.status = "completed"
+        turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == sid)).one()
+        turn.stop_reason = None
+        turn.terminal_reason = "completed"
+        turn.result_text = '```json\n{"assertions":[],"dispute_resolution":null,"doc_drift":[],"notes":"saved"}\n```'
+        db.execute(
+            text(
+                "UPDATE routine_jobs SET last_status=NULL,locked_by='luna-drainer:cycle:0',locked_at='old-time',next_run_at='old-due' WHERE name=:name"
+            ),
+            {"name": name},
+        )
+        permit = AgentCapacityReservation(
+            local_session_id=agent.local_session_id,
+            pending_seq=1,
+            session_id=sid,
+            tier="kg",
+            routine_job_name=name,
+            state="settled",
+            outcome="completed",
+        )
+        db.add(permit)
+        db.commit()
+        pid = permit.id
+    monkeypatch.setenv("KG_COMPLETED_RAW_RECOVERY_ENABLED", "true")
+    # Empty saved output needs no embeddings, but constructing the existing
+    # client must not depend on a developer's model endpoint configuration.
+    monkeypatch.setattr("knowledge.extraction.EmbeddingClient", lambda: object())
+    return database, {
+        "mode": "preview",
+        "job_name": name,
+        "session_id": sid,
+        "permit_id": pid,
+    }
+
+
+def _completed_apply(request, preview):
+    return {
+        **request,
+        "mode": "apply",
+        "reconciliation_key": "saved-result-1",
+        "expected_state_sha256": preview["expected_state_sha256"],
+    }
+
+
+def test_completed_raw_applies_original_result_and_replays_receipt(completed_raw):
+    from knowledge.models import AtomRawProvenance, RawInput
+
+    engine, request = completed_raw
+    preview = reconciliation.recover_completed_raw(actor="operator", recovery=request)
+    apply = _completed_apply(request, preview)
+    result = reconciliation.recover_completed_raw(actor="operator", recovery=apply)
+    assert result["rearmed"] is False and result["atoms"] == 0
+    with Session(engine) as db:
+        raw = db.exec(select(RawInput)).one()
+        assert raw.extra["extraction_passes"] == 1
+        assert len(db.exec(select(AtomRawProvenance)).all()) == 1
+        job = (
+            db.execute(text("SELECT * FROM routine_jobs WHERE name='kg:raw'"))
+            .mappings()
+            .one()
+        )
+        assert job["last_status"] == "reconciled_completed"
+        assert job["locked_by"] is None and job["next_run_at"] is None
+        turn = db.exec(select(AgentTurn)).one()
+        assert (
+            turn.terminal_reason == "completed"
+            and '"notes":"saved"' in turn.result_text
+        )
+        db.execute(text("DELETE FROM routine_jobs WHERE name='kg:raw'"))
+        db.commit()
+    assert (
+        reconciliation.recover_completed_raw(actor="operator", recovery=apply) == result
+    )
+    with pytest.raises(ValueError, match="conflicts"):
+        reconciliation.recover_completed_raw(actor="other", recovery=apply)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "UPDATE agent_sessions SET status='failed'",
+        "UPDATE agent_turns SET terminal_reason='error'",
+        "UPDATE routine_jobs SET locked_by='another-owner'",
+        "UPDATE workflow_status SET status='PENDING'",
+        "UPDATE capacity_reservations SET state='uncertain'",
+    ],
+)
+def test_completed_raw_refuses_ambiguous_ownership(completed_raw, sql):
+    engine, request = completed_raw
+    with Session(engine) as db:
+        db.execute(text(sql))
+        db.commit()
+    with pytest.raises(ValueError, match="ambiguous"):
+        reconciliation.recover_completed_raw(actor="operator", recovery=request)
+
+
+def test_completed_raw_changed_result_and_disabled_apply_stay_fenced(
+    completed_raw, monkeypatch
+):
+    engine, request = completed_raw
+    preview = reconciliation.recover_completed_raw(actor="operator", recovery=request)
+    apply = _completed_apply(request, preview)
+    monkeypatch.setenv("KG_COMPLETED_RAW_RECOVERY_ENABLED", "false")
+    with pytest.raises(ValueError, match="disabled"):
+        reconciliation.recover_completed_raw(actor="operator", recovery=apply)
+    monkeypatch.setenv("KG_COMPLETED_RAW_RECOVERY_ENABLED", "true")
+    with Session(engine) as db:
+        db.execute(text("UPDATE agent_turns SET result_text='changed'"))
+        db.commit()
+    with pytest.raises(ValueError, match="state changed"):
+        reconciliation.recover_completed_raw(actor="operator", recovery=apply)
+
+
+def test_completed_raw_failure_rolls_back_application_and_lease(
+    completed_raw, monkeypatch
+):
+    from knowledge.models import AtomRawProvenance, RawInput
+
+    engine, request = completed_raw
+    preview = reconciliation.recover_completed_raw(actor="operator", recovery=request)
+    original = reconciliation.read_reconciliation_state
+
+    def fail_after_application(db, *args):
+        state = original(db, *args)
+        if state["extraction_passes"] == 1:
+            raise ValueError("injected finalization failure")
+        return state
+
+    monkeypatch.setattr(
+        reconciliation, "read_reconciliation_state", fail_after_application
+    )
+    with pytest.raises(ValueError, match="injected"):
+        reconciliation.recover_completed_raw(
+            actor="operator", recovery=_completed_apply(request, preview)
+        )
+    with Session(engine) as db:
+        assert db.exec(select(AtomRawProvenance)).all() == []
+        assert "extraction_passes" not in db.exec(select(RawInput)).one().extra
+        assert (
+            db.execute(
+                text("SELECT locked_by FROM routine_jobs WHERE name='kg:raw'")
+            ).scalar_one()
+            == "luna-drainer:cycle:0"
+        )
+        assert db.exec(select(RoutineReconciliation)).all() == []
+
+
+def test_completed_raw_rejects_unbound_sibling_permit(completed_raw):
+    engine, request = completed_raw
+    with Session(engine) as db:
+        db.add(
+            AgentCapacityReservation(
+                local_session_id="new-attempt",
+                pending_seq=1,
+                session_id=None,
+                tier="kg",
+                routine_job_name=request["job_name"],
+                state="reserved",
+            )
+        )
+        db.commit()
+    with pytest.raises(ValueError, match="ambiguous"):
+        reconciliation.recover_completed_raw(actor="operator", recovery=request)
+
+
+def test_completed_raw_rejects_contradictory_settled_permit(completed_raw):
+    engine, request = completed_raw
+    with Session(engine) as db:
+        permit = db.get(AgentCapacityReservation, request["permit_id"])
+        permit.outcome = "delivery_error"
+        db.commit()
+    with pytest.raises(ValueError, match="ambiguous"):
+        reconciliation.recover_completed_raw(actor="operator", recovery=request)
+
+
+def test_completed_raw_concurrent_same_key_returns_one_receipt(
+    completed_raw, monkeypatch
+):
+    from threading import Barrier, local
+
+    engine, request = completed_raw
+    preview = reconciliation.recover_completed_raw(actor="operator", recovery=request)
+    apply = _completed_apply(request, preview)
+    barrier, seen = Barrier(2), local()
+    original = reconciliation._completed_raw_state
+
+    def overlap(*args):
+        state = original(*args)
+        if not getattr(seen, "read", False):
+            seen.read = True
+            barrier.wait(timeout=10)
+        return state
+
+    monkeypatch.setattr(reconciliation, "_completed_raw_state", overlap)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(
+                reconciliation.recover_completed_raw, actor="operator", recovery=apply
+            )
+            for _ in range(2)
+        ]
+        results = [f.result(timeout=20) for f in futures]
+    assert results[0] == results[1]
+    with Session(engine) as db:
+        assert len(db.exec(select(RoutineReconciliation)).all()) == 1
+
+
+def test_completed_raw_nonempty_application_rolls_back_with_receipt_failure(
+    completed_raw, monkeypatch
+):
+    from knowledge.models import AtomRawProvenance, Chunk, Note, RawInput
+
+    engine, request = completed_raw
+
+    class Embedder:
+        async def embed(self, text):
+            return [0.0] * 1024
+
+        async def embed_batch(self, texts):
+            return [[0.0] * 1024 for _ in texts]
+
+    monkeypatch.setattr("knowledge.extraction.EmbeddingClient", Embedder)
+    monkeypatch.setattr("knowledge.atoms.EmbeddingClient", Embedder)
+    monkeypatch.setattr(
+        "knowledge.store.KnowledgeStore.search_notes_with_context",
+        lambda *args, **kwargs: [],
+    )
+    output = {
+        "assertions": [
+            {
+                "title": "Monolith retries extraction",
+                "body": "When extraction fails, Monolith retries the work.",
+                "scope": "repo:jomcgi-org/homelab",
+                "verification_state": "unverified",
+                "confidence": 0.8,
+                "edges": {},
+            }
+        ],
+        "dispute_resolution": None,
+        "doc_drift": [],
+        "notes": "saved",
+    }
+    with Session(engine) as db:
+        db.exec(select(AgentTurn)).one().result_text = (
+            "```json\n" + json.dumps(output) + "\n```"
+        )
+        db.commit()
+    preview = reconciliation.recover_completed_raw(actor="operator", recovery=request)
+    original = reconciliation.read_reconciliation_state
+    saw_atoms = []
+
+    def fail_after_atoms(db, *args):
+        state = original(db, *args)
+        if state["extraction_passes"] == 1:
+            assert len(db.exec(select(Note)).all()) == 1
+            assert len(db.exec(select(Chunk)).all()) >= 1
+            saw_atoms.append(True)
+            raise ValueError("receipt failure after atoms")
+        return state
+
+    monkeypatch.setattr(reconciliation, "read_reconciliation_state", fail_after_atoms)
+    with pytest.raises(ValueError, match="receipt failure"):
+        reconciliation.recover_completed_raw(
+            actor="operator", recovery=_completed_apply(request, preview)
+        )
+    assert saw_atoms == [True]
+    with Session(engine) as db:
+        for model in (Note, Chunk, AtomRawProvenance, RoutineReconciliation):
+            assert db.exec(select(model)).all() == []
+        assert "extraction_passes" not in db.exec(select(RawInput)).one().extra
+        assert (
+            db.execute(
+                text("SELECT locked_by FROM routine_jobs WHERE name='kg:raw'")
+            ).scalar_one()
+            == "luna-drainer:cycle:0"
+        )

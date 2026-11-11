@@ -281,5 +281,5 @@ Written per episode via `put-eval <episode_id> <base64-payload>` to
 
 Prompt and gate edits ship with the MONOLITH image: the merged PR's chart bump
 rolls them out. Channel directive proposals land as inactive rows and take
-effect on a human 👍 in Discord. The next `/improve-ambient` run's before/after
+effect on a human 👍 in Discord. The next improve-ambient procedure run's before/after
 aggregates are the verdict on whether the change worked.

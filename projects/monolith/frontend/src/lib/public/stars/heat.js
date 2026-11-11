@@ -5,7 +5,7 @@
 // Full month-of-year names, indexed 1..12 (index 0 is a pad so month numbers
 // read directly). The historical layer buckets by month-of-year (ADR 008), so
 // the picker and header label by name, not by a year-month.
-export const MONTH_LABELS = [
+const MONTH_LABELS = [
   "",
   "January",
   "February",
@@ -22,7 +22,7 @@ export const MONTH_LABELS = [
 ];
 
 // Short three-letter chip labels (Jan..Dec), indexed 1..12 to match.
-export const MONTH_SHORT = [
+const MONTH_SHORT = [
   "",
   "Jan",
   "Feb",
@@ -48,22 +48,19 @@ export function monthShort(month) {
   return MONTH_SHORT[month] ?? "";
 }
 
-// Geometry for the per-site 12-month clear-dark-hours bar chart. Accepts either
-// a 12-element array (clear-dark hours, index 0 = January, the shape the
-// /history payload now carries per site) or the legacy {1..12: clear_dark_hours}
-// map (keys may be numbers or strings since JSON object keys stringify). Returns
+// Geometry for the per-site 12-month clear-dark-hours bar chart. Takes a
+// 12-element array (clear-dark hours, index 0 = January, the shape the
+// /history payload carries per site); anything else reads as all zero. Returns
 // a fixed array of 12 bars in month order. Each bar carries its raw `value`, its
 // `frac` (value / the tallest month, 0..1, the bar height fraction), and `isMax`
 // (the tallest month(s), so the card can label the notable bar). Pure +
 // layout-agnostic: it emits numbers, not SVG, so it stays unit-testable without
 // a DOM (mirrors how relativeMax keeps the normalization math out of StarsMap).
 export function monthBars(months) {
-  const at = Array.isArray(months)
-    ? (m) => months[m - 1]
-    : (m) => months?.[m] ?? months?.[String(m)];
+  const arr = Array.isArray(months) ? months : [];
   const values = [];
   for (let m = 1; m <= 12; m++) {
-    const raw = Number(at(m) ?? 0);
+    const raw = Number(arr[m - 1] ?? 0);
     values.push(Number.isFinite(raw) && raw > 0 ? raw : 0);
   }
   const max = Math.max(0, ...values);

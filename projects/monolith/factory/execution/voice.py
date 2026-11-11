@@ -22,8 +22,3 @@ def extract_voice_summary(result_text: str) -> str:
         return " ".join(match.group(1).split()).strip()[:200]
     first_sentence = re.split(r"(?<=[.!?])\s+", result_text.strip(), maxsplit=1)[0]
     return " ".join(first_sentence.split())[:200]
-
-
-def spark_voice_fallback(result_text: str) -> str:
-    """Reserved hook for a future model summary fallback."""
-    return ""

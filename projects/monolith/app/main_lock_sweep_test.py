@@ -1,4 +1,4 @@
-"""Tests for the _lock_sweep_loop background task in app.main.
+"""Tests for the _lock_sweep_loop background task in chat.leader.
 
 Covers paths not addressed by existing main_* test files:
 - _lock_sweep_loop runs sweep and cleanup when no locks are expired
@@ -8,7 +8,7 @@ Covers paths not addressed by existing main_* test files:
 - _lock_sweep_loop does NOT log debug when cleanup_completed returns 0
 - _lock_sweep_loop catches Exception and calls logger.exception('Lock sweep failed')
 - _lock_sweep_loop continues after an exception (resilience)
-- sweep_task.add_done_callback(_log_task_exception) is registered
+- sweep_task.add_done_callback(log_task_exception) is registered
 - 'Message lock sweep started (30s interval)' is logged when token is set
 
 NOTE on loop structure in _lock_sweep_loop (chat/leader.py leader_start):
@@ -36,7 +36,9 @@ import pytest
 # Ensure no valid STATIC_DIR is set before importing main
 os.environ.pop("STATIC_DIR", None)
 
-from app.main import _log_task_exception, _start_singletons, app  # noqa: E402
+from app.main import app  # noqa: E402
+from app.modules_private import ALL_MODULES  # noqa: E402
+from framework import log_task_exception, start_leader_singletons  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -101,14 +103,6 @@ def _make_lock(discord_message_id: int, channel_id: int) -> MagicMock:
     return lock
 
 
-def _make_session_mock(store: MagicMock) -> MagicMock:
-    """Return a context-manager session mock that yields the given store's session."""
-    mock_session_obj = MagicMock()
-    mock_session_obj.__enter__ = MagicMock(return_value=mock_session_obj)
-    mock_session_obj.__exit__ = MagicMock(return_value=False)
-    return mock_session_obj
-
-
 # ---------------------------------------------------------------------------
 # sweep_task registration wiring
 # ---------------------------------------------------------------------------
@@ -117,7 +111,7 @@ def _make_session_mock(store: MagicMock) -> MagicMock:
 class TestSweepTaskRegistration:
     @pytest.mark.asyncio
     async def test_sweep_task_registers_done_callback_with_log_task_exception(self):
-        """When DISCORD_BOT_TOKEN is set, sweep_task.add_done_callback(_log_task_exception) is called."""
+        """When DISCORD_BOT_TOKEN is set, sweep_task.add_done_callback(log_task_exception) is called."""
         mock_bot = MagicMock()
         mock_bot.close = AsyncMock()
 
@@ -139,9 +133,9 @@ class TestSweepTaskRegistration:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
-        sweep_task_mock.add_done_callback.assert_called_once_with(_log_task_exception)
+        sweep_task_mock.add_done_callback.assert_called_once_with(log_task_exception)
 
     @pytest.mark.asyncio
     async def test_sweep_started_log_message_when_token_set(self):
@@ -163,7 +157,7 @@ class TestSweepTaskRegistration:
             patches[2],
             patch("chat.leader.logger") as mock_logger,
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
         messages = [str(c) for c in mock_logger.info.call_args_list]
         assert any("Message lock sweep started" in m for m in messages), (
@@ -195,11 +189,12 @@ class TestSweepTaskRegistration:
             patches[1],
             patch("chat.leader.logger") as mock_logger,
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
         # Ships ingest, the agent_sessions pending-message sweep, title refresh,
-        # KG feed, guest cleanup, receipt retention, cd-probe, and quota refresh are the eight service tasks.
-        assert len(tasks_created) == 8
+        # KG feed, permit supervision, guest cleanup, receipt retention, cd-probe and
+        # quota refresh are the nine service tasks.
+        assert len(tasks_created) == 9
         messages = [str(c) for c in mock_logger.info.call_args_list]
         assert not any("Message lock sweep started" in m for m in messages)
 
@@ -231,7 +226,7 @@ class TestLockSweepLoopNoExpiredLocks:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
         assert len(coros) == 1
 
@@ -280,7 +275,7 @@ class TestLockSweepLoopNoExpiredLocks:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
         assert len(coros) == 1
 
@@ -327,7 +322,7 @@ class TestLockSweepLoopNoExpiredLocks:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
         assert len(coros) == 1
 
@@ -378,7 +373,7 @@ class TestLockSweepLoopNoExpiredLocks:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
         assert len(coros) == 1
 
@@ -437,7 +432,7 @@ class TestLockSweepLoopWithExpiredLocks:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
         assert len(coros) == 1
 
@@ -495,7 +490,7 @@ class TestLockSweepLoopWithExpiredLocks:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
         assert len(coros) == 1
 
@@ -549,7 +544,7 @@ class TestLockSweepLoopWithExpiredLocks:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
         assert len(coros) == 1
 
@@ -602,7 +597,7 @@ class TestLockSweepLoopWithExpiredLocks:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
         assert len(coros) == 1
 
@@ -658,7 +653,7 @@ class TestLockSweepLoopExceptionHandling:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
         assert len(coros) == 1
 
@@ -711,7 +706,7 @@ class TestLockSweepLoopExceptionHandling:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
         assert len(coros) == 1
 
@@ -761,7 +756,7 @@ class TestLockSweepLoopExceptionHandling:
             patches[1],
             patches[2],
         ):
-            await _start_singletons(app)
+            await start_leader_singletons(app, ALL_MODULES)
 
         assert len(coros) == 1
 

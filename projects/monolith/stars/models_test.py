@@ -6,32 +6,26 @@ Uses SQLModel.metadata.create_all (no migrations), mirroring the hikes tests.
 from datetime import datetime, timezone
 
 import pytest
-from sqlmodel import Session, SQLModel, create_engine, select
-from sqlmodel.pool import StaticPool
+from sqlmodel import SQLModel, select
+from sqlalchemy.dialects import postgresql
 
 from stars.models import Site, SiteHour, SiteMonthClimatology
+from shared.testing.sqlite import sqlite_session
+
+
+def test_forecast_timestamp_is_nullable_timestamptz():
+    column = Site.__table__.c.forecast_fetched_at
+    assert column.nullable
+    assert column.default is None and column.server_default is None
+    assert (
+        column.type.compile(dialect=postgresql.dialect()) == "TIMESTAMP WITH TIME ZONE"
+    )
 
 
 @pytest.fixture(name="session")
 def session_fixture():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
+    with sqlite_session() as session:
+        yield session
 
 
 def test_site_hour_roundtrip(session):
@@ -85,6 +79,7 @@ def test_site_roundtrip(session):
     assert loaded.altitude_m == 312
     assert loaded.lp_zone == "1a"
     assert loaded.source == "grid"
+    assert loaded.forecast_fetched_at is None
     # SQLite returns naive datetimes; assert the type only, not tzinfo.
     # Production is Postgres TIMESTAMPTZ where the value round-trips tz-aware.
     assert isinstance(loaded.updated_at, datetime)

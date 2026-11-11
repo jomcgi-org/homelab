@@ -2,6 +2,11 @@
   import { onMount } from "svelte";
   import "maplibre-gl/dist/maplibre-gl.css";
   import { dayColor } from "$lib/trips/trip.js";
+  import {
+    mapPalette,
+    themeBasemap,
+    watchMapScheme,
+  } from "$lib/trips/map-theme.js";
 
   // Summary route map: one GPU GeoJSON line layer per day, coloured by day.
   // Clicking a day's line navigates to that day; hovering dims the others. A
@@ -21,6 +26,16 @@
   let mapContainer;
   let map = null;
   let ready = false;
+
+  function applyScheme() {
+    if (!map || !ready) return;
+    const palette = mapPalette(mapContainer);
+    themeBasemap(map, palette);
+    if (map.getLayer("trip-start")) {
+      map.setPaintProperty("trip-start", "circle-color", palette.ink);
+      map.setPaintProperty("trip-start", "circle-stroke-color", palette.sheet);
+    }
+  }
 
   function allPoints() {
     return days
@@ -58,6 +73,7 @@
   onMount(() => {
     let destroyed = false;
     let cleanup = () => {};
+    const unwatch = watchMapScheme(applyScheme);
 
     (async () => {
       const maplibregl = await import("maplibre-gl");
@@ -143,14 +159,15 @@
             source: "trip-start",
             paint: {
               "circle-radius": 6,
-              "circle-color": "#1a1a1a",
-              "circle-stroke-color": "#ffffff",
-              "circle-stroke-width": 2,
+              "circle-color": mapPalette(mapContainer).ink,
+              "circle-stroke-color": mapPalette(mapContainer).sheet,
+              "circle-stroke-width": 1,
             },
           });
         }
 
         ready = true;
+        applyScheme();
         applyHover();
       });
 
@@ -163,6 +180,7 @@
 
     return () => {
       destroyed = true;
+      unwatch();
       cleanup();
     };
   });
@@ -177,7 +195,7 @@
     min-height: 240px;
   }
   .map :global(.maplibregl-ctrl-attrib-inner) {
-    font-family: var(--mono);
+    font-family: var(--font-code);
     font-size: 10px;
   }
 </style>

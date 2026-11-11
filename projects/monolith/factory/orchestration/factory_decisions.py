@@ -37,18 +37,20 @@ from factory.orchestration.factory_controls import (
     ESCALATED,
     ESCAPE_OPTIONS,
     _audit,
+    _live_claim,
     _locked_session,
     _now,
+    _pending_request,
     _read_session,
+    _request_records,
+    decision_in_flight as decision_in_flight,
     decision_identity,
     delivery_branch_owner,
     granted_delivery_surface,
-    intake_policy,
     is_advisory,
     terminal_effect,
     terminal_resolution,
 )
-from factory.orchestration.factory_intake import INTAKE_ACTOR
 from factory.orchestration import work_items
 from factory.orchestration.factory_models import (
     FactoryAudit,
@@ -238,12 +240,24 @@ def _claim(
         # running right now would keep writing to an issue the decision has
         # just closed or relabelled, and would then settle against a verdict
         # nobody asked it for.
-        from factory.orchestration import factory_progress_watchdog
+        from factory.orchestration import factory_pause, factory_progress_watchdog
+
+        if factory_pause.is_card(escalation):
+            if not factory_pause.eligible(db, row) or not factory_pause.decidable(
+                row, escalation
+            ):
+                raise DecisionError(409, "this automatic pause no longer owns the task")
+            if option != factory_pause.STOP:
+                raise DecisionError(
+                    409,
+                    "this pause only offers stopping; continuation needs separate authorization",
+                )
 
         # A watchdog card is the one answered mid-task: its task is paused
         # waiting for it, and the watchdog enacts the answer on the next tick.
-        if row.state in _RUNNING_STATES and not factory_progress_watchdog.decidable(
-            row, escalation
+        if row.state in _RUNNING_STATES and not (
+            factory_progress_watchdog.decidable(row, escalation)
+            or factory_pause.decidable(row, escalation)
         ):
             raise DecisionError(
                 409, "a brief is running on this issue; decide when it settles"
@@ -290,47 +304,6 @@ def _decision_audits(db, receipt_id: int, action: str) -> list[dict]:
     return [detail for detail in details if detail.get("receipt_id") == receipt_id]
 
 
-def _live_claim(
-    db, receipt_id: int, option_key: str, identity: str | None = None
-) -> str | None:
-    """The other option holding this escalation, when one still holds it.
-
-    A claim is superseded by a later `decision_failed` for the same option.
-    Without that, one failed GitHub call would lock the escalation to the
-    option that failed: the operator could neither retry it into a different
-    answer nor pick another, and the only way out would be the database.
-    """
-    held = set()
-    rows = db.exec(
-        select(FactoryAudit)
-        .where(
-            FactoryAudit.action.in_(
-                ("decision_claimed", "decision_failed", "decision_applied")
-            )
-        )
-        .order_by(FactoryAudit.id)
-    ).all()
-    for row in rows:
-        detail = json.loads(row.detail_json)
-        if detail.get("receipt_id") != receipt_id:
-            continue
-        if identity is not None and detail.get("decision_id") not in (None, identity):
-            continue
-        key = detail.get("option_key")
-        if row.action == "decision_claimed":
-            held.add(key)
-        else:
-            held.discard(key)
-    return next((key for key in sorted(held) if key != option_key), None)
-
-
-def decision_in_flight(db, receipt_id: int) -> bool:
-    """Whether policy retirement must wait for a claimed external mutation."""
-    if _pending_request(db, receipt_id):
-        return True
-    return _live_claim(db, receipt_id, "") is not None
-
-
 def _fields(row: FactoryReceipt) -> dict:
     return {
         "id": row.id,
@@ -372,9 +345,13 @@ def _comment(repo: str, number: int, marker: str, body: str) -> bool:
     """Post one comment at most once. True when this call wrote it."""
     if _has_marker(repo, number, marker):
         return False
+    _post_comment(repo, number, marker, body)
+    return True
+
+
+def _post_comment(repo: str, number: int, marker: str, body: str) -> None:
     _get, _list, github_write = _github()
     github_write(repo, f"issues/{number}/comments", {"body": f"{marker}\n{body}"})
-    return True
 
 
 def _label(repo: str, number: int, add: list[str], remove: list[str]) -> None:
@@ -524,7 +501,7 @@ def _apply_split(fields: dict, option: dict, marker: str) -> dict:
         }
         from factory.orchestration import factory_operational_handoff as handoff
 
-        if handoff.enabled() and handoff.operational_child(child):
+        if handoff.operational_child(child):
             # Live checks are a person's to run. Without an exclusion label
             # intake admitted #6559 as a refine task within seconds.
             payload["labels"] = [HUMAN_LABEL]
@@ -727,6 +704,7 @@ def _resolve(
     *,
     expected_decision_id: str,
     request: dict | None = None,
+    session=None,
 ) -> dict:
     """Write the resolution onto the escalation and audit what it did."""
     effects = dict(effects)
@@ -742,7 +720,8 @@ def _resolve(
         "decided_at": iso(_now()),
         "decision_id": expected_decision_id,
     }
-    with _locked_session() as (db, _control):
+    context = _locked_session() if session is None else nullcontext((session, None))
+    with context as (db, _control):
         row = _receipt(db, receipt_id)
         escalation = escalation_of(row) or {}
         if _fields(row)["decision_id"] != expected_decision_id:
@@ -755,6 +734,19 @@ def _resolve(
         # the audit has to name the task the decision was made against rather
         # than the null a re-queued receipt carries.
         task_id = row.task_id
+        from factory.orchestration import factory_pause
+
+        if factory_pause.is_card(escalation):
+            if (
+                not factory_pause.eligible(db, row)
+                or not factory_pause.decidable(row, escalation)
+                or option != factory_pause.STOP
+            ):
+                raise DecisionError(409, "this automatic pause no longer owns the task")
+            # Request cancellation, never settle or release uncertain reservations.
+            # The existing cancel_owned reconciler accounts for outstanding work.
+            row.cancellation_requested = True
+            resolution["effects"]["cancellation_requested"] = True
         # A dismiss is overwritten rather than preserved: the operator who
         # cleared the card and then decided the issue properly must end up
         # with the decision on the record, not the dismiss.
@@ -877,11 +869,27 @@ def apply_decision(
     expected_decision_id: str | None = None,
 ) -> dict:
     """Answer one escalation with one of its options."""
-    fields, escalation, resolved = _claim(
-        receipt_id, option_key, actor, expected_decision_id
-    )
-    if resolved is not None:
-        return {"ok": True, "applied": False, "resolution": resolved}
+    from factory.orchestration import factory_pause
+
+    with _locked_session() as (db, _control):
+        fields, escalation, resolved = _claim(
+            receipt_id, option_key, actor, expected_decision_id, session=db
+        )
+        if resolved is not None:
+            return {"ok": True, "applied": False, "resolution": resolved}
+        if factory_pause.is_card(escalation):
+            # Stop is database-only. Keep claim and answer under one control
+            # lock so resume, another pause or handoff cannot split them.
+            resolution = _resolve(
+                receipt_id,
+                factory_pause.STOP,
+                actor,
+                note,
+                {"held": True},
+                expected_decision_id=fields["decision_id"],
+                session=db,
+            )
+            return {"ok": True, "applied": True, "resolution": resolution}
     option = _option(escalation, option_key)
     try:
         effects = _apply(fields, option, note)
@@ -972,12 +980,12 @@ def _requeue_blocker(db, row: FactoryReceipt, ignore_request=None) -> str | None
             f"the receipt is generation {row.generation} and the policy is on "
             f"{policy.get('generation')}, so admission will not select it"
         )
-    # The same two clauses admit_next ORs together. An issue in the operator
-    # allowlist is admissible whatever intake is doing, so reading the intake
-    # flag alone would refuse a re-brief the lane would happily have run.
-    allowlisted = row.issue_number in (policy.get("issue_numbers") or [])
-    discovered = row.actor == INTAKE_ACTOR and intake_policy(policy)["enabled"]
-    if not (allowlisted or discovered):
+    from factory.orchestration.factory_controls import admission_eligible
+
+    # Keep rebriefs aligned with bounded natural and selected admission.
+    if not admission_eligible(
+        policy, row.issue_number, row.actor, task_class=row.task_class, repo=row.repo
+    ):
         return (
             "this issue is neither in the policy allowlist nor discoverable "
             "with intake on, so admission will not select it"
@@ -1070,7 +1078,10 @@ def _direction(
                 "conductor_gates",
                 "delivery_adoption",
                 "landing_hold",
+                "landing_hold_provenance",
+                "landing_hold_refusals",
                 "nonrenewable_recovery",
+                "model_restriction",
             )
             if key in stored
         },
@@ -1139,6 +1150,7 @@ def _readmit(
     row.direction_json = json.dumps(direction)
     if not queued:
         _requeue(row)
+        _audit(db, actor, "operator_readmission_queued", receipt_id=row.id)
     return {"readmitted": True, "blocked_by": None}
 
 
@@ -1211,6 +1223,7 @@ def _requeue_refine(
                 )
             )
         _requeue(row)
+        _audit(db, actor, "operator_readmission_queued", receipt_id=row.id)
     db.add(row)
     return blocker
 
@@ -1248,99 +1261,6 @@ def _append_operator_exchange(
         }
     )
     escalation["conversation"] = conversation[-20:]
-
-
-def request_chat(receipt_id: int, note: str, actor: str) -> dict:
-    """Ask the lane for more before deciding, and say so on the issue."""
-    note = (note or "").strip()
-    if not note:
-        return {"ok": False, "reason": "a chat request needs a note"}
-    if len(note) > MAX_NOTE:
-        raise DecisionError(422, "the note is too long")
-    with _locked_session() as (db, control):
-        row = _receipt(db, receipt_id)
-        _require_current_generation(db, row, control)
-        if _pending_request(db, receipt_id):
-            raise DecisionError(
-                409, "a durable decision request has an unresolved outcome"
-            )
-        escalation = escalation_of(row)
-        fields = _fields(row)
-        if escalation is None:
-            raise DecisionError(409, "this receipt raised no escalation")
-        # A dismiss is not a decision, so asking about a card you cleared is
-        # allowed: it is the way back from one keypress that wrote nothing.
-        if terminal_resolution(escalation.get("resolved")):
-            raise DecisionError(409, "this escalation was already decided")
-        # Keyed on how many times chat has been asked, so a second, different
-        # question posts a second comment while a retry of the first does not.
-        sequence = len(escalation.get("chat") or [])
-        marker = _marker(receipt_id, f"chat-{sequence}")
-        answer = (
-            "Re-queued for another brief that answers this."
-            if fields["task_class"] == TASK_CLASS
-            else "Re-admitted to the delivery lane with this as the direction."
-        )
-        try:
-            # Keep the control-row fence until the receipt is re-queued. A
-            # generation bump can therefore happen before this operation, in
-            # which case it is refused above, or afterwards, when configure
-            # retires it. It cannot land between the GitHub write and state.
-            _comment(
-                fields["repo"],
-                fields["issue_number"],
-                marker,
-                f"{CHAT_PREFIX} {note}\n\n{answer}",
-            )
-        except (httpx.HTTPError, ValueError) as exc:
-            raise DecisionError(
-                502, "the question could not be posted on GitHub"
-            ) from exc
-        task_id = row.task_id
-        blocker = _requeue_refine(db, row, note, actor)
-        _audit(
-            db,
-            actor,
-            "decision_chat_requested",
-            task_id=task_id,
-            receipt_id=receipt_id,
-            issue_number=fields["issue_number"],
-            note=note[:MAX_NOTE],
-            requeued=blocker is None,
-            blocked_by=blocker,
-            sequence=sequence,
-        )
-    from factory.orchestration.conductor_context import report_receipt_with_deadline
-
-    report_receipt_with_deadline(receipt_id)
-    return {
-        "ok": True,
-        "requeued": blocker is None,
-        "blocked_by": blocker,
-        "sequence": sequence,
-    }
-
-
-def _request_records(db) -> dict[tuple[str, str], dict]:
-    rows = db.exec(
-        select(FactoryAudit)
-        .where(FactoryAudit.action == "decision_request")
-        .order_by(FactoryAudit.id)
-    ).all()
-    return {
-        (row.actor, detail["request"]["request_key"]): detail
-        for row in rows
-        if (detail := json.loads(row.detail_json)).get("request")
-    }
-
-
-def _pending_request(db, receipt_id: int, ignore=None) -> bool:
-    return any(
-        key != ignore
-        and detail["request"]["receipt_id"] == receipt_id
-        and detail["result"]["state"] in ("accepted", "outcome_unknown")
-        for key, detail in _request_records(db).items()
-    )
 
 
 def _request_event(db, actor: str, request: dict, result: dict) -> None:
@@ -1483,6 +1403,23 @@ def request_decision(
         )
         _request_event(db, actor, request, accepted)
 
+        from factory.orchestration import factory_pause
+
+        if action == "decide" and factory_pause.is_card(escalation):
+            # No external effect or separately committed accepted state exists
+            # for a local stop. A crash rolls back the claim and answer together.
+            resolution = _resolve(
+                receipt_id,
+                factory_pause.STOP,
+                actor,
+                note,
+                {"held": True},
+                expected_decision_id=decision_id,
+                request=request,
+                session=db,
+            )
+            return _decision_result(request, resolution)
+
     fields["effect_namespace"] = decision_id
     try:
         if action == "chat":
@@ -1520,6 +1457,7 @@ def _apply_chat_request(fields: dict, request: dict, actor: str) -> dict:
     # The durable request fence, rather than a check-then-post marker, keeps
     # concurrent retries from posting a second question.
     import hashlib
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
 
     marker = _effect_marker(
         fields,
@@ -1527,12 +1465,33 @@ def _apply_chat_request(fields: dict, request: dict, actor: str) -> dict:
         + hashlib.sha256((actor + ":" + request["request_key"]).encode()).hexdigest(),
     )
     note = request["note"].strip()
-    _comment(
-        fields["repo"],
-        fields["issue_number"],
-        marker,
-        f"{CHAT_PREFIX} {note}\n\nRequested another brief; the factory receipt records scheduling.",
-    )
+    try:
+        already_posted = _has_marker(fields["repo"], fields["issue_number"], marker)
+    except GitHubReadDeferred:
+        # This fresh request has not entered a write. Keep its refusal durable
+        # without fencing the receipt as an unknown external effect. Existing
+        # accepted/unknown keys never reach this path and remain fenced.
+        result = dict(
+            ok=False,
+            state="refused",
+            reason="github_read_deferred_before_effects",
+            effects_started=False,
+            error_type="GitHubReadDeferred",
+            request_key=request["request_key"],
+            receipt_id=request["receipt_id"],
+            decision_id=request["decision_id"],
+            acknowledged_at=iso(_now()),
+        )
+        with _locked_session() as (db, _control):
+            _request_event(db, actor, request, result)
+        return result
+    if not already_posted:
+        _post_comment(
+            fields["repo"],
+            fields["issue_number"],
+            marker,
+            f"{CHAT_PREFIX} {note}\n\nRequested another brief; the factory receipt records scheduling.",
+        )
     with _locked_session() as (db, _control):
         row = _receipt(db, request["receipt_id"])
         if _fields(row)["decision_id"] != request["decision_id"]:
@@ -1567,7 +1526,6 @@ __all__ = [
     "DecisionError",
     "apply_decision",
     "decision_in_flight",
-    "request_chat",
     "request_decision",
     "resume_escalated",
 ]

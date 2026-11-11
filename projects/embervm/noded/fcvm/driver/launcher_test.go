@@ -32,7 +32,7 @@ func TestWaitForSocketReadyAfterFirstAttempt(t *testing.T) {
 	socket := apiSocketPath(t)
 	synctest.Test(t, func(t *testing.T) {
 		done := make(chan error, 1)
-		go func() { done <- waitForSocket(t.Context(), socket, time.Second) }()
+		go func() { done <- waitForSocketOrExit(t.Context(), socket, time.Second, nil) }()
 		synctest.Wait()
 		listener, err := net.Listen("unix", socket)
 		if err != nil {
@@ -59,7 +59,7 @@ func TestWaitForSocketCancellationInterruptsRetry(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		done := make(chan error, 1)
-		go func() { done <- waitForSocket(ctx, socket, time.Second) }()
+		go func() { done <- waitForSocketOrExit(ctx, socket, time.Second, nil) }()
 		synctest.Wait()
 		cancel()
 		synctest.Wait()
@@ -92,7 +92,7 @@ func TestWaitForSocketDeadline(t *testing.T) {
 					timeout = time.Second
 				}
 				done := make(chan error, 1)
-				go func() { done <- waitForSocket(ctx, socket, timeout) }()
+				go func() { done <- waitForSocketOrExit(ctx, socket, timeout, nil) }()
 				time.Sleep(5 * time.Millisecond)
 				synctest.Wait()
 				select {

@@ -12,6 +12,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from core.clock import iso_z
+
 from factory.orchestration import config
 from factory.execution.rationale import parse_rationale
 from factory.orchestration.budget import effective_budget
@@ -709,6 +711,9 @@ def compose_master(
     decisions = (
         (decision_loader(workflow_ids) or {}) if decision_loader is not None else {}
     )
+    if callable(session_costs):
+        # A loader reads only the sessions of the runs being composed.
+        session_costs = session_costs(workflow_ids) or {}
     runs = []
     started = time.perf_counter() if not active else None
     for workflow, wf_id in zip(statuses, workflow_ids):
@@ -804,5 +809,5 @@ def compose_master(
             }
         ],
         "runs": runs,
-        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "generated_at": iso_z(datetime.now(timezone.utc)),
     }

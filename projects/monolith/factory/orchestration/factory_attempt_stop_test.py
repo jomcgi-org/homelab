@@ -3,7 +3,6 @@
 import asyncio
 import copy
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 from threading import Event
@@ -139,9 +138,6 @@ def database(tmp_path, monkeypatch):
         core_db,
     ):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
-    monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "false")
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     # Dispatch is driven explicitly by the test, using the same pending executor.
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _sid: None)
     monkeypatch.setattr(execution_api, "_schedule_next_message", lambda _sid: None)
@@ -360,6 +356,7 @@ class Ember:
         self.loop = None
         self.task = None
         self.reply_ready = None
+        self.finish_requested = Event()
         self.native_record = None
         self.lose_delete_ack = False
         self.on_get = None
@@ -384,6 +381,9 @@ class Ember:
                 ember.loop = asyncio.get_running_loop()
                 ember.task = asyncio.current_task()
                 ember.reply_ready = asyncio.Event()
+                # Keep a teardown release that arrived before POST startup.
+                if ember.finish_requested.is_set():
+                    ember.reply_ready.set()
                 ember.started.set()
                 try:
                     await ember.reply_ready.wait()
@@ -457,8 +457,105 @@ class Ember:
 
     def finish_post(self, record=None):
         self.native_record = record
-        if self.loop is not None and not self.loop.is_closed():
+        self.finish_requested.set()
+        if (
+            self.loop is not None
+            and self.reply_ready is not None
+            and not self.loop.is_closed()
+        ):
             self.loop.call_soon_threadsafe(self.reply_ready.set)
+
+
+class PendingExecutor:
+    """Own the real executor before transport startup can time out."""
+
+    def __init__(self, session_id):
+        self.loop = None
+        self.task = None
+        self.cancel_requested = Event()
+        self.pool = ThreadPoolExecutor(max_workers=1)
+        self.future = self.pool.submit(lambda: asyncio.run(self.execute(session_id)))
+
+    async def execute(self, session_id):
+        self.loop = asyncio.get_running_loop()
+        self.task = asyncio.current_task()
+        if self.cancel_requested.is_set():
+            raise asyncio.CancelledError
+        await mcp._execute_pending_message(session_id)
+
+    def cancel(self):
+        self.cancel_requested.set()
+        if (
+            self.loop is not None
+            and self.task is not None
+            and not self.loop.is_closed()
+        ):
+            self.loop.call_soon_threadsafe(self.task.cancel)
+
+    def startup_stack(self):
+        coroutine = self.task.get_coro() if self.task is not None else None
+        frames = []
+        while coroutine is not None:
+            frame = getattr(coroutine, "cr_frame", None)
+            if frame is not None:
+                frames.append(f"{frame.f_code.co_name}:{frame.f_lineno}")
+            coroutine = getattr(coroutine, "cr_await", None)
+        if frames:
+            return " -> ".join(frames)
+        return (
+            "executor thread has not entered its event loop"
+            if self.task is None
+            else "executor coroutine finished; runner cleanup remains"
+        )
+
+
+@pytest.mark.parametrize("cancel_before_start", [False, True])
+def test_fixture_can_cancel_executor_before_post(monkeypatch, cancel_before_start):
+    entered = Event()
+    release_thread = Event()
+
+    async def before_post(_sid):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(mcp, "_execute_pending_message", before_post)
+    if cancel_before_start:
+        original = PendingExecutor.execute
+
+        async def delayed_start(self, session_id):
+            await asyncio.to_thread(release_thread.wait)
+            await original(self, session_id)
+
+        monkeypatch.setattr(PendingExecutor, "execute", delayed_start)
+    executor = PendingExecutor(1)
+    try:
+        if not cancel_before_start:
+            assert entered.wait(5)
+            assert "before_post" in executor.startup_stack()
+        executor.cancel()
+        release_thread.set()
+        with pytest.raises(asyncio.CancelledError):
+            executor.future.result(timeout=5)
+        assert entered.is_set() == (not cancel_before_start)
+    finally:
+        release_thread.set()
+        executor.cancel()
+        executor.pool.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+async def test_fixture_release_before_post_is_not_lost(monkeypatch):
+    ember = Ember()
+    ember.install(monkeypatch)
+    # Teardown may run before the executor reaches its physical POST.
+    ember.finish_post()
+    async with transport.httpx.AsyncClient() as client:
+        with pytest.raises(httpx.ReadError, match="original response unavailable"):
+            await asyncio.wait_for(
+                client.post("https://ember.test/v1/sessions/s-original/invoke"),
+                timeout=0.1,
+            )
+    assert ember.started.is_set() and ember.exited.is_set()
 
 
 @pytest.fixture
@@ -468,13 +565,16 @@ def running(attempt, monkeypatch):
     ember.install(monkeypatch)
     heartbeat = HeartbeatGate()
     monkeypatch.setattr(mcp, "asyncio", heartbeat)
-    pool = ThreadPoolExecutor(max_workers=1)
-    future = pool.submit(lambda: asyncio.run(mcp._execute_pending_message(s.sid)))
+    executor = PendingExecutor(s.sid)
+    future = executor.future
     try:
         if not ember.started.wait(5):
             if future.done():
                 future.result()
-            pytest.fail("the real pending executor never reached its POST")
+            pytest.fail(
+                "the real pending executor never reached its POST: "
+                + executor.startup_stack()
+            )
         with Session(s.engine) as db, db.begin():
             pending = store.get_pending_message(db, s.sid, 1)
             pending.partial_text = (
@@ -492,7 +592,8 @@ def running(attempt, monkeypatch):
         except asyncio.CancelledError:
             pass
         except TimeoutError:
-            ember.loop.call_soon_threadsafe(ember.task.cancel)
+            # The root task is owned before POST, including a startup failure.
+            executor.cancel()
             try:
                 future.result(timeout=5)
             except asyncio.CancelledError:
@@ -501,21 +602,13 @@ def running(attempt, monkeypatch):
                 "the test executor did not exit after its response was released"
             )
         finally:
-            pool.shutdown(wait=True)
+            executor.pool.shutdown(wait=True)
 
 
 def preview(s):
-    response = s.client.get(
-        "/api/swarm/factory/attempt-stop",
-        params={
-            "task_id": s.task_id,
-            "node_key": s.pin["node_key"],
-            "attempt": 1,
-            "session_id": s.sid,
-        },
-    )
-    assert response.status_code == 200, response.text
-    return response.json()
+    from factory.orchestration.factory_attempt_stop import read_attempt_stop
+
+    return read_attempt_stop(s.task_id, s.pin["node_key"], 1, s.sid)
 
 
 def request_body(s, *, key="operator-stop-original"):
@@ -644,65 +737,49 @@ def test_lost_stop_ack_and_fresh_conductor_reuse_original_durable_operation(runn
     assert_limits_preserved(s)
 
 
-@pytest.mark.parametrize("request_after_empty_stop_read", [False, True])
 def test_exact_stop_reaches_real_executor_after_its_lease_observer_loses_claim(
-    running, request_after_empty_stop_read
+    running,
 ):
     s = running
     body = request_body(s)
-    if request_after_empty_stop_read:
-        # Wait until the real heartbeat has read no stop request and releases
-        # that read transaction. Commit through the public API before its next
-        # lease refresh, with no owner helpers replaced or database locks held.
-        armed = True
-        requested = Event()
-        errors = []
+    # Wait until the real heartbeat has read no stop request and releases
+    # that read transaction. Commit through the public API before its next
+    # lease refresh, with no owner helpers replaced or database locks held.
+    armed = True
+    requested = Event()
+    errors = []
 
-        def observe_stop_read(connection, _cursor, _sql, _parameters, context, _many):
-            nonlocal armed
-            if armed and any(
-                "attempt_stop_requested" in parameters.values()
-                for parameters in context.compiled_parameters
-            ):
-                armed = False
-                connection.info["request_after_stop_read"] = True
+    def observe_stop_read(connection, _cursor, _sql, _parameters, context, _many):
+        nonlocal armed
+        if armed and any(
+            "attempt_stop_requested" in parameters.values()
+            for parameters in context.compiled_parameters
+        ):
+            armed = False
+            connection.info["request_after_stop_read"] = True
 
-        def request_after_read(_connection, record):
-            if not record.info.pop("request_after_stop_read", False):
-                return
-            try:
-                post_stop(s, body)
-            except Exception as exc:
-                errors.append(exc)
-            finally:
-                requested.set()
-
-        event.listen(s.engine, "after_cursor_execute", observe_stop_read)
-        event.listen(s.engine, "checkin", request_after_read)
+    def request_after_read(_connection, record):
+        if not record.info.pop("request_after_stop_read", False):
+            return
         try:
-            s.heartbeat.release()
-            assert requested.wait(3), "the heartbeat never read the empty stop ledger"
-            assert errors == []
-            assert s.heartbeat.cycles[1].wait(3), (
-                "the observer exited after its failed lease refresh"
-            )
+            post_stop(s, body)
+        except Exception as exc:
+            errors.append(exc)
         finally:
-            event.remove(s.engine, "after_cursor_execute", observe_stop_read)
-            event.remove(s.engine, "checkin", request_after_read)
-    else:
-        with Session(s.engine) as db, db.begin():
-            pending = store.get_pending_message(db, s.sid, 1)
-            pending.claimed_at = datetime.now(timezone.utc) - timedelta(seconds=60)
-            db.add(pending)
-        assert store.reclaim_stale_claims_sync() == 1
-        unknown = snapshot(s.engine, s.sid)
-        assert unknown["turns"][0]["stop_reason"] == UNKNOWN_INVOCATION
+            requested.set()
+
+    event.listen(s.engine, "after_cursor_execute", observe_stop_read)
+    event.listen(s.engine, "checkin", request_after_read)
+    try:
         s.heartbeat.release()
+        assert requested.wait(3), "the heartbeat never read the empty stop ledger"
+        assert errors == []
         assert s.heartbeat.cycles[1].wait(3), (
-            "the observer exited before a later exact stop could arrive"
+            "the observer exited after its failed lease refresh"
         )
-        post_stop(s, body)
-        assert snapshot(s.engine, s.sid)["turns"] == unknown["turns"]
+    finally:
+        event.remove(s.engine, "after_cursor_execute", observe_stop_read)
+        event.remove(s.engine, "checkin", request_after_read)
     fenced = snapshot(s.engine, s.sid)
     assert not s.ember.exited.is_set()
     s.heartbeat.release(cycle=2)
@@ -783,20 +860,6 @@ def test_native_completion_before_stop_fence_wins_without_history_rewrite(
     assert completed["turns"][0]["terminal_reason"] == "end_turn"
     assert completed["turns"][0]["cost_usd"] == 0.25
     assert snapshot(s.engine, s.sid) == completed
-    assert audits(s, "attempt_stop_requested") == []
-    assert s.ember.deletes == s.dbos.cancelled == []
-
-
-def test_disabled_supervision_refuses_attempt_stop_without_mutation(
-    running, monkeypatch
-):
-    s = running
-    body = request_body(s)
-    before = snapshot(s.engine, s.sid)
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
-    response = s.client.post("/api/swarm/factory/control", json=body)
-    assert response.status_code == 409, response.text
-    assert snapshot(s.engine, s.sid) == before
     assert audits(s, "attempt_stop_requested") == []
     assert s.ember.deletes == s.dbos.cancelled == []
 

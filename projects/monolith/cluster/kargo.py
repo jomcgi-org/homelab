@@ -33,6 +33,8 @@ from typing import Any
 from shared import rollout
 
 API_VERSION = "kargo.akuity.io/v1alpha1"
+# Who asked the monolith for this Promotion: the verified MCP request subject.
+REQUESTER_ANNOTATION = "monolith.jomcgi.dev/requested-by"
 _FINISHED = {"Succeeded", "Failed", "Errored", "Aborted"}
 
 _DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)(ms|h|m|s)")
@@ -149,6 +151,7 @@ def plan_promotion(
     stage_name: str,
     chart: str | None,
     version: str,
+    requester: str,
     promotions: list[dict[str, Any]] = (),
     rollback: bool = False,
     now: datetime | None = None,
@@ -156,7 +159,8 @@ def plan_promotion(
     """The Promotion that re-runs ``stage_name`` for this chart version.
 
     ``promotions`` is the namespace's Promotions, used to refuse while one for
-    this Stage is running or queued.
+    this Stage is running or queued. ``requester`` is recorded in
+    ``REQUESTER_ANNOTATION``; it has no default so no caller can leave it out.
     """
     if not isinstance(stage, dict):
         raise PromotionRefused(f"stage {stage_name!r} not found in {namespace}")
@@ -219,6 +223,13 @@ def plan_promotion(
         # Kargo's webhook names the Promotion itself (stage.ulid.freight), but
         # the API server validates generateName first, and a trailing "." is
         # not a valid subdomain prefix. A trailing "-" is masked by that check.
-        "metadata": {"generateName": f"{stage_name}-", "namespace": namespace},
+        # The requester annotation is ours: Kargo's webhook stamps its own
+        # create-actor annotation from the API caller (this ServiceAccount), so
+        # it is left alone and the verified MCP subject travels beside it.
+        "metadata": {
+            "generateName": f"{stage_name}-",
+            "namespace": namespace,
+            "annotations": {REQUESTER_ANNOTATION: requester},
+        },
         "spec": spec,
     }

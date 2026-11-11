@@ -1,6 +1,7 @@
 """All GitHub evidence is mocked, including queue discovery and publication."""
 
 import json
+import hashlib
 from copy import deepcopy
 
 import httpx
@@ -25,6 +26,7 @@ REPO = "owner/repo"
 HEAD, BASE, QUEUE_BASE, QUEUE_HEAD = (letter * 40 for letter in "abcd")
 POLICY = {"repo": REPO, "base_branch": "main"}
 APP_ID = 456
+EMPTY_ADVISORY = hashlib.sha256(b'{"vulns":[]}').hexdigest()
 
 
 def pull(*, kind="Bot", ref="dependabot/pip/example-2", number=91):
@@ -76,10 +78,17 @@ class FakeGitHub:
         self.reads = []
         self.check_runs = []
         self.check_error = None
+        self.ci_state = "success"
 
     def get(self, repo, endpoint):
         assert repo == REPO
         self.reads.append(endpoint)
+        if "/status?" in endpoint:
+            return {
+                "sha": endpoint.split("/")[1],
+                "total_count": 1,
+                "statuses": [{"context": "pr-checks", "state": self.ci_state}],
+            }
         if "/check-runs?" in endpoint:
             if self.check_error:
                 raise self.check_error
@@ -94,14 +103,18 @@ class FakeGitHub:
             }
         if endpoint.startswith("pulls/"):
             return deepcopy(self.pull)
-        assert endpoint == f"compare/{QUEUE_BASE}...{QUEUE_HEAD}"
+        assert endpoint in (
+            f"compare/{BASE}...{QUEUE_HEAD}",
+            f"compare/{QUEUE_BASE}...{QUEUE_HEAD}",
+        )
+        comparison_base = endpoint.removeprefix("compare/").split("...")[0]
         return deepcopy(
             self.comparison
             or {
                 "files": self.files,
                 "status": "ahead",
-                "base_commit": {"sha": QUEUE_BASE},
-                "merge_base_commit": {"sha": QUEUE_BASE},
+                "base_commit": {"sha": comparison_base},
+                "merge_base_commit": {"sha": comparison_base},
             }
         )
 
@@ -125,11 +138,111 @@ class FakeGitHub:
         return deepcopy(self.entries)
 
 
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "projects/platform/example/Chart.yaml",
+        "MODULE.bazel",
+        "projects/platform/example/values.yaml",
+        "projects/example/apko.lock.json",
+    ],
+)
+def test_unrepresented_dependencies_require_complete_independent_review(
+    setup, monkeypatch, filename
+):
+    github, _approved, audits, publications = setup
+    github.files[0]["filename"] = filename
+    github.changes = []
+    evidence = deps.snapshot(
+        REPO, github.pull, read_get=github.get, read_list=github.rows
+    )
+    approved = gate.Approval(7, "task-review", evidence, runs(evidence))
+    monkeypatch.setattr(gate, "approval", lambda *_: approved)
+    gate.check(REPO, "main", github.pull, POLICY, github, "token", [queue_entry()])
+    assert publications[-1][2]["conclusion"] == "success"
+    # A successful empty graph never exempts the blob from queue-time freshness.
+    github.files[0]["sha"] = "f" * 40
+    gate.check(REPO, "main", github.pull, POLICY, github, "token", [queue_entry()])
+    assert publications[-1][2]["conclusion"] == "failure"
+    assert any(action == "dependency_approval_invalidated" for action, _ in audits)
+
+
+@pytest.mark.parametrize(
+    "failure", ["omitted_file", "extra_file", "missing_coverage", "missing_files"]
+)
+def test_graphless_review_cannot_omit_evidence(setup, monkeypatch, failure):
+    github, _approved, _audits, publications = setup
+    github.changes = []
+    evidence = deps.snapshot(
+        REPO, github.pull, read_get=github.get, read_list=github.rows
+    )
+    reviewed = runs(evidence)
+    outcome = json.loads(reviewed[1]["outcome_json"])
+    assessment = outcome["value"]["dependency_assessment"]
+    if failure == "missing_coverage":
+        del assessment["evidence_coverage"]
+    elif failure == "missing_files":
+        del assessment["reviewed_files"]
+    else:
+        assessment["reviewed_files"] = (
+            [] if failure == "omitted_file" else ["requirements.txt", "other.yaml"]
+        )
+    reviewed[1]["outcome_json"] = json.dumps(outcome)
+    monkeypatch.setattr(
+        gate, "approval", lambda *_: gate.Approval(7, "task-review", evidence, reviewed)
+    )
+    gate.check(REPO, "main", github.pull, POLICY, github, "token", [queue_entry()])
+    assert publications[-1][2]["conclusion"] == "failure"
+
+
+def advisory_inventory(evidence):
+    def component(version, files):
+        return {
+            "key": "requirements/example",
+            "artifact_sha256": hashlib.sha256(version.encode()).hexdigest(),
+            "exposure_sha256": "e" * 64,
+            "files": files,
+            "query": {
+                "package": {"name": "example", "ecosystem": "PyPI"},
+                "version": version,
+            },
+            "response_sha256": EMPTY_ADVISORY,
+        }
+
+    return {
+        "base_sha": evidence["base_sha"],
+        "head_sha": evidence["head_sha"],
+        "complete": True,
+        "base": [
+            component(
+                "1.0",
+                [
+                    row.get("previous_filename") or row["filename"]
+                    for row in evidence["files"]
+                    if row["status"] != "added"
+                ],
+            )
+        ],
+        "head": [
+            component(
+                "2.0",
+                [
+                    row["filename"]
+                    for row in evidence["files"]
+                    if row["status"] != "removed"
+                ],
+            )
+        ],
+    }
+
+
 def runs(evidence):
     assessment = {
         "safe": True,
         "base_sha": evidence["base_sha"],
         "evidence_sha256": evidence["evidence_sha256"],
+        "reviewed_files": [row["filename"] for row in evidence["files"]],
+        "advisory_sources": advisory_inventory(evidence),
         **{
             dimension: "Inspected upstream source and validated on isolated Linux: pass."
             for dimension in deps.ASSESSMENTS
@@ -172,6 +285,7 @@ def setup(monkeypatch):
         httpx, "Client", lambda **_kw: pytest.fail("unexpected network")
     )
     github = FakeGitHub()
+    monkeypatch.setattr(deps, "read_advisory", lambda _query: {"vulns": []})
     evidence = deps.snapshot(
         REPO, github.pull, read_get=github.get, read_list=github.rows
     )
@@ -397,7 +511,7 @@ def test_approved_dependency_passes_pr_and_queue_with_matching_content(setup):
     "failure",
     [
         "malformed_graph",
-        "empty_graph",
+        "changed_to_empty_graph",
         "truncated_graph",
         "truncated_files",
         "malformed_files",
@@ -436,7 +550,7 @@ def test_dependency_failure_refuses_with_invalidation_only_on_positive_evidence(
     entry = queue_entry()
     if failure == "malformed_graph":
         github.changes = [{"name": "example"}]
-    elif failure == "empty_graph":
+    elif failure == "changed_to_empty_graph":
         github.changes = []
     elif failure == "truncated_graph":
         github.changes *= deps.MAX_ROWS
@@ -531,7 +645,6 @@ def test_dependency_failure_refuses_with_invalidation_only_on_positive_evidence(
     assert any(action == "dependency_gate_refused" for action, _ in audits)
     unavailable = failure in {
         "malformed_graph",
-        "empty_graph",
         "truncated_graph",
         "truncated_files",
         "malformed_files",
@@ -885,7 +998,7 @@ def test_conductor_runs_gate_before_disabled_lane_return(monkeypatch):
 
     monkeypatch.setattr(uncertain_tasks, "emit_uncertain_task_snapshot", lambda: None)
     monkeypatch.setattr(
-        controls, "status", lambda: {"state": "disabled", "policy": POLICY}
+        controls, "conductor_status", lambda: {"state": "disabled", "policy": POLICY}
     )
     observed = []
     monkeypatch.setattr(gate, "tick", lambda policy: observed.append(policy))
@@ -896,3 +1009,545 @@ def test_conductor_runs_gate_before_disabled_lane_return(monkeypatch):
     )
     factory_conductor.tick()
     assert observed == [POLICY]
+
+
+@pytest.mark.parametrize(
+    "hold", ["human", "needs-human", "hold", "do-not-merge", "assigned"]
+)
+@pytest.mark.parametrize("late", [False, True])
+def test_dependency_ownership_hold_revokes_previously_approved_evidence(
+    setup, hold, late
+):
+    github, approved, audits, publications = setup
+    original = deepcopy(github.pull)
+    if hold == "assigned":
+        github.pull["assignees"] = [{"login": "owner"}]
+    else:
+        github.pull["labels"] = [{"name": hold}]
+    assert deps.ownership_held(github.pull, REPO, POLICY)
+    # A hold appearing in the last PR read is as binding as one seen at intake.
+    gate.check(
+        REPO,
+        "main",
+        original if late else github.pull,
+        POLICY,
+        github,
+        "token",
+        [queue_entry()],
+    )
+    assert publications[-1][2]["conclusion"] == "failure"
+    assert any(action == "dependency_approval_invalidated" for action, _ in audits)
+
+
+@pytest.mark.parametrize("state", ["pending", "failure", "error", None])
+def test_dependency_success_waits_for_exact_head_ci(setup, monkeypatch, state):
+    github, _, audits, publications = setup
+    gate.tick(POLICY)
+    github.ci_state = state
+    monkeypatch.setattr(deps, "read_advisory", lambda _: pytest.fail("CI not ready"))
+    gate.tick(POLICY)
+    assert [row[2]["conclusion"] for row in publications[-2:]] == ["failure"] * 2
+    assert not any(action == "dependency_approval_invalidated" for action, _ in audits)
+
+
+@pytest.mark.parametrize(
+    "failure", ["missing", "disagree", "coverage", "url", "mutable_version", "too_many"]
+)
+def test_advisory_contract_requires_independent_complete_inventory(setup, failure):
+    github, approved, audits, publications = setup
+    outcome = json.loads(approved.runs[1]["outcome_json"])
+    assessment = outcome["value"]["dependency_assessment"]
+    if failure == "missing":
+        del assessment["advisory_sources"]
+    elif failure == "disagree":
+        assessment["advisory_sources"]["head"][0]["query"]["version"] = "3.0"
+    elif failure == "coverage":
+        assessment["advisory_sources"]["head"][0]["files"] = ["unreviewed.yaml"]
+    elif failure == "url":
+        assessment["advisory_sources"]["head"][0]["query"] = {
+            "url": "http://169.254.169.254/"
+        }
+    elif failure == "mutable_version":
+        assessment["advisory_sources"]["head"][0]["query"]["version"] = "latest"
+    else:
+        assessment["advisory_sources"]["head"] *= deps.MAX_ADVISORY_SOURCES + 1
+    approved.runs[1]["outcome_json"] = json.dumps(outcome)
+    gate.tick(POLICY)
+    assert {row[2]["conclusion"] for row in publications} == {"failure"}
+    assert any(action == "dependency_approval_invalidated" for action, _ in audits)
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_supplemental_outage_refuses_but_changed_evidence_invalidates(
+    setup, monkeypatch, changed
+):
+    _, _, audits, publications = setup
+    gate.tick(POLICY)
+
+    def unavailable(_):
+        raise httpx.ReadTimeout("upstream unavailable")
+
+    monkeypatch.setattr(
+        deps,
+        "read_advisory",
+        (lambda _: {"vulns": [{"id": "OSV-new"}]}) if changed else unavailable,
+    )
+    gate.tick(POLICY)
+    assert [row[2]["conclusion"] for row in publications[-2:]] == ["failure"] * 2
+    assert (
+        any(action == "dependency_approval_invalidated" for action, _ in audits)
+        is changed
+    )
+
+
+def test_each_head_revalidates_advisories_immediately_before_publication(
+    setup, monkeypatch
+):
+    _, _, _, publications = setup
+    observed = []
+
+    def read(_):
+        observed.append(len(publications))
+        return {"vulns": []}
+
+    monkeypatch.setattr(deps, "read_advisory", read)
+    gate.tick(POLICY)
+    assert observed == [0, 0, 1, 1]
+    assert [row[2]["conclusion"] for row in publications] == ["success"] * 2
+
+
+@pytest.mark.parametrize("slow_phase", ["advisory", "check_inventory"])
+def test_collection_deadline_revokes_even_an_existing_success(
+    setup, monkeypatch, slow_phase
+):
+    github, _, audits, publications = setup
+    gate.tick(POLICY)
+    clock = [0.0]
+    monkeypatch.setattr(gate.time, "monotonic", lambda: clock[0])
+    if slow_phase == "advisory":
+
+        def slow(_):
+            clock[0] += gate.MAX_EVALUATION_SECONDS
+            return {"vulns": []}
+
+        monkeypatch.setattr(deps, "read_advisory", slow)
+    else:
+        original = github.get
+
+        def slow(repo, endpoint):
+            if "/check-runs?" in endpoint:
+                clock[0] += gate.MAX_EVALUATION_SECONDS
+            return original(repo, endpoint)
+
+        monkeypatch.setattr(github, "get", slow)
+    gate.tick(POLICY)
+    assert [row[2]["conclusion"] for row in publications[-2:]] == ["failure"] * 2
+    assert all(
+        "freshness bound" in row[2]["output"]["summary"] for row in publications[-2:]
+    )
+    assert not any(action == "dependency_approval_invalidated" for action, _ in audits)
+
+
+@pytest.mark.parametrize("payload", [{}, {"vulns": []}])
+def test_advisory_read_has_fixed_origin_no_credentials_and_normalizes_empty(
+    monkeypatch, payload
+):
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json=payload)
+
+    real_client = httpx.Client
+    monkeypatch.setenv(gate.TOKEN_ENV, "never-send")
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    query = {"commit": "1" * 40}
+    assert deps.read_advisory(query) == {"vulns": []}
+    assert len(seen) == 1
+    assert str(seen[0].url) == "https://api.osv.dev/v1/query"
+    assert "authorization" not in seen[0].headers
+    assert json.loads(seen[0].content) == query
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "redirect",
+        "http_error",
+        "oversize",
+        "page",
+        "false_page",
+        "null",
+        "malformed",
+        "duplicate",
+    ],
+)
+def test_advisory_transport_and_response_fail_closed(monkeypatch, failure):
+    def handler(_):
+        if failure == "redirect":
+            return httpx.Response(302, headers={"location": "http://169.254.169.254/"})
+        if failure == "http_error":
+            return httpx.Response(503)
+        if failure == "oversize":
+            return httpx.Response(200, content=b" " * (1024 * 1024 + 1))
+        return httpx.Response(
+            200,
+            json={
+                "page": {"next_page_token": "more"},
+                "false_page": {"next_page_token": False},
+                "null": None,
+                "malformed": {"vulns": [{"error": "unknown"}]},
+                "duplicate": {
+                    "vulns": [
+                        {
+                            "id": "OSV-2026-1",
+                            "modified": "2026-10-27T00:00:00Z",
+                            "affected": [{"package": {"name": "example"}}],
+                        }
+                    ]
+                    * 2
+                },
+            }[failure],
+        )
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    with pytest.raises((httpx.HTTPError, ValueError)) as error:
+        deps.read_advisory({"commit": "1" * 40})
+    assert not isinstance(error.value, deps.EvidenceChanged)
+
+
+def test_revoked_durable_approval_during_advisory_reads_cannot_publish_success(
+    setup, monkeypatch
+):
+    _, _, _, publications = setup
+
+    def read(_):
+        def revoked(*_args):
+            raise ValueError("receipt paused during external reads")
+
+        monkeypatch.setattr(gate, "approval", revoked)
+        return {"vulns": []}
+
+    monkeypatch.setattr(deps, "read_advisory", read)
+    gate.tick(POLICY)
+    assert {row[2]["conclusion"] for row in publications} == {"failure"}
+
+
+@pytest.mark.parametrize("ci", ["pending", "failure", "unavailable"])
+@pytest.mark.parametrize("change", ["hold", "head", "author", "queue_head"])
+def test_positive_identity_and_hold_changes_invalidate_even_before_ci_ready(
+    setup, monkeypatch, ci, change
+):
+    github, _, audits, publications = setup
+    if change == "hold":
+        github.pull["labels"] = [{"name": "human"}]
+    elif change == "head":
+        github.pull["head"]["sha"] = "f" * 40
+    elif change == "queue_head":
+        github.entries[0]["pullRequest"]["headRefOid"] = "f" * 40
+    else:
+        github.pull["user"]["id"] = 999
+    if ci == "unavailable":
+        original = github.get
+
+        def unavailable(repo, endpoint):
+            if "/status?" in endpoint:
+                raise httpx.ReadTimeout("CI unavailable")
+            return original(repo, endpoint)
+
+        monkeypatch.setattr(github, "get", unavailable)
+    else:
+        github.ci_state = ci
+    gate.tick(POLICY)
+    assert {row[2]["conclusion"] for row in publications} == {"failure"}
+    assert any(action == "dependency_approval_invalidated" for action, _ in audits)
+
+
+def advisory_record(name="OSV-existing", **changes):
+    return {
+        "id": name,
+        "modified": "2026-10-27T00:00:00Z",
+        "affected": [{"package": {"name": "example", "ecosystem": "PyPI"}}],
+        "summary": "Existing independently reviewed finding",
+        **changes,
+    }
+
+
+def bind_advisory_inventory(approved, inventory):
+    for run in approved.runs:
+        outcome = json.loads(run["outcome_json"])
+        outcome["value"]["dependency_assessment"]["advisory_sources"] = deepcopy(
+            inventory
+        )
+        outcome["artifact"]["value"] = deepcopy(outcome["value"])
+        run["outcome_json"] = json.dumps(outcome)
+
+
+def partial_remediation(setup, monkeypatch):
+    github, approved, audits, publications = setup
+    # Residual findings require the same independently inspected baseline on
+    # both PR and queue heads; clean candidates may use equivalent newer bases.
+    github.entries[0]["baseCommit"]["oid"] = approved.evidence["base_sha"]
+    inventory = advisory_inventory(approved.evidence)
+    vulnerable = {"vulns": [advisory_record()]}
+    inventory["base"][0]["response_sha256"] = deps.advisory_digest(vulnerable)
+    residual = deepcopy(inventory["base"][0])
+    residual["key"] = "requirements/unrelated"
+    residual["query"]["package"]["name"] = "unrelated"
+    residual["artifact_sha256"] = "f" * 64
+    inventory["base"].append(deepcopy(residual))
+    inventory["head"].append(deepcopy(residual))
+    calls = []
+
+    def read(query):
+        calls.append(deepcopy(query))
+        return deepcopy(
+            {"vulns": []}
+            if query["package"]["name"] == "example" and query["version"] == "2.0"
+            else vulnerable
+        )
+
+    monkeypatch.setattr(deps, "read_advisory", read)
+    bind_advisory_inventory(approved, inventory)
+    return inventory, calls, vulnerable
+
+
+def test_partial_remediation_preserves_unrelated_unchanged_findings(setup, monkeypatch):
+    _, calls, _ = partial_remediation(setup, monkeypatch)
+    github, approved, _, publications = setup
+    gate.tick(POLICY)
+    assert [row[2]["conclusion"] for row in publications] == ["success", "success"]
+    # Fresh queries include the removed vulnerable version and fixed candidate,
+    # plus the unchanged vulnerable component; duplicate same-query occurrences
+    # use the same fresh snapshot within each publication, not a persistent cache.
+    assert len(calls) == 6
+    assert {json.dumps(query, sort_keys=True) for query in calls} == {
+        json.dumps(query, sort_keys=True)
+        for query in (
+            {"package": {"name": "example", "ecosystem": "PyPI"}, "version": "1.0"},
+            {"package": {"name": "example", "ecosystem": "PyPI"}, "version": "2.0"},
+            {"package": {"name": "unrelated", "ecosystem": "PyPI"}, "version": "1.0"},
+        )
+    }
+    # Completion uses the same fresh comparison as PR/queue publication.
+    monkeypatch.setattr(deps, "github_get", github.get)
+    monkeypatch.setattr(deps, "github_list", github.rows)
+    deps.verify(
+        {"repo": REPO, "dependency_review": approved.evidence},
+        github.pull,
+        approved.runs,
+    )
+    assert len(calls) == 9
+
+
+@pytest.mark.parametrize(
+    "change", ["version", "artifact", "exposure", "copy", "baseline_removed"]
+)
+def test_baseline_findings_cannot_authorize_new_vulnerable_occurrences(
+    setup, monkeypatch, change
+):
+    inventory, _, _ = partial_remediation(setup, monkeypatch)
+    _, approved, audits, publications = setup
+    residual = inventory["head"][1]
+    if change == "version":
+        residual["query"]["version"] = "2.0"
+    elif change == "artifact":
+        residual["artifact_sha256"] = "a" * 64
+    elif change == "exposure":
+        residual["exposure_sha256"] = "a" * 64
+    elif change == "copy":
+        duplicate = deepcopy(residual)
+        duplicate["key"] = "new-service/unrelated"
+        inventory["head"].append(duplicate)
+    else:
+        inventory["base"].pop()
+    bind_advisory_inventory(approved, inventory)
+    gate.tick(POLICY)
+    assert {row[2]["conclusion"] for row in publications} == {"failure"}
+    assert any(action == "dependency_approval_invalidated" for action, _ in audits)
+
+
+def test_an_improved_new_version_with_remaining_findings_is_still_refused(
+    setup, monkeypatch
+):
+    inventory, _, vulnerable = partial_remediation(setup, monkeypatch)
+    _, approved, audits, publications = setup
+    old = {"vulns": [advisory_record("OSV-fixed"), advisory_record("OSV-remains")]}
+    candidate = {"vulns": [advisory_record("OSV-remains")]}
+    inventory["base"][0]["response_sha256"] = deps.advisory_digest(old)
+    inventory["head"][0]["response_sha256"] = deps.advisory_digest(candidate)
+    bind_advisory_inventory(approved, inventory)
+    monkeypatch.setattr(
+        deps,
+        "read_advisory",
+        lambda query: (
+            vulnerable
+            if query["package"]["name"] == "unrelated"
+            else old
+            if query["version"] == "1.0"
+            else candidate
+        ),
+    )
+    gate.tick(POLICY)
+    assert {row[2]["conclusion"] for row in publications} == {"failure"}
+    assert any(action == "dependency_approval_invalidated" for action, _ in audits)
+
+
+@pytest.mark.parametrize(
+    "change", ["base_new_finding", "head_new_finding", "same_id_new_detail"]
+)
+def test_new_advisories_or_changed_record_content_require_fresh_review(
+    setup, monkeypatch, change
+):
+    partial_remediation(setup, monkeypatch)
+    _, _, audits, publications = setup
+    gate.tick(POLICY)
+    original = deps.read_advisory
+
+    def changed(query):
+        response = original(query)
+        if (
+            change == "base_new_finding"
+            and query["package"]["name"] == "example"
+            and query["version"] == "1.0"
+        ):
+            response["vulns"].append(advisory_record("OSV-new"))
+        elif change == "head_new_finding" and query["version"] == "2.0":
+            response["vulns"].append(advisory_record("OSV-new"))
+        elif change == "same_id_new_detail" and query["package"]["name"] == "unrelated":
+            response["vulns"][0]["summary"] = (
+                "New exposure details with unchanged identifier"
+            )
+        return response
+
+    monkeypatch.setattr(deps, "read_advisory", changed)
+    gate.tick(POLICY)
+    assert [row[2]["conclusion"] for row in publications[-2:]] == ["failure", "failure"]
+    assert any(action == "dependency_approval_invalidated" for action, _ in audits)
+
+
+@pytest.mark.parametrize("side", ["base", "head"])
+def test_incomplete_side_read_refuses_without_invalidating_unchanged_approval(
+    setup, monkeypatch, side
+):
+    partial_remediation(setup, monkeypatch)
+    _, _, audits, publications = setup
+    original = deps.read_advisory
+
+    def read(query):
+        if query["package"]["name"] == "example" and query["version"] == (
+            "1.0" if side == "base" else "2.0"
+        ):
+            raise ValueError("truncated advisory evidence")
+        return original(query)
+
+    monkeypatch.setattr(deps, "read_advisory", read)
+    gate.tick(POLICY)
+    assert {row[2]["conclusion"] for row in publications} == {"failure"}
+    assert not any(action == "dependency_approval_invalidated" for action, _ in audits)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "base_missing",
+        "head_missing",
+        "incomplete",
+        "wrong_base",
+        "wrong_head",
+        "duplicate_key",
+        "missing_artifact",
+        "missing_exposure",
+        "reviewer_omission",
+    ],
+)
+def test_base_head_contract_refuses_incomplete_or_unbound_inventories(
+    setup, monkeypatch, failure
+):
+    inventory, _, _ = partial_remediation(setup, monkeypatch)
+    _, approved, _, publications = setup
+    if failure == "base_missing":
+        del inventory["base"]
+    elif failure == "head_missing":
+        del inventory["head"]
+    elif failure == "incomplete":
+        inventory["complete"] = False
+    elif failure in ("wrong_base", "wrong_head"):
+        inventory[failure.removeprefix("wrong_") + "_sha"] = "f" * 40
+    elif failure == "duplicate_key":
+        inventory["head"][1]["key"] = inventory["head"][0]["key"]
+    elif failure == "missing_artifact":
+        del inventory["head"][1]["artifact_sha256"]
+    elif failure == "missing_exposure":
+        del inventory["head"][1]["exposure_sha256"]
+    bind_advisory_inventory(approved, inventory)
+    if failure == "reviewer_omission":
+        outcome = json.loads(approved.runs[1]["outcome_json"])
+        outcome["value"]["dependency_assessment"]["advisory_sources"]["head"].pop()
+        approved.runs[1]["outcome_json"] = json.dumps(outcome)
+    gate.tick(POLICY)
+    assert {row[2]["conclusion"] for row in publications} == {"failure"}
+
+
+def test_osv_nonempty_response_retains_complete_sorted_records(monkeypatch):
+    records = [
+        advisory_record("OSV-z", aliases=["CVE-2026-42"]),
+        advisory_record(
+            "OSV-a", severity=[{"type": "CVSS_V3", "score": "reviewed score"}]
+        ),
+    ]
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: real_client(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, json={"vulns": records})
+            ),
+            **kwargs,
+        ),
+    )
+    response = deps.read_advisory({"commit": "1" * 40})
+    assert response == {"vulns": list(reversed(records))}
+    changed = deepcopy(response)
+    changed["vulns"][0]["severity"][0]["score"] = "changed score"
+    assert deps.advisory_digest(changed) != deps.advisory_digest(response)
+
+
+@pytest.mark.parametrize("target", ["pr", "queue"])
+@pytest.mark.parametrize("ci_state", ["success", "pending", "failure"])
+def test_residual_findings_cannot_use_an_obsolete_comparison_base(
+    setup, monkeypatch, target, ci_state
+):
+    github, approved, audits, publications = setup
+    github.changes = []
+    github.files[0].update(
+        filename="projects/example/values.yaml", patch="-image: A\n+image: C"
+    )
+    evidence = deps.snapshot(
+        REPO, github.pull, read_get=github.get, read_list=github.rows
+    )
+    approved.evidence.clear()
+    approved.evidence.update(evidence)
+    approved.runs[:] = runs(evidence)
+    partial_remediation(setup, monkeypatch)
+    # Main's image B already fixed the residual vulnerability. The candidate C
+    # and empty graph stay identical, so old A->C evidence cannot authorize B->C.
+    github.files[0]["patch"] = "-image: B\n+image: C"
+    github.ci_state = ci_state
+    entry = queue_entry() if target == "queue" else None
+    if target == "pr":
+        github.pull["base"]["sha"] = QUEUE_BASE
+    with pytest.raises(ValueError):
+        gate.evaluate(REPO, "main", github.pull, POLICY, github, entry)
+    assert any(action == "dependency_approval_invalidated" for action, _ in audits)
+    assert not any("/status?" in endpoint for endpoint in github.reads)

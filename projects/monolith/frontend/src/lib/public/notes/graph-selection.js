@@ -6,8 +6,8 @@
 // and the factory context viewer deep-links into it with ?focus=<note id>.
 
 /**
- * The graph view never auto-selects a node: a fresh graph has no selection and
- * the detail panel shows its placeholder until the visitor hovers or clicks.
+ * The graph view never auto-selects a node: a fresh graph has no selection.
+ * Hover shows a canvas label; clicking opens the detail panel.
  *
  * @returns {null}
  */

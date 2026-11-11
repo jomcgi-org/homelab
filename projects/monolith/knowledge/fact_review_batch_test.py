@@ -1,8 +1,11 @@
 """Batch amortization preserves per-fact coverage, revision and replay fences."""
 
 import base64
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from functools import partial
+from pathlib import Path
 
 import httpx
 import pytest
@@ -14,15 +17,174 @@ from knowledge.extraction import ExtractionOutputInvalid
 from knowledge.freshness import STANDARD, utc
 from knowledge.models import FactReviewBatch, FactReviewRun, Note, ReviewOutcome
 from knowledge.review_batch_sources import BatchSources
+from knowledge.review_sources import EvidenceUnsupported, collect_sources
 
 NOW = datetime(2026, 10, 18, tzinfo=UTC)
 SHA = "a" * 40
 SOURCE = "if not inputs: raise ValueError('empty inputs')"
 
 
+def coverage_fetch(files, *, calls=None, revision=SHA, unavailable=None):
+    blobs = {}
+    entries = []
+    for path, raw in files.items():
+        sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+        blobs[sha] = (path, raw)
+        entries.append(
+            {
+                "path": Path(path).name,
+                "size": len(raw),
+                "sha": sha,
+                "type": "blob",
+                "mode": "100644",
+            }
+        )
+
+    def read(url):
+        if calls is not None:
+            calls.append(url)
+        if "/git/ref/" in url:
+            return {"object": {"sha": revision}}
+        if "/git/trees/" in url:
+            return {"truncated": False, "tree": entries}
+        sha = url.rsplit("/", 1)[-1]
+        path, raw = blobs[sha]
+        if path == unavailable:
+            raise httpx.ReadTimeout("source timeout")
+        return {
+            "sha": sha,
+            "size": len(raw),
+            "encoding": "base64",
+            "content": base64.b64encode(raw).decode(),
+        }
+
+    return read
+
+
+def streamed_coverage(
+    monkeypatch, files, calls, *, pin_padding=0, tree_padding=0, blob_padding=0
+):
+    fetch = coverage_fetch(files, calls=calls)
+
+    def transport(request):
+        body = fetch(request.url.path)
+        base = "https://api.github.com/repos/jomcgi-org/homelab"
+        if "object" in body:
+            body.update(
+                ref="refs/heads/main",
+                node_id="REF_kwDORcE7qq9yZWZzL2hlYWRzL21haW4",
+                url=base + "/git/refs/heads/main",
+            )
+            body["object"].update(
+                type="commit", url=base + "/git/commits/" + body["object"]["sha"]
+            )
+        if "tree" in body:
+            body.update(sha="c" * 40, url=base + "/git/trees/" + "c" * 40)
+            for entry in body["tree"]:
+                entry["url"] = base + "/git/blobs/" + entry["sha"]
+        if "content" in body:
+            # GitHub base64 blobs wrap at 60 characters, including a final LF.
+            encoded = body["content"]
+            body["content"] = "".join(
+                encoded[start : start + 60] + "\n"
+                for start in range(0, len(encoded), 60)
+            )
+            body["url"] = base + "/git/blobs/" + body["sha"]
+            body["node_id"] = "B_kwDORcE7qtoAK" + body["sha"]
+        padding = (
+            pin_padding
+            if "object" in body
+            else tree_padding
+            if "tree" in body
+            else blob_padding
+        )
+        raw = json.dumps(body).encode() + b" " * padding
+        return httpx.Response(200, stream=httpx.ByteStream(raw))
+
+    monkeypatch.setattr(
+        httpx, "Client", partial(httpx.Client, transport=httpx.MockTransport(transport))
+    )
+
+
+@pytest.mark.parametrize(
+    "count,size,pin_padding,tree_padding",
+    [
+        (4, 110_000, 0, 0),
+        (3, 127_000, 0, 0),
+        (3, 123_400, 0, 0),
+        (3, 115_000, 30_000, 0),
+        (3, 115_000, 0, 30_000),
+    ],
+)
+@pytest.mark.parametrize("batched", [False, True])
+def test_streamed_aggregate_blob_limit_precedes_reads_and_preserves_siblings(
+    monkeypatch, count, size, pin_padding, tree_padding, batched
+):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    files = {
+        f"projects/example/large-{index}.py": bytes([65 + index]) * size
+        for index in range(count)
+    }
+    claim = {"title": "Behavior of " + " and ".join(files), "content": None}
+    files["projects/example/small.py"] = b"bounded complete source"
+    calls = []
+    streamed_coverage(
+        monkeypatch, files, calls, pin_padding=pin_padding, tree_padding=tree_padding
+    )
+    with BatchSources() as reader:
+        revision = reader.pin() if batched else None
+        with pytest.raises(EvidenceUnsupported, match="byte bound") as error:
+            if batched:
+                reader.collect(claim, revision)
+            else:
+                collect_sources(claim)
+        assert all(error.value.identity["files"].values())
+        assert len(error.value.identity["files"]) == count
+        assert not any("/git/blobs/" in path for path in calls)
+        if batched:
+            assert reader.stopped is None
+            sources = reader.collect({"title": "projects/example/small.py"}, revision)
+            assert sources[0]["text"] == "bounded complete source"
+            assert sum("/git/blobs/" in path for path in calls) == 1
+
+
+@pytest.mark.parametrize("blob_padding", [0, 2000])
+def test_streamed_blob_envelope_bound_is_enforced_without_stopping_batch(
+    monkeypatch, blob_padding
+):
+    from knowledge import review_coverage as coverage
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    files = {
+        f"projects/example/large-{index}.py": bytes([65 + index]) * 115_000
+        for index in range(3)
+    }
+    clauses = [
+        f"`{path}` contains the exact text `{raw[:8].decode()}`."
+        for path, raw in files.items()
+    ]
+    claim = {"title": clauses[0], "content": "\n".join(clauses[1:])}
+    calls = []
+    streamed_coverage(monkeypatch, files, calls, blob_padding=blob_padding)
+    with BatchSources() as reader:
+        revision = reader.pin()
+        if blob_padding:
+            with pytest.raises(
+                EvidenceUnsupported, match="response byte bound"
+            ) as error:
+                reader.collect(claim, revision)
+            assert all(error.value.identity["files"].values())
+            assert sum("/git/blobs/" in path for path in calls) == 1
+        else:
+            sources = reader.collect(claim, revision)
+            assert len(sources) == 3
+            assert sum("/git/blobs/" in path for path in calls) == 3
+        assert reader.transfer_bytes <= coverage.MAX_TRANSFER_BYTES
+        assert reader.stopped is None
+
+
 @pytest.fixture
 def db(tmp_path, monkeypatch):
-    monkeypatch.setenv("KG_FACT_REVIEW_ENABLED", "true")
     monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "20000")
     engine = create_engine(f"sqlite:///{tmp_path / 'batch.db'}").execution_options(
         schema_translate_map={
@@ -301,7 +463,69 @@ def test_transport_outage_makes_one_request_and_never_chains(db):
     assert prepare(db, fetch=unavailable) == batch.SOURCE_UNAVAILABLE
     assert len(calls) == 1
     assert db.get(FactReviewBatch, "batch").metrics["source_requests"] == 1
-    assert db.get(FactReviewBatch, "batch").result["outcomes"] == {"unavailable": 32}
+    assert db.get(FactReviewBatch, "batch").result["outcomes"] == {"deferred": 32}
+    assert db.exec(select(ReviewOutcome)).all() == []
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize(
+    "failure", [401, 403, 429, 500, 502, 503, httpx.ConnectError, httpx.ConnectTimeout]
+)
+def test_streamed_batch_stops_after_provider_failure(db, monkeypatch, enabled, failure):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", str(enabled).lower())
+    monkeypatch.setenv("KG_FACT_REVIEW_BATCH_SIZE", "32")
+    notes(db, 32, paths=[f"projects/member-{i}/app.py" for i in range(32)])
+    calls = []
+
+    def transport(request):
+        calls.append(request.url.path)
+        if "/git/ref/" in request.url.path:
+            return httpx.Response(
+                200,
+                stream=httpx.ByteStream(json.dumps({"object": {"sha": SHA}}).encode()),
+            )
+        if isinstance(failure, int):
+            return httpx.Response(failure)
+        raise failure("provider unavailable")
+
+    monkeypatch.setattr(
+        httpx, "Client", partial(httpx.Client, transport=httpx.MockTransport(transport))
+    )
+    assert prepare(db, fetch=None) == batch.SOURCE_UNAVAILABLE
+    assert len(calls) == 2  # one pin and the first member, never the other 31
+    parent = db.get(FactReviewBatch, "batch")
+    assert parent.metrics["source_requests"] == 2
+    assert parent.result["outcomes"] == {"unavailable": 1, "deferred": 31}
+    assert len(db.exec(select(ReviewOutcome)).all()) == 1
+    assert all(
+        utc(outcome.next_attempt_at) > NOW
+        for outcome in db.exec(select(ReviewOutcome)).all()
+    )
+
+
+@pytest.mark.parametrize("failure", [404, httpx.ReadTimeout])
+def test_enabled_streamed_batch_isolates_member_failure(monkeypatch, failure):
+    from knowledge.review_sources import EvidenceUnavailable
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    calls = []
+
+    def transport(request):
+        calls.append(request.url.path)
+        if request.url.path == "/failed":
+            if isinstance(failure, int):
+                return httpx.Response(failure)
+            raise failure("member timeout")
+        return httpx.Response(200, stream=httpx.ByteStream(b'{"ok": true}'))
+
+    with BatchSources() as reader:
+        reader.client.close()
+        reader.client = httpx.Client(transport=httpx.MockTransport(transport))
+        with pytest.raises(EvidenceUnavailable):
+            reader.read("/failed")
+        assert reader.stopped is None
+        assert reader.read("/healthy") == {"ok": True}
+        assert calls == ["/failed", "/healthy"]
 
 
 def test_prompt_budget_does_not_turn_temporary_deferral_into_unsupported(
@@ -313,6 +537,195 @@ def test_prompt_budget_does_not_turn_temporary_deferral_into_unsupported(
     assert {row.status for row in db.exec(select(ReviewOutcome)).all()} == {
         "unavailable"
     }
+
+
+def test_staged_mixed_batch_shared_large_source_and_failure_isolation(db, monkeypatch):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    path = "projects/monolith/knowledge/extraction.py"
+    files = {
+        path: Path(__file__).with_name("extraction.py").read_bytes(),
+        "projects/monolith/knowledge/small.py": SOURCE.encode(),
+        "projects/monolith/knowledge/offline.py": b"unavailable source",
+    }
+    rows = notes(
+        db,
+        5,
+        paths=[
+            path,
+            path,
+            path,
+            "projects/monolith/knowledge/offline.py",
+            "projects/monolith/knowledge/small.py",
+        ],
+    )
+    for row, literal in zip(rows[:2], ["RAW_BODY_CAP = 60_000", "DOC_DRIFT_CAP = 10"]):
+        row.title = f"`{path}` contains the exact text `{literal}`."
+        row.content = row.title
+    db.commit()
+    calls = []
+    prompt = prepare(
+        db,
+        fetch=coverage_fetch(
+            files, calls=calls, unavailable="projects/monolith/knowledge/offline.py"
+        ),
+    )
+    parent = db.get(FactReviewBatch, "batch")
+    runs = [db.get(FactReviewRun, key) for key in parent.member_keys]
+    assert {run.note_id: run.result.get("outcome") for run in runs} == {
+        "fact-0": None,
+        "fact-1": None,
+        "fact-2": "unsupported",
+        "fact-3": "unavailable",
+        "fact-4": None,
+    }
+    assert len(calls) == 5  # pin, shared directory, three distinct blobs
+    assert parent.metrics["source_cache_hits"] >= 4
+    assert len(prompt.encode()) <= batch.MAX_PROMPT_BYTES
+    engine = db.get_bind()
+    answer = {"reviews": []}
+    for index, run in enumerate(runs, 1):
+        if run.sources:
+            answer["reviews"].append(
+                {
+                    "id": f"f{index}",
+                    "claim_hash": review._digest(run.claim),
+                    "verdict": "holds",
+                    "rationale": "Every positive literal and the complete small source have exact assigned quotations.",
+                    "citations": [
+                        {"source_id": s["id"], "quote": s["text"]} for s in run.sources
+                    ],
+                }
+            )
+    db.commit()
+    with Session(engine) as restarted:
+        assert (
+            prepare(restarted, fetch=lambda _: pytest.fail("replay refetched"))
+            == prompt
+        )
+        result = batch.apply(
+            restarted, "batch", json.dumps(answer), now=NOW + timedelta(minutes=1)
+        )
+        assert result["outcomes"] == {"renewed": 3, "unsupported": 1, "unavailable": 1}
+        replay = batch.apply(restarted, "batch", "bad replay", now=NOW)
+        assert replay["outcomes"] == result["outcomes"]
+        assert len(restarted.exec(select(ReviewOutcome)).all()) == 5
+
+
+def test_batch_rejects_cross_claim_witnesses_without_poisoning_sibling(db, monkeypatch):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    path = "projects/monolith/knowledge/extraction.py"
+    rows = notes(db, 2, paths=[path])
+    for row, literal in zip(rows, ["RAW_BODY_CAP = 60_000", "DOC_DRIFT_CAP = 10"]):
+        row.title = f"`{path}` contains the exact text `{literal}`."
+        row.content = None
+    db.commit()
+    prepare(
+        db,
+        fetch=coverage_fetch(
+            {path: Path(__file__).with_name("extraction.py").read_bytes()}
+        ),
+    )
+    parent = db.get(FactReviewBatch, "batch")
+    first, second = [db.get(FactReviewRun, key) for key in parent.member_keys]
+    assert first.sources[0]["id"] != second.sources[0]["id"]
+    answer = {
+        "reviews": [
+            {
+                "id": f"f{i}",
+                "claim_hash": review._digest(run.claim),
+                "verdict": "holds",
+                "rationale": "The witness supports this literal presence clause in the source.",
+                "citations": [
+                    {
+                        "source_id": second.sources[0]["id"],
+                        "quote": second.sources[0]["text"],
+                    }
+                ],
+            }
+            for i, run in enumerate([first, second], 1)
+        ]
+    }
+    result = batch.apply(
+        db, "batch", json.dumps(answer), now=NOW + timedelta(minutes=1)
+    )
+    assert result["outcomes"] == {"unavailable": 1, "renewed": 1}
+
+
+def test_batch_block_reconsideration_does_not_charge_unchanged_polls(db, monkeypatch):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    path = "projects/monolith/knowledge/extraction.py"
+    notes(db, 3, paths=[path])
+    raw = Path(__file__).with_name("extraction.py").read_bytes()
+    assert prepare(db, fetch=coverage_fetch({path: raw})) == review.NO_MODEL
+    engine = db.get_bind()
+    db.commit()
+    with Session(engine) as restarted:
+        assert (
+            prepare(
+                restarted,
+                "unchanged",
+                fetch=lambda _: pytest.fail("unexpected network"),
+                now=NOW + timedelta(minutes=1),
+            )
+            == review.NO_REVIEW
+        )
+        assert (
+            review.throughput(restarted, now=NOW + timedelta(minutes=1))["attempts"]
+            == 3
+        )
+        # Probe at most two candidates. One remains blocked without starving others.
+        prompt = prepare(
+            restarted,
+            "changed",
+            fetch=coverage_fetch({path: SOURCE.encode()}, revision="b" * 40),
+            now=NOW + timedelta(hours=7),
+        )
+        assert SOURCE in prompt
+        assert len(restarted.get(FactReviewBatch, "changed").member_keys) == 2
+        assert (
+            review.throughput(restarted, now=NOW + timedelta(hours=7))["attempts"] == 5
+        )
+        assert (
+            prepare(
+                restarted,
+                "pending",
+                fetch=lambda _: pytest.fail("pending/reprobe"),
+                now=NOW + timedelta(hours=7, minutes=1),
+            )
+            == review.NO_REVIEW
+        )
+
+
+def test_staged_cache_counts_escaped_bytes_and_rejected_transfers(monkeypatch):
+    from knowledge import review_batch_sources as cache
+    from knowledge.review_sources import EvidenceUnavailable, EvidenceUnsupported
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    monkeypatch.setattr(cache, "MAX_CACHE_BYTES", 300_000)
+    value = {"x": "é" * 35_000}
+    with BatchSources(fetch=lambda _: value) as reader:
+        with pytest.raises(EvidenceUnsupported):
+            reader.read("/oversized")
+        assert reader.cache == {}
+        with pytest.raises(EvidenceUnavailable, match="transport byte budget"):
+            reader.read("/oversized-again")
+        assert reader.requests == 2 and reader.stopped
+
+
+def test_staged_batch_prompt_limit_preserves_backoff_and_valid_sibling(db, monkeypatch):
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    notes(db, 2, paths=["projects/a.py", "projects/b.py"])
+    monkeypatch.setattr(batch, "MAX_PROMPT_BYTES", 12_000)
+    prompt = prepare(
+        db,
+        fetch=coverage_fetch(
+            {"projects/a.py": SOURCE.encode(), "projects/b.py": b"x" * 20_000}
+        ),
+    )
+    parent = db.get(FactReviewBatch, "batch")
+    runs = [db.get(FactReviewRun, key) for key in parent.member_keys]
+    assert runs[0].sources and runs[1].result["outcome"] == "unavailable"
+    assert len(prompt.encode()) <= batch.MAX_PROMPT_BYTES
 
 
 def test_known_failure_releases_with_backoff_but_unresolved_batch_stays_fenced(db):
@@ -385,3 +798,252 @@ def test_invalid_batch_size_is_refused(monkeypatch, value):
     monkeypatch.setenv("KG_FACT_REVIEW_BATCH_SIZE", value)
     with pytest.raises(ValueError):
         batch.batch_size()
+
+
+def test_operator_abandonment_fences_old_writers_and_releases_only_unfinished_claims(
+    db,
+):
+    notes(db, 2)
+    keys = batch._reserve(db, "unknown-batch", NOW)
+    completed = db.get(FactReviewRun, keys[0])
+    completed.status, completed.completed_at, completed.result = (
+        "complete",
+        NOW,
+        {"outcome": "supported"},
+    )
+    db.commit()
+    db.refresh(completed)
+    before = completed.model_dump()
+    counts = batch.abandon_for_recomputation(db, "unknown-batch")
+    db.commit()
+    assert counts == {"abandoned_members": 1, "retained_completed_members": 1}
+    assert db.get(FactReviewRun, keys[0]).model_dump() == before
+    assert db.get(FactReviewRun, keys[1]).status == "abandoned"
+    assert db.get(FactReviewRun, keys[1]).completed_at is None
+    for operation in (
+        lambda: batch.prepare(db, "unknown-batch", now=NOW),
+        lambda: batch.apply(db, "unknown-batch", "bad", now=NOW),
+        lambda: batch._finish(db, "unknown-batch", NOW),
+        lambda: batch._failure(db, keys[1], "unavailable", "late failure", NOW),
+        lambda: review.apply(db, keys[1], "bad", now=NOW),
+        lambda: review.prepare(db, keys[1], now=NOW),
+    ):
+        with pytest.raises(ExtractionOutputInvalid, match="abandoned"):
+            operation()
+        db.rollback()
+    batch.fail(db, "unknown-batch", "late failure", now=NOW)
+    assert db.get(FactReviewRun, keys[0]).model_dump() == before
+    assert db.get(FactReviewRun, keys[1]).status == "abandoned"
+    new_keys = batch._reserve(db, "replacement", NOW)
+    assert any(
+        db.get(FactReviewRun, k).note_id == db.get(FactReviewRun, keys[1]).note_id
+        for k in new_keys
+    )
+    assert db.get(FactReviewBatch, "unknown-batch").status == "abandoned"
+
+
+def test_recovery_during_source_fetch_fences_late_single_writer(db):
+    notes(db, 1)
+    key = batch._reserve(db, "inflight", NOW)[0]
+
+    def collector(claim):
+        batch.abandon_for_recomputation(db, "inflight")
+        db.commit()
+        return [{"id": "late", "text": "late source"}], NOW
+
+    with pytest.raises(ExtractionOutputInvalid, match="abandoned"):
+        review.prepare(db, key, collector=collector, now=NOW)
+    db.rollback()
+    assert db.get(FactReviewRun, key).status == "abandoned"
+    assert db.get(FactReviewRun, key).sources == []
+    assert db.exec(select(ReviewOutcome)).first() is None
+
+
+@pytest.mark.parametrize("bound", ["request", "deadline", "byte"])
+def test_collection_bound_preserves_attempts_defers_suffix_and_makes_progress(
+    db, monkeypatch, bound
+):
+    from knowledge import review_batch_sources as sources
+
+    notes(db, 5, paths=[f"projects/member-{i}/app.py" for i in range(5)])
+    calls = []
+    clock = [0.0]
+    if bound == "request":
+        monkeypatch.setattr(sources, "MAX_REQUESTS", 3)  # pin plus two members
+    elif bound == "byte":
+        pin_size = len(json.dumps({"object": {"sha": SHA}}).encode())
+        response_size = len(
+            json.dumps(fetch("/contents/projects/member-0/app.py?ref=" + SHA)).encode()
+        )
+        monkeypatch.setattr(sources, "MAX_CACHE_BYTES", pin_size + 2 * response_size)
+    else:
+        monkeypatch.setattr(sources.time, "monotonic", lambda: clock[0])
+
+    def read(path):
+        calls.append(path)
+        result = fetch(path)
+        if bound == "deadline" and len(calls) == 3:
+            clock[0] = sources.DEADLINE_SECONDS + 1
+        return result
+
+    prompt = prepare(db, fetch=read)
+    assert "reviews" in prompt
+    parent = db.get(FactReviewBatch, "batch")
+    members = [db.get(FactReviewRun, key) for key in parent.member_keys]
+    assert [bool(r.sources) for r in members] == [True, True, False, False, False]
+    expected_failed = 1 if bound == "byte" else 0
+    assert len(db.exec(select(ReviewOutcome)).all()) == expected_failed
+    assert (
+        sum(r.result.get("outcome") == "deferred" for r in members)
+        == 3 - expected_failed
+    )
+    frozen = [
+        (r.invocation_key, dict(r.result))
+        for r in members
+        if r.result.get("outcome") == "deferred"
+    ]
+    first = apply(db)
+    assert first["outcomes"]["renewed"] == 2
+    assert first["deferred_facts"] == 3 - expected_failed
+    original_calls = len(calls)
+    assert prepare(db, fetch=read) == review.NO_MODEL
+    assert len(calls) == original_calls
+    assert apply(db)["replayed"] is True
+    batch.fail(db, "batch", "late failure", now=NOW)
+    assert [(key, db.get(FactReviewRun, key).result) for key, _ in frozen] == frozen
+    assert review.throughput(db, now=NOW)["attempts"] == 2 + expected_failed
+    assert (
+        batch.status(db, now=NOW + timedelta(minutes=1))["last_hour"][
+            "distinct_completed"
+        ]
+        == 2 + expected_failed
+    )
+    # Even after the failed prefix cooldown expires, unattempted suffix wins.
+    later = NOW + timedelta(minutes=16)
+    selected = review._candidates(db, later, limit=5)
+    assert selected[0].note_id == members[2 + expected_failed].note_id
+    clock[0] = 0.0
+    prepare(db, "next", fetch=fetch, now=later)
+    second = batch.apply(db, "next", json.dumps(output(db, "next")), now=later)
+    assert second["outcomes"]["renewed"] >= 2
+    assert sum(r.last_reviewed_at is not None for r in db.exec(select(Note)).all()) >= 4
+    assert len(db.get(FactReviewBatch, "batch").member_keys) == 5
+
+
+def test_deferred_reservations_still_charge_daily_cap(db, monkeypatch):
+    notes(db, 3)
+    monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "3")
+    assert (
+        prepare(
+            db, fetch=lambda _: (_ for _ in ()).throw(httpx.ConnectError("offline"))
+        )
+        == batch.SOURCE_UNAVAILABLE
+    )
+    assert review.throughput(db, now=NOW)["attempts"] == 0
+    assert prepare(db, "next") == review.NO_REVIEW
+    assert db.get(FactReviewBatch, "next").member_keys == []
+
+
+def test_streamed_transport_bound_preserves_attempt_and_defers_untouched(
+    db, monkeypatch
+):
+    from knowledge import review_batch_sources as source_batch
+
+    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+    monkeypatch.setattr(source_batch, "MAX_CACHE_BYTES", 35_000)
+    files = {
+        f"projects/example/member-{i}.py": SOURCE.encode() + bytes([65 + i]) * 11_000
+        for i in range(5)
+    }
+    notes(db, 5, paths=list(files))
+    calls = []
+    streamed_coverage(monkeypatch, files, calls)
+    prompt = prepare(db, fetch=None)
+    assert "reviews" in prompt
+    runs = [
+        db.get(FactReviewRun, k) for k in db.get(FactReviewBatch, "batch").member_keys
+    ]
+    assert runs[0].sources
+    outcomes = db.exec(select(ReviewOutcome)).all()
+    assert len(outcomes) == 1
+    assert outcomes[0].status == "unavailable"
+    assert outcomes[0].reason.endswith("batch source transport byte budget exhausted")
+    failed_index = next(
+        i for i, r in enumerate(runs) if r.result.get("outcome") == "unavailable"
+    )
+    assert failed_index < len(runs) - 1
+    assert all(r.result.get("outcome") == "deferred" for r in runs[failed_index + 1 :])
+    assert len([p for p in calls if "/git/blobs/" in p]) == failed_index + 1
+    result = apply(db)
+    assert result["outcomes"]["renewed"] == failed_index
+    assert result["deferred_facts"] == len(runs) - failed_index - 1
+
+
+def test_crash_after_defer_commit_preserves_sources_and_terminal_suffix(
+    db, monkeypatch
+):
+    from knowledge import review_batch_sources as source_batch
+
+    notes(db, 4, paths=[f"projects/member-{i}.py" for i in range(4)])
+    monkeypatch.setattr(source_batch, "MAX_REQUESTS", 2)
+    original = batch._defer
+    interrupted = [False]
+
+    def interrupt(session, key, reason, now):
+        original(session, key, reason, now)
+        if not interrupted[0]:
+            interrupted[0] = True
+            raise RuntimeError("executor interrupted after durable deferral")
+
+    monkeypatch.setattr(batch, "_defer", interrupt)
+    with pytest.raises(RuntimeError, match="executor interrupted"):
+        prepare(db)
+    db.rollback()
+    first = db.get(FactReviewRun, "batch:fact:1")
+    saved = list(first.sources)
+    deferred = dict(db.get(FactReviewRun, "batch:fact:2").result)
+    calls = []
+    monkeypatch.setattr(batch, "_defer", original)
+    prepare(db, fetch=lambda path: (calls.append(path), fetch(path))[1])
+    assert db.get(FactReviewRun, "batch:fact:1").sources == saved
+    assert db.get(FactReviewRun, "batch:fact:2").result == deferred
+    assert not any("member-0" in p or "member-1" in p for p in calls)
+    assert db.get(FactReviewBatch, "batch").response is None
+    result = apply(db)
+    assert result["outcomes"] == {"renewed": 3, "deferred": 1}
+    assert len(db.exec(select(ReviewOutcome)).all()) == 3
+    assert apply(db)["replayed"] is True
+    assert len(db.exec(select(ReviewOutcome)).all()) == 3
+
+
+def test_repeated_batch_does_not_let_one_expensive_member_starve_siblings(
+    db, monkeypatch
+):
+    from knowledge import review_batch_sources as source_batch
+
+    notes(db, 4, paths=[f"projects/member-{i}.py" for i in range(4)])
+    monkeypatch.setattr(source_batch, "MAX_CACHE_BYTES", 600)
+    seen = []
+
+    def expensive(path):
+        seen.append(path)
+        result = fetch(path)
+        if "member-0.py" in path:
+            result["envelope"] = "x" * 1000
+        return result
+
+    assert prepare(db, fetch=expensive) == batch.SOURCE_UNAVAILABLE
+    assert db.get(FactReviewBatch, "batch").result["outcomes"] == {
+        "unavailable": 1,
+        "deferred": 3,
+    }
+    assert len(seen) == 2  # pin and the actually attempted expensive member
+    seen.clear()
+    later = NOW + timedelta(minutes=16)  # the first member's cooldown has expired
+    assert review._candidates(db, later, limit=4)[0].note_id == "fact-1"
+    prepare(db, "later", fetch=expensive, now=later)
+    answer = output(db, "later")
+    result = batch.apply(db, "later", json.dumps(answer), now=later)
+    assert result["outcomes"]["renewed"] >= 2
+    assert "member-1.py" in seen[1]
+    assert db.get(FactReviewRun, "batch:fact:1").result["outcome"] == "unavailable"

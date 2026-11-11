@@ -17,6 +17,19 @@ from stars.grid_ingest import replace_computed_grid
 from stars.models import Site, SiteHour
 
 
+def test_metadata_refresh_keeps_forecast_owned_timestamp(engine):
+    fetched = datetime(2026, 10, 23, 12, tzinfo=timezone.utc)
+    with Session(engine) as session:
+        session.add(Site(id="grid-0001", lat=57, lon=-4, forecast_fetched_at=fetched))
+        session.commit()
+    assert grid.replace_grid(list(_GRID), engine=engine) == 2
+    with Session(engine) as session:
+        site = session.get(Site, "grid-0001")
+        assert site.forecast_fetched_at.replace(tzinfo=timezone.utc) == fetched
+        assert site.lat == _GRID[0]["lat"]
+        assert session.get(Site, "grid-0002").forecast_fetched_at is None
+
+
 @pytest.fixture(name="engine")
 def engine_fixture(monkeypatch, tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'stars-grid.sqlite'}")

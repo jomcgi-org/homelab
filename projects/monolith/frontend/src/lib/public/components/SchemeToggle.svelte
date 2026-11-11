@@ -1,4 +1,5 @@
 <script>
+  import SchemePreference from "./SchemePreference.svelte";
   // Scheme: the system preference by default (no attribute stored), or an
   // explicit "light" / "dark" stamped on the root as data-theme once the
   // reader clicks the toggle. technical-drawing.css resolves data-theme
@@ -8,10 +9,22 @@
   // The scheme currently painted, whichever source decided it.
   let dark = $state(false);
 
+  // The switch sits on a .td surface, so once the scheme is stamped the
+  // sheet colour the page now paints is readable from it; the theme-color
+  // metas in app.html take that value so the browser's own chrome follows
+  // a hand-picked scheme rather than the OS one.
+  let button = $state(null);
+
   function apply(next) {
     const root = document.documentElement;
     root.dataset.theme = next;
     dark = next === "dark";
+    const sheet = button
+      ? getComputedStyle(button).getPropertyValue("--sheet").trim()
+      : "";
+    if (sheet)
+      for (const meta of document.querySelectorAll('meta[name="theme-color"]'))
+        meta.setAttribute("content", sheet);
     try {
       localStorage.setItem(KEY, next);
     } catch {
@@ -20,8 +33,24 @@
     }
   }
 
+  // Cross-fade the whole page between schemes where the browser can,
+  // instead of every surface snapping at once. Reduced motion snaps.
+  // `want` is the scheme a pending transition will apply, so a second
+  // click before it runs flips from that rather than the painted scheme.
+  let want = null;
   function flip() {
-    apply(dark ? "light" : "dark");
+    const from = want ?? (dark ? "dark" : "light");
+    const next = from === "dark" ? "light" : "dark";
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!document.startViewTransition || still) {
+      apply(next);
+      return;
+    }
+    want = next;
+    document.startViewTransition(() => {
+      apply(next);
+      if (want === next) want = null;
+    });
   }
 
   $effect(() => {
@@ -39,18 +68,10 @@
   });
 </script>
 
-<svelte:head>
-  <!-- Applied before paint; mirrors apply() above. -->
-  <script>
-    try {
-      var t = localStorage.getItem("td-theme");
-      if (t === "light" || t === "dark")
-        document.documentElement.dataset.theme = t;
-    } catch (e) {}
-  </script>
-</svelte:head>
+<SchemePreference />
 
 <button
+  bind:this={button}
   class="scheme"
   type="button"
   onclick={flip}
@@ -148,5 +169,13 @@
   .scheme:focus-visible {
     outline: 2px solid var(--accent-ink);
     outline-offset: -2px;
+  }
+
+  /* A thumb needs the 44px floor; the glyph stays the same size. */
+  @media (max-width: 760px) {
+    .scheme {
+      width: 2.75rem;
+      height: 2.75rem;
+    }
   }
 </style>

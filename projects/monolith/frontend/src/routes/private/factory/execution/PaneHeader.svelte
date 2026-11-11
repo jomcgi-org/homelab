@@ -397,10 +397,10 @@
     width: 176px;
     overflow: hidden;
     padding: 4px;
-    border: 1px solid var(--line);
-    border-radius: 6px;
+    border: 1px solid var(--ink);
+    border-radius: 0;
     background: var(--panel-bg);
-    box-shadow: var(--panel-shadow);
+    box-shadow: none;
   }
   .session-menu-popover button,
   .session-menu-popover a {

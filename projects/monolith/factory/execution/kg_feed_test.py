@@ -164,7 +164,6 @@ def test_pick_finished_sessions_uses_configured_since_floor(engine, monkeypatch)
 
 
 def test_feed_once_reuses_durable_floor_after_engine_restart(engine, monkeypatch):
-    monkeypatch.setenv("KG_FEED_ENABLED", "true")
     monkeypatch.delenv("KG_FEED_SINCE", raising=False)
     monkeypatch.setattr(kg_feed, "get_engine", lambda: engine)
 
@@ -212,7 +211,7 @@ def test_render_caps_turns_preserves_rationale_and_elides_middle():
         for seq in range(1, 25)
     ]
 
-    rendered = kg_feed.render_session_raw(row, turns)
+    rendered, _, _ = kg_feed._render_session_raw(row, turns)
 
     assert len(rendered) <= kg_feed.DOCUMENT_CAP
     assert "truncated: true" in rendered
@@ -242,7 +241,7 @@ def test_render_redacts_planted_secret_and_uses_prompt_title():
         result_text=f"token={secret}",
     )
 
-    rendered = kg_feed.render_session_raw(row, [turn])
+    rendered, _, _ = kg_feed._render_session_raw(row, [turn])
 
     assert secret not in rendered
     assert rendered.count("[REDACTED:openai_key]") == 1
@@ -258,7 +257,6 @@ def test_feed_once_writes_raw_advances_and_resumes_incrementally(engine, monkeyp
         row = _add_session(session, "incremental", turns=2)
         session_id = row.id
 
-    monkeypatch.setenv("KG_FEED_ENABLED", "true")
     monkeypatch.setattr(kg_feed, "get_engine", lambda: engine)
     ingested = []
     enqueued = []
@@ -356,7 +354,6 @@ def test_feed_turn_query_defers_blob_columns(engine, monkeypatch):
             statements.append(statement)
 
     event.listen(engine, "before_cursor_execute", capture_statement)
-    monkeypatch.setenv("KG_FEED_ENABLED", "true")
     monkeypatch.setattr(kg_feed, "get_engine", lambda: engine)
     try:
         assert (
@@ -384,7 +381,6 @@ def test_feed_exception_after_ingest_rolls_back_raw_and_watermark(engine, monkey
         row = _add_session(session, "transactional")
         session_id = row.id
 
-    monkeypatch.setenv("KG_FEED_ENABLED", "true")
     monkeypatch.setattr(kg_feed, "get_engine", lambda: engine)
 
     def ingest(session, *, commit, **_kwargs):
@@ -420,7 +416,6 @@ def test_existing_raw_is_reenqueued_before_watermark_advances(engine, monkeypatc
     with Session(engine) as session:
         row = _add_session(session, "retry")
         session_id = row.id
-    monkeypatch.setenv("KG_FEED_ENABLED", "yes")
     monkeypatch.setattr(kg_feed, "get_engine", lambda: engine)
     enqueued = []
 
@@ -466,6 +461,7 @@ def test_enqueue_failure_sweep_then_next_feed_advances_watermark(
                     interval_secs INTEGER,
                     next_run_at TIMESTAMP,
                     last_status TEXT,
+                    locked_by TEXT,
                     payload TEXT,
                     created_by TEXT
                 )
@@ -474,7 +470,6 @@ def test_enqueue_failure_sweep_then_next_feed_advances_watermark(
         )
         session.commit()
 
-    monkeypatch.setenv("KG_FEED_ENABLED", "true")
     monkeypatch.setattr(kg_feed, "get_engine", lambda: engine)
     raw_id = "raw-missed-enqueue"
 
@@ -505,16 +500,6 @@ def test_enqueue_failure_sweep_then_next_feed_advances_watermark(
     assert asyncio.run(kg_feed.feed_once(ingest=ingest)) == 1
     with Session(engine) as session:
         assert session.get(AgentSession, session_id).kg_extracted_turn_seq == 1
-
-
-def test_disabled_feed_does_not_touch_database(monkeypatch):
-    monkeypatch.delenv("KG_FEED_ENABLED", raising=False)
-
-    def explode():
-        raise AssertionError("disabled feed must not open the database")
-
-    monkeypatch.setattr(kg_feed, "get_engine", explode)
-    assert asyncio.run(kg_feed.feed_once()) == 0
 
 
 def test_start_kg_feed_loop_is_idempotent(monkeypatch):

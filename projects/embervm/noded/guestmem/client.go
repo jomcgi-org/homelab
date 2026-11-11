@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/guestagent"
+	"github.com/jomcgi/homelab/projects/embervm/noded/unixsock"
 	"github.com/jomcgi/homelab/projects/embervm/noded/vsockproto"
 )
 
@@ -46,7 +47,7 @@ func (c Client) Fetch(ctx context.Context, uds, nonce string) (guestagent.Memory
 	dial := c.Dial
 	if dial == nil {
 		dial = func(ctx context.Context, uds string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", uds)
+			return unixsock.Dial(ctx, uds)
 		}
 	}
 	conn, err := dial(ctx, uds)

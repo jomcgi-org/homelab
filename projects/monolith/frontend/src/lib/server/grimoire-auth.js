@@ -2,8 +2,11 @@
 // it against its own issuer and audience; projected email is never authority.
 export function grimoireHeaders(cookies) {
   const token = cookies.get("grimoire-id-token");
-  if (!token)
-    throw new Error("Your session has expired. Please sign in again.");
+  if (!token) {
+    const error = new Error("Your session has expired. Please sign in again.");
+    error.status = 401;
+    throw error;
+  }
   return { "x-grimoire-token": token };
 }
 

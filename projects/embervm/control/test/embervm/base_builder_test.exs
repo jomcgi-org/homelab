@@ -173,13 +173,21 @@ defmodule Embervm.BaseBuilderTest do
 
   test "a valid admission drives BuildBase and writes a built base into status" do
     agent = start_recorder()
+    test_pid = self()
 
-    build_fun = fn :fake_channel, _req -> {:ok, resp("snap1", "sha256:abc")} end
+    build_fun = fn :fake_channel, req ->
+      send(test_pid, {:image_request, req})
+      {:ok, resp("snap1", "sha256:abc")}
+    end
 
     builder =
       start_builder(status_writer: recording_status_writer(agent), build_fun: build_fun)
 
     :ok = BaseBuilder.reconcile(builder, desc())
+
+    assert_receive {:image_request, req}, 1_000
+    refute Map.has_key?(req, :guest_port)
+    assert req.image_ref == "imgA"
 
     assert_eventually(fn ->
       case latest(agent, "w") do
@@ -505,6 +513,7 @@ defmodule Embervm.BaseBuilderTest do
 
     assert_receive {:req, req}, 1_000
     # The image lane's top-level image_ref is empty; source is the ZipSource.
+    refute Map.has_key?(req, :guest_port)
     assert req.image_ref in [nil, ""]
     assert {:zip, %ZipSource{} = zip} = req.source
     assert zip.runtime_image_ref == "ghcr.io/runtimes/python:pinned"
@@ -1080,50 +1089,6 @@ defmodule Embervm.BaseBuilderTest do
     # No turnover has happened; snapX is not tracked. Must not crash or evict.
     assert :ok = BaseBuilder.report_base_refs(builder, "snapX", primed: 0, sessions: 0)
     assert Process.alive?(builder)
-  end
-
-  # The event-driven refcount seam still accepts the legacy :serving count, but
-  # serving safety is owned by the disk-driven reconcile below. Requiring the
-  # legacy term here would wedge task and session eviction because those callers
-  # never report it.
-  test "a legacy :serving refcount does not alter task and session eviction" do
-    agent = start_recorder()
-    test_pid = self()
-    table = new_cap_table()
-    put_node_capacity_fact(table, "w", "snap1", true)
-
-    build_fun = fn :fake_channel, req ->
-      ref = if req.image_ref == "imgA", do: "snap1", else: "snap2"
-      {:ok, resp(ref)}
-    end
-
-    evict_fun = fn :fake_channel, _workload, ref ->
-      send(test_pid, {:evicted, ref})
-      {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
-    end
-
-    builder =
-      start_builder(
-        status_writer: recording_status_writer(agent),
-        build_fun: build_fun,
-        evict_fun: evict_fun,
-        capacity_table: table
-      )
-
-    turnover_to_snap2(builder, agent)
-
-    # A :serving count arrives alongside primed, before sessions: still NOT
-    # evictable (sessions unknown), proving :serving does not shortcut the
-    # existing guard.
-    :ok = BaseBuilder.report_base_refs(builder, "snap1", primed: 0, serving: 3)
-    refute_receive {:evicted, "snap1"}, 100
-
-    # primed:0, sessions:0 alone evicts, exactly as before R3, even though
-    # :serving was reported nonzero and is never reported as 0: the guard is
-    # unchanged, so a stray or nonzero :serving count cannot block eviction
-    # either.
-    :ok = BaseBuilder.report_base_refs(builder, "snap1", sessions: 0)
-    assert_receive {:evicted, "snap1"}, 1_000
   end
 
   # -- reconciled base-retention sweep (base-durability PR-3) ------------------

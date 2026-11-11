@@ -23,7 +23,13 @@ from sqlmodel import Session, select
 from knowledge.disputes import create_dispute
 from knowledge.extraction import ExtractionOutputInvalid
 from knowledge.freshness import commit_successful_review, record_outcome, utc
-from knowledge.models import Dispute, FactReviewRun, Note, ReviewOutcome
+from knowledge.models import (
+    Dispute,
+    FactReviewRun,
+    FactReviewSourceBlock,
+    Note,
+    ReviewOutcome,
+)
 from knowledge.public_fact_counts import fact_summary
 from knowledge.recall import _get_repo_scope
 from knowledge.review_sources import (
@@ -37,10 +43,7 @@ PREFIX = "source-review/v1: "
 NO_REVIEW = "No source-grounded review is due."
 NO_MODEL = "Source review completed without model inference."
 MAX_EVIDENCE_AGE = timedelta(minutes=30)
-
-
-def enabled() -> bool:
-    return os.environ.get("KG_FACT_REVIEW_ENABLED", "false").lower() == "true"
+MAX_PROMPT_BYTES = 96_000
 
 
 def settings() -> tuple[int, int]:
@@ -53,11 +56,10 @@ def settings() -> tuple[int, int]:
 
 def status() -> dict:
     """Operator inspection without prompts, source bodies or credential data."""
-    if not enabled():
-        return {"enabled": False}
     from core.db import get_engine
 
     from knowledge.fact_review_batch import status as batch_status
+    from knowledge.review_coverage import enabled as source_coverage_enabled
 
     max_daily, interval = settings()
     with Session(get_engine()) as session:
@@ -70,10 +72,12 @@ def status() -> dict:
         ).all()
         return {
             "enabled": True,
+            "source_coverage_enabled": source_coverage_enabled(),
             "max_daily": max_daily,
             "interval_seconds": interval,
             "public_facts": fact_summary(session, now=now),
             "coverage": coverage(session, now=now),
+            "eligible_unique_facts": eligible_count(session, now=now),
             "throughput": throughput(session, now=now),
             "batches": batch_status(session, now=now),
             "recent": [
@@ -94,8 +98,6 @@ def ensure_job(session: Session) -> bool:
     """Reconcile the existing drain lane; retain unknown outcomes and leases."""
     from shared.invocation_outcomes import UNKNOWN_INVOCATION
 
-    if not enabled():
-        return False
     sqlite = session.get_bind().dialect.name == "sqlite"
     table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
     payload = ":payload" if sqlite else "CAST(:payload AS JSONB)"
@@ -178,12 +180,19 @@ def coverage(session: Session, *, now: datetime) -> dict:
     }
 
 
+def attempted_receipt():
+    """Deferred reservations still consume admission quota, but are not attempts."""
+    outcome = FactReviewRun.result["outcome"].as_string()
+    return or_(outcome.is_(None), outcome != "deferred")
+
+
 def throughput(session: Session, *, now: datetime) -> dict:
     """Rolling coverage distinguishes distinct facts from repeated selections."""
     window = (
         FactReviewRun.created_at >= now - timedelta(days=1),
         FactReviewRun.created_at <= now,
         FactReviewRun.note_id.is_not(None),
+        attempted_receipt(),
     )
     attempts, distinct = session.exec(
         select(func.count(), func.count(func.distinct(FactReviewRun.note_id)))
@@ -205,13 +214,134 @@ def throughput(session: Session, *, now: datetime) -> dict:
             name: {"attempts": count, "distinct_facts": unique}
             for name, count, unique in rows
         },
+        "unavailable_by_cause": unavailable_causes(session, window),
     }
 
 
-def _candidates(session: Session, now: datetime, *, limit: int = 1):
+def unavailable_causes(session: Session, window) -> dict:
+    """Aggregate fixed categories in SQL, never export stored reason text.
+
+    Older/single-review rows may have no reason. Keep those unknown instead of
+    inferring a provider failure or attributing retry churn to oversized files.
+    """
+    reason = FactReviewRun.result["reason"].as_string()
+    summary = FactReviewRun.result["summary"].as_string()
+    category = case(
+        (reason == "unsupported file representation", "file_representation"),
+        (reason == "batch source deadline exhausted", "batch_deadline_bound"),
+        (reason == "batch source request budget exhausted", "batch_request_bound"),
+        (reason == "batch source byte budget exhausted", "batch_cache_byte_bound"),
+        (
+            reason == "batch source transport byte budget exhausted",
+            "batch_transport_byte_bound",
+        ),
+        (reason == "batch prompt byte budget exhausted", "batch_prompt_byte_bound"),
+        (
+            reason.in_(
+                (
+                    "source collection budget exhausted",
+                    "source collection deadline exhausted",
+                )
+            ),
+            "collection_bound",
+        ),
+        (
+            reason.in_(
+                (
+                    "checks exceed one complete page",
+                    "incomplete check runs",
+                    "incomplete commit statuses",
+                )
+            ),
+            "incomplete_checks",
+        ),
+        (
+            reason.in_(
+                (
+                    "invalid source file",
+                    "source file size mismatch",
+                    "malformed GitHub response",
+                    "malformed issue identity or state",
+                    "malformed pull request identity or head",
+                    "missing main commit",
+                )
+            ),
+            "invalid_source_response",
+        ),
+        # A bare 403 cannot distinguish permission refusal from rate limiting.
+        (reason == "GitHub returned 401", "source_http_401"),
+        (reason == "GitHub returned 403", "source_http_403"),
+        (reason == "GitHub returned 404", "source_http_404"),
+        (reason == "batch source transport unavailable", "source_transport"),
+        (reason == "batch evidence is stale", "stale_batch_evidence"),
+        (reason == "GitHub returned 429", "source_rate_limit"),
+        (reason.startswith("GitHub returned 5"), "source_server_error"),
+        (
+            summary == "Source review: unavailable (invalid reviewer output)",
+            "invalid_reviewer_output",
+        ),
+        (reason.is_(None) | (reason == ""), "unrecorded"),
+        else_="other",
+    )
+    rows = session.exec(
+        select(category, func.count(), func.count(func.distinct(FactReviewRun.note_id)))
+        .where(
+            *window,
+            FactReviewRun.status == "complete",
+            FactReviewRun.result["outcome"].as_string() == "unavailable",
+        )
+        .group_by(category)
+    ).all()
+    return {
+        name: {
+            "attempts": count,
+            "distinct_facts": unique,
+            "repeat_attempts": count - unique,
+        }
+        for name, count, unique in rows
+    }
+
+
+def _candidate_query(now: datetime):
+    from knowledge import review_coverage as coverage
+
     newer = aliased(ReviewOutcome)
     # The deterministic verifier's unsupported outcome is eligible for this
     # separate reviewer. Its own unsupported outcomes wait for a new revision.
+    unsupported = (
+        ReviewOutcome.status == "unsupported"
+    ) & ReviewOutcome.reason.startswith(PREFIX)
+    coverage_blocked = False
+    if coverage.enabled():
+        reconsidered = (
+            select(FactReviewSourceBlock.note_id)
+            .where(
+                FactReviewSourceBlock.note_id == Note.note_id,
+                FactReviewSourceBlock.outcome_id == ReviewOutcome.id,
+                or_(
+                    FactReviewSourceBlock.released.is_(True),
+                    FactReviewSourceBlock.identity["version"].as_string()
+                    != coverage.VERSION,
+                    FactReviewSourceBlock.content_hash != Note.content_hash,
+                ),
+            )
+            .correlate(Note, ReviewOutcome)
+            .exists()
+        )
+        unsupported = unsupported & ~reconsidered
+        coverage_blocked = (
+            select(FactReviewSourceBlock.note_id)
+            .where(
+                FactReviewSourceBlock.note_id == Note.note_id,
+                FactReviewSourceBlock.revision == Note.revision,
+                FactReviewSourceBlock.content_hash == Note.content_hash,
+                FactReviewSourceBlock.identity["version"].as_string()
+                == coverage.VERSION,
+                FactReviewSourceBlock.released.is_(False),
+            )
+            .correlate(Note)
+            .exists()
+        )
     blocked = (
         select(ReviewOutcome.id)
         .where(
@@ -221,8 +351,7 @@ def _candidates(session: Session, now: datetime, *, limit: int = 1):
             .where(newer.note_id == ReviewOutcome.note_id, newer.id > ReviewOutcome.id)
             .exists(),
             or_(
-                (ReviewOutcome.status == "unsupported")
-                & ReviewOutcome.reason.startswith(PREFIX),
+                unsupported,
                 ReviewOutcome.next_attempt_at > now,
             ),
         )
@@ -235,6 +364,7 @@ def _candidates(session: Session, now: datetime, *, limit: int = 1):
         .where(
             FactReviewRun.note_id == Note.note_id,
             FactReviewRun.revision == Note.revision,
+            attempted_receipt(),
         )
         .correlate(Note)
         .scalar_subquery()
@@ -249,11 +379,12 @@ def _candidates(session: Session, now: datetime, *, limit: int = 1):
         .correlate(Note)
         .exists()
     )
-    return session.exec(
+    return (
         select(Note)
         .where(
             *_review_pool(now),
             ~blocked,
+            ~coverage_blocked if coverage_blocked is not False else True,
             ~pending,
         )
         .order_by(
@@ -264,8 +395,21 @@ def _candidates(session: Session, now: datetime, *, limit: int = 1):
             Note.review_after.asc().nulls_first(),
             Note.id,
         )
-        .limit(limit)
-    ).all()
+    )
+
+
+def _candidates(session: Session, now: datetime, *, limit: int = 1):
+    return session.exec(_candidate_query(now).limit(limit)).all()
+
+
+def eligible_count(session: Session, *, now: datetime) -> int:
+    """Current unique eligible claims, with the exact worker eligibility filters.
+
+    Excludes pending claims, cooldowns and unchanged unsupported revisions. This
+    is not the broader overdue inventory and does not reserve or schedule work.
+    """
+    query = _candidate_query(now).order_by(None).subquery()
+    return session.exec(select(func.count()).select_from(query)).one()
 
 
 def _candidate(session: Session, now: datetime):
@@ -277,6 +421,8 @@ def _digest(claim: dict) -> str:
 
 
 def _prompt(run: FactReviewRun, progress_signal: bool = False) -> str:
+    from knowledge import review_coverage as coverage
+
     if run.status == "complete" or not run.note_id:
         if progress_signal and run.note_id:
             return NO_MODEL
@@ -302,6 +448,24 @@ def _prompt(run: FactReviewRun, progress_signal: bool = False) -> str:
         "configuration or execution. No source coverage means unsupported. If a source "
         "contradicts the claim, return changed with the exact conflicting clause. If source "
         "coverage is insufficient, return unsupported. Do not rewrite or simplify the claim.\n"
+        + (
+            "A literal-witness source explicitly omits the rest of its file. It establishes only "
+            "the exact positive literal-presence clause shown, never behavior or absence. "
+            "For such sources, quote EVERY complete witness, including different literals in "
+            "the same file. Missing coverage is unsupported, never changed.\n"
+            if coverage.enabled()
+            else ""
+        )
+        + "Literal citation contract: quote is checked as an exact substring of the assigned "
+        "source's decoded text value, not rendered Markdown or reformatted code. Preserve "
+        "Markdown markers (such as **), comment prefixes (such as //), indentation, line "
+        "breaks, punctuation and spelling. Do not paraphrase, join separated passages, "
+        "unwrap comment lines or clean up formatting. Select a contiguous passage that "
+        "supports the claim; use separate citations for separate passages. Encode quotes, "
+        "backslashes and line breaks with JSON escaping so the decoded quote remains "
+        "identical to the decoded source text. Before returning, check every quote against "
+        "its assigned source_id and copied claim_hash. If no exact supporting passage is "
+        "available, return unsupported without inventing a citation.\n"
         "Cite exact, nonempty quotations from supplied sources by id. For holds, cite at least "
         "one source for every source subject supplied, and explain coverage of every claim. "
         "Return exactly one JSON fence with no other text: "
@@ -319,18 +483,24 @@ def prepare(
     invocation_key: str,
     *,
     collector=collect_sources,
+    probe_fetch=None,
     now=None,
     progress_signal: bool = False,
 ) -> str:
     """Pin the claim first; perform network reads outside a database transaction."""
-    if not enabled():
-        return NO_REVIEW
     now = utc(now or datetime.now(UTC))
+    from knowledge import review_coverage as coverage
+    from knowledge.review_source_blocks import probe, record_block
+
+    if coverage.enabled() and session.get(FactReviewRun, invocation_key) is None:
+        probe(session, now, fetch=probe_fetch)
     if session.get_bind().dialect.name != "sqlite":
         session.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": JOB_NAME}
         )
     run = session.get(FactReviewRun, invocation_key)
+    if run is not None and run.status == "abandoned":
+        raise ExtractionOutputInvalid("review member abandoned by operator recovery")
     if run is not None and (run.status == "complete" or run.sources):
         return _prompt(run, progress_signal)
     if run is None:
@@ -368,6 +538,7 @@ def prepare(
     # SQLAlchemy expiration. A retry never replaces this pinned evidence.
     claim = dict(run.claim)
     session.commit()
+    identity = None
     try:
         sources, observed = collector(claim)
         failure = (
@@ -376,6 +547,7 @@ def prepare(
         status = "unsupported"
     except EvidenceUnsupported as exc:
         sources, observed, failure, status = [], None, str(exc), "unsupported"
+        identity = exc.identity
     except EvidenceUnavailable as exc:
         sources, observed, failure, status = [], None, str(exc), "unavailable"
     run = session.exec(
@@ -384,6 +556,8 @@ def prepare(
         .with_for_update()
         .execution_options(populate_existing=True)
     ).one()
+    if run.status == "abandoned":
+        raise ExtractionOutputInvalid("review member abandoned by operator recovery")
     if run.sources or run.status == "complete":
         # A recovered executor may have completed the same read-only fetch.
         # Keep the first durable evidence bundle, including after application.
@@ -391,8 +565,18 @@ def prepare(
         session.commit()
         return prompt
     run.sources, run.observed_at = sources, observed
+    if (
+        coverage.enabled()
+        and not failure
+        and len(_prompt(run).encode("utf-8")) > MAX_PROMPT_BYTES
+    ):
+        failure, status = "complete prompt exceeds byte bound", "unsupported"
+        identity = next(
+            (s["coverage"]["identity"] for s in sources if "coverage" in s), None
+        )
+        run.sources, run.observed_at = [], None
     if failure:
-        record_outcome(
+        outcome = record_outcome(
             session,
             note_id=run.note_id,
             revision=run.revision,
@@ -400,6 +584,8 @@ def prepare(
             reason=PREFIX + failure,
             now=now,
         )
+        if status == "unsupported":
+            record_block(session, run, outcome, identity, now)
         run.status = "complete"
         run.completed_at = now
         run.result = {
@@ -426,8 +612,8 @@ class Verdict(BaseModel):
 
 
 def apply(session: Session, invocation_key: str, result_text: str, *, now=None) -> dict:
-    if not enabled():
-        return {"summary": "Source review disabled"}
+    from knowledge import review_coverage as coverage
+
     now = utc(now or datetime.now(UTC))
     run = session.exec(
         select(FactReviewRun)
@@ -437,11 +623,16 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
     ).first()
     if run is None:
         raise ExtractionOutputInvalid("source review was not prepared")
+    if run.status == "abandoned":
+        raise ExtractionOutputInvalid("review member abandoned by operator recovery")
     if run.status == "complete":
         return {**run.result, "replayed": True}
     try:
         blocks = re.findall(r"```json\s*\n(.*?)\n```", result_text, re.DOTALL)
-        if len(result_text) > 32_000 or len(blocks) != 1:
+        result_size = (
+            len(result_text.encode("utf-8")) if coverage.enabled() else len(result_text)
+        )
+        if result_size > 32_000 or len(blocks) != 1:
             raise ValueError("one bounded JSON block required")
         verdict = Verdict.model_validate_json(blocks[0])
         if verdict.claim_hash != _digest(run.claim):
@@ -463,6 +654,18 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
             item["subject"] for item in run.sources
         }:
             raise ValueError("renewal omitted a source subject")
+        from knowledge.review_coverage import complete_witness_citations
+
+        partial = any("coverage" in source for source in run.sources)
+        if partial and (
+            verdict.verdict == "changed"
+            or verdict.verdict == "holds"
+            and not complete_witness_citations(
+                run.claim, run.sources, verdict.citations
+            )
+        ):
+            verdict.verdict = "unsupported"
+            verdict.rationale = "Incomplete literal-witness coverage cannot renew or disprove the complete claim."
     except (ValueError, TypeError) as exc:
         record_outcome(
             session,
@@ -521,7 +724,7 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
         outcome = "renewed" if committed.renewed else "aborted"
     else:
         outcome = "failed" if verdict.verdict == "changed" else "unsupported"
-        record_outcome(
+        recorded = record_outcome(
             session,
             note_id=run.note_id,
             revision=run.revision,
@@ -531,6 +734,20 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
             evidence=evidence,
             evidence_observed_at=observed,
         )
+        if partial and outcome == "unsupported":
+            from knowledge.review_source_blocks import record_block
+
+            record_block(
+                session,
+                run,
+                recorded,
+                next(
+                    source["coverage"]["identity"]
+                    for source in run.sources
+                    if "coverage" in source
+                ),
+                now,
+            )
         if verdict.verdict == "changed" and note.verification_state not in {
             "disputed",
             "invalidated",

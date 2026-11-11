@@ -22,6 +22,7 @@ import (
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
+	"github.com/jomcgi/homelab/projects/embervm/noded/volume"
 )
 
 // TestMain isolates every test in this package from the host's own cgroup. New
@@ -173,6 +174,48 @@ func TestStartServingRejectsUnderMemPressure(t *testing.T) {
 	if fsd.claims != 0 {
 		t.Fatalf("mem-rejected StartServing cold-booted %d VMs, want 0", fsd.claims)
 	}
+}
+
+// underPressure is admit's verdict without the reservation, counter or log: the
+// first reason that trips, or ("", false) to admit. It reads the same facts
+// admit does (in-flight boots included).
+func (s *Server) underPressure(needMib uint64, class pressureClass) (rejectReason, bool) {
+	if s.memExhausted(needMib) {
+		return reasonPressureMem, true
+	}
+	if class == classTapBearing && s.tapsExhausted() {
+		return reasonPressureTaps, true
+	}
+	return "", false
+}
+
+// memExhausted reports whether a boot declaring needMib fails the memory
+// predicate of the configured model (admittableMib), boots in flight included.
+func (s *Server) memExhausted(needMib uint64) bool {
+	s.admission.mu.Lock()
+	defer s.admission.mu.Unlock()
+	return !s.admissionFactsLocked().memAdmits(needMib)
+}
+
+// memPressured is the observed half of the predicate on its own: whether known
+// cgroup headroom, less the boots in flight it does not yet reflect, is below
+// the workload's need plus the reject floor. An unknown headroom (unlimited or unreadable cgroup) fails
+// open; a known but exhausted cgroup reads at least 1 MiB (parseMemHeadroomMib)
+// and refuses.
+func (s *Server) memPressured(needMib uint64) bool {
+	s.admission.mu.Lock()
+	defer s.admission.mu.Unlock()
+	f := s.admissionFactsLocked()
+	f.model = "observed"
+	return !f.memAdmits(needMib)
+}
+
+// slotsExhausted reports whether live VMs plus boots in flight already fill the
+// live-VM backstop. A zero ceiling is unlimited.
+func (s *Server) slotsExhausted() bool {
+	s.admission.mu.Lock()
+	defer s.admission.mu.Unlock()
+	return s.admissionFactsLocked().slotsFull()
 }
 
 // TestUnderPressureFloorFallback: a zero/unset configured floor still applies
@@ -1336,10 +1379,11 @@ func TestReservedRefusalMessageNamesTheModel(t *testing.T) {
 func TestPrimeVolumeColdBootCarriesWorkloadSizing(t *testing.T) {
 	drv := &fakeDriver{}
 	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
+	srv.volumes = volume.NewManager(t.TempDir())
 	seedBase(srv, "sess__sizing", "claude-runtime")
 	srv.registry.sync([]workloadEntry{{Workload: "claude-runtime", VCPUs: 2, MemMib: 3072}})
 
-	if _, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "sess__sizing", VolumeDiskPath: "/sessions/l/workspace.img"}); err != nil {
+	if _, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "sess__sizing", LineageId: "l", VolumeMount: "/workspace", VolumeSizeBytes: 1 << 20}); err != nil {
 		t.Fatalf("volume Prime: %v", err)
 	}
 	if spec := drv.claimSpec(); spec.ColdBootVCPUs != 2 || spec.ColdBootMemMib != 3072 {

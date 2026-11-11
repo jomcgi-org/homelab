@@ -1,3 +1,16 @@
+import { startPublicSnapshotPrewarm } from "./lib/server/public-snapshots.js";
+
+// The public build leaves out src/lib/private, so the private prewarm is
+// found by glob: an empty map there, a lazy import in the private build.
+const privateCache = import.meta.glob("./lib/private/backend-cache.js");
+
+export async function init() {
+  startPublicSnapshotPrewarm();
+  for (const load of Object.values(privateCache)) {
+    (await load()).startPrivatePrewarm();
+  }
+}
+
 // SvelteKit server hook: negotiated response compression.
 //
 // adapter-node does not compress dynamic responses, and Cloudflare in front of

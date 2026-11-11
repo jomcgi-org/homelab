@@ -21,6 +21,7 @@ from sqlalchemy import bindparam, or_, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import Session, select
 
+from core.env import flag
 from core.github import GITHUB_REPO
 from knowledge import raw_store
 from knowledge.gardener import MAX_GARDENER_RETRIES
@@ -356,22 +357,9 @@ def enqueue_extraction(session: Session, raw_id: str, *, commit: bool = True) ->
 
 
 def ensure_repo_diff_job(session: Session) -> bool:
-    """Reconcile the recurring repository scout job with its feature flag."""
-    from shared.invocation_outcomes import UNKNOWN_INVOCATION
-
-    enabled = os.environ.get("KG_REPO_DIFF_ENABLED", "false").lower() == "true"
+    """Register the recurring repository scout job if it is missing."""
     dialect = session.get_bind().dialect.name
     table = "routine_jobs" if dialect == "sqlite" else "claude_agent.routine_jobs"
-    if not enabled:
-        result = session.execute(
-            text(
-                f"DELETE FROM {table} WHERE name = :name "
-                "AND (last_status IS NULL OR last_status != :unknown_outcome)"
-            ),
-            {"name": REPO_DIFF_JOB_NAME, "unknown_outcome": UNKNOWN_INVOCATION},
-        )
-        return result.rowcount > 0
-
     payload_expr = ":payload" if dialect == "sqlite" else "CAST(:payload AS JSONB)"
     result = session.execute(
         text(
@@ -929,7 +917,7 @@ _REPO_DIFF_URL_RE = re.compile(
 
 
 def _reconcile_enabled() -> bool:
-    return os.environ.get(KG_REPO_DIFF_RECONCILE_ENV, "false").lower() == "true"
+    return flag(KG_REPO_DIFF_RECONCILE_ENV)
 
 
 def _extra_as_dict(extra: object) -> dict:
@@ -1477,20 +1465,10 @@ def _insert_no_new_notes_pending(session: Session, raw: RawInput) -> None:
     )
 
 
-def apply_extraction(
-    session: Session,
-    raw_id: str,
-    result_text: str,
-    *,
-    correction: bool = False,
-    transaction_guard: Callable[[Session], None] | None = None,
-) -> dict:
-    """Validate output, then guard and atomically apply its knowledge changes.
-
-    The optional caller guard must raise on lost ownership and retain its lock
-    in this session. It runs after preparation releases the original transaction,
-    before the authoritative reread and all writes.
-    """
+def _unhandled_raw(
+    session: Session, raw_id: str, correction: bool
+) -> tuple[RawInput, int] | None:
+    """Return the raw row and its pass count, or None when already handled."""
     raw = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
     if raw is None:
         raise ExtractionInputMissing(f"raw not found: {raw_id}")
@@ -1507,8 +1485,29 @@ def apply_extraction(
     ).first()
     if correction:
         if passes != 1:
-            return _replayed_result(raw_id)
+            return None
     elif passes > 0 or handled is not None:
+        return None
+    return raw, passes
+
+
+def apply_extraction(
+    session: Session,
+    raw_id: str,
+    result_text: str,
+    *,
+    correction: bool = False,
+    transaction_guard: Callable[[Session], None] | None = None,
+    transaction_finalize: Callable[[Session, dict], None] | None = None,
+) -> dict:
+    """Validate output, then guard and atomically apply its knowledge changes.
+
+    The optional caller guard must raise on lost ownership and retain its lock
+    in this session. It runs after preparation releases the original transaction,
+    before the authoritative reread and all writes. A finalizer may record caller
+    completion in the same transaction; it must not commit or perform network I/O.
+    """
+    if _unhandled_raw(session, raw_id, correction) is None:
         return _replayed_result(raw_id)
     session.rollback()
     parsed = _parse_result(result_text)
@@ -1564,25 +1563,10 @@ def apply_extraction(
     try:
         if transaction_guard is not None:
             transaction_guard(session)
-        raw = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
-        if raw is None:
-            raise ExtractionInputMissing(f"raw not found: {raw_id}")
-        passes = int((raw.extra or {}).get("extraction_passes", 0) or 0)
-        handled = session.exec(
-            select(AtomRawProvenance).where(
-                AtomRawProvenance.raw_fk == raw.id,
-                AtomRawProvenance.gardener_version == EXTRACTION_VERSION,
-                (
-                    AtomRawProvenance.derived_note_id.is_(None)
-                    | (AtomRawProvenance.derived_note_id != "failed")
-                ),
-            )
-        ).first()
-        if correction:
-            if passes != 1:
-                return _replayed_result(raw_id)
-        elif passes > 0 or handled is not None:
+        unhandled = _unhandled_raw(session, raw_id, correction)
+        if unhandled is None:
             return _replayed_result(raw_id)
+        raw, passes = unhandled
         authoritative_scope = _authoritative_raw_scope(raw)
 
         if session.get_bind().dialect.name == "postgresql":
@@ -1786,10 +1770,7 @@ def apply_extraction(
         raw.extra = extra
         session.add(raw)
 
-        if (
-            os.environ.get("DRAINER_DOCFIX_ENABLED", "false").lower() == "true"
-            and raw.source == "repo-diff"
-        ):
+        if flag("DRAINER_DOCFIX_ENABLED") and raw.source == "repo-diff":
             base_sha = extra.get("base_sha")
             head_sha = extra.get("head_sha")
             if isinstance(base_sha, str) and isinstance(head_sha, str):
@@ -1897,18 +1878,22 @@ def apply_extraction(
                     ):
                         disputed_note.verification_state = prior_state
                         session.add(disputed_note)
+        result = {
+            "raw_id": raw_id,
+            "atoms": note_ids,
+            "rejected": rejected,
+            "dispute": dispute_state,
+            "doc_drift": len(valid_doc_drift),
+            "docfix_jobs": docfix_jobs,
+            "failed": False,
+            "replayed": False,
+        }
+        if transaction_finalize is not None:
+            session.flush()
+            transaction_finalize(session, result)
         session.commit()
     except Exception:
         session.rollback()
         raise
 
-    return {
-        "raw_id": raw_id,
-        "atoms": note_ids,
-        "rejected": rejected,
-        "dispute": dispute_state,
-        "doc_drift": len(valid_doc_drift),
-        "docfix_jobs": docfix_jobs,
-        "failed": False,
-        "replayed": False,
-    }
+    return result

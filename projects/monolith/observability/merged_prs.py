@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import DateTime
 from sqlmodel import Field, SQLModel
+
+from core.clock import utc_now
 
 MERGE_TYPES = (
     "feat",
@@ -31,10 +33,6 @@ _CODEX_FOOTER_RE = re.compile(
 )
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 class MergedPR(SQLModel, table=True):
     __tablename__ = "merged_prs"
     __table_args__ = {"schema": "observability", "extend_existing": True}
@@ -49,7 +47,7 @@ class MergedPR(SQLModel, table=True):
     scope: str | None = None
     agent_authored: bool
     snapshotted_at: datetime = Field(
-        default_factory=_utc_now,
+        default_factory=utc_now,
         sa_type=DateTime(timezone=True),
     )
 

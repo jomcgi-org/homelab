@@ -798,6 +798,57 @@ defmodule Embervm.OpLog.SQLiteTest do
 
   # -- binary payloads (op payloads are ETF blobs, not JSON) -----------------
 
+  test "payload storage is byte-exact BLOB across journal reads, reopen and replay", %{path: path} do
+    server = start_server(path)
+    body = <<137, 0, 255, "codec">>
+    headers = %{"content-type" => "application/octet-stream", "x-codec" => "yes"}
+    request = %{method: "POST", body: body, headers: headers, absent: nil}
+    submitted = %{request: request, extra: [nil, :ready, true, false, %{drop: nil, keep: 7}]}
+    succeeded = %{status_code: 200, body: body, size_bytes: byte_size(body), headers: headers}
+
+    for {kind, payload, ts} <- [{:submitted, submitted, 100}, {:succeeded, succeeded, 101}] do
+      assert {:ok, _} = SQLite.append(server, %Op{
+        kind: kind, payload: payload, ts: ts, tenant: "t1", principal: "p1",
+        workload: "codec", task_id: "task-codec"
+      })
+    end
+
+    {:ok, conn} = Sqlite3.open(path)
+    {:ok, stmt} = Sqlite3.prepare(conn, "SELECT typeof(payload_json), payload_json FROM ops ORDER BY seq")
+    assert {:row, ["blob", stored_submitted]} = Sqlite3.step(conn, stmt)
+    assert stored_submitted == :erlang.term_to_binary(submitted)
+    assert {:row, ["blob", stored_succeeded]} = Sqlite3.step(conn, stmt)
+    assert stored_succeeded == :erlang.term_to_binary(succeeded)
+    assert :done = Sqlite3.step(conn, stmt)
+    :ok = Sqlite3.release(conn, stmt)
+    :ok = Sqlite3.close(conn)
+
+    expected_request = %{"method" => "POST", "body" => body, "headers" => headers}
+    assert {:ok, ^expected_request} = SQLite.load_request(server, "task-codec")
+    assert {:ok, %{body: ^body, headers: ^headers}} = SQLite.load_result(server, "task-codec")
+    assert {:ok, [first, last] = journal} = SQLite.read_from(server, 0)
+    assert first.payload == %{"request" => expected_request, "extra" => ["nil", "ready", true, false, %{"keep" => 7}]}
+    assert last.payload == %{"status_code" => 200, "body" => body, "size_bytes" => byte_size(body), "headers" => headers}
+    :ok = GenServer.stop(server)
+
+    reopened = start_server(path)
+    assert {:ok, ^journal} = SQLite.read_from(reopened, 0)
+    assert {:ok, ^expected_request} = SQLite.load_request(reopened, "task-codec")
+    assert {:ok, %{body: ^body, headers: ^headers}} = SQLite.load_result(reopened, "task-codec")
+
+    replay = start_server(path <> ".replay")
+    # Replay the original append envelopes; projections consume atom-keyed
+    # payloads, while journal readers receive the normalized string-keyed view.
+    for {op, payload} <- Enum.zip(journal, [submitted, succeeded]) do
+      assert {:ok, _} = SQLite.append(replay, %{op | payload: payload})
+    end
+    assert {:ok, ^journal} = SQLite.read_from(replay, 0)
+    assert {:ok, ^expected_request} = SQLite.load_request(replay, "task-codec")
+    assert {:ok, %{body: ^body, headers: ^headers}} = SQLite.load_result(replay, "task-codec")
+    :ok = GenServer.stop(replay)
+    :ok = GenServer.stop(reopened)
+  end
+
   test "a binary (non-UTF-8) result body round-trips instead of crashing the writer",
        %{path: path} do
     server = start_server(path)
@@ -921,7 +972,7 @@ defmodule Embervm.OpLog.SQLiteTest do
     :ok = GenServer.stop(server2)
   end
 
-  # -- monotonic lifecycle-projection guard (ADR embervm/014 decision 2) -----
+  # -- monotonic lifecycle-projection guard for late records and replay -----
 
   defp append_task_op(server, kind, task_id, ts, payload \\ %{}) do
     {:ok, _} =
@@ -959,7 +1010,7 @@ defmodule Embervm.OpLog.SQLiteTest do
       expires_at: 9_999
     })
 
-    # A DEFERRED async :assigned lands late (out of order relative to :succeeded).
+    # A stale :assigned record lands after :succeeded.
     append_task_op(server, :assigned, "task-x", 104)
 
     # Projection did NOT regress: the monotonic guard made the late append a no-op.
@@ -996,8 +1047,8 @@ defmodule Embervm.OpLog.SQLiteTest do
        %{path: path} do
     server = start_server(path)
 
-    # This is exactly the rebuild-replay order the reviewer asked to pin: an out-of-
-    # order async append at the tail must not undo the terminal projection.
+    # Historical replay can contain a stale assignment after the terminal edge.
+    # The late record must preserve the terminal projection.
     append_task_op(server, :submitted, "task-z", 100, %{idempotency_key: nil, expires_at: nil})
     append_task_op(server, :assigned, "task-z", 101)
     append_task_op(server, :started, "task-z", 102)
@@ -1019,14 +1070,14 @@ defmodule Embervm.OpLog.SQLiteTest do
     :ok = GenServer.stop(server2)
   end
 
-  # -- attempt-aliasing epoch guard (ADR embervm/014 decision 2, async gate) --
+  # -- attempt-aliasing epoch guard for late records and replay -------------
 
   test "attempt-aliasing: a stale :assigned from a prior attempt does NOT re-assign a task retried back to queued",
        %{path: path} do
     server = start_server(path)
 
     append_task_op(server, :submitted, "task-a", 100, %{idempotency_key: nil, expires_at: nil})
-    # Attempt 1 (epoch 1) is dispatched: its deferred :assigned/:started land and
+    # Attempt 1 (epoch 1) is dispatched: its :assigned/:started records land and
     # advance the row to running (attempt column still 0).
     append_task_op(server, :assigned, "task-a", 101, %{epoch: 1})
     append_task_op(server, :started, "task-a", 102, %{epoch: 1})
@@ -1037,8 +1088,8 @@ defmodule Embervm.OpLog.SQLiteTest do
     append_task_op(server, :retried, "task-a", 104)
     assert task_state(server, "task-a") == "queued"
 
-    # The DEFERRED attempt-1 :assigned finally lands (epoch 1). queued -> assigned is
-    # FORWARD in the state-rank order, so the rank guard alone would let it through;
+    # A stale attempt-1 :assigned lands after the retry (epoch 1). Assigning from
+    # queued is forward in the state-rank order, so the rank guard would admit it;
     # the EPOCH guard drops it because the row has already retried to attempt 1
     # (1 is not < 1). Without this guard the task would be re-assigned to attempt 1's
     # worker, which no longer exists.
