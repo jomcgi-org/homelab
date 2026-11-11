@@ -51,16 +51,45 @@ query MergedPullRequests($owner: String!, $name: String!, $cursor: String) {
 """
 
 
-def _github_headers() -> dict[str, str]:
+def github_headers(user_agent: str, token: str | None = None) -> dict[str, str]:
+    """REST headers; ``None`` reads ``GITHUB_API_TOKEN`` and ``""`` sends none."""
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "monolith-merged-pr-snapshot",
+        "User-Agent": user_agent,
     }
-    token = os.environ.get("GITHUB_API_TOKEN", "")
+    if token is None:
+        token = os.environ.get("GITHUB_API_TOKEN", "")
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
+
+
+def _github_headers() -> dict[str, str]:
+    return github_headers("monolith-merged-pr-snapshot")
+
+
+def github_get(
+    url: str, *, timeout: float, follow_redirects: bool, user_agent: str
+) -> httpx.Response:
+    """One GET with fresh headers; return raw status and propagate transport errors.
+
+    Adapters normalize the API version and caller User-Agent through
+    ``github_headers``. Redirects are caller-selected; no status raising or
+    snapshot retry policy is applied here.
+    """
+    with httpx.Client(timeout=timeout, follow_redirects=follow_redirects) as client:
+        return client.get(url, headers=github_headers(user_agent))
+
+
+async def async_github_get(
+    url: str, *, timeout: float, follow_redirects: bool, user_agent: str
+) -> httpx.Response:
+    """Async equivalent of ``github_get``, with the same single-attempt policy."""
+    async with httpx.AsyncClient(
+        timeout=timeout, follow_redirects=follow_redirects
+    ) as client:
+        return await client.get(url, headers=github_headers(user_agent))
 
 
 def _parse_github_datetime(value: str | None) -> datetime | None:

@@ -16,7 +16,6 @@ export class JoinLinkError extends Error {
 const SAFE_ERRORS = new Set([
   "Your session has expired. Please sign in again.",
   "Invalid selection.",
-  "Invitation links are not enabled yet.",
   "Invitation not found.",
   "Campaign owner required.",
   "Enter a valid player's email address.",
@@ -47,10 +46,6 @@ const COOKIE_OPTIONS = {
   secure: true,
   sameSite: "lax",
 };
-
-export function linksEnabled() {
-  return process.env.GRIMOIRE_INVITATION_LINKS_ENABLED === "true";
-}
 
 export function joinToken(value) {
   if (typeof value !== "string" || !TOKEN.test(value)) {
@@ -91,7 +86,6 @@ export function joinMetadata(row) {
 }
 
 export async function bearerJoinJson(fetch, action, token) {
-  if (!linksEnabled()) throw new JoinLinkError(JOIN_UNAVAILABLE);
   if (!["inspect", "enroll"].includes(action))
     throw new JoinLinkError("Invalid invitation action.");
   const response = await fetch(
@@ -164,7 +158,6 @@ export async function checkJoinSelection(fetch, token, invitationId) {
 }
 
 export async function redeemJoin(fetch, cookies, token) {
-  if (!linksEnabled()) throw new JoinLinkError(JOIN_UNAVAILABLE);
   return grimoireJson(fetch, cookies, "/join-links/redeem", {
     method: "POST",
     headers: { "content-type": "application/json" },

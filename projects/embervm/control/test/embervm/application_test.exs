@@ -17,6 +17,17 @@ defmodule Embervm.ApplicationTest do
 
   alias Embervm.Application, as: App
 
+  test "the running supervisor retains store health without the removed detector" do
+    children = Supervisor.which_children(Embervm.Supervisor)
+    assert {Embervm.StoreProbe, pid, :worker, _} =
+             Enum.find(children, fn {id, _, _, _} -> id == Embervm.StoreProbe end)
+    assert Process.alive?(pid)
+    refute Enum.any?(children, fn {id, _, _, _} -> id == Embervm.Durability end)
+    refute Code.ensure_loaded?(Embervm.Durability)
+    refute function_exported?(App, :durability_health_enabled, 0)
+    refute function_exported?(App, :durability_expected_nodes, 0)
+  end
+
   setup do
     # Snapshot and restore the env vars these tests toggle, so they never leak.
     saved =

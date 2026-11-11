@@ -153,9 +153,6 @@ impl Memory for Mock {
     fn zeros(&self, _: usize) -> Result<Unused> {
         unimplemented!()
     }
-    fn fill_zero(&self, _: &mut Unused) -> Result<()> {
-        unimplemented!()
-    }
     fn upload_f32(&self, _: &[f32]) -> Result<Unused> {
         unimplemented!()
     }

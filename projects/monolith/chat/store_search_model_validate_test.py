@@ -6,7 +6,6 @@ tests verify that:
   - Dict-shaped rows are correctly deserialized into Message instances
   - The embedding string representation ("[0.1, 0.2, ...]") from pgvector
     is parsed correctly via the _parse_embedding field_validator
-  - Empty results return an empty list
   - Multiple rows each become distinct Message objects
 """
 
@@ -84,17 +83,6 @@ class TestSearchSimilarModelValidate:
         assert all(isinstance(r, Message) for r in results)
         contents = [r.content for r in results]
         assert contents == ["first", "second", "third"]
-
-    def test_empty_result_returns_empty_list(self, store, mock_session):
-        """search_similar returns [] when the raw query returns no rows."""
-        mock_session.exec.return_value = []
-
-        results = store.search_similar(
-            channel_id="ch1",
-            query_embedding=[0.0] * 1024,
-        )
-
-        assert results == []
 
     def test_channel_id_preserved_after_deserialization(self, store, mock_session):
         """channel_id is preserved correctly after model_validate deserialization."""

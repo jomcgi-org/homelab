@@ -13,6 +13,7 @@ Mirrors chart/migrations/20260613000000_hikes_schema.sql (walks) and
 
 from datetime import datetime, timezone
 
+from sqlalchemy import Column, DateTime
 from sqlmodel import Field, SQLModel
 
 
@@ -29,6 +30,9 @@ class Walk(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     summary: str = Field(default="")
     latitude: float
     longitude: float
+    forecast_fetched_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
     scraped_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -43,4 +47,10 @@ class WalkHour(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fa
     precip_mm: float
     wind_kmh: float
     cloud_pct: float
+    # From the complete forecast; None when met.no leaves them out or for
+    # rows written before the columns existed. Every daylight hour is stored,
+    # so readers that want the hikes app's good hours filter on
+    # hikes.forecast.is_viable.
+    fog_pct: float | None = None
+    low_cloud_pct: float | None = None
     fetched_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

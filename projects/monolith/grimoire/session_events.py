@@ -33,25 +33,14 @@ class EventRequestConflictError(ValueError):
     """A retry token was reused for a different event."""
 
 
-def play_enabled() -> bool:
-    """Only the exact lowercase string 'true' enables play, read at call time."""
-    return os.environ.get("GRIMOIRE_PLAY_ENABLED") == "true"
-
-
-def require_play_enabled() -> None:
-    """FastAPI dependency for every play route, hiding the surface when off."""
-    if not play_enabled():
-        raise HTTPException(status_code=404, detail="Not found")
-
-
 def transcript_enabled() -> bool:
     """Read the text-only transcript switch at call time."""
     return os.environ.get("GRIMOIRE_TRANSCRIPT_ENABLED") == "true"
 
 
 def require_transcript_enabled() -> None:
-    """Hide transcript routes unless both transcript and play are enabled."""
-    if not play_enabled() or not transcript_enabled():
+    """Hide transcript routes unless the transcript switch is enabled."""
+    if not transcript_enabled():
         raise HTTPException(status_code=404, detail="Not found")
 
 

@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from core.clock import utc_now as _now
 from core.db import get_engine  # noqa: F401 - for test monkeypatching
 from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError
@@ -45,10 +46,6 @@ _TRANSITIONS = {
 
 class WorkItemError(ValueError):
     """A requested work item mutation violates semantic invariants."""
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def trust_for_github_author(
@@ -462,9 +459,10 @@ def mint_or_sync_from_github(
     trusted_authors: frozenset[str] | None = None,
     source_ordered: bool = False,
     source_ref: str | None = None,
+    allow_pull_request: bool = False,
 ) -> tuple[WorkItem | None, str]:
     """Mint or refresh one issue while respecting a local authority handoff."""
-    if issue.get("pull_request") is not None:
+    if issue.get("pull_request") is not None and not allow_pull_request:
         return None, "skipped"
     try:
         repo = normalize_repo(repo)
@@ -884,6 +882,9 @@ def sync_github_work_items(
             if not isinstance(issue, dict):
                 raise WorkItemError("GitHub issue entries must be objects")
             if issue.get("pull_request") is not None:
+                # Owner PR intake may already have a canonical work item. An
+                # issue sweep does not own its closure and must retain it.
+                open_numbers.add(_issue_number(issue))
                 counts["skipped"] += 1
                 continue
             _issue_number(issue)

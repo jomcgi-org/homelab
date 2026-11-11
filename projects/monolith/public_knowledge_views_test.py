@@ -521,7 +521,11 @@ async def test_public_reader_freshness_on_real_views(session, monkeypatch):
     with TestClient(app) as client:
         summary_response = client.get("/api/knowledge/public/facts/daily")
         assert summary_response.status_code == 200
-        assert summary_response.headers["cache-control"] == "no-store"
+        # Future observation/review timestamps become eligible one second later.
+        # The summary lease must stop at that boundary, not the normal 60s cap.
+        assert summary_response.headers["cache-control"] == (
+            "public, max-age=1, s-maxage=1, must-revalidate"
+        )
         assert summary_response.json()["summary"] == {
             "total": 8,
             "valid": 0,

@@ -213,7 +213,7 @@ initContainers:
       - name: ROOTFS_SIZE
         value: {{ $ctx.Values.rootfsBuilder.rootfsSize | quote }}
       - name: ROOTFS_BAKE_FORMAT
-        value: {{ $ctx.Values.rootfsBuilder.bakeFormatVersion | quote }}
+        value: {{ include "embervm.rootfs.bakeFormatVersion" $ctx.Values.rootfsBuilder | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_ENABLED
         value: {{ $ctx.Values.rootfsReclaim.enabled | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_SNAPSHOTS_ROOT
@@ -288,7 +288,7 @@ initContainers:
       - name: ROOTFS_SIZE
         value: {{ $ctx.Values.rootfsBuilder.rootfsSize | quote }}
       - name: ROOTFS_BAKE_FORMAT
-        value: {{ $ctx.Values.rootfsBuilder.bakeFormatVersion | quote }}
+        value: {{ include "embervm.rootfs.bakeFormatVersion" $ctx.Values.rootfsBuilder | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_ENABLED
         value: {{ $ctx.Values.rootfsReclaim.enabled | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_SNAPSHOTS_ROOT
@@ -361,7 +361,7 @@ containers:
       - name: ROOTFS_SIZE
         value: {{ $ctx.Values.rootfsBuilder.rootfsSize | quote }}
       - name: ROOTFS_BAKE_FORMAT
-        value: {{ $ctx.Values.rootfsBuilder.bakeFormatVersion | quote }}
+        value: {{ include "embervm.rootfs.bakeFormatVersion" $ctx.Values.rootfsBuilder | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_ENABLED
         value: {{ $ctx.Values.rootfsReclaim.enabled | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_SNAPSHOTS_ROOT
@@ -541,10 +541,6 @@ containers:
         value: {{ $ctx.Values.noded.vmOverheadMib | quote }}
       - name: EMBERVM_NODED_MEM_REJECT_FLOOR_MIB
         value: {{ $ctx.Values.noded.memRejectFloorMib | default 512 | quote }}
-      - name: EMBERVM_NODED_DIFF_BANKING
-        value: {{ $ctx.Values.noded.diffBanking | quote }}
-      - name: EMBERVM_NODED_DIFF_BANKING_WORKLOADS
-        value: {{ $ctx.Values.noded.diffBankingWorkloads | quote }}
       - name: EMBERVM_NODED_ENFORCE_BUNDLE_ROOTFS_IDENTITY
         value: {{ $ctx.Values.noded.enforceBundleRootfsIdentity | quote }}
       # Brick silence timeout (ADR embervm/037, #5073), seconds. Rendered only
@@ -618,8 +614,6 @@ containers:
         value: {{ $ctx.Values.noded.drain.preemptionNoticeEnabled | quote }}
       - name: EMBERVM_NODED_PREEMPTION_DRAIN_TIMEOUT
         value: "{{ $ctx.Values.noded.drain.preemptionTimeoutSeconds }}s"
-      - name: EMBERVM_NODED_DRAIN_EXPORTS_OUTLIVE_SIGNAL
-        value: {{ $ctx.Values.noded.drain.exportsOutliveSignal | default false | quote }}
       {{- if $ctx.Values.egress.enabled }}
       # Guest egress lane (ADR 023). Serve the vsock egress port per guest and
       # tunnel to the sidecar above. The workload list is load-bearing because
@@ -715,10 +709,6 @@ containers:
         value: {{ $ctx.Values.noded.store.endpoint | quote }}
       - name: EMBERVM_NODED_STORE_BUCKET
         value: {{ $ctx.Values.noded.store.bucket | quote }}
-      - name: EMBERVM_NODED_STORE_COMPRESS
-        value: {{ $ctx.Values.noded.store.compress | quote }}
-      - name: EMBERVM_NODED_STORE_ENCRYPT
-        value: {{ $ctx.Values.noded.store.encrypt | quote }}
       {{- with $ctx.Values.noded.store.unexportableTTL }}
       - name: EMBERVM_NODED_UNEXPORTABLE_TTL
         value: {{ . | quote }}
@@ -735,8 +725,6 @@ containers:
             name: {{ include "embervm.store.credentialsSecretName" $ctx }}
             key: {{ $ctx.Values.noded.store.credentials.secretAccessKeyKey }}
       {{- end }}
-      - name: EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY
-        value: {{ $ctx.Values.noded.requireRestoreCapability | quote }}
       {{- if $ctx.Values.controlPlane.restoreCapabilityKeySecret.enabled }}
       # Same Secret and key as the control-plane minting path. This env name is
       # noded-specific, while the underlying key identity is exactly shared.
@@ -858,7 +846,7 @@ containers:
       {{- fail (printf "egress.secrets entry for %v must set exactly one of secretRef, brokerGrant or brokerGrants, and secretRef entries need env" $s.egressTo) }}
       {{- end }}
       {{- if $hasBrokerGrant }}
-      {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "basicUser" ($s.basicUser | default "") "brokerGrant" ($s.brokerGrant | default "") "brokerGrants" ($s.brokerGrants | default (list)) "egressTo" $s.egressTo "claimHeader" ($s.claimHeader | default "") "claimPath" ($s.claimPath | default "") "injectAlwaysPaths" ($s.injectAlwaysPaths | default (list)) "plaintextUpstream" ($s.plaintextUpstream | default false) "quotaProvider" ($s.quotaProvider | default "")) }}
+      {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "basicUser" ($s.basicUser | default "") "brokerGrant" ($s.brokerGrant | default "") "brokerGrants" ($s.brokerGrants | default (list)) "grantPolicy" ($s.grantPolicy | default "") "egressTo" $s.egressTo "claimHeader" ($s.claimHeader | default "") "claimPath" ($s.claimPath | default "") "injectAlwaysPaths" ($s.injectAlwaysPaths | default (list)) "plaintextUpstream" ($s.plaintextUpstream | default false) "quotaProvider" ($s.quotaProvider | default "")) }}
       {{- else }}
       {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "basicUser" ($s.basicUser | default "") "env" $s.env "egressTo" $s.egressTo "claimHeader" ($s.claimHeader | default "") "claimPath" ($s.claimPath | default "") "injectAlwaysPaths" ($s.injectAlwaysPaths | default (list)) "plaintextUpstream" ($s.plaintextUpstream | default false) "quotaProvider" ($s.quotaProvider | default "")) }}
       {{- end }}
@@ -968,9 +956,10 @@ volumes:
       # mount. Optional breaks the deadlock.
       #
       # Degrading is safe: the sidecar treats an unreadable CA as "no MITM lane"
-      # (newCAMinter fails, minter stays nil) and keeps injecting on the
-      # cleartext lane, so a guest loses https:// credential injection rather
-      # than all egress.
+      # and keeps injecting on the cleartext lane. CA-dependent requests retry
+      # the initial load at most once per five seconds, so cert-manager can
+      # populate this optional mount after startup without a manual restart.
+      # The first valid CA stays fixed until restart; this does not rotate it.
       optional: true
 {{- end }}
   - name: dev-kvm
@@ -1001,7 +990,7 @@ volumes:
   {{- if $ctx.Values.workloads }}
   - name: rootfs-builder-script
     configMap:
-      name: {{ include "embervm.noded.fullname" $ctx }}-rootfs-builder
+      name: {{ include "embervm.rootfs.builderConfigMap" $ctx }}
       defaultMode: 0755
   - name: rootfs-builder-work
     emptyDir: {}

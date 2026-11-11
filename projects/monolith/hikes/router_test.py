@@ -17,13 +17,13 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
+from sqlmodel import Session, delete, select
 
 from core.db import get_session
 from hikes.models import Walk, WalkHour
 from hikes.router import _doable_days, _longest_good_run, router
 from shared.forecast_freshness import top_of_hour
+from shared.testing.sqlite import sqlite_session
 
 CUTOFF = top_of_hour(datetime.now(timezone.utc))
 H1 = CUTOFF + timedelta(hours=1)
@@ -46,26 +46,8 @@ def _hours_at(base: datetime, *offsets: int) -> list[datetime]:
 
 @pytest.fixture(name="session")
 def session_fixture():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    # SQLite can't span schemas, so strip the Postgres-only schema= overrides so
-    # SQLModel.metadata.create_all() lands every table in the default schema.
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
+    with sqlite_session() as session:
+        yield session
 
 
 @pytest.fixture(name="client")
@@ -283,9 +265,23 @@ class TestLongestGoodRun:
         # Missing hour 102 (bad weather) is tolerated once: 100,101,_,103,104.
         assert _longest_good_run([100, 101, 103, 104]) == 4
 
-    def test_second_gap_ends_the_run(self):
-        # 100,102,104: first gap bridged (run 2), second gap breaks it.
+    def test_second_gap_slides_the_run(self):
+        # Both overlapping two-hour runs qualify, but all three hours do not.
         assert _longest_good_run([100, 102, 104]) == 2
+
+    @pytest.mark.parametrize(
+        "offsets,want",
+        [
+            ([0, 2, 3, 5, 6, 7], 5),
+            ([0, 2, 3, 5, 6, 8, 9, 10], 5),
+            ([0, 2, 5, 6, 8, 9, 10], 5),
+            ([0, 1, 2, 4, 5, 7], 5),
+            ([0, 2, 3, 5, 6], 4),
+            ([0, 1, 3, 4, 6, 7], 4),
+        ],
+    )
+    def test_sliding_windows(self, offsets, want):
+        assert _longest_good_run([100 + o for o in offsets]) == want
 
     def test_two_hour_gap_is_not_bridged(self):
         # Two missing hours (102,103) is too long: the run ends at 101.
@@ -297,6 +293,10 @@ class TestLongestGoodRun:
 
 
 class TestDoableDays:
+    def test_second_gap_slides_to_a_doable_slot(self):
+        hours = _hours_at(UNIT_BASE, 0, 2, 3, 5, 6, 7)
+        assert _doable_days(hours, 5.0) == ["2026-06-15"]
+
     def test_run_meets_eighty_percent_floor(self):
         # 5.5 h walk needs 0.8 * 5.5 = 4.4 -> 5 good hours; a 5-hour run qualifies.
         hours = _hours_at(UNIT_BASE, 0, 1, 2, 3, 4)
@@ -337,3 +337,98 @@ class TestDoableDays:
 
     def test_no_hours_not_doable(self):
         assert _doable_days([], 3.0) == []
+
+
+class TestStoredBadHours:
+    """The job stores every daylight hour; the planner counts the viable ones."""
+
+    @pytest.mark.parametrize(
+        "precip_mm,wind_kmh,viable",
+        [(2.0, 80.0, True), (2.1, 80.0, False), (2.0, 80.01, False)],
+    )
+    def test_stored_viability_boundaries(
+        self, client, session, precip_mm, wind_kmh, viable
+    ):
+        _seed_walks(session)
+        hour_time = H1 + timedelta(hours=20)
+        session.add(_hour(BEN, hour_time, precip_mm=precip_mm, wind_kmh=wind_kmh))
+        session.commit()
+        response = client.get(f"/api/hikes/walks/{BEN}")
+        assert response.status_code == 200
+        windows = response.json()["windows"]
+        matching = [row for row in windows if row[0] == int(hour_time.timestamp())]
+        assert bool(matching) is viable
+        assert all(len(row) == 5 for row in windows)
+        if viable:
+            assert matching[0][2:4] == [2.0, 80]
+            assert isinstance(matching[0][3], int)
+
+    def test_non_viable_hours_are_not_windows(self, client, session):
+        _seed_walks(session)
+        session.add_all(
+            [_hour(BEN, H1 + timedelta(hours=k), precip_mm=3.0) for k in range(12, 14)]
+            + [_hour(BEN, H1 + timedelta(hours=14), wind_kmh=80.28)]
+            + [_hour(BEN, H1 + timedelta(hours=15), wind_kmh=79.92)]
+        )
+        session.commit()
+        body = client.get(f"/api/hikes/walks/{BEN}").json()
+        times = [w[0] for w in body["windows"]]
+        assert int((H1 + timedelta(hours=12)).timestamp()) not in times
+        assert int((H1 + timedelta(hours=14)).timestamp()) not in times
+        # 79.92 km/h is viable and comes back as the legacy whole km/h.
+        last = body["windows"][-1]
+        assert last[0] == int((H1 + timedelta(hours=15)).timestamp())
+        assert last[3] == 80
+
+    def test_bad_hours_do_not_make_a_day_doable(self, client, session):
+        _seed_walks(session)
+        for walk in session.exec(select(Walk)).all():
+            session.exec(delete(WalkHour).where(WalkHour.walk_uuid == walk.uuid))
+        session.add_all(
+            [_hour(BEN, H1 + timedelta(hours=k), precip_mm=5.0) for k in range(10)]
+        )
+        session.commit()
+        walks = {w["uuid"]: w for w in client.get("/api/hikes/walks").json()["walks"]}
+        assert walks[BEN]["viable_days"] == []
+
+    def test_bad_hours_still_move_freshness(self, client, session):
+        """A refresh that finds only bad weather still turns the list over."""
+        _seed_walks(session)
+        before = client.get("/api/hikes/walks").json()["generated_at"]
+        later = FETCHED + timedelta(hours=2)
+        session.add(
+            WalkHour(
+                walk_uuid=BEN,
+                hour_time=H1 + timedelta(hours=20),
+                temp_c=8.0,
+                precip_mm=6.0,
+                wind_kmh=30.0,
+                cloud_pct=90.0,
+                fetched_at=later,
+            )
+        )
+        session.commit()
+        r = client.get("/api/hikes/walks")
+        assert r.json()["generated_at"] != before
+        assert r.json()["generated_at"].startswith(later.isoformat()[:16])
+
+
+@pytest.mark.parametrize("duration,doable", [(4, True), (5, True), (5.5, False)])
+def test_doable_day_excludes_partial_sunset_hour(duration, doable):
+    from hikes.forecast import compute_hours
+
+    now = datetime(2026, 10, 22, tzinfo=timezone.utc)
+    hourly = [
+        {
+            "time": f"2026-10-22T{hour}:00:00Z",
+            "temp_c": 10,
+            "wind_speed_ms": 0,
+            "precipitation_mm": 0,
+            "cloud_area_fraction": 20,
+        }
+        for hour in range(13, 18)
+    ]
+    rows = compute_hours(hourly, now, 56.82, -5.1)
+    hours = [datetime.fromtimestamp(row[0], timezone.utc) for row in rows]
+    assert [hour.hour for hour in hours] == [13, 14, 15, 16]
+    assert _doable_days(hours, duration) == (["2026-10-22"] if doable else [])

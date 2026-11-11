@@ -713,3 +713,48 @@ def test_a_raised_background_limit_still_bounds_the_kg_tier(database, monkeypatc
     assert reserve(database, "kg-two", tier="kg")
     assert not reserve(database, "kg-three", tier="kg")
     assert reserve(database, "project-one", tier="project")
+
+
+def test_explicit_review_recomputation_keeps_capacity_charged(database, monkeypatch):
+    monkeypatch.setattr(admission, "kg_limit", lambda: 1)
+    with Session(database) as db, db.begin():
+        db.add(
+            AgentCapacityReservation(
+                local_session_id="old-review",
+                pending_seq=1,
+                tier="kg",
+                routine_job_name="kg-fact-review",
+                state="uncertain",
+                outcome="operator_recompute_unknown",
+            )
+        )
+    with Session(database) as db:
+        assert admission.reserved_routine_jobs(db) == set()
+        assert admission.reserve_start_verdict(
+            db, "new-review", tier="kg", model="luna", routine_job_name="kg-fact-review"
+        ).startswith("kg_full")
+        db.rollback()
+    monkeypatch.setattr(admission, "kg_limit", lambda: 2)
+    assert reserve(database, "new-review", "kg", routine_job_name="kg-fact-review")
+    with Session(database) as db:
+        assert admission.reserved_routine_jobs(db) == {"kg-fact-review"}
+        assert (
+            admission.reserve_start_verdict(
+                db,
+                "duplicate-review",
+                tier="kg",
+                model="luna",
+                routine_job_name="kg-fact-review",
+            )
+            == "routine_job_already_reserved"
+        )
+        assert (
+            len(
+                db.exec(
+                    select(AgentCapacityReservation).where(
+                        AgentCapacityReservation.state != "settled"
+                    )
+                ).all()
+            )
+            == 2
+        )

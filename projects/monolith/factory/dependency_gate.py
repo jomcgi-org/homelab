@@ -11,10 +11,12 @@ import hashlib
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
 import httpx
+from core.env import flag
 from core.github import GITHUB_API
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import select
@@ -38,6 +40,9 @@ ACTOR = "factory:dependency-gate"
 ENABLED_ENV = "FACTORY_DEPENDENCY_GATE_ENABLED"
 TOKEN_ENV = "FACTORY_DEPENDENCY_GATE_TOKEN"
 APP_ID_ENV = "FACTORY_DEPENDENCY_GATE_APP_ID"
+# Bounds collection-to-publication only. GitHub does not expire a successful
+# check. Activation must canary and explicitly accept the post-success race.
+MAX_EVALUATION_SECONDS = 60
 QUEUE_QUERY = """
 query DependencyQueue($owner: String!, $name: String!, $branch: String!) {
   repository(owner: $owner, name: $name) {
@@ -58,7 +63,7 @@ query DependencyQueue($owner: String!, $name: String!, $branch: String!) {
 
 
 def enabled() -> bool:
-    return os.environ.get(ENABLED_ENV, "").lower() == "true"
+    return flag(ENABLED_ENV)
 
 
 class GitHub:
@@ -295,6 +300,26 @@ class EvidenceUnavailable(ValueError):
     """A failed fresh read cannot establish that durable approval changed."""
 
 
+def require_ci(github: GitHub, repo: str, head: str) -> None:
+    """Do not leave a dependency success waiting hours for its exact-head CI."""
+    try:
+        value = github.get(repo, f"commits/{head}/status?per_page=100")
+        rows = value["statuses"]
+        if (
+            value["sha"] != head
+            or not isinstance(rows, list)
+            or type(value["total_count"]) is not int
+            or value["total_count"] != len(rows)
+            or len(rows) > 100
+            or len({row["context"] for row in rows}) != len(rows)
+            or [row["state"] for row in rows if row["context"] == "pr-checks"]
+            != ["success"]
+        ):
+            raise ValueError("required CI is not successful on this head")
+    except FAILURES as exc:
+        raise EvidenceUnavailable("exact-head CI unavailable or incomplete") from exc
+
+
 def evaluate(
     repo: str, branch: str, pull: dict, policy: dict, github: GitHub, entry=None
 ) -> tuple[str, Approval | None]:
@@ -314,6 +339,8 @@ def evaluate(
         # refuse this tick without invalidating the durable generation.
         raise EvidenceUnavailable("dependency approval unavailable") from exc
     try:
+        if deps.ownership_held(pull, repo, policy):
+            raise ValueError("dependency PR ownership or approval hold")
         evidence = approved.evidence
         encoded = json.dumps(
             {key: value for key, value in evidence.items() if key != "evidence_sha256"},
@@ -324,13 +351,24 @@ def evaluate(
             raise ValueError("approved evidence digest malformed")
         if evidence["head_sha"] != head or evidence["author_id"] != pull["user"]["id"]:
             raise ValueError("approved PR head or author moved")
-        deps.verify_assessments(evidence, approved.runs)
+        sources = deps.verify_assessments(evidence, approved.runs)
         comparison = None
         if entry is not None:
             if entry["pullRequest"]["headRefOid"] != head:
                 raise ValueError("queued PR head moved")
             comparison = (entry["baseCommit"]["oid"], entry["headCommit"]["oid"])
+        actual_base = comparison[0] if comparison else pull["base"]["sha"]
+        if actual_base != evidence["base_sha"] and any(
+            row["response_sha256"] != deps.advisory_digest({"vulns": []})
+            for row in sources["head"]
+        ):
+            # Residual findings rely on the independently inspected baseline,
+            # including exposure outside changed files. A later base may have
+            # fixed them even when the candidate blob and graph diff are equal.
+            # Invalidate before CI/OSV availability can hide this known change.
+            raise ValueError("residual findings require review on the current base")
         reviewed = comparable(evidence)
+        require_ci(github, repo, entry["headCommit"]["oid"] if entry else head)
         try:
             current = deps.snapshot(
                 repo,
@@ -348,6 +386,21 @@ def evaluate(
             raise ValueError(
                 "dependency evidence changed; fresh authorized generation required"
             )
+        try:
+            deps.revalidate_advisories(sources)
+        except deps.EvidenceChanged:
+            raise
+        except FAILURES as exc:
+            raise EvidenceUnavailable(
+                "supplemental advisory evidence unavailable"
+            ) from exc
+        try:
+            if approval(repo, pull["number"]) != approved:
+                raise ValueError(
+                    "dependency approval changed during evidence collection"
+                )
+        except SQLAlchemyError as exc:
+            raise EvidenceUnavailable("final dependency approval unavailable") from exc
         return (
             "independent safe assessments match fresh dependency evidence",
             approved,
@@ -425,8 +478,21 @@ def already_published(repo: str, head: str, conclusion: str, token: str) -> bool
         return False
 
 
-def publish(repo: str, head: str, conclusion: str, reason: str, token: str) -> None:
-    if already_published(repo, head, conclusion, token):
+def publish(
+    repo: str, head: str, conclusion: str, reason: str, token: str, *, deadline=None
+) -> None:
+    previous_matches = already_published(repo, head, conclusion, token)
+    if (
+        conclusion == "success"
+        and deadline is not None
+        and time.monotonic() >= deadline
+    ):
+        conclusion, reason = (
+            "failure",
+            "dependency evidence collection exceeded freshness bound",
+        )
+        previous_matches = False
+    if previous_matches:
         return
     body = _github_post(
         repo,
@@ -492,6 +558,7 @@ def check(
     entries=None,
     results=None,
 ) -> None:
+    started = time.monotonic()
     head = entries[-1]["headCommit"]["oid"] if entries else pull["head"]["sha"]
     approved: Approval | None = None
     try:
@@ -518,11 +585,16 @@ def check(
                 repo, branch, pull, policy, github, entries[0] if entries else None
             )
         latest: dict | None = None
+        observed_hold = False
         try:
             if entries and github.queue(repo, branch)[: len(entries)] != entries:
                 raise ValueError("queue base or merge-group head moved")
             latest = github.get(repo, f"pulls/{pull['number']}")
             validate_pull(latest, repo, branch, pull["number"], pull["head"]["sha"])
+            if approved is not None:
+                observed_hold = deps.ownership_held(latest, repo, policy)
+                if observed_hold:
+                    raise ValueError("dependency PR ownership or approval hold")
             if (
                 latest["user"] != pull["user"]
                 or latest["base"]["sha"] != pull["base"]["sha"]
@@ -534,7 +606,9 @@ def check(
             # or author change must still invalidate the approved receipt:
             # returning the old evidence must not restore approval without
             # fresh authorized-generation review.
-            if approved is not None and _approved_head_moved(latest, approved):
+            if approved is not None and (
+                observed_hold or _approved_head_moved(latest, approved)
+            ):
                 _safe_audit(
                     "dependency_approval_invalidated",
                     task_id=approved.task_id,
@@ -558,7 +632,14 @@ def check(
             error=type(exc).__name__,
         )
     if results is None:
-        publish(repo, head, conclusion, reason, token)
+        publish(
+            repo,
+            head,
+            conclusion,
+            reason,
+            token,
+            deadline=started + MAX_EVALUATION_SECONDS,
+        )
     elif head not in results or conclusion == "failure":
         # A shared commit may appear on several PRs. A human PR must not
         # overwrite a refusal for a bot PR sharing that commit.
@@ -581,22 +662,37 @@ def tick(policy: dict) -> dict:
             repo, f"pulls?{urlencode({'state': 'open', 'base': branch})}", github.rows
         )
         entries = github.queue(repo, branch)
-        results = {}
+        targets = {}
         for listed in pulls:
             pull = github.get(repo, f"pulls/{listed['number']}")
-            check(repo, branch, pull, policy, github, token, results=results)
+            targets.setdefault(pull["head"]["sha"], []).append((pull, None))
         for index, entry in enumerate(entries):
             pull = github.get(repo, f"pulls/{entry['pullRequest']['number']}")
-            check(
-                repo, branch, pull, policy, github, token, entries[: index + 1], results
+            targets.setdefault(entry["headCommit"]["oid"], []).append(
+                (pull, entries[: index + 1])
             )
         # Publish every known head even when one publication fails: a
         # failed audit or post for one target cannot abort revocation of
         # the remaining targets.
         failed: BaseException | None = None
-        for head, (conclusion, reason) in results.items():
+        for head, candidates in targets.items():
             try:
-                publish(repo, head, conclusion, reason, token)
+                # Revalidate immediately before each publication. A slow later
+                # PR must not age an earlier result in a batch. Shared commits
+                # still aggregate every contributor, with failure dominating.
+                started = time.monotonic()
+                results = {}
+                for pull, prefix in candidates:
+                    check(repo, branch, pull, policy, github, token, prefix, results)
+                conclusion, reason = results[head]
+                publish(
+                    repo,
+                    head,
+                    conclusion,
+                    reason,
+                    token,
+                    deadline=started + MAX_EVALUATION_SECONDS,
+                )
             except FAILURES as exc:
                 _safe_audit(
                     "dependency_gate_skipped",

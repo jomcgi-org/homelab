@@ -121,7 +121,7 @@ export function formatDateRange(from, to) {
   return `${formatShortDate(from)} \u2013 ${formatShortDate(to)}`;
 }
 
-export function dayDistance(from, to) {
+function dayDistance(from, to) {
   const start = dateStamp(from);
   const end = dateStamp(to);
   if (start == null || end == null) return null;
@@ -411,7 +411,7 @@ const LEG_TAG_LABEL_CHAR_PX = 7;
 const LEG_TAG_DATE_CHAR_PX = 5.8;
 const LEG_TAG_CLEARANCE_PX = 14;
 
-export function estimateLegTagWidthPx(tag) {
+function estimateLegTagWidthPx(tag) {
   const label = String(tag.label ?? "");
   const date =
     tag.starts_on || tag.ends_on

@@ -46,7 +46,6 @@ pub trait Memory {
     /// operation fully writes).
     fn uninit(&self, n: usize) -> Result<Self::F32>;
     fn zeros(&self, n: usize) -> Result<Self::F32>;
-    fn fill_zero(&self, buf: &mut Self::F32) -> Result<()>;
     fn upload_f32(&self, host: &[f32]) -> Result<Self::F32>;
     /// Copies `host` into `dst` (same length).
     fn upload_into(&self, host: &[f32], dst: &mut Self::F32) -> Result<()>;

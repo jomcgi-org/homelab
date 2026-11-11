@@ -54,7 +54,15 @@ type config struct {
 	// default-off: with both false the suite is exactly S1..S6.
 	requireJailer bool
 	egressProbe   bool
-	budgets       map[string]time.Duration
+	// S9 is an authenticated Codex shell and native resume check. It is
+	// disabled until a dev broker grant and a stamped candidate image exist.
+	codexProbe         bool
+	codexWorkload      string
+	codexModel         string
+	codexProviderModel string
+	codexGuestDigest   string
+	codexCLIVersion    string
+	budgets            map[string]time.Duration
 }
 
 type controlPlaneClient struct {
@@ -199,7 +207,7 @@ func unreadyWorkloads(view nodesView, workloads []string) []string {
 	return unready
 }
 
-func runScenarios(ctx context.Context, cfg config, client *controlPlaneClient, started time.Time) []scenarioVerdict {
+func runScenarios(ctx context.Context, cfg config, client *controlPlaneClient, started time.Time, codexGate *codexProbeGate) []scenarioVerdict {
 	// Before S1, so S7 compares launch counters across everything the suite boots.
 	baseline := readJailerBaseline(ctx, cfg, client)
 
@@ -242,6 +250,11 @@ func runScenarios(ctx context.Context, cfg config, client *controlPlaneClient, s
 		})
 		logScenario(s6)
 		scenarios = append(scenarios, s6)
+	}
+	if cfg.codexProbe {
+		s9 := codexGate.run(ctx, cfg, client)
+		logScenario(s9)
+		scenarios = append(scenarios, s9)
 	}
 	return append(scenarios, runJailerScenarios(ctx, cfg, client, started, baseline)...)
 }
@@ -416,6 +429,32 @@ func runS5(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 	return scenarioVerdict{Verdict: verdictPass, Detail: fmt.Sprintf("guest exited 0 with exact untruncated stdout %q and empty stderr and guest error; VM reap observed in %s", elixirUnicodeStdout, reapDelay.Round(time.Millisecond))}
 }
 
+// This error is emitted only for the control plane's structured no-allocation
+// response. Transport errors and arbitrary response prose prove no such thing.
+type sessionCreateDeniedError struct{ detail string }
+
+func (e *sessionCreateDeniedError) Error() string { return e.detail }
+
+func sessionCreateDeniedWithoutAllocation(response apiResponse, workload string) bool {
+	if response.status != http.StatusTooManyRequests {
+		return false
+	}
+	var denial struct {
+		Error     string `json:"error"`
+		Reason    string `json:"reason"`
+		Workload  string `json:"workload"`
+		Retryable bool   `json:"retryable"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(response.body))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&denial) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return false
+	}
+	// Keep the exemption narrow: this is the authoritative warm-up denial
+	// observed from create_denial/3, not every retryable creation failure.
+	return denial.Error == "session create denied" && denial.Reason == "no_capacity" && denial.Workload == workload && denial.Retryable
+}
+
 func createSession(ctx context.Context, cfg config, client *controlPlaneClient) (sessionIdentity, string, error) {
 	path := "/v1/workloads/" + url.PathEscape(cfg.sessionWorkload) + "/sessions"
 	response, err := client.request(ctx, http.MethodPost, path, []byte(`{}`), "", nil)
@@ -423,7 +462,11 @@ func createSession(ctx context.Context, cfg config, client *controlPlaneClient) 
 		return sessionIdentity{}, "", fmt.Errorf("POST %s: %w", path, err)
 	}
 	if response.status != http.StatusCreated {
-		return sessionIdentity{}, "", fmt.Errorf("%s", httpErrorDetail(http.MethodPost, path, response))
+		detail := httpErrorDetail(http.MethodPost, path, response)
+		if sessionCreateDeniedWithoutAllocation(response, cfg.sessionWorkload) {
+			return sessionIdentity{}, "", &sessionCreateDeniedError{detail: detail}
+		}
+		return sessionIdentity{}, "", fmt.Errorf("%s", detail)
 	}
 	var created struct {
 		SessionID    string `json:"session_id"`

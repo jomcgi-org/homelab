@@ -44,8 +44,7 @@ defmodule Embervm.SessionCreateIdempotencyTest do
     on_exit(fn -> File.rm_rf!(path) end)
 
     {:ok, op_log} = SQLite.start_link(name: nil, path: path)
-    {:ok, writer} = Embervm.AsyncWriter.start_link(name: nil)
-    {:ok, store} = SessionStore.start_link(name: nil, op_log: op_log, async_writer: writer)
+    {:ok, store} = SessionStore.start_link(name: nil, op_log: op_log)
 
     registry = :"ireg_#{suffix}"
     {:ok, _} = Registry.start_link(keys: :unique, name: registry)
@@ -88,7 +87,6 @@ defmodule Embervm.SessionCreateIdempotencyTest do
           destroy_fun: fn _ch, _vm -> {:ok, %{teardown_confirmed: true}} end,
           invalidate_fun: fn _node, _ch -> :ok end
         ],
-        async_writer: writer,
         op_log: op_log,
         op_log_mod: SQLite
       )
@@ -251,7 +249,6 @@ defmodule Embervm.SessionCreateIdempotencyTest do
           destroy_fun: fn _ch, _vm -> {:ok, %{teardown_confirmed: true}} end,
           invalidate_fun: fn _node, _ch -> :ok end
         ],
-        async_writer: Embervm.AsyncWriter,
         op_log: ctx.op_log,
         op_log_mod: SQLite
       )
@@ -314,8 +311,7 @@ defmodule Embervm.SessionCreateIdempotencyTest do
     GenServer.stop(ctx.mgr)
     GenServer.stop(ctx.store)
 
-    {:ok, writer} = Embervm.AsyncWriter.start_link(name: nil)
-    {:ok, store} = SessionStore.start_link(name: nil, op_log: ctx.op_log, async_writer: writer)
+    {:ok, store} = SessionStore.start_link(name: nil, op_log: ctx.op_log)
 
     {:ok, mgr} =
       SessionManager.start_link(
@@ -351,7 +347,6 @@ defmodule Embervm.SessionCreateIdempotencyTest do
           destroy_fun: fn _ch, _vm -> {:ok, %{teardown_confirmed: true}} end,
           invalidate_fun: fn _node, _ch -> :ok end
         ],
-        async_writer: writer,
         op_log: ctx.op_log,
         op_log_mod: SQLite
       )

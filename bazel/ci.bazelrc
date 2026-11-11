@@ -1,7 +1,0 @@
-# CI-specific configuration for self-hosted GitHub Actions runners
-# This file is imported via try-import in user.bazelrc during CI builds
-#
-# Builds run on self-hosted runners with BuildBuddy RBE (remote execution)
-# RBE provides distributed build/test across BuildBuddy's 80-core fleet
-
-common --config=ci

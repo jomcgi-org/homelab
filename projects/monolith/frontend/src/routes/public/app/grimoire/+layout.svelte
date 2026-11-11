@@ -24,13 +24,7 @@
   import { createChatSession } from "$lib/public/grimoire/chat/admission.js";
   import PageTurn from "$lib/public/grimoire/PageTurn.svelte";
   import ConstellationDock from "$lib/public/grimoire/ConstellationDock.svelte";
-  import "$lib/grimoire/theme.css";
-  import {
-    homeHref,
-    libraryHref,
-    worldHref,
-    chatHref,
-  } from "$lib/public/grimoire/api.js";
+  import GrimoireSheet from "$lib/public/grimoire/GrimoireSheet.svelte";
 
   let { data, children } = $props();
 
@@ -110,39 +104,19 @@
   {/if}
 </svelte:head>
 
-<div class="grimoire-app grimoire" class:home={isHome}>
-  <header class="topbar">
-    <a class="wordmark grim-title" href={homeHref()}>Grimoire</a>
-    <nav class="topbar-nav" aria-label="Grimoire sections">
-      <a
-        class="topbar-link"
-        class:active={section === "library"}
-        href={libraryHref()}>Library</a
-      >
-      <a
-        class="topbar-link"
-        class:active={section === "world"}
-        href={worldHref()}>World</a
-      >
-      <a class="topbar-link" class:active={section === "chat"} href={chatHref()}
-        >Chat</a
-      >
-    </nav>
-    <div class="topbar-spacer"></div>
-  </header>
-
-  <main class="grimoire-shell">
-    {#if isUngated || admitted}
-      <PageTurn section={pageTurnSegment}>
-        {@render children()}
-      </PageTurn>
-    {:else}
-      <div class="wrap-narrow gate">
-        <p class="gate-eyebrow">Grimoire Access</p>
-        <h1 class="grim-title gate-title">
+<GrimoireSheet {section} immersive={isHome}>
+  {#if isUngated || admitted}
+    <PageTurn section={pageTurnSegment}>
+      {@render children()}
+    </PageTurn>
+  {:else}
+    <section class="edition">
+      <p class="ed-head">Grimoire Access</p>
+      <div class="ed-body">
+        <h1 class="grim-title">
           solve to <span class="gate-accent">explore.</span>
         </h1>
-        <p class="gate-copy">
+        <p>
           Bots? <em>Get outta here!</em>
         </p>
         <TurnstileGate
@@ -151,147 +125,10 @@
           onAdmitted={() => (admitted = true)}
         />
       </div>
-    {/if}
-  </main>
+    </section>
+  {/if}
 
   {#if showDock}
     <ConstellationDock />
   {/if}
-</div>
-
-<style>
-  /* App-own chrome: a slim sticky topbar over the clean --grim-* theme. No
-     more design-system .card-hard/.btn overrides here: every surface in this
-     app tree now renders its own --grim-surface cards and hairline borders
-     directly (see theme.css + each route's <style> block), so there is
-     nothing left for a global override to neutralize. */
-  .grimoire-app {
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    /* Own the page background so every grimoire page is on the clean --grim
-       paper (not the site-wide design-system cream body showing behind the
-       cards). */
-    background: var(--grim-paper);
-  }
-
-  .topbar {
-    position: sticky;
-    top: 0;
-    z-index: 10;
-    display: flex;
-    align-items: center;
-    gap: 20px;
-    padding: 0 28px;
-    height: 58px;
-    /* Dark ledger-cover surface, not the light reading paper: the topbar is
-       the book's spine, so it should read as its own material rather than a
-       plain white app header. */
-    background: color-mix(in srgb, var(--grim-nav-surface) 92%, transparent);
-    backdrop-filter: blur(10px);
-    border-bottom: 1px solid var(--grim-nav-line);
-    transition: opacity 0.25s ease;
-  }
-
-  /* The landing's ScrollStory toggles .story-immersed on .grimoire-app while
-     the visitor is inside the story (past the hero, before the finale): the
-     chrome gets out of the way of the pinned stage and returns at the end. */
-  .grimoire-app:global(.story-immersed) .topbar {
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  /* On phones the landing is the scroll story itself, which is its own hero and
-     ends with call-to-action buttons, so the app chrome is pure clutter (and
-     the four nav links overflow the width). Drop the whole topbar on the home
-     route below the mobile breakpoint; every other route keeps it. */
-  @media (max-width: 700px) {
-    .grimoire-app.home .topbar {
-      display: none;
-    }
-  }
-
-  .wordmark {
-    /* .grim-title already sets the serif display face + weight; this layers
-       size, tracking, and the ledger-cover ink color on top of it. */
-    font-size: 17px;
-    letter-spacing: 0.06em;
-    color: var(--grim-nav-ink);
-    text-decoration: none;
-    flex: none;
-  }
-
-  .topbar-nav {
-    display: flex;
-    gap: 4px;
-    margin-left: 8px;
-  }
-
-  .topbar-link {
-    display: inline-flex;
-    align-items: center;
-    min-height: 40px;
-    padding: 6px 12px;
-    margin-bottom: -1px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: var(--grim-nav-text-dim);
-    text-decoration: none;
-    border-bottom: 2px solid transparent;
-  }
-
-  /* Weighted accent underline on hover/active against the dark ledger
-     surface, no fill: heavier than the reskin's light-mode hairline so it
-     still reads clearly on the darker chrome. */
-  .topbar-link:hover {
-    color: var(--grim-nav-ink);
-  }
-
-  .topbar-link.active {
-    color: var(--grim-nav-ink);
-    border-bottom-width: 3px;
-    border-bottom-color: var(--grim-accent);
-  }
-
-  .topbar-spacer {
-    flex: 1;
-  }
-
-  .grimoire-shell {
-    flex: 1;
-    min-height: 60vh;
-  }
-
-  .gate {
-    padding: 64px 32px 80px;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 16px;
-  }
-
-  .gate-eyebrow {
-    margin: 0;
-    font-size: 11px;
-    letter-spacing: 0.22em;
-    text-transform: uppercase;
-    font-weight: 600;
-    color: var(--grim-text-faint);
-  }
-
-  .gate-title {
-    font-size: clamp(32px, 6vw, 56px);
-  }
-
-  .gate-accent {
-    color: var(--grim-accent);
-  }
-
-  .gate-copy {
-    max-width: 52ch;
-    color: var(--grim-text-dim);
-    line-height: 1.6;
-  }
-</style>
+</GrimoireSheet>

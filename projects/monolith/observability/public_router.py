@@ -11,7 +11,7 @@ from email.utils import format_datetime
 from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session, select
 
-from core.clock import as_utc, iso
+from core.clock import as_utc, iso_z, utc_now as _now_utc
 from core.db import get_session
 from observability.factory_goals import (
     goals_payload,
@@ -28,8 +28,7 @@ _TYPES = MERGE_TYPES
 _CACHE_CONTROL = "public, max-age=1800, stale-while-revalidate=86400"
 # Declared goals move when the orchestrator declares them, not on a snapshot
 # cadence, so the goals endpoint keeps the same 30-minute shared freshness as
-# the merges snapshot. FACTORY_GOALS_CACHE_CONTROL in
-# frontend/src/lib/cache-headers.js mirrors this; keep the two in sync.
+# the merges snapshot.
 _GOALS_CACHE_CONTROL = "public, max-age=0, s-maxage=1800, stale-while-revalidate=86400"
 # Goal scoring must see every merge the table can possibly hold, not a narrow
 # recency window: merged_prs retains 90 days (app/jobs_main.py
@@ -38,15 +37,6 @@ _GOALS_CACHE_CONTROL = "public, max-age=0, s-maxage=1800, stale-while-revalidate
 # than the retention period silently under-counts merged_refs for any goal
 # older than the window, even though the evidence is still in the table.
 _GOALS_MERGE_WINDOW_DAYS = 90
-
-
-def _iso(value: datetime | None) -> str | None:
-    stamp = iso(value)
-    return None if stamp is None else stamp.replace("+00:00", "Z")
-
-
-def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _payload(session: Session, now: datetime) -> tuple[dict, datetime | None]:
@@ -86,7 +76,7 @@ def _payload(session: Session, now: datetime) -> tuple[dict, datetime | None]:
         {
             "number": row.number,
             "title": row.title,
-            "merged_at": _iso(row.merged_at),
+            "merged_at": iso_z(row.merged_at),
             "additions": row.additions,
             "deletions": row.deletions,
             "changed_files": row.changed_files,
@@ -109,7 +99,7 @@ def _payload(session: Session, now: datetime) -> tuple[dict, datetime | None]:
             "daily": daily,
             "week": week,
             "totals": totals,
-            "snapshotted_at": _iso(snapshotted_at),
+            "snapshotted_at": iso_z(snapshotted_at),
         },
         snapshotted_at,
     )
@@ -124,8 +114,8 @@ def get_public_merges(
     """Return cached 30-day aggregates and the last seven days of merges."""
     now = _now_utc()
     payload, snapshotted_at = _payload(session, now)
-    stamp = _iso(snapshotted_at) or "null"
-    cutoff_7d_hour = _iso(
+    stamp = iso_z(snapshotted_at) or "null"
+    cutoff_7d_hour = iso_z(
         (now - timedelta(days=7)).replace(minute=0, second=0, microsecond=0)
     )
     etag = (
@@ -153,7 +143,7 @@ def _goals_payload(session: Session, now: datetime) -> dict:
         ).all()
     )
     merges = [
-        {"number": row.number, "title": row.title, "merged_at": _iso(row.merged_at)}
+        {"number": row.number, "title": row.title, "merged_at": iso_z(row.merged_at)}
         for row in rows
     ]
     numbers = {number for goal in goals for number in goal["issue_numbers"]}

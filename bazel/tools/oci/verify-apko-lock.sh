@@ -20,7 +20,7 @@ if [ "$COMPUTED" != "$EXPECTED" ]; then
 	echo "  Expected: $EXPECTED"
 	echo "  Got:      $COMPUTED"
 	echo ""
-	echo "Run 'format' to update lock files."
+	echo "Run ./bazel/tools/format/update-apko-locks.sh \"$CONFIG\" to update the lock file."
 	exit 1
 fi
 

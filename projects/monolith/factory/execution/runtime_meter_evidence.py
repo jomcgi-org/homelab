@@ -9,7 +9,7 @@ import json
 from sqlmodel import Session, select
 
 from factory.execution import result_receipts
-from factory.orchestration.factory_models import FactoryAudit
+from factory.orchestration.factory_models import FactoryAudit, funding_audit_filter
 
 BOUND = "runtime_meter_bound"
 UPDATE = "runtime_meter_usage"
@@ -27,7 +27,7 @@ def binding(db, receipt_id):
 
 def records_for_receipt(db, receipt_id, action):
     query = select(FactoryAudit).where(
-        FactoryAudit.action == action, FactoryAudit.detail_json.contains(receipt_id)
+        funding_audit_filter(action), FactoryAudit.detail_json.contains(receipt_id)
     )
     if action != BOUND:
         query = query.where(FactoryAudit.task_id == binding(db, receipt_id)["task_id"])

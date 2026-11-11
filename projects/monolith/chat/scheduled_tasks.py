@@ -18,6 +18,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from core.clock import as_utc
 from sqlalchemy import and_, or_, update
 from sqlmodel import Session, select
 
@@ -53,14 +54,8 @@ class ClaimedOccurrence:
     claim_token: str
 
 
-def _aware(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
 def _occurrence_id(task_id: int, scheduled_for: datetime) -> str:
-    identity = f"{task_id}:{_aware(scheduled_for).isoformat()}"
+    identity = f"{task_id}:{as_utc(scheduled_for).isoformat()}"
     return hashlib.sha256(identity.encode()).hexdigest()
 
 
@@ -140,7 +135,7 @@ def next_cron_at(expression: str, after: datetime) -> datetime:
     raw_fields = expression.strip().split()
     day_wildcard = raw_fields[2] == "*"
     weekday_wildcard = raw_fields[4] == "*"
-    candidate = _aware(after).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    candidate = as_utc(after).replace(second=0, microsecond=0) + timedelta(minutes=1)
     deadline = candidate + timedelta(days=_CRON_SEARCH_DAYS)
     while candidate <= deadline:
         # Python Monday=0; cron Sunday=0.
@@ -188,7 +183,7 @@ def create_task(
     digest_mode: str = "summary",
 ) -> ScheduledTask | str:
     """Validate and stage a scheduled task. The caller commits."""
-    now = _aware(now or datetime.now(timezone.utc))
+    now = as_utc(now or datetime.now(timezone.utc))
     if not channel_id or not author_id:
         return "scheduled tasks require an authorized channel and user"
     if _active_count(session, author_id) >= MAX_PENDING_PER_USER:
@@ -206,7 +201,7 @@ def create_task(
             return f"reminder text cannot exceed {_MAX_CONTENT_CHARS} characters"
         if due_at is None:
             return "due_at is required for a one-shot reminder"
-        next_run_at = _aware(due_at)
+        next_run_at = as_utc(due_at)
         normalized_due_at = next_run_at
         if next_run_at <= now:
             return "due_at must be in the future"
@@ -303,7 +298,7 @@ def claim_due(
     only one claimant.  The returned objects are detached value snapshots and
     are safe to use after this transaction commits.
     """
-    now = _aware(now)
+    now = as_utc(now)
     stale_before = now - timedelta(seconds=lease_seconds)
     candidates = session.exec(
         select(ScheduledTask)
@@ -328,14 +323,14 @@ def claim_due(
     ).all()
     claimed: list[ClaimedOccurrence] = []
     for task in candidates:
-        if len(claimed) >= limit or _aware(task.next_run_at) > now:
+        if len(claimed) >= limit or as_utc(task.next_run_at) > now:
             continue
         stale = task.status == "claimed" and (
-            task.claimed_at is None or _aware(task.claimed_at) <= stale_before
+            task.claimed_at is None or as_utc(task.claimed_at) <= stale_before
         )
         if task.status == "claimed" and not stale:
             continue
-        scheduled_for = _aware(task.next_run_at)
+        scheduled_for = as_utc(task.next_run_at)
         occurrence_id = _occurrence_id(task.id, scheduled_for)
         token = f"{claimant}:{uuid.uuid4().hex}"
         statement = (
@@ -393,7 +388,7 @@ def finalize_claim(
     now: datetime,
 ) -> bool:
     """Atomically enqueue a claimed occurrence and complete/advance its task."""
-    now = _aware(now)
+    now = as_utc(now)
     task = session.get(ScheduledTask, claim.task_id)
     occurrence = session.get(ScheduledTaskOccurrence, claim.occurrence_id)
     if (
@@ -455,7 +450,7 @@ def release_claim(
         or task.claim_token != claim.claim_token
     ):
         return False
-    now = _aware(now or datetime.now(timezone.utc))
+    now = as_utc(now or datetime.now(timezone.utc))
     task.failure_count += 1
     if task.failure_count < MAX_GENERATION_ATTEMPTS:
         task.status = "pending"
@@ -542,7 +537,7 @@ async def drain_once(
     digest_builder: Callable[[object, ClaimedOccurrence], Awaitable[str]] | None = None,
 ) -> int:
     """Claim and enqueue due work once. Returns finalized occurrence count."""
-    now = _aware(now or datetime.now(timezone.utc))
+    now = as_utc(now or datetime.now(timezone.utc))
     claimant = claimant or uuid.uuid4().hex
     claims = await asyncio.to_thread(_claim_with_engine, engine, now, claimant)
     finalized = 0

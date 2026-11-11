@@ -5,43 +5,16 @@ from __future__ import annotations
 import json
 from typing import Annotated, Optional
 
-import httpx
 import typer
 
-from tools.cli.auth import clear_cf_token, get_cf_token
+from tools.cli.api import request as _request
 from tools.cli.output import compact_line, format_edges, search_line, write_to_tmpfile
-
-API_BASE = "https://private.jomcgi.dev"
 
 knowledge_app = typer.Typer(
     name="knowledge",
     help="Search, read, and debug the knowledge graph.",
     no_args_is_help=True,
 )
-
-
-def _client() -> httpx.Client:
-    token = get_cf_token()
-    return httpx.Client(
-        base_url=API_BASE,
-        cookies={"CF_Authorization": token},
-        follow_redirects=False,
-        timeout=30.0,
-    )
-
-
-def _request(method: str, path: str, **kwargs) -> httpx.Response:
-    """Make a request with automatic re-auth on 3xx (expired CF token)."""
-    with _client() as client:
-        resp = getattr(client, method)(path, **kwargs)
-
-    if resp.is_redirect:
-        typer.echo("Token expired, re-authenticating...", err=True)
-        clear_cf_token()
-        with _client() as client:
-            resp = getattr(client, method)(path, **kwargs)
-
-    return resp
 
 
 @knowledge_app.command()

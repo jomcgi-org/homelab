@@ -1,6 +1,7 @@
 """Factory controls are checked at each transport side-effect boundary."""
 
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -42,6 +43,50 @@ def completed(request):
         json={"result": "done", "terminal_reason": "completed", "session_id": "cli"},
         request=request,
     )
+
+
+def test_push_contract_crosses_real_transport_and_usage_parser(monkeypatch):
+    contract = {
+        "task_id": "t-test",
+        "node_key": "integrate_1",
+        "branch": "factory/t-test",
+        "base_ref": "refs/remotes/origin/main",
+    }
+    calls = []
+
+    async def handler(request):
+        calls.append(request)
+        if request.url.path.endswith("/sessions"):
+            return created(request)
+        assert json.loads(request.content)["push_format"] == contract
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "result": "corrected",
+                "terminal_reason": "completed",
+                "usage": {
+                    "push_format": {
+                        **contract,
+                        "outcome": "drift_blocked",
+                        "paths": ["a.py"],
+                        "file_count": 1,
+                    }
+                },
+            },
+        )
+
+    install_client(monkeypatch, handler)
+    turn, _ = asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            None,
+            None,
+            "source work",
+            push_format=contract,
+        )
+    )
+    assert len(calls) == 2
+    assert turn.usage["push_format"]["file_count"] == 1
 
 
 @pytest.mark.parametrize("restore_from", [None, "prior-lineage"])
@@ -287,7 +332,8 @@ def test_in_flight_timeout_keeps_transport_uncertainty_after_stop(monkeypatch):
             )
         )
     assert len(requests) == 1
-    assert checks == 1
+    # One check before receipt preparation and one before the POST; none after.
+    assert checks == 2
 
 
 def test_nested_unrelated_delivery_temporarily_clears_factory_check(monkeypatch):

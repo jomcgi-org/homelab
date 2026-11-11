@@ -6,6 +6,7 @@ import json
 
 from sqlmodel import select
 
+from core.jsonio import dumps
 from factory.execution.models import AgentSession, PendingMessage
 from factory.orchestration import factory_controls as controls, graph
 from factory.orchestration.factory_models import (
@@ -36,14 +37,18 @@ def _issue(receipt_id):
 
 
 def _capacity(db, control, row):
-    from factory.orchestration.factory_intake import lane_of, open_lanes
-
     policy = json.loads(control.policy_json)
     if (
         control.state != "enabled"
         or row.generation != policy.get("generation", 0)
         or row.repo not in controls.enabled_repos(policy)
-        or not controls.admission_eligible(policy, row.issue_number, row.actor)
+        or not controls.admission_eligible(
+            policy,
+            row.issue_number,
+            row.actor,
+            task_class=row.task_class,
+            repo=row.repo,
+        )
     ):
         raise ValueError("recovery_admission_disabled")
     owned = db.exec(
@@ -54,12 +59,7 @@ def _capacity(db, control, row):
     if any(same_work(other, row) for other in owned):
         raise ValueError("recovery_work_owned_elsewhere")
     active = [other for other in owned if other.state in controls._ACTIVE]
-    lane = lane_of(row)
-    if (
-        open_lanes(policy, active, (lane,))[lane] <= 0
-        or sum(other.repo == row.repo and lane_of(other) == lane for other in active)
-        >= controls.repo_lane_limits(policy, row.repo)[lane]
-    ):
+    if not controls.execution_capacity_available(db, control, row, active=active):
         raise ValueError("recovery_capacity_unavailable")
     if row.work_item_id:
         item = db.get(WorkItem, row.work_item_id)
@@ -164,7 +164,7 @@ def _preview(db, control, receipt_id, deadline_at, max_work_turns, direction, is
         "expected_revision": graph.current_version(row.task_id, session=db),
         "receipt_updated_at": row.updated_at.isoformat(),
         "receipt_body_sha256": hashlib.sha256(row.body.encode()).hexdigest(),
-        "issue_sha256": hashlib.sha256(controls._json(issue).encode()).hexdigest(),
+        "issue_sha256": hashlib.sha256(dumps(issue).encode()).hexdigest(),
         "policy": policy,
         "prior_direction": stored_direction,
         "prior_escalation": json.loads(row.escalation_json or "{}"),
@@ -180,9 +180,7 @@ def _preview(db, control, receipt_id, deadline_at, max_work_turns, direction, is
         "direction": direction,
         "stays_paused": True,
     }
-    proposal["preview_sha256"] = hashlib.sha256(
-        controls._json(proposal).encode()
-    ).hexdigest()
+    proposal["preview_sha256"] = hashlib.sha256(dumps(proposal).encode()).hexdigest()
     return proposal
 
 
@@ -247,17 +245,20 @@ def apply(
         task = graph._lock_task(db, row.task_id)
         authority = {"actor": actor, "request_key": request_key, "reason": direction}
         stored_direction = proposal["prior_direction"].copy()
+        # Recovery explicitly reasserts the operator's hold. Old planner
+        # refusal evidence remains historical and cannot suppress that act.
+        stored_direction.pop("landing_hold_provenance", None)
         for hold in ("landing_hold", "nonrenewable_recovery"):
             stored_direction.setdefault(hold, authority)
         stored_direction["task_recovery"] = authority
-        row.direction_json = controls._json(stored_direction)
+        row.direction_json = dumps(stored_direction)
         escalation = proposal["prior_escalation"].copy()
         escalation["resolved"] = {
             **authority,
             "effect": ACTION,
             "at": controls._now().isoformat(),
         }
-        row.escalation_json = controls._json(escalation)
+        row.escalation_json = dumps(escalation)
         row.state, row.task_paused, row.updated_at = "admitted", True, controls._now()
         # This is a new operator-owned pause. Retaining only an older conductor
         # pause would let its legacy expiry cancel recovery before explicit resume.

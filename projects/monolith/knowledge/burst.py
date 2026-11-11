@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
+from core.clock import as_utc
 from sqlalchemy import text
 from sqlmodel import Session
 
@@ -12,12 +13,6 @@ from knowledge.extraction import KG_NODE_KEY
 
 KG_BURST_MAX_EXTRA_JOBS = 1_000
 KG_BURST_MAX_DURATION_SECONDS = 24 * 60 * 60
-
-
-def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -50,7 +45,7 @@ def validate_kg_burst_grant(extra_jobs: int, duration_seconds: int) -> None:
 
 def kg_burst_state(session: Session, *, now: datetime | None = None) -> KGBurstState:
     """Return the newest unexpired grant and its remaining allowance."""
-    checked_at = _as_utc(now or datetime.now(timezone.utc))
+    checked_at = as_utc(now or datetime.now(timezone.utc))
     row = session.execute(
         text(
             """
@@ -75,7 +70,7 @@ def kg_burst_state(session: Session, *, now: datetime | None = None) -> KGBurstS
     if row is None:
         return KGBurstState()
 
-    expires_at = _as_utc(row.expires_at)
+    expires_at = as_utc(row.expires_at)
     used_jobs = max(0, int(row.used_jobs))
     remaining_jobs = max(0, int(row.extra_jobs) - used_jobs)
     # Keep expiry enforcement in Python as well as SQL. This protects callers
@@ -89,7 +84,7 @@ def kg_burst_state(session: Session, *, now: datetime | None = None) -> KGBurstS
         extra_jobs=int(row.extra_jobs),
         used_jobs=used_jobs,
         remaining_jobs=remaining_jobs,
-        created_at=_as_utc(row.created_at),
+        created_at=as_utc(row.created_at),
         expires_at=expires_at,
         created_by=row.created_by,
     )
@@ -120,7 +115,7 @@ def create_kg_burst_grant(
 ) -> dict:
     """Persist one bounded grant, rejecting overlap with a usable grant."""
     validate_kg_burst_grant(extra_jobs, duration_seconds)
-    created_at = _as_utc(now or datetime.now(timezone.utc))
+    created_at = as_utc(now or datetime.now(timezone.utc))
     if session.get_bind().dialect.name == "postgresql":
         # Serialize operator grants so two simultaneous requests cannot both
         # observe no active grant and create overlapping allowances.

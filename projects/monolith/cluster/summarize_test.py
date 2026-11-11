@@ -130,6 +130,28 @@ class TestUnhealthy:
         )
 
 
+def test_trimmed_deployment_exposes_single_writer_posture_without_manifest():
+    obj = {
+        "metadata": {"name": "embervm", "generation": 7},
+        "spec": {
+            "replicas": 1,
+            "strategy": {"type": "Recreate"},
+            "template": {"spec": {"containers": [{"env": [{"value": "private"}]}]}},
+        },
+        "status": {"replicas": 1, "readyReplicas": 1, "observedGeneration": 7},
+    }
+    detail = summarize.resource_detail("deployments", obj)
+    assert detail["deployment"] == {
+        "replicas": 1,
+        "strategy": "Recreate",
+        "actual_replicas": 1,
+        "generation": 7,
+        "observed_generation": 7,
+    }
+    assert "private" not in str(detail)
+    assert "template" not in detail
+
+
 class TestBuildHealth:
     def test_only_unhealthy_returned(self):
         resources = {

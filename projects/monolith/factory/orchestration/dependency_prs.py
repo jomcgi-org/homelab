@@ -12,12 +12,13 @@ import json
 import re
 from copy import deepcopy
 
+import httpx
 from sqlmodel import select
 
+from core.jsonio import dumps
 from factory.orchestration.factory_controls import (
     INTAKE_ACTOR,
     _audit,
-    _json,
     _locked_session,
     intake_policy,
     normalize_repo,
@@ -29,22 +30,138 @@ from factory.orchestration.factory_models import FactoryReceipt
 SHA = re.compile(r"[0-9a-f]{40}")
 MAX_ROWS = 500
 MAX_EVIDENCE_CHARS = 48000
+MAX_ADVISORY_SOURCES = 100
+COMPONENT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "key",
+        "artifact_sha256",
+        "exposure_sha256",
+        "files",
+        "query",
+        "response_sha256",
+    ],
+    "properties": {
+        "key": {"type": "string", "minLength": 3, "maxLength": 500},
+        **{
+            name: {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            for name in ("artifact_sha256", "exposure_sha256", "response_sha256")
+        },
+        "files": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": MAX_ROWS,
+            "uniqueItems": True,
+            "items": {"type": "string", "minLength": 1},
+        },
+        "query": {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["commit"],
+                    "properties": {
+                        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+                    },
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["package", "version"],
+                    "properties": {
+                        "version": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 200,
+                            "pattern": r"^[^\s*^~<>=|]+$",
+                            "not": {
+                                "enum": [
+                                    "latest",
+                                    "stable",
+                                    "main",
+                                    "master",
+                                    "HEAD",
+                                    "head",
+                                ]
+                            },
+                        },
+                        "package": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["name", "ecosystem"],
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 500,
+                                },
+                                "ecosystem": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 100,
+                                },
+                            },
+                        },
+                    },
+                },
+            ],
+        },
+    },
+}
+ADVISORY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["base_sha", "head_sha", "complete", "base", "head"],
+    "properties": {
+        "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "complete": {"const": True},
+        **{
+            side: {
+                "type": "array",
+                "maxItems": MAX_ADVISORY_SOURCES,
+                "uniqueItems": True,
+                "items": COMPONENT_SCHEMA,
+            }
+            for side in ("base", "head")
+        },
+    },
+}
+
 ASSESSMENTS = (
     "provenance",
     "install_scripts",
     "transitive_changes",
     "vulnerability_remediation",
     "compatibility",
+    "authorization_scope",
+    "evidence_coverage",
     "validation",
 )
 ASSESSMENT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["evidence_sha256", "base_sha", "safe", *ASSESSMENTS],
+    "required": [
+        "evidence_sha256",
+        "base_sha",
+        "safe",
+        "reviewed_files",
+        "advisory_sources",
+        *ASSESSMENTS,
+    ],
     "properties": {
+        "advisory_sources": ADVISORY_SCHEMA,
         "evidence_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "safe": {"type": "boolean"},
+        "reviewed_files": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "minItems": 1,
+            "maxItems": MAX_ROWS,
+            "uniqueItems": True,
+        },
         **{
             name: {"type": "string", "minLength": 20, "maxLength": 3000}
             for name in ASSESSMENTS
@@ -65,14 +182,9 @@ def github_list(repo: str, suffix: str) -> list:
     return read(repo, suffix)
 
 
-def eligible(pull: object, repo: str, policy: dict) -> bool:
-    """Never infer author authority from a label, branch name or PR prose."""
-    if not isinstance(pull, dict):
-        return False
-    user = pull.get("user") or {}
-    head, base = pull.get("head") or {}, pull.get("base") or {}
+def ownership_held(pull: dict, repo: str, policy: dict) -> bool:
+    """Recheck ownership at intake and publication, including after approval."""
     intake = intake_policy(policy)
-    authors = intake.get("dependency_pr_authors", [])
     excluded = {
         label.lower()
         for label in (policy.get("repos") or {})
@@ -84,11 +196,27 @@ def eligible(pull: object, repo: str, policy: dict) -> bool:
         for label in pull.get("labels") or []
     }
     return (
+        bool(pull.get("assignees"))
+        or bool(labels & (excluded | {"human"}))
+        or any(
+            re.search(r"hold|blocked|needs-human|do-not-merge|manual|agent-skip", label)
+            for label in labels
+        )
+    )
+
+
+def eligible(pull: object, repo: str, policy: dict) -> bool:
+    """Never infer author authority from a label, branch name or PR prose."""
+    if not isinstance(pull, dict):
+        return False
+    user = pull.get("user") or {}
+    head, base = pull.get("head") or {}, pull.get("base") or {}
+    authors = intake_policy(policy).get("dependency_pr_authors", [])
+    return (
         bool(authors)
         and pull.get("state") == "open"
         and pull.get("draft") is False
-        and not pull.get("assignees")
-        and not labels & excluded
+        and not ownership_held(pull, repo, policy)
         and type(pull.get("number")) is int
         and pull["number"] > 0
         and isinstance(user.get("login"), str)
@@ -126,10 +254,90 @@ class EvidenceChanged(ValueError):
     """Positive evidence of an unsafe dependency or a changed PR identity."""
 
 
+def read_advisory(query: dict) -> dict:
+    """Re-fetch one reviewed OSV query without credentials or caller URLs.
+
+    An empty OSV result does not establish ecosystem coverage. Both reviewers
+    must establish applicability and the complete artifact/SBOM package set.
+    Pagination, redirects, errors and oversized responses refuse this update.
+    """
+    with (
+        httpx.Client(timeout=10, follow_redirects=False, trust_env=False) as client,
+        client.stream("POST", "https://api.osv.dev/v1/query", json=query) as response,
+    ):
+        response.raise_for_status()
+        data = bytearray()
+        for chunk in response.iter_bytes():
+            data.extend(chunk)
+            if len(data) > 1024 * 1024:
+                raise ValueError("supplemental advisory response exceeds bound")
+    value = json.loads(data)
+    if (
+        not isinstance(value, dict)
+        or set(value) - {"vulns", "next_page_token"}
+        or ("next_page_token" in value and value["next_page_token"] != "")
+        or not isinstance(value.get("vulns", []), list)
+    ):
+        raise ValueError("supplemental advisory response malformed or incomplete")
+    if any(
+        not isinstance(row, dict)
+        or not isinstance(row.get("id"), str)
+        or not row["id"]
+        or not isinstance(row.get("modified"), str)
+        or not row["modified"]
+        or not isinstance(row.get("affected"), list)
+        or not row["affected"]
+        for row in value.get("vulns", [])
+    ):
+        raise ValueError("supplemental advisory records malformed")
+    findings = value.get("vulns", [])
+    if len({row["id"] for row in findings}) != len(findings):
+        raise ValueError("supplemental advisory records duplicated")
+    # Retain every advisory field, not just IDs/severity. OSV may represent no
+    # findings as {} or {"vulns": []}; response order does not change evidence.
+    return {"vulns": sorted(findings, key=lambda row: row["id"])}
+
+
+def advisory_digest(value: dict) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def revalidate_advisories(inventory: dict) -> None:
+    """Fresh base/head reads permit only unchanged vulnerable occurrences.
+
+    Complete component/exposure inventories are independently reviewed against
+    the pinned files. This is not an automatic SBOM extractor or a CVE waiver.
+    """
+    seen = {}
+    findings = {}
+    for side in ("base", "head"):
+        for component in inventory[side]:
+            query = json.dumps(
+                component["query"], sort_keys=True, separators=(",", ":")
+            )
+            if query not in seen:
+                seen[query] = read_advisory(component["query"])
+            current = seen[query]
+            if advisory_digest(current) != component["response_sha256"]:
+                raise EvidenceChanged("supplemental advisory evidence changed")
+            findings[(side, component["key"])] = bool(current["vulns"])
+    baseline = {component["key"]: component for component in inventory["base"]}
+    for component in inventory["head"]:
+        # A matching occurrence must preserve query/version, artifact bytes,
+        # exposure fingerprint and file associations as well as fresh findings.
+        # A baseline finding elsewhere cannot authorize a new vulnerable copy.
+        if (
+            findings[("head", component["key"])]
+            and baseline.get(component["key"]) != component
+        ):
+            raise EvidenceChanged("dependency PR adds a vulnerable version or exposure")
+
+
 def snapshot(
     repo: str, pull: dict, *, read_get=None, read_list=None, comparison=None
 ) -> dict:
-    """Unavailable or incomplete vulnerability evidence is a refusal, not clean."""
+    """Bind complete file and advisory reads, including graph coverage limits."""
     read_get, read_list = read_get or github_get, read_list or github_list
     head, base = pull["head"]["sha"], pull["base"]["sha"]
     if comparison is None:
@@ -161,8 +369,32 @@ def snapshot(
         )
     ):
         raise ValueError("dependency file evidence is incomplete")
+    if len({row["filename"] for row in files}) != len(files) or any(
+        not isinstance(row.get("sha"), str)
+        or not SHA.fullmatch(row["sha"])
+        or row.get("status")
+        not in (
+            "added",
+            "removed",
+            "modified",
+            "renamed",
+            "copied",
+            "changed",
+            "unchanged",
+        )
+        or any(
+            type(row.get(key)) is not int or row[key] < 0
+            for key in ("additions", "deletions")
+        )
+        for row in files
+    ):
+        raise ValueError("dependency file identity is malformed")
     changes = read_list(repo, f"dependency-graph/compare/{base}...{head}")
-    if not isinstance(changes, list) or not changes or len(changes) >= MAX_ROWS:
+    # A successful empty comparison is normal for Helm, Bazel, OCI and APK
+    # inputs. It grants no safety conclusion. Both independent assessments
+    # must cover every blob and supply the missing upstream/advisory evidence.
+    # Exceptions, null responses and truncated inventories still refuse.
+    if not isinstance(changes, list) or len(changes) >= MAX_ROWS:
         raise ValueError("dependency graph evidence is missing or truncated")
     for change in changes:
         if (
@@ -287,7 +519,7 @@ def receive(repo: str, number: int, policy: dict, *, generation: int) -> dict:
             url=f"https://github.com/{repo}/pull/{number}",
             actor=INTAKE_ACTOR,
             task_class="judgment-analysis",
-            direction_json=_json(direction),
+            direction_json=dumps(direction),
         )
         db.add(row)
         db.flush()
@@ -326,8 +558,51 @@ def guidance(task: dict) -> str:
         "ranges and remediation, API/runtime compatibility and targeted Linux "
         "validation results. Record concrete citations, commands and results in "
         "dependency_assessment; safe=true only when every dimension is supported. "
-        "An empty dependency graph is not proof of safety; inspect unrepresented "
-        "dependencies too. A major bump or passing CI is no exemption. "
+        "In authorization_scope, confirm this is an ordinary dependency update "
+        "within the established maintenance goal. Inspect upstream defaults and "
+        "rendered changes for credential, access, security-policy, budget or "
+        "audience changes. Approval of dependency bumps does not authorize those "
+        "side effects: cite exact existing authority or set safe=false and name "
+        "only the consequential decision that needs approval. Preserve explicit "
+        "PR holds and documented compatibility pins. Do not invent a human "
+        "approval requirement for ordinary updates, including majors. "
+        "In evidence_coverage, enumerate the ecosystems and changed dependency "
+        "identities represented by GitHub and those it does not represent. "
+        "Read every changed file at the pinned base/head, including generated "
+        "locks, chart archives and image digests; list every filename exactly "
+        "once in reviewed_files. For unrepresented dependencies, cite upstream "
+        "release/advisory evidence and concrete artifact inspection (for example "
+        "image SBOM/scan results, APK package versions, chart contents or Bazel "
+        "archive provenance). An empty comparison is a coverage limitation, "
+        "never a clean bill of health. If the necessary independent vulnerability "
+        "or provenance evidence cannot be obtained, set safe=false. A filename, "
+        "major bump or passing CI is no exemption. "
+        "Both assessments must independently supply the same advisory_sources "
+        "object bound to base_sha/head_sha, with complete=true and complete base "
+        "and head component inventories (at most 100 entries per side). Inspect "
+        "the full resolved dependency/SBOM closure and every changed file; no "
+        "claimed completeness or hash substitutes for that inspection. Each "
+        "component needs a stable unique occurrence key (including location), "
+        "artifact_sha256 for its immutable package/archive bytes, files on that "
+        "side, exact OSV package/ecosystem/version or immutable Git commit query, "
+        "and response_sha256. exposure_sha256 binds canonical installation paths, "
+        "dependency/reachability edges, execution scope, privileges and network "
+        "exposure; explain its inputs and derivation in evidence_coverage. Do not "
+        "reuse an exposure fingerprint when those facts change. An unknown OSV "
+        "package returning no findings is not coverage. Base file names use "
+        "previous_filename for renames and exclude added files; head files exclude "
+        "removed files. Include every corresponding changed file on each side. "
+        "No caller URL, credential or page token is accepted. Hash UTF-8 JSON "
+        '{"vulns":[...]} with all record fields, records sorted by id, sorted '
+        "object keys and separators (',',':'); normalize absent vulns to []. "
+        "The server re-fetches every distinct base/head query at completion and "
+        "before publication. Advisory-content changes require fresh review. "
+        "Unrelated baseline findings may remain only on exactly unchanged "
+        "occurrences, artifacts, query versions, exposure and file associations. "
+        "Added vulnerable versions, vulnerable copies or new exposure refuse, "
+        "even if another finding was removed. Explain residual baseline findings "
+        "and remediation in vulnerability_remediation; this grants no suppression "
+        "or new risk exception. Missing/incomplete evidence requires safe=false. "
         "Escalate missing evidence, suspicious changes or failed validation. "
         "Finish requires passing required CI and independent adversarial approval "
         "on the pinned head, base and evidence digest. Do not use closing keywords. "
@@ -358,10 +633,10 @@ def verify(task: dict, pull: dict, runs: list[dict]) -> None:
         != evidence["evidence_sha256"]
     ):
         raise ValueError("dependency review evidence changed; fresh intake is required")
-    verify_assessments(evidence, runs)
+    revalidate_advisories(verify_assessments(evidence, runs))
 
 
-def verify_assessments(evidence: dict, runs: list[dict]) -> None:
+def verify_assessments(evidence: dict, runs: list[dict]) -> dict:
     """Validate the durable review independently of the comparison commit IDs."""
     from factory.orchestration.factory_conductor import _artifact, _is_implementation
     from factory.orchestration.turn_artifact import schema_errors
@@ -385,6 +660,7 @@ def verify_assessments(evidence: dict, runs: list[dict]) -> None:
         raise ValueError(
             "dependency adversarial review is not independent and approved"
         )
+    source_sets = []
     for run in (worker, reviewer):
         artifact = _artifact(run)
         outcome = json.loads(run.get("outcome_json") or "{}")
@@ -399,6 +675,8 @@ def verify_assessments(evidence: dict, runs: list[dict]) -> None:
             or artifact.get("head_sha") != evidence["head_sha"]
             or artifact.get("pr_number") != evidence["pr_number"]
             or schema_errors(assessment, ASSESSMENT_SCHEMA)
+            or sorted(assessment.get("reviewed_files", []))
+            != sorted(row["filename"] for row in evidence["files"])
             or assessment.get("safe") is not True
             or assessment.get("base_sha") != evidence["base_sha"]
             or assessment.get("evidence_sha256") != evidence["evidence_sha256"]
@@ -406,3 +684,27 @@ def verify_assessments(evidence: dict, runs: list[dict]) -> None:
             raise ValueError(
                 "dependency security assessment is missing, unsafe or stale"
             )
+        inventory = deepcopy(assessment["advisory_sources"])
+        if any(inventory[key] != evidence[key] for key in ("base_sha", "head_sha")):
+            raise ValueError("supplemental inventory is not bound to reviewed commits")
+        for side, absent_status in (("base", "added"), ("head", "removed")):
+            expected = {
+                (row.get("previous_filename") or row["filename"])
+                if side == "base"
+                else row["filename"]
+                for row in evidence["files"]
+                if row["status"] != absent_status
+            }
+            components = inventory[side]
+            if len({row["key"] for row in components}) != len(components):
+                raise ValueError("supplemental component occurrences duplicated")
+            if {name for row in components for name in row["files"]} != expected:
+                raise ValueError("supplemental advisory coverage is incomplete")
+            inventory[side] = sorted(
+                ({**row, "files": sorted(row["files"])} for row in components),
+                key=lambda row: row["key"],
+            )
+        source_sets.append(inventory)
+    if source_sets[0] != source_sets[1]:
+        raise ValueError("independent supplemental advisory inventories disagree")
+    return source_sets[0]

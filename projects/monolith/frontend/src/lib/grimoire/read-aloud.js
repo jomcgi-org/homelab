@@ -30,6 +30,42 @@ export function voicePreset(presets, key) {
   );
 }
 
+// The picker value for typing a new label. Speaker keys never contain a
+// colon, so no saved preset can share it.
+export const FREE_LABEL = "label:custom";
+
+// NPC presets are keyed by entity UUID. One the DM view leaves unnamed is an
+// NPC the DM can no longer see, which narration would reject.
+const ENTITY_KEY =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const unavailable = (row) =>
+  !row.speaker_name && ENTITY_KEY.test(row.speaker_key);
+
+// DM speaker pickers list saved presets only: NPCs by the name the DM voice
+// view carries, then free labels. Unavailable NPCs appear only when asked
+// for, so the preset editor can delete them. A player's view has no names.
+export function presetSpeakers(presets, { includeUnavailable = false } = {}) {
+  const rows = presets.filter((row) => row.speaker_key !== "narrator");
+  const option = (row) => ({
+    key: row.speaker_key,
+    name: row.speaker_name || row.speaker_key,
+  });
+  return [
+    ...rows
+      .filter((row) => row.speaker_name)
+      .map(option)
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    ...rows.filter((row) => !row.speaker_name && !unavailable(row)).map(option),
+    ...(includeUnavailable
+      ? rows.filter(unavailable).map((row) => ({
+          key: row.speaker_key,
+          name: "Unavailable NPC",
+          unavailable: true,
+        }))
+      : []),
+  ];
+}
+
 export function readAloudDefaults(role) {
   return { narration: role === "dm", reveals: false };
 }

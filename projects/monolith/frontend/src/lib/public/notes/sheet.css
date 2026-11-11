@@ -1,0 +1,123 @@
+/* Only the public GraphView opts in. Private /notes retains every legacy
+ * fallback in the shared controls and the canvas's default palette.
+ * The .td ancestor gives these rules precedence over Svelte's scoped
+ * component selectors regardless of stylesheet insertion order. */
+.td .sheet-graph {
+  --notes-sheet: var(--sheet);
+  --notes-ink: var(--ink);
+  --notes-muted: var(--ink-2);
+  --notes-accent: var(--accent-ink);
+  --notes-band: var(--band);
+  --notes-highlight: var(--band);
+  --notes-error: var(--tone-disk);
+  --notes-rule: var(--stroke);
+  --notes-rule-width: 1px;
+  --notes-rule-style: solid;
+  --notes-shadow: none;
+}
+
+.td .sheet-graph .stage {
+  background: var(--sheet);
+}
+
+.td .sheet-graph .stage::before {
+  background-image: none;
+}
+
+.td .sheet-graph .search,
+.td .sheet-graph .legend,
+.td .sheet-graph .panel {
+  font-family: var(--font-code);
+  color: var(--ink);
+  border-color: var(--stroke);
+  border-radius: 0;
+}
+
+.td .sheet-graph .search {
+  top: 12px;
+  left: 12px;
+  width: min(240px, calc(100% - 24px));
+}
+
+.td .sheet-graph .search input {
+  min-height: 32px;
+  font-size: 14px;
+}
+
+.td .sheet-graph .search input:focus-visible,
+.td .sheet-graph .link-list .link-row:focus-visible,
+.td .sheet-graph .legend-row:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+
+.td .sheet-graph .legend {
+  left: 12px;
+  bottom: 12px;
+  min-width: 160px;
+  max-width: calc(100% - 24px);
+  max-height: calc(100% - 144px);
+  overflow-y: auto;
+}
+
+.td .sheet-graph .legend-row {
+  min-height: 28px;
+}
+
+.td .sheet-graph .legend-row.off {
+  opacity: 1;
+  color: var(--ink-2);
+}
+
+.td .sheet-graph .panel {
+  top: 12px;
+  right: 12px;
+  width: min(480px, 48%);
+  max-height: calc(100% - 24px);
+}
+
+.td .sheet-graph .panel-head,
+.td .sheet-graph .panel-foot {
+  background: var(--band);
+  border-color: var(--stroke);
+}
+
+.td .sheet-graph .panel-body {
+  min-height: 0;
+  overflow-wrap: anywhere;
+}
+
+.td .sheet-graph .panel-body table {
+  display: block;
+  overflow-x: auto;
+}
+
+.td .sheet-graph .panel-body pre {
+  max-width: 100%;
+}
+
+.td .sheet-graph .panel-body blockquote {
+  border-left-width: 1px;
+}
+
+.td .sheet-graph .panel-foot {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  max-height: 35%;
+  overflow-y: auto;
+}
+
+.td .sheet-graph .link-row span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 760px) {
+  .td .sheet-graph .panel {
+    top: auto;
+    bottom: 12px;
+    left: 12px;
+    width: auto;
+    max-height: 46%;
+  }
+}

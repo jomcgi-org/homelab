@@ -7,12 +7,11 @@ under ``books/<book_id>/raw/``. This module lists those manifests, upserts rows
 into ``knowledge_chunk`` keyed on ``(book_id, chunk_ref)``, and embeds new/changed
 content into the generic ``embedding`` table (``embeddable_kind="chunk"``).
 
-The S3 client construction mirrors ``artifact.s3`` / ``trips.s3`` /
-``stars.grid._s3_client`` (dummy creds, path-style addressing, scheme guard
-on the endpoint); ``build_s3_client`` is the reusable constructor, while
-``load_chunks`` itself takes an already-built client so tests can pass a
-fake and a later scheduler job (Task 7) can pass a real one without this
-module needing to know how it is wired.
+The S3 client comes from ``core.s3`` (dummy creds, path-style addressing,
+scheme guard on the endpoint); ``build_s3_client`` is the reusable
+constructor, while ``load_chunks`` itself takes an already-built client so
+tests can pass a fake and a later scheduler job (Task 7) can pass a real one
+without this module needing to know how it is wired.
 
 All Session I/O (upserts) lives in plain sync helper functions, called
 directly from ``load_chunks`` rather than written inline in its ``async
@@ -34,6 +33,7 @@ from typing import Any, Protocol
 
 from sqlmodel import Session, select
 
+from core.s3 import path_style_client
 from grimoire.models import Book, Embedding, KnowledgeChunk
 
 logger = logging.getLogger("monolith.grimoire.ingest")
@@ -98,30 +98,11 @@ class _Embedder(Protocol):
 
 
 def build_s3_client():
-    """Build a SeaweedFS S3 client (mirrors artifact.s3._client / trips.s3).
-
-    boto3 is imported lazily so importing this module never pulls boto3 into
-    an import closure that does not need it.
-    """
-    import boto3
-    from botocore.config import Config
-
+    """Build a SeaweedFS S3 client via core.s3 (boto3 imported lazily)."""
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "")
     if not endpoint:
         raise RuntimeError("SEAWEEDFS_S3_ENDPOINT unset; cannot load grimoire chunks")
-    # The chart injects a scheme-less host:port; boto3 requires a scheme and
-    # SeaweedFS S3 is plaintext HTTP.
-    if not endpoint.startswith(("http://", "https://")):
-        endpoint = "http://" + endpoint
-    # Scheme guaranteed above; see artifact.s3._client for the same guard.
-    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),
-        aws_secret_access_key=os.environ.get("S3_SECRET_ACCESS_KEY", "duckdb"),
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-        config=Config(s3={"addressing_style": "path"}),
-    )
+    return path_style_client(endpoint)
 
 
 def parse_manifest_lines(book_id: str, lines: Iterable[str]) -> tuple[list[dict], int]:

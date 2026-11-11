@@ -1,20 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlmodel import Session
 
+from core.clock import utc_now
 from factory.execution import store
 from factory.execution.models import AgentSession
 from core.db import get_engine
 
 SURFACES = frozenset({"run", "walkthrough", "transcript", "vm"})
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def register_companion(
@@ -29,7 +25,7 @@ def register_companion(
                 store.heartbeat_voice_ui_companion(
                     session,
                     existing,
-                    _now(),
+                    utc_now(),
                     principal_subject,
                     principal_authority,
                 )
@@ -40,14 +36,14 @@ def register_companion(
             minted_id,
             principal_subject,
             principal_authority,
-            _now(),
+            utc_now(),
         )
         return minted_id
 
 
 def poll_ledger(companion_id: str, since: int) -> list[dict] | None:
     with Session(get_engine()) as session:
-        return store.poll_voice_ui_ledger(session, companion_id, since, _now())
+        return store.poll_voice_ui_ledger(session, companion_id, since, utc_now())
 
 
 def attach(
@@ -57,7 +53,9 @@ def attach(
     mint_session: Callable[[], AgentSession],
 ) -> dict:
     with Session(get_engine()) as session:
-        companion = store.get_open_voice_ui_companion(session, _now(), for_update=True)
+        companion = store.get_open_voice_ui_companion(
+            session, utc_now(), for_update=True
+        )
         if companion is None:
             return {"accepted": True, "companion_open": False}
 
@@ -99,7 +97,7 @@ def show(
         # dependency on screen state this ordering exists to remove.
         return {"accepted": False, "error": _surface_error(surface)}
     with Session(get_engine()) as session:
-        companion = store.get_open_voice_ui_companion(session, _now())
+        companion = store.get_open_voice_ui_companion(session, utc_now())
         if companion is None:
             # Degrade to voice: a screen is optional, so no open companion means
             # acceptance without a ledger row or any other side effect.
@@ -145,7 +143,7 @@ def dismiss(
         # See show(): companion_open is omitted because it is undetermined.
         return {"accepted": False, "error": _surface_error(surface)}
     with Session(get_engine()) as session:
-        companion = store.get_open_voice_ui_companion(session, _now())
+        companion = store.get_open_voice_ui_companion(session, utc_now())
         if companion is None:
             return {"accepted": True, "companion_open": False}
         store.record_voice_ui_call(
@@ -166,7 +164,7 @@ def _record_if_open(
     principal_authority: str,
 ) -> dict:
     with Session(get_engine()) as session:
-        companion = store.get_open_voice_ui_companion(session, _now())
+        companion = store.get_open_voice_ui_companion(session, utc_now())
         if companion is None:
             return {"accepted": True, "companion_open": False}
         store.record_voice_ui_call(

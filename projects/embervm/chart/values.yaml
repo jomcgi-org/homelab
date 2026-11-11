@@ -228,50 +228,6 @@ opLog:
   # audit is retained by the configured telemetry backend.
   journalHorizonDays: 30
 
-# SpecTrace gate for spec validation (GitHub issue #4770). A debug-gated, spec-shaped
-# trace that validates TLA+ specs against real behaviour, read once at boot. OFF means
-# no process, no connection, no sweep.
-#
-# Backend selection reuses EMBERVM_OPLOG_DSN: set means the Postgres backend (its own
-# table in the existing `embervm_oplog` database), unset means SQLite. This mirrors the
-# Node-confirmed destroy ordering (ADR embervm/014 decision 5). FALSE keeps the
-# legacy ordering: tear the VM down locally, then record destroyed. TRUE records
-# the durable destroying intent, runs the node-confirmed teardown RPC, and
-# records destroyed ONLY when the node confirms.
-#
-# #4758: the control plane has read this gate since the ADR landed and no
-# template rendered it, so the ordering has never run in any environment and two
-# modeled invariants (NoDestroyBeforeConfirm, DestroyIntentPrecedesRecord)
-# describe behaviour production has never performed. Production stays false
-# until dev has exercised it under the conformance harness.
-nodeConfirmedDestroy: false
-
-# Async lifecycle op-log appends (ADR embervm/014 decision 2, GitHub issue
-# #5230). Read once at boot by Embervm.Application.async_lifecycle_writes_enabled/0
-# (control/lib/embervm/application.ex) as EMBERVM_ASYNC_LIFECYCLE_WRITES. False
-# (the default) keeps today's write-through ordering: the boot/wake lifecycle
-# appends (:assigned/:started on dispatch, session_created/session_relit on
-# session boot/wake) block the hot-path caller before the instance is handed
-# back. True defers those four appends to Embervm.AsyncWriter after in-memory
-# state advances (a lost write is repaired by adoption backfill); metering,
-# :submitted, destruction, and bank ops are never deferred regardless. This key
-# exists so the gate flips via a values-only deploy, the same surface its
-# sibling nodeConfirmedDestroy above has had all along.
-asyncLifecycleWrites: false
-
-# Flush exact unfinished invokes on control-plane restart before idle parking.
-# Default off for staged rollout; recovery evidence is never fabricated.
-restartFlushInflightInvokes: false
-
-# Instance-scoped session drain. Read at boot as
-# EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS. False (the default) keeps the old
-# behaviour: a brick drain edge interrupts and banks every running session on
-# the node. True drains only the sessions placed on the draining brick instance
-# (node + pod_uid), so the autoscaler's idle drain of an empty brick does not
-# interrupt live turns on a co-located brick of another size class. A session
-# whose placement is unknown is still drained.
-drainInstanceScopedSessions: false
-
 # Instance-scoped class drain for serving, stateful and group workloads. Read
 # at boot as EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS. False (the default) keeps
 # the old behaviour: a brick drain edge force-banks every serving, stateful and
@@ -280,11 +236,12 @@ drainInstanceScopedSessions: false
 # neighbours' guests. A guest whose placement is unknown is still drained.
 drainInstanceScopedWorkloads: false
 
-# EMBERVM_CROSS_NODE_REJOIN. False preserves node-pinned workspace rejoin.
-# True permits another brick only after a synchronous export proves the current
-# unattached workspace fingerprint. CP restarts discard that in-memory proof.
-crossNodeRejoin: false
-
+# SpecTrace gate for spec validation (GitHub issue #4770). A debug-gated, spec-shaped
+# trace that validates TLA+ specs against real behaviour, read once at boot. OFF means
+# no process, no connection, no sweep.
+#
+# Backend selection reuses EMBERVM_OPLOG_DSN: set means the Postgres backend (its own
+# table in the existing `embervm_oplog` database), unset means SQLite. This mirrors the
 # existing op_log_mod/0 selection and avoids inventing a second switch.
 specTrace:
   # Default OFF in production. ON in dev for local spec validation.
@@ -383,6 +340,13 @@ dispatcher:
 
 # Session-process tuning (control-plane env).
 session:
+  # Repository preparation only. Activation requires separately accepted memory
+  # admission evidence (#6965). Readers/reconciliation remain on when disabled.
+  asyncResidency:
+    enabled: false
+    queueLimit: 1024
+    principalLimit: 128
+    restoreLimit: 2
   # Invoke wall-clock watchdog margin (#4434), in ms. A session invoke's gRPC
   # deadline is a header the SERVER enforces, so on an orphaned channel (#4419)
   # nothing fires and the invoke worker wedges forever, pinning the session's
@@ -441,27 +405,12 @@ tokenBroker:
     # Health and metrics stay operational. Keep false through staged mTLS
     # validation and arm only in a separately authorized values change.
     retireProtectedRoutes: false
-  # Bosun installation tokens. Inert until the App, SPIFFE callers and repository
-  # IDs are configured. These grants are not added to the legacy OAuth catalog.
-  githubApp:
-    enabled: false
-    appID: ""
-    installationID: ""
-    onepassword:
-      itemPath: ""
-      privateKeyField: private-key
-    # Each grant requires name, profile, repositoryIDs and allowedSpiffeIds.
-    # Profiles: planner, implementer, reviewer, review-publisher, merger.
-    # Names alone are not credentials; only explicitly allowed mTLS callers
-    # can retrieve a token. Do not authorize shared agent nodes for publishing.
-    grants: []
-    canary:
-      # Opt-in verification Job. Requires an explicitly allowed dedicated SPIFFE
-      # identity, a reviewer grant and a publisher grant it must NOT retrieve.
-      enabled: false
-      grant: bosun-canary
-      deniedGrant: bosun-review-publisher
-      repositoryID: 847803371
+  loginAuth:
+    # Opt in per environment: login/start and login/status require one of these
+    # exact SPIFFE identities. Login identities gain no token, refresh or quota
+    # access. Requires spiffe.enabled and a nonempty login identity list.
+    required: false
+    clientSpiffeIds: []
   spiffe:
     # Phase 2 of ADR embervm/041: serve /token only over SPIFFE mTLS on a
     # second port. Off by default; the hub overlay flips it after this
@@ -469,7 +418,8 @@ tokenBroker:
     enabled: false
     trustDomain: embervm.jomcgi.dev
     tlsPort: 8443
-    # SPIFFE IDs allowed on the mTLS port. Empty means the noded
+    # Token, refresh and quota client IDs (also login when loginAuth is off).
+    # Empty means the noded
     # ServiceAccount's ID, because the egress-proxy sidecar that fetches
     # tokens runs in the noded pods.
     clientSpiffeIds: []
@@ -532,6 +482,14 @@ conformance:
   idleBankSeconds: 20
   sweepGraceSeconds: 15
   minPassingInvariants: 4
+  # S9 uses one native Claude-runtime session to exercise Codex before and
+  # after park/rejoin. Stage the live probe separately from runtime updates.
+  codex:
+    enabled: false
+    workload: claude-runtime
+    model: terra
+    providerModel: gpt-6.1-terra
+    cliVersion: "0.167.0"
   budgets:
     s1: 90s
     # The guest shim's inner init read timeout is 90s. A 180s outer budget safely
@@ -546,6 +504,7 @@ conformance:
     # count toward the dev verdictTimeout arithmetic in dev/deploy/values.yaml.
     s7: 15s
     s8: 20s
+    s9: 5m
   # S7 jailer and admission facts (#5255), staged default-off like s6. True
   # makes the runner read GET /v1/capacity before S1 and again after the
   # suite, and pass only when every brick reports jailer_armed, no brick's
@@ -795,41 +754,8 @@ sandboxWorkloads:
     cap: 4
     timeoutSeconds: 30
 
-# The bazel-query workload (ADR embervm/010: the Skyframe snapshot demo). Task
-# class: the base is a warm Bazel server (Abseil analysis graph resident in the
-# JVM heap); each request restores a CoW clone, runs one `bazel cquery`, and the
-# VM is destroyed after the response (task-class Assign is the reap, so no idle
-# TTL). Its guest image ref is the SAME Bazel-pinned value the noded rootfs-builder
-# bakes and EMBERVM_NODED_IMAGES keys on, so BuildBase(ref) resolves on the node.
-# Guest contract: vsock 1027, /shim/ready (200 only after the warming client
-# exits), /query (one POST with {"expression": "..."}).
-bazelQueryWorkload:
-  enabled: true
-  name: bazel-query
-  port: 1027
-  readyPath: /shim/ready
-  invokePath: /query
-  vcpus: 2
-  # Measured warm usage at the base snapshot cutoff (#4062): 548 MiB of guest
-  # unreclaimable memory, including the 203 MiB /tmp tmpfs use. 1024 MiB gives
-  # about 1.9x headroom while leaving the -Xmx1g JVM heap unchanged.
-  #
-  # ENOSPC COUPLING: memMib is sized to hold the guest's tmpfs in RAM. If a live
-  # base build ENOSPCs on /tmp during the warming cquery, the tmpfs `size=` in the
-  # guest-init (runtimes/bazel/guest-init/cmd/mount_linux.go) and this memMib MUST be
-  # raised TOGETHER: a larger tmpfs with the same memMib would exhaust guest RAM
-  # instead of running out of /tmp, trading one failure for another.
-  memMib: 1024
-  # floor: one primed clone kept warm; restore is demand-paged so a miss is cheap.
-  floor: 1
-  # cap: the governor is RAM (ADR); raise only after measuring per-clone dirtied
-  # RSS. One query per clone means throughput scales with restore rate, not cap.
-  cap: 2
-  timeoutSeconds: 20
-
 # The shotter workload (ADR embervm/035: the website snapshotter). Task class,
-# the same warm-snapshot shape as bazel-query above but with a headless Chromium
-# resident instead of a Bazel server: guest-init launches Chromium, polls its CDP
+# with a headless Chromium resident: guest-init launches Chromium, polls its CDP
 # endpoint until it genuinely answers, and only then flips /shim/ready, which is
 # what triggers the base snapshot. Each request restores a CoW clone, drives one
 # screenshot over CDP, and the VM is destroyed after the response.
@@ -843,8 +769,7 @@ shotterWorkload:
   readyPath: /shim/ready
   invokePath: /shim/screenshot
   vcpus: 2
-  # ENOSPC COUPLING, the same invariant bazelQueryWorkload documents above and
-  # for the same reason: memMib has to hold the guest's tmpfs in RAM, because a
+  # ENOSPC COUPLING: memMib has to hold the guest's tmpfs in RAM, because a
   # tmpfs page is guest RAM the instant it is written. Chromium runs with
   # --disable-dev-shm-usage, so its shared-memory scratch lands on the 512m /tmp
   # tmpfs set in runtimes/shotter/guest-init/cmd/mount_linux.go. Nothing in the
@@ -857,8 +782,8 @@ shotterWorkload:
   # 2048 leaves roughly 1.5 GiB above the tmpfs cap for Chromium itself, which
   # idles far below that at about:blank but grows while rasterizing a page.
   memMib: 2048
-  # floor 0: unlike bazel-query this is called occasionally by an agent, not on a
-  # hot path, so a miss paying a restore (about 250ms cold spawn worst case) is
+  # floor 0: agents call this occasionally, so a miss paying a restore
+  # (about 250ms cold spawn worst case) is
   # the right trade. floor is a PER-BRICK multiplier, so a non-zero floor at
   # 2048 MiB would reserve capacity on every brick for a tool that is idle most
   # of the time.
@@ -958,15 +883,6 @@ workloads:
   scratchPostgres:
     rootfsPath: /var/lib/embervm/scratch/embervm-noded/scratch-postgres/rootfs.ext4
     harnessInit: /usr/local/bin/ember-postgres-init
-  # Bazel Skyframe query demo base (ADR embervm/010). Its PID-1 ember-bazel-init
-  # mounts a large tmpfs at /tmp, runs the warming `bazel cquery //absl/...`
-  # offline (distdir), and only flips /shim/ready after the warming CLIENT exits
-  # so BuildBase snapshots the warm JVM (analysis graph resident in heap). The key
-  # must match the top-level `bazelQuery` block below (the deployment ranges over
-  # `workloads` and looks the guest image up by the same key).
-  bazelQuery:
-    rootfsPath: /var/lib/embervm/scratch/embervm-noded/bazel-query/rootfs.ext4
-    harnessInit: /usr/local/bin/ember-bazel-init
   # Website snapshotter base (ADR embervm/035). Its PID-1 ember-shotter-init
   # launches headless Chromium, waits for the CDP endpoint to answer, and only
   # then flips /shim/ready, so BuildBase snapshots a browser that is already
@@ -1114,18 +1030,6 @@ scratchPostgres:
 # requires the 1Password item (scratchK8s.onepassword.itemPath) so the stable
 # EMBER_GROUP_SECRET exists.
 
-# The bazel-query base image (ADR embervm/010: the Skyframe snapshot demo), Bazel-
-# pinned (helm_chart images="bazelQuery.guestImage") from its .info provider.
-# Distinct FLAT top-level key (never nested) so the image pin does not collide on
-# YAML parse (D14a.6). Three refs derive from here and always match: the rootfs-
-# builder GUEST_IMAGE, the derived EMBERVM_NODED_IMAGES entry, and the Workload
-# CR's source.image.ref.
-bazelQuery:
-  guestImage:
-    repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/bazel
-    tag: latest
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
-
 # The shotter base image (ADR embervm/035: the website snapshotter), a warm
 # headless Chromium. Bazel-pinned (helm_chart images="shotter.guestImage") from
 # its .info provider. Distinct FLAT top-level key (never nested) so the image pin
@@ -1194,22 +1098,16 @@ demoPostgres:
 statefulSweeper:
   sweepIntervalMs: ""
   wakeMax: ""
+  # Resident-memory hysteresis for pressure banking, which always runs.
   pressureBanking:
-    # Lane lands off and is armed by a later values-only change after live verification.
-    # Cross-brick stateful relight is currently broken (#5502) and every extra bank
-    # is another exposure to it.
-    enabled: false
     highWaterFraction: 0.85
     lowWaterFraction: 0.70
     idleFloorMs: 5000
     sessionPressureIdleFloorMs: 60000
 
-# gRPC connection sweep gate for orphaned channels. Empty means off: the
-# sweeper only logs what it would clean up and leaves connections untouched.
-# Set enabled to "1" or "true" to arm the destructive sweep, which terminates
-# orphaned connections. This is a deploy values gate, not an application default.
+# Orphaned gRPC connection sweep, always on. Empty interval uses the 60s
+# application default.
 grpcConnectionSweeper:
-  enabled: ""
   sweepIntervalMs: ""
 
 # Base-retention sweep gate (base-durability PR-3, control-plane env). Empty
@@ -1283,6 +1181,9 @@ envelopeRewrap:
 warmthS3Gc:
   allowEmptyKinds: ""
   enabled: ""
+  # Separate destructive opt-in for new, explicitly registered capture exports.
+  # Does not arm cleanup of legacy workspaces or any other resource class.
+  captureEvidenceEnabled: false
   generationRetentionCap: 1
   maxPrefixes: ""
   maxBytes: ""
@@ -1292,28 +1193,6 @@ warmthS3Gc:
   sessionWorkspaceTtlMs: ""
   groupSetTtlMs: ""
   intervalMs: ""
-
-# Durability health surface (#4338, ADR embervm/031): the CP-side detector
-# behind GET /v1/health/durability. Tier 1 latches unhealthy on a sustained
-# per-kind artifact-export failure streak read from node capacity facts
-# (~minutes, not hours); tier 2 degrades when the newest gc-manifests/ object
-# exceeds 24h + sweepIntervalMs. BOTH tiers end in the health surface (the
-# monolith ember-durability component reads this endpoint); missing data reads
-# unknown, never green. DARK by default per the standing rule that a
-# health-affecting detector lands suspend:true and flips on only after live
-# verification: enabled "" means no evaluation runs and the route answers 404.
-# Flip to "1" only after verifying against live fleet facts; flipping back to
-# "" is the entire rollback lever. expectedNodes is the fleet contract for
-# tier 1's freshness check (empty = tier 1 always unknown), roundIntervalMs /
-# streakThreshold tune the streak window (module defaults 30000ms x 10 rounds,
-# i.e. ~5 minutes sustained), and gcSweepIntervalMs must match warmthS3Gc
-# intervalMs so the stall bound tracks the GC cadence.
-durabilityHealth:
-  enabled: ""
-  expectedNodes: []
-  roundIntervalMs: ""
-  streakThreshold: ""
-  gcSweepIntervalMs: ""
 
 # The rootfs-builder tool image (crane + e2fsprogs + bash) that bakes each
 # workload's guest OCI image into an ext4 base rootfs at pod init. Reuses the
@@ -1334,6 +1213,10 @@ rootfsBuilder:
   # digest-only local files and remote objects are the implicit legacy b1 and
   # remain untouched for banked sessions.
   bakeFormatVersion: b2
+  # Dev opt-in: stamp the immutable guest digest inside the baked rootfs.
+  # The effective cache format becomes b3; retain the generic b2 value so
+  # charts without stamp support keep their original cache namespace.
+  stampImageDigest: false
   # Opt-in only until Linux and live validation complete. False preserves the
   # legacy one-init-container-per-workload sequence, including baking every
   # image on every brick. True renders one driver that runs independent bakes
@@ -1509,15 +1392,6 @@ noded:
   # Keep this aligned with noded's daemon fallback.
   memRejectFloorMib: 512
 
-  # Use Firecracker dirty-page diffs for repeated memory banks. Disabled by
-  # default until the staged XFS path in #5699 is validated on a dev node and
-  # the #4970 demo-postgres rollout records latency and correctness. The merge
-  # helper uses FICLONE on capable storage and falls back to a byte copy on ext4.
-  diffBanking: false
-  # Comma-separated workload allowlist for dirty tracking at both Prime and
-  # Relight. Keep task and park-only workloads outside the diff path.
-  diffBankingWorkloads: sandbox-session
-
   # New banks write bundle.json v1 with the ext4 UUID of their actual rootfs.
   # Keep rejection off for the observation roll: unstamped v0 is always
   # grandfathered, while invalid stamped v1 bundles are logged. A staged values
@@ -1672,11 +1546,6 @@ noded:
     # Watches GCE's instance/preempted metadata value with hanging GETs. Landed
     # off so a deployment can verify the mechanism before arming it in values.
     preemptionNoticeEnabled: false
-    # Keep the artifact export and restore workers running after SIGTERM so the
-    # drain can actually move parked workspaces and banked sessions into the
-    # store. Off, the workers stop with the signal and every drain export fails
-    # "context canceled", so a parked session can only relight on its own node.
-    exportsOutliveSignal: false
     # GCE's approximately 30s Spot shutdown period, less notice-observation
     # latency and noded's final stop, leaves 20s to publish to the control plane.
     # Re-derive this from the GCE contract if that contract changes. Do not tune
@@ -1727,15 +1596,6 @@ noded:
     # rootfs.ext4.sha256 in that identity prefix names the complete payload.
     # Remote retention remains default-off staged follow-up work on #5772.
     bucket: embervm
-    # Reader support shipped while writer compression remained inert, the first
-    # phase of the two-phase rollout. Every brick in the fleet now runs a daemon
-    # that honors the per-file zstd marker, so the arming precondition is met and
-    # new objects can be compressed safely.
-    compress: true
-    # EMBERVM_NODED_STORE_ENCRYPT. Phase 1 ships the reader fleet-wide with the
-    # writer inert. Arm only after every daemon can read enveloped artifacts and
-    # the control plane wrap endpoint is available.
-    encrypt: false
     # Optional override for the daemon's retry suppression period after an
     # artifact-specific control-plane wrap refusal. Empty uses the Go default.
     unexportableTTL: ""
@@ -1757,11 +1617,6 @@ noded:
   # issuer of volume generations. noded rejects an unblessed writable attach
   # (blessed_generation == 0) FAILED_PRECONDITION unconditionally; the
   # EMBERVM_NODED_REQUIRE_BLESSING rollout gate was collapsed in #4950.
-
-  # EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY. Phase 1 validates restore
-  # capabilities with enforcement inert. Arm only after the control plane
-  # supplies a capability on every enveloped restore.
-  requireRestoreCapability: false
 
   # 256Mi req / 36Gi limit (Task 14b full side-by-side). The limit is a cgroup
   # OOM CEILING, not a scheduling reservation (the request stays 256Mi), so it
@@ -2161,6 +2016,8 @@ egress:
   #
   #   - header: Authorization                      # a POOL of grants, more than one
   #     valuePrefix: "Bearer "                     # account on the same provider. The
+  #     grantPolicy: prefer-first                 # optional: exactly two Codex grants;
+  #                                              # applies to every guest on the brick.
   #     brokerGrants: [codex-a, codex-b]           # sidecar picks the active grant per
   #     egressTo: [chatgpt.com]                    # connection by remaining quota in
   #     quotaProvider: codex                       # 25% bands with hysteresis (see

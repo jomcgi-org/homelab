@@ -5,7 +5,7 @@ image:
 
 replicas: 1
 
-# Repository-only staging for #7002. Enable in a later authorized PR.
+# Opt-in defaults for #7002. The GKE overlay enables the shared checker.
 # Scheduling, image and resources retain the existing loom.backupCheck keys;
 # one job serves these targets and conditionally Loom, never two jobs.
 backupCheck:

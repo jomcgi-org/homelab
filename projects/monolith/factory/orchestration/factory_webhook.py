@@ -15,6 +15,7 @@ import os
 import re
 from datetime import datetime
 
+from core.env import flag
 from core.db import get_session
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
@@ -47,7 +48,7 @@ _SUPPORTED_ACTIONS = frozenset(
 
 
 def webhook_enabled() -> bool:
-    return os.getenv("FACTORY_GITHUB_WEBHOOK_ENABLED", "false").lower() == "true"
+    return flag("FACTORY_GITHUB_WEBHOOK_ENABLED")
 
 
 def webhook_repository() -> str:

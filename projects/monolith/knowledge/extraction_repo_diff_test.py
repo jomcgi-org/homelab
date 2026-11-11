@@ -59,6 +59,7 @@ def session_fixture(tmp_path):
                         next_run_at TIMESTAMP,
                         last_run_at TIMESTAMP,
                         last_status TEXT,
+                        locked_by TEXT,
                         payload TEXT,
                         created_by TEXT
                     )
@@ -556,21 +557,15 @@ def test_postgres_cursor_sql_qualifies_schema_and_casts_jsonb():
     }
 
 
-def test_repo_diff_job_registration_follows_flag(session, monkeypatch):
-    monkeypatch.setenv("KG_REPO_DIFF_ENABLED", "true")
+def test_repo_diff_job_registration(session):
     assert ensure_repo_diff_job(session) is True
     session.commit()
     job = session.execute(text("SELECT interval_secs, payload FROM routine_jobs")).one()
     assert job.interval_secs == 3600
     assert json.loads(job.payload) == {"mode": "repo-diff", "last_sha": None}
-    monkeypatch.setenv("KG_REPO_DIFF_ENABLED", "false")
-    assert ensure_repo_diff_job(session) is True
-    session.commit()
-    assert session.execute(text("SELECT name FROM routine_jobs")).all() == []
 
 
-def test_unknown_scout_hold_survives_feature_flag_toggle(session, monkeypatch):
-    monkeypatch.setenv("KG_REPO_DIFF_ENABLED", "true")
+def test_unknown_scout_hold_survives_reregistration(session):
     assert ensure_repo_diff_job(session) is True
     session.execute(
         text("""
@@ -580,10 +575,8 @@ def test_unknown_scout_hold_survives_feature_flag_toggle(session, monkeypatch):
     """)
     )
     session.commit()
-    for enabled in ("false", "true"):
-        monkeypatch.setenv("KG_REPO_DIFF_ENABLED", enabled)
-        assert ensure_repo_diff_job(session) is False
-        session.commit()
+    assert ensure_repo_diff_job(session) is False
+    session.commit()
     row = session.execute(text("SELECT * FROM routine_jobs")).one()
     assert row.next_run_at is None
     assert row.last_status == "invocation_outcome_unknown"

@@ -8,7 +8,6 @@ export const PHASES = {
   out: [0.96, 1],
 };
 
-export const CHAT_REVEAL = 0.022;
 export const CHAT_SCHEDULE = [
   [0.08, "wake"],
   [0.14, "wake"],
@@ -94,8 +93,3 @@ export const CALLS = {
     },
   ],
 };
-
-export const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
-export const sub = (t, a, b) => clamp((t - a) / (b - a), 0, 1);
-export const easeInOut = (p) =>
-  p < 0.5 ? 2 * p * p : 1 - (-2 * p + 2) ** 2 / 2;

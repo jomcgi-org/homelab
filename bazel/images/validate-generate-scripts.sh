@@ -155,7 +155,7 @@ if [ "$FAILED" -ne 0 ]; then
 	echo "To fix:"
 	echo "  1. Check which BUILD files changed (new targets added/removed/renamed)"
 	echo "  2. Update the corresponding generate script in bazel/images/ to match"
-	echo "  3. Re-run 'format' to regenerate the BUILD files"
+	echo "  3. Run './bazel/images/generate-push-all.sh' to regenerate the image BUILD files"
 	echo "  4. Verify locally with: bash bazel/images/validate-generate-scripts.sh"
 	exit 1
 fi

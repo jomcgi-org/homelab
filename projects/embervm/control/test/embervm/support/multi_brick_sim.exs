@@ -609,15 +609,12 @@ defmodule Embervm.MultiBrickSim do
 
     path = Path.join(System.tmp_dir!(), "embervm_msim_#{suffix}.db")
     {:ok, op_log} = SQLite.start_link(name: nil, path: path)
-    {:ok, writer} = Embervm.AsyncWriter.start_link(name: nil)
 
     {:ok, store} =
       SessionStore.start_link(
         name: nil,
         op_log: op_log,
-        op_log_mod: SQLite,
-        async_writer: writer,
-        async_lifecycle_writes: false
+        op_log_mod: SQLite
       )
 
     registry = :"msim_reg_#{suffix}"
@@ -705,8 +702,6 @@ defmodule Embervm.MultiBrickSim do
         delete_session_volume_fun: fn _ch, _req -> {:ok, %{}} end,
         expected_instances_fun: fn -> %{} end,
         session_opts: session_opts,
-        async_writer: writer,
-        async_lifecycle_writes: false,
         op_log: op_log,
         op_log_mod: SQLite,
         tenant: "homelab",
@@ -792,7 +787,6 @@ defmodule Embervm.MultiBrickSim do
         disp_name: disp_name,
         task_store: task_store,
         store: store,
-        writer: writer,
         op_log: op_log,
         path: path,
         registry_pid: registry_pid,
@@ -816,7 +810,7 @@ defmodule Embervm.MultiBrickSim do
     # Managers first, so a worker still blocked in a fake RPC is never finished
     # as a crash (which would audit a denial into the application's Metering).
     for pid <-
-          [sim.ctx.callers, sim.ctx.mgr, sim.ctx.disp, sim.ctx.task_store, sim.ctx.bc, sim.ctx.store, sim.ctx.writer] ++
+          [sim.ctx.callers, sim.ctx.mgr, sim.ctx.disp, sim.ctx.task_store, sim.ctx.bc, sim.ctx.store] ++
             [sim.ctx.sup, sim.ctx.registry_pid, sim.ctx.op_log, sim.ctx.deployments] do
       Embervm.TestProcess.stop_safely(pid)
     end

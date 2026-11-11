@@ -13,6 +13,9 @@
  * (.sheet) every technical-drawing page is built from.
  */
 
+/* Token-only chrome can coexist with full-screen tools without opting their
+ * document into the .td page typography and scrolling contract. */
+.td-chrome,
 .td {
   --sheet: #ffffff;
   --paper: #f3f1ea;
@@ -52,6 +55,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .td-chrome,
   :root:not([data-theme="light"]) .td {
     --sheet: #181a20;
     --paper: #14151b;
@@ -72,6 +76,7 @@
   }
 }
 
+:root[data-theme="dark"] .td-chrome,
 :root[data-theme="dark"] .td {
   --sheet: #181a20;
   --paper: #14151b;
@@ -402,13 +407,16 @@ body:has(.td) {
 }
 
 /* ── Panels ──
-   Content lives in outlined panels: each record is one 1px ink-bordered
-   panel with 1px --stroke partitions between its head band, lead, rows
-   and body. Text floating between horizontal rules was tried and vetoed
-   twice: rules alone read as noise, panels read as a diagram. */
+   Content lives in panels that a tinted head band opens; the sheet itself
+   is the ground. Strokes run between things, never around them: the band,
+   the body and each row draw one horizontal hairline, and nothing draws a
+   vertical edge. The 1px ink outline around every record was dropped on
+   2026-11-03 after Joe compared the homepage, one housing with strokes
+   only at object edges, against the sheet pages, where one fact sat
+   inside four nested strokes. Rules alone, with no band, were tried
+   earlier and vetoed as noise; the band is what carries the structure. */
 
 .sheet .edition {
-  border: 1px solid var(--ink);
   scroll-margin-top: 1.5rem;
 }
 
@@ -416,10 +424,10 @@ body:has(.td) {
   margin-top: 1.5rem;
 }
 
-/* Records that are one continuous ruled list share their borders: the
-   tinted head band is the separator. */
+/* Records that are one continuous ruled list run on: the tinted head
+   band is the separator. */
 .sheet .editions.ruled > .edition + .edition {
-  margin-top: -1px;
+  margin-top: 0;
 }
 
 /* The head band: structure reads from ground colour before the rules are
@@ -519,19 +527,20 @@ body:has(.td) {
   border-top: 1px solid var(--stroke);
 }
 
-/* A row of plain links closing a panel: one divided value, each cell its
-   own control. */
+/* A row of plain links closing a panel: spaced mono words under one
+   rule, as the homepage footer draws them. Cells divided by rules were
+   dropped with the panel outline (2026-11-03). */
 .sheet .ed-foot {
   display: flex;
   flex-wrap: wrap;
+  gap: 0.35em 1.4em;
+  padding: 0.6em 1rem;
   border-top: 1px solid var(--stroke);
   font-family: var(--font-code);
   font-size: 0.72rem;
 }
 
 .sheet .ed-foot a {
-  padding: 0.6em 1rem;
-  border-right: 1px solid var(--stroke);
   color: var(--ink-2);
   text-decoration: none;
 }
@@ -541,9 +550,10 @@ body:has(.td) {
 }
 
 /* ── Spec table ──
-   Metadata rows: a fixed mono label column with its own vertical rule,
-   the value flowing left beside it (right-aligned values wrap ragged
-   against a gulf and were vetoed), one hairline per row. */
+   Metadata rows: a fixed mono label column, the value flowing left beside
+   it (right-aligned values wrap ragged against a gulf and were vetoed),
+   one hairline per row. The typeface change separates the columns; the
+   vertical rule the value cell drew was dropped on 2026-11-03. */
 .sheet .spec {
   margin: 0;
   border-top: 1px solid var(--stroke);
@@ -572,17 +582,14 @@ body:has(.td) {
 .sheet .spec dd {
   margin: 0;
   padding: 0.55em 1rem 0.55em 1.2em;
-  /* Label column rule, drawn by the value cell so it spans row height. */
-  border-left: 1px solid var(--line);
   color: var(--ink);
   font-size: 0.88rem;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
-/* Inside a body the table runs to the panel's edges so its rules join the
-   outline, and a body that ends on it ends on the panel's own border: no
-   strip of sheet between the last rule and the outline. */
+/* Inside a body the table runs to the panel's edges so its rules span the
+   measure, and a body that ends on it ends on the last row. */
 .sheet .ed-body > .spec,
 .sheet .prose > .spec {
   margin: 1rem -1rem;
@@ -611,22 +618,22 @@ body:has(.td) {
 }
 
 /* ── Divided row ──
-   Repeated values render as one divided value: cells in a full-width row
-   separated by hairlines, the row supplying the frame. Each cell draws its
-   own top and left rule and the row tucks under the rule above it, so the
-   grid closes on the panel wall and the last row ends on the panel border. */
+   Repeated values render as one row of spaced mono words under a single
+   hairline, the way the homepage footer lists its links. The cell grid
+   (each value boxed by a top and left rule) was dropped on 2026-11-03: a
+   list of ten words is not a table. */
 .sheet .divided {
   display: flex;
   flex-wrap: wrap;
-  margin: -1px 0 0 -1px;
-  padding: 0;
+  gap: 0.3em 1.4em;
+  margin: 0;
+  padding: 0.55em 1rem;
+  border-top: 1px solid var(--line);
   list-style: none;
 }
 
 .sheet .divided > li {
-  padding: 0.45em 0.9em;
-  border-top: 1px solid var(--line);
-  border-left: 1px solid var(--line);
+  padding: 0;
   color: var(--ink-2);
   font-family: var(--font-code);
   font-size: 0.72rem;
@@ -894,13 +901,11 @@ body:has(.td) {
   counter-increment: fig;
 }
 
-/* The drawing is flush with the panel: its partitions meet the panel
-   walls and the figure's rules, and those four lines are its outline. */
+/* The drawing sits between the figure's two rules; its parts carry
+   their own outlines, so the art draws no frame of its own. */
 .sheet .prose .fig-art {
   padding: 0;
   overflow-x: auto;
-  margin-right: -1px;
-  border-right: 1px solid var(--ink);
   color: var(--ink);
 }
 

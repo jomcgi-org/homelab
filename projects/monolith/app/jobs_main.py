@@ -31,6 +31,7 @@ from pathlib import Path
 
 import typer
 
+from core import job_tracing
 from core.log import configure_logging as _configure_shared_logging
 
 logger = logging.getLogger("monolith.jobs")
@@ -239,45 +240,12 @@ def _price_raws_backfill_core(
 def _setup_otel():
     """Install tracing for one-shot jobs when an OTLP endpoint is configured."""
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
-    if not endpoint:
-        return None
-
-    try:
-        from opentelemetry import trace
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-            OTLPSpanExporter,
-        )
-        from opentelemetry.sdk.resources import Resource
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
-        provider = TracerProvider(
-            resource=Resource.create({"service.name": "monolith-jobs"})
-        )
-        provider.add_span_processor(
-            BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint))
-        )
-        trace.set_tracer_provider(provider)
-        logger.info("OpenTelemetry instrumentation enabled")
-        return provider
-    except Exception:
-        logger.warning("Failed to initialize OpenTelemetry", exc_info=True)
-        return None
+    return job_tracing.setup(endpoint, "monolith-jobs", logger)
 
 
 def _shutdown_otel(provider) -> None:
     """Flush job spans without allowing telemetry to change the exit status."""
-    if provider is None:
-        return
-    try:
-        if not provider.force_flush():
-            logger.warning("OpenTelemetry force_flush timed out")
-    except Exception:
-        logger.warning("Failed to flush OpenTelemetry", exc_info=True)
-    try:
-        provider.shutdown()
-    except Exception:
-        logger.warning("Failed to shut down OpenTelemetry", exc_info=True)
+    job_tracing.shutdown(provider, logger)
 
 
 @app.command("ember-codex-synthetic-trigger")
@@ -507,13 +475,11 @@ def knowledge_review_admission(
     import httpx
     from sqlmodel import Session
 
+    from core.clock import utc_now as clock
     from core.db import get_engine
     from core.github import GITHUB_REPO
     from knowledge.review_admission import Limits, run_admission
     from knowledge.review_verifier import GitHubVerifier, httpx_fetcher
-
-    def clock() -> datetime:
-        return datetime.now(timezone.utc)
 
     token = os.environ.get("GITHUB_API_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
     with httpx.Client(timeout=20.0, follow_redirects=True) as client:
@@ -1026,6 +992,12 @@ def grimoire_verify_entities() -> None:
 def stars_load_grid() -> None:
     """Reload the stars site grid from S3 (one-shot of stars.load_grid)."""
     _run_job("stars-load-grid", "stars.grid", "load_grid_handler")
+
+
+@app.command("stars-aurora")
+def stars_aurora() -> None:
+    """Refresh the bounded aurora snapshot with independent provider caches."""
+    _run_job("stars-aurora", "stars.aurora_job", "aurora_handler")
 
 
 @app.command("stars-refresh")

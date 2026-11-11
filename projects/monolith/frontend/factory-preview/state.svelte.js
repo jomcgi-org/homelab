@@ -1,6 +1,15 @@
 import fixtures from "./.generated/pages.json";
+import { executionLocation } from "./execution-stores.js";
 const input = new URL(location.href).searchParams;
-const views = new Set(["overview", "activity", "context", "chapter", "search"]);
+const views = new Set([
+  "overview",
+  "activity",
+  "context",
+  "chapter",
+  "search",
+  "execution",
+  "drain",
+]);
 const scenarios = new Set(["live", "empty", "error"]);
 export const fixture = $state({
   view: views.has(input.get("view")) ? input.get("view") : "overview",
@@ -16,6 +25,13 @@ export const page = $state({
 });
 
 export function syncPage() {
+  if (["execution", "drain"].includes(fixture.view)) {
+    executionLocation(
+      fixture.view,
+      new URL(location.href).searchParams.get("selection") || "",
+    );
+    return;
+  }
   const route =
     fixture.view === "overview"
       ? ""
@@ -32,7 +48,10 @@ syncPage();
 
 export function navigate(url) {
   const target = new URL(url, location.href);
-  if (target.pathname === "/slop/factory") fixture.view = "overview";
+  if (target.pathname === "/factory/execution") fixture.view = "execution";
+  else if (target.pathname === "/factory/execution/drain")
+    fixture.view = "drain";
+  else if (target.pathname === "/slop/factory") fixture.view = "overview";
   else if (target.pathname === "/slop/factory/activity")
     fixture.view = "activity";
   else if (target.pathname === "/slop/factory/context") {
@@ -47,6 +66,8 @@ export function navigate(url) {
     view: fixture.view,
     scenario: fixture.scenario,
   });
+  if (["execution", "drain"].includes(fixture.view))
+    physical.searchParams.set("selection", target.search);
   history.pushState({}, "", physical);
   syncPage();
   return true;

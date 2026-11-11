@@ -17,8 +17,8 @@ public tier on plain SQL over granted tables.
 from __future__ import annotations
 
 import re
-from core.clock import as_utc, iso
-from datetime import datetime, timezone
+from core.clock import as_utc, iso_z, utc_now
+from datetime import datetime
 
 from sqlalchemy import Column, DateTime, Integer, JSON
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
@@ -33,10 +33,6 @@ MAX_STATEMENT_CHARS = 280
 _ISSUE_REF_RE = re.compile(r"#(\d+)")
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 class FactoryGoal(SQLModel, table=True):
     __tablename__ = "factory_goals"
     __table_args__ = {"schema": "observability", "extend_existing": True}
@@ -46,7 +42,7 @@ class FactoryGoal(SQLModel, table=True):
     issue_numbers: list[int] = Field(default_factory=list, sa_column=Column(_INT_ARRAY))
     declared_by: str
     declared_at: datetime = Field(
-        default_factory=_utc_now,
+        default_factory=utc_now,
         sa_type=DateTime(timezone=True),
     )
     active: bool = True
@@ -66,11 +62,6 @@ class FactoryGoalIssue(SQLModel, table=True):
         default=None, sa_type=DateTime(timezone=True)
     )
     snapshotted_at: datetime = Field(sa_type=DateTime(timezone=True))
-
-
-def _iso(value: datetime | None) -> str | None:
-    stamp = iso(value)
-    return None if stamp is None else stamp.replace("+00:00", "Z")
 
 
 def validate_goals(goals: list[dict], declared_by: str) -> list[dict]:
@@ -124,7 +115,7 @@ def score_goals(
     issues: list[dict] | None = None,
 ) -> list[dict]:
     """Score declared goals against merged PRs, newest declaration first."""
-    now_utc = as_utc(now) or _utc_now()
+    now_utc = as_utc(now) or utc_now()
     issues_by_number = {row["number"]: row for row in issues or []}
     scored = []
     for goal in goals:
@@ -163,7 +154,7 @@ def score_goals(
                 "statement": goal.get("statement"),
                 "issue_numbers": sorted(linked),
                 "declared_by": goal.get("declared_by"),
-                "declared_at": _iso(declared_at),
+                "declared_at": iso_z(declared_at),
                 "age_days": age_days,
                 "stale": age_days is None or age_days > STALE_AFTER_DAYS,
                 "linked_issues": len(linked),
@@ -171,7 +162,7 @@ def score_goals(
                 "issues_closed": sum(row["state"] == "CLOSED" for row in snapshots),
                 "issues_unknown": len(linked) - len(snapshots),
                 "merged_refs": len(refs),
-                "last_activity": _iso(max(hit_times)) if hit_times else None,
+                "last_activity": iso_z(max(hit_times)) if hit_times else None,
             }
         )
     scored.sort(key=lambda row: row["declared_at"] or "", reverse=True)

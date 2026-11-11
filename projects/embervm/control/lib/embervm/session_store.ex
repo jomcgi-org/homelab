@@ -36,8 +36,10 @@ defmodule Embervm.SessionStore do
   terminal session rejects every token (the capability dies with the session).
   """
 
+  require Logger
   use GenServer
 
+  alias Embervm.InstanceTable
   alias Embervm.OpLog.Op
   alias Embervm.{SessionId, SessionState}
 
@@ -68,6 +70,23 @@ defmodule Embervm.SessionStore do
   @record_invoke_started_timeout_ms 25_000
 
   # -- Client API ------------------------------------------------------------
+
+  def session_cessation_evidence(store, session_id, expected, principal) do
+    Embervm.OpLog.safe_server_call(store, {:session_cessation_evidence, session_id, expected, principal}, 45_000)
+  end
+
+  def preview_recovery_fence(store, id, request, principal, now) do
+    Embervm.OpLog.safe_server_call(store, {:preview_recovery_fence, id, request, principal, now}, 45_000)
+  end
+
+  def apply_recovery_fence(store, id, request, principal, now, preview) do
+    Embervm.OpLog.safe_server_call(store, {:apply_recovery_fence, id, request, principal, now, preview}, 45_000)
+  end
+
+  def session_restore_allowed(store, lineage) do
+    Embervm.OpLog.safe_server_call(store, {:session_restore_allowed, lineage}, 45_000)
+  end
+
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -117,21 +136,6 @@ defmodule Embervm.SessionStore do
   end
 
   @doc """
-  Like `transition/6`, but the durable append may be DEFERRED to Embervm.AsyncWriter
-  when `EMBERVM_ASYNC_LIFECYCLE_WRITES` is on (ADR embervm/014 decision 2). Used only
-  for the wake hot-path `session_relit`: the ETS row (state + residency +
-  `node_id`/`vm_id` from `updates`) is advanced synchronously so the woken session is
-  immediately routable and adoption sees it, and the durable append lands afterward.
-  `vm_id` registers the pending write for the reconciler's adopt-and-backfill
-  discriminator. Gate off: identical to `transition/6` (write-through).
-  """
-  @spec transition_lifecycle(GenServer.server(), String.t(), atom(), atom(), map(), map(), binary() | nil) ::
-          {:ok, map()} | {:error, term()}
-  def transition_lifecycle(store \\ __MODULE__, session_id, event, op_kind, payload, updates, vm_id) do
-    GenServer.call(store, {:transition_lifecycle, session_id, event, op_kind, payload, updates, vm_id})
-  end
-
-  @doc """
   Applies a TRANSIENT FSM edge to a session WITHOUT an op-log append: the ETS-only
   move into a mid-operation state (`banking`, `relighting`) that a crash heals from
   node inventory rather than from the durable log (there is no `session_banking`/
@@ -172,9 +176,8 @@ defmodule Embervm.SessionStore do
 
   @doc """
   Durably stamps the start of an invoke before its worker is spawned. This is a
-  synchronous write even when async lifecycle writes are enabled because the
-  stamp authorizes recovery code to destroy a guest and must survive a control
-  plane restart.
+  synchronous write because the stamp authorizes recovery code to destroy a
+  guest and must survive a control plane restart.
 
   The optional caller dispatch identity is stored verbatim. When absent, the
   store derives it from the newly allocated start timestamp, so the guest and
@@ -289,6 +292,19 @@ defmodule Embervm.SessionStore do
   end
 
   @doc """
+  Recover a completed bank from an owned node inventory entry. Appends the
+  recovered snapshot facts before changing ETS, counts or residency. Repeated
+  matching inventory is a no-op. Inventory cannot replace an existing snapshot
+  identity or resurrect a terminal, destroying or parked session.
+
+  NodeStatus carries no generation or parent-base provenance. Keep the durable
+  row's generation and base identity instead of inferring either from a ref.
+  """
+  def adopt_banked(store, session_id, node_id, snapshot) do
+    GenServer.call(store, {:adopt_banked, session_id, node_id, snapshot})
+  end
+
+  @doc """
   Adoption: rebind a session the node reports as a LIVE VM to `{node_id, vm_id}`,
   writing the residency fact and the ETS row's `vm_id`/`node_id` WITHOUT an FSM
   transition or an op-log append (residency is a lossy fact the node owns, not
@@ -300,13 +316,12 @@ defmodule Embervm.SessionStore do
   end
 
   @doc """
-  Re-drive the durable `session_created` append for a session whose ETS row
-  survived but whose deferred async append was lost (ADR embervm/014 decision 2's
-  adopt-and-backfill repair, called by the reconciler). Reconstructs the op from
-  the live ETS row and appends it SYNCHRONOUSLY (reconcile is not a hot path, and a
-  synchronous append guarantees the durable row lands before the next pass). The
-  projection is INSERT OR IGNORE, so a re-drive that races the original append (or
-  runs twice) is idempotent. A no-op / `:error` for an unknown session.
+  Re-drive the durable `session_created` append from a surviving ETS row.
+  This helper has no production caller; tests invoke it directly. Production
+  reconciliation destroys rowless session VMs and never calls this helper.
+  A direct call appends synchronously and preserves the original ownership
+  fields. INSERT OR IGNORE keeps repeated calls idempotent. An unknown session
+  returns `{:error, {:not_found, session_id}}`.
   """
   @spec backfill_created(GenServer.server(), String.t()) :: :ok | {:error, term()}
   def backfill_created(store \\ __MODULE__, session_id) do
@@ -338,6 +353,15 @@ defmodule Embervm.SessionStore do
     GenServer.call(store, {:list, workload, opts})
   end
 
+  @doc "Durable residency demand, serialized with session invoke and bank decisions."
+  def residency_intent(store, command) do
+    GenServer.call(store, {:residency_intent, command}, @record_invoke_started_timeout_ms)
+  end
+
+  def record_residency_handoff(store, session_id, dispatch_id, request, identity) do
+    GenServer.call(store, {:residency_handoff, session_id, dispatch_id, request, identity}, @record_invoke_started_timeout_ms)
+  end
+
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true
@@ -353,12 +377,6 @@ defmodule Embervm.SessionStore do
     # %{principal, ts, stats}, so Embervm.Metering charges the quota cache off the
     # same write, exactly like TaskStore. No-op default (unit tests wire none).
     on_metered = Keyword.get(opts, :on_metered, fn _event -> :ok end)
-    # Off-hot-path wake writes (ADR embervm/014 decision 2). session_relit may be
-    # deferred after the ETS row advances. session_created remains write-through
-    # because it establishes durable VM ownership. Invoke, bank, and terminal ops
-    # also remain synchronous.
-    async_writer = Keyword.get(opts, :async_writer, Embervm.AsyncWriter)
-    async_lifecycle_writes = Keyword.get(opts, :async_lifecycle_writes, false)
 
     sessions = :ets.new(@sessions_table, [:set, :private])
     residency = :ets.new(@residency_table, [:set, :private])
@@ -370,17 +388,21 @@ defmodule Embervm.SessionStore do
       clock: clock,
       id_fun: id_fun,
       on_metered: on_metered,
-      async_writer: async_writer,
-      async_lifecycle_writes: async_lifecycle_writes,
       sessions: sessions,
       residency: residency,
       idem: idem,
+      residency_intents: %{},
+      residency_work: %{},
+      residency_keys: %{},
+      residency_order: 0,
+      residency_totals: %{restore_attempts: 0, invocation_starts: 0},
+      residency_uncertain: false,
       # workload -> %{live, banked}, kept in step with the hot set on every write.
       counts: %{}
     }
 
     case rebuild(state) do
-      {:ok, state} -> {:ok, state}
+      {:ok, state} -> rebuild_residency(state)
       {:error, reason} -> {:stop, {:rebuild_failed, reason}}
     end
   end
@@ -406,6 +428,16 @@ defmodule Embervm.SessionStore do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp rebuild_residency(state) do
+    case state.op_log_mod.load_residency_intents(state.op_log) do
+      {:ok, rows} ->
+        empty = %{state | residency_intents: %{}, residency_work: %{}, residency_keys: %{},
+          residency_order: 0, residency_totals: %{restore_attempts: 0, invocation_starts: 0}, residency_uncertain: false}
+        {:ok, Enum.reduce(rows, empty, &index_residency(&2, &1))}
+      {:error, reason} -> {:stop, {:residency_rebuild_failed, reason}}
     end
   end
 
@@ -452,6 +484,7 @@ defmodule Embervm.SessionStore do
       idempotency_key: Map.get(row, :idempotency_key),
       stop_intent: Map.get(row, :stop_intent),
       stop_completion: Map.get(row, :stop_completion),
+      recovery_fence: Map.get(row, :recovery_fence),
       turn_seq: Map.get(row, :turn_seq, 0),
       interrupted_turn: Map.get(row, :interrupted_turn)
     }
@@ -481,6 +514,27 @@ defmodule Embervm.SessionStore do
     do_create(attrs, state)
   end
 
+  def handle_call({:residency_intent, command}, _from, state) do
+    case refresh_residency(state) do
+      {:ok, state} -> residency_command(command, state)
+      _ -> {:reply, {:error, :unavailable}, state}
+    end
+  end
+
+  def handle_call({:residency_handoff, session_id, dispatch_id, request, identity}, _from, state) do
+    with {:ok, state} <- refresh_residency(state),
+         {:ok, session} <- fetch(state, session_id),
+         {:ok, intent} <- scoped_intent(state, session, request.operation_id) do
+      case Embervm.ResidencyIntent.handoff(intent, session, request.epoch, dispatch_id, identity, state.clock.()) do
+        {:ok, consumed} -> do_record_invoke_started(state, session_id, dispatch_id, consumed)
+        {:not_dispatched, reason} -> reject_residency_dispatch(state, session, intent, dispatch_id, reason)
+        {:error, reason} -> {:reply, {:error, reason}, state}
+      end
+    else
+      _ -> {:reply, {:error, :unavailable}, state}
+    end
+  end
+
   def handle_call({:begin_exact_destroy, session_id, intent}, _from, state) do
     case fetch(state, session_id) do
       {:ok, session} ->
@@ -499,14 +553,6 @@ defmodule Embervm.SessionStore do
 
   def handle_call({:transition, session_id, event, op_kind, payload, updates}, _from, state) do
     do_transition(state, session_id, event, op_kind, payload, updates)
-  end
-
-  def handle_call({:transition_lifecycle, session_id, event, op_kind, payload, updates, vm_id}, _from, state) do
-    if state.async_lifecycle_writes do
-      do_transition_async(state, session_id, event, op_kind, payload, updates, vm_id)
-    else
-      do_transition(state, session_id, event, op_kind, payload, updates)
-    end
   end
 
   def handle_call({:mark, session_id, event}, _from, state) do
@@ -534,6 +580,73 @@ defmodule Embervm.SessionStore do
 
   def handle_call({:record_invoke_started, session_id, dispatch_id}, _from, state) do
     do_record_invoke_started(state, session_id, dispatch_id)
+  end
+
+  def handle_call({:session_cessation_evidence, id, expected, principal}, _from, state) do
+    result = with false <- state.residency_uncertain,
+                  {:ok, proof} <- state.op_log_mod.session_cessation_evidence(state.op_log, id, expected, principal) do
+      hot_owner = :ets.foldl(fn {_sid, row}, found ->
+        found or row.session_id == id or row.lineage_id == proof.lineage_id or row.vm_id == proof.vm_id
+      end, false, state.sessions)
+      intent = Enum.any?(state.residency_intents, fn {_id, row} -> Embervm.SessionCessationEvidence.related_intent?(row, proof) end)
+      if hot_owner or intent,
+        do: {:error, :historical_current_owner, Embervm.SessionCessationEvidence.summary(proof, proof.event_count)},
+        else: {:ok, proof}
+    else
+      true -> {:error, :historical_store_unavailable, %{}}
+      error -> error
+    end
+    {:reply, result, state}
+  end
+
+  def handle_call({:session_restore_allowed, lineage}, _from, state) do
+    # Always read the durable projection. A fence append can commit after its
+    # caller times out; unchanged ETS must never reopen restoration in that case.
+    {:reply, state.op_log_mod.session_restore_allowed(state.op_log, lineage), state}
+  end
+
+  def handle_call({:preview_recovery_fence, id, request, principal, now}, _from, state) do
+    result = with false <- state.residency_uncertain,
+      {:ok, proof} <- state.op_log_mod.session_recovery_fence(state.op_log, id,
+        Embervm.SessionRecoveryFence.preview_request(request), principal, now),
+      :ok <- recovery_hot_check(state, proof) do
+      {:ok, proof}
+    else
+      true -> {:error, :recovery_store_unavailable, %{}}
+      error -> error
+    end
+    {:reply, result, state}
+  end
+
+  def handle_call({:apply_recovery_fence, id, request, principal, now, preview}, _from, state) do
+    result = with false <- state.residency_uncertain,
+      true <- request["operation"] == "apply" and id == preview.session_id and principal == preview.principal,
+      :ok <- recovery_hot_check(state, preview),
+      {:ok, proof} <- state.op_log_mod.session_recovery_fence(state.op_log, id, request, principal, now) do
+      # Only the extra audit field changes. Preserve all lifecycle/result data.
+      case :ets.lookup(state.sessions, id) do
+        [{^id, row}] -> :ets.insert(state.sessions, {id, Map.put(row, :recovery_fence, proof.recovery_fence)})
+        _ -> :ok
+      end
+      {:ok, proof}
+    else
+      value when is_boolean(value) -> {:error, :recovery_store_unavailable, %{}}
+      error -> error
+    end
+    {:reply, result, state}
+  end
+
+  defp recovery_hot_check(state, proof) do
+    owners = :ets.foldl(fn {_sid, row}, found ->
+      if row.session_id == proof.session_id or row.lineage_id == proof.lineage_id or row.vm_id == proof.vm_id,
+        do: [row | found], else: found
+    end, [], state.sessions)
+    aliases = Enum.any?(state.residency_intents, fn {_id, row} -> Embervm.SessionCessationEvidence.related_intent?(row, proof) end)
+    case owners do
+      [row] -> if not aliases and Embervm.SessionRecoveryFence.hot_owner?(row, proof),
+        do: :ok, else: {:error, :recovery_owner_changed, %{}}
+      _ -> {:error, :recovery_owner_changed, %{}}
+    end
   end
 
   def handle_call({:get, session_id}, _from, state) do
@@ -607,7 +720,7 @@ defmodule Embervm.SessionStore do
       {:ok, session} ->
         # Reconstruct the session_created op from the surviving ETS row and append it
         # synchronously. The projection is INSERT OR IGNORE, so this is idempotent
-        # even if the original deferred append later drains or this runs twice.
+        # when a direct call repeats an existing append or runs twice.
         op = %Op{
           kind: :session_created,
           tenant: session.tenant,
@@ -636,6 +749,37 @@ defmodule Embervm.SessionStore do
 
       {:error, _reason} = error ->
         {:reply, error, state}
+    end
+  end
+
+  def handle_call({:adopt_banked, session_id, node_id, snapshot}, _from, state) do
+    with {:ok, session} <- fetch(state, session_id),
+         true <- session.state in [:creating, :running, :banking, :banked, :relighting],
+         true <- Map.get(snapshot, :session_id) == session_id and Map.get(snapshot, :workload) == session.workload,
+         true <- is_binary(node_id) and node_id != "" and node_id == session.node_id,
+         ref when is_binary(ref) and ref != "" <- Map.get(snapshot, :snapshot_ref),
+         true <- valid_inventory_snapshot_ref?(ref),
+         size <- Map.get(snapshot, :size_bytes),
+         true <- is_nil(size) or (is_integer(size) and size >= 0),
+         true <- session.snapshot_ref in [nil, "", ref] do
+      size = case size do
+        n when is_integer(n) and n > 0 -> n
+        _ -> session.snapshot_size_bytes
+      end
+      updates = %{snapshot_ref: ref, snapshot_size_bytes: size, node_id: node_id, vm_id: nil}
+
+      if session.state == :banked and Map.take(session, Map.keys(updates)) == updates do
+        {:reply, {:ok, session}, state}
+      else
+        payload = %{snapshot_ref: ref, size_bytes: size, generation: session.generation,
+          adopted: true}
+        case append_and_update(state, session, :session_banked, :banked, payload, updates) do
+          {:ok, updated, next} -> {:reply, {:ok, updated}, next}
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
+      end
+    else
+      _ -> {:reply, {:error, :invalid_snapshot_inventory}, state}
     end
   end
 
@@ -783,6 +927,7 @@ defmodule Embervm.SessionStore do
       terminal_reason: nil,
       stop_intent: nil,
       stop_completion: nil,
+      recovery_fence: nil,
       turn_seq: 0,
       interrupted_turn: nil,
       idempotency_key: idempotency_key
@@ -802,8 +947,7 @@ defmodule Embervm.SessionStore do
       state: :running
     }
 
-    # session_created is always write-through, even when other lifecycle writes
-    # are asynchronous. It establishes the VM ownership claim, so acknowledging
+    # session_created establishes the VM ownership claim. Acknowledging
     # create before this append lands would reopen the restart window where a
     # still-primed guest has no recoverable owner.
     case state.op_log_mod.append(state.op_log, op) do
@@ -846,50 +990,6 @@ defmodule Embervm.SessionStore do
         {:ok, updated, state} -> {:reply, {:ok, updated}, state}
         {:error, reason} -> {:reply, {:error, reason}, state}
       end
-    else
-      {:error, _reason} = error -> {:reply, error, state}
-    end
-  end
-
-  # The async-deferred transition (session_relit under the gate, ADR embervm/014
-  # decision 2): advance the FSM + ETS row (state, merged updates, residency,
-  # counts) SYNCHRONOUSLY so the woken session is immediately routable and adoption
-  # sees it, then defer the durable append to Embervm.AsyncWriter. Mirrors
-  # append_and_update's ETS side exactly, minus the metering hook: this path is only
-  # ever a non-terminal, usage-free lifecycle op (session_relit), so there is
-  # nothing to charge (metering stays synchronous, on the terminal/invoke ops).
-  defp do_transition_async(state, session_id, event, op_kind, payload, updates, vm_id) do
-    with {:ok, session} <- fetch(state, session_id),
-         {:ok, next} <- SessionState.transition(session.state, event) do
-      ts = state.clock.()
-
-      op = %Op{
-        kind: op_kind,
-        tenant: session.tenant,
-        principal: session.principal,
-        workload: session.workload,
-        session_id: session_id,
-        ts: ts,
-        payload: payload
-      }
-
-      updated =
-        session
-        |> Map.merge(updates)
-        |> Map.merge(%{state: next, updated_at: ts})
-
-      :ets.insert(state.sessions, {session_id, updated})
-      state = bump_counts(state, session.state, next, session.workload)
-      state = apply_residency(state, session.state, updated)
-
-      Embervm.AsyncWriter.enqueue(state.async_writer, %{
-        op: op,
-        op_log_mod: state.op_log_mod,
-        op_log: state.op_log,
-        vm_id: vm_id
-      })
-
-      {:reply, {:ok, updated}, state}
     else
       {:error, _reason} = error -> {:reply, error, state}
     end
@@ -971,7 +1071,7 @@ defmodule Embervm.SessionStore do
   # worker. An ETS-only stamp could disappear on a control plane restart while
   # the monolith claim keeps heartbeating, causing the recovery oracle to destroy
   # a healthy live guest. The timestamp is monotonic and is never cleared.
-  defp do_record_invoke_started(state, session_id, requested_dispatch_id) do
+  defp do_record_invoke_started(state, session_id, requested_dispatch_id, residency_intent \\ nil) do
     case fetch(state, session_id) do
       {:ok, %{state: :running} = session} ->
         # The timestamp also fences an exact conditional stop. Even two invokes
@@ -986,7 +1086,7 @@ defmodule Embervm.SessionStore do
           workload: session.workload,
           session_id: session_id,
           ts: ts,
-          payload: %{turn_seq: session.turn_seq + 1, dispatch_id: dispatch_id}
+          payload: Map.merge(%{turn_seq: session.turn_seq + 1, dispatch_id: dispatch_id}, if(residency_intent, do: %{residency_intent: residency_intent}, else: %{}))
         }
 
         case state.op_log_mod.append(state.op_log, op) do
@@ -995,10 +1095,11 @@ defmodule Embervm.SessionStore do
             :ets.insert(state.sessions, {session_id, updated})
             # Return the consumed marker to prepare_turn, while clearing it durably
             # at dispatch so a denied turn cannot replay it on unrelated input.
+            state = if residency_intent, do: put_residency_intent(state, residency_intent), else: state
             {:reply, {:ok, %{updated | interrupted_turn: session.interrupted_turn}}, state}
 
           {:error, _reason} = error ->
-            {:reply, error, state}
+            {:reply, error, %{state | residency_uncertain: not is_nil(residency_intent)}}
         end
 
       {:ok, _session} ->
@@ -1006,6 +1107,172 @@ defmodule Embervm.SessionStore do
 
       {:error, _reason} = error ->
         {:reply, error, state}
+    end
+  end
+
+  # A timed-out append may have committed. Read the serialized projection before
+  # making another decision; never treat a lost acknowledgement as non-dispatch.
+  defp refresh_residency(%{residency_uncertain: false} = state), do: {:ok, state}
+  defp refresh_residency(state) do
+    with {:ok, rows} <- state.op_log_mod.load_sessions(state.op_log),
+         {:ok, state} <- rebuild_residency(state) do
+      # Only invoke-start can atomically change both projections. Preserve the
+      # manager's transient lifecycle and residency while refreshing its durable
+      # dispatch fields after an ambiguous append acknowledgement.
+      for row <- rows do
+        case fetch(state, row.session_id) do
+          {:ok, current} ->
+            durable = row_to_session(row)
+            updated = Map.merge(current, Map.take(durable, [:invoke_started_at, :inflight_dispatch_id, :turn_seq, :interrupted_turn]))
+            :ets.insert(state.sessions, {row.session_id, updated})
+          _ -> :ok
+        end
+      end
+      {:ok, state}
+    end
+  end
+
+  defp residency_command({:submit, session_id, attrs, limits}, state) do
+    with {:ok, session} <- fetch(state, session_id) do
+      existing = Map.get(state.residency_intents, Map.get(state.residency_keys, {session.principal, attrs["key"]}))
+      cond do
+        existing && Embervm.ResidencyIntent.replay?(existing, session, attrs) -> {:reply, {:ok, existing}, state}
+        existing -> {:reply, {:error, :idempotency_conflict}, state}
+        not Map.get(limits, :enabled, true) -> {:reply, {:error, :async_residency_unsupported}, state}
+        SessionState.terminal?(session.state) -> {:reply, {:error, :not_found}, state}
+        true ->
+          case Embervm.ResidencyIntent.new(session, attrs, state.clock.()) do
+            {:ok, proposed} ->
+              proposed = Map.put(proposed, "queue_order", state.residency_order + 1)
+              active = Enum.filter(Map.values(state.residency_work), &Embervm.ResidencyIntent.active?/1)
+              if length(active) >= limits.global or Enum.count(active, &(&1["principal"] == session.principal)) >= limits.principal,
+                do: {:reply, {:error, :residency_queue_full}, state},
+                else: persist_residency(state, session, proposed)
+            error -> {:reply, error, state}
+          end
+      end
+    else
+      _ -> {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  # Internal hot working set. Terminal status/dedupe records remain addressable,
+  # but completed traffic never increases the periodic manager's scan workload.
+  defp residency_command(:working, state), do: {:reply, {:ok, Map.values(state.residency_work)}, state}
+  defp residency_command(:totals, state), do: {:reply, {:ok, state.residency_totals}, state}
+
+  defp residency_command({:list, session_id, limit, offset}, state) do
+    items = Map.values(state.residency_intents)
+      |> Enum.filter(&(is_nil(session_id) or &1["session_id"] == session_id))
+      |> Enum.sort_by(&{&1["first_wait_at"], &1["id"]})
+    {:reply, {:ok, %{items: Enum.slice(items, max(offset, 0), min(max(limit, 1), 100)), total: length(items)}}, state}
+  end
+
+  defp residency_command({:lookup, session_id, key}, state) do
+    result = with {:ok, session} <- fetch(state, session_id),
+      id when is_binary(id) <- Map.get(state.residency_keys, {session.principal, key}),
+      do: scoped_intent(state, session, id)
+    {:reply, if(is_nil(result), do: {:error, :not_found}, else: result), state}
+  end
+
+  defp residency_command({:get, session_id, id}, state) do
+    result = with {:ok, session} <- fetch(state, session_id), do: scoped_intent(state, session, id)
+    {:reply, result, state}
+  end
+
+  defp residency_command({:cancel, session_id, id}, state) do
+    with {:ok, session} <- fetch(state, session_id),
+         {:ok, intent} <- scoped_intent(state, session, id),
+         {:ok, updated} <- Embervm.ResidencyIntent.cancel(intent, state.clock.()) do
+      if updated == intent, do: {:reply, {:ok, intent}, state}, else: persist_residency(state, session, updated)
+    else
+      error -> {:reply, error, state}
+    end
+  end
+
+  defp residency_command({:claim_reconciled, id, version, claim_id}, state) do
+    with {:ok, intent} <- Map.fetch(state.residency_intents, id),
+         true <- intent["version"] == version and get_in(intent, ["restore", "claim_id"]) == claim_id,
+         {:ok, session} <- fetch(state, intent["session_id"]) do
+      # Internal physical-accounting acknowledgement, including terminal demand.
+      # It does not change the handoff outcome or its invocation timestamp.
+      updated = intent |> Map.put("claim_reconciled", true) |> Map.put("version", version + 1)
+      persist_residency(state, session, updated)
+    else
+      _ -> {:reply, {:error, :stale_residency_observation}, state}
+    end
+  end
+
+  defp residency_command({:change, id, version, updates}, state) do
+    with {:ok, intent} <- Map.fetch(state.residency_intents, id),
+         {:ok, session} <- fetch(state, intent["session_id"]),
+         {:ok, updated} <- Embervm.ResidencyIntent.change(intent, version, updates, state.clock.()) do
+      persist_residency(state, session, updated)
+    else
+      error -> {:reply, error, state}
+    end
+  end
+
+  defp scoped_intent(state, session, id) do
+    case Map.get(state.residency_intents, id) do
+      %{"session_id" => sid, "principal" => principal} = intent
+          when sid == session.session_id and principal == session.principal -> {:ok, intent}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp put_residency_intent(state, intent) do
+    Logger.info("embervm residency decision", operation_id: intent["id"], session_id: intent["session_id"],
+      residency_state: intent["state"], reason: intent["reason"], attempt: intent["attempt_epoch"],
+      elapsed_ms: max(intent["updated_at"] - intent["first_wait_at"], 0))
+    :telemetry.execute([:embervm, :residency, :decision],
+      %{count: 1, wait_ms: max(intent["updated_at"] - intent["first_wait_at"], 0),
+        restore_ms: if(intent["ready_at"] && intent["admitted_at"], do: max(intent["ready_at"] - intent["admitted_at"], 0), else: 0)},
+      %{state: intent["state"], reason: intent["reason"]})
+    index_residency(state, intent)
+  end
+
+  defp index_residency(state, intent) do
+    previous = Map.get(state.residency_intents, intent["id"], %{})
+    work = if Embervm.ResidencyIntent.active?(intent) or
+        (intent["restore"] != nil and intent["claim_reconciled"] != true),
+      do: Map.put(state.residency_work, intent["id"], intent),
+      else: Map.delete(state.residency_work, intent["id"])
+    totals = %{restore_attempts: state.residency_totals.restore_attempts +
+        intent["attempt_epoch"] - (previous["attempt_epoch"] || 0),
+      invocation_starts: state.residency_totals.invocation_starts +
+        (if intent["state"] == "consumed", do: 1, else: 0) -
+        (if previous["state"] == "consumed", do: 1, else: 0)}
+    %{state | residency_intents: Map.put(state.residency_intents, intent["id"], intent),
+      residency_work: work, residency_keys: Map.put(state.residency_keys, {intent["principal"], intent["key"]}, intent["id"]),
+      residency_order: max(state.residency_order, intent["queue_order"] || 0), residency_totals: totals}
+  end
+
+  defp persist_residency(state, session, intent) do
+    op = %Op{kind: :residency_changed, tenant: session.tenant, principal: session.principal,
+      workload: session.workload, session_id: session.session_id, ts: state.clock.(),
+      payload: %{residency_intent: intent}}
+    case state.op_log_mod.append(state.op_log, op) do
+      {:ok, _seq} -> {:reply, {:ok, intent}, put_residency_intent(state, intent)}
+      {:error, _} = error -> {:reply, error, %{state | residency_uncertain: true}}
+    end
+  end
+
+  defp reject_residency_dispatch(state, session, intent, dispatch_id, reason) do
+    # Record exact negative evidence before returning it. A timeout here remains
+    # unknown to factory, even though no guest was called by this process.
+    updates = %{"rejected_dispatch_id" => dispatch_id, "rejection_reason" => reason}
+    updates = cond do
+      reason == "stale_generation" -> Map.merge(updates, %{"state" => "failed", "reason" => reason})
+      reason == "expired" -> Map.merge(updates, %{"state" => "expired", "reason" => reason})
+      intent["state"] == "ready" -> Map.merge(updates, %{"state" => "queued", "reason" => reason})
+      true -> updates
+    end
+    # Terminal cancellation still records exact negative dispatch evidence.
+    updated = intent |> Map.merge(updates) |> Map.put("version", intent["version"] + 1) |> Map.put("updated_at", state.clock.())
+    case persist_residency(state, session, updated) do
+      {:reply, {:ok, _}, state} -> {:reply, {:error, {:not_dispatched, intent["id"], dispatch_id, reason}}, state}
+      other -> other
     end
   end
 
@@ -1024,6 +1291,13 @@ defmodule Embervm.SessionStore do
   # snapshot_ref/generation/node_id/vm_id into the row atomically with the state
   # change. Terminal transitions record the reason, drop the residency fact, and
   # (for usage-carrying payloads) fire the metering hook.
+  # Session bundles are one path segment, matching noded's session identity
+  # boundary. Blank references cannot be consumed by WakeInstance.
+  defp valid_inventory_snapshot_ref?(ref) do
+    String.trim(ref) != "" and ref not in [".", ".."] and
+      not String.contains?(ref, ["/", "\\", <<0>>])
+  end
+
   defp append_and_update(state, session, op_kind, next_state, payload, updates) do
     ts = state.clock.()
 
@@ -1087,14 +1361,7 @@ defmodule Embervm.SessionStore do
   # prior bucket and increment the next. A terminal state is neither live nor
   # banked, so it decrements without a matching increment.
   defp bump_counts(state, prior, next, workload) do
-    counts = Map.get(state.counts, workload, %{live: 0, banked: 0})
-
-    counts =
-      counts
-      |> dec_bucket(bucket_of(prior))
-      |> inc_bucket(bucket_of(next))
-
-    %{state | counts: Map.put(state.counts, workload, counts)}
+    %{state | counts: InstanceTable.bump_counts(state.counts, workload, bucket_of(prior), bucket_of(next))}
   end
 
   defp bucket_of(nil), do: nil
@@ -1102,12 +1369,6 @@ defmodule Embervm.SessionStore do
   defp bucket_of(:parked), do: :banked
   defp bucket_of(state) when state in @live_states, do: :live
   defp bucket_of(_terminal), do: nil
-
-  defp inc_bucket(counts, nil), do: counts
-  defp inc_bucket(counts, bucket), do: Map.update!(counts, bucket, &(&1 + 1))
-
-  defp dec_bucket(counts, nil), do: counts
-  defp dec_bucket(counts, bucket), do: Map.update!(counts, bucket, &max(&1 - 1, 0))
 
   # -- helpers ---------------------------------------------------------------
 

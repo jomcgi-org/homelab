@@ -1,14 +1,13 @@
 """Grant-filtered vector search over entities and chunks.
 
-Spec #5 of the pg-first design (``GET
-/campaigns/{id}/search``): embed the query, over-fetch nearest neighbors from
-the generic ``embedding`` table, then apply the same visibility predicate the
-entity endpoints use before shaping and trimming to ``k`` results.
+Knowledge search embeds the query, over-fetches nearest neighbors from the
+generic ``embedding`` table, then applies live visibility predicates before
+shaping and trimming to ``k`` results.
 
 ``knn_embeddings`` is the only pgvector-specific code in this module, kept
 deliberately tiny so tests can stub it directly (SQLite test fixtures have no
 cosine_distance operator). All other Session I/O lives in plain sync helper
-functions called from ``search_campaign`` (which is ``async def``), mirroring
+functions called from ``search_knowledge`` (which is ``async def``), mirroring
 the split in ``extract.py``/``ingest.py``: no Session I/O is written inline in
 an async function body.
 """
@@ -116,14 +115,12 @@ def _resolve_entity_hit(
     viewer: Viewer,
     entity_id: str,
     distance: float,
-    not_granted_to: str | None = None,
 ) -> dict[str, Any] | None:
     """Sync: apply the visibility predicate/projection to one entity hit.
 
     Builds on visible_entities_query()/project_entity() scoped to a single
-    entity_id, the same helpers and pattern router.py's _project_neighbor
-    uses, so the grant predicate lives in exactly one place. Returns None
-    when the entity does not exist, is not visible to the viewer at all
+    entity_id, keeping the grant predicate in the shared visibility helpers.
+    Returns None when the entity does not exist, is not visible to the viewer at all
     (ungranted, non-global), or is a name_only grant (dropped in lookup
     context per spec #3.3).
 
@@ -134,9 +131,7 @@ def _resolve_entity_hit(
     module to wire the endpoint, so importing back would be circular).
     """
     rows = session.exec(
-        visible_entities_query(
-            campaign_id, viewer, not_granted_to=not_granted_to
-        ).where(Entity.id == entity_id)
+        visible_entities_query(campaign_id, viewer).where(Entity.id == entity_id)
     ).all()
     if not rows:
         return None
@@ -163,61 +158,6 @@ def _resolve_entity_hit(
     projected["kind"] = "entity"
     projected["score"] = 1.0 - distance
     return projected
-
-
-def _resolve_hits(
-    session: Session,
-    campaign_id: str,
-    viewer: Viewer,
-    hits: list[tuple[Embedding, float]],
-    not_granted_to: str | None = None,
-) -> list[dict[str, Any]]:
-    """Sync: resolve raw kNN hits into scored, visibility-filtered result dicts."""
-    results: list[dict[str, Any]] = []
-    for embedding, distance in hits:
-        if embedding.embeddable_kind == "chunk":
-            resolved = _resolve_chunk_hit(session, embedding.embeddable_id, distance)
-        elif embedding.embeddable_kind == "entity":
-            resolved = _resolve_entity_hit(
-                session,
-                campaign_id,
-                viewer,
-                embedding.embeddable_id,
-                distance,
-                not_granted_to,
-            )
-        else:
-            resolved = None
-        if resolved is not None:
-            results.append(resolved)
-    return results
-
-
-async def search_campaign(
-    session: Session,
-    embed_client: _Embedder,
-    campaign_id: str,
-    viewer: Viewer,
-    q: str,
-    k: int = 10,
-    *,
-    not_granted_to: str | None = None,
-) -> list[dict[str, Any]]:
-    """Grant-filtered vector search over entities and chunks for one campaign.
-
-    Embeds ``q``, over-fetches ``k * OVERFETCH_FACTOR`` nearest neighbors
-    across both embeddable kinds, resolves and visibility-filters each hit,
-    then sorts by score (descending) and trims to ``k``. The embed call is
-    the only ``await`` in this function; all Session I/O lives in the sync
-    helpers above (see module docstring).
-    """
-    query_vector = await embed_client.embed(q)
-    hits = knn_embeddings(
-        session, query_vector, ("entity", "chunk"), k * OVERFETCH_FACTOR
-    )
-    results = _resolve_hits(session, campaign_id, viewer, hits, not_granted_to)
-    results.sort(key=lambda item: item["score"], reverse=True)
-    return results[:k]
 
 
 def _resolve_knowledge_hits(

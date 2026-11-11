@@ -121,37 +121,10 @@ spec:
             # do not drive every guest to the worker timeout at once.
             - name: EMBERVM_CREATE_CONCURRENCY
               value: {{ .Values.controlPlane.createConcurrency | quote }}
-            # Node-confirmed destroy ordering (ADR embervm/014 decision 5).
-            #
-            # #4758: application.ex has read this gate since the ADR landed, and
-            # NO template rendered it, so the ordering it selects has never run
-            # in any environment. The code was reachable only by an env var
-            # nothing could set. Rendering it here is what makes arming it a
-            # values decision rather than an impossibility.
-            #
-            # Chart default stays false. Dev armed it first; production followed
-            # on 2026-08-22 after the dev drill passed (see deploy/values.yaml).
-            - name: EMBERVM_NODE_CONFIRMED_DESTROY
-              value: {{ if .Values.nodeConfirmedDestroy }}"true"{{ else }}"false"{{ end }}
-            # Async lifecycle op-log appends (ADR embervm/014 decision 2,
-            # GitHub issue #5230): true defers the boot/wake lifecycle appends
-            # (:assigned/:started, session_created/session_relit) to
-            # Embervm.AsyncWriter off the hot path; false (the default) keeps
-            # today's write-through ordering. Rendered beside its sibling gate
-            # above so both ADR-014 ordering gates flip via values only.
-            - name: EMBERVM_ASYNC_LIFECYCLE_WRITES
-              value: {{ if .Values.asyncLifecycleWrites }}"true"{{ else }}"false"{{ end }}
-            - name: EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES
-              value: {{ if .Values.restartFlushInflightInvokes }}"true"{{ else }}"false"{{ end }}
-            # Drain only the sessions on the draining brick instance, not every
-            # session on its node (co-located bricks share a node).
-            - name: EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS
-              value: {{ if .Values.drainInstanceScopedSessions }}"true"{{ else }}"false"{{ end }}
-            # The same scoping for serving, stateful and group workloads.
+            # Drain only the serving, stateful and group guests on the draining
+            # brick instance, not every guest on its node.
             - name: EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS
               value: {{ if .Values.drainInstanceScopedWorkloads }}"true"{{ else }}"false"{{ end }}
-            - name: EMBERVM_CROSS_NODE_REJOIN
-              value: {{ if .Values.crossNodeRejoin }}"true"{{ else }}"false"{{ end }}
             # SpecTrace gate for spec validation (GitHub issue #4770):
             # the debug-gated, spec-shaped trace reads once at boot.
             # OFF means no process, no connection, no sweep.
@@ -343,6 +316,14 @@ spec:
               value: {{ mul .Values.noded.drain.flushWindowSeconds 1000 | quote }}
             - name: EMBERVM_SESSION_DRAIN_BANK_BUDGET_MS
               value: {{ mul .Values.noded.drain.bankBudgetSeconds 1000 | quote }}
+            - name: EMBERVM_ASYNC_RESIDENCY_ENABLED
+              value: {{ .Values.session.asyncResidency.enabled | default false | quote }}
+            - name: EMBERVM_RESIDENCY_QUEUE_LIMIT
+              value: {{ .Values.session.asyncResidency.queueLimit | quote }}
+            - name: EMBERVM_RESIDENCY_PRINCIPAL_LIMIT
+              value: {{ .Values.session.asyncResidency.principalLimit | quote }}
+            - name: EMBERVM_RESIDENCY_RESTORE_LIMIT
+              value: {{ .Values.session.asyncResidency.restoreLimit | quote }}
             - name: EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS
               value: {{ .Values.session.invokeWatchdogMarginMs | quote }}
             # Metering + quotas (Task 12). Per-principal daily vCPU-second budgets
@@ -518,8 +499,6 @@ spec:
             {{- end }}
             # StatefulSweeper resident-memory hysteresis. These are CP-only
             # settings over NodeCapacity facts and add no daemon surface.
-            - name: EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED
-              value: {{ .Values.statefulSweeper.pressureBanking.enabled | quote }}
             - name: EMBERVM_STATEFUL_PRESSURE_HIGH_WATER_FRACTION
               value: {{ .Values.statefulSweeper.pressureBanking.highWaterFraction | quote }}
             - name: EMBERVM_STATEFUL_PRESSURE_LOW_WATER_FRACTION
@@ -528,12 +507,6 @@ spec:
               value: {{ .Values.statefulSweeper.pressureBanking.idleFloorMs | quote }}
             - name: EMBERVM_STATEFUL_SESSION_PRESSURE_IDLE_FLOOR_MS
               value: {{ .Values.statefulSweeper.pressureBanking.sessionPressureIdleFloorMs | quote }}
-            {{- if .Values.grpcConnectionSweeper.enabled }}
-            # gRPC connection sweep gate (default off, dry-run logging only). "1" or "true"
-            # arms destructive orphaned connection termination.
-            - name: EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED
-              value: {{ .Values.grpcConnectionSweeper.enabled | quote }}
-            {{- end }}
             {{- if .Values.grpcConnectionSweeper.sweepIntervalMs }}
             # gRPC connection sweep tick override (default 60000ms).
             - name: EMBERVM_GRPC_CONNECTION_SWEEP_INTERVAL_MS
@@ -643,6 +616,10 @@ spec:
             - name: EMBERVM_WARMTH_S3_GC
               value: {{ .Values.warmthS3Gc.enabled | quote }}
             {{- end }}
+            # Independent scope: newly registered disposable capture workspaces.
+            # The global warmth cleanup gate remains separate and unchanged.
+            - name: EMBERVM_CAPTURE_EVIDENCE_GC
+              value: {{ .Values.warmthS3Gc.captureEvidenceEnabled | quote }}
             {{- $generationRetentionCap := toString .Values.warmthS3Gc.generationRetentionCap }}
             {{- if not (regexMatch "^[1-9][0-9]*$" $generationRetentionCap) }}
             {{- fail "warmthS3Gc.generationRetentionCap must be a positive integer" }}
@@ -693,36 +670,6 @@ spec:
             {{- if .Values.warmthS3Gc.intervalMs }}
             - name: EMBERVM_WARMTH_S3_GC_INTERVAL_MS
               value: {{ .Values.warmthS3Gc.intervalMs | quote }}
-            {{- end }}
-            {{- if .Values.durabilityHealth.enabled }}
-            # Durability health detector (#4338, ADR embervm/031): BOTH tiers
-            # (export-failure streaks; gc-manifests age vs 24h + sweep
-            # interval) surface on GET /v1/health/durability. Unset keeps the
-            # detector dark: no evaluation runs and the route 404s. See the
-            # durabilityHealth block in values for the flip procedure.
-            - name: EMBERVM_DURABILITY_HEALTH
-              value: {{ .Values.durabilityHealth.enabled | quote }}
-            {{- end }}
-            {{- if .Values.durabilityHealth.expectedNodes }}
-            # Tier 1's fleet contract: every listed node must report fresh
-            # capacity facts or tier 1 reads unknown (never green). Empty =
-            # tier 1 always unknown.
-            - name: EMBERVM_DURABILITY_EXPECTED_NODES
-              value: {{ join "," .Values.durabilityHealth.expectedNodes | quote }}
-            {{- end }}
-            {{- if .Values.durabilityHealth.roundIntervalMs }}
-            - name: EMBERVM_DURABILITY_ROUND_INTERVAL_MS
-              value: {{ .Values.durabilityHealth.roundIntervalMs | quote }}
-            {{- end }}
-            {{- if .Values.durabilityHealth.streakThreshold }}
-            - name: EMBERVM_DURABILITY_STREAK_THRESHOLD
-              value: {{ .Values.durabilityHealth.streakThreshold | quote }}
-            {{- end }}
-            {{- if .Values.durabilityHealth.gcSweepIntervalMs }}
-            # Must match warmthS3Gc.intervalMs so the tier-2 stall bound (24h +
-            # sweep interval) tracks the GC cadence instead of drifting from it.
-            - name: EMBERVM_DURABILITY_GC_SWEEP_INTERVAL_MS
-              value: {{ .Values.durabilityHealth.gcSweepIntervalMs | quote }}
             {{- end }}
           readinessProbe:
             httpGet:

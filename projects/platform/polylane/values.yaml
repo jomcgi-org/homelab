@@ -26,6 +26,10 @@ polylane-k8s:
       memory: 256Mi
 
   tunnel:
+    image:
+      repository: docker.io/cloudflare/cloudflared
+      tag: "2026.10.4"
+      digest: "sha256:c6c7ae1d5dfdcb094ad344ed68ccffc26635c9c6be80965664c33baf064b0515"
     resources:
       requests:
         cpu: 50m

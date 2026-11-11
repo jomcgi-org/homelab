@@ -184,18 +184,19 @@ test("the input scan follows seeking while thinking stays explicitly disabled", 
   const view = await render();
   expect(recording.thinking).toBe(false);
   expect(turn.events.every((event) => !event.reasoning)).toBe(true);
-  const initial = view.querySelector(".document-pages").getAttribute("style");
+  const read = () => view.querySelectorAll(".document-pages li.read").length;
+  expect(read()).toBe(0);
   await seek(turn.metrics.ttftMs / 2);
-  expect(view.querySelector(".document-pages").getAttribute("style")).not.toBe(
-    initial,
-  );
+  expect(read()).toBeGreaterThan(0);
+  expect(read()).toBeLessThan(recording.document.pages);
+  expect(
+    view.querySelector(".document-pages").getAttribute("style"),
+  ).toBeNull();
   expect(view.querySelector(".scan-heading").textContent).toContain(
     "Thinking off",
   );
   await seek(0);
-  expect(view.querySelector(".document-pages").getAttribute("style")).toBe(
-    initial,
-  );
+  expect(read()).toBe(0);
 });
 
 test("model output is open during decode and contains only arrived text", async () => {

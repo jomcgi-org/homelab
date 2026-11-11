@@ -124,16 +124,7 @@ class LeakHarness:
         }
 
     def prepare(self, state: str | None) -> None:
-        if state == "bootstrap":
-            members = self.session.exec(
-                select(CampaignMember).where(
-                    CampaignMember.campaign_id == self.rows["campaign"].id,
-                    CampaignMember.role == "dm",
-                )
-            ).all()
-            for member in members:
-                self.session.delete(member)
-        elif state == "submitted":
+        if state == "submitted":
             self.rows["sheet"].status = "submitted"
             self.rows["sheet"].submitted_at = datetime.now(UTC)
         elif state == "closed":

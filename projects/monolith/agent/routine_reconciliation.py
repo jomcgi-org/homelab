@@ -56,6 +56,46 @@ def _payload(value):
     return value
 
 
+def _review_batch_state(db, key):
+    batches = _rows(
+        db,
+        f"SELECT invocation_key, member_keys, status, completed_at FROM "
+        f"{_table(db, 'knowledge', 'fact_review_batches')} WHERE invocation_key=:key",
+        {"key": key},
+    )
+    if not batches:
+        return {"complete": False, "sha256": _sha([])}
+    batch = batches[0]
+    keys = batch["member_keys"]
+    keys = json.loads(keys) if isinstance(keys, str) else keys
+    if (
+        not isinstance(keys, list)
+        or len(keys) > 32
+        or keys != [f"{key}:fact:{i + 1}" for i in range(len(keys))]
+    ):
+        raise ValueError("Fact-review batch membership identity mismatch")
+    members = []
+    for member in keys:
+        members.extend(
+            _rows(
+                db,
+                f"SELECT invocation_key, status, completed_at FROM "
+                f"{_table(db, 'knowledge', 'fact_review_runs')} WHERE invocation_key=:key",
+                {"key": member},
+            )
+        )
+    complete = (
+        batch["status"] == "complete"
+        and batch["completed_at"] is not None
+        and len(members) == len(keys)
+        and all(
+            row["status"] == "complete" and row["completed_at"] is not None
+            for row in members
+        )
+    )
+    return {"complete": complete, "sha256": _sha([batch, members])}
+
+
 def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> dict:
     """SELECT-only expected-state evidence, without prompts, tokens or raw text."""
     jobs = _rows(
@@ -103,9 +143,14 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
     )
     payload = _payload(job["payload"])
     raw = None
+    review_batch = None
     provenance = []
     if routine_kind == KG_NODE_KEY:
-        if job_name == "kg-repo-diff":
+        if job_name == "kg-fact-review":
+            if payload != {"mode": "fact-review", "review_protocol": 3}:
+                raise ValueError("Fact-review payload identity mismatch")
+            review_batch = _review_batch_state(db, agent["local_session_id"])
+        elif job_name == "kg-repo-diff":
             if payload.get("mode") != "repo-diff":
                 raise ValueError("Scout payload identity mismatch")
         else:
@@ -208,6 +253,7 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
         ),
         "active_reservation_ids": [row["id"] for row in active_reservations],
         "extraction_version": EXTRACTION_VERSION,
+        "review_batch": review_batch,
         "raw_sha256": _sha(raw),
         "provenance_sha256": _sha(provenance),
         "provenance_count": len(provenance),
@@ -259,6 +305,14 @@ def _reconcile(db, request):
         text(f"SELECT name FROM {jobs} WHERE name=:name{lock}"),
         {"name": request["job_name"]},
     ).one()
+    if request["job_name"] == "kg-fact-review":
+        db.execute(
+            text(
+                f"SELECT invocation_key FROM {_table(db, 'knowledge', 'fact_review_batches')} "
+                f"WHERE invocation_key=:key{lock}"
+            ),
+            {"key": agent["local_session_id"]},
+        ).all()
     state = read_reconciliation_state(db, request["job_name"], agent["id"])
     if state["state_sha256"] != request["expected_state_sha256"]:
         raise ValueError("Expected reconciliation state changed")
@@ -338,7 +392,7 @@ def _reconcile(db, request):
         raise ValueError("This held attempt was already reconciled")
     # Lock the raw against the existing atomic extraction writer before checking
     # its evidence again. The operator never changes raw/provenance records.
-    if routine_kind == KG_NODE_KEY and request["job_name"] != "kg-repo-diff":
+    if routine_kind == KG_NODE_KEY and request["job_name"].startswith("kg:"):
         raw_table = _table(db, "knowledge", "raw_inputs")
         db.execute(
             text(f"SELECT id FROM {raw_table} WHERE raw_id=:raw{lock}"),
@@ -346,6 +400,11 @@ def _reconcile(db, request):
         ).one()
         if read_reconciliation_state(db, request["job_name"], agent["id"]) != state:
             raise ValueError("Provenance changed during reconciliation")
+    if state["review_batch"] is not None:
+        # Cessation proves the guest stopped, not that its review was applied.
+        # Incomplete/missing receipts stay fenced, even after a known guest exit.
+        if not state["review_batch"]["complete"]:
+            raise ValueError("Fact-review outcome requires reconciliation before rearm")
     if request["disposition"] == "rearm":
         if routine_kind == KG_NODE_KEY and (
             state["provenance_count"] or state["extraction_passes"] != 0
@@ -354,6 +413,7 @@ def _reconcile(db, request):
     elif (
         request["disposition"] == "retain_applied"
         and routine_kind == KG_NODE_KEY
+        and state["review_batch"] is None
         and not state["applied_count"]
     ):
         raise ValueError("Retain-applied requires existing extraction provenance")
@@ -405,6 +465,7 @@ def _reconcile(db, request):
         "raw_sha256",
         "provenance_sha256",
         "cursor_sha",
+        "review_batch",
     ):
         if after[field] != state[field]:
             raise ValueError("Reconciliation changed protected history")
@@ -456,7 +517,11 @@ def reconcile_held_job(
     interruption, and proof that this dispatch's invoke never completed.
     It is not accepted from guest/model output. Identical lost-response replays
     return the durable result, even after the ordinary job has run or disappeared.
-    For KG jobs, retain_applied is additionally backed by extraction provenance.
+    Protocol-3 fact-review jobs require an exact, durably completed batch and
+    completed members in addition to cessation. Rearm starts a new cycle;
+    missing or unfinished review receipts require separate result reconciliation
+    and remain fenced. Neither claims nor verdicts are changed here.
+    For raw KG jobs, retain_applied is backed by extraction provenance.
     For qwen-drain jobs it remains the operator-selected no-rearm disposition.
     """
     if (
@@ -533,3 +598,592 @@ def reconcile_held_job(
             return _reconcile(session, request)
     with Session(get_engine()) as db, db.begin():
         return _reconcile(db, request)
+
+
+def _review_guest_ceased(state, observation):
+    if not isinstance(observation, dict):
+        return False
+    try:
+        observed = _proof_time(observation)
+        turn = datetime.fromisoformat(state["latest_turn_at"].replace("Z", "+00:00"))
+        if turn.tzinfo is None:
+            turn = turn.replace(tzinfo=timezone.utc)
+    except (KeyError, TypeError, ValueError):
+        return False
+    prior = state.get("permit_observation")
+    if prior is not None and (
+        prior["guest_id"] not in {None, state["guest_id"]}
+        or (
+            prior["generation"] is not None
+            and (
+                type(observation.get("generation")) is not int
+                or observation["generation"] < prior["generation"]
+            )
+        )
+        or (
+            prior["invoke_started_at"] is not None
+            and observation.get("invoke_started_at") != prior["invoke_started_at"]
+        )
+        or (
+            prior["cp_updated_at"] is not None
+            and (
+                type(observation.get("updated_at")) is not int
+                or observation["updated_at"] < prior["cp_updated_at"]
+            )
+        )
+    ):
+        return False
+    return (
+        observation.get("session_id") == state["guest_id"]
+        and observation.get("state") in {"evicted", "destroyed"}
+        and type(observation.get("generation")) is int
+        and observation["generation"] >= 0
+        and 0 <= (datetime.now(timezone.utc) - observed).total_seconds() <= 30
+        and type(observation.get("updated_at")) is int
+        and 0 <= observation["updated_at"] <= int(observed.timestamp() * 1000)
+        and terminal_dispatch_cessation(
+            observation,
+            state["latest_dispatch"],
+            state["reservation_owner"],
+            turn,
+        )
+    )
+
+
+def _recover_review(db, request, observation=None):
+    from factory.api import (
+        accept_review_recomputation,
+        read_review_cessation_observation,
+    )
+    from knowledge.api import abandon_fact_review_for_recomputation
+
+    apply = request["mode"] == "apply"
+    if apply:
+        lock_capacity_pool(db)
+        previous = db.get(RoutineReconciliation, request["reconciliation_key"])
+        if previous is not None:
+            if previous.request_sha256 != _sha(request):
+                raise ValueError("Recovery key conflicts with recorded request")
+            return json.loads(previous.result_json)
+        lock_cessation_session(db, request["session_id"])
+        lock = " FOR UPDATE" if db.bind.dialect.name != "sqlite" else ""
+        db.execute(
+            text(
+                f"SELECT name FROM {_table(db, 'claude_agent', 'routine_jobs')} "
+                f"WHERE name='kg-fact-review'{lock}"
+            )
+        ).one()
+        # Serialize against the batch writer before binding the preview digest.
+        local = _rows(
+            db,
+            f"SELECT local_session_id FROM {_table(db, 'agent_sessions', 'agent_sessions')} WHERE id=:id",
+            {"id": request["session_id"]},
+        )[0]
+        db.execute(
+            text(
+                f"SELECT invocation_key FROM {_table(db, 'knowledge', 'fact_review_batches')} "
+                f"WHERE invocation_key=:key{lock}"
+            ),
+            {"key": local["local_session_id"]},
+        ).one()
+    state = read_reconciliation_state(db, "kg-fact-review", request["session_id"])
+    state["permit_observation"] = read_review_cessation_observation(
+        db, request["permit_id"]
+    )
+    state["state_sha256"] = _sha(
+        {k: v for k, v in state.items() if k != "state_sha256"}
+    )
+    if (
+        state["job_status"] != UNKNOWN_INVOCATION
+        or state["routine_kind"] != KG_NODE_KEY
+        or state["node_key"] != KG_NODE_KEY
+        or state["session_status"] != "failed"
+        or state["latest_stop_reason"] != UNKNOWN_INVOCATION
+        or state["latest_terminal_reason"] != "error"
+        or state["latest_routine_session_id"] != request["session_id"]
+        or state["binding_session_ids"] != [request["session_id"]]
+        or state["pending"]
+        or state["locked_by"] is not None
+        or state["locked_at"] is not None
+        or state["next_run_at"] is not None
+        or state["reservation_count"] != 1
+        or state["reservation_id"] != request["permit_id"]
+        or state["reservation_state"] != "uncertain"
+        or state["reservation_tier"] != "kg"
+        or state["reservation_job_name"] != "kg-fact-review"
+        or state["reservation_session_id"] != request["session_id"]
+        or state["reservation_local_session_id"] != state["local_session_id"]
+        or state["active_reservation_ids"] != [request["permit_id"]]
+        or state["local_session_id"]
+        != f"{state['workflow_id']}:kg-drain:kg-fact-review"
+        or not (state["last_summary"] or "").startswith(
+            f"session_id={request['session_id']}:"
+        )
+        or len(state["workflow"]) != 1
+        or state["workflow"][0]["name"] != "drain_cycle"
+        or state["workflow"][0]["status"] not in {"SUCCESS", "ERROR", "CANCELLED"}
+        or state["review_batch"]["complete"]
+    ):
+        raise ValueError(
+            "Exact held review attempt is not eligible for operator recomputation"
+        )
+    if db.exec(
+        select(RoutineReconciliation).where(
+            RoutineReconciliation.session_id == request["session_id"],
+            RoutineReconciliation.unknown_turn_seq == state["latest_turn_seq"],
+        )
+    ).first():
+        raise ValueError("This attempt already has a recovery decision")
+    ceased = _review_guest_ceased(state, observation)
+    if not apply:
+        return {
+            "ok": True,
+            "mode": "preview",
+            "job_name": "kg-fact-review",
+            "session_id": request["session_id"],
+            "permit_id": request["permit_id"],
+            "expected_state_sha256": state["state_sha256"],
+            "batch_key": state["local_session_id"],
+            "original_outcome": UNKNOWN_INVOCATION,
+            "capacity_reservation_retained": not ceased,
+            "required_acknowledgment": "accept_duplicate_compute_and_writes",
+        }
+    if state["state_sha256"] != request["expected_state_sha256"]:
+        raise ValueError("Expected recovery state changed; preview again")
+    counts = abandon_fact_review_for_recomputation(db, state["local_session_id"])
+    accept_review_recomputation(
+        db, request["session_id"], request["permit_id"], cessation_confirmed=ceased
+    )
+    now = datetime.now(timezone.utc)
+    db.execute(
+        text(
+            f"UPDATE {_table(db, 'claude_agent', 'routine_jobs')} "
+            "SET next_run_at=:now,last_status='operator_recompute_unknown' WHERE name='kg-fact-review'"
+        ),
+        {"now": now},
+    )
+    db.flush()
+    after = read_reconciliation_state(db, "kg-fact-review", request["session_id"])
+    for field in ("session_sha256", "turns_sha256", "payload_sha256", "guest_id"):
+        if after[field] != state[field]:
+            raise ValueError("Recovery changed protected execution history")
+    if ceased and not _review_guest_ceased(state, observation):
+        raise ValueError(
+            "Cessation evidence expired while acquiring recovery ownership"
+        )
+    result = {
+        "ok": True,
+        "mode": "apply",
+        "job_name": "kg-fact-review",
+        "session_id": request["session_id"],
+        "permit_id": request["permit_id"],
+        "reconciliation_key": request["reconciliation_key"],
+        "original_outcome": UNKNOWN_INVOCATION,
+        "guest_cessation_confirmed": ceased,
+        "capacity_reservation_retained": not ceased,
+        "next_run_at": now.isoformat(),
+        **counts,
+    }
+    db.add(
+        RoutineReconciliation(
+            reconciliation_key=request["reconciliation_key"],
+            request_sha256=_sha(request),
+            actor=request["actor"],
+            job_name="kg-fact-review",
+            session_id=request["session_id"],
+            unknown_turn_seq=state["latest_turn_seq"],
+            disposition="rearm",
+            evidence_json=_json(
+                {
+                    "request": request,
+                    "before": state,
+                    "after": after,
+                    "observation": observation,
+                }
+            ),
+            result_json=_json(result),
+            created_at=now,
+        )
+    )
+    db.flush()
+    return result
+
+
+def recover_review_job(
+    *, actor: str, recovery: dict, session: Session | None = None
+) -> dict:
+    """Explicit one-attempt operator override, never used by automatic supervision.
+
+    No success is inferred. Capacity remains charged unless a fresh server-owned
+    control-plane read proves this exact dispatch ceased. A new
+    cycle uses ordinary subscriptions, admission and daily caps; no job is run
+    directly. Only unfinished review claims are abandoned, with their data kept.
+    """
+    if not isinstance(recovery, dict) or recovery.get("mode") not in {
+        "preview",
+        "apply",
+    }:
+        raise ValueError("Recovery requires preview or apply")
+    keys = {"mode", "session_id", "permit_id"}
+    if recovery["mode"] == "apply":
+        keys |= {"reconciliation_key", "expected_state_sha256", "acknowledgment"}
+    if set(recovery) != keys or any(
+        type(recovery[k]) is not int or recovery[k] <= 0
+        for k in ("session_id", "permit_id")
+    ):
+        raise ValueError("Exact recovery fields and positive IDs required")
+    if recovery["mode"] == "apply":
+        _identifier(recovery["reconciliation_key"], "recovery key")
+        _digest(recovery["expected_state_sha256"])
+        if recovery["acknowledgment"] != "accept_duplicate_compute_and_writes":
+            raise ValueError(
+                "Explicit duplicate computation and write risk acknowledgment required"
+            )
+    request = {**recovery, "actor": _identifier(actor, "actor")}
+    if session is not None:
+        if request["mode"] == "preview":
+            return _recover_review(session, request)
+        lock_capacity_pool(session)
+        with session.begin_nested():
+            return _recover_review(session, request)
+    from factory.api import observe_guest_for_recomputation
+
+    # Never perform network I/O while holding ownership locks. Replays return
+    # their durable result even after the routine or session has disappeared.
+    with Session(get_engine()) as db:
+        if request["mode"] == "apply":
+            previous = db.get(RoutineReconciliation, request["reconciliation_key"])
+            if previous is not None:
+                if previous.request_sha256 != _sha(request):
+                    raise ValueError("Recovery key conflicts with recorded request")
+                return json.loads(previous.result_json)
+        before = read_reconciliation_state(db, "kg-fact-review", request["session_id"])
+        guest_id = before["guest_id"]
+    observation = observe_guest_for_recomputation(guest_id) if guest_id else None
+    with Session(get_engine()) as db, db.begin():
+        return _recover_review(db, request, observation)
+
+
+def recovered_review_original_outcome(
+    db: Session, session_id: int, permit_id: int
+) -> str:
+    """Validate an existing operator decision without replaying or changing it."""
+    rows = db.exec(
+        select(RoutineReconciliation).where(
+            RoutineReconciliation.session_id == session_id,
+            RoutineReconciliation.job_name == "kg-fact-review",
+        )
+    ).all()
+    if len(rows) != 1:
+        raise ValueError("missing_review_recomputation")
+    row = rows[0]
+    try:
+        evidence = json.loads(row.evidence_json)
+        request, before, after = (evidence[k] for k in ("request", "before", "after"))
+        result = json.loads(row.result_json)
+        if (
+            request["mode"] != "apply"
+            or request["session_id"] != session_id
+            or request["permit_id"] != permit_id
+            or request["actor"] != row.actor
+            or request["reconciliation_key"] != row.reconciliation_key
+            or request["acknowledgment"] != "accept_duplicate_compute_and_writes"
+            or _sha(request) != row.request_sha256
+            or request["expected_state_sha256"] != before["state_sha256"]
+            or row.disposition != "rearm"
+            or row.unknown_turn_seq != after["latest_turn_seq"]
+            or result["permit_id"] != permit_id
+            or result["session_id"] != session_id
+            or result["capacity_reservation_retained"] is not True
+            or result["guest_cessation_confirmed"] is not False
+        ):
+            raise ValueError("changed_review_recomputation")
+        current = read_reconciliation_state(db, "kg-fact-review", session_id)
+        protected = (
+            "session_sha256",
+            "turns_sha256",
+            "payload_sha256",
+            "guest_id",
+            "local_session_id",
+            "workflow_id",
+            "workflow",
+            "latest_dispatch",
+            "reservation_owner",
+            "reservation_id",
+            "reservation_count",
+            "reservation_tier",
+            "reservation_job_name",
+            "reservation_session_id",
+            "reservation_local_session_id",
+            "review_batch",
+        )
+        if (
+            current["reservation_state"] != "uncertain"
+            or current["reservation_outcome"] != "operator_recompute_unknown"
+            or any(current[k] != after[k] for k in protected)
+            or any(
+                before[k] != after[k]
+                for k in ("session_sha256", "turns_sha256", "guest_id")
+            )
+            or not isinstance(before["reservation_outcome"], str)
+        ):
+            raise ValueError("changed_review_recomputation")
+        return before["reservation_outcome"]
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("malformed_review_recomputation") from exc
+
+
+def _completed_raw_state(db, job_name, session_id, permit_id):
+    """Fail closed on any ambiguity; completion is not inferred from lease age."""
+    state = read_reconciliation_state(db, job_name, session_id)
+    siblings = _rows(
+        db,
+        f"SELECT id FROM {_table(db, 'agent_sessions', 'capacity_reservations')} WHERE routine_job_name=:name AND state!='settled' ORDER BY id LIMIT 1",
+        {"name": job_name},
+    )
+    workflow = state["workflow"]
+    expected_prefix = f"luna-drainer:{state['workflow_id']}:"
+    holder = state["locked_by"] or ""
+    if (
+        not job_name.startswith("kg:")
+        or state["routine_kind"] != KG_NODE_KEY
+        or state["node_key"] != KG_NODE_KEY
+        or state["session_status"] != "completed"
+        or state["latest_terminal_reason"] != "completed"
+        or state["latest_stop_reason"] is not None
+        or state["latest_turn_seq"] != 1
+        or state["latest_routine_session_id"] != session_id
+        or state["pending"]
+        or state["active_reservation_ids"]
+        or siblings
+        or state["reservation_count"] != 1
+        or state["reservation_id"] != permit_id
+        or state["reservation_state"] != "settled"
+        or state["reservation_outcome"] != "completed"
+        or state["reservation_tier"] != "kg"
+        or state["reservation_job_name"] != job_name
+        or state["reservation_session_id"] != session_id
+        or state["reservation_local_session_id"] != state["local_session_id"]
+        or state["local_session_id"]
+        != f"{state['workflow_id']}:{KG_NODE_KEY}:{job_name}"
+        or len(workflow) != 1
+        or workflow[0]["name"] != "drain_cycle"
+        or workflow[0]["status"] not in {"SUCCESS", "ERROR", "CANCELLED"}
+        or not holder.startswith(expected_prefix)
+        or not holder[len(expected_prefix) :].isdigit()
+        or state["locked_at"] is None
+        or state["job_status"] is not None
+        or state["provenance_count"]
+        or state["extraction_passes"] not in {None, 0}
+        or state["binding_session_ids"]
+        != ([] if state["guest_id"] is None else [session_id])
+    ):
+        raise ValueError("Completed raw ownership or application evidence is ambiguous")
+    raw = _rows(
+        db,
+        f"SELECT source,extra FROM {_table(db, 'knowledge', 'raw_inputs')} WHERE raw_id=:raw",
+        {"raw": job_name[3:]},
+    )[0]
+    extra = _payload(raw["extra"] or {})
+    if raw["source"] not in {"ember-session", "codex-session", "agent-report"} or any(
+        k in extra for k in ("note_id", "dispute_id")
+    ):
+        raise ValueError("Recovery is limited to ordinary session/report extraction")
+    turn = _rows(
+        db,
+        f"SELECT result_text FROM {_table(db, 'agent_sessions', 'agent_turns')} WHERE session_id=:id AND seq=1",
+        {"id": session_id},
+    )[0]
+    output = turn["result_text"]
+    if (
+        not isinstance(output, str)
+        or not output.strip()
+        or len(output.encode()) > 256_000
+    ):
+        raise ValueError("Saved extraction result is missing or exceeds recovery bound")
+    return state, output
+
+
+class _CompletedReplay(Exception):
+    def __init__(self, result):
+        self.result = result
+
+
+def _completed_receipt(db, key, request):
+    previous = db.get(RoutineReconciliation, key) if key is not None else None
+    if previous is None:
+        return None
+    if previous.request_sha256 != _sha(request):
+        raise ValueError("Recovery key conflicts with recorded request")
+    return json.loads(previous.result_json)
+
+
+def recover_completed_raw(*, actor: str, recovery: dict) -> dict:
+    """Preview/apply one saved result, without invoking a model or rearming a job.
+
+    Default-off operator operation. The preview digest binds the original turn,
+    raw input, lease, workflow, permit and extraction version. The normal writer
+    validates saved output; its transaction also completes the lease and records
+    a durable idempotency receipt. No timeout or missing provenance proves that
+    an attempt did not execute. Error, unknown, multi-turn and already-applied
+    states require a different disposition and remain fenced.
+    """
+    import os
+    from knowledge.api import apply_extraction
+
+    if not isinstance(recovery, dict) or recovery.get("mode") not in {
+        "preview",
+        "apply",
+    }:
+        raise ValueError("Recovery requires preview or apply")
+    keys = {"mode", "job_name", "session_id", "permit_id"}
+    if recovery["mode"] == "apply":
+        keys |= {"reconciliation_key", "expected_state_sha256"}
+    if set(recovery) != keys or any(
+        type(recovery[k]) is not int or recovery[k] <= 0
+        for k in ("session_id", "permit_id")
+    ):
+        raise ValueError("Exact recovery fields and positive IDs required")
+    _identifier(recovery["job_name"], "job name")
+    request = {**recovery, "actor": _identifier(actor, "actor")}
+    key = recovery.get("reconciliation_key")
+    if recovery["mode"] == "apply":
+        _identifier(key, "reconciliation key")
+        _digest(recovery["expected_state_sha256"])
+    enabled = (
+        os.environ.get("KG_COMPLETED_RAW_RECOVERY_ENABLED", "false").lower() == "true"
+    )
+    with Session(get_engine()) as db:
+        receipt = _completed_receipt(db, key, request)
+        if receipt is not None:
+            return receipt
+        try:
+            state, output = _completed_raw_state(
+                db, recovery["job_name"], recovery["session_id"], recovery["permit_id"]
+            )
+        except ValueError:
+            db.rollback()
+            receipt = _completed_receipt(db, key, request)
+            if receipt is not None:
+                return receipt
+            raise
+        if recovery["mode"] == "preview":
+            return {
+                "enabled": enabled,
+                "expected_state_sha256": state["state_sha256"],
+                "job_name": recovery["job_name"],
+                "session_id": recovery["session_id"],
+                "permit_id": recovery["permit_id"],
+                "result_sha256": _sha(output),
+                "extraction_version": EXTRACTION_VERSION,
+            }
+        if not enabled:
+            raise ValueError("Completed raw recovery is disabled")
+        if state["state_sha256"] != recovery["expected_state_sha256"]:
+            raise ValueError("Expected completed-result state changed")
+        before = state
+
+        def guard(session):
+            lock_capacity_pool(session)
+            receipt = _completed_receipt(session, key, request)
+            if receipt is not None:
+                raise _CompletedReplay(receipt)
+            lock_cessation_session(session, recovery["session_id"])
+            lock = " FOR UPDATE" if session.bind.dialect.name != "sqlite" else ""
+            session.execute(
+                text(
+                    f"SELECT name FROM {_table(session, 'claude_agent', 'routine_jobs')} WHERE name=:name{lock}"
+                ),
+                {"name": recovery["job_name"]},
+            ).one()
+            session.execute(
+                text(
+                    f"SELECT id FROM {_table(session, 'knowledge', 'raw_inputs')} WHERE raw_id=:raw{lock}"
+                ),
+                {"raw": recovery["job_name"][3:]},
+            ).one()
+            current, saved = _completed_raw_state(
+                session,
+                recovery["job_name"],
+                recovery["session_id"],
+                recovery["permit_id"],
+            )
+            if current != before or saved != output:
+                raise ValueError(
+                    "Completed-result ownership changed during preparation"
+                )
+
+        result = {
+            "job_name": recovery["job_name"],
+            "session_id": recovery["session_id"],
+            "permit_id": recovery["permit_id"],
+            "reconciliation_key": key,
+            "result_sha256": _sha(output),
+            "extraction_version": EXTRACTION_VERSION,
+            "original_outcome": "completed",
+            "rearmed": False,
+        }
+
+        def finalize(session, applied):
+            if applied.get("failed") or applied.get("replayed"):
+                raise ValueError("Saved result was not newly validated and applied")
+            jobs = _table(session, "claude_agent", "routine_jobs")
+            session.execute(
+                text(
+                    f"UPDATE {jobs} SET locked_by=NULL,locked_at=NULL,next_run_at=NULL,last_run_at=:now,last_status='reconciled_completed',last_summary=:summary WHERE name=:name"
+                ),
+                {
+                    "now": datetime.now(timezone.utc),
+                    "summary": f"Saved session {recovery['session_id']} applied by recovery {key}",
+                    "name": recovery["job_name"],
+                },
+            )
+            session.flush()
+            after = read_reconciliation_state(
+                session, recovery["job_name"], recovery["session_id"]
+            )
+            for field in (
+                "turns_sha256",
+                "payload_sha256",
+                "session_sha256",
+                "reservation_state",
+                "reservation_id",
+            ):
+                if after[field] != before[field]:
+                    raise ValueError("Recovery changed protected execution history")
+            result["atoms"] = len(applied["atoms"])
+            result["rejected"] = len(applied["rejected"])
+            session.add(
+                RoutineReconciliation(
+                    reconciliation_key=key,
+                    request_sha256=_sha(request),
+                    actor=actor,
+                    job_name=recovery["job_name"],
+                    session_id=recovery["session_id"],
+                    unknown_turn_seq=1,
+                    disposition="retain_applied",
+                    evidence_json=_json(
+                        {"request": request, "before": before, "after": after}
+                    ),
+                    result_json=_json(result),
+                )
+            )
+            session.flush()
+
+        try:
+            applied = apply_extraction(
+                db,
+                recovery["job_name"][3:],
+                output,
+                transaction_guard=guard,
+                transaction_finalize=finalize,
+            )
+        except _CompletedReplay as replay:
+            return replay.result
+        if applied.get("replayed"):
+            db.rollback()
+            receipt = _completed_receipt(db, key, request)
+            if receipt is not None:
+                return receipt
+            raise ValueError("Application appeared without this recovery receipt")
+        return result

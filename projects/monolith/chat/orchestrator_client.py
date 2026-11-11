@@ -18,15 +18,6 @@ configured the behavior is byte-identical to the original single-attempt contrac
 There is still no per-provider retry loop (contrast with build_llm_caller's 3
 retries), because escalations must degrade quickly, not stall on any single call.
 
-``call_tool`` is the typed sibling used for the runtime ``submit_plan``
-plan (ADR 036 amendment, DeepSeek runtime recipes):
-it forces a tool call against a caller-supplied JSON Schema instead of
-parsing free-text content. The probe at
-``scratchpad/probe_submit_plan.py`` validated a forced tool call
-(``tools`` + ``tool_choice``) at 12/12 across trials; OpenRouter's
-``response_format: {"type": "json_schema", "json_schema": {...}}`` (also
-12/12 in the probe) is the documented drop-in fallback mechanism should
-tool-calling ever regress for the pinned model.
 """
 
 from __future__ import annotations
@@ -42,9 +33,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-# Initial-compile budget (Task 8). Covers BOTH the route-decision ``call()`` and
-# the ``submit_plan`` ``call_tool()``, since plan construction is real work, not a
-# quick classification. Overridable via ``ORCHESTRATOR_TIMEOUT_S``.
+# Routing call budget, overridable via ORCHESTRATOR_TIMEOUT_S.
 _DEFAULT_TIMEOUT_S = 60.0
 
 
@@ -208,120 +197,6 @@ async def call(system: str, user: str) -> OrchestratorResponse:
             if i + 1 < len(providers):
                 logger.warning(
                     "orchestrator provider %s unavailable (%s); trying next: %s",
-                    m,
-                    exc,
-                    providers[i + 1][0],
-                )
-    raise last_exc or OrchestratorUnavailable("no orchestrator providers configured")
-
-
-async def _attempt_call_tool(
-    model: str,
-    base_url: str,
-    api_key: str,
-    timeout_s: float,
-    system: str,
-    user: str,
-    schema: dict,
-    tool_name: str,
-) -> tuple[dict, OrchestratorResponse]:
-    """One provider attempt for ``call_tool``: forced tool call + parse, or raise
-    ``OrchestratorUnavailable``."""
-    started = time.monotonic()
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s)) as client:
-            resp = await client.post(
-                f"{base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    "tools": [{"type": "function", "function": schema}],
-                    "tool_choice": {
-                        "type": "function",
-                        "function": {"name": tool_name},
-                    },
-                },
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-    except httpx.TimeoutException as exc:
-        raise OrchestratorUnavailable(
-            f"orchestrator tool call timed out: {exc}"
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise OrchestratorUnavailable(f"orchestrator tool call failed: {exc}") from exc
-
-    latency_ms = int((time.monotonic() - started) * 1000)
-
-    try:
-        tool_call = payload["choices"][0]["message"]["tool_calls"][0]
-        arguments_raw = tool_call["function"]["arguments"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise OrchestratorUnavailable(
-            f"unexpected orchestrator tool-call response shape: {exc}"
-        ) from exc
-
-    try:
-        args = json.loads(arguments_raw)
-    except (json.JSONDecodeError, TypeError) as exc:
-        raise OrchestratorUnavailable(
-            f"orchestrator tool-call arguments were not valid JSON: {exc}"
-        ) from exc
-
-    prompt_tokens, completion_tokens, cached_tokens = _extract_usage(payload)
-
-    response = OrchestratorResponse(
-        content=arguments_raw,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        cached_tokens=cached_tokens,
-        latency_ms=latency_ms,
-    )
-    return args, response
-
-
-async def call_tool(
-    system: str,
-    user: str,
-    *,
-    schema: dict,
-    tool_name: str = "submit_plan",
-    timeout_s: float | None = None,
-) -> tuple[dict, OrchestratorResponse]:
-    """Force a tool call against ``schema`` and parse its arguments.
-
-    Sends ``tools=[{"type": "function", "function": schema}]`` with
-    ``tool_choice`` pinned to ``tool_name``, then parses
-    ``choices[0].message.tool_calls[0].function.arguments`` (a JSON string)
-    into a dict. Returns ``(args, response)`` where ``response`` mirrors
-    ``call()``'s usage/latency accounting (``response.content`` holds the
-    raw arguments JSON string).
-
-    Tries the primary provider, then each provider in the fallback chain in
-    order, stopping at the first success. This is where a primary with weaker
-    forced-tool-call support (or an exhausted rate limit) degrades to the proven
-    path. One attempt per provider, no retry loop. Uses ``timeout_s`` if given,
-    else the configured default (see ``_read_config``).
-    """
-    model, base_url, api_key, default_timeout_s = _read_config()
-    effective_timeout_s = timeout_s if timeout_s is not None else default_timeout_s
-    providers = [(model, base_url, api_key), *_read_fallback_chain()]
-    last_exc: OrchestratorUnavailable | None = None
-    for i, (m, b, k) in enumerate(providers):
-        try:
-            return await _attempt_call_tool(
-                m, b, k, effective_timeout_s, system, user, schema, tool_name
-            )
-        except OrchestratorUnavailable as exc:
-            last_exc = exc
-            if i + 1 < len(providers):
-                logger.warning(
-                    "orchestrator provider %s tool-call unavailable (%s); "
-                    "trying next: %s",
                     m,
                     exc,
                     providers[i + 1][0],

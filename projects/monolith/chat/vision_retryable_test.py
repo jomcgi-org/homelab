@@ -9,7 +9,6 @@ HTTPStatusError(5xx) → True, HTTPStatusError(4xx) → False, ValueError → Fa
 from unittest.mock import MagicMock
 
 import httpx
-import pytest
 
 from chat.vision import _is_retryable
 
@@ -89,12 +88,3 @@ class TestIsRetryableVision:
             "Client Closed Request", request=MagicMock(), response=resp
         )
         assert _is_retryable(exc) is False
-
-    def test_boundary_500_is_retryable(self):
-        """HTTPStatusError with exactly 500 (5xx lower boundary) is retryable."""
-        resp = MagicMock()
-        resp.status_code = 500
-        exc = httpx.HTTPStatusError(
-            "Internal Server Error", request=MagicMock(), response=resp
-        )
-        assert _is_retryable(exc) is True

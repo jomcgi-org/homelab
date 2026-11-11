@@ -14,6 +14,7 @@ import signal
 import socket
 import sys
 import threading
+import tempfile
 import time
 import subprocess
 import runpy
@@ -25,7 +26,7 @@ try:
 except ModuleNotFoundError:
     import tomli as tomllib
 from http.client import HTTPConnection
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -108,7 +109,7 @@ for line in sys.stdin:
     if not initialized:
         print(json.dumps({"type": "system", "subtype": "init", "session_id": "init-sid",
                           "model": "fake", "apiKeySource": api_key,
-                          "mcp_servers": []}), flush=True)
+                          "mcp_servers": [], "tools": json.loads(os.environ.get("FAKE_TOOLS", "[]"))}), flush=True)
         initialized = True
     if text == "block":
         while True:
@@ -117,7 +118,7 @@ for line in sys.stdin:
     if text == "fallback":
         result = "First sentence. Second sentence."
     else:
-        result = "Done <voice>Changed the files and need review.</voice>"
+        result = os.environ.get("FAKE_RESULT", "Done <voice>Changed the files and need review.</voice>")
     if os.environ.get("FAKE_MALFORMED"):
         malformed = [
             {"type": "assistant", "message": None},
@@ -542,7 +543,8 @@ if args_path:
 assert "--provider" in sys.argv
 assert sys.argv[sys.argv.index("--provider") + 1] == "openai-completions"
 assert sys.argv[sys.argv.index("--model") + 1] == "muse-spark-1.3-contributor"
-for flag in ("--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates"):
+assert "--no-context-files" not in sys.argv
+for flag in ("--no-extensions", "--no-skills", "--no-prompt-templates"):
     assert flag in sys.argv
 assert sys.argv[sys.argv.index("--extension") + 1] == "/usr/share/ember-pi/extensions/web-research.ts"
 assert "--tools" not in sys.argv
@@ -668,9 +670,8 @@ for line in sys.stdin:
                        "content": [{"type": "text",
                                     "text": os.environ["FAKE_PI_PARTIAL"]}],
                        "stopReason": "length",
+                       "finish_reason": "length",
                        "usage": {"input": 2, "output": 3}}
-            if not os.environ.get("FAKE_PI_OMIT_FINISH_REASON"):
-                message["finish_reason"] = "length"
             emit({"type": "message_end", "message": message})
             emit({"type": "agent_end", "messages": []})
         elif os.environ.get("FAKE_PI_MODE") == "tool-call-leak-balanced":
@@ -3604,6 +3605,8 @@ def _manager(tmp_path, monkeypatch, api_key="none"):
 
 def _new_process_manager():
     manager = object.__new__(shim.ProcessManager)
+    manager._test_workspace = tempfile.TemporaryDirectory(prefix="shim-manager-test-")
+    manager.workspace = manager._test_workspace.name
     manager._prewarm_clis = ()
     manager._mount_lock = threading.Lock()
     manager._thread_factory = threading.Thread
@@ -3997,6 +4000,7 @@ def test_process_manager_diff_capture_failure_does_not_fail_turn(
 ):
     manager = _new_process_manager()
     manager.workspace = str(tmp_path / "workspace")
+    os.makedirs(manager.workspace)
     manager._hydration_error = None
     manager._hydration_status = None
 
@@ -6403,6 +6407,17 @@ def test_system_prompt_validation_and_forwarding():
     assert manager.calls[0][1] == {"artifact_path": "plan.json"}
 
     manager = _Manager()
+    assert post({"message": "hello", "workspace_handoff": {"version": 1}}, manager) == [
+        (200, {"result": "ok"})
+    ]
+    assert manager.calls[0][1] == {"workspace_handoff": {"version": 1}}
+    manager = _Manager()
+    assert post({"message": "hello", "workspace_handoff": None}, manager) == [
+        (400, {"error": "workspace_handoff must be an object"})
+    ]
+    assert manager.calls == []
+
+    manager = _Manager()
     assert post({"message": "hello", "thinking": "high"}, manager) == [
         (200, {"result": "ok"})
     ]
@@ -7747,6 +7762,340 @@ def test_permission_mode_can_be_overridden(tmp_path, monkeypatch):
     args = json.loads(args_path.read_text())
     assert args[args.index("--permission-mode") + 1] == "default"
     manager._close_process(kill=True)
+
+
+def _funding_profile():
+    return {
+        "name": "factory-funding-v1",
+        "model": "opus",
+        "request_id": 9,
+        "request_sha256": "a" * 64,
+        "schema_sha256": "b" * 64,
+    }
+
+
+@pytest.fixture
+def funding_provider(monkeypatch):
+    """Detect any provider request, using a credential-free local HTTP proxy."""
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
+    monkeypatch.setenv(shim.PREWARM_CLIS_ENV, ",")
+    calls = []
+    reply = {
+        "type": "message",
+        "role": "assistant",
+        "stop_reason": "end_turn",
+        "model": shim.CLAUDE_MODELS["opus"],
+        "content": [{"type": "text", "text": '{"action":"continue"}'}],
+        "usage": {"input_tokens": 30, "output_tokens": 7},
+    }
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            calls.append(
+                {
+                    "path": self.path,
+                    "body": body,
+                    "headers": {k.lower(): v for k, v in self.headers.items()},
+                }
+            )
+            self.send_response(reply.get("_status", 200))
+            if reply.get("_status") == 302:
+                self.send_header("Location", "http://api.anthropic.com/redirected")
+            self.end_headers()
+            self.wfile.write(json.dumps(reply).encode())
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(
+        shim,
+        "egress_proxy_env",
+        lambda: {
+            "HTTP_PROXY": "http://127.0.0.1:%s" % server.server_port,
+        },
+    )
+    try:
+        yield calls, reply
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_disabled_funding_profile_sends_no_content_and_preserves_one_shot_fence(
+    tmp_path, monkeypatch, funding_provider
+):
+    monkeypatch.setattr(shim, "GIT_PROXY_PATH", str(tmp_path / "git-proxy"))
+    monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_DIR", str(tmp_path / "mcp"))
+    claude = _manager(tmp_path, monkeypatch)
+    manager = shim.ProcessManager(claude.workspace, claude.executable)
+    args_path = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+    # Even a CLI advertising Bash must never receive funding input or run.
+    monkeypatch.setenv("FAKE_TOOLS", '["Bash"]')
+    monkeypatch.setenv(
+        shim.AGENT_MCP_URL_ENV, "https://must-not-be-bootstrapped.invalid"
+    )
+
+    def forbidden(*_a, **_kw):
+        pytest.fail(
+            "decision profile must not hydrate, configure git, or capture repository output"
+        )
+
+    monkeypatch.setattr(manager, "_hydrate_workspace", forbidden)
+    monkeypatch.setattr(shim.ClaudeProcess, "_configure_git", forbidden)
+    try:
+        with pytest.raises(
+            shim.StartupError, match="funding_provider_route_unavailable"
+        ):
+            manager.turn(
+                "Decide the supplied funding request",
+                model="opus",
+                artifact_path=".factory/t/funding.json",
+                dispatch_id="exact-1",
+                turn_seq=1,
+                execution_profile=_funding_profile(),
+            )
+        assert not args_path.exists(), "funding must not launch or probe the CLI"
+        calls, _reply = funding_provider
+        assert calls == []
+        assert manager.claude.workspace != manager.workspace
+        assert manager.claude.current_result is None
+        assert manager.claude.session_id is None
+        for kwargs in ({}, {"execution_profile": _funding_profile()}):
+            with pytest.raises(shim.SessionConflictError):
+                manager.turn("another turn", model="opus", **kwargs)
+    finally:
+        manager._close_process(kill=True)
+    restored = shim.ProcessManager(claude.workspace, claude.executable)
+    with pytest.raises(shim.SessionConflictError):
+        restored.turn("ordinary fallback", model="opus")
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["model", "resume", "repo", "handoff", "dispatch", "turn", "schema", "extra"],
+)
+def test_funding_profile_refuses_unsupported_or_ambiguous_execution(
+    tmp_path, monkeypatch, change
+):
+    monkeypatch.setattr(shim, "GIT_PROXY_PATH", str(tmp_path / "git-proxy"))
+    monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_DIR", str(tmp_path / "mcp"))
+    claude = _manager(tmp_path, monkeypatch)
+    manager = shim.ProcessManager(claude.workspace, claude.executable)
+    kwargs = {
+        "model": "opus",
+        "artifact_path": ".factory/t/funding.json",
+        "dispatch_id": "exact-1",
+        "turn_seq": 1,
+        "execution_profile": _funding_profile(),
+    }
+    if change == "model":
+        kwargs["model"] = kwargs["execution_profile"]["model"] = "astra"
+    elif change == "resume":
+        kwargs["session_id"] = "old"
+    elif change == "repo":
+        kwargs["repo"] = "owner/repo"
+    elif change == "handoff":
+        kwargs["workspace_handoff"] = {"x": 1}
+    elif change == "dispatch":
+        kwargs["dispatch_id"] = None
+    elif change == "turn":
+        kwargs["turn_seq"] = 2
+    elif change == "schema":
+        kwargs["execution_profile"]["schema_sha256"] = "bad"
+    else:
+        kwargs["execution_profile"]["tools"] = ["Bash"]
+    with pytest.raises((ValueError, shim.SessionConflictError)):
+        manager.turn("decision", **kwargs)
+    assert manager.claude.process is None
+
+
+@pytest.mark.parametrize("capability", ["tools", "mcp_servers", "betas", "container"])
+def test_funding_profile_refuses_capabilities_before_prompt_or_provider(
+    tmp_path, monkeypatch, funding_provider, capability
+):
+    claude = _manager(tmp_path, monkeypatch)
+    args_path = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+    monkeypatch.setenv("FAKE_TOOLS", '["Bash"]')
+    claude.decision_profile = {**_funding_profile(), capability: ["web_search"]}
+    with pytest.raises(ValueError, match="invalid funding execution profile"):
+        claude.turn("private decision must not be delivered", model="opus")
+    assert funding_provider[0] == []
+    assert not args_path.exists()
+    assert claude.process is None
+
+
+def test_funding_profile_cannot_fall_through_to_cli(
+    tmp_path, monkeypatch, funding_provider
+):
+    claude = _manager(tmp_path, monkeypatch)
+    claude.decision_profile = _funding_profile()
+    with pytest.raises(shim.StartupError, match="cannot invoke a CLI"):
+        claude._spawn(first_message="private decision", model="opus")
+    assert funding_provider[0] == []
+    assert claude.process is None
+
+
+def test_funding_interrupt_before_invocation_delivers_no_prompt(
+    tmp_path, monkeypatch, funding_provider
+):
+    claude = _manager(tmp_path, monkeypatch)
+    claude.decision_profile = _funding_profile()
+    outcome = claude.interrupt(timeout=0)
+    assert outcome["timeout"] and not outcome["killed"]
+    with pytest.raises(shim.StartupError, match="before provider invocation"):
+        claude.turn("private decision", model="opus")
+    assert funding_provider[0] == []
+
+
+def test_funding_absent_cli_does_not_prove_provider_cessation(
+    tmp_path, monkeypatch, funding_provider
+):
+    claude = _manager(tmp_path, monkeypatch)
+    claude.decision_profile = _funding_profile()
+    # A restored historical direct-client attempt must not be reclassified as
+    # ceased merely because the replacement code cannot make new calls.
+    claude.session_id = "funding-historical-unknown"
+    assert claude.interrupt(timeout=0) == {
+        "terminal_reason": "user_interrupt",
+        "killed": False,
+        "timeout": True,
+    }
+    assert funding_provider[0] == []
+
+
+@pytest.mark.parametrize("message", [None, "", {"tools": [{"type": "web_search"}]}])
+def test_funding_rejects_nontext_before_any_prompt_delivery(
+    tmp_path, monkeypatch, funding_provider, message
+):
+    claude = _manager(tmp_path, monkeypatch)
+    claude.decision_profile = _funding_profile()
+    args_path = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+    with pytest.raises(ValueError, match="plain text"):
+        claude.turn(message, model="opus")
+    assert funding_provider[0] == []
+    assert not args_path.exists()
+    assert claude.session_id is None
+
+
+@pytest.mark.parametrize("model", ["opus", "sonnet", "fable"])
+@pytest.mark.parametrize(
+    "credential_env",
+    ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "EMBER_ANTHROPIC_OAUTH_TOKEN"],
+)
+def test_disabled_funding_cannot_be_enabled_by_ambient_credentials(
+    tmp_path, monkeypatch, funding_provider, model, credential_env
+):
+    claude = _manager(tmp_path, monkeypatch)
+    claude.decision_profile = {**_funding_profile(), "model": model}
+    monkeypatch.setenv(credential_env, "synthetic-not-a-credential")
+    args_path = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+
+    # Refusal must precede even HTTP client construction. The listening fake
+    # provider is an independent check that no serialized content reaches it.
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("disabled funding constructed an HTTP client")
+
+    monkeypatch.setattr(shim.urllib.request, "build_opener", forbidden)
+    for _ in range(2):
+        with pytest.raises(
+            shim.StartupError, match="funding_provider_route_unavailable"
+        ):
+            claude.turn("private decision", model=model)
+    assert funding_provider[0] == []
+    assert claude.process is None
+    assert claude.session_id is None
+    assert not args_path.exists()
+
+
+@pytest.mark.parametrize("decision_first", [False, True])
+def test_funding_profile_and_ordinary_turn_race_is_fenced(
+    tmp_path, monkeypatch, decision_first
+):
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(shim, "GIT_PROXY_PATH", str(tmp_path / "git-proxy"))
+    monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_DIR", str(tmp_path / "mcp"))
+    claude = _manager(tmp_path, monkeypatch)
+    manager = shim.ProcessManager(claude.workspace, claude.executable)
+    first_entered, second_waiting, release = (threading.Event() for _ in range(3))
+    calls = []
+
+    class OrderedMountLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.arrivals = 0
+
+        def __enter__(self):
+            self.arrivals += 1
+            if self.arrivals == 2:
+                second_waiting.set()
+            self.lock.acquire()
+
+        def __exit__(self, *_args):
+            self.lock.release()
+
+    def mounted():
+        first_entered.set()
+        assert release.wait(5)
+
+    def turn(adapter, *_args, **_kwargs):
+        calls.append(adapter.decision_profile)
+        return {"result": '{"action":"stop"}'}
+
+    monkeypatch.setattr(manager, "_mount_lock", OrderedMountLock())
+    monkeypatch.setattr(shim, "ensure_workspace_volume", mounted)
+    monkeypatch.setattr(shim.ClaudeProcess, "turn", turn)
+    monkeypatch.setattr(shim, "_sync_session_volume", lambda: None)
+    options = {
+        "model": "opus",
+        "artifact_path": ".factory/t/funding.json",
+        "dispatch_id": "exact-1",
+        "turn_seq": 1,
+        "execution_profile": _funding_profile(),
+    }
+    first, second = (options, {}) if decision_first else ({}, options)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        winner = pool.submit(manager.turn, "decision", **first)
+        assert first_entered.wait(5)
+        loser = pool.submit(manager.turn, "decision", **second)
+        try:
+            assert second_waiting.wait(5)
+        finally:
+            release.set()
+        assert winner.result(timeout=5)["result"]
+        with pytest.raises(shim.SessionConflictError):
+            loser.result(timeout=5)
+    assert calls == [_funding_profile() if decision_first else None]
+
+
+@pytest.mark.parametrize(
+    "path,profile", [(shim.TURN_PATH, True), (shim.FUNDING_PATH, False)]
+)
+def test_funding_profile_requires_matching_versioned_endpoint(path, profile):
+    payload = {"message": "decide", "model": "opus"}
+    if profile:
+        payload["execution_profile"] = _funding_profile()
+    raw = json.dumps(payload).encode()
+    handler = object.__new__(shim.RequestHandler)
+    handler.path = path
+    handler.headers = {"Content-Length": str(len(raw))}
+    handler.rfile = io.BytesIO(raw)
+    responses = []
+    handler._send = lambda status, value: responses.append((status, value))
+    handler.manager = None  # A mismatched endpoint must never reach any adapter.
+    handler.do_POST()
+    assert responses == [
+        (400, {"error": "execution profile requires its versioned endpoint"})
+    ]
 
 
 def test_spawn_sets_egress_proxy_environment(tmp_path, monkeypatch):
@@ -9374,14 +9723,8 @@ sys.exit(1)
     assert "Parsed events:" in error_msg or "error" in error_msg
 
 
-def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
-    """pi must be launched with the context budget pinned down.
-
-    Pi gets one bounded share of NInfer's shared KV pool. These flags keep that
-    budget available to the task. Losing any of them fails SILENTLY: the turn
-    still succeeds, it just spends the window on discovered context or a default
-    prompt instead of the task, and the answers quietly get worse.
-    """
+def test_pi_argv_loads_repo_guidance_with_the_callers_role(tmp_path, monkeypatch):
+    """Native repo instructions must coexist with the assigned role prompt."""
     monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, "http://agents.test:8092/mcp")
     manager = _pi_manager(tmp_path, monkeypatch)
     manager.turn("hello", model="spark", system_prompt="CALLER-MARKER")
@@ -9397,18 +9740,20 @@ def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
     assert "in-cluster services are not" in system_prompt
     assert "only in-cluster service you can reach" not in system_prompt
 
-    # Discovery of every kind is off: context files (AGENTS.md/CLAUDE.md),
-    # extensions, skills and prompt templates all inject tokens we did not
-    # choose, and AGENTS.md discovery alone can dwarf the prompt.
+    # Pi appends native AGENTS.md context even with --system-prompt. Do not
+    # suppress shared repo guidance when launching from the hydrated checkout.
+    assert "--no-context-files" not in argv
+
+    # Keep runtime extension, skill and prompt-template discovery separate from
+    # repository instructions. Only the image-owned extensions are loaded.
     for flag in (
-        "--no-context-files",
         "--no-extensions",
         "--no-skills",
         "--no-prompt-templates",
     ):
-        assert flag in argv, "missing %s: model context budget is unguarded" % flag
+        assert flag in argv, "unexpected discovery enabled: %s" % flag
 
-    # Explicitly load the trusted extension while all discovery stays off.
+    # Explicitly load the trusted extension.
     assert "--extension" in argv
     assert argv[argv.index("--extension") + 1] == shim.PI_WEB_RESEARCH_EXTENSION
     manager._close_process()
@@ -9504,13 +9849,7 @@ def test_pi_without_agent_mcp_url_is_unchanged(tmp_path, monkeypatch, value):
 
 
 def test_pi_models_json_declares_correct_context_window(tmp_path, monkeypatch):
-    """models.json must declare the bounded per-session NInfer budget.
-
-    If these values are wrong, pi's clampMaxTokensToContext computes available
-    tokens using a false budget. Pi's 128000-token default would let two active
-    sessions consume 256000 tokens, leaving less than the required shared
-    headroom in NInfer's 262144-token page pool.
-    """
+    """Meta Spark models.json must preserve Pi's local context and output limits."""
     manager = _pi_manager(tmp_path, monkeypatch)
     manager.turn("hello", model="spark")
 
@@ -9530,37 +9869,37 @@ def test_pi_models_json_declares_correct_context_window(tmp_path, monkeypatch):
     assert provider["baseUrl"] == "https://api.meta.ai/v1"
     assert "thinkingFormat" not in provider["compat"]
     assert model_dict["id"] == "muse-spark-1.3-contributor"
-    assert model_dict["contextWindow"] == shim.PI_CONTEXT_WINDOW
-    assert model_dict["maxTokens"] == shim.PI_MAX_OUTPUT_TOKENS
+    assert model_dict["contextWindow"] == 122880
+    assert model_dict["maxTokens"] == 12288
     assert model_dict["reasoning"] is False
 
     manager._close_process()
 
 
-def test_pi_context_window_headroom_relationship():
-    """Two Pi windows plus shared headroom must fit NInfer's KV capacity.
+def test_pi_local_context_safety_budgets():
+    """Pin local limits and room for the observed 4097-token estimation error.
 
-    The cross-file test reads the deployment values. This fast unit test pins
-    the approved production arithmetic even without its Bazel data dependency.
+    These are conservative runtime budgets, independent of any server KV pool.
+    The reserve exceeds output plus pi's safety subtraction. It also absorbs
+    the historical trailing-tool-result underestimate plus a full response.
     """
-    ninfer_kv_capacity = 262144
-    ninfer_max_concurrency = 2
-    declared_window = shim.PI_CONTEXT_WINDOW
-    declared_headroom = shim.PI_CONTEXT_WINDOW_HEADROOM
-    assert declared_window == 122880
-    assert declared_headroom == 16384
-
-    total = declared_window * ninfer_max_concurrency + declared_headroom
-    assert total == ninfer_kv_capacity, (
-        "%s Pi contexts at %s tokens plus %s headroom = %s, which does not "
-        "exactly account for NInfer KV capacity %s."
-        % (
-            ninfer_max_concurrency,
-            declared_window,
-            declared_headroom,
-            total,
-            ninfer_kv_capacity,
-        )
+    assert shim.PI_CONTEXT_WINDOW == 122880
+    assert shim.PI_MAX_OUTPUT_TOKENS == 12288
+    assert shim.PI_CONTEXT_SAFETY_TOKENS == 4096
+    assert shim.PI_COMPACTION_RESERVE_TOKENS == 16896
+    assert shim.PI_COMPACTION_KEEP_RECENT_TOKENS == 8000
+    assert (
+        shim.PI_CONTEXT_WINDOW
+        - shim.PI_COMPACTION_RESERVE_TOKENS
+        + 4097
+        + shim.PI_MAX_OUTPUT_TOKENS
+        < shim.PI_CONTEXT_WINDOW
+    )
+    assert (
+        shim.PI_COMPACTION_RESERVE_TOKENS
+        - shim.PI_MAX_OUTPUT_TOKENS
+        - shim.PI_CONTEXT_SAFETY_TOKENS
+        == 512
     )
 
 
@@ -9590,11 +9929,8 @@ def test_pi_settings_json_is_written_with_compaction_block(tmp_path, monkeypatch
 
     assert "compaction" in settings
     assert settings["compaction"]["enabled"] is True
-    assert settings["compaction"]["reserveTokens"] == shim.PI_COMPACTION_RESERVE_TOKENS
-    assert (
-        settings["compaction"]["keepRecentTokens"]
-        == shim.PI_COMPACTION_KEEP_RECENT_TOKENS
-    )
+    assert settings["compaction"]["reserveTokens"] == 16896
+    assert settings["compaction"]["keepRecentTokens"] == 8000
     assert "defaultThinkingLevel" not in settings
 
     manager._close_process()
@@ -11770,3 +12106,177 @@ def test_runtime_meter_freshness_deadline_is_not_extended_by_output(
         manager.turn("work", model="astra", runtime_meter={"fixture": True})
     assert observed[-1] == "unknown"
     assert manager.process is None
+
+
+@pytest.fixture
+def browser_preflight_contract(tmp_path):
+    checker = b"""import hashlib,json,os,sys
+request=json.load(sys.stdin)
+h=request["handoff"]
+p=h["provenance"]
+assert os.path.isabs(request["checkout"])
+assert "PYTHONPATH" not in os.environ
+assert sys.flags.isolated == 1
+print(json.dumps({"status":"ok", "handoff_sha256":hashlib.sha256(json.dumps(h,sort_keys=True,separators=(",",":")).encode()).hexdigest(), "manifest_sha256":h["manifest_sha256"], "inventory_sha256":h["inventory_sha256"], "base_sha":p["base_sha"], "head_sha":p["head_sha"], "harness_sha":p["harness_sha"], "files":2, "bytes":10}))
+"""
+    pins = {}
+    for relative in shim.BROWSER_PREFLIGHT_FILES:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = (
+            checker
+            if relative == shim.BROWSER_PREFLIGHT_FILES[0]
+            else b"# pinned helper\n"
+        )
+        path.write_bytes(content)
+        pins[relative] = hashlib.sha256(content).hexdigest()
+    payload = {
+        "version": 1,
+        "expected_workspace_fingerprint": "a" * 64,
+        "handoff": {
+            "manifest_sha256": "b" * 64,
+            "inventory_sha256": "c" * 64,
+            "provenance": {
+                "base_sha": "d" * 40,
+                "head_sha": "e" * 40,
+                "harness_sha": "f" * 40,
+            },
+        },
+        "preflight": {"harness_sha": "f" * 40, "files": pins},
+    }
+    return tmp_path, payload
+
+
+def test_browser_preflight_runs_only_pinned_isolated_closure(
+    browser_preflight_contract, monkeypatch
+):
+    checkout, payload = browser_preflight_contract
+    monkeypatch.setenv("PYTHONPATH", "/untrusted/producer")
+    monkeypatch.setattr(shim, "_cli_privilege_kwargs", lambda: {})
+    result = shim._workspace_handoff_preflight(str(checkout), payload)
+    assert result["status"] == "ok"
+    assert result["files"] == 2
+    assert result["head_sha"] == "e" * 40
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["code", "helper", "symlink", "missing", "extra", "sha", "oversize", "command"],
+)
+def test_browser_preflight_fails_closed_before_checker(
+    browser_preflight_contract, monkeypatch, damage
+):
+    checkout, payload = browser_preflight_contract
+    first = checkout / shim.BROWSER_PREFLIGHT_FILES[0]
+    if damage == "code":
+        first.write_bytes(b"raise Exception('tampered')")
+    elif damage == "helper":
+        (checkout / shim.BROWSER_PREFLIGHT_FILES[1]).write_bytes(b"# tampered helper")
+    elif damage == "symlink":
+        content = first.read_bytes()
+        first.unlink()
+        other = checkout / "other.py"
+        other.write_bytes(content)
+        first.symlink_to(other)
+    elif damage == "missing":
+        first.unlink()
+    elif damage == "extra":
+        payload["preflight"]["files"]["other.py"] = "a" * 64
+    elif damage == "sha":
+        payload["preflight"]["harness_sha"] = "0" * 40
+    elif damage == "oversize":
+        payload["handoff"]["extra"] = "x" * shim.BROWSER_PREFLIGHT_MAX_BYTES
+    else:
+        payload["command"] = ["sh", "-c", "false"]
+    monkeypatch.setattr(
+        shim.subprocess, "run", lambda *a, **k: pytest.fail("checker must not run")
+    )
+    assert (
+        shim._workspace_handoff_preflight(str(checkout), payload)["status"] == "failed"
+    )
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["nonzero", "missing_dependency", "timeout", "malformed", "stale", "oversize"],
+)
+def test_browser_preflight_rejects_failed_or_stale_checker(
+    browser_preflight_contract, monkeypatch, outcome
+):
+    checkout, payload = browser_preflight_contract
+
+    def run(*args, **kwargs):
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(args[0], 120)
+        if outcome == "missing_dependency":
+            return subprocess.CompletedProcess(
+                args[0], 1, b"", b"ModuleNotFoundError: PIL"
+            )
+        if outcome == "nonzero":
+            return subprocess.CompletedProcess(args[0], 1, b'{"status":"ok"}', b"")
+        stdout = {
+            "malformed": b"not-json",
+            "stale": b'{"status":"ok","head_sha":"wrong"}',
+            "oversize": b" " * 8193,
+        }[outcome]
+        return subprocess.CompletedProcess(args[0], 0, stdout, b"")
+
+    monkeypatch.setattr(shim.subprocess, "run", run)
+    assert (
+        shim._workspace_handoff_preflight(str(checkout), payload)["status"] == "failed"
+    )
+
+
+def test_browser_preflight_failure_never_calls_model(monkeypatch, tmp_path):
+    manager = _new_process_manager()
+    manager.workspace = str(tmp_path)
+    manager._hydration_error = None
+    manager._hydration_status = None
+
+    class Adapter:
+        workspace = None
+
+        def turn(self, *args, **kwargs):
+            pytest.fail("model must not run after failed browser preflight")
+
+    manager.claude = manager.codex = manager.pi = manager.muse = Adapter()
+    monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
+    monkeypatch.setattr(shim, "_sync_session_volume", lambda: None)
+    monkeypatch.setattr(shim, "_capture_turn_base", lambda *_: None)
+    result = manager.turn("review", workspace_handoff={})
+    assert result["is_error"] is True
+    assert result["terminal_reason"] == "workspace_preflight_failed"
+    assert result["workspace_preflight"]["status"] == "failed"
+    assert result["usage"]["workspace_preflight"] == result["workspace_preflight"]
+
+
+def test_browser_preflight_success_overwrites_model_usage_claim(monkeypatch, tmp_path):
+    manager = _new_process_manager()
+    manager.workspace = str(tmp_path)
+    manager._hydration_error = None
+    manager._hydration_status = None
+    observed = {"status": "ok", "handoff_sha256": "a" * 64}
+
+    class Adapter:
+        workspace = None
+
+        def turn(self, *args, **kwargs):
+            return {
+                "result": "review",
+                "usage": {
+                    "tokens": 10,
+                    "workspace_preflight": {"status": "model_claim"},
+                },
+            }
+
+    manager.claude = manager.codex = manager.pi = manager.muse = Adapter()
+    monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
+    monkeypatch.setattr(shim, "_sync_session_volume", lambda: None)
+    monkeypatch.setattr(shim, "_capture_turn_base", lambda *_: None)
+    monkeypatch.setattr(shim, "_capture_turn_diff", lambda *_: None)
+    monkeypatch.setattr(shim, "_capture_turn_artifact", lambda *_: None)
+    monkeypatch.setattr(shim, "_workspace_handoff_preflight", lambda *_: observed)
+    result = manager.turn("review", workspace_handoff={})
+    assert result["usage"] == {"tokens": 10, "workspace_preflight": observed}

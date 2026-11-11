@@ -4,7 +4,7 @@ Shared Bazel build tooling: rules, wrappers, and helper binaries used across the
 
 | Subdir | What it provides | Load path / notes |
 | --- | --- | --- |
-| [cluster](cluster/) | Read-only `sh_binary` wrappers around kubectl for cluster inspection: `pods`, `events`, `status`, `argocd` | Script helpers; no `.bzl` files |
+| [cluster](cluster/) | Session-authenticated ArgoCD API helper | `//bazel/tools/cluster:argocd_api`; `scripts/argocd-api.sh` |
 | [ci](ci/) | Unified local feedback loop: selective lint/regen + `bb remote` Linux test (matches Workflows Test flags) | `ci` on PATH via direnv; `bazel/tools/ci/ci` |
 | [embervm](embervm/) | Read-only Firecracker guest RSS and PSS overhead measurement for running EmberVM brick pods | Shell script + `sh_test` |
 | [format](format/) | The top-level `format` multirun target plus helper scripts for updating apko locks, Python requirements, and Atlas migration checksums | No new `.bzl` rules; orchestrates aspect_rules_lint |
@@ -14,7 +14,7 @@ Shared Bazel build tooling: rules, wrappers, and helper binaries used across the
 | [http](http/) | `multiarch_http_archive` and `multiarch_http_file` repository rules for downloading dual-arch binaries from HTTP archives and packaging them as platform-specific tars for apko images | `//bazel/tools/http:multiarch_http_archive.bzl` |
 | [image](image/README.md) | Builds the developer tools OCI image (vendored CLI tools, Node.js, Python, pnpm, prettier, homelab CLI) and exposes `multitool_tar`, `node_tar`, and `python_tar` macros | See linked README |
 | [js](js/README.md) | Bazel helpers for frontend builds: `exec_filegroup` and `node_modules_tar` | See linked README |
-| [lint](lint/) | Configures aspect_rules_lint linter aspects for ESLint, Ruff, and Shellcheck | `//bazel/tools/lint:linters.bzl` |
+| [lint](lint/) | Go analyzers registered by `MODULE.bazel` | `//bazel/tools/lint:nogo` |
 | [oci](oci/README.md) | Bazel rules and macros for building and pushing container images: `apko_image`, `go_image`, `py3_image`, and the `OciImageInfo` provider | See linked README |
 | [platforms](platforms/) | Bazel `platform` targets for `linux_aarch64`, `linux_x86_64`, and `darwin_aarch64`, used by image build transitions and cross-compilation | No `.bzl` files |
 | [postgres](postgres/) | Module extension registering `oci_postgres`, which extracts PostgreSQL 16 and pgvector binaries from an OCI image for use as test data dependencies | `//bazel/tools/postgres:extensions.bzl` |

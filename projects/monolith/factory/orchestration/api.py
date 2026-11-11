@@ -6,6 +6,8 @@ import json
 import logging
 import posixpath
 
+_UNSPECIFIED_MODEL = object()
+
 
 def _check_relative_path(path: str) -> None:
     if "\x00" in path or "\\" in path:
@@ -69,8 +71,10 @@ def declared_artifact_path(
         return None
 
 
-def factory_session_allowed(local_session_id: str | None) -> bool:
-    """Apply current factory controls only to factory-owned session identities."""
+def factory_session_allowed(
+    local_session_id: str | None, *, model: object = _UNSPECIFIED_MODEL
+) -> bool:
+    """Fence a factory session and, at physical dispatch, its actual turn model."""
     if not local_session_id or not local_session_id.startswith("factory:"):
         return True
     fields = local_session_id.split(":")
@@ -78,22 +82,45 @@ def factory_session_allowed(local_session_id: str | None) -> bool:
         return False
     from factory.orchestration.factory_controls import can_start
 
-    return can_start(fields[1], start_key="factory-node:" + ":".join(fields[1:]))["ok"]
+    allowed = can_start(fields[1], start_key="factory-node:" + ":".join(fields[1:]))[
+        "ok"
+    ]
+    if not allowed:
+        return False
+    # Task-wide live transport fence: even an accidental generic funding node
+    # cannot escape a scout's fixed two-node/model subscription contract.
+    from factory.orchestration.factory_improvement_fence import transport_allowed
+    from factory.orchestration.backlog_refill import dispatch_allowed as refill_allowed
 
+    try:
+        if model is not _UNSPECIFIED_MODEL:
+            from factory.execution import normalize_model
+            from factory.orchestration import factory_controls as controls
 
-def get_decision_reference(session, decision_id: int) -> dict | None:
-    """Read one exact decision for knowledge association."""
-    from factory.orchestration.models import SwarmDecision
+            with controls._read_session() as db:
+                row = controls._receipt(db, fields[1])
+                if row is None:
+                    return False
+                if json.loads(row.direction_json or "{}").get("model_restriction"):
+                    if (
+                        normalize_model(model)
+                        not in controls._effective_policy(db, row)["allowed_models"]
+                    ):
+                        return False
+        if not transport_allowed(fields[1], fields[2], int(fields[3])):
+            return False
+        if refill_allowed(fields[1], fields[2], int(fields[3]), physical=True):
+            return True
+        from factory.orchestration.funding_profile import session_profile
 
-    row = session.get(SwarmDecision, decision_id, populate_existing=True)
-    if row is None:
-        return None
-    return {
-        "decision_id": row.id,
-        "workflow_id": row.workflow_id,
-        "node_key": row.node_key,
-        "state": "open" if row.decided_at is None else "decided",
-    }
+        return (
+            session_profile(
+                local_session_id, model=None if model is _UNSPECIFIED_MODEL else model
+            )
+            is not None
+        )
+    except Exception:  # unavailable evidence must not start speculative work
+        return False
 
 
 def read_factory_attempt_stop_request(

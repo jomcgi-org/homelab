@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 import time
 import zlib
 from urllib.parse import quote
@@ -11,24 +9,15 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 
 from factory.execution.rationale import parse_rationale
-from core.github import GITHUB_API, GITHUB_REPO
+from core.github import GITHUB_API, GITHUB_REPO, async_github_get
 from factory.orchestration.unified_diff import parse_unified_diff
+from core.jsonio import loads_or
 
 router = APIRouter(prefix="/compare", tags=["swarm"])
 
 _COMPARE_BASE = "main"
 _CACHE_TTL_S = 90.0
 _cache: dict[str, tuple[float, dict]] = {}
-
-
-def _decode(value: str | None, default):
-    if not value:
-        return default
-    try:
-        decoded = json.loads(value)
-    except (TypeError, json.JSONDecodeError):
-        return default
-    return decoded
 
 
 def _turn_data(session_id: int, turn_seq: int):
@@ -88,7 +77,7 @@ def _stored_compare(data: dict) -> dict | None:
 
 
 def _activities(data: dict) -> tuple[set[str], bool]:
-    usage = _decode(data.get("usage_json"), {})
+    usage = loads_or(data.get("usage_json"), {})
     activities = usage.get("activities", []) if isinstance(usage, dict) else []
     if not isinstance(activities, list):
         return set(), False
@@ -114,13 +103,9 @@ def _cache_put(key: str, value: dict) -> None:
 
 
 async def _github_get(url: str) -> httpx.Response:
-    headers = {"Accept": "application/vnd.github+json"}
-    token = os.environ.get("GITHUB_API_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        response = await client.get(url, headers=headers)
-    return response
+    return await async_github_get(
+        url, timeout=15.0, follow_redirects=True, user_agent="monolith-compare"
+    )
 
 
 async def _compare(

@@ -79,17 +79,17 @@ defmodule Embervm.StatefulStoreTest do
 
   test "blessing leases burn ranges durably and next generation skips them", %{path: path} do
     {op_log, store} = start_pair(path)
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-a", generation: 0})
 
-    {:ok, lease} = StatefulStore.grant_blessing_lease(store, "wl-a", "node-a", 1000)
-    assert lease.start_generation == 1
+    {:ok, [lease]} = StatefulStore.ensure_blessing_lease(store, "wl-a", "node-a")
     assert lease.next_generation == 1
-    assert StatefulStore.next_blessed_generation(store, "wl-a") == 1001
-    assert [%{workload_name: "wl-a", next_generation: 1, lease_end: 1001}] =
+    assert StatefulStore.next_blessed_generation(store, "wl-a") == 51
+    assert [%{workload_name: "wl-a", next_generation: 1, lease_end: 51}] =
              StatefulStore.blessing_leases_for_node(store, "node-a")
 
     GenServer.stop(store)
     {:ok, restarted} = StatefulStore.start_link(op_log: op_log, name: nil)
-    assert StatefulStore.next_blessed_generation(restarted, "wl-a") == 1001
+    assert StatefulStore.next_blessed_generation(restarted, "wl-a") == 51
   end
 
   test "blessing lease start remains seeded past the reported generation", %{path: path} do
@@ -99,10 +99,9 @@ defmodule Embervm.StatefulStoreTest do
 
     StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 7, generation_blessed: true})
 
-    assert {:ok, lease} = StatefulStore.grant_blessing_lease(store, "wl-a", "node-4", 10)
-    assert lease.start_generation == 8
+    assert {:ok, [lease]} = StatefulStore.ensure_blessing_lease(store, "wl-a", "node-4")
     assert lease.next_generation == 8
-    assert lease.lease_end == 18
+    assert lease.lease_end == 58
   end
 
   test "ensure_blessing_lease grants when the lease is absent", %{path: path} do
@@ -123,9 +122,9 @@ defmodule Embervm.StatefulStoreTest do
     {op_log, store} = start_pair(path)
     StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 0})
 
-    {:ok, old_lease} = StatefulStore.grant_blessing_lease(store, "wl-a", "node-4", 4)
-    assert old_lease.lease_end == 5
-    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 5)
+    {:ok, [old_lease]} = StatefulStore.ensure_blessing_lease(store, "wl-a", "node-4")
+    assert old_lease.lease_end == 51
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 51)
 
     assert {:ok, [new_lease]} = StatefulStore.ensure_blessing_lease(store, "wl-a", "node-4")
     assert new_lease != old_lease
@@ -138,7 +137,7 @@ defmodule Embervm.StatefulStoreTest do
   test "ensure_blessing_lease is a no-op when a healthy lease exists", %{path: path} do
     {op_log, store} = start_pair(path)
     StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 0})
-    {:ok, original} = StatefulStore.grant_blessing_lease(store, "wl-a", "node-4", 50)
+    {:ok, [original]} = StatefulStore.ensure_blessing_lease(store, "wl-a", "node-4")
 
     results =
       for _ <- 1..3 do

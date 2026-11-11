@@ -20,11 +20,6 @@ from sqlmodel.pool import StaticPool
 
 import knowledge.module
 from knowledge.frontmatter import ParsedFrontmatter
-from knowledge.gaps import (
-    GapAnswerInvalidError,
-    GapNotFoundError,
-    GapWrongStateError,
-)
 from knowledge.links import Link
 from knowledge.public_models import (
     PublicEntity,
@@ -49,6 +44,30 @@ DEFAULT_SCOPES = (
     "repo:jomcgi-org/homelab",
     "environment:homelab",
 )
+
+
+def test_retired_routes_are_absent_from_registered_knowledge_surface():
+    # OpenAPI expands FastAPI's nested included routers in the composed app.
+    routes = {
+        (method.upper(), path)
+        for path, operations in app.openapi()["paths"].items()
+        for method in operations
+    }
+    removed = {
+        ("GET", "/api/knowledge/interventions"),
+        ("GET", "/api/knowledge/interventions/{raw_id}"),
+        ("POST", "/api/knowledge/interventions/{raw_id}/acknowledge"),
+        ("POST", "/api/knowledge/interventions/{raw_id}/decision"),
+        ("POST", "/api/knowledge/interventions/{raw_id}/resolve"),
+        ("POST", "/api/knowledge/interventions/{raw_id}/evidence"),
+        ("POST", "/api/knowledge/gaps/{gap_id}/answer"),
+    }
+    assert removed.isdisjoint(routes)
+    for action in ("reject", "verify", "reopen", "undelete"):
+        assert ("POST", f"/api/knowledge/gaps/{{gap_id}}/{action}") in routes
+    assert ("DELETE", "/api/knowledge/gaps/{gap_id}") in routes
+    assert ("GET", "/api/knowledge/search") in routes
+    assert ("POST", "/api/knowledge/raws") in routes
 
 
 def _principal(
@@ -544,7 +563,7 @@ class TestListGapsEndpoint:
         assert r.json() == {"gaps": []}
 
     def test_no_filters_passes_none_to_store(self, note_client):
-        """Omitting state/gap_class passes states=None, classes=None to the store."""
+        """Omitting all params passes states=None, classes=None, limit=100."""
         with patch("knowledge.router.KnowledgeStore") as MockStore:
             MockStore.return_value.list_gaps.return_value = []
             note_client.get("/api/knowledge/gaps")
@@ -601,18 +620,6 @@ class TestListGapsEndpoint:
                 states=None,
                 classes=None,
                 limit=50,
-            )
-
-    def test_default_limit_is_100(self, note_client):
-        """Default limit is 100 when not specified."""
-        with patch("knowledge.router.KnowledgeStore") as MockStore:
-            MockStore.return_value.list_gaps.return_value = []
-            note_client.get("/api/knowledge/gaps")
-
-            MockStore.return_value.list_gaps.assert_called_once_with(
-                states=None,
-                classes=None,
-                limit=100,
             )
 
     def test_limit_over_max_returns_422(self, note_client):
@@ -737,119 +744,6 @@ class TestReviewQueueEndpoint:
         assert r.status_code == 200
         terms = [g["term"] for g in r.json().get("gaps", [])]
         assert terms == ["alpha", "beta"]
-
-
-class TestAnswerGapEndpoint:
-    """Tests for POST /api/knowledge/gaps/{gap_id}/answer.
-
-    The endpoint accepts {"answer": "..."}, delegates to answer_gap(), and
-    maps ValueError sub-types to specific HTTP status codes:
-      - "Gap not found"        → 404
-      - "expected 'in_review'" → 409
-      - "frontmatter terminator" → 400
-      - any other ValueError   → 400
-    """
-
-    def test_happy_path_returns_answer_gap_result(self, note_client):
-        """Successful answer_gap() result is returned directly."""
-        expected = {
-            "gap_id": 1,
-            "note_id": "linkerd-mtls",
-        }
-        with patch("knowledge.router.answer_gap") as mock_answer:
-            mock_answer.return_value = expected
-            r = note_client.post(
-                "/api/knowledge/gaps/1/answer",
-                json={"answer": "Linkerd uses per-pod sidecars on port 4143."},
-            )
-
-        assert r.status_code == 200
-        assert r.json() == expected
-
-    def test_answer_and_gap_id_forwarded_to_answer_gap(self, note_client):
-        """gap_id and answer string are forwarded positionally to answer_gap."""
-        with patch("knowledge.router.answer_gap") as mock_answer:
-            mock_answer.return_value = {"gap_id": 42, "note_id": "x"}
-            note_client.post(
-                "/api/knowledge/gaps/42/answer",
-                json={"answer": "my answer text"},
-            )
-
-            args, _ = mock_answer.call_args
-            # answer_gap(session, gap_id, answer)
-            assert args[1] == 42
-            assert args[2] == "my answer text"
-
-    def test_gap_not_found_returns_404(self, note_client):
-        """GapNotFoundError maps to HTTP 404."""
-        with patch("knowledge.router.answer_gap") as mock_answer:
-            mock_answer.side_effect = GapNotFoundError("Gap not found: id=9999")
-            r = note_client.post(
-                "/api/knowledge/gaps/9999/answer",
-                json={"answer": "anything"},
-            )
-
-        assert r.status_code == 404
-        assert "Gap not found" in r.json().get("detail", "")
-
-    def test_wrong_state_returns_409(self, note_client):
-        """GapWrongStateError maps to HTTP 409."""
-        with patch("knowledge.router.answer_gap") as mock_answer:
-            mock_answer.side_effect = GapWrongStateError(
-                "Gap 1 is in state 'discovered', expected 'in_review'"
-            )
-            r = note_client.post(
-                "/api/knowledge/gaps/1/answer",
-                json={"answer": "x"},
-            )
-
-        assert r.status_code == 409
-        assert "expected 'in_review'" in r.json().get("detail", "")
-
-    def test_frontmatter_terminator_returns_400(self, note_client):
-        """GapAnswerInvalidError (frontmatter terminator) maps to HTTP 400."""
-        with patch("knowledge.router.answer_gap") as mock_answer:
-            mock_answer.side_effect = GapAnswerInvalidError(
-                "Answer contains a frontmatter terminator (---)"
-            )
-            r = note_client.post(
-                "/api/knowledge/gaps/1/answer",
-                json={"answer": "foo\n---\nbar"},
-            )
-
-        assert r.status_code == 400
-        assert "frontmatter terminator" in r.json().get("detail", "")
-
-    def test_other_value_error_returns_400(self, note_client):
-        """Any other ValueError (not matched by the three specific checks) → 400."""
-        with patch("knowledge.router.answer_gap") as mock_answer:
-            mock_answer.side_effect = ValueError("some unexpected validation failure")
-            r = note_client.post(
-                "/api/knowledge/gaps/1/answer",
-                json={"answer": "x"},
-            )
-
-        assert r.status_code == 400
-
-    def test_missing_answer_field_returns_422(self, note_client):
-        """Request body without 'answer' field is rejected by FastAPI with 422."""
-        r = note_client.post(
-            "/api/knowledge/gaps/1/answer",
-            json={},
-        )
-        assert r.status_code == 422
-
-    def test_error_detail_message_preserved(self, note_client):
-        """The ValueError message is preserved verbatim in the detail field."""
-        msg = "Gap not found: id=777"
-        with patch("knowledge.router.answer_gap") as mock_answer:
-            mock_answer.side_effect = ValueError(msg)
-            r = note_client.post(
-                "/api/knowledge/gaps/777/answer",
-                json={"answer": "x"},
-            )
-
-        assert r.json().get("detail") == msg
 
 
 # The _meta/_upsert helpers below mirror the equivalents in store_test.py
@@ -1413,10 +1307,14 @@ class TestPublicNoteEndpoint:
         try:
             c = TestClient(app, raise_server_exceptions=False)
             res = c.get("/api/knowledge/public/notes/pub-A")
+            expanded = c.get(
+                "/api/knowledge/public/notes/pub-A?include_review_history=true&review_history_limit=25"
+            )
         finally:
             app.dependency_overrides.clear()
 
         assert res.status_code == 200
+        assert expanded.content == res.content
         body = res.json()
         assert set(body.keys()) == {
             "note_id",
@@ -1435,3 +1333,69 @@ class TestPublicNoteEndpoint:
             "body",
         }
         assert "extra" not in body
+
+
+@pytest.mark.parametrize("enabled,limit", [(False, 10), (True, 10), (True, 25)])
+def test_note_history_opt_in_matches_mcp(note_client, enabled, limit):
+    import asyncio
+
+    from knowledge.mcp import get_note
+
+    history = {"current_revision": 2, "entries": [], "has_more": False, "limit": limit}
+    note = {**SAMPLE_NOTE, "content": "A fact"}
+    if enabled:
+        note["review_history"] = history
+    with (
+        patch("knowledge.router.KnowledgeStore") as http_store,
+        patch("knowledge.mcp.KnowledgeStore") as mcp_store,
+        patch("knowledge.mcp.Session"),
+        patch("knowledge.mcp.get_engine"),
+    ):
+        for factory in (http_store, mcp_store):
+            factory.return_value.get_note_by_id.return_value = note
+            factory.return_value.get_note_links.return_value = []
+        response = note_client.get(
+            "/api/knowledge/notes/n1",
+            params={
+                "include_review_history": str(enabled).lower(),
+                "review_history_limit": limit,
+            },
+        )
+        mcp = asyncio.run(
+            get_note("n1", include_review_history=enabled, review_history_limit=limit)
+        )
+        assert response.status_code == 200
+        assert response.json() == mcp == {**note, "edges": []}
+        kwargs = (
+            {"include_review_history": True, "review_history_limit": limit}
+            if enabled
+            else {}
+        )
+        for factory in (http_store, mcp_store):
+            factory.return_value.get_note_by_id.assert_called_once_with("n1", **kwargs)
+
+
+@pytest.mark.parametrize("limit", [0, -1, 26, 1000])
+def test_note_history_limits_rejected_before_reads(note_client, limit):
+    import asyncio
+
+    from knowledge.mcp import get_note
+
+    with (
+        patch("knowledge.router.KnowledgeStore") as store,
+        patch("knowledge.mcp.Session") as session,
+    ):
+        response = note_client.get(
+            "/api/knowledge/notes/n1",
+            params={
+                "include_review_history": "true",
+                "review_history_limit": limit,
+            },
+        )
+        result = asyncio.run(
+            get_note("n1", include_review_history=True, review_history_limit=limit)
+        )
+        assert response.status_code == 422
+        assert "between 1 and 25" in result["error"]
+        store.assert_not_called()
+        session.assert_not_called()

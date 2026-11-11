@@ -1,7 +1,7 @@
 <script>
   import { replaceState } from "$app/navigation";
   import { page } from "$app/state";
-  import { SchemeToggle, Seo } from "$lib/public/components";
+  import { TechnicalDrawingChrome, Trail, Seo } from "$lib/public/components";
   import BarChart from "$lib/public/llm-leaderboard/BarChart.svelte";
   import Scatter from "$lib/public/llm-leaderboard/Scatter.svelte";
   import Selector from "$lib/public/llm-leaderboard/Selector.svelte";
@@ -139,15 +139,15 @@
   path="/app/llm-leaderboard"
 />
 
-<main class="td lb-page">
+{#snippet trail()}
+  <Trail crumbs={[{ label: "llm-leaderboard" }]} />
+{/snippet}
+
+<TechnicalDrawingChrome {trail} />
+
+<main class="td sheet lb-page">
   <div class="frame">
-    <header class="masthead">
-      <nav class="trail" aria-label="You are here">
-        <a class="crumb" href="/">jomcgi.dev</a>
-        <span class="crumb current" aria-current="page">llm-leaderboard</span>
-      </nav>
-      <SchemeToggle />
-    </header>
+    <div class="trail-dock">{@render trail()}</div>
 
     <div class="lead">
       <h1>LLM leaderboard</h1>

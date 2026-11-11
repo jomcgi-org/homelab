@@ -1,24 +1,16 @@
 """Tests for agent helper functions and tool implementations.
 
 Covers gaps not addressed by existing test files:
-- _coerce_username: None input, dict extraction (username/name/display_name keys),
-  invalid dict, non-string types
 - ChatDeps: all three fields (channel_id, store, embed_client)
 - web_search tool: query delegation and return-value passthrough
 - search_history tool: query embedding, username coercion, similarity search,
   limit boundary (exactly 20, over 20, under 20), username=None skips user lookup
 - get_user_summary tool: list path, specific-user path, dict username coercion
-- build_system_prompt: exact tool descriptions, conciseness guidance, tool usage prompt
-- build_system_prompt (DO/DON'T): persona ('friend hanging out'), DO:/DON'T: section
-  headers and ordering, DO section phrases ('Answer directly', 'Match the vibe',
-  proactive tool usage, short casual replies), DON'T section phrases
-  ('contextually, they are referring to', padding small talk into an essay, filler starters
-  'Sure!'/'Of course!'/'Great question!', announcing tool usage, 'as an AI')
+- build_system_prompt: string return type and non-empty output
 - format_context_messages: timestamp format, bot "Assistant" label, multiple messages,
   multiple attachments per message, missing message id in attachment map
 """
 
-import logging
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,7 +20,6 @@ from pydantic_ai.models.function import FunctionModel
 
 from chat.agent import (
     ChatDeps,
-    _coerce_username,
     _format_sandbox_result,
     build_system_prompt,
     create_agent,
@@ -189,52 +180,6 @@ class TestBuildSystemPromptReturnType:
 
 
 # ---------------------------------------------------------------------------
-# build_system_prompt — content: tool guidance
-# Tool-specific descriptions are now auto-generated from signposts in the
-# dynamic system prompt; see TestAllToolsSignposted in agent_tools_test.py.
-# ---------------------------------------------------------------------------
-
-
-class TestBuildSystemPromptToolGuidance:
-    def test_encourages_proactive_search(self):
-        """System prompt encourages search-first behavior."""
-        prompt = build_system_prompt()
-        assert "Search before you respond" in prompt
-
-    def test_includes_dont_pretend_rule(self):
-        """System prompt warns against claiming to have searched without doing so."""
-        prompt = build_system_prompt()
-        assert "Pretend you looked something up" in prompt
-
-
-# ---------------------------------------------------------------------------
-# build_system_prompt — content: guidance phrases
-# ---------------------------------------------------------------------------
-
-
-class TestBuildSystemPromptGuidance:
-    def test_includes_discord_chat_context(self):
-        """System prompt identifies the agent as a Discord chat assistant."""
-        prompt = build_system_prompt()
-        assert "Discord" in prompt
-
-    def test_instructs_concise_responses(self):
-        """System prompt instructs the model to keep responses concise."""
-        prompt = build_system_prompt()
-        assert "concise" in prompt
-
-    def test_instructs_search_first_for_factual_content(self):
-        """System prompt tells the agent to search before responding to factual content."""
-        prompt = build_system_prompt()
-        assert "search" in prompt.lower()
-
-    def test_instructs_matching_conversation_vibe(self):
-        """System prompt tells the agent to match conversation vibe."""
-        prompt = build_system_prompt()
-        assert "vibe" in prompt
-
-
-# ---------------------------------------------------------------------------
 # format_context_messages — timestamp format
 # ---------------------------------------------------------------------------
 
@@ -392,89 +337,6 @@ class TestFormatContextMessagesAttachments:
         }
         result = format_context_messages([msg], attachments_map)
         assert "  [Image: Sunset]" in result
-
-
-# ===========================================================================
-# _coerce_username — gaps not covered elsewhere
-# ===========================================================================
-
-
-class TestCoerceUsernameNoneInput:
-    def test_none_returns_none(self):
-        """None input produces None without error."""
-        assert _coerce_username(None) is None
-
-
-class TestCoerceUsernameDictKeys:
-    def test_dict_with_username_key(self):
-        """Dict with 'username' key returns that string value."""
-        assert _coerce_username({"username": "alice"}) == "alice"
-
-    def test_dict_with_name_key(self):
-        """Dict with 'name' key (no 'username') returns name."""
-        assert _coerce_username({"name": "bob"}) == "bob"
-
-    def test_dict_with_display_name_key(self):
-        """Dict with only 'display_name' returns that value."""
-        assert _coerce_username({"display_name": "carol"}) == "carol"
-
-    def test_username_key_takes_priority_over_name_and_display_name(self):
-        """'username' wins when all three keys are present."""
-        assert (
-            _coerce_username(
-                {"username": "first", "name": "second", "display_name": "third"}
-            )
-            == "first"
-        )
-
-    def test_name_key_takes_priority_over_display_name(self):
-        """'name' wins over 'display_name' when 'username' is absent."""
-        assert _coerce_username({"name": "second", "display_name": "third"}) == "second"
-
-    def test_non_string_username_value_skipped_falls_through_to_name(self):
-        """Dict 'username' with a non-string value is skipped; 'name' is returned."""
-        assert _coerce_username({"username": 99, "name": "fallback"}) == "fallback"
-
-    def test_all_known_keys_with_non_string_values_returns_none(self, caplog):
-        """When all known keys exist but have non-string values, return None with warning."""
-        with caplog.at_level(logging.WARNING, logger="chat.agent"):
-            result = _coerce_username({"username": 1, "name": 2, "display_name": 3})
-        assert result is None
-        assert any("Could not extract username" in r.message for r in caplog.records)
-
-
-class TestCoerceUsernameInvalidDict:
-    def test_empty_dict_returns_none_with_warning(self, caplog):
-        """Empty dict logs a warning and returns None."""
-        with caplog.at_level(logging.WARNING, logger="chat.agent"):
-            result = _coerce_username({})
-        assert result is None
-        assert any("Could not extract username" in r.message for r in caplog.records)
-
-    def test_dict_with_unrelated_keys_returns_none_with_warning(self, caplog):
-        """Dict without any known username keys returns None and logs a warning."""
-        with caplog.at_level(logging.WARNING, logger="chat.agent"):
-            result = _coerce_username({"id": 42, "email": "x@example.com"})
-        assert result is None
-        assert any("Could not extract username" in r.message for r in caplog.records)
-
-
-class TestCoerceUsernameNonStringTypes:
-    def test_integer_coerced_to_string(self):
-        """Integer is str()-converted."""
-        assert _coerce_username(42) == "42"
-
-    def test_float_coerced_to_string(self):
-        """Float is str()-converted."""
-        assert _coerce_username(3.14) == "3.14"
-
-    def test_list_coerced_to_string(self):
-        """List (non-str, non-dict) is str()-converted."""
-        assert _coerce_username([1, 2]) == "[1, 2]"
-
-    def test_bool_coerced_to_string(self):
-        """bool (subclass of int, not str) is str()-converted."""
-        assert _coerce_username(True) == "True"
 
 
 # ===========================================================================
@@ -1025,109 +887,3 @@ class TestGetUserSummarySpecificUserPath:
 
         store.list_user_summaries.assert_called_once()
         store.get_user_summary.assert_not_called()
-
-
-# ===========================================================================
-# build_system_prompt — persona, DO/DON'T structure, and behavioral guidance
-# ===========================================================================
-
-
-class TestBuildSystemPromptPersona:
-    def test_describes_friend_persona(self):
-        """System prompt uses 'friend hanging out' persona, not 'helpful assistant'."""
-        prompt = build_system_prompt()
-        assert "friend hanging out" in prompt
-
-    def test_does_not_describe_helpful_assistant(self):
-        """System prompt does NOT describe the agent as a 'helpful assistant'."""
-        prompt = build_system_prompt()
-        assert "helpful assistant" not in prompt
-
-    def test_mentions_casual_natural_tone(self):
-        """System prompt describes a casual, direct, and natural conversation style."""
-        prompt = build_system_prompt()
-        assert "casual" in prompt
-
-
-class TestBuildSystemPromptDoSectionHeader:
-    def test_do_section_header_present(self):
-        """System prompt contains a 'DO:' section header."""
-        prompt = build_system_prompt()
-        assert "DO:" in prompt
-
-    def test_dont_section_header_present(self):
-        """System prompt contains a \"DON'T:\" section header."""
-        prompt = build_system_prompt()
-        assert "DON'T:" in prompt
-
-    def test_do_header_appears_before_dont_header(self):
-        """The DO: section comes before the DON'T: section in the prompt."""
-        prompt = build_system_prompt()
-        do_pos = prompt.index("DO:")
-        dont_pos = prompt.index("DON'T:")
-        assert do_pos < dont_pos
-
-
-class TestBuildSystemPromptDoSection:
-    def test_instructs_answer_directly(self):
-        """DO section tells the agent to answer directly."""
-        prompt = build_system_prompt()
-        assert "Answer directly" in prompt
-
-    def test_instructs_match_the_vibe(self):
-        """DO section tells the agent to match the vibe of the conversation."""
-        prompt = build_system_prompt()
-        assert "Match the vibe" in prompt
-
-    def test_instructs_search_first_behavior(self):
-        """DO section explicitly says to search before responding."""
-        prompt = build_system_prompt()
-        assert "Search before you respond" in prompt
-
-    def test_instructs_when_in_doubt_search(self):
-        """DO section ends the search directive with 'When in doubt, search'."""
-        prompt = build_system_prompt()
-        assert "When in doubt, search" in prompt
-
-    def test_instructs_short_casual_replies(self):
-        """READ THE ROOM section keeps casual chatter short (a sentence or two)."""
-        prompt = build_system_prompt()
-        assert "a sentence or two" in prompt.lower()
-
-
-class TestBuildSystemPromptDontSection:
-    def test_prohibits_contextual_narration(self):
-        """DON'T section forbids narrating with 'contextually, they are referring to'."""
-        prompt = build_system_prompt()
-        assert "contextually, they are referring to" in prompt
-
-    def test_prohibits_padding_small_talk_into_essay(self):
-        """DON'T section forbids padding casual chat into an essay."""
-        prompt = build_system_prompt()
-        assert "essay" in prompt
-
-    def test_prohibits_sure_filler_starter(self):
-        """DON'T section lists 'Sure!' as a prohibited filler starter."""
-        prompt = build_system_prompt()
-        assert "Sure!" in prompt
-
-    def test_prohibits_of_course_filler_starter(self):
-        """DON'T section lists 'Of course!' as a prohibited filler starter."""
-        prompt = build_system_prompt()
-        assert "Of course!" in prompt
-
-    def test_prohibits_great_question_filler_starter(self):
-        """DON'T section lists 'Great question!' as a prohibited filler starter."""
-        prompt = build_system_prompt()
-        assert "Great question!" in prompt
-
-    def test_prohibits_announcing_tool_usage(self):
-        """DON'T section tells the agent not to announce that it is using a tool."""
-        prompt = build_system_prompt()
-        # The prompt says "Announce that you're using a tool"
-        assert "Announce" in prompt
-
-    def test_prohibits_as_an_ai_apology(self):
-        """DON'T section forbids saying 'as an AI'."""
-        prompt = build_system_prompt()
-        assert "as an AI" in prompt

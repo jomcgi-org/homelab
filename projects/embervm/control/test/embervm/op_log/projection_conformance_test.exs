@@ -36,7 +36,7 @@ defmodule Embervm.OpLog.ProjectionConformance do
   def scenarios do
     [
       task_lifecycle_projects_exact_state: &__MODULE__.task_lifecycle/2,
-      late_async_appends_never_regress_or_cross_attempts: &__MODULE__.task_monotonic_guards/2,
+      late_records_never_regress_or_cross_attempts: &__MODULE__.task_monotonic_guards/2,
       redrive_resets_the_attempt_budget: &__MODULE__.task_redrive/2,
       audit_only_kinds_write_ops_without_projection_rows: &__MODULE__.audit_only_kinds/2,
       session_lifecycle_from_create_to_relit: &__MODULE__.session_lifecycle/2,
@@ -160,8 +160,8 @@ defmodule Embervm.OpLog.ProjectionConformance do
         task_id: "task-1"
       )
 
-    # epoch-tagged assigned (ADR embervm/014 decision 2): applies while the row's
-    # attempt is still below the tag.
+    # An epoch-tagged assignment applies while the row's attempt is below the tag,
+    # including when replaying historical records.
     {:ok, _} = append(server, backend, :assigned, 101, task_id: "task-1", payload: %{epoch: 1})
     assert_eq(one(backend, server, :load_tasks).state, "assigned", "epoch-1 assigned applies")
 
@@ -429,7 +429,7 @@ defmodule Embervm.OpLog.ProjectionConformance do
         payload: %{reason: "gone"}
       )
 
-    # A deferred async relit landing AFTER the terminal edge must not resurrect.
+    # A late relit record after the terminal edge must not resurrect the session.
     {:ok, _} = append(server, backend, :session_relit, 300, session_id: "s-1")
     s = one(backend, server, :load_sessions)
     assert_eq(s.state, "destroyed", "destroyed session stays destroyed")

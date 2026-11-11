@@ -1083,7 +1083,97 @@ class TestPublicRecordSearch:
 # ---------------------------------------------------------------------------
 
 
+def test_graph_lease_and_refresh_stop_at_validity_expiry(client, session, monkeypatch):
+    note = _make_note("validity", "Short validity")
+    note.valid_until = _NOW + timedelta(seconds=13)
+    session.add(note)
+    session.commit()
+    before = client.get("/api/knowledge/public/graph")
+    assert (
+        before.headers["cache-control"]
+        == "public, max-age=13, s-maxage=13, must-revalidate"
+    )
+    assert before.json()["nodes"][0]["id"] == "validity"
+    monkeypatch.setattr(
+        "knowledge.public_router._now", lambda: _NOW + timedelta(seconds=13)
+    )
+    after = client.get(
+        "/api/knowledge/public/graph", headers={"If-None-Match": before.headers["etag"]}
+    )
+    assert after.status_code == 200
+    assert after.json()["nodes"] == []
+    assert after.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("valid_from", _NOW + timedelta(seconds=1)),
+        ("verification_state", "invalidated"),
+    ],
+)
+def test_graph_excludes_not_current_validity(client, session, field, value):
+    note = _make_note("not-current", "Not current")
+    setattr(note, field, value)
+    session.add(note)
+    session.commit()
+    assert client.get("/api/knowledge/public/graph").json()["nodes"] == []
+
+
 class TestPublicFactsDaily:
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "review_after",
+            "valid_from",
+            "valid_until",
+            "observed_at",
+            "last_reviewed_at",
+        ],
+    )
+    def test_cache_lease_stops_at_any_temporal_transition(self, client, session, field):
+        note = _make_note("transition", "Temporal transition", type_="fact")
+        setattr(note, field, _NOW + timedelta(seconds=13))
+        session.add(note)
+        session.commit()
+        response = client.get("/api/knowledge/public/facts/daily")
+        assert (
+            response.headers["cache-control"]
+            == "public, max-age=13, s-maxage=13, must-revalidate"
+        )
+
+    def test_cache_lease_stops_at_midnight(self, client, monkeypatch):
+        monkeypatch.setattr(
+            "knowledge.public_router._now",
+            lambda: _NOW.replace(hour=23, minute=59, second=59),
+        )
+        response = client.get("/api/knowledge/public/facts/daily")
+        assert (
+            response.headers["cache-control"]
+            == "public, max-age=1, s-maxage=1, must-revalidate"
+        )
+
+    def test_cache_lease_consumes_query_time(self, client, session, monkeypatch):
+        from knowledge import public_router
+
+        original = public_router.fact_summary_snapshot
+
+        def slow_summary(*args, **kwargs):
+            result = original(*args, **kwargs)
+            monkeypatch.setattr(
+                public_router, "_now", lambda: _NOW + timedelta(seconds=13)
+            )
+            return result
+
+        monkeypatch.setattr(public_router, "fact_summary_snapshot", slow_summary)
+        note = _make_note("transition", "Temporal transition", type_="fact")
+        note.review_after = _NOW + timedelta(seconds=13)
+        session.add(note)
+        session.commit()
+        response = client.get("/api/knowledge/public/facts/daily")
+        assert response.status_code == 503
+        assert response.headers["cache-control"] == "no-store"
+
     def test_summary_partitions_public_facts_without_counting_links_as_facts(
         self, client, session
     ):
@@ -1164,7 +1254,10 @@ class TestPublicFactsDaily:
         session.commit()
         before = client.get("/api/knowledge/public/facts/daily")
         assert before.json()["summary"]["valid"] == 1
-        assert before.headers["cache-control"] == "no-store"
+        assert (
+            before.headers["cache-control"]
+            == "public, max-age=1, s-maxage=1, must-revalidate"
+        )
         for offset, bucket in [(1, "to_confirm"), (2, "retired")]:
             monkeypatch.setattr(
                 "knowledge.public_router._now",
@@ -1178,10 +1271,14 @@ class TestPublicFactsDaily:
             assert after.json()["summary"]["total"] == 1
             assert after.json()["summary"]["valid"] == 0
             assert after.json()["summary"][bucket] == 1
-            assert after.headers["cache-control"] == "no-store"
+            expected_ttl = 1 if offset == 1 else 60
+            assert (
+                f"s-maxage={expected_ttl}, must-revalidate"
+                in after.headers["cache-control"]
+            )
 
     def test_review_does_not_count_as_a_new_observation(self, client, session):
-        now = datetime.now(_UTC)
+        now = _NOW
         note = _make_note("reviewed", "Reviewed fact", indexed_at=now)
         note.observed_at = now - timedelta(days=2)
         session.add(note)
@@ -1197,7 +1294,7 @@ class TestPublicFactsDaily:
         ]
 
     def test_returns_daily_state_totals_and_contradictions(self, client, session):
-        now = datetime.now(_UTC)
+        now = _NOW
         verified = _make_note("verified", "Verified")
         verified.observed_at = now - timedelta(days=1)
         unverified = _make_note(

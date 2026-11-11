@@ -368,11 +368,6 @@ impl<B: Backend> QwenModel<B> {
         &self.layers
     }
 
-    /// Whether the model can propose draft tokens ([`Self::draft`]).
-    pub fn has_draft(&self) -> bool {
-        self.mtp.is_some()
-    }
-
     /// Keeps rows `[first, first + tokens.len())` of the residual `x`, the hidden
     /// states of `tokens` (the sequence's last tokens), as the draft head's input.
     /// With `extends` they follow the rows kept so far; otherwise only they are

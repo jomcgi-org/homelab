@@ -19,15 +19,13 @@ import (
 )
 
 const (
-	codexUsageTick             = time.Minute
-	codexUsageTimeout          = 10 * time.Second
-	codexRejectionStaleAfter   = 15 * time.Minute
-	codexUsageExhaustedPercent = 97
+	codexUsageTick    = time.Minute
+	codexUsageTimeout = 10 * time.Second
 )
 
 type usageTokenSource interface {
 	NeedsLogin(string) bool
-	GetAccessToken(string, context.Context) (string, time.Time, error)
+	CachedAccessToken(string, context.Context) (string, time.Time, error)
 }
 
 type usageAttempt struct {
@@ -101,26 +99,14 @@ func (r *codexUsageRefresher) tick(ctx context.Context) {
 	}
 }
 
-func usageExhausted(view quota.View, now time.Time) bool {
-	for _, window := range view.Windows {
-		reset, err := time.Parse(time.RFC3339, window.ResetsAt)
-		if err == nil && reset.After(now) && (view.Exhausted || window.UsedPercent >= codexUsageExhaustedPercent) {
-			return true
-		}
-	}
-	return len(view.Windows) == 0 && view.Status == "rejected" && view.AgeSeconds <= codexRejectionStaleAfter.Seconds()
-}
-
 func (r *codexUsageRefresher) refresh(ctx context.Context, name string) {
 	if r.tokens.NeedsLogin(name) {
 		return
 	}
 	now := r.now().UTC()
 	view := r.server.quotaStore.GetGrantAt(name, now)
-	if usageExhausted(view, now) {
-		r.outcome(name, "skipped_exhausted")
-		return
-	}
+	// Exhaustion is quota evidence, not a reason to stop observing. A manual
+	// reset can restore capacity before the previously reported reset time.
 	if view.Observed && view.AgeSeconds <= r.age.Seconds() {
 		return
 	}
@@ -140,7 +126,7 @@ func (r *codexUsageRefresher) refresh(ctx context.Context, name string) {
 
 	requestCtx, cancel := context.WithTimeout(ctx, codexUsageTimeout)
 	defer cancel()
-	token, _, err := r.tokens.GetAccessToken(name, requestCtx)
+	token, _, err := r.tokens.CachedAccessToken(name, requestCtx)
 	accountID, ok := usageAccountID(token)
 	if err != nil || !ok {
 		r.outcome(name, "token_error")
@@ -160,6 +146,10 @@ func (r *codexUsageRefresher) refresh(ctx context.Context, name string) {
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		r.outcome(name, "authorization_error")
+		return
+	}
 	if resp.StatusCode != http.StatusOK {
 		r.outcome(name, "http_error")
 		return
@@ -177,7 +167,7 @@ func (r *codexUsageRefresher) refresh(ctx context.Context, name string) {
 
 func (r *codexUsageRefresher) outcome(grant, outcome string) {
 	r.metrics.WithLabelValues(grant, outcome).Inc()
-	if outcome != "refreshed" && outcome != "skipped_exhausted" {
+	if outcome != "refreshed" {
 		// HTTP errors and bodies can contain credentials, so only log the outcome.
 		r.server.logger.Warn("tokenbroker Codex usage refresh failed", "grant", grant, "outcome", outcome)
 	}

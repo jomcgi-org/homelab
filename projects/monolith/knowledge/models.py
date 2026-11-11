@@ -123,6 +123,26 @@ class FactReviewRun(SQLModel, table=True):
     )
 
 
+class FactReviewSourceBlock(SQLModel, table=True):
+    """A deterministic coverage failure, separate from paid review receipts."""
+
+    __tablename__ = "fact_review_source_blocks"
+    __table_args__ = {"schema": "knowledge", "extend_existing": True}
+
+    note_id: str = Field(primary_key=True)
+    revision: int
+    content_hash: str
+    outcome_id: int
+    identity: dict = Field(sa_column=Column(_JSONB, nullable=False))
+    released: bool = False
+    next_probe_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True)
+    )
+    last_probe_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), index=True)
+    )
+
+
 class FactReviewBatch(SQLModel, table=True):
     """Immutable membership and first model response for a bounded review session."""
 
@@ -725,9 +745,6 @@ def _serialize_open_dispute(mapper, connection, target) -> None:
         )
 
 
-ReviewStatus = Literal["success", "failed", "unavailable", "unsupported"]
-
-
 class ReviewOutcome(
     SQLModel, table=True
 ):  # nosemgrep: sqlmodel-datetime-without-factory
@@ -881,7 +898,7 @@ class Gap(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
     resolved_at: datetime | None = None
     # Soft-delete timestamp for the /private/review audit "delete" action.
     # NULL means live; NOT NULL means the row is hidden from every user-
-    # facing read path (review-queue, list_gaps, get_gap_by_id, graph).
+    # facing read path (review-queue, list_gaps, graph).
     # The ``_researching/<slug>.md`` stub is hard-deleted at soft-delete
     # time and regenerated lazily by ``discover_gaps`` on undelete.
     # Mirrors chart/migrations/20260523120000_review_soft_delete.sql.

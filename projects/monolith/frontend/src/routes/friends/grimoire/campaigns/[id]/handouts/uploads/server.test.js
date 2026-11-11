@@ -32,7 +32,6 @@ function upload({ file, headers = {}, field = "file", id = campaignId } = {}) {
 
 beforeEach(() => {
   process.env.API_BASE = "http://backend.test";
-  process.env.GRIMOIRE_PLAY_ENABLED = "true";
 });
 
 describe("handout upload proxy", () => {
@@ -117,11 +116,5 @@ describe("handout upload proxy", () => {
     });
     await expect(response).rejects.toMatchObject({ status: 404 });
     expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it("is not served while play is disabled", async () => {
-    process.env.GRIMOIRE_PLAY_ENABLED = "false";
-    const { response } = upload({ file: new Blob([png]) });
-    await expect(response).rejects.toMatchObject({ status: 404 });
   });
 });

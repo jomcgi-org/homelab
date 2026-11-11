@@ -114,7 +114,7 @@ removed path.
 
 **Platform tier components** deploy on merge. Every `projects/platform/*/application.yaml` and every Application under `projects/platform-gke/` tracks git HEAD with no OCI chart version, so a platform change lands the moment it merges, with no write-back step.
 
-**Kargo owns promotion on the hub** for the monolith, monolith-agents, monolith-public and EmberVM. Each pipeline's Warehouse polls the OCI registry every five minutes; a new chart becomes Freight, and each Stage auto-promotes it with `argocd-update` followed by `argocd-wait`, so a chart that cannot come up fails its Promotion instead of sitting half-rolled. EmberVM runs dev then prod: `embervm-dev` (`projects/gke-apps/embervm-dev`) takes Freight first, its Stage polls the conformance runner for a functional verdict on that chart version, and prod receives only Freight dev verified and held for a 5 minute soak. The monolith pipelines are still prod only, so for them the gate is point-in-time readiness with no functional assertion (#4745); a revision-aware `/healthz` step is wired on the private monolith prod Stage but stays off until the monolith reports its chart version. The wait timeout is measured per pipeline (90 minutes for EmberVM, whose bricks rebuild a guest rootfs one node at a time). The `projects/gke-apps` pins for these Applications, `embervm-dev` included, are bootstrap floors that Kargo patches past on the live object, so `git != live` is correct there. Read the deployed version from the hub:
+**Kargo owns promotion on the hub** for the monolith, monolith-agents, monolith-public, EmberVM and the public Scotland connector (`scotland-connector`, prod only, #7242). Each pipeline's Warehouse polls the OCI registry every five minutes; a new chart becomes Freight, and each Stage auto-promotes it with `argocd-update` followed by `argocd-wait`, so a chart that cannot come up fails its Promotion instead of sitting half-rolled. EmberVM runs dev then prod: `embervm-dev` (`projects/gke-apps/embervm-dev`) takes Freight first, its Stage polls the conformance runner for a functional verdict on that chart version, and prod receives only Freight dev verified and held for a 5 minute soak. The monolith pipelines are still prod only, so for them the gate is point-in-time readiness with no functional assertion (#4745); a revision-aware `/healthz` step is wired on the private monolith prod Stage but stays off until the monolith reports its chart version. The wait timeout is measured per pipeline (90 minutes for EmberVM, whose bricks rebuild a guest rootfs one node at a time). The `projects/gke-apps` pins for these Applications, `embervm-dev` included, are bootstrap floors that Kargo patches past on the live object, so `git != live` is correct there. Read the deployed version from the hub:
 
 ```bash
 kubectl get application monolith -n argocd -o jsonpath='{.spec.sources[0].targetRevision}'
@@ -126,7 +126,7 @@ The root carries an `ignoreDifferences` entry per promoted Application plus `Res
 
 **Per-PR preview environments do not exist.** ADR platform/005 (label-gated ApplicationSet previews with copy-on-write CNPG clones) is Draft and unbuilt: no `ApplicationSet` exists on either cluster, and the hub has no second lane at all. Its tracking issues #3882 to #3887 were closed not planned.
 
-(see: `projects/gke-cluster/root/root-application.yaml`, `projects/gke-cluster/hub-root-application.yaml`, `projects/gke-apps/`, `projects/platform/kargo/values.yaml`, `projects/platform/kargo/README.md`, `bazel/helm/README.md`, `AGENTS.md` "Git and PRs", ADR platform/009, ADR platform/011, ADR platform/014)
+(see: `projects/gke-cluster/root/root-application.yaml`, `projects/gke-cluster/hub-root-application.yaml`, `projects/gke-apps/`, `projects/platform/kargo/values.yaml`, `projects/platform/kargo/README.md`, `bazel/helm/README.md`, `docs/agents/reference.md` "Delivery mechanics", ADR platform/009, ADR platform/011, ADR platform/014)
 
 **Why.** Branch-side chart bumps caused duplicate versions, merge conflicts, and
 merged changes that never deployed when a bump was lost (ADR platform/009, ADR
@@ -171,7 +171,7 @@ remain on #7002; configuration and failure semantics are in
 
 **Longhorn**, the home cluster's block storage, was retired with the home configuration in #6914; the hub's PVCs use GKE's `standard-rwo` storage class.
 
-**atlas-operator** applies each service's database migrations from its ConfigMap on the hub. The ConfigMap carries the entire migration history, and ArgoCD applies it as a single object with a 256 KiB last-applied-configuration annotation ceiling (see: root `AGENTS.md`, Gotchas, "Keep bulk data out of chart/migrations/*.sql").
+**atlas-operator** applies each service's database migrations from its ConfigMap on the hub. The ConfigMap carries the entire migration history, and ArgoCD applies it as a single object with a 256 KiB last-applied-configuration annotation ceiling (see: `docs/agents/reference.md`, "Gotchas", "Keep bulk data out of chart/migrations/*.sql").
 
 (see: `projects/platform/cloudnative-pg/`, `projects/monolith/deploy/values-gke.yaml`, `projects/platform/authentik/values-gke.yaml`, `projects/embervm/deploy/values-gke.yaml`, `projects/platform/atlas-operator/`)
 
@@ -314,9 +314,13 @@ and an agent on every brick node (ADR embervm/041).
 
 ## 9. Maintenance automation
 
-**Argo Workflows** runs in `monolith-workflows` on the hub as the CronWorkflow executor for the monolith's job schedule (32 CronWorkflows). Renovate and apko lock maintenance ran on it at home; their hub enrolment is staged and suspended (#6247), and the home Renovate Application is the one home overlay #6914 kept, pending that cutover.
+**Argo Workflows** runs in `monolith-workflows` on the hub as the CronWorkflow executor for the monolith's jobs. The hub is also the sole intended deployment for Renovate and apko lock maintenance. The retired home enrollment and cutover scaffolding are removed under #7068. Both hub schedules remain suspended in `values-gke.yaml` pending separately authorized credential/identity verification and enablement.
 
-**Renovate** configures a daily 04:00 Argo `CronWorkflow` (`projects/platform/renovate/values.yaml` l.7). Hub enrolment is staged and suspended under #6247; the only non-hub enrolment is the kept home overlay that no root deploys. Its enabled managers cover Bazel modules, Go, pep621, npm/pnpm, Helm, Kubernetes manifests and ArgoCD `application.yaml` files. `renovate.json` holds ordinary PR creation to a Monday window, so the daily schedule exists to absorb a transient failure rather than to open PRs seven days a week. Credentials come from 1Password. **apko lock maintenance** configures a second CronWorkflow, weekly on Monday at 01:00, regenerating every committed `apko.lock.json` through the pinned `rules_apko` toolchain into one `renovate/apko-lock-maintenance` PR under rebase auto-merge (l.31, `README.md`). Both hub schedules are suspended in `values-gke.yaml` pending the #6247 operator cutover.
+**Renovate** configures a daily 04:00 America/Vancouver CronWorkflow. Its enabled managers cover Bazel modules, Go, pep621, npm/pnpm, Helm, Kubernetes manifests and ArgoCD Applications. `renovate.json` limits ordinary PR creation to before 06:00 on Monday in the same timezone, with an any-time exception for vulnerability alerts. PR #7358 stages native platform auto-merge for ordinary updates, including majors, behind independent dependency evidence and required Linux CI. It integrates #7168's cleanup; both hub writers remain suspended until the verified App-bound evidence check and activation prerequisites are enforced.
+
+**apko lock maintenance** configures a second CronWorkflow for Monday at 01:00 America/Vancouver. Its script regenerates committed apko locks, compiled root Python requirements and non-GitHub tool pins in separate maintenance PRs. It preserves ownership holds and stages native platform auto-merge behind `apkoLockMaintenance.automerge`, false in both base and hub values. Repository-wide and package-rule Renovate automerge also remain false. #7186 owns their explicit activation alongside the suspended schedules, after the independent App-bound evidence check and CI are enforced. The helper never submits approvals and missing flags stay off even in an older workflow loading the updated ConfigMap.
+
+Both workflows reference the `RENOVATE_TOKEN` key of the `renovate-github` Secret, declared through the existing OnePasswordItem. The templates and script target `jomcgi-org/homelab`; the existing dedicated identity, usable permissions and renewal remain unverified. The current chart does not mint App tokens. #7068 retains operational acceptance, including ownership reconciliation with #7001's overlapping enablement, absence of competing writers, hub Application and Secret synchronization, and successful scheduled runs with PR evidence.
 
 **Repo layout** (ADR repo/001): every deployable lives under `projects/<name>/` with its chart and `deploy/` colocated; Bazel rules and tooling live under `bazel/` (`bazel/helm`, `bazel/images`, `bazel/tools`). `projects/gke-cluster/`, `projects/platform-gke/` and `projects/gke-apps/` are the hub's hand-maintained roots over the charts under `projects/platform/` and each service's `deploy/` values (section 1); the generated home root was retired in #6914. `projects/operators/` holds the one custom operator (`oci-model-cache`, a `ModelCache` CRD that syncs HuggingFace models into an OCI registry) and the conventions in `best-practices.md` that a new operator follows. None of these is a domain of its own.
 
@@ -331,6 +335,13 @@ separate from the Monday review window, while the weekly apko job amortizes a
 more expensive whole-repository lock refresh. This accepts Argo as an operational
 dependency and keeps its write credentials scoped through 1Password.
 
+**Why.** The home cluster was retired in #6914. Its remaining enrollment and
+cutover assertions described a deployment no active root reaches. #7068 removes
+those inputs while retaining policy safeguards, the base render, and hub
+enrollment/render tests. Keeping both hub schedules suspended separates the
+repository cleanup from credential verification and operational enablement.
+The latter overlaps #7001 and requires its own authorization and live evidence.
+
 ---
 
 ## Direction
@@ -340,6 +351,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Hub-only Renovate and reviewed dependency maintenance | section 9 | #7068, #7001 | cleanup integrated by #7358 with both hub schedules suspended; verified identity, required evidence check, CI isolation and #7186 activation acceptance outstanding |
 | Shared CNPG backup-age observations feed the private advisory and Discord notifier | section 5 | #7002 | repository implementation staged off; rollout, effective RBAC and failure/recovery acceptance outstanding |
 | Native `NetworkPolicy` successor enforcement on the hub | section 3 | #5276, #5277 | inert templates removed in #5816; native egress remains staged off pending its own live validation; hub-only since #4964 closed 2026-09-18 |
 | Kargo promotion on the hub gains a functional verification gate, not just stage ordering | section 4 | #4745 | staged: revision-aware `/healthz` gate wired on the monolith prod Stage behind `promotion.revisionGate.enabled` (off); the monolith must expose `chart_version` before the flip; functional assertions remain out of scope |

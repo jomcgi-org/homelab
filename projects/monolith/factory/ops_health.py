@@ -38,9 +38,10 @@ import os
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from core.clock import aware
+from core.clock import utc_now as _now
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +80,6 @@ KG_DISPUTE_NOTE_LIMIT = 5
 # scanner or database writer runs in this process.
 BACKUP_MAX_AGE_S = 129600
 BACKUP_OBSERVATION_MAX_AGE_S = 7200
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _minutes(delta: timedelta) -> str:
@@ -443,6 +440,7 @@ def _factory_rows_sync() -> tuple[object | None, list, list]:
                     FactoryReceipt.actor,
                     FactoryReceipt.repo,
                     FactoryReceipt.generation,
+                    FactoryReceipt.task_class,
                 ).where(FactoryReceipt.state == "queued")
             ).all()
         )
@@ -551,13 +549,15 @@ def evaluate_factory(
             intake_on = bool(intake_policy(policy).get("enabled"))
         except Exception:  # noqa: BLE001 - malformed intake block reads as off
             intake_on = False
-        for rid, issue, actor, repo, generation in queued:
+        for rid, issue, actor, repo, generation, task_class in queued:
             if repo != policy.get("repo") or generation != policy.get("generation"):
                 continue
             if actor == INTAKE_ACTOR and not intake_on:
                 continue
             try:
-                eligible = admission_eligible(policy, issue, actor)
+                eligible = admission_eligible(
+                    policy, issue, actor, task_class=task_class, repo=repo
+                )
             except Exception:  # noqa: BLE001 - a policy it cannot read admits nothing
                 eligible = False
             if not eligible:
@@ -730,8 +730,6 @@ def evaluate_cnpg_backups(document, required, optional, now: datetime) -> dict:
 
 
 async def _cnpg_backups() -> dict:
-    if os.environ.get("CNPG_BACKUP_HEALTH_ENABLED", "").lower() != "true":
-        return _unknown("CNPG backup advisory disabled")
     try:
         from kubernetes_asyncio import client, config
 

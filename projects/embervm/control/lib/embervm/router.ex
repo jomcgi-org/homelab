@@ -15,9 +15,6 @@ defmodule Embervm.Router do
     * `GET  /v1/nodes`                 read-only node health + dispatcher snapshot
       (operational introspection: capacity facts, inventory, denials).
     * `GET  /v1/capacity`              read-only capacity and demand tiers.
-    * `GET  /v1/health/durability`     both ADR 031 durability tiers (#4338):
-      tier 1 export-failure streaks + tier 2 gc-manifests stall. 200 ok /
-      503 not-ok / 404 while dark.
     * `GET  /v1/health/store`          latest artifact-store TLS probe result.
     * `GET  /healthz`                  unauthenticated readiness.
     * `GET  /livez`                    unauthenticated liveness.
@@ -135,15 +132,6 @@ defmodule Embervm.Router do
     handle_conformance_trace_window(conn)
   end
 
-  # GET /v1/health/durability (#4338, ADR embervm/031): both durability tiers
-  # as one machine-readable surface. 200 when both tiers read ok, 503 with the
-  # SAME report body otherwise (unknown/missing data is never green), and 404
-  # while the detector is dark (durabilityHealth.enabled unset), so a suspended
-  # detector neither reads healthy nor pages anybody.
-  get "/v1/health/durability" do
-    handle_durability(conn)
-  end
-
   get "/v1/health/store" do
     handle_store_health(conn)
   end
@@ -185,6 +173,42 @@ defmodule Embervm.Router do
 
   get "/v1/workloads/:name/sessions" do
     handle_list_sessions(conn, name)
+  end
+
+  post "/v1/sessions/:id/residency" do
+    handle_residency(conn, id, :submit)
+  end
+
+  # Management-only, owner-scoped read of retained journal evidence. It never
+  # recreates a pruned session or accepts its retired session bearer token.
+  get "/v1/sessions/:id/cessation-evidence" do
+    handle_session_cessation_evidence(conn, id)
+  end
+
+  # Existing management authentication and exact retained owner only. A retired
+  # session capability cannot acquire a recovery fence for its own lineage.
+  post "/v1/sessions/:id/recovery-fence" do
+    handle_session_recovery_fence(conn, id)
+  end
+
+  get "/v1/sessions/:id/residency" do
+    handle_residency(conn, id, :list)
+  end
+
+  get "/v1/sessions/:id/residency/:operation_id" do
+    handle_residency(conn, id, {:get, operation_id})
+  end
+
+  delete "/v1/sessions/:id/residency/:operation_id" do
+    handle_residency(conn, id, {:cancel, operation_id})
+  end
+
+  post "/v1/sessions/:id/evidence-retention" do
+    handle_evidence_retention(conn, id)
+  end
+
+  post "/v1/sessions/:id/workspace-export" do
+    handle_workspace_export(conn, id)
   end
 
   post "/v1/sessions/:id/invoke" do
@@ -336,6 +360,10 @@ defmodule Embervm.Router do
     do: true
 
   defp session_token_route?(%Plug.Conn{method: "GET", path_info: ["v1", "sessions", _id]}), do: true
+  defp session_token_route?(%Plug.Conn{method: method, path_info: ["v1", "sessions", _id, "residency"]})
+      when method in ["POST", "GET"], do: true
+  defp session_token_route?(%Plug.Conn{method: method, path_info: ["v1", "sessions", _id, "residency", _operation_id]})
+      when method in ["GET", "DELETE"], do: true
   defp session_token_route?(_conn), do: false
 
   defp do_authenticate(conn) do
@@ -692,7 +720,8 @@ defmodule Embervm.Router do
       dispatch: dispatch_snapshot(),
       create_inflight: create_inflight,
       create_concurrency: create_concurrency,
-      create_saturated_denials: create_saturated_denials
+      create_saturated_denials: create_saturated_denials,
+      async_residency: residency_stats()
     })
   end
 
@@ -740,6 +769,14 @@ defmodule Embervm.Router do
     _ -> false
   catch
     _, _ -> false
+  end
+
+  defp residency_stats do
+    session_manager().residency_stats(session_manager_server())
+  rescue
+    _ -> %{available: false}
+  catch
+    _, _ -> %{available: false}
   end
 
   defp create_admission_stats do
@@ -795,41 +832,6 @@ defmodule Embervm.Router do
     error -> {:error, error}
   catch
     kind, reason -> {:error, {kind, reason}}
-  end
-
-  # The durability module resolves from app env (the :durability key) so a
-  # request test can inject a fake without the supervised process, mirroring
-  # the :authenticator seam. A dead/unavailable evaluator is a durability
-  # UNKNOWN (503 with the same body shape), never a 500 crash and never green.
-  defp handle_durability(conn) do
-    mod = Application.get_env(:embervm, :durability, Embervm.Durability)
-
-    case try_durability_snapshot(mod) do
-      :suspended ->
-        # Dark landing: the detector ships suspend:true and flips on only after
-        # live verification (#4338 standing rule), so an unset gate reads as an
-        # absent route.
-        send_json(conn, 404, %{error: "not found"})
-
-      {:error, reason} ->
-        send_json(conn, 503, %{
-          ok: false,
-          error: "durability evaluation failed",
-          detail: inspect(reason)
-        })
-
-      report when is_map(report) ->
-        status = if report.ok, do: 200, else: 503
-        send_json(conn, status, json_nullify(report))
-    end
-  end
-
-  defp try_durability_snapshot(mod) do
-    mod.snapshot()
-  catch
-    :exit, reason -> {:error, reason}
-  rescue
-    e -> {:error, e}
   end
 
   defp handle_store_health(conn) do
@@ -1376,7 +1378,16 @@ defmodule Embervm.Router do
   end
 
   defp do_handle_create_session(conn, workload, principal) do
-    {restore_lineage, conn} = optional_restore_lineage(conn)
+    {restore_lineage, fingerprint, conn} = optional_restore_lineage(conn)
+    if fingerprint != nil and (is_nil(restore_lineage) or not is_binary(fingerprint) or
+         not Regex.match?(~r/\A[0-9a-f]{64}\z/, fingerprint)) do
+      send_json(conn, 400, %{error: "invalid expected_workspace_fingerprint", retryable: false})
+    else
+      create_session_with_workspace(conn, workload, principal, restore_lineage, fingerprint)
+    end
+  end
+
+  defp create_session_with_workspace(conn, workload, principal, restore_lineage, fingerprint) do
     idempotency_key = header_value(conn, "idempotency-key")
 
     # Cold-boot persistence creates legitimately take tens of seconds; the
@@ -1384,7 +1395,7 @@ defmodule Embervm.Router do
     result =
       try do
         session_manager().create(session_manager_server(), workload, principal, restore_lineage,
-          idempotency_key: idempotency_key
+          idempotency_key: idempotency_key, expected_workspace_fingerprint: fingerprint
         )
       catch
         :exit, {:timeout, _} -> :control_plane_busy
@@ -1421,7 +1432,8 @@ defmodule Embervm.Router do
           expires_at: created.expires_at,
           base_digest: created.base_digest,
           state: to_string(Map.get(created, :state, :running)),
-          restored: Map.get(created, :restored, false)
+          restored: Map.get(created, :restored, false),
+          workspace_fingerprint: Map.get(created, :workspace_fingerprint, "")
         })
 
       # A key whose holder is terminal (destroyed/expired/evicted/failed):
@@ -1454,6 +1466,8 @@ defmodule Embervm.Router do
   # requested" rather than an error: an empty body is the normal, by-far-most-
   # common case for this route, so this is tolerant by design, matching
   # decode_registration's own body-parsing idiom elsewhere in this router.
+  # A present expected_workspace_fingerprint is different: the create handler
+  # validates it strictly and requires a restore lineage, never silent fallback.
   defp optional_restore_lineage(conn) do
     case read_capped_body(conn) do
       {:ok, body, conn} ->
@@ -1463,10 +1477,15 @@ defmodule Embervm.Router do
             _ -> nil
           end
 
-        {restore_lineage, conn}
+        fingerprint = case safe_decode(body) do
+          %{"expected_workspace_fingerprint" => value} when is_binary(value) -> value
+          %{"expected_workspace_fingerprint" => _} -> :invalid
+          _ -> nil
+        end
+        {restore_lineage, fingerprint, conn}
 
       {:error, _} ->
-        {nil, conn}
+        {nil, nil, conn}
     end
   end
 
@@ -1678,6 +1697,68 @@ defmodule Embervm.Router do
   # session token, so the hash compare fails). Proxies the guest request under the
   # task-envelope allow-list + 8 MiB cap via the SessionManager, and returns the
   # guest response VERBATIM including headers.
+  defp handle_residency(conn, session_id, action) do
+    # The same capability hash authenticates only its owning session, including
+    # terminal status/cancellation reads retained after the session expires.
+    with {:ok, token} <- bearer_token(conn),
+         {:ok, session} <- session_store().get(session_store_server(), session_id),
+         true <- Embervm.SessionId.verify_token(token, session.token_sha256) do
+      residency_action(conn, session, action)
+    else
+      _ -> send_json(conn, 403, %{error: "invalid session token", retryable: false})
+    end
+  end
+
+  defp residency_action(conn, session, :submit) do
+      with {:ok, body, conn} <- read_capped_body(conn),
+           {:ok, attrs} <- Jason.decode(body),
+           true <- is_map(attrs) and Map.keys(attrs) -- ["generation", "deadline", "task_deadline", "first_wait_at"] == [] do
+        limits = %{enabled: Application.get_env(:embervm, :async_residency_enabled, false), global: Application.get_env(:embervm, :residency_queue_limit, 1024),
+          principal: Application.get_env(:embervm, :residency_principal_limit, 128)}
+        result = session_store().residency_intent(session_store_server(), {:submit, session.session_id,
+          Map.put(attrs, "key", header_value(conn, "idempotency-key")), limits})
+        residency_response(conn, result, 202)
+      else
+        _ -> send_json(conn, 400, %{error: "invalid residency request", retryable: false})
+      end
+  end
+
+  defp residency_action(conn, session, :list) do
+    if key = header_value(conn, "idempotency-key") do
+      residency_response(conn, session_store().residency_intent(session_store_server(), {:lookup, session.session_id, key}), 200)
+    else
+      residency_list(conn, session)
+    end
+  end
+
+  defp residency_list(conn, session) do
+    conn = fetch_query_params(conn)
+    with {limit, ""} <- Integer.parse(conn.query_params["limit"] || "100"),
+         {offset, ""} <- Integer.parse(conn.query_params["offset"] || "0") do
+      residency_response(conn, session_store().residency_intent(session_store_server(), {:list, session.session_id, limit, offset}), 200)
+    else
+      _ -> send_json(conn, 400, %{error: "invalid pagination", retryable: false})
+    end
+  end
+
+  defp residency_action(conn, session, {action, id}) do
+    residency_response(conn, session_store().residency_intent(session_store_server(), {action, session.session_id, id}), 200)
+  end
+
+  defp residency_response(conn, {:ok, value}, status), do: send_json(conn, status, value)
+  defp residency_response(conn, {:error, reason}, _status) do
+    code = case reason do
+      :async_residency_unsupported -> 501
+      :not_found -> 404
+      :residency_queue_full -> 429
+      :unavailable -> 503
+      reason when reason in [:invalid_residency_request, :invalid_deadline] -> 400
+      reason when reason in [:idempotency_conflict, :already_consumed, :stale_generation] -> 409
+      _ -> 503
+    end
+    send_json(conn, code, %{error: if(is_atom(reason), do: to_string(reason), else: "unavailable"), retryable: code in [429, 503]})
+  end
+
   defp handle_session_invoke(conn, session_id) do
     # Restore the CALLER's trace context (the traceparent their httpx/OTel client
     # carried), then open the session-invoke ROOT span so `auth`, `queue_wait`,
@@ -1705,7 +1786,7 @@ defmodule Embervm.Router do
 
   defp do_handle_session_invoke(conn, session_id) do
     with {:ok, token} <- bearer_token(conn),
-         {:ok, session} <- verify_session_token_span(session_id, token) do
+         {:ok, session} <- verify_invoke_capability(conn, session_id, token) do
       Tracer.set_attributes(%{
         "ember.workload" => Map.get(session, :workload),
         "ember.principal" => Map.get(session, :principal),
@@ -1810,6 +1891,29 @@ defmodule Embervm.Router do
     })
   end
 
+  defp residency_headers(conn) do
+    case header_value(conn, "x-ember-residency-operation") do
+      nil -> nil
+      id -> %{operation_id: id, epoch: header_value(conn, "x-ember-residency-epoch")}
+    end
+  end
+
+  defp verify_invoke_capability(conn, session_id, token) do
+    if residency_headers(conn) do
+      # Authenticate the same capability even after expiry so the serialized
+      # handoff can return exact negative evidence. This never authorizes a
+      # guest call: the operation, lifetime and resident fences still apply.
+      with {:ok, session} <- session_store().get(session_store_server(), session_id),
+           true <- Embervm.SessionId.verify_token(token, session.token_sha256) do
+        {:ok, session}
+      else
+        _ -> {:error, :invalid_token}
+      end
+    else
+      verify_session_token_span(session_id, token)
+    end
+  end
+
   defp proxy_invoke(conn, session_id, authorized_session) do
     case read_capped_body(conn) do
       {:ok, body, conn} ->
@@ -1820,7 +1924,8 @@ defmodule Embervm.Router do
           path: guest_path(conn),
           headers: guest_headers(conn),
           body: body,
-          dispatch_id: header_value(conn, "x-ember-dispatch-id")
+          dispatch_id: header_value(conn, "x-ember-dispatch-id"),
+          residency: residency_headers(conn)
         }
 
         result =
@@ -1842,6 +1947,11 @@ defmodule Embervm.Router do
             conn
             |> put_resp_header(@invoke_outcome_header, "guest_response")
             |> send_guest_result(code, resp_body, headers)
+
+          {:error, {:not_dispatched, operation_id, dispatch_id, reason}} ->
+            conn |> put_resp_header(@invoke_outcome_header, "not_dispatched")
+            |> send_json(409, %{outcome: "not_dispatched", operation_id: operation_id,
+              dispatch_id: dispatch_id, session_id: session_id, reason: reason, retryable: true})
 
           {:error, {:gone, reason}} ->
             SessionTelemetry.mark_expected({:gone, reason})
@@ -1992,6 +2102,53 @@ defmodule Embervm.Router do
     header_value(conn, @path_header)
   end
 
+  defp handle_session_cessation_evidence(conn, session_id) do
+    keys = ["generation", "invoke_started_at", "updated_at"]
+    parsed = Enum.map(keys, fn key ->
+      case Map.get(conn.query_params, key) do
+        text when is_binary(text) and byte_size(text) <= 19 ->
+          case Integer.parse(text) do
+            {value, ""} -> value
+            _ -> nil
+          end
+        _ -> nil
+      end
+    end)
+    [generation, started, updated] = parsed
+    expected = %{generation: generation, invoke_started_at: started, updated_at: updated}
+    if Enum.sort(Map.keys(conn.query_params)) == Enum.sort(keys) and Embervm.SessionCessationEvidence.expected?(expected) do
+      owner = if admin?(conn), do: :admin, else: conn.assigns.principal
+      case session_manager().session_cessation_evidence(session_manager_server(), session_id, expected, owner) do
+        {:ok, proof} -> send_json(conn, 200, proof)
+        {:error, :historical_not_found, _} -> send_json(conn, 404, %{error: "session not found", retryable: false})
+        {:error, reason, diagnostics} ->
+          status = if reason == :historical_store_unavailable, do: 503, else: 409
+          send_json(conn, status, %{error: "historical cessation unavailable", reason: to_string(reason), diagnostics: diagnostics, retryable: false})
+        _ -> send_json(conn, 503, %{error: "historical cessation unavailable", reason: "historical_store_unavailable", retryable: false})
+      end
+    else
+      send_json(conn, 400, %{error: "invalid historical cessation identity", retryable: false})
+    end
+  end
+
+  defp handle_session_recovery_fence(conn, session_id) do
+    with {:ok, body, conn} <- read_body(conn, length: 4096, read_length: 4096),
+         {:ok, request} <- Jason.decode(body),
+         true <- Embervm.SessionRecoveryFence.valid_request?(request) do
+      case session_manager().session_recovery_fence(session_manager_server(), session_id, request, conn.assigns.principal) do
+        {:ok, proof} -> send_json(conn, 200, proof)
+        {:error, :historical_not_found, _} -> send_json(conn, 404, %{error: "session not found", retryable: false})
+        {:error, reason, diagnostics} when is_atom(reason) and is_map(diagnostics) ->
+          status = if reason in [:historical_store_unavailable, :recovery_store_unavailable], do: 503, else: 409
+          send_json(conn, status, %{error: "session recovery fence unavailable", reason: to_string(reason), diagnostics: diagnostics, retryable: false})
+        _ -> send_json(conn, 503, %{error: "session recovery fence unavailable", reason: "recovery_store_unavailable", retryable: false})
+      end
+    else
+      {:more, _, conn} -> send_json(conn, 413, %{error: "request too large", retryable: false})
+      _ -> send_json(conn, 400, %{error: "invalid recovery fence request", retryable: false})
+    end
+  end
+
   # GET /v1/sessions/:id (management OR session token). The management-auth plug is
   # skipped for this route, so authorize here: either a valid management bearer
   # (TokenReview) OR the session's own token. Returns state, generation, base
@@ -2006,7 +2163,10 @@ defmodule Embervm.Router do
             # principal (or an admin); otherwise the session reads as not found.
             if authority == :session_token or owner_or_admin?(conn, session.principal) do
               view = session_view(session, session_node_statuses([session]))
-              send_json(conn, 200, Map.put(view, :stop_precondition, session_stop_identity(session_id)))
+              view = view |> Map.put(:stop_precondition, session_stop_identity(session_id))
+                |> Map.put(:workspace_export, session_workspace_export(session_id))
+                |> Map.put(:workspace_fingerprint, session_workspace_fingerprint(session_id))
+              send_json(conn, 200, view)
             else
               send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
             end
@@ -2018,6 +2178,79 @@ defmodule Embervm.Router do
       {:error, status, body} ->
         send_json(conn, status, body)
     end
+  end
+
+  # Management auth is enforced by the normal route plug. Export additionally
+  # requires ownership, as destroy does. This does not grant artifact-store access.
+  defp handle_workspace_export(conn, session_id) do
+    case session_store().get(session_store_server(), session_id) do
+      {:ok, session} ->
+        if owner_or_admin?(conn, session.principal) do
+          with {:ok, body, conn} <- read_capped_body(conn),
+               %{"lineage_id" => lineage_id} = request <- safe_decode(body),
+               true <- map_size(request) == 1 and is_binary(lineage_id) and lineage_id != "" do
+            case session_manager().export_workspace(session_manager_server(), session_id, lineage_id) do
+              {:ok, receipt} -> send_json(conn, if(receipt.status == "pending", do: 202, else: 200), receipt)
+              {:error, reason} -> send_json(conn, 409, %{error: "workspace export unavailable", reason: to_string(reason), retryable: false})
+            end
+          else
+            _ -> send_json(conn, 400, %{error: "expected lineage_id", retryable: false})
+          end
+        else
+          send_json(conn, 404, %{error: "session not found", retryable: false})
+        end
+      :error -> send_json(conn, 404, %{error: "session not found", retryable: false})
+    end
+  end
+
+  # The same management identity and owner check as workspace export. Registration
+  # is opt-in and refuses an existing unmarked archive; it is never a backfill.
+  defp handle_evidence_retention(conn, session_id) do
+    case session_store().get(session_store_server(), session_id) do
+      {:ok, session} ->
+        if owner_or_admin?(conn, session.principal) do
+          with {:ok, body, conn} <- read_capped_body(conn),
+               %{"operation" => operation, "lineage_id" => lineage} = request <- safe_decode(body),
+               true <- lineage == session.lineage_id,
+               true <- Map.keys(request) -- ["operation", "lineage_id", "ttl_ms", "lease_ms"] == [] do
+            identity = Map.take(session, [:session_id, :lineage_id, :workload, :principal])
+            result = case operation do
+              "register" -> Embervm.S3WarmthGc.register_capture(capture_retention_server(), identity,
+                Map.get(request, "ttl_ms", Embervm.CaptureEvidenceRetention.default_ttl_ms()))
+              "lease" -> Embervm.S3WarmthGc.lease_capture(capture_retention_server(), identity,
+                Map.get(request, "lease_ms", Embervm.CaptureEvidenceRetention.max_review_lease_ms()))
+              _ -> {:error, :invalid_operation}
+            end
+            case result do
+              {:ok, policy} -> send_json(conn, 200, %{status: "retained", policy: policy})
+              {:error, reason} -> send_json(conn, 409, %{error: "capture retention unavailable", reason: to_string(reason), retryable: false})
+            end
+          else
+            _ -> send_json(conn, 400, %{error: "invalid capture retention request", retryable: false})
+          end
+        else
+          send_json(conn, 404, %{error: "session not found", retryable: false})
+        end
+      :error -> send_json(conn, 404, %{error: "session not found", retryable: false})
+    end
+  end
+
+  defp capture_retention_server, do: Application.get_env(:embervm, :s3_warmth_gc, Embervm.S3WarmthGc)
+
+  defp session_workspace_fingerprint(session_id) do
+    session_manager().workspace_fingerprint(session_manager_server(), session_id)
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  defp session_workspace_export(session_id) do
+    session_manager().workspace_export_status(session_manager_server(), session_id)
+  rescue
+    _ -> %{status: "unknown"}
+  catch
+    _, _ -> %{status: "unknown"}
   end
 
   # DELETE /v1/sessions/:id (management auth): destroy. The caller must be the
@@ -2713,6 +2946,7 @@ defmodule Embervm.Router do
   defp session_view(session, node_statuses) do
     %{
       session_id: session.session_id,
+      lineage_id: Map.get(session, :lineage_id),
       workload: session.workload,
       principal: session.principal,
       state: to_string(session.state),

@@ -166,8 +166,13 @@ def _build_sites_from_db(
     request: Request,
     response: Response,
     session: Session = Depends(get_session),
+    *,
+    hour_limit: int | None = _DISPLAY_HOURS,
 ):
-    """Build the payload in the Argo materializer, never in the web pod."""
+    """Build from one upcoming scalar load; None retains all connector hours.
+
+    The public reader and disabled materializer keep the display limit.
+    """
     now = datetime.now(timezone.utc)
     cutoff = top_of_hour(now)
 
@@ -177,7 +182,13 @@ def _build_sites_from_db(
         site.id: site
         for site in session.exec(
             select(
-                Site.id, Site.name, Site.lat, Site.lon, Site.altitude_m, Site.lp_zone
+                Site.id,
+                Site.name,
+                Site.lat,
+                Site.lon,
+                Site.altitude_m,
+                Site.lp_zone,
+                Site.forecast_fetched_at,
             )
         ).all()
     }
@@ -199,10 +210,15 @@ def _build_sites_from_db(
     # implementation hydrated ~340k SQLModel objects, which OOM-killed both the
     # web pod and the 512 MiB materializer job.
     by_site: dict[str, list[tuple[datetime, float, float]]] = {}
-    max_fetched: datetime | None = None
+    max_fetched = max(
+        (
+            as_utc(site.forecast_fetched_at)
+            for site in by_id.values()
+            if site.forecast_fetched_at is not None
+        ),
+        default=None,
+    )
     for site_id, hour_time, cloud, sun, fetched_at in rows:
-        if fetched_at is not None and (max_fetched is None or fetched_at > max_fetched):
-            max_fetched = fetched_at
         by_site.setdefault(site_id, []).append((hour_time, cloud, sun))
 
     # Track, across all sites, whether any site has a true-dark hour (sun < -12,
@@ -215,15 +231,8 @@ def _build_sites_from_db(
     any_twilight_hour = False
 
     sites = []
-    for site_id, hours in by_site.items():
-        meta = by_id.get(site_id)
-        if meta is None:
-            # Defensive: the refresh job only writes ids that exist in
-            # stars.sites, so this should not happen. Skip rather than emit a
-            # site with no metadata.
-            logger.debug("stars: skipping unknown site_id %s", site_id)
-            continue
-
+    for site_id, meta in by_id.items():
+        hours = by_site.get(site_id, [])
         # Clear hours split two ways. clear-DARK (sun < -12 AND cloud < 10) is
         # the unchanged headline metric and drives ranking + history. clear-
         # TWILIGHT (sun < -10 AND cloud < 10) is the wider summer fallback: every
@@ -248,7 +257,8 @@ def _build_sites_from_db(
             any_twilight_hour = True
 
         # The site's upcoming clear windows in chronological order, capped at
-        # _DISPLAY_HOURS. This is the clear-twilight superset, each hour tagged
+        # _DISPLAY_HOURS for public output (uncapped for the staged connector
+        # object). This is the clear-twilight superset, each hour tagged
         # ``dark`` (true nautical dark, sun < -12) vs a twilight-only fallback
         # hour. The live map field, the night-filter buckets and the card list
         # all derive from this one array on the client, so the marker colour and
@@ -262,11 +272,12 @@ def _build_sites_from_db(
                 "cloud_area_fraction": h[1],
                 "dark": is_dark_hour(h[2]),
             }
-            for h in sorted(clear_twilight, key=lambda h: h[0])[:_DISPLAY_HOURS]
+            for h in sorted(clear_twilight, key=lambda h: h[0])[:hour_limit]
         ]
         sites.append(
             {
                 "id": meta.id,
+                "forecast_fetched_at": iso(meta.forecast_fetched_at),
                 "name": meta.name,
                 "lat": meta.lat,
                 "lon": meta.lon,

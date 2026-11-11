@@ -22,6 +22,20 @@ companion, require the operator group. The earlier anonymous companion
 exception is retired; anonymous catalogue discovery remains available to the
 gateway, while anonymous tool calls are denied.
 
+Intake stages per-sweep issue observations in the existing audit store and
+finalizes them after locked receipt admission. The aggregate sweep audit ID is
+the observation identity. Candidate audit insertion and a latest private
+inventory snapshot commit together under the singleton factory lock. Readers
+load that snapshot and current indexed work-item/receipt state; they do not scan
+candidate audit history. A full lane still runs observation at the existing
+sweep cadence. Public snapshot publication disables the private backlog reader.
+
+**Why.** Receipt creation only queues work. Separating observation from its
+finalization records actual admission without rewriting append-only history.
+The snapshot preserves the latest observation per issue across partial sweeps,
+with its original timestamp and explicit coverage. This adds no scheduler,
+admission authority or public database grants (Refs #7459).
+
 The existing private `factory-public-snapshot` job also fetches broker quota
 before opening its database session. `factory.publication.shape_quota` adds an
 allowlisted `quota` object to the board JSON: provider, window duration, account
@@ -60,8 +74,34 @@ Broker failure leaves quota unavailable while the rest of the board publishes.
 The cron job respects the broker's SPIFFE mode; missing workload credentials in
 that mode fail closed without an HTTP fallback.
 
-Routine-job reconciliation and knowledge interventions use the narrow existing
-contracts in `factory.api`. The domain boundary test checks factory internals
+The existing private Codex login MCP tools and HTTP routes accept `environment`
+as `prod` (default) or `dev`. The dev bridge permits only `codex-cluster`
+`POST /login/start` and `GET /login/status` under `/grants/codex-cluster`.
+Its URL and exact server SPIFFE ID come from the private deployment values;
+callers cannot select either. The hub targets
+`https://embervm-dev-embervm-tokenbroker.embervm-dev.svc:8443` and pins
+`spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-tokenbroker`.
+It reuses the private Monolith's rotating
+`spiffe://embervm.jomcgi.dev/ns/monolith/sa/monolith` SVID with a request-local
+server pin, leaving the production broker target and pin unchanged. Missing
+configuration or SVIDs fail closed. Requests do not follow redirects, have a
+30-second deadline and read at most 1 MiB. Dev responses expose validated device
+approval fields or a fixed login-state description; provider error detail and
+token fields are omitted. No dev token, refresh or quota proxy is exposed.
+The dev broker separately authorizes this client for login only; its noded
+identity owns token delivery. The chart configures the bridge only on the private
+hub backend. This is source configuration, not evidence of a dev grant, deployed
+authorization or a completed live conformance turn (Refs #6471).
+(see: /projects/monolith/factory/execution/broker_client.py)
+(see: /projects/monolith/deploy/values-gke.yaml)
+
+The private page at `/factory/execution/codex-login` defaults to production;
+`?environment=dev` selects dev conformance. A button starts device approval,
+and **Check connection** reads its status. The execution console retains its
+production default.
+
+Routine-job reconciliation uses the narrow existing contracts in `factory.api`.
+The domain boundary test checks factory internals
 and requires its dependencies on other domains to pass through their APIs.
 Discord integration is outside this consolidation.
 (see: /projects/monolith/factory/module.py)
@@ -301,898 +341,836 @@ security/004).
 
 ## 4. Agents
 
-**Why.** Factory outcome comparisons use receipt cohorts and count every attempt
-through an explicit as-of bound. A positive requires successful delivery CI and
-a completed seven-day clean revert scan. Missing evidence stays unknown or
-pending. Priced turns and settled-plus-reserved ledger costs remain separate
-bounds, and elapsed-time ratios include failed terminal tasks. Initiating-model
-cohorts preserve one task per row; role/model contributions expose switches
-without adding task counts across models. The report is manually invoked on a
-read-only connection. Model-bench (#6702) covers cheaper-model counterfactuals;
-rating remains later work (#6700).
-(see: /projects/monolith/factory/outcomes.md)
+[FACTORY.md](factory/orchestration/FACTORY.md) is the factory design document.
+This section records monolith ownership, trust boundaries, acceptance and rationale.
+The Conductor owns operator-facing coordination, the policy-pinned Planner proposes
+the task graph, and the Executor dispatches admitted nodes. Role names grant no authority.
 
-`agent_sessions` persists sessions, turns, pending messages, progress, model
-selection, workflow ownership, and EmberVM lineage in Postgres. Pending turns
-are claimed in sequence by one replica, refreshed by heartbeat, and reclaimed
-after a stale lease so a crashed worker does not strand work. A turn whose
-brick is preempted mid-flight is resumed or re-issued rather than lost, and the
-model the guest actually ran is persisted on the turn.
-(see: /projects/monolith/factory/execution/models.py)
-(see: /projects/monolith/factory/execution/store.py)
-(see: /projects/monolith/chart/migrations/20260903030000_agent_session_recovery.sql)
+### Ownership and trust
 
-Model names map to three runtime families. `spark` selects the Pi family and
-its dedicated workload (`qwen` survives only as a legacy alias for persisted
-sessions), `luna`, `terra`, and `sol` select Codex dispatch, and `opus`,
-`sonnet`, and `fable` select Claude dispatch. The production list is explicit
-in chart values, so a newly supported model never appears in the console or the
-Discord command without a values change. Turns cross the EmberVM boundary
-through a session API: the Claude, Codex and Pi runtimes are `session` class
-guests, while `run_code` selects disposable language-specific task workloads,
-and both kinds are vsock-only with no NIC.
-(see: /projects/monolith/factory/execution/__init__.py)
-(see: /projects/monolith/factory/execution/transport.py)
-(see: /projects/monolith/sandbox/mcp.py)
-(see: /projects/embervm/ARCHITECTURE.md)
+Factory owns orchestration, session execution, recovery and private projections.
+Postgres owns durable records, EmberVM owns isolated execution and physical cessation,
+DBOS owns bounded workflow recovery, and Argo owns batch cadence. Mutable graph
+reconciliation stays outside durable replay. Shared authentication establishes identity;
+factory controls require a standing human in `operators`. Browser decisions instead
+require the single Envoy-projected `X-Auth-Email`, optionally narrowed by
+`FACTORY_OPERATOR_EMAILS`. A caller-supplied Cloudflare email header grants nothing.
 
-Swarm is the DBOS layer that composes sessions into durable workflows. The one
-engine today is `implement_then_review`: a Luna implementer session, an Opus
-review session, bounded attempts and review cycles, and a plan pinned into a
-step record at start so replay can never see a budget move. The pinned
-`budget_usd` is enforced at node boundaries. Every structured output an agent
-makes, review verdict and rationale record alike, arrives through one typed
-artifact channel validated at ingestion; nothing structured is parsed out of
-prose. For a legacy swarm run the workflow's Python control flow is still the
-graph, so the orchestration-level mutable DAG that ADR agents/062 decided
-reaches those runs only when this engine is retired (#5419, #4781).
-(see: /projects/monolith/factory/orchestration/workflows.py)
-(see: /projects/monolith/factory/orchestration/budget.py)
-(see: /projects/monolith/factory/orchestration/turn_artifact.py)
+The private MCP surface includes receipt status/detail/context, submission, decisions,
+controls and exact recovery operations; [factory MCP](factory/MCP.md) records their
+contracts. Execution MCP includes session start/send/status/detail and legacy swarm
+decisions. These surfaces do not share a blanket per-record authorization guarantee:
+task tools and session reads/mutations retain caller-scoping gaps, alongside note
+lookup and turn-detail reads. These are examples, not an exhaustive gap inventory.
+Section 7's surface matrix remains the authentication and result-access reference.
+The pruned agents tier lacks verified delegated task identity; planner preview
+binding fails closed even with its flag enabled. Public composition uses published,
+read-only projections and the restricted public database role.
+See [domain ownership](factory/orchestration/FACTORY.md#domain-ownership) and
+[planner preview](factory/orchestration/FACTORY.md#planner-preview).
 
-The factory lane is where that mutable DAG does exist. `swarm/factory_conductor.py`
-reconciles a versioned graph outside durable replay, and `swarm/graph.py` owns
-the versions, cycle and dependency checks, protected acted nodes and immutable
-dispatch pins. The planner builds the whole DAG at plan time through one `plan`
-decision whose edits apply atomically under a single expected revision, the
-reconciler dispatches each ready node as its own pinned unit, and a review that
-returns `changes_requested` opens a correction and re-review pair the engine
-appends itself, bounded by the policy's `max_review_rounds` (default 2). A round
-that fails is reopened the same way, against the same reviewed head and
-findings, with the failed round counted against the bound. The
-planner is called back only for a named deviation: no plan applied yet, a node
-that failed or escalated with no runnable retry, review rounds spent, a fan-in
-the engine could not open, or a settled graph with no verified delivery.
+**Why.** Connected MCP callers can retain a tool catalog after the native server
+consolidates names. The session dispatch diagnostics compatibility name delegates
+to `factory_diagnostics` so those callers can inspect an uncertain turn without
+guessing that it stopped. Both names keep the same standing-operator gate, strict
+identity and bounded read owner; neither grants recovery authority (#7603).
+Some cached callers still cannot invoke the restored name after deployment.
+An explicit session-dispatch read target on the established `factory_status`
+route reaches that same owner while preserving default status behavior. Native
+catalog evidence identifies the route without claiming gateway refresh.
 
-The proposed-decision preview is staged behind
-`swarm.factoryPlannerPreviewEnabled=false`, which renders
-`FACTORY_PLANNER_PREVIEW_ENABLED=false`. `planner_preview.py` is an unregistered
-server-side read adapter over the shared submission projection. It adds no
-HTTP route, MCP tool or guest catalogue entry. The private MCP surface serves
-standing humans and the pruned agents tier lacks delegated task identity
-verification (`projects/mcp/ARCHITECTURE.md`, `docs/security.md`). The production
-binding verifier therefore returns no binding even with the flag on. Operator
-tools keep their existing `_refuse` and `factory.access.is_operator` floor.
+### Owned records
 
-The adapter takes a schema-valid `plan` or `add_node` decision, using the real
-decision/edit schema and bounds, plus an exact integer `expected_revision`.
-It resolves identity from the verified request principal and a server binding
-verifier, never from caller task, receipt or node IDs. A delegated workload
-binding must name a non-terminal `conductor_<n>` run of that same admitted,
-unpaused, uncancelled task. Missing or ambiguous bindings refuse. The database
-checks the run and task before evaluation. A unique insert into
-`swarm.factory_planner_preview` reserves ordinal 1 or 2 for that run. Every
-enabled, bound, schema-valid call reaching the revision check consumes a slot,
-including stale revisions, refused projections and retries. A third call
-refuses `preview_limit_reached` without evaluating. This ledger is the preview's
-only write: graph versions, starts, receipts, allowance/refusal audits, funding
-overlays and decisions stay unchanged. Results are advisory; submission repeats
-current-state validation and accounting. The enabled prompt asks for at most two
-previews, then a feasible smaller decision, authorized funding request or pause,
-with measured needed/allowed turns and USD and reserve-aware spare figures.
+Schema and durable workflow identities survive the package consolidation.
+The model definitions are [orchestration records](factory/orchestration/factory_models.py),
+[graph records](factory/orchestration/models.py) and [session records](factory/execution/models.py).
 
-**Why.** Deterministic envelope accounting belongs inside the planner's own turn
-so an over-envelope proposal can be resized before a rejected submission spends
-another round. Preview and submission share one projection owner. Advisory
-results cannot authorize a later submission. Fail-closed task binding preserves
-operator authority while delegated identity is unavailable, and two durable
-slots bound evaluation across retries and concurrent calls. Repository delivery
-leaves the flag off. Binding provisioning, authorized enablement with a live
-in-turn preview, and the 72-hour rejected-run/cost comparison remain live checks
-on #6650. Its reported baseline for 2026-09-28 through 2026-10-01 is 11
-`envelope_exceeded` refusals and $10.17; savings count only eliminated rejection
-or replan work.
+| Store | Owned records |
+| --- | --- |
+| `swarm` | `factory_control`, `factory_receipt`, `factory_start`, `factory_audit`, `factory_planner_preview` |
+| `swarm` | `work_item`, `work_item_edge`, `work_item_event`, `factory_webhook_delivery`, `factory_github_issue_state`, `factory_class_tier`, `factory_review_verdict` (retained historical routing/review records) |
+| `swarm` | `swarm_task`, `swarm_plan_version`, `swarm_plan_node`, `swarm_node_run`, `swarm_conductor_call`, `swarm_decision` |
+| `agent_sessions` | `agent_sessions`, `agent_turns`, `pending_messages`, `capacity_pool`, `capacity_reservations`, `probe_observations`, `result_receipts`, `reservation_reviews`, `voice_ui_companions`, `voice_ui_ledger` |
+| `claude_agent.routine_jobs` | Existing drainer queue and leases |
+| `scheduler.scheduled_jobs` | Retained list/get and legacy run-now compatibility; table retirement needs separate scope |
 
-An attempt stop crosses the factory/session boundary through public APIs.
-`swarm.factory_attempt_stop` owns task authority, run/start checks, idempotency
-and stop audits. `agent_sessions.factory_stop` owns session/permit identity,
-the UNKNOWN transition and the executor heartbeat check. The factory calls
-`agent_sessions.api` with immutable values and its current transaction; the
-session domain calls `swarm.api` to read committed stop authority and exact
-cessation evidence. Neither side imports the other's models or private helpers
-for this path. The lock order stays factory control, capacity pool, session,
-and the UNKNOWN transition commits or rolls back with the factory's stop intent.
-Ember still owns physical execution cessation; a cancellation acknowledgment
-alone never releases the permit.
-(see: /projects/monolith/factory/execution/factory_stop.py)
-(see: /projects/monolith/factory/orchestration/factory_attempt_stop.py)
+Session records retain model selection, workflow ownership and EmberVM lineage.
+Factory receipts retain issue/branch ownership while paused or landing-held.
+See [authoritative records](factory/orchestration/FACTORY.md#authoritative-records-and-context)
+and [cadence ownership](factory/orchestration/FACTORY.md#cadence-and-singleton-ownership).
 
-The accepted plan sizes the task. Its allowance is the sum over live
-unsucceeded nodes of `max_attempts`, plus the work turns history already spent,
-plus what the engine may still insert on its own. Review rounds are reserved one
-at a time: the next round only, at the two turns it costs, because the engine
-inserts its correction and its re-review at one attempt each. Each inserted
-round is then counted like any other live node while the round behind it is
-reserved, so the allowance grows by one round at a time. A fan-out wave reserves
-its one fan-in node at the policy's `max_attempts`, exactly as the inserted node
-will carry, so that insertion is turn-neutral. Every insertion is checked
-against the envelope as it happens, and an engine insertion is checked on the
-nodes it really adds, with no forward reserve counted on top: that reserve is
-headroom for the planner's next edit, not a charge against the round the engine
-is opening. Money is the same sum over node cost
-ceilings plus charged history, recorded for accounting only: no dollar figure
-refuses an edit, a dispatch or a start (#7161). Review rounds are reserved only
-when the plan holds a review node. That allowance is
-persisted on the receipt with the graph revision it came from, re-derived and
-audited on every accepted plan, add, discard and engine round, and it is the
-bound `authorize_start` and the board actually read. Policy keeps only a turn
-envelope, `max_task_turns_hard` beside the deadline. An edit whose derived turn
-allowance would exceed it is refused whole with `envelope_exceeded` and the
-excess named as needed against allowed, beside the spare turns the graph still
-leaves under the reserve that edit implies, which reaches the planner as
-decision feedback so it can shrink the edit, split the work, or pause.
+**Why.** Work item pointer comments link each GitHub-sourced work item to its
+durable factory record. They exist only for display and reference and are never
+read back, so issue-side changes cannot steer factory state through them.
 
-Nodes that can start together fan out, up to `max_parallel_nodes`. A wave is
-read from the live graph rather than from the plan as a whole: source-writing
-nodes that have never run, whose dependencies are all already on the task
-branch, and that no dependency path connects to each other. Each member works on
-`factory/<task-id>-<node key>`, a sibling of the task branch rather than a path
-below it, and an `integrate` node depending on all of them merges those branches
-into the task branch and reports the integrated head. The planner may name that
-node itself; otherwise the engine inserts `integrate_<n>` over the wave and
-repoints whatever depended on those branches at it. A node only takes a branch
-of its own once the fan-in that will merge it exists, so a refused fan-in asks
-the planner rather than stranding work, and the branch a node first ran on is
-pinned for every later attempt. While a wave is open it is the only source of
-source-writing work that may start, so a node outside it waits rather than
-becoming a second writer on the task branch. Fan-out is off entirely at a
-parallel limit of one, a planner-authored integrate node included: its members
-run serially on the task branch and it merges nothing.
-The lane is two lanes. A task's lane follows its class: work that ends in a
-pull request is delivery, work that ends in a comment is advisory. The policy's
-`max_tasks` bounds each separately, the chart's `swarm.factoryMaxConcurrentTasks`
-bounds their sum, and intake fills at most one candidate per lane per tick, so a
-full delivery lane never starves advisory work and the reverse. A `quota_guard`
-block watches the shared Claude 7-day window and, while it is nearly spent,
-routes review down the `reviewer` pool instead of spending it: nothing is held,
-admission is untouched, and Opus returns on its own below the resume threshold.
-The model is chosen when a review is dispatched rather than when it was
-planned, so the node keeps the planner's preference and the immutable pin
-records what really ran. Judgment work waits for Opus instead of falling back,
-and so does any review when no pool member has quota, because review is the
-gate. Transitions are recorded once each in the audit ledger, so a replica
-restart cannot forget a fallback mid-task, and an unknown or stale reading
-neither starts nor ends one.
-(see: /projects/monolith/factory/orchestration/factory_conductor.py)
-(see: /projects/monolith/factory/orchestration/factory_quota_guard.py)
-(see: /projects/monolith/factory/orchestration/graph.py)
-(see: /projects/monolith/factory/orchestration/deviations.py)
-(see: /projects/monolith/factory/orchestration/FACTORY.md)
+### Funding consolidation
 
-**Why.** Autonomous intake lets the bounded lane discover delivery-ready work
-without making the operator continually copy issue numbers into policy, while
-keeping that authority inert by default and capped by labels, cooldown, and a
-daily limit. Issues that are not ready can take a separate refine-or-escalate
-path: one bounded node writes a structured brief, and the server trusts only
-the label and comment it re-reads from GitHub. This makes readiness evidence an
-observable issue state and keeps an unresolved human decision from entering the
-delivery DAG (#6002). The receipt stores the task class because intake decides
-it once and routing and audits must retain it across later policy changes. ADR
-agents/038 decision 5 gives judgment work an Opus-or-better implementer floor
-because no machine oracle can verify its correctness; quota pressure parks that
-work instead of demoting it.
+**Why.** A task-level grant alone cannot make an exhausted node runnable.
+Funding now binds one failed work node to its review and records one versioned
+attempt-bound increase on approval. Two renewals per task, the ten-attempt node
+ceiling and the pinned cumulative turn extension remain enforced. Existing
+operator and uncertainty fences are rechecked at settlement. Producer activation
+uses an independent narrow preview/apply control that preserves generation and
+receipt ownership; it feeds the existing problem-issue and intake owners.
+The established refill MCP name exposes an explicit problem-issues target
+through that same owner for cached callers, without changing refill settings.
+Compact operator status projects recorded landing refusals without inferring
+queue state or accepting a merge whose identity differs from its approved head.
 
-**Why.** Repository is a property of the work item and receipt, not of the
-lane, because pointing the single-repo policy at loom would have meant
-replacing the whole homelab policy and pausing homelab to work elsewhere.
-Policy now carries a `repos` map where each entry holds its own enable
-switch, intake labels, lane caps, daily cap, budget envelope, landing mode
-and charter fragment, while pause, stop and generation stay global so one
-operator act still halts everything. A policy with only the legacy `repo`
-field normalizes to a one-entry map that behaves exactly as today, so the
-live policy needs no re-post. Entries store only what an operator set and
-read everything else from the global blocks when used, so a later global
-raise still reaches homelab instead of a frozen copy. Admission, the intake sweep and the webhook
-all serve the enabled entries under their own numbers, and each prompt
-carries its repo's charter: homelab receipts read the existing charter
-unchanged, loom receipts read loom's own CI, landing and review rules.
-The loom entry ships default-off and is enabled only through the staged
-operator migration, so adding a repository never starts work in it (#6463).
+**Why.** The eight funding, judgement, reservation, watchdog, continuation,
+allocation and metering modules answered overlapping policy questions (#7454).
+Task grants, exact-artifact continuations, reservation verdicts and opt-in meter
+outcomes now share `factory_funding.decide`; its judge call is a bounded step.
+The existing adapters retain authentication, exact-dispatch revalidation, stop
+ownership, unknown-outcome charges and lease deadlines. Historical operator
+holds remain binding. Unresolved attempts wait for their existing owner, legacy
+dollar-threshold audits rearm from the current turn count, and an unresolved
+funding escalation or budget proposal cannot request a second judge. See [Funding](factory/orchestration/FACTORY.md#funding).
 
-**Why.** The chart ceiling and the per-lane maxima are set in two places and
-neither said which was binding, so a ceiling of 4 under lanes of 4 and 8 gave
-the advisory lane nothing: the limits handed delivery its whole maximum first
-and one sweep excluded 272 advisory candidates as lane_full. The ceiling is now
-12, high enough to cover both lanes, and when it is not, the free part of it is
-dealt to whichever lane is furthest from its own maximum rather than reserved
-for delivery, with delivery keeping the first slot so it is never unable to
-start. The sweep names the mismatch as lane_ceiling_below_lanes. Twelve tasks could
-also hold every slot in the background session pool the drainers and the probes
-share, so factory dispatch now leaves a reserve there and every node is gated on
-it, the first node of a settled graph included: the factory is the only member
-of that pool whose work can simply wait for a later tick, so it is the one that
-yields. The same lanes
-also filled at one slot an hour, because a sweep takes one candidate per lane
-and the sweep clock only re-opened on the hour or on a settlement. An admission
-re-opens it too, which costs one extra sweep per admission and lets a lane fill
-over consecutive ticks (#6002).
+**Why.** Canonical `funding_*` audit events commit with marked legacy projections
+so old binaries still enforce continuation leases and meter trips on rollback.
+Current readers select canonical and unmarked historical rows, excluding those
+projections to avoid duplicate bindings and charges. Historical rows are never
+rewritten and no schema migration is required. PostgreSQL policy-row tests share
+meaningful assertions; source/test reductions are measurements under the revised
+acceptance, not numeric gates. Required CI and independent exact-head review
+remain mandatory. Rollback is reverting the PR.
 
-**Why.** Landing exists because approval was not delivery: #3877 was shipped as
-PR #6007 whose body carried no closing keyword, so the issue stayed open with
-`agent-ready` intact and the next generation's sweep admitted it again as fresh
-work. The fix is three separate facts rather than one. Intake excludes any issue
-with a succeeded receipt, so the lane's own delivery record is what says work is
-done and the issue's labels are not. The delivery gate reads the pull request
-body back from GitHub and refuses a body that does not close its issue, naming
-the refusal so the planner can act on it. And landing, behind an `auto_merge`
-flag that defaults off, arms the merge and closes the issue against the merge
-it observes, one pull request at a time because the merge queue ejects
-everything behind a failed candidate. That holder is read from GitHub as well as
-from the lane's own audits, because an operator arming a factory pull request by
-hand puts it in the same queue, and landing selects on landing state rather than
-recency so a burst of newer settlements cannot evict the armed delivery from the
-batch that observes it. An ejection is a state the lane names and re-arms once
-rather than a wedge, and a head that moves under an armed pull request takes the
-arming back off. Landing verifies publication and the live rollout before closing
-the issue (#6002).
+**Why.** `FACTORY_CONDUCTOR_FUNDING_ENABLED` stages judge-reviewed funding.
+Eligible funding reviews carry merit criteria and server-read evidence on the
+same judge path. Doubt steers to an operator card under a pinned turn ceiling.
+`FACTORY_RESERVATION_REVIEW_ENABLED` reviews the running invocation's lease. Two
+continuation contracts remain: the legacy final correction pair behind
+`FACTORY_AUTONOMOUS_CONTINUATION_ENABLED`, which cannot renew itself, and an
+operator two-hour lease for one paused recovered task. The switch contract is in
+[Funding](factory/orchestration/FACTORY.md#funding).
 
-**Why.** Merge observation runs before review publication, including previously
-refused deliveries, because publishing an open-PR check after another owner
-merged the PR permanently hid it from landing. A bounded rotating scan revisits
-those receipts with merging disabled too. Observed merges must match the owned
-repository, base, branch and approved head. They do not authorize a new merge.
-For an active task whose owned PR merged elsewhere, existing invocations drain
-through normal accounting before exact-head review and CI verification. Approved
-work enters landing even with auto-merge off; missing or rejected review escalates
-without another planner or funding grant. Paused and explicitly held receipts
-remain fenced. Infrastructure rollout and outstanding functional acceptance are
-separate from repository merge observation, including externally closed issues.
+**Why.** The hub reads deployment values from git HEAD while Kargo promotes
+the chart revision separately. The GKE overlay retains
+`factoryMeritJudgeEnabled: true` for pre-retirement charts during promotion
+and pin-lowering rollback. Those charts default to false without the key;
+the current chart and image no longer read it. The staged #7585 scope permits
+this one compatibility config reference. #7596 tracks its removal only after
+pre-retirement charts are no longer supported revert targets. A verified new
+rollout alone does not satisfy that removal condition.
 
-Execution capacity uses one projection: admitted and uncertain receipts retain
-slots across generations, including pauses; current admission-eligible queues
-reserve intake room; landing receipts retain issue ownership without guest slots.
-The existing operational health loop reports landing or observed-merged active
-work awaiting reconciliation or rollout for over 30 minutes. It does not settle,
-resume or otherwise repair a task as a side effect of health evaluation.
+### Factory acceptance
 
-**Why.** Rollout verification gates only on the Applications the merged PR's
-files deploy through: registry chart versions moved since the merge, git paths
-and their kustomize surface, and `$values` files (#6660). Chart scope uses the
-publication with the earliest proven source containing the merge; later unrelated
-chart bumps do not widen it. Chart deployment proof uses the newest proven source,
-while git revisions need only contain the delivery's source. Source ancestry
-orders receipts, and the receipt commit bounds the history search even when a
-publisher finishes late. Unknown kustomize keys include the Application conservatively, and
-workload reads begin after scope selection. Anything unreadable fails closed.
-A PR reaching no live Application verifies against its publication
-receipt's successful `pr-checks` render check. A wait reaches status and the daily
-digest at 30 minutes and pages once at 60 minutes. Landing keeps polling each
-minute and closes the issue only after verification.
+Repository delivery and operational acceptance are separate. These rows move from
+section 11 unchanged, including their owners, holds and unresolved live checks.
+The linked issues own current acceptance; a closed repository issue alone proves no rollout.
+See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-checks).
 
-**Why.** Landing recovery is recorded from durable recovery structure, not a
-node-name convention. A request-bound engine edit is the normal proof that a
-bounded correction round exists. Plans written before that marker require a
-successful source-writing dependent above the request's run floor with typed
-evidence for the same pull request and exact written head. Other dependents do
-not block the engine from appending its correction and independent re-review,
-and armed or run-bearing nodes remain immutable history. Completion still
-requires the paired recovery audit plus a fresh, independent, approving review
-of the delivered pull request head above that floor; neither the audit, an old
-approval, nor a `changes_requested` result is sufficient.
+Standing delivery landing remains default-off. Its
+[outstanding acceptance checklist](factory/orchestration/FACTORY.md#standing-delivery-landing-delegation)
+requires verified rollout, separately authorized operator preview/apply, one
+ordinary landing without a per-head grant, queued-grant revocation evidence,
+and the documented 72-hour measure and stop-condition verdict.
 
-The landing-recovery deadline is a fixed cap, distinct from a renewable funding
-lease. Snapshots and start permission identify its expiry as
-`landing_recovery_deadline`. Funding cannot buy another reassessment or extend
-that cap, including when it expires during evidence reads or before a queued
-review starts. Completed paid reviews still settle once with their accounting
-intact, but cannot issue an ineffective grant. The receipt and its lane slot
-remain held for an operator recovery decision; this fence does not resume,
-re-admit, cancel, or release the task. Ordinary funding leases retain their
-existing renewal path.
+| Direction | Decided in | Tracks | State |
+| --- | --- | --- | --- |
+| Repair newly proven native refill infrastructure failures and observe useful same-node recovery | #7583 implementation contract | #7583 | original-allocation retry implemented without a paid judge; classified execution-owner repairs remain outside standing landing authority; rollout and live useful-delivery acceptance remain unproven |
+| Retire the merit runtime switch while preserving old-chart enabled behavior | section 4; proposed staged Conductor rescope | #7585, #7596 | repository correction; verified rollout remains on #7585; compatibility-key removal stays on #7596 until old charts leave rollback support |
+| Escalation cards survive the factory's own gate writes, declined landing recovery is named, and optimizer verdicts are final once the window ends and its attempts settle | section 4; evidence on the issue | #7495 | repository delivery; 72-hour before and after counts remain on the issue |
+| Per-sweep intake decisions, private backlog age and digest evidence | section 4; repository-only Conductor rescope | #7459 | staged repository delivery; rollout, first-sweep distribution and credential-backed follow-up remain on the issue |
+| One funding decision owns continuation, steering and stop while accounting retains reservations and unknown outcomes | Funding consolidation; repository acceptance in #7454 | #7454 | policy tests consolidated, task grant, progress and continuation decisions unified, allocation recovery folded into funding, shadow and reservation dollar-ceiling paths retired; reservation and meter decisions share the funding resolver; canonical funding audits retain rollback projections; reduction percentages are measurements |
+| Refuse planner-origin unmerged holds while preserving operator provenance and live acceptance | Joe's 2026-10-30 direction; #7450 revert lever | #7449, #7451 | repository-only staged work; flag disabled; rollout, activation, backlog triage and measurement remain |
+| Optional queue-driven inventory refill, default-off with durable advisory execution and bounded issue publication | section 4, recorded Conductor rescope and cap decision | #7376 | repository-only; operational checklist remains on the issue; no shipped policy enablement |
+| Admit agent-ready security findings under existing ownership and eligibility fences | Joe's 2026-10-28 decision, section 4 | [#7372](https://github.com/jomcgi-org/homelab/issues/7372) | repository-only staged delivery; guarded migration, rollout and natural-sweep acceptance remain |
+| Automatic pauses retain actionable questions and audit superseded cards | The factory conductor | #7165 | repository-only staged delivery under an unmerged landing hold; historical pause attribution and post-rollout checks remain |
+| Release execution capacity for quiescent paused or landing-held tasks while retaining ownership and durable authorized resume intent | section 4; Joe's 2026-10-18 decision | #7163 | repository implementation staged; separately authorized rollout and live capacity, ownership and reacquisition checks remain |
+| Sol-first planner implementation follows pool routing and role effort, with structured complex-work overrides | The factory conductor, implementation admission | #6992 | admission fix staged; merge and deployment held for operator confirmation |
+| Restore Astra planning and refinement, retain Sol routine implementation and Opus independent review | #6983, factory model pools | #6983 | follow-up migration staged for the already-allowed Astra policy; rollout and live Astra planner observation remain |
+| The human issue label excludes both factory lanes and durably hands admitted work off after normal attempt accounting | The factory conductor, human ownership | #6781 | implemented in repository; rollout pending |
+| Factory outcomes use mature delivery predicates, complete attempt accounting, and task-class/role/model cohorts with explicit unknown evidence | section 4, recorded Conductor rescope | #6716 | repository report staged for manual read-only invocation; standby accounting, CI, revert, metadata, and query-cost checks remain |
+| One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5784 (open child #5788) | roles (#5785) and staged MCP mutation enforcement (#5789) delivered; #5786, #5787 and #5804 closed not planned; continuity enablement is #6561 |
+| One factory conversation spans web, Discord, and voice for the same conductor | The factory conductor | #5788 | not started |
+| Execution profiles (implement, investigate, debug, research) become policy dimensions beside difficulty and risk | The factory conductor | #5784 | not started; conductor and planner on Astra since generation 11 |
+| Trusted `factory/dependency-evidence` gate with App-pinned identity, exact-head assessments and invalidation | PR #6806, staged rollout | [#6799](https://github.com/jomcgi-org/homelab/issues/6799) | repository-only; 7-item live checklist on [the issue](https://github.com/jomcgi-org/homelab/issues/6799#issuecomment-6545691566); #7186 owns the Renovate switches and schedule activation |
+| Post-guest proof settles bound zero-turn attempts with read-only live evidence per item | The factory conductor, staged flag | [#6559](https://github.com/jomcgi-org/homelab/issues/6559) | repository delivery merged, default-off; 6-item live validation plus runbook detail on [the issue](https://github.com/jomcgi-org/homelab/issues/6559#issuecomment-6545695108) |
+| Trusted `factory/review` check publisher with session-distinct approval and dedicated token | PR #6213 | [#3835](https://github.com/jomcgi-org/homelab/issues/3835) | repository-only; 4-item activation checklist on [the issue](https://github.com/jomcgi-org/homelab/issues/3835#issuecomment-6545692966) |
+| Fail-closed push-format validation for source guests, staged repository-only | The factory conductor, staged flag | [#7458](https://github.com/jomcgi-org/homelab/issues/7458) | repository-only; PR #7473 merged 2026-10-31; hypothesis, 14-day window and stop conditions on the issue; trial pending |
 
-Explicit review-only recovery is a separate paid episode on the escalated
-receipt, never a resumed DAG or a renewed landing-recovery deadline. The
-operator supplies an idempotency key, the existing PR and exact head, a new
-bounded deadline, and cumulative dollar/work-turn ceilings no higher than
-existing authority. The start ledger includes all objective history and
-unresolved reservations. Every explicitly requested retry consumes a new
-reservation and work turn. No planner, funding judge, correction or implicit
-retry runs. Missing money or turns returns the precise deficit.
+### Intake and planning rationale
 
-**Why.** The existing guest's read-only prompt does not attenuate its shared
-GitHub credential. Recovery instead sends bounded, immutable base/head evidence
-to a tool-free reviewer through one fixed provider endpoint. It creates no
-guest/session and exposes no shell, Git, MCP, HTTP tools or GitHub credential
-to the model. Only a dedicated recovery API key and explicitly configured
-reviewer alias are accepted, with no shared-key, model or provider fallback.
-The alias must belong to the receipt's reviewer pool; judgment-class recovery
-is unavailable on this OpenAI-only adapter. Fixed model identity and list
-pricing come from shared pricing. Unavailable configuration fails closed.
+**Why.** The intake queue's filtered count keeps optional refill aligned with
+ownership, dependencies and receipt history. Bounded, default-off execution and
+duplicate-post fences protect uncertain publication (#7376).
+See [refill](factory/orchestration/FACTORY.md#queue-driven-backlog-refill).
 
-The maximum input/output charge is reserved under the factory control lock.
-This first adapter conservatively commits that entire ceiling, also on a
-successful response; it does not claim a provider-reported actual cost.
-Uncertain calls retain the reservation and block retries. A proven no-post
-fence releases money. The bounded provider call is serialized with stop/hold
-under the same lock, for at most 120 seconds; client cancellation cannot prove
-remote provider cessation, so its reservation remains charged. Late results
-cannot approve. Exact-head CI and draft/queue state are rechecked before and
-after review. Head or base changes invalidate the result.
+**Why.** The dated #7366 inventory brief gave way to five rotating one-sentence
+maintenance routines. The collector picks its own analysis, while the independent
+review, durable publication and breakers are unchanged. A routine run no
+longer opens a needs-human summary issue; the summary stays in its settled audit,
+and starts recorded before routines keep theirs. `factory_configure_refill`
+preserved an open low-yield breaker and only a full policy re-post cleared it,
+which is board-only and, with active work, forces a generation advance. The
+opt-in `reset_breaker` records the same reset and `min_new_issues` sets the
+floor, so neither needs the full post (#7376, #7489).
 
-The append-only episode audit supplies a sticky review-only hold independently
-of global auto-merge. Ordinary starts, funding, re-admission, delivery settlement
-and merge arming refuse it. Success records `awaiting_landing_approval` while
-the receipt remains escalated, with the old graph, deadline and audit intact.
-This control has no release/landing operation. Deployment, dedicated credential
-provisioning, live review spending and eventual landing each require their
-separate operator decision. No deployment values activate this path.
+**Why.** The static planner charter grew to about 1,800 words, mostly restating
+mechanics the server already enforces and explains through its schema, refusal
+codes and `decision_feedback`. Outcome-level prompts with guardrails and exit
+criteria are preferred, restoring a line only after repeated failure. The charter
+keeps authority, untrusted-data scoping, exit criteria and the defaults the server
+cannot infer, at about 560 words. The cut is measured against the prior 14 days
+by planner refusal rate, planner rounds per task, first-pass review rejection
+and planner input tokens (#7489). See
+[charter content](factory/orchestration/FACTORY.md#operating-rules).
 
-**Why.** An escalation is a decision, not a message. The refine lane's
-`needs-human` verdict used to end at a warning and a question, so eleven of
-them in one hour on 2026-09-11 were eleven GitHub threads a person had to open,
-read and act on by hand, and the acting was the slow half: applying a label,
-writing the reason, opening the children, closing the parent. The verdict now
-carries two to four options, each naming the concrete act and the effect that
-performs it, with the recommendation first and matching the `recommend:` line
-so the brief on GitHub and the console offer one list rather than two. That
-turns the operator's work into picking, and picking is what a keyboard and a
-row of buttons are for, which is why `/agents/escalations` exists beside the
-board and answers to `j`, `k`, `1` to `4` and `c`. The effects run server-side
-under the monolith's own GitHub credential rather than as instructions to
-another agent, because a decision a person has already made should not wait on
-a guest to be scheduled. Every write is idempotent on the receipt and option
-pair, fenced by a hidden marker in the comment and an audit row per child
-issue, because the operator who clicks twice is the operator whose first click
-looked like it did nothing. And the private tier reaches the decision endpoint
-on the Access identity rather than the standing bearer the rest of
-`/api/swarm/factory` wants, because the browser behind Access carries no
-bearer at all. That identity is `X-Auth-Email`, the claim Envoy projects from
-a signature it verified and the gateway strips on ingress so it cannot be
-smuggled past the auth filter, never `Cf-Access-Authenticated-User-Email`,
-which nothing in the cluster validates or strips and which any caller reaching
-the backend could therefore write. Access itself is the gate, since
-`private.jomcgi.dev` is zero trust locked to one identity, so a verified
-address decides on its own and the `FACTORY_OPERATOR_EMAILS` secret is empty by
-default. Setting it narrows the click to a named list while leaving the page
-readable to everyone Access admits (#6002).
+**Why.** Native registration and client visibility are separate observations.
+Stale discovery cannot justify another control route or access change.
+See [discovery](factory/orchestration/FACTORY.md#native-registration-and-caller-discovery).
 
-**Why.** A pause is a decision request, so it leaves the lane. A delivery
-planner that needed a person used to emit `pause`, and the receipt stayed
-admitted behind a `task_paused` flag, holding a delivery slot and its
-accounting until somebody resumed or cancelled by hand. Resuming replayed the
-same pause, because the planner's context is the issue body captured at
-admission plus graph evidence, so an answer posted as a comment never reached
-it: that happened twice in one day on #3824 and #3832. A pause now carries the
-question and the same two to four options a refine escalation carries, and
-settling it moves the receipt to `escalated`, which holds no slot, starts no
-node, and keeps the graph and the accounting for a decision to be read
-against. The answer comes back the other way rather than on the issue: an
-option that says carry on re-admits the receipt with the choice, its detail and
-the operator's note as direction, and the next task's first planner round reads
-that as a labelled untrusted section naming the previous branch and pull
-request. That option has to be the one the pause lists first, because
-`resume_task` applies option one without showing anyone the card and a pause
-recommending a close would make resuming the task close the issue. Every other
-answer settles the receipt cancelled rather than succeeded, because nothing was
-delivered and a succeeded delivery receipt is in the exclusion intake keeps for
-good. Re-admission mints a whole new task on a fresh budget, so the receipt
-keeps its previous task ids and the board shows what they spent beside the
-current task rather than inside its limits (#6041).
+**Why.** A ceased learning guest can leave an unknown historical result that must
+still fence its session without permanently blocking a cadence change. Missing
+remote records prove nothing. For a pruned guest projection, a fresh authenticated
+EmberVM verifier may instead establish the exact positive terminal journal chain,
+complete retained successor coverage and no remaining restore authority. Monolith
+binds that proof to local lineage ownership, preview digest and audited replay;
+incomplete history remains fenced. See [learning reconciliation](factory/orchestration/FACTORY.md#settled-learning-execution).
 
-(see: /projects/monolith/factory/orchestration/factory_decisions.py)
-(see: /projects/monolith/frontend/src/routes/private/agents/escalations/+page.svelte)
+**Why.** A second dispatch settled as uninvoked does not establish the first
+dispatch's missing result. A retained terminal EmberVM row can still authorize
+workspace restoration, so current absence of successors is insufficient.
+Explicit settled-retry recovery combines an immutable, journaled lineage fence
+with positive parking evidence and complete successor checks, then rechecks the
+exact local owner before failing only the factory attempt at unknown cost. The
+private management boundary is unchanged. Native history and accounting remain
+intact; partial remote effects are reconciled through a durable request intent.
+See [supervised cessation](factory/orchestration/FACTORY.md#supervised-cessation).
 
-**Why.** The factory has two lanes because Opus review is the only scarce
-input it has. Implementation capacity is three spot brick nodes behind the
-autoscaler, and the implementers on the other end of it bill someone else or
-almost nothing, so a single concurrency number was rationing the wrong thing:
-it held back advisory work, which passes no review gate at all, in order to
-protect a reviewer that advisory work never calls. Splitting the bound lets
-delivery stay as narrow as review can sustain while advisory work runs at
-whatever the platform holds. The quota guard applies the same reasoning to the
-window rather than to the count. Review is what spends the shared Claude
-subscription, and running it to zero would cost the operator their own sessions
-rather than only the factory's, so a nearly spent window buys a cheaper
-reviewer rather than stopping delivery: the work that does not need Opus was
-never the thing to hold. Independence is what a review gate is actually for,
-and that is a property of the session, so a cheaper reviewer is a weaker
-opinion rather than a weaker gate. The two things that do wait are the two
-where no substitute exists: judgment work, whose floor is a capability and not
-a price, and a pool with nothing left in it. An unknown reading neither starts
-nor ends a fallback, because reacting to an unreachable token broker in either
-direction is acting on something nobody has read (#6002).
+**Why.** Outcome comparisons need complete receipt cohorts and attempt accounting.
+Missing evidence must remain unknown; priced turns and ledger bounds answer
+different questions. See [outcome evidence](factory/orchestration/FACTORY.md#outcome-evidence-ci-at-merge-reverts-after-it).
 
-**Why.** The bootstrap asked the planner for one graph edit at a time, so a
-single task (#5981) spent nine starts on five pieces of work: five were planner
-turns that added one node each, and a review that requested changes went back
-to the planner to restate findings the review had already written. Planning is
-the most expensive turn in the lane and the one least able to add information
-when the next step is mechanical, so both the shape and the loop moved into the
-server. A plan-time DAG lets one planner turn express the dependencies the
-graph machinery already enforced but never saw, and a bounded review loop runs
-the deterministic part with no model in it. The round bound is server policy,
-counted from the version ledger rather than from live nodes, so a planner
-cannot replenish it by renaming or discarding a correction node, and
-`correct_<n>` and `review_<n>` are refused as decision node keys for the same
-reason. Those same two refusals are why the engine, not the planner, reopens a
-round that failed: a `correct_<n>` whose guest ended its turn without pushing
-leaves a node the planner may not name and, because it has a run, may not
-discard either, so handing that back to the planner asked it for an edit no
-edit could express and the task only paused. Delivery stays with the planner because `verify_delivery` is the gate a
-completion claim has to pass, and an exhausted loop returns to the planner with
-the evidence instead of failing the task (#5419).
+**Why.** Removing an unsupported model must preserve admission history and expired
+deadlines without creating funding or execution authority.
+See [receipt restrictions](factory/orchestration/FACTORY.md#restrict-receipt-model-choices).
 
-Escalation is a pause, not a return. At each escalate point the workflow
-writes a `swarm.swarm_decision` row and polls it on the cadence it already
-polls session turns; a human answers through the console, the run decision
-endpoint, or the `agent_run_decide` MCP tool, with the actor recorded
-best-effort the way `cancel_run` records one. An unanswered row expires after
-`swarm.decisionTimeoutSeconds` and the run ends the way an unwatched gate
-always did. Swarm deliberately stops short of merging: the role-separated
-review gate that ADR agents/027 describes does not exist in code, so nothing
-autonomous lands on main, and the only agent-merged path is docfix auto-merge,
-off by default and refusing agent instructions, skills, runbooks and ADRs even
-when on.
-(see: /projects/monolith/chart/migrations/20260822230000_swarm_decision.sql)
-(see: /projects/monolith/factory/orchestration/router.py)
-(see: /projects/monolith/deploy/values.yaml)
+**Why.** Planner-local envelope feedback avoids paying for repeated rejected
+submissions. Advisory previews cannot authorize submission; unavailable delegated
+identity must preserve the operator boundary. See [preview](factory/orchestration/FACTORY.md#planner-preview).
 
-The work-queue drainer turns a standing backlog into continuous progress. An
-Argo tick every fifteen minutes asks the leader to start `drain_cycle`, a
-leader-owned DBOS workflow that claims `claude_agent.routine_jobs` rows under
-the existing skip-locked lease, runs each as one fresh Luna session, and
-completes it. Two job kinds are claimed: the general lane (`qwen-drain`, a
-legacy name kept so registered rows stay claimable) and knowledge extraction
-(`kg-drain`, capped per day with manual burst grants). Draining is serial by
-design, the tick's suspend and the `agents.drainer.enabled` value are the two
-kill switches, and a stall advisory rather than a Discord notify is the default
-failure surface.
-(see: /projects/monolith/factory/orchestration/drainer.py)
-(see: /projects/monolith/agent/routine_jobs.py)
-(see: /projects/monolith/chart/values.yaml)
+**Why.** Immutable ancestry does not become fresher when reread. A bounded
+publication scan exceeded the shared file cache and evicted its own comparisons;
+unknown evidence still needs a fresh read. See [read pacing](factory/orchestration/FACTORY.md#github-read-pacing).
 
-**Why.** KG admission stays fail-closed on unconfirmed Codex capacity: the gate
-needs at least one fresh permitting grant observation, and a stale grant is
-unselectable rather than unconfirmed because the egress ranker tries fresh
-usable grants before stale ones. That alone still wedges an all-stale pool,
-since the deferral stops the very traffic that would refresh an observation.
-The tokenbroker's inference-free usage refresher is the primary source of
-Codex grant freshness, including parked grants. The Codex probe is the
-backstop: one unpinned Luna request when every observed grant is stale and
-at least one is no longer exhausted. The ranker selects its grant, so a probe
-cannot target a parked account. The gate and probe retain the sidecar's
-15-minute freshness ceiling.
+**Why.** A process-wide GitHub cooldown avoids repeated refused ownership reads.
+Unknown ownership still cannot authorize dispatch, and diagnostic logs must not
+expose credentials or query content. See [read pacing](factory/orchestration/FACTORY.md#github-read-pacing).
 
-**Why.** Probe cleanup advances past held rows in session-ID order before
-limiting the result to five unheld guests. Bound or running Codex probes always
-fence another probe, with a log naming the blocking reason. Only orphaned
-pending turns and unknown outcomes older than 3,600 seconds stop fencing.
-That gives recovery four times the 900-second freshness ceiling and thirty
-120-second turn timeouts, without expiring a live guest's fence or clearing
-its evidence.
-(see: /projects/monolith/factory/quota_probe.py)
-(see: /projects/monolith/factory/orchestration/model_pool.py)
-(see: /projects/embervm/tokenbroker/cmd/tokenbroker/codex_usage.go)
+**Why.** Autonomous intake removes manual issue copying while keeping readiness
+observable on GitHub. Judgment work has no machine oracle, so quota pressure must
+preserve its capability floor (agents/038, #6002). See [intake](factory/orchestration/FACTORY.md#autonomous-intake-and-refine).
 
-The agent console is served at `/agents` on the private hostname as an
-inbox-first surface: rows state the ask, a run view draws the plan, decision
-records and walkthrough, a knowledge extraction queue lane shows the drainer's
-backlog, a VM map reads the control plane and is deliberately empty when it is
-unreachable, and the voice companion is a ledger-first screen the conversation
-drives. The route is grouped under the private tree behind the private ingress
-authentication policy. Session output reaches Discord only when a turn needs a
-human, unless the session is bound to a thread.
+**Why.** Open owner-authored PRs are unfinished delivery, so intake should finish
+or refine them before generating fresh implementation. The same work-item,
+receipt, branch and landing owners preserve holds and history. Verified numeric
+author identity discovers work; an accepted objective or server-verified brief
+establishes scope, and fresh independent review still gates the current head.
+See [owner PR backlog](factory/orchestration/FACTORY.md#owner-authored-pr-backlog).
+Its optional standing landing delegation has a separate audit family and fixed
+private diagnostic boundary. The existing landing owner derives exact-head
+authority only after canonical provenance, fresh holds, independent review and
+CI pass, with rolling and lifetime per-PR caps shared across reauthorization.
+Activation and operational acceptance remain on #7597.
 
-The factory board at `/agents/factory` is the operator's view of the factory:
-a state strip, then in flight, queue and recent panels, each task drawn as its
-plan (nodes ranked by dependency, one attempt row per node with the session it
-ran in) beside its starts and stop events. It reads one board endpoint,
-`GET /api/agents/factory`, a read-only join of the factory status, plan graph,
-node runs and session summaries that sits beside `/api/agents/sessions` rather
-than under the operator-gated `/api/swarm/factory` routes, because the browser
-on the private tier carries no bearer and the board is a view, not a control.
-A card's "Discuss with the conductor" link opens the console with an Astra
-session prefilled with that task's plan, so a sync with the conductor is an
-ordinary session rather than a second chat surface. The launcher leads with a
-factory strip above the knowledge extraction queue strip.
-(see: /projects/monolith/frontend/src/routes/private/agents/+page.svelte)
-(see: /projects/monolith/frontend/src/routes/private/agents/factory/+page.svelte)
-(see: /projects/monolith/factory/private_view.py)
-(see: /projects/monolith/factory/execution/voice.py)
-(see: /projects/monolith/chart/values.yaml)
+**Why.** Security risk and human ownership are different labels. Excluding every
+security finding discarded otherwise eligible work; custom eligibility fences
+must survive migration (#7372). See [intake](factory/orchestration/FACTORY.md#autonomous-intake-and-refine).
 
-### Turn observations survive queue deletion
+**Why.** Repository identity belongs to work and receipts. A second repository
+must not replace homelab's policy, freeze inherited limits or start work merely
+by being added (#6463). See [repositories](factory/orchestration/FACTORY.md#serving-more-than-one-repository).
 
-`AgentTurn.usage_json["observation"]` stores `turn-observation/1`: the requested
-model, queue and dispatch timestamps, dispatch count, and timing for one
-physical dispatch. Queue and recording timestamps are monolith pod wall time
-(`monolith_wall`); the dispatch timestamp is the database server's
-transaction-start time (`database_transaction_start`), so queue wait mixes
-both clocks (`monolith_wall+database_transaction_start`) and reads null when
-clock skew inverts the order. After a drain or brick retry, queue wait spans
-enqueue to the latest dispatch, so it includes the earlier dispatch's
-runtime. Executor elapsed
-time uses `executor_monotonic` around the single transport delivery await.
-Runtime duration is `guest_reported`, accepted only as an integer from zero
-to less than seven days. The block records these clock labels explicitly.
+**Why.** Planner prompts are static-first so the byte-identical prefix stays
+cacheable across rounds and tasks; whether the cache hits is measured through
+`cache_read_tokens`, never assumed.
 
-Null means unavailable. Receipt adoption has no executor measurement;
-executor-failure error rows, unknown-invocation and pre-dispatch cancellation
-rows have no runtime or executor measurement. Provider retries remain null because current adapter
-results do not report them. Dispatch count tracks executor dispatches of the
-pending sequence; the factory node attempt and CLI loop count remain separate.
-Drain continuations retain each prior observation under `drain_continuations`
-and write a fresh observation without adding elapsed times. Guest usage cannot
-override the server-owned block.
-Completed-receipt reconciliation also writes this block. Its pending row is
-already gone, so queue identity and executor timing are null; the final native
-receipt supplies runtime duration. The original row survives in
-`factory_receipt_recovery.previous_turn`. A drained response-loss hold writes
-an observation before releasing its claim and retains the pending row for
-the next dispatch. The not-invoked error path snapshots its pending row before
-deletion. Claim heartbeats do not write turns.
+**Why.** Reasoning effort pins by role, with Planner and review nodes at
+`xhigh` and `role_effort` overrides; the Astra coding policy makes new workers
+and implementers prefer Astra at `medium`, never downgrades a failed Astra
+attempt to Sol, and leaves Opus as the independent reviewer. The Opus review
+floor is a capability constraint with the judgment floor ignoring quota
+(#6461, #6992).
 
-`create_turn` remains a low-level writer: direct callers must supply their
-observation. Duplicate-terminal cleanup preserves the existing turn without
-rewriting it, including legacy rows without observations.
-`settle_interrupted_factory_continuation` retains the interrupted turn while
-deleting its unused continuation, as does `settle_drained_lost_factory_attempt`.
-`settle_stranded_factory_attempt` preserves existing turns while consuming
-pending rows. `settle_never_dispatched_factory_attempt` and
-`settle_bound_zero_turn_factory_attempt` consume pending rows without creating
-turns. Those paths retain their existing settlement semantics and do not
-backfill observations. `delete_pending_message_sync` assumes a persisted turn.
-The drainer's `destroy_drainer_session` bulk cleanup cancels queued messages
-and deletes them without writing turns; no dispatch observation is created
-for that lifecycle cleanup.
-(see: /projects/monolith/factory/execution/store.py)
-(see: /projects/monolith/factory/execution/mcp.py)
-(see: /projects/monolith/factory/execution/reconciliation.py)
+**Why.** A GitOps policy change is a one-shot guarded migration that bumps the
+version and writes an audit row; rollback uses the normal policy control, and
+the historical migration is never rerun or rewritten (#6983).
 
-A factory start reserves a ceiling and settles at the cost its node result
-reports. Codex-backed models report no provider cost, so a result falls back to
-the list price the turn store computed from token usage, and every result
-carries the basis it settled on: provider, list, or unknown. The graph surfaces
-that as an accounting basis of reported or list_priced beside the reserved and
-accounted figures. Only known completions settle at a priced amount. Unknown
-execution retains its whole reservation, and a completion with no price at all
-still consumes its ceiling. The receipt counts work starts as `turns_used` and
-conductor rounds separately as `planner_turns_used`. Work starts meet
-`max_turns_per_task` and planning rounds meet `max_planner_turns`, an optional
-policy field that inherits the work cap when a policy predates it.
-(see: /projects/monolith/factory/orchestration/factory_controls.py)
-(see: /projects/monolith/factory/orchestration/node_workflows.py)
-(see: /projects/monolith/shared/pricing.py)
+### Capacity and delivery rationale
 
-**Why.** Booking an unpriced completion at its full ceiling is the conservative
-choice when nothing is known about the spend, but a Codex turn is not unknown:
-its token usage is recorded and priceable, so charging the ceiling overstated a
-task by more than an order of magnitude and retired it with most of its real
-budget unspent. Neither a list price nor a provider-measured overrun fails a
-delivery: both settle the ledger and the work is kept (#7161). Counting planner
-rounds against the delivery cap let a task exhaust itself deciding, but the task
-budget alone is not the answer either: a planning round costs a few cents, so
-the budget would admit hundreds of them and a refused decision mints the next
-planner every tick. `max_planner_turns` bounds deliberation on its own count,
-leaving the work bound to the plan.
+**Why.** A completed Claude quota probe could destroy its guest after bounded
+receipt-fence release retries failed, then retain its binding forever because
+workflow cleanup excludes probes. The leader now retries only delivered Claude
+quota probes with an exact saved receipt, settled permit and fresh positive
+original-generation destroyed guest record. It rechecks the full identity under
+the control, capacity and session locks, then retires the matching fence and
+binding together with an audit. Missing guests, changed identities, aliases,
+pending work and unknown outcomes remain held. Result history, accounting,
+observer timestamps and prior lineage are preserved; this cleanup never invokes
+or deletes a guest. Only the existing bounded probe can refresh provider quota.
+(see: /projects/monolith/factory/completed_probe_cleanup.py)
 
-**Why.** A fixed `max_turns_per_task` is a guess made before anyone knows what
-the task is. It stranded a well-formed plan that needed one more node and it
-funded a trivial one at ten times its size, and neither failure told the
-planner anything. The plan is the only artifact that knows how much work there
-is, so it derives the allowance and policy keeps the envelope that plan has to
-fit inside. Refusing an over-envelope plan whole, with the excess named, is
-what makes the bound actionable: the planner can split the work into a
-follow-up task or pause for orchestration review instead of discovering the
-wall one turn at a time. `max_turns_per_task` is still accepted and read as the
-envelope, so a live policy needs no re-post. Reserving every remaining review
-round up front then reintroduced the same failure from the other side: at two
-nodes of `max_attempts` per round, two rounds cost eight turns of allowance on
-top of the plan, so a nine-turn envelope could not hold a three-node plan and a
-task with any history could not add a review node at all (t-5e48b6e1, #5981).
-The reserve is lazy instead, the next round only and at the two turns the engine
-really inserts, and the envelope is checked again at each insertion, which is
-the check that was doing the work all along. The same reasoning keeps the
-reserve out of the engine's own check: headroom the planner needs for sizing
-would otherwise refuse a round the envelope can afford because of a round that
-may never open. Naming the spare turns in the refusal is the other
-half, computed under the reserve the refused edit implies: a planner that only
-hears no, or that shrinks to a figure which ignored the reserve its own review
-node brings, re-proposes until `max_planner_turns` pauses the task (#5419).
-That holds on the engine paths too: a refused review round or fan-in is admitted
-on its own nodes, but the spare it reports is read under the planner's reserve,
-because the planner is who acts on it (#6000).
+**Why.** Operator provenance owns landing holds (#7449): a server-supplied
+`operator:` cause or authoritative `human` issue ownership (including a durable
+operator handoff) can retain an
+unmerged hold; a true declared effect still requires the human decision path.
+Planner text supplies neither authority nor provenance. The default-off
+`FACTORY_PLANNER_HOLD_REFUSAL_ENABLED` stages refusal audits and exact-provenance
+inheritance filtering while preserving unknown and explicit operator holds.
+A planner may restate a gate already bound under such a hold, which creates
+nothing, so progress renewal still passes. Disabling it restores prior handling; #7450 adds the automated revert lever.
+A verified disabled rollout, reviewed activation coordinated with
+#7451, rollback validation, backlog triage and the 14-day measurement remain
+outstanding on #7449. Repository delivery establishes none of those outcomes.
 
-**Why.** Nodes were serial because every node pushed to the one branch
-`factory/<task-id>` and the reconciler dispatched one active run per task, not
-because the plan said they depended on each other. Giving concurrent
-implementations their own branch and fanning them back in through one integrate
-node before review is the shape #5861 point 5 asks for: parallel contributors
-feed one integration branch per coherent slice, with the required checks at the
-integrated head. The branch is a sibling name rather than a path under the task
-branch because git cannot hold `refs/heads/factory/<id>` and a ref below it at
-the same time. Which nodes fan out is read from the dependencies the planner
-already wrote rather than from a separate marker, so the branch a node pushes to
-and the order the graph enforces can never disagree. Reading it as a wave rather
-than as plan-wide concurrency is what keeps a node added by a later replan off a
-branch of its own: its siblings have already run and been integrated, so it has
-nobody to run beside and works on the task branch serially. Fan-out is off until
-an operator raises `max_parallel_nodes`, and the extra concurrent guests are
-gated on the shared session pool first, so a node the pool cannot hold stays
-ready for the next tick rather than failing (#5419, #5861).
+**Why.** Conflicting chart and lane ceilings starved advisory work; hourly sweeps
+then filled capacity too slowly. Factory work can wait, so shared background
+capacity must remain for drainers and probes (#6002). See [lanes](factory/orchestration/FACTORY.md#two-lanes).
 
-**Why.** An unconfirmed delivery error is one hold represented consistently
-across the turn, capacity reservation, routine job and health views. Capacity
-is released only by the explicit reconciliation owner after fresh authoritative
-terminal proof for the exact guest, generation, session and turn. Uncertain
-permit cessation settlement is behind
-`agents.sessions.uncertainPermitSupervisionEnabled`, which defaults off. It
-covers kg and project drainer permits, interactive permits, and factory-owned
-project permits. When probe supervision is also enabled, it extends probes to
-destroyed and no-guest proof. A bound guest requires exact control-plane
-eviction or timestamped destruction after the failed turn, and a guest that
-ceased without ever being stopped reports no stop precondition, so the factory
-path takes its identity from the committed stop intent or from the observed
-invocation. Both loops order that invocation against the failed turn rather
-than against the dispatch, because the dispatch stamp is written when the
-executor claims the turn and so lands before the guest is ever invoked. A
-no-guest permit requires durable
-claim evidence with no guest, binding or residual lineage evidence, and an
-operator destroy no longer clears a binding under an unresolved outcome, so a
-cleared binding cannot masquerade as one that never existed. A drainer permit
-whose routine job row is still parked on the attempt is left to the operator
-reconciliation path, and that path only handles kg jobs: it refuses any
-`routine_kind` other than `kg-drain`. `swarm/drainer.py` holds the job on every
-`InvocationOutcomeUnknown`, so the held row is the rule for drainer permits
-rather than the exception, and a held non-kg job currently has no owner at all
-(#5983). What this loop covers for drainers is the narrower shape where the
-workflow died before the hold was written, leaving the job row still armed. The
-two KG permits from the 2026-09-09 stall are held rows and still need the
-operator path. The shared settler preserves the session binding, while
-factory-owned sessions use the factory settlement path. Factory attempts with
-no bound guest remain held until that path can prove no delivery. Legacy swarm
-`implement_then_review` sessions stay a residual:
-they are project tier with no routine job and no factory pin, so nothing
-settles them, and covering them needs a check that their DBOS workflow is
-terminal, which this loop does not have.
-(see: /projects/monolith/factory/execution/permit_supervision.py)
+**Why.** Approval without delivery left #3877 open after PR #6007 and invited
+duplicate intake. Delivery needs its own receipt and issue-closing evidence;
+merge observation and live acceptance remain separate. See [landing](factory/orchestration/FACTORY.md#landing).
 
-**Why.** A node can reserve its `FactoryStart` and admitted graph run before
-the durable workflow creates an agent session. If session creation never
-happens, funding refuses the unresolved start and the deadline backstop refuses
-every reserved start, so the task holds its delivery slot indefinitely. The
-periodic conductor can examine that exact pre-session window after the node's
-pinned `turn_timeout_seconds` has elapsed. The automatic sweep is staged behind
-`swarm.factoryLostBeforeSessionSweepEnabled`, which is wired to runtime and
-defaults false. Enabling it does not widen the manual repair, session-based
-reconciliation, ordinary task reconciliation, or deadline behavior.
+**Why.** Publishing open-PR review checks before observing external merges hid
+merged work permanently. Observing a merge grants no new merge authority and
+must preserve pauses and explicit holds. See [landing](factory/orchestration/FACTORY.md#landing).
 
-The exact owning DBOS workflow must first report `ERROR` or `CANCELLED`, the
-same external cessation evidence required by the existing never-dispatched
-proof. Under the control lock that fences session creation, the database proof
-then requires immutable run and start ownership, no bound or deterministic
-session, no cost or outcome, and no permit or result receipt. A nonterminal or
-missing workflow, failed ownership, or lookup error leaves the attempt
-untouched. A matching attempt settles both ledgers atomically as `failed` at
-zero cost with `no_model_post` and `never_dispatched`, after which ordinary
-bounded conductor reconciliation decides whether the node may retry. This is
-separate from the deadline backstop and from uncertain-execution release:
-neither elapsed time nor a missing binding can refund an attempt that carries
-contradictory execution evidence (#6285).
-(see: /projects/monolith/factory/execution/reconciliation.py)
-(see: /projects/monolith/factory/orchestration/factory_conductor.py)
+**Why.** Quiescent tasks awaiting a person filled delivery slots (#7163).
+Execution capacity follows unresolved work while ownership persists; competing
+resumes and admissions must share one capacity decision. See [release intent](factory/orchestration/FACTORY.md#execution-capacity-and-release-intent).
 
-**Why.** A bound factory session can outlive its node workflow with zero local
-turns and its first claimed message still unconsumed even though Ember durably
-completed an invoke. Neither a missing current binding nor destroying the guest
-first proves that no guest ran. The staged bound-zero-turn proof therefore
-retains the reserved cost ceiling and settles the permit as `delivery_error`,
-never as a measured zero. It locks the exact factory owner, run, start, permit,
-pending sequence, dispatch owner, receipt state and guest binding, then requires
-two unchanged producer-shaped control-plane observations strictly farther apart
-than that node's `turn_timeout_seconds`. Only a healthy, non-draining node with
-unchanged generation, turn sequence and invoke stamps can mature. Sustained
-404/410 absence follows the same bound; transport failures, malformed payloads
-and identity mismatches reset or retain the proof. Before conditional cleanup,
-the proof writes an exact durable cleanup fence that blocks late dispatch,
-progress, error and result writers. Settlement revalidates the whole zero-turn
-shape and consumes the pending message, permit, run and start in one
-transaction. Conditional cleanup has a durable two-request cap, and a fenced
-lookup outage raises one intervention audit after two minutes. If fresh remote
-progress disproves a fence, releasing it reopens the exact uncommitted result
-receipt under its row lock. The dedicated chart switch defaults off, including
-in the GKE overlay, until the live race and cleanup checklist on #6559 is
-complete.
-(see: /projects/monolith/factory/execution/reconciliation.py)
-(see: /projects/monolith/factory/orchestration/factory_supervision.py)
+**Why.** Rollout acceptance must follow only the merged change's Applications.
+Unrelated chart publications must not widen scope, and unreadable scope evidence
+must fail closed (#6660). See [landing](factory/orchestration/FACTORY.md#landing).
 
-**Why.** Eleven factory cessations coincided with monolith promotions on
-2026-10-01 (#6670). The existing cancellation handler recorded a response-loss
-hold only after delivery and its receipt observer unwound; observer cleanup
-could outlive the five-second drain, and leader teardown destroyed DBOS first.
-`agents.sessions.rolloutHandoffEnabled` fences admission at SIGTERM and publishes
-the exact attempted POST identity while delivery is still waiting. Shutdown
-writes the receipt, guest, claim owner and dispatch hold before cancelling the
-observer and before destroying DBOS. Another replica adopts the committed
-receipt through the ordinary turn writer. Turns without an adoptable receipt
-get five seconds to finish. Early holds share a five-second lock budget, and
-cancellation gets five seconds, inside the chart's thirty-second termination
-grace. The enabled uvicorn bootstrap bounds HTTP drain at five seconds before
-lifespan handoff. The flag defaults off and is enabled in the GKE overlay. The two-replica
-mid-invoke test covers handoff and successful node completion; control-plane
-restart (#6664) and cross-brick rejoin (#6663) remain separate.
-(see: /projects/monolith/factory/execution/mcp.py)
-(see: /projects/monolith/factory/execution/response_lost_test.py)
+**Why.** Node names cannot prove recovery occurred. Durable request-bound
+correction evidence and fresh independent exact-head approval prevent old or
+rejected reviews from completing recovery. See [recovery](factory/orchestration/FACTORY.md#landing-recovery-authority).
 
-**Why.** A lost invoke response is not a lost invocation. Every monolith
-rollout cancelled the executor watching an in-flight turn, and the guest went
-on working while the executor recorded `invocation_outcome_unknown`, failed the
-session and left supervision to destroy a guest that was mid-turn. Three
-factory attempts died that way in under an hour on 2026-09-11, which made the
-factory's own deploys its largest self-inflicted loss (#5938, #4322). The guest
-already publishes its complete native record to a result receipt before it
-writes the synchronous response, so the evidence survives the observer. What
-was missing was a state between "finished" and "unknown". A dispatch whose
-response is lost while the control plane still shows its guest running, with an
-invoke still in progress, is now held: an interrupted turn with stop reason
-`response_lost`, the pending row keeping its claim so nothing re-dispatches the
-prompt, and the permit keeping its state so nothing releases capacity the guest
-is still consuming. In progress is the order of two stamps, not the absence of
-one: `invoke_started_at` is stamped per invoke and strictly increases, while
-`last_invoke_at` is stamped on completion and is never cleared, so an invoke is
-running when its start is later than the last completion. Treating a missing
-completion as "still running" would have held a guest's first turn and no turn
-after it, and would have settled every held second turn unknown on the
-recovering owner's first look. Both stamps and the generation travel onto the
-hold, so a later owner can tell a guest still working this invocation from one
-that was banked and relit or handed another turn. The recovered attempt is finished from
-the committed receipt through the ordinary turn writer, so the recovered result
-passes the same parser, diff, artifact and permit validation the synchronous
-response would have, and the model runs once. The live thirty-second claim
-stamp used to be the only thing authorizing a receipt read, and an executor
-that lost its response stops refreshing it, so the durable hold takes its place:
-it is dispatch-exact, bounded, names one receipt and carries the digest of the
-request that receipt was minted against, and every other ownership condition is
-unchanged. A held adoption sets no guest reuse fence, because the
-fence exists so a follow-up waits for the original POST's own response and after
-a replica loss nobody is left to clear one. Holds are bounded by the invoke
-budget clamped to the twelve-hour workload backstop, and a guest that has ceased,
-that completed its invoke without publishing, or that has moved to another
-invocation ends the hold early, all into the same unknown outcome reconciliation
-already handles. A committed body that can never be adopted ends its hold at
-once, because a receipt body is immutable and waiting out the bound cannot
-change the answer. There is one hold per dispatch, ever: re-holding an expired
-marker would replace the twelve-hour bound with the receipt's own seven-day
-retention. The lifespan now cancels in-flight executors on shutdown and waits
-a bounded five seconds for each to record its own outcome, because uvicorn
-tears the loop down without cancelling them and `DBOS.destroy()` waits zero
-seconds for workflow completion, so the handler that writes the hold often
-never ran. The hold itself is still written synchronously from that handler,
-with a two-second lock timeout: inside a thirty-second termination grace,
-giving up on a row lock is better than giving up on the grace. A replica killed
-outright writes no marker at all, so the claim lease is the backstop: a stale
-claim that already has an unconsumed committed receipt is held, and one with no
-receipt settles unknown exactly as before. Behind `agents.sessions.responseLostRecoveryEnabled`, which
-defaults off and needs `resultReceiptsEnabled`, since without a receipt a hold
-would only delay the same unknown outcome. Every owner that writes, finishes or
-ends a hold reads that one flag, including the lease backstop and the node
-recovery, so off is byte-for-byte the behaviour that preceded this whatever the
-receipt flags say.
+**Why.** A guest's read-only prompt cannot attenuate its shared GitHub credential.
+Review-only recovery needs a tool-free provider boundary, dedicated configuration
+and preserved holds. It sends immutable base and head evidence to a tool-free
+reviewer through one fixed provider endpoint, with no guest or session. See [review-only recovery](factory/orchestration/FACTORY.md#explicit-review-only-recovery).
 
-A separate control-plane result cache is not planned. The gate in
-[#4322](https://github.com/jomcgi-org/homelab/issues/4322) can be reconsidered
-only if [#5938](https://github.com/jomcgi-org/homelab/issues/5938)'s bounded
-native canary demonstrates a completed-result recovery gap that the receipt path
-cannot cover and a bounded receipt fix cannot address.
+**Why.** Escalations need decisions a person can select, rather than many threads
+to reinterpret. Server-side, idempotent effects avoid another guest turn; browser
+authority must use verified Access identity. See [decisions](factory/orchestration/FACTORY.md#escalation-decisions).
 
-(see: /projects/monolith/factory/execution/store.py)
+**Why.** Resuming #3824 and #3832 replayed unanswered pauses because issue comments
+never entered planner context. Direction must survive re-admission, and resuming
+must not silently choose to close the issue. See [delivery pauses](factory/orchestration/FACTORY.md#a-delivery-pause-is-a-decision-request).
 
-**Why.** The guest reuse fence had a hold and no release. A receipt that beat
-its own POST completed the turn and fenced the session so a follow-up dispatch
-would wait for that POST's own validated response, and only that response ever
-cleared the fence. A POST that ends in an error, a timeout or a cancellation
-produces no such response, so the fence outlived every owner: turn completion
-skipped its destroy, the workflow reaper filed the row as pending, and
-admission, reconciliation and factory attempt stop all stood back. On an
-unpressured brick the control plane then left the guest running until
-`idle_ttl`, hours later. Eight guests leaked that way between 04:00 and 05:00
-UTC on 2026-09-12, the sixteen-guest `claude-runtime` workload cap filled, every
-create was denied and the factory stalled on 429s while two attempts burned
-their whole turn window (#6050). The fence now has an owner with a deadline at
-both ends. The invoke coroutine's terminal path releases the exact receipt it
-fenced, bound to the same session, receipt, guest, claim owner and dispatch
-count identity the observed path checks, so a stale coroutine can neither
-release a newer fence nor authorize destroying a newer guest, and then runs the
-ordinary completion cleanup. That release is optional work on a completion
-path, so a contended pool that answers `lock_not_available` inside its one
-second lock timeout is retried a bounded number of times and then logged: it
-never replaces the exception the turn was already raising, and never stands
-between that turn and the destroy and unbind that follow it. The two cleanup
-owners are the backstop for a crash between those steps, and for every session
-that keeps its guest resident rather than destroying it at turn completion.
-Both release a fence whose receipt is gone, whose body has arrived, or whose
-acceptance window has closed. The drainer releases inside its own cleanup
-transaction, so a refused cleanup rolls the release back with everything else
-it was going to write. The workflow reaper cannot, because `begin_guest_cleanup`
-refuses while any row bound to the guest carries a fence, so it releases first
-and puts the fence back when no claim follows: a committed claim blocks
-dispatch, receipt minting and rebinding in the fence's place, but between the
-release and the claim nothing does, and a row left pending with neither would
-let a queued follow-up claim a guest whose POST may still be streaming. What
-none of them will touch is a
-receipt still inside its acceptance window with nothing committed, because
-until that body arrives the guest is the only path to the turn. The release
-deliberately does not stamp `response_observed_at`: nothing observed a
-response, and the lease backstop and factory reconciliation read that stamp as
-evidence about the response itself, so the count of received receipts with no
-observed response stays the honest health signal for how often the receipt is
-winning the race.
-(see: /projects/monolith/factory/execution/result_receipts.py)
+**Why.** Paused tasks can retain uncertain execution or a nonrenewable envelope.
+Recovery questions must neither infer an answer nor create continuation authority;
+historical attribution and observation remain on #7165. See [pause questions](factory/orchestration/FACTORY.md#automatic-pause-questions).
 
-Monolith batch work is rendered as Argo CronWorkflows in the workflows
-namespace, whose controller owns cadence, concurrency, deadlines, and history.
-Each entry runs the digest-pinned jobs image with one `jobs_main.py`
-subcommand. A job pod gets `DATABASE_URL` from a Kyverno-cloned Secret plus
-whatever the entry declares, never the deployment's environment. Entries marked
-`internalApi` only POST a private endpoint on the leader (the drain tick and
-the synthetic probes), so that work runs inside the API pod
-where the credentials already live. Suspended entries remain available for
-manual submission.
-(see: /projects/monolith/chart/templates/cronworkflows.yaml)
-(see: /projects/monolith/app/jobs_main.py)
+**Why.** Advisory work consumes no delivery review, so one concurrency bound
+rationed the wrong resource. Review independence survives a cheaper opinion;
+judgment floors and unknown quota evidence still constrain routing (#6002).
+Reviewer independence is a property of the session, never the model.
+See [reviewer fallback](factory/orchestration/FACTORY.md#reviewer-fallback-while-the-claude-window-is-spent).
 
-The scheduler API retains `scheduler.scheduled_jobs` and its `ScheduledJob`
-model for list/get and legacy run-now names. The chart also puts every
-`replaces` name in `ARGO_JOBS`, including suspended manual-only entries, and
-uses the same annotation to locate the CronWorkflow for submission. The dormant
-in-process registry, registration hooks and registry-based orphan check are
-removed under #7021.
+**Why.** One-node planning spent nine starts on five pieces of work in #5981;
+five starts were planner turns.
+Mechanical correction loops add no new planning information; lost re-review
+verdicts supply no fresh findings (#5419). See [execution](factory/orchestration/FACTORY.md#execution-and-evidence).
 
-**Why.** Existing row readers and manual callers still use this compatibility
-surface. Removing unused Python registration does not require deleting rows or
-changing migrations. Table retirement and CronWorkflow-native listing require
-separately scoped work; #6921 does not authorize either here.
-(see: /projects/monolith/scheduler/api.py)
-(see: /projects/monolith/scheduler/service.py)
+**Why.** An exhausted implementation opens a verification handoff instead of
+another retry: Joe chose option 3 on #6296 on 2026-10-01 to remove the person
+from this loop without assuming an infrastructure-dead attempt never reached a
+model. `attempts_spent` and `NO_MODEL_POST_PHASES` stay unchanged (#6296).
 
-Leader election scopes side-effecting singleton hooks to one API replica: the
-Discord bot, outbox drain and message-lock sweep, AIS ingest, the agent-session
-loops (pending-message sweep, title refresh, Ember-session export into the
-knowledge graph), the DBOS runtime, and the continuous-delivery probe writer. A
-failing singleton resigns and retries rather than ending leader election, and a
-failed acquire backs off while followers keep serving.
-(see: /projects/monolith/framework/core.py)
-(see: /projects/monolith/chat/leader.py)
-(see: /projects/monolith/factory/module.py)
+**Why.** The 2026-09-13 MVP decision keeps four operating rules: human-equivalent
+review, one line per task, cost per accepted PR, and shared planner and
+implementation starts (#5956).
 
-**Why.** Terminal-lived runs and process-local queues could not survive a
-restart, support multiple frontends, or provide a queryable history (ADR
-agents/007). Putting every idle or short turn into an Argo Workflow was rejected
-because each run becomes a high-churn etcd object and snapshot-backed sessions
-wait on events rather than run to completion (ADR agents/019, ADR agents/022).
-Leased Postgres rows own ordered turn dispatch, EmberVM owns isolated execution,
-and short DBOS workflows own bounded multi-step recovery. This accepts polling
-and reconciliation latency in exchange for one durable record shared by MCP,
-the browser UI, and swarm orchestration (ADR agents/049, ADR agents/053).
-Escalation waits on a polled row rather than a DBOS message because the
-codebase's one rule about waiting is poll-shaped end to end and the audit
-fields have to live somewhere durable regardless (ADR agents/060). The drainer
-composes an Argo tick, a leader-owned workflow and the routine-job lease that
-already existed rather than a new queue table or a hosted routine, because ADR
-agents/038's work queue was never built and a hosted routine spends Claude
-quota to babysit work billed elsewhere (ADR agents/061). Graph mutation belongs
-at the orchestration level and never inside a durable workflow, because a
-workflow that reads mutable state recovers wrongly on replay (ADR agents/062).
+### Execution and recovery rationale
+
+**Why.** An interactive follow-up can POST to an already evicted guest and then
+fail while restoring it (#7583). The old terminal timestamp precedes the local
+error, so the general cessation ordering guard leaves its permit uncertain.
+The permit supervisor can settle this exact capacity reservation when a fresh
+terminal view predates its first dispatch and the complete retained receipt
+chain names only that guest. Terminal guest IDs cannot relight; a replacement
+POST would require another committed receipt. The proof keeps receipt locks,
+claim ownership, retention bounds and all result/hold checks. It preserves the
+turn, unknown outcome, cost and workspace binding, and grants no retry.
+
+**Why.** A drain continuation can target the same earlier invocation, then fail
+restoring after the guest is evicted. Neither the first-dispatch proof nor an
+invoke stamp inside the second dispatch covers this case (#7583). A separate
+native interactive proof enumerates the complete retained two-dispatch chain
+(at most three receipts and two guests), observes every guest positively
+terminal, and rechecks the unchanged chain under the capacity/session/receipt
+locks. Session and permit age bound completeness before the first possible
+POST. The latest receipt must be unobserved, result-free and released; earlier
+responses remain history. Missing, live, stale or contradictory evidence keeps
+uncertainty. Settlement changes only the exact capacity permit, not the failed
+turn, unknown marker, cost, receipt history, binding or continuation authority.
+
+**Why.** A truncated native error cannot distinguish staged receipt preparation,
+promotion and admission-recheck failures (#7583). The transport records a bounded
+phase, SQLSTATE, promotion attempt and intent flag with numeric dispatch identity
+in private logs. Pre-intent terminal summaries retain phase and SQLSTATE within
+the existing voice limit, excluding driver text, SQL parameters and request data.
+Handled contention leaves no terminal diagnostic. Retry bounds, claim freshness,
+capacity waiting, accounting and post-intent uncertainty keep their existing
+owners. These diagnostics grant no recovery authority and do not establish the
+cause of a historical failure.
+
+**Why.** Sixteen of the thirty-one resolved cards in the newest fifty were
+dismissed because the issue body changed. Four came minutes after the card, on
+issues already carrying the factory's own gate blocks, so the hash excludes
+those blocks. An optimizer window that has ended cannot gain traffic, so once
+its attempts settle the verdict is final and releases the selection; one
+experiment had held the loop for four weeks (#7495). See [automatic pause questions](factory/orchestration/FACTORY.md#automatic-pause-questions).
+
+**Why.** KG admission needs a fresh permitting grant; a stale pool can block
+the traffic that refreshes it. Inference-free usage refresh and a bounded probe
+must preserve account selection and freshness. See [quota evidence](factory/orchestration/FACTORY.md#quota-evidence-and-probe-cleanup).
+
+**Why.** Held probes must not hide unheld cleanup candidates or permit duplicate
+probes. Aging orphan evidence must not expire a live guest's fence.
+See [probe cleanup](factory/orchestration/FACTORY.md#quota-evidence-and-probe-cleanup).
+
+**Why.** Charging an unpriced completion at its ceiling is conservative, but
+recorded Codex tokens are priceable. Charging those ceilings overstated spend;
+cheap planning also needs its own turn bound (#7161). See [accounting](factory/orchestration/FACTORY.md#funding).
+
+**Why.** Fixed turn caps stranded valid plans and overfunded trivial ones.
+Reserving every possible review round repeated that failure; refusals must name
+reserve-aware headroom (#5419, #5981, #6000). See [allowances](factory/orchestration/FACTORY.md#escalation-decisions).
+
+**Why.** Serial nodes reflected one shared branch, not their dependency graph.
+Sibling branches avoid Git ref conflicts, and integration must precede review
+of the combined head (#5419, #5861). See [execution](factory/orchestration/FACTORY.md#execution-and-evidence).
+
+**Why.** Unknown delivery is one hold across turn, permit, job and health views.
+Only exact fresh cessation evidence can release capacity; held-job and legacy
+swarm coverage must stay explicit (#5983). See [permit boundaries](factory/orchestration/FACTORY.md#permit-supervision-boundaries).
+
+**Why.** A reserved start can precede session creation. Funding and deadline
+fences can then strand it indefinitely; elapsed time or a missing binding alone
+cannot prove no delivery (#6285). See [execution](factory/orchestration/FACTORY.md#execution-and-evidence).
+
+**Why.** Zero local turns do not prove no guest ran. Bound-zero-turn recovery
+requires a terminal owning workflow, a run and start still active and unpriced,
+and a session owning one bound guest with zero turns and one matching running or
+uncertain permit. It must retain the cost ceiling and exclude late writers until
+exact remote proof and conditional cleanup agree (#6559). See [settlement](factory/orchestration/FACTORY.md#bound-zero-turn-settlement-runbook).
+
+**Why.** Eleven cessations coincided with promotions (#6670): observer cleanup
+outlived drain, and DBOS teardown preceded handoff. The attempted POST identity
+must survive cancellation. See [execution](factory/orchestration/FACTORY.md#execution-and-evidence).
+
+**Why.** Losing an invoke response does not stop its guest. Rollouts once failed
+working attempts (#5938, #4322); native receipts preserve results without paying
+for another invocation. See [execution](factory/orchestration/FACTORY.md#execution-and-evidence).
+
+**Why.** A receipt that beat its POST could leave a reuse fence with no release
+owner. Eight leaked guests filled the workload cap and stalled delivery (#6050);
+cleanup must preserve an uncommitted receipt's acceptance window. See [cleanup](factory/orchestration/FACTORY.md#guest-reuse-cleanup).
+
+**Why.** Existing row readers and manual callers still need scheduler compatibility.
+Removing dormant Python registration does not authorize table retirement or a
+migration change (#6921). See [cadence](factory/orchestration/FACTORY.md#cadence-and-singleton-ownership).
+
+**Why.** Terminal-lived runs and process-local queues lost restart history and
+frontend-shared state (agents/007). Per-turn Argo objects imposed etcd churn
+(019, 022). Durable polling accepts reconciliation latency for one shared record
+(049, 053, 060). Reusing the job lease avoids a second queue and hosted Claude
+work babysitting work billed elsewhere (038, 061); mutable graphs recover
+incorrectly inside replay (062). See [cadence](factory/orchestration/FACTORY.md#cadence-and-singleton-ownership).
+
+**Why.** Factory improvements need a baseline, success measure and bounded
+evaluation to retain useful changes and retire failed ones. The
+[evolution contract](../../docs/agents/evolution.md) preserves pinned limits and
+holds. See [evolution](factory/orchestration/FACTORY.md#factory-evolution-follows-delivery-authority).
+
+**Why.** A launched factory exits the process after orderly shutdown instead of
+destroying and relaunching DBOS in process: surviving workflow threads can race
+recovery, and teardown reordering leaves the lease shorter than the rollout
+drain. A normal rollout still fences admission on SIGTERM and drains native
+executor handoffs (#6798).
+
+**Why.** The DBOS application version pins to the node workflow source, so a
+deploy that leaves those functions alone recovers in-flight nodes natively.
+Every checkpoint-sequence change is gated with `DBOS.patch`, retired only once
+no pre-patch workflow can still be PENDING (#6659).
+
+**Why.** A replica lost mid-invoke holds the turn with stop reason
+`response_lost` under a durable dispatch-exact hold; DBOS recovery brings the
+node back and the next dispatch poll finishes the attempt from that receipt.
+Response loss, timeouts and unknown invocations keep the uncertain path, and
+a separate control-plane result cache stays unplanned (#5938, #4322).
+
+**Why.** A receipt still inside its acceptance window with nothing committed
+keeps its guest fenced, because until that body arrives the guest is the only
+path to the turn. See [guest reuse](factory/orchestration/FACTORY.md#guest-reuse-cleanup).
+
+**Why.** A guest that answers its turn with a provider error before doing any
+work settles permit, attempt and start in one transaction under the
+`provider_error_before_work` proof; any tool activity before the error keeps
+the attempt on the uncertain path (#6468).
+
+**Why.** The lost-before-session sweep settles an aged reserved start with no
+session, permit, receipt, cost or outcome as failed at zero cost, and only when
+the owning workflow is proven `ERROR`, `CANCELLED` or absent. The terminal graph
+transition fences a delayed submitter, and elapsed time or a missing binding
+alone cannot refund an attempt with contradictory execution evidence (#6285).
+
+**Why.** A drained factory turn has a separate settlement path behind
+`FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED`, staged off in chart defaults;
+sessions 8410 and 8416 stay unchanged by that delivery, with remediation and
+final acceptance on #6271.
+
+**Why.** `factory_cessation.py` closes the unknown-hold gap for an attempt
+whose run and start are both `uncertain` and whose node workflow is terminal;
+the automatic path runs more than two hours past the task deadline, and
+`request_cessation` runs the same steps
+for one exact attempt on an operator reviewed fingerprint (#6025, #6288).
+
+**Why.** The node workflow carries a brick-drain relay
+through to an owner in the node workflow, with continuation retirement and
+stop supervision; a stranded state otherwise needs the control-plane root
+cause on #6091 (#6256).
+
+
+**Why.** The recurring repair loop belongs to the existing problem producer,
+not the one-shot improvement scout or report-only learning pipeline (#7583).
+The operator enables its recovery sources through guarded preview/apply after
+rollout. General policy history cannot distinguish old defaults from explicit
+disables, so deployment never changes switches. The improvement quota rules gate discovery and
+ordinary delivery owns review, CI, merge and rollout. Private exact-node
+observation distinguishes deployed repair from actual recovery. Funding records
+fresh machine-pause provenance, then verified exact repair rollout permits one
+same-node review through native capacity release. The judge retains bounded
+attempt authority; source holds and pause identity are rechecked at settlement.
+Legacy cards and uncertainty remain fenced. Public tickets carry only
+scoped code repairs and synthetic acceptance criteria.
+
+**Why native refill repair has its own narrow adapter.** Fresh starts pin a
+version-2 repair contract and the
+control-policy epoch. Two distinct fixed-role attempt-one failures within 24 hours
+must carry matching, positively proven native `not_invoked` receipts and a closed
+vocabulary of staged database failure metadata. Diagnostics or exception text
+alone grant nothing. The existing problem producer owns the recurring-blocker
+issue, daily bounds and nonrecursion. The
+funding owner owns its machine pause, exact accepted repair rollout, finite
+decision and single retry of the original exhausted node. Source #7366 may remain
+closed only under that exact admitted recurring contract and its synchronized
+GitHub mirror, with no human/security ownership. Historical starts and breakers
+are not enrolled. Policy disable/restore invalidates the epoch even if no refill
+tick observed the disabled interval.
+
+### Funding stays disabled
+
+The paid `factory-funding-v1` protocol remains staged. `PROVIDER_ROUTE_AVAILABLE`
+is false, with no environment or policy toggle. The funding owner refuses native
+paid reviews before changing a machine pause or preparing a paid start. Physical
+dispatch refuses pre-existing paid requests. The guest independently returns
+`funding_provider_route_unavailable` before constructing an HTTP client or starting
+a CLI. Ordinary funding and Claude Code sessions retain their existing paths.
+
+**Why deterministic recovery uses the original allocation.** A verified exact
+repair already establishes the machine's reason to retry its fixed read-only role.
+Version 2 therefore needs no additional model call or credential. The funding
+owner atomically resumes its exact machine pause, records a distinct authorization
+and renews only the failed node from one attempt to two. Every unfinished role
+must fit inside the original unused turns and reservation-cost budget, including
+independent review. Physical admission counts its already-reserved start exactly
+once and refuses other unknown starts, changed holds or stale proof. The task
+receives one finite 30-minute lease, with no dollar or turn increase. Expiry or a
+second failure ends this continuation; there is no grant renewal. Useful reviewed
+publication is still required for observed recovery. Version-1 waits, starts
+without a repair contract, historical breakers and standing landing scope are
+unchanged. The following API proposal remains separate and is not a prerequisite
+for version-2 recovery.
+
+The deployment injects `EMBER_ANTHROPIC_OAUTH_TOKEN` from `CLAUDE_AUTH_TOKEN` at
+`api.anthropic.com`. It is subscription OAuth. Anthropic's
+[authentication rules](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use)
+distinguish unmodified native Claude Code use from custom API clients; the
+[API overview](https://platform.claude.com/docs/en/api/overview) describes API-key
+authentication. The removed direct Messages client cannot reuse that grant.
+No subscription token, PR-review credential or alternate framework is a fallback.
+
+On November 6, 2026 a credential-free loopback probe used the installed unmodified
+Claude Code 2.1.284, the version pinned by `MODULE.bazel` (package SHA256
+`642690c3afaa22029c17341e520d8c35ca85857fce6dcc9ecd90ef5e3c7f1027`). It used a fresh
+configuration directory, an allowlisted process environment, synthetic OAuth text,
+a localhost API origin and rejecting localhost HTTP/HTTPS proxies. No provider
+request was forwarded. The relevant arguments were:
+
+```text
+--safe-mode --tools "" --disallowedTools '*' --disable-slash-commands
+--strict-mcp-config --mcp-config '{"mcpServers":{}}' --setting-sources ""
+--permission-mode dontAsk --no-session-persistence --max-turns 1
+--input-format stream-json --output-format stream-json --await-initialize
+```
+
+Before input, the initialize control response contained no tools declaration and
+the local provider saw zero requests. After synthetic input, `system/init` declared
+empty tools/MCP and one `/v1/messages?beta=true` request had `tools: []`; the fake
+provider rejected it with 403. This establishes the observed request shape only.
+The CLI did not supply a pre-input capability attestation. Its `--bare` help also
+states that OAuth is not read in that mode. A future CLI solution would need a
+trusted pre-forward request gate and pre-tool execution enforcement, including
+startup customizations and responses. This patch establishes neither for that pin
+and does not restore post-input checking. The fallback below remains a proposal.
+
+#### Proposed dedicated API authority
+
+Joe must approve provisioning a dedicated Claude Console workspace API key, its
+billing owner and trial limits. A new reviewed broker capability is required;
+the current host-only egress secret catalog cannot enforce this scope. Keep the
+native executor, result receipts and cumulative accounting. Add no model worker,
+generic API proxy or independent execution framework.
+
+- Proposed grant: `claude-factory-funding-v1`, stored through the 1Password
+  Operator in a dedicated `embervm-factory-funding-api` Secret. No key enters
+  a guest, prompt, environment of a CLI, or public projection. No OAuth refresh,
+  subscription quota or PR-review grant is reused. The key has its own workspace
+  rate/spend controls and revocation. Workload identity is a separate alternative
+  only after a supported provider endpoint and billing principal are reviewed.
+- Proposed broker route: `POST /grants/claude-factory-funding-v1/messages` on the
+  existing SPIFFE mTLS listener. Plaintext and `/token` access for this grant deny.
+  The authenticated native execution owner supplies an expiring, one-use binding
+  for receipt, task, run, session, dispatch, control epoch and request/prompt/schema
+  hashes. A guest-supplied role/profile is insufficient. The broker verifies that
+  binding against current owner authority and holds before forwarding content.
+  No other session, ordinary coding role or standing landing grant may select it.
+- Upstream is exactly `POST https://api.anthropic.com/v1/messages`, no query,
+  redirects or caller-selected host/path. The broker constructs the closed body:
+  `claude-opus-5-5`, `stream: false`, `max_tokens: 4096`, `tools: []`,
+  `tool_choice: {type: none}`, one plain-text user message and a fixed system
+  instruction. It injects `x-api-key` and `anthropic-version: 2023-06-01` only
+  after validation. No `Authorization`, OAuth beta, custom headers, containers,
+  MCP, skills, server tools or arbitrary provider kwargs cross this boundary.
+- Proposed initial limits: one in-flight call, three calls per rolling 24 hours
+  for the entire dedicated grant, one call per admitted dispatch, 64 KiB UTF-8
+  input, 4096 output tokens and 120 seconds total. Oversize evidence refuses,
+  without silent truncation. Reserve the conservative input/output price ceiling
+  under existing admission before transmission; settle reported usage once under
+  the same dispatch, including refusal responses with usage. Missing usage, timeout
+  or response loss stays charged/unknown with no automatic retry. Fresh API-key
+  quota/rate evidence must be independent of subscription quota. These proposed
+  trial limits do not change existing factory policy or its accounting rules.
+- Return only a bounded, complete text result with the exact model and valid
+  usage. Reject tool-bearing, partial, malformed or oversized responses before
+  artifact acceptance. No tool loop exists. Disabling the route or revoking the
+  grant increments its authorization epoch and denies queued/new calls. In-flight
+  calls retain their receipt and uncertainty; revocation never proves cessation
+  or refunds a reservation. Disable admission first, revoke/rotate the workspace
+  key, then reconcile outstanding results through the existing receipt owner.
+
+Before activation, fake-provider tests must cover exact body/header bytes, wrong
+identity/profile/epoch, replay, concurrent admission, every quota bound, changed
+holds, revocation, redirects, tool responses and lost-response accounting. Deploy
+broker and runtime with the route disabled, verify every serving replica and
+rendered credential isolation, and obtain independent exact-head security review.
+A separate operator-approved key-scoped canary may verify provider acceptance and
+usage accounting. Only a later reviewed activation can enable new native starts.
+Rollback disables the capability and revokes its dedicated grant, retaining history.
+No provisioning, policy change, canary or rollout occurs in this patch.
+
+### Native repair landing authority
+
+Typed `receipt_admission`, `prepared_admission` and `promotion_admission` failures
+map to `projects/monolith/factory/execution/admission.py` and `admission_test.py`.
+`receipt_prepare` and `receipt_promotion` map to `result_receipts.py` and
+`result_receipts_test.py` in that directory. The producer reauthenticates positive
+native `not_invoked` proof before publishing the bounded role/stage/SQLSTATE/path
+projection. Raw errors, SQL and private identities stay private. All four paths
+are outside both standing repair profiles and the owner-PR diagnostics profile.
+`repair_landing_paths_require_operator` remains binding.
+
+**Why stop-only cards expire:** on 2026-11-09, 8 of 29 open escalations were
+machine pauses whose only option was "stop". Some had held a delivery slot for
+ten days, and answering them needed no judgement. `factory_pause.expire_stop_card`
+applies the card's own option after the task deadline and a 24-hour grace. It
+cannot continue or re-fund work, so recovery limits are unchanged. Joe chose
+the same default on 2026-11-10 for a factory pause that reaches its deadline
+with no question left: stop and release the slot, never continue in a new task,
+because that would reset attempts. Operator pauses, open questions and landing
+holds still ask. Measure over
+72 hours either side of rollout: open stop-only cards older than 36 hours,
+expected zero. Revert if a stop is applied while a repair of that node is
+pending.
+
+**Why an operator can release a text hold:** on 2026-11-10, 42 of 83 open PRs
+were classed `explicit_hold`, most because their descriptions said "leave
+unmerged". Joe approved landing about 29 of them, and the only way to say so was
+to rewrite each description, because discovery deliberately does not interpret
+hold prose. `factory_release_owner_pr_hold` records the decision for one PR and
+waives the exact description read at release, its earlier comments and holds it
+only inherits from items it mentions, except a security label: on 2026-11-11, 13
+of the approved PRs were held solely by a mention, such as #7587 by its note
+about #7392. An edited description, labels, assignees, later comments, the
+closing objective issue and all review, CI and landing gates still bind.
+Standing landing delegations do not read a release, so a released PR still lands
+on a per-head grant and the control cannot land anything. Landing status also
+gains `landing_wait`, the current reason an approved delivery lacks authority,
+which was invisible for 22 receipts. Measure over 72 hours either side of
+rollout: owner PRs classed `explicit_hold` (baseline 42) and approved receipts
+in `landing` with no visible reason (baseline 22, expected zero). Revert the
+release control if a released PR lands while it carries a hold label.
+
+**Why a standing delivery owner:** on 2026-11-09, 23 intake-admitted deliveries
+sat in `landing` with independent exact-head approval and passing CI, most for
+four days. Per-head grants were the only authority for ordinary work, so every
+merge waited for a person and intake found no candidates behind the open PRs.
+`delivery_landing_delegation` lets a standing operator delegate that decision
+once, inside a previewed deny-list and rolling cap. The factory and its framework
+packages, deployment and schema, credential and isolation code, and public
+routes stay outside it. Domain packages the factory imports stay eligible.
+[The boundary](factory/orchestration/FACTORY.md#standing-delivery-landing-delegation)
+lists them.
+
+Joe set that boundary on 2026-11-10. Successive review rounds had excluded whole
+projects and every monolith domain, each for a defensible reason, until three
+of the 23 waiting deliveries still qualified: the fence-on-fence pattern that
+stalled landing in the first place. The deny-list is a second check, not
+isolation. Eligible monolith code runs in the factory's process, so its safety
+rests on the typed independent review, required CI and the merge queue. Revoke
+the delegation and return to per-head grants if the typed review's scope
+classification proves unreliable.
+
+Measure, over the 72 hours before and after the operator's activation: receipts
+in `landing` older than 24 hours (`factory_status`), and agent-authored merges
+(the public merges feed). Baseline on 2026-11-09: 23 in `landing`, 7
+agent-authored merges in seven days. Expected: the first falls and the second
+rises. Stop condition: disable the delegation on the first derived grant whose
+diff proves public-facing, security-sensitive, credential-bearing or
+destructive, or if neither number moves.
+
+An existing per-repair route is implemented by `factory_release_landing_hold` in
+`factory/orchestration/mcp.py` and `factory_landing_release.py`. It requires a
+standing human operator. For a genuinely private, internal, reversible repair
+that changes no security boundary or authority, the operator can:
+
+1. Read the exact repair receipt and owned PR. Require an unpaused, unheld
+   `succeeded` or `landing` receipt, an open non-draft PR and no unsettled execution,
+   competing branch owner, review-recovery hold or decision in flight. Record the
+   immutable base, current head, exact modified paths and independently reviewed
+   diff. A typed database stage alone never proves the change qualifies.
+2. Call `factory_release_landing_hold` with `operation: preview`, exact
+   `receipt_id`, `pr_number`, 40-character `head_sha`, and `reason`. Supply `scope`
+   with exactly `classification: private_internal_reversible` and `evidence`
+   (1–4000 characters). Evidence should name the base/head, exact owner paths,
+   bounded change, tests and independent review, and the operator's assessment
+   that public, credential, security and destructive effects are absent.
+3. Inspect an `authorize` preview. Apply identical target/reason/scope with
+   `operation: apply`, its `preview_sha256` as `expected_preview_sha256`, and a new
+   `request_key`. Retry a lost response only with that same request and key.
+   State or evidence drift requires a fresh preview. Read back authoritative state;
+   a replay acknowledgement alone is not current authority.
+4. The existing landing owner checks the audited exact-head grant, native
+   independent exact-head review, required CI, current holds and enabled merge
+   policy before the protected queue. Head changes require renewed authorization
+   and review. No direct merge, resume or acceptance is granted by this call.
+
+This explicit scope is human-attested and head-bound; it has no machine-verified
+private-path allowlist. It cannot release a private landing hold. The separate
+`public_docs` exception covers only two documentation files and cannot authorize
+these repairs. Changes to admission authority, credential boundaries or destructive
+semantics use the separate explicit operator approval below. Both standing
+delegation profiles retain their existing path and effect limits.
+
+Breaker 1155 and historical 1131, 1136, 1050 and 7640 remain untouched. No hold,
+historical lineage, workspace or volume is adopted, cleared or rewritten. Fixture
+rollouts exercise downstream contracts with the paid provider disabled;
+#7583 still requires natural useful work after a supported, authorized repair.
+
+**Why.** Backlog-refill completion does not prove repair discovery or recovery.
+The operator status nests the repair producer's own persisted policy observation,
+source watermarks/cursors, next event, pending publication and recovery checkpoints
+under `refill.problem_issues.recovery`. This read never advances the producer or
+infers quota, ownership, retry permission or delivery from enabled switches.
+It exposes bounded metadata, excluding prompts and raw audit payloads, so #7583's
+operational acceptance can distinguish missing signals from unfinished repairs.
+
+#### Explicit operator landing approval
+
+`factory_release_landing_hold` accepts `classification: requires_operator` for
+an already settled, unheld delivery. A standing human in `operators` supplies
+the exact receipt, PR and head. The server binds preview and apply to the
+authenticated subject. Service and delegated identities cannot record this
+approval. Existing holds, paused tasks, uncertain or claimed execution, competing
+owners and pending decisions retain their refusal paths.
+
+The scope has exactly five fields: `classification`, `evidence`,
+`acknowledged_effects`, `rollback_plan` and `expires_at`. The effects object has
+four explicit booleans: `public_facing`, `security_sensitive`,
+`authentication_or_credentials` and `destructive`. Every true effect in the
+native review must be acknowledged. The expiry is an absolute UTC time, in the
+future and at most 24 hours away when previewed and applied. Reason, evidence and
+rollback describe this delivery. They cannot supply a reviewer identity or a
+client-created file manifest.
+
+The server reads the actual base branch tip and records it separately from the
+immutable merge base and PR head. Complete GitHub comparison and tree evidence
+binds each path, change status, file mode, blob identity and content hash. The
+supported diff contains at most 64 added or modified regular UTF-8 files with
+mode `100644` or `100755`, each at most 512 KiB. Unsupported file kinds,
+renames, deletions, binary content and incomplete evidence refuse approval.
+Total decoded content is capped at 8 MiB, with bounded path traversal and GitHub
+reads. Audit records retain metadata and hashes, without source contents.
+
+Native independent review must approve this exact head and provide a typed
+`landing_scope` matching the immutable merge base and complete path set. The
+grant binds its run, session and artifact digest together with successful head
+CI. An older untyped review needs a real typed review before this scope can be
+authorized. A typed review requiring operator approval cannot be downgraded to
+the legacy private scope.
+
+Apply requires the preview digest and an idempotent request key. It records a
+schema-2 grant and returns its `authorization_audit_id`. Changed identity,
+policy, graph, base, head, review or CI evidence requires a fresh preview.
+The factory commits one arming intent before contacting GitHub. An unknown
+response or queue ejection cannot trigger another factory attempt under that
+grant. The observer binds the first queue entry it sees and refuses a replacement.
+The landing owner revalidates approval before arming and while observing queued
+work. Revocation targets the exact authorization audit, retains a tombstone and
+cannot fall through to standing machine delegation. Expiry and revocation do
+not renew approval or release a hold. Required CI, the protected queue and
+verified rollout remain separate delivery gates.
+
+The queue observer runs asynchronously. A revoked or expired entry is disarmed
+and dequeued on the next successful observation; GitHub can complete a merge
+before that observation. This path does not provide atomic revocation across
+the database and GitHub, or prove that an external caller never requeued between
+observations. Approval of source changes also does not establish that this
+capability is installed or authorize it to deploy itself.
+
+**Why.** Security-affecting deliveries need an explicit approval record that the
+landing owner can verify. The existing private and two-file documentation scopes
+cannot express that decision. This separate scope binds a standing operator's
+decision to independently reviewed source and preserves routine delivery policy.
+
+**Why.** Producer-created repairs need an authorization owner at native landing
+(#7601, follow-up to #7583). An operator can enable a finite trial or explicitly
+select ongoing standing delegation through existing guarded controls. Ongoing
+authority uses a rolling 24-hour rate cap and cumulative per-repair/source-task
+bounds instead of silently renewing a trial. Existing grants retain their mode,
+paths and expiry. Exact marker/task lookups keep unrelated historical repairs
+from stranding a current one. The landing owner derives
+a separate machine audit from that decision, fresh machine-pause provenance,
+the repair's exact PR/head and independent typed scope review. Human per-head
+grants and their audit remain separate. No identity token, credential, scheduler
+or ledger is added. The first fixed path boundary covers existing private
+observation/discovery modules and their tests. An explicitly selected diagnostics
+profile adds only private rationale/diff parsers. Mixed executor, build and control
+files remain outside this file-bound authorization, not because every bug in them
+is a security change, but because the same files enforce native gates. Extracting
+pure helpers through reviewed delivery is the narrow expansion route. Public,
+security and authority changes remain operator exceptions. Native queue fences enforce revocation, policy drift,
+holds and uncertainty. Synthetic native landing tests establish code reachability;
+operational acceptance still requires an activated producer repair to land, roll
+out and resume its original node without a per-PR manual grant.
 
 ## 5. Chat
 
@@ -1218,10 +1196,18 @@ only when Joe requests resumption.
 Proactive work is scheduled rather than reactive: hourly changelog summaries
 for three repositories, a reminders drain every two minutes, a weekly directive
 observation pass and a daily directive autopilot, daily channel summaries, and
-weekly safeguards training, all as CronWorkflows. The orchestrator brief
-compiler decides chat against task submission on channels that hold the
+weekly safeguards training, all as CronWorkflows. The orchestrator
+`compile()` decides only chat versus session on channels that hold the
 `orchestrator` consent grant, with an ordered provider fallback chain that
-fails open to direct submit.
+fails open to direct submit. It makes no `submit_plan` call. Each enabled,
+granted attempt records one routing telemetry row; a session verdict carries its
+row id for thread linkage. Sessions use the caller's raw prompt, selected repo
+and model.
+
+**Why.** The generated plan had no runtime consumer after the session executor
+retirement. Joe chose to remove plan generation and its recipe catalog in
+#7043. Repository grants and the chat reply guidance remain in the routing tier.
+Historical telemetry stays readable in the existing JSON column.
 (see: /projects/monolith/chart/values.yaml)
 (see: /projects/monolith/chat/orchestrator_client.py)
 (see: /projects/monolith/chat/acl.py)
@@ -1453,14 +1439,117 @@ The fact allowance counts every selected member, including failures and
 unsupported sources. Prepared claim revisions cannot be selected again while
 their outcomes remain unresolved. Fewer-attempted revisions precede retries.
 
+**Why saved-result recovery is separate.** A completed raw extraction may retain
+its routine lease when the parent workflow stops before applying the saved result.
+The default-off `knowledge.completedRawRecoveryEnabled` gate permits a standing
+operator to preview and apply that exact result through the dedicated
+`monolith_agent_completed_raw_recovery` tool. Preview binds the stored turn,
+raw input, lease owner, terminal workflow, settled permit and extraction version.
+Apply rechecks them under ownership locks and uses the normal validating writer.
+Its knowledge writes, job completion and durable recovery receipt commit together.
+A replay returns the same receipt even after the routine row disappears. No model
+is invoked, no job is rearmed, and execution/cost history is unchanged. Unknown,
+error, multi-turn, dispute, already-applied or ambiguous states stay fenced; they
+are not evidence of a missing result. The gate and exact operator action are
+separate from deploying this supported path. Refs #6659.
+
+**Why explicit review recomputation.** Node loss can leave a prepared review
+batch with an unknown model result indefinitely. Automatic reconciliation keeps
+that uncertainty fenced. A standing human operator may instead use
+`monolith_agent_fact_review_recovery` for the exact `kg-fact-review` session
+and permit, acknowledging duplicate computation and writes. It is a tool
+identity separate from routine triggering, so stale discovery cannot mistake
+recovery for an ordinary scheduling call. Its `operation` is `preview` or
+`apply`; preview cannot apply. Apply requires the digest, key and exact
+acknowledgment, checked server-side before any read, with no legacy-trigger
+fallback. Routine triggering no longer accepts a recovery argument.
+One tool serving both preview and apply follows the factory MCP convention
+and keeps the operator catalogue small. The state
+digest and idempotency key bind one audited decision. Only unfinished members
+become abandoned; completed receipts, source evidence, unknown turns and prior
+session bindings remain. Abandoned members reject late writes and become
+eligible for a fresh cycle under the existing daily allowance. The old permit
+stays capacity-charged unless a fresh server-owned control-plane read proves
+cessation of the exact persisted dispatch. Cessation can precede the client's
+unknown-result timestamp without proving a successful result. The override
+never changes automatic recovery defaults, admission limits or coverage flags.
+
+An already-audited recomputation may retain its old permit until cessation is
+observed. Supervision validates that durable decision and all protected attempt
+state before recognizing its outcome-only identity transition. For a two-dispatch
+retry attached to the same guest invocation, matching receipt ownership and
+supersession must place both receipt issuances before the fresh terminal guest
+stamp. This releases only the old permit as `operator_recompute_ceased_unknown`,
+without another rearm, a successful-result claim, or changes to the original
+operator audit and guest binding. Missing receipts or changed identity remain
+fenced. Unreviewed unknown attempts retain the existing stricter dispatch rule.
+
 A batch shares source responses only during its bounded preparation, at the
 same pinned main revision. Collection permits at most 64 requests, 512 KB of
 cached responses and 90 seconds; the complete prompt is bounded to 256 KB.
 Existing per-claim source and byte limits remain. A shared source pool carries
 an explicit allowed-source list for every claim. The reviewer must support
 every clause and qualification, and cite exact quotations from that claim's
-sources. Partial coverage cannot renew a fact. Oversized files are still
-unavailable until the source coverage work in #6995 is resolved.
+sources. Partial coverage cannot renew a fact.
+
+`knowledge.factReview.coverageEnabled` defaults to false. When enabled, both
+review paths resolve cited files through non-recursive directory trees at one
+pinned main commit and verify decoded bytes against the returned Git blob hash.
+Wire responses and their serialized JSON are capped at 192,000 bytes, decoded
+files at 128,000 bytes, and per-claim transfer at 512,000 bytes. The existing
+48,000-byte evidence bound includes JSON escaping and metadata. Batch transfer
+and retained cache each have a 512,000-byte bound. Single prompts are capped at
+96,000 bytes; batch prompts retain their 256,000-byte bound. Fetch deadlines,
+request limits and the 30-minute evidence age still apply.
+Tree sizes preflight aggregate base64 transport, including escaped line breaks
+and a 1,024-byte envelope allowance per blob, before any blob is fetched. The
+same per-blob bound is enforced while streaming. Prior responses count their
+actual wire size or serialized size, whichever is larger; batches include the
+shared pin response. Preflight reserves one final streaming chunk so rejected
+response bytes remain charged. Preflight overflow is unsupported with a resolved
+file identity and leaves the batch reader available to later members.
+
+HTTP 401/403/429, server errors and transport failures stop further batch reads;
+the enabled path isolates a single read timeout to its member. HTTP 404 remains
+member-local. Invalid JSON/UTF-8 response envelopes, unexpected content encoding
+and response serialization overflow record unavailable outcomes with backoff on
+both enabled paths, without creating source blocks. Blob content failures and
+explicit wire/file/coverage bounds retain deterministic unsupported outcomes.
+
+**Why.** A shared provider failure must not fan out across the remaining batch.
+Malformed response envelopes cannot establish that a cited source is unsupported.
+
+Files that do not fit the evidence bound can supply positive literal witnesses.
+Every nonempty title/body line must match the closed grammar
+`` `projects/path.py` contains the exact text `literal text`. ``
+with at most twelve clauses. The server finds every literal in the verified
+file bytes before supplying any witness. Each witness records its blob identity,
+byte offsets, line numbers and omitted byte ranges. Renewal requires an exact
+citation for every witness, including distinct literals in one file. Broader
+behavioral statements, negative claims, missing literals and extra qualifications
+are unsupported. Missing coverage never produces a changed verdict or dispute.
+There is no rewrite of an existing note into the supported grammar.
+
+Deterministic file-coverage failures keep an additive
+`knowledge.fact_review_source_blocks` record with the note revision/content hash,
+outcome ID, cited-file blob identities and coverage algorithm version. Unchanged
+blocks are excluded in SQL before fact selection. Reconsideration reserves at
+most two metadata probes per fifteen minutes under the shared admission lock,
+with a six-hour per-block cooldown persisted before I/O. A failed probe retains
+the block. Only fully resolved old identities can be released by changed cited
+blobs. Placeholder identities stay blocked until the claim revision/content or
+algorithm version changes. A fresh probe resolving a placeholder is insufficient.
+Neither main's SHA nor the directory tree hash is a retry identity.
+Probes allocate no fact-review receipt, append no review outcome
+and consume no fact-selection allowance. Prepared and unknown-outcome receipts
+retain their existing fences. Network/provider failures keep ordinary backoff.
+
+**Why.** Exact literal presence can be established from a bounded positive
+witness without reading omitted regions into the model prompt. General source
+behavior needs context this representation does not establish. The closed grammar
+gives the server a complete-claim check before model inference. Content-addressed
+file identities permit reconsideration without polling unchanged oversized bodies
+or charging another review because an unrelated file moved (#6995).
 
 Each verdict passes the existing source-subject, quotation, 30-minute evidence
 age and revision/dispute checks. A missing, duplicate or malformed verdict
@@ -1762,9 +1851,9 @@ The request outcomes differ by surface:
 
 | Surface | Missing or unusable authorization | Valid standing token | Resource and result authorization |
 | --- | --- | --- | --- |
-| Shared private `/mcp` | No header, a blank header, or a non-Bearer scheme becomes the anonymous principal. Anonymous `tools/list` returns the catalogue for Context Forge refresh, but `GroupPolicyMiddleware.on_call_tool` denies every non-public tool. No current tool carries `mcp:public`. `Bearer` without a credential and any invalid or unrecognized bearer return 401; verifier or JWKS configuration faults return 503. | The verified claims become a standing `Principal`. Listing is filtered and calls require the literal `operators` group unless a tool is explicitly tagged public. | `GroupPolicyMiddleware` owns the coarse call gate. Domain checks can narrow it further. Factory orchestration uses `factory.access.is_operator`, knowledge and Grimoire HTTP mutations require a standing human operator, and `submit_product_update` requires `updates:submit`. Tool visibility, a populated `Principal`, and network reachability do not grant permission. |
+| Shared private `/mcp` | No header, a blank header, or a non-Bearer scheme becomes the anonymous principal. Anonymous `tools/list` returns the catalogue for Context Forge refresh, but `GroupPolicyMiddleware.on_call_tool` denies every non-public tool. No current tool carries `mcp:public`. `Bearer` without a credential and any invalid or unrecognized bearer return 401; verifier or JWKS configuration faults return 503. | The verified claims become a standing `Principal`. Listing is filtered and calls require the literal `operators` group unless a tool is explicitly tagged public. | `GroupPolicyMiddleware` owns the coarse call gate. Domain checks can narrow it further. Factory orchestration uses `factory.access.is_operator`, Grimoire HTTP mutations require a standing human operator, and `submit_product_update` requires `updates:submit`. Tool visibility, a populated `Principal`, and network reachability do not grant permission. |
 | Agent `/mcp` | `/healthz` is open. The MCP gate turns the anonymous principal into 401, while an invalid bearer is rejected by `PrincipalMiddleware` with 401 and an infrastructure fault with 503. | The resolver is configured for both `mcp-friends` and `mcp-agents`; `_AuthenticatedPrincipalGate` accepts any non-anonymous principal for the four knowledge tools. The three board tools additionally require the default-off board flag and an internal server-trusted binding, so a shared bearer alone returns `scope_unavailable`. Each of the two Kubernetes observation tools additionally requires a standing, undelegated workload principal whose subject is `kg-agent-sa` and whose groups include `kg-agents`. | `search_knowledge` maps exact verified scope grants plus the `homelab-admin` and `kg-agents` groups to a database allow-list. Personal and legacy NULL scopes require explicit opt-in and a durable audit row. The reporting tools record the resolved subject and authority for attribution. Board scope derives from the trusted session, task, resource, lane, and service binding, never caller content. Kubernetes reads are confined again by the client allowlist, bounds, and the tier's separate Roles. Identity facts alone do not widen either surface. |
-| Private HTTP API | Only routes that opt into `get_principal` parse a bearer. On those routes, absence becomes anonymous and invalid bearer material returns 401 or 503; their owner may then return 403. Most private routes do not opt in and ignore bearer identity. | Knowledge intervention and Grimoire alias owners require a standing human in `operators`. Browser factory decisions instead use the single `X-Auth-Email` claim projected from a verified Cloudflare Access JWT and optionally narrow it with `FACTORY_OPERATOR_EMAILS`. | Cloudflare Access owns the external ingress gate. The application defines no blanket anonymous-principal policy. For example, `GET /api/agents/sessions/{session_id}` returns prompts and verbatim turn results without an application-level principal or per-session ownership check. Direct network reachability supplies no permission. The missing object-level result check remains unresolved and does not redefine the edge policy. |
+| Private HTTP API | Only routes that opt into `get_principal` parse a bearer. On those routes, absence becomes anonymous and invalid bearer material returns 401 or 503; their owner may then return 403. Most private routes do not opt in and ignore bearer identity. | Grimoire alias owners require a standing human in `operators`. Browser factory decisions instead use the single `X-Auth-Email` claim projected from a verified Cloudflare Access JWT and optionally narrow it with `FACTORY_OPERATOR_EMAILS`. | Cloudflare Access owns the external ingress gate. The application defines no blanket anonymous-principal policy. For example, `GET /api/agents/sessions/{session_id}` returns prompts and verbatim turn results without an application-level principal or per-session ownership check. Direct network reachability supplies no permission. The missing object-level result check remains unresolved and does not redefine the edge policy. |
 | Result receipt callback `/ingest/results/{receipt_id}` | Missing, malformed, unknown, or mismatched receipt bearer material returns 401. An expired acceptance window returns 410 and a different body for an already captured receipt returns 409. It never falls back to an anonymous principal. | `result_receipts.authenticate_receipt` compares the presented capability hash before reading the body; `capture_result` rechecks it, the expiry, and exact-byte idempotency. | This is a write-only callback for one receipt minted by `prepare_receipt` while the session, turn, dispatch owner, and guest are active. Capturing is evidence only; later consumption revalidates current executor ownership. The callback exposes no result-reading operation and does not use the authentik `Principal`. |
 
 Identity and attribution stay separate from permission to act. Middleware logs
@@ -1789,8 +1878,8 @@ operation, exact issue and verb set, and demonstrated permission gap before
 delegation or a broker is selected. #4945 proceeds only if that selected design
 needs a new credential-delivery path. These closed gates may be reopened with
 their evidence; they are not accepted future architecture. The independent
-result-scoping work in #4569 and existing factory-control enforcement in #5789
-do not wait for this record or for delegation.
+result-scoping work (#4569, consolidated into #5573) and the factory-control
+enforcement delivered under #5789 do not wait for this record or for delegation.
 (see: /projects/monolith/core/mcp_policy.py)
 (see: /projects/monolith/app/agents_main.py)
 (see: /projects/monolith/factory/access.py)
@@ -1807,9 +1896,18 @@ could roll production back or prune an Application. Joe accepted this on
 2026-10-01 (#6475): the operators group holds only Joe and his agents, every
 lever is reversible through GitOps (re-sync, promote forward, or lower a pin),
 and a second tier would add an authentik group and token path for one operator.
-Attribution is the compensating control: #6476 stamps the calling principal
-into the Promotion and the ArgoCD operation. Revisit if the operators group
-gains a member who is not Joe or one of his agents.
+Attribution is the compensating control (#6476, staged in the repository and
+not yet verified live). Each tool reads the verified request subject from
+`current_principal()` when it is invoked, never from a tool argument. A sync
+records that subject as `.operation.initiatedBy.username`. A Promotion carries
+it in the `monolith.jomcgi.dev/requested-by` annotation, beside whatever actor
+annotations Kargo's webhook adds. Both success log lines name the subject,
+authority, target and flags. A call without a bearer, reachable only with
+`MCP_GROUP_POLICY_ENFORCED` off, is recorded as `anonymous`. This is a label,
+not Kubernetes impersonation: the API server and Kargo still authenticate the
+monolith ServiceAccount. A shared token yields one shared subject, so callers
+sharing a token are indistinguishable. Revisit if the operators group gains a
+member who is not Joe or one of his agents.
 (see: /projects/monolith/core/mcp_policy.py)
 (see: /projects/monolith/cluster/mcp.py)
 (tracks: #6475, #6476)
@@ -1833,17 +1931,25 @@ by trust in the guest.
 - `/app/trips`: geotagged trip and photo feed with a private ingest path and public cached reads. (see: /projects/monolith/trips/read_router.py)
 - `/app/stars`: astronomy forecasts and historical climatology heatmaps. (see: /projects/monolith/stars/router.py)
 - `/app/ships`: current and historical maritime tracks and heat cells. (see: /projects/monolith/ships/router.py)
-- `/app/wc2026`: cached dynamic tournament summary and odds data. (see: /projects/monolith/worldcup/router.py)
-- `/app/campsites`: cached recreation-area search with weather-enriched snapshots. (see: /projects/monolith/campsites/router.py)
+- The World Cup page is retired (#6916); its stored-data routes under `worldcup/` remain until that lane removes the backend.
 - `/app/grimoire`: public knowledge graph, entity explorer, adventure index, and open-book reader with extracted illustrations. (see: /projects/monolith/grimoire/router_public.py)
 - `/app/notes`: public knowledge graph browsing, including note links from the factory context viewer. Notes chat is retired.
 - `/app/grimoire/chat`: Turnstile-gated Grimoire RAG chat. (see: /projects/monolith/grimoire_chat/router.py)
-- `/app/dr-jobs`: NHS job search over the scraped listings feed. (see: /projects/monolith/dr_jobs/router.py)
 - `/app/llm-leaderboard`: model-bench results scatter. (see: /projects/monolith/frontend/src/routes/public/app/llm-leaderboard/+page.svelte)
 - `/ember/firecracker`: recorded restore timings and a local replay. The retired Bazel and Postgres exhibit URLs redirect to this replay; `/ember/agents` remains an explainer.
 - `/artifact/{id}`: agent-built HTML served from object storage in a sandboxed opaque origin. (see: /projects/monolith/artifact/router.py)
 - `/blog`, `/docs`, `/engineering`: the posts, the published repository documents (this file among them), and the engineering index. (see: /projects/monolith/frontend/src/routes/public/docs)
 - `/agents` (private hostname): the agent console of section 4. (see: /projects/monolith/frontend/src/routes/private/agents/+page.svelte)
+- `/` (private hostname): the operator console, read phone-first. Its load merges the home aggregate with a summary of the factory board (open decisions, lane counts, the conductor link) so one page says what needs Joe and where every private tool is; the same merged read backs its 60-second refresh. (see: /projects/monolith/frontend/src/lib/private/dashboard-load.js)
+
+The obsolete `/app/dr-jobs` and `/app/campsites` frontend pages are retired.
+Their former URLs, including query-string bookmarks, use the root path-aware
+404 page. They have no replacement destination. Their backend APIs, records,
+refresh jobs and backups remain independent of this frontend retirement.
+
+Joe's 2026-11-01 decision suspends the hourly BC Parks refresh because it is
+no longer used. Records, backups and the campsites module remain; any removal
+belongs to #7030.
 
 Public application responses follow the anonymous cache pattern established by
 the platform CDN decisions, with route handlers declaring cache and ETag
@@ -1873,9 +1979,13 @@ site index and the scheme chrome under `src/lib/public/components/`. Four
 separate systems were kept apart on purpose until then; `.impeccable.md`
 records each one's vetoes. The cost was four sets of chrome, three duplicated
 page vocabularies and a public baseline no other page could share. The
-engineering index, the docs and the root error page moved first; #7016 tracks
-the rest, surface by surface, and the three legacy stylesheets leave the tree
-with their last consumer.
+engineering index, the docs and the root error page moved first, then home
+and the CV; on 2026-10-30 the public apps, the Ember pages and stories, the
+private tools and the friends screens followed, the brutalist nav retired,
+and the Grimoire ledger theme became a bridge onto the sheet tokens. #7016
+tracks live acceptance; the legacy stylesheets leave the tree under #7160,
+the brutalist one once the Grimoire rehearsal clears its removal from the
+root error page.
 
 ## 9. Observability and health
 
@@ -1889,8 +1999,9 @@ when the backend is unhealthy or unreachable.
 (see: /projects/monolith/frontend/src/routes/public/health/+server.js)
 
 The public tier checks its database and stars data. The private tier retains the
-Codex session probe and configured Ember durability check for production agent
-execution. The live public demo latches and combined hourly demo CronWorkflow
+Codex session probe for production agent execution. #4338 built an Ember
+durability consumer that was never armed; #7058 removes it with the control-plane
+detector. The live public demo latches and combined hourly demo CronWorkflow
 are retired. **Why.** Recorded Firecracker replays explain the VM lifecycle
 without coupling public-site health to an exhibit workload. Codex remains the
 one automatically scheduled agent probe; Spark is manual-only.
@@ -1940,7 +2051,7 @@ ignores it. This is repository-only staged delivery, with live acceptance still
 tracked on #7028.
 
 **Why.** Process liveness alone stayed green through downstream failures, while
-alert-only maintenance failures could remain unread for days (ADR embervm/031).
+alert-only maintenance failures could remain unread for days.
 Composite checks therefore classify immediate serving failures as fatal and
 slower debt as advisory, rather than making every degraded dependency trigger a
 rollback. Healthy-only edge caching prevents an old green result from hiding an
@@ -1997,6 +2108,23 @@ runtime `targetRevision` is cluster state and, on the hub, that a point-in-time
 health wait stands in for a settling window until a development stage exists
 there (ADR platform/009).
 
+A frontend deploy replaces its hashed JS chunks, but Cloudflare keeps serving
+cached page HTML for up to an hour (plus stale-while-revalidate), and during a
+rolling update a page from one pod can request chunks from another. A page that
+fails to load a chunk reloads once with a unique `_fresh` query, which misses
+the edge cache and returns HTML for the current build. A session-storage guard
+stops a second reload within 30 seconds, and the marker is removed from the
+address bar on arrival.
+(see: /projects/monolith/frontend/src/app.html)
+(see: /projects/monolith/frontend/src/hooks.client.js)
+
+**Why.** Before this, visitors got SvelteKit's 500 page until the edge copy
+expired. Purging Cloudflare on each rollout would also fix cached HTML, but it
+needs a zone API credential in the cluster and still leaves rollout skew;
+publishing every build's chunks to persistent storage removes both, at the
+cost of an asset bucket and upload step. The reload costs affected visitors one
+extra page load and needs neither.
+
 The two document manifests are build outputs, not committed files. The
 `:repo_docs_manifest` genrule writes the repo-docs NDJSON (the docfix path
 allowlist `knowledge/repo_docs.py` loads), which the backend, jobs and domain
@@ -2021,58 +2149,40 @@ the fallback: mergeable, but still generated state in git.
 ## 11. Direction
 
 Decided and not yet built, each with the issue that tracks it. A row leaves
-this table when the work ships or the issue closes without it.
+this table when the work ships or the issue closes without it. Factory acceptance
+is tracked in [section 4](#factory-acceptance).
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
-| Remove dormant scheduler registration while retaining rows and Argo run-now compatibility | section 4, batch execution | #7021 | repository removal; later table retirement and CronWorkflow-native listing need separate scope |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
-| Every public, private and friends surface renders in the technical-drawing language; the brutalist, ember and grimoire stylesheets retire with their last consumer | section 8, visual language | #7016 | foundation, `/engineering`, `/docs` and the root error page shipped; home, cv, the apps, the private and friends tiers remain |
-| Restore Astra planning and refinement, retain Sol routine implementation and Opus independent review | #6983, factory model pools | #6983 | follow-up migration staged for the already-allowed Astra policy; rollout and live Astra planner observation remain |
+| Bound oversized source coverage with exact literal witnesses and reconsider deterministic blocks by cited blob identity | section 6, source coverage | #6995 | default-off contract; broader behavioral and negative claims require complete evidence |
+| Every public, private and friends surface renders in the technical-drawing language; the brutalist, ember and grimoire stylesheets retire with their last consumer | section 8, visual language | #7016 | every tier renders on the sheet in the repository; live acceptance of the rollout and the final stylesheet retirement (#7160, after the Grimoire rehearsal) remain |
 | Retire the household gateway and its exclusively owned schema, retaining shared data | section 5, Household gateway retired | #6915 | repository retirement staged; merge, rollout, migration and shared-job acceptance remain |
 | Platform invitations create Authentik-linked platform users; application grants and campaign membership remain separate, with reusable HTTP/MCP management commands | [Platform enrollment and access](auth/architecture.md) | #6858 | design recorded; API, enrollment binding, permissions and MCP implementation remain unbuilt; signup remains disabled |
-| The human issue label excludes both factory lanes and durably hands admitted work off after normal attempt accounting | The factory conductor, human ownership | #6781 | implemented in repository; rollout pending |
-| Factory outcomes use mature delivery predicates, complete attempt accounting, and task-class/role/model cohorts with explicit unknown evidence | section 4, recorded Conductor rescope | #6716 | repository report staged for manual read-only invocation; standby accounting, CI, revert, metadata, and query-cost checks remain |
-| One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5784 (children #5785, #5787, #5788, #5789; #5786 closed 2026-09-14) | not started |
-| One factory conversation spans web, Discord, and voice for the same conductor | The factory conductor | #5788 | not started |
-| Execution profiles (implement, investigate, debug, research) become policy dimensions beside difficulty and risk | The factory conductor | #5784 | not started; conductor and planner on Astra since generation 11 |
-| The knowledge graph gains project context, runtime evidence and known-work linkage in bounded slices behind a measured retrieval baseline | section 6 | #5829 (children #6128, #5849, #5571, #5573, #5913, #5926) | not started: baseline #6128 first |
-| Evidence-lane follow-ons: deployment observations (#5571), default retrieval scopes with personal opt-in (#5573), distress inbox (#5574), #5569, #5587 | section 6 (agents/063) | #5571, #5573, #5574 (parent #5527 closed 2026-10-01) | in progress: slice live 2026-09-03, children open |
-| A Discord voice adapter is the primary transcript capture for Grimoire's online table, through the #6618 ingest and the #6620 Google Speech-to-Text seam | section 6 | #3961 | agent-ready 2026-10-01, blocked by #6618 and #6620; Joe's table plays online over Discord voice |
+| The knowledge graph gains project context, runtime evidence and known-work linkage in bounded slices behind a measured retrieval baseline | section 6 | #5829 (open sub-issues #6812, #6813) | baseline #6128 delivered by PR #6297; Joe chose its follow-ups on 2026-10-02 (#6712, #6713, #6718 to #6721, all closed); per #5829's 2026-10-17 record, temporal slice #6812 is merged and in its live pilot and #6813 waits on it; #5849 closed not planned, #5881 completed; catalog identities, entity-aware drain, work-item linkage and component overviews have no issue and stay needs-thought |
+| Evidence-lane follow-ons: deployment observations (#5571), default retrieval scopes with personal opt-in (#5573) | section 6 (agents/063) | #5571, #5573 (parent #5527 closed 2026-10-01) | slice live 2026-09-03; #5574, #5569 and #5587 closed completed |
+| A Discord voice adapter is the primary transcript capture for Grimoire's online table, through the #6618 ingest and the #6620 Google Speech-to-Text seam | section 6 | #3961 | agent-ready 2026-10-01; #6618 ingest delivered by PR #6953 on 2026-10-18; blocked by #6620; Joe's table plays online over Discord voice |
 
 ### Reversible gates
 
-**Why.** The escalation cards on 2026-09-18 repeatedly asked for reversible
-parameter choices, permission to separate repository work from live acceptance,
-and permission to reuse an existing delivery branch. These questions consumed
-operator attention without supplying authority the repository work needed.
-The conductor now chooses non-spending defaults with a reason on the issue,
-stages repository work and keeps operational checks on an open issue, and
-adopts the existing PR before any node starts. Spending, production deletion,
-external-account changes and a branch owned by a running task still require a
-person. Independent review and required Linux CI remain delivery gates.
-One task-level Discord summary replaces attempt and supervision-cycle noise;
-the audit retains every observation. This delegates the three reversible gates
-under #6208 without granting deployment or credential authority.
+**Why.** Reversible parameter, repository/live-acceptance and existing-branch
+questions consumed operator attention without adding needed authority (#6208).
+The [gate design](factory/orchestration/FACTORY.md#conductor-owned-reversible-gates)
+preserves spending, production deletion, external-account and branch ownership
+decisions, independent review and required Linux CI. Delegating these gates
+grants no deployment or credential authority.
 
-**Why.** A successful repository delivery does not complete an outstanding live
-acceptance checklist. Normal plan edits and completed work artifacts persist
-typed operational gates before further work, and before publishing their GitHub
-rescope. Separate gate and graph decision identities let a retry apply an edit
-that was interrupted after gate persistence. Re-admission retains the checklist
-in receipt direction. Landing reloads it before closure and independently
-checks that the merged PR confirms completion of this issue; a reference-only
-or explicitly rescoped PR leaves the issue open. Rollout evidence counts active
-pods, excluding terminal and deleting remnants while still requiring the desired
-number of ready replicas running the requested images.
+**Why.** Successful repository delivery cannot complete outstanding operational
+acceptance. Durable checklists must survive interrupted graph edits, re-admission
+and externally observed merges. See [live-check handoff](factory/orchestration/FACTORY.md#handing-off-live-checks).
 
 ### Control loops that gate work
 
-A factory control loop that can demote, pause or reroute work ships only with a
-independently reviewed bound recorded here first: what it measures, the threshold, how
-it recovers, and the longest it may hold a class or lane restricted before it
-escalates to a person instead.
+A factory control loop that can demote, pause or reroute work ships only with an
+independently reviewed bound recorded in [FACTORY.md](factory/orchestration/FACTORY.md)
+and linked here first: what it measures, the threshold, how it recovers, and the
+longest it may hold a class or lane restricted before it escalates to a person.
 
 Use `AGENTS.md` "Merge authority" to land changes within established goals and
 policies. A new policy decision or exception to an existing bound needs Joe's
@@ -2088,15 +2198,8 @@ of Opus went on recovery samples that could not converge. No ARCHITECTURE
 section described the loop, so no reviewer saw its bound. Quality routing
 stays retired; review rounds already bound quality (#6283, closed 2026-10-01).
 
-The no-progress watchdog is such a loop. It measures settled turns, planner
-rounds included, since the task was admitted or last cleared without a new
-commit or pull request. Every `progress_watchdog.threshold_turns` turns (default
-8) it assesses the task once; a loop pauses the task and raises a Resume, Stop
-or Rescope card. A delivery or a resume re-arms it a full step from the current
-count, and the pause holds until a person answers. It counted dollars until
-#7161; a task whose last watchdog row predates that re-arms from its current
-turn count on the first tick rather than reading dollars as turns.
-
+The [no-progress watchdog](factory/orchestration/FACTORY.md#funding)
+records its measurement and recovery contract in the factory design.
 
 ### Adversarial dependency PR intake
 
@@ -2109,14 +2212,15 @@ inspection only. PR text, changed repository instructions and upstream package
 material remain untrusted even for an allowlisted author.
 
 `dependency_prs.py` fetches the full changed-file inventory, GitHub dependency
-comparison and open Dependabot alerts. Unavailable, empty, malformed or
-truncated comparison evidence holds the PR; added versions with known
+comparison and open Dependabot alerts. Unavailable, null, malformed or
+truncated comparison evidence holds the PR; a successful empty comparison
+requires supplemental coverage; added versions with known
 vulnerabilities are refused. The receipt adopts the original PR and pins its
 head, base, numeric author identity and evidence digest. The conductor uses a
 read-only `implement_*` investigation followed by a separate `review_*` session
 that challenges the investigation. Both structured assessments must cover
 provenance, install scripts, transitive changes, vulnerability remediation,
-compatibility and validation with concrete evidence. Dependency inspection
+compatibility, authorization scope, evidence coverage and validation with concrete evidence. Dependency inspection
 nodes have `side_effects=false`; source integration and automatic correction
 rounds are refused. The guest is instructed to inspect hostile scripts before
 execution and use isolated validation without production credentials; this
@@ -2130,8 +2234,9 @@ new authorized generation. Rejected or unsupported changes stay held for an
 operator; missing access to Dependabot alerts is never treated as no alerts.
 The GitHub read identity needs Dependabot alerts read permission in addition
 to access to the repository and dependency graph. This lane never dismisses
-alerts. Dependency auto-merge is unconditionally disabled, even with approved
-assessments and repository auto-merge enabled. The trusted
+alerts. The factory landing function never arms dependency auto-merge. The staged
+Renovate policy and weekly maintenance request native platform auto-merge only
+after the separate activation prerequisites; GitHub retains merge authority. The trusted
 `factory/dependency-evidence` publisher is staged off by default
 (`factory.dependencyGate.enabled: false`). It checks PR heads and GitHub
 merge-queue entry heads using each entry's actual base, through a dedicated
@@ -2154,21 +2259,44 @@ head, unsafe assessment or changed evidence invalidates that generation in the
 audit ledger; reverting the evidence does not restore its approval. The
 publisher never changes generation or starts a review itself.
 
-Renovate and apko lock maintenance no longer request auto-merge for any update
-type. Activation still requires the operator checklist in `FACTORY.md`, including
+Both assessment artifacts must agree on complete base/head OSV inventories,
+bound to the reviewed commits and corresponding changed files. Reviewers
+establish the actual dependency/SBOM closure, occurrence and artifact identities,
+exposure fingerprints and feed applicability. The server re-fetches every exact
+package/version or Git commit query without credentials at completion and
+publication, and binds the complete response contents to that review. Unknown
+packages with empty responses are not proof of coverage. Partial remediation
+preserves the established non-regression policy: unrelated findings may remain
+only on exactly unchanged components, including their exposure and artifacts.
+Added vulnerable versions or occurrences, new exposure and changed advisory
+content invalidate approval. If findings remain, a changed PR or queue base also
+invalidates approval before CI/OSV reads: main may already have fixed them or
+changed exposure despite identical candidate blobs. Fresh review must establish
+that baseline. Clean candidates retain equivalent-content queue comparison.
+Incomplete responses and unsupported sources refuse.
+Every dependency success waits for exact-head `pr-checks`; each target is
+revalidated immediately before publication, including durable approval, with a
+60-second collection budget.
+
+Activation still requires the operator checklist on [issue #6799](https://github.com/jomcgi-org/homelab/issues/6799#issuecomment-6545691566), including
 App-pinned ruleset enforcement on both PR and merge-group commits and resolving
-the BuildBuddy credential boundary (#6799). Tick-time checks and revocation
+the BuildBuddy credential boundary (#7005). Tick-time checks and revocation
 cannot guarantee atomic freshness when an advisory appears after a successful
-check and before merge. The live stale/advisory canary must establish the
-merge-time acceptance before any automated dependency merging is authorized.
+check and before merge. GitHub checks have no expiry field: a missing publisher
+or token cannot revoke a stored success. This is point-in-time verification of
+the exact queue commit. Live canary evidence and Joe's explicit acceptance of
+the residual race are required before activation; this change does not introduce
+a mandatory expiry service.
 For separately authorized merges, landing verifies publication and managed rollout
 before recording repository delivery complete. It never closes a PR through
 the issue-close API. Runtime activation is a live policy update after rollout;
 shipping this code alone enables no author accounts. BuildBuddy currently
 injects secrets into same-repository PR events and executes the PR branch
 workflow (`buildbuddy.yaml`). This merge gate does not isolate those earlier
-CI executions; activating automated intake must account for that credential
-boundary.
+CI executions. #7005 has no active owner or receipt as of the 2026-10-27
+read-only check. The provider must enforce credential and snapshot isolation
+before executing PR/queue code; PR-editable shell guards or action splits do
+not provide that boundary. No live provider controls are changed here.
 
 **Why.** A compromised bot account or malicious upstream release can produce
 a plausible version bump and green CI. Author reputation, semver and a clean
@@ -2183,12 +2311,32 @@ original PR preserves Dependabot's history without replacement changes.
 
 ### The factory conductor
 
+Source-role dispatch carries an exact task/node push-format contract to the
+guest (#7458). The runtime validates outgoing Git objects in detached linked
+worktrees and returns prevented-drift paths through native usage. The existing
+result transaction appends only newly observed paths to the factory audit under
+the task lock. This preserves workflow checkpoint ordering and keeps evidence
+after a worker corrects its tree. Image tools use repository pins and generator
+sources; CI's formatter remains unchanged. The staged experiment and live
+acceptance are recorded on [issue #7458](https://github.com/jomcgi-org/homelab/issues/7458).
+
 **Why.** The September policy removed Astra to conserve Codex quota before a
 reset. On 2026-10-17 both grants had substantial headroom and Joe chose to use
 Astra for more planning and difficult work (#6983). Restore that routing for
 new admissions while preserving Sol's routine implementation role, Opus's
 independent review role, task bounds and pinned receipts. Available quota is
 capacity for useful delivery, not permission to repeat a stalled funding loop.
+
+**Why.** Routine planner implementation follows the pinned implementation pool
+and role effort. For new non-judgment implementation admissions with a Sol-first
+pool, omitted models and explicit `sol` requests use quota-aware selection.
+Another allowed model or effort above the role floor requires a structured
+complex-work exception naming the risk and why the default is insufficient
+(#6992). UI migrations, refactors and renames alone do not justify it. Validation
+checks the declaration's structure and substantive length; its truth remains a
+review responsibility. Other roles and operator pool orders retain their routing.
+Recorded graph and run pins, running sessions, retries and engine-owned correction
+rounds retain their existing behavior.
 
 One logical Conductor per operator sits above every per-task Planner and drain
 lane. It runs in a replaceable fenced EmberVM session, on Astra since policy
@@ -2199,8 +2347,8 @@ safely available subscription quota doing useful work toward agreed product
 goals while preserving platform health, interactive responsiveness, and the
 capacity to finish and verify what it started. The monolith owns the durable
 state and the deterministic enforcement; planning and execution stay in EmberVM
-guests. Tracked by #5784 and the six sub-issues in the table below; the full
-design text is on #5784.
+guests. Tracked by #5784; the Owner column below names each aspect's issue and
+its state. The full design text is on #5784.
 
 **Why.** The `human` issue label declares human ownership independently of
 assignment and readiness. Both intake lanes exclude it, queued receipts check
@@ -2227,14 +2375,14 @@ PR lifecycle sweeps, and intake keeps its normal cooldown.
 | Aspect | Decision | Owner |
 | --- | --- | --- |
 | Entry point | One factory conversation across web, Discord, and voice, integrating the existing launcher (#4781) on the private agents page; no choice of model, session, run, or conductor is required | #5788 |
-| Responsiveness | Factory controls and exact decision requests are persisted and acknowledged independently of KG maintenance; pause and stop are authenticated deterministic controls that bypass the model; status reads from records when the model is busy | #5788, #5789 |
-| Roles and context | Factory deploys and orchestrates agents on Ember; the operator-facing Conductor selects work and delegates one bounded task to the Astra Planner; the Planner creates or amends its DAG; the Executor dispatches recorded nodes under existing identities and authorization; operator instructions, approved decisions, and retrieved KG claims remain distinct | #5785 |
-| Work selection | Durable records link product outcome to milestone, task, and acceptance evidence; a completion claim or a session count does not satisfy acceptance; every selected task advances an agreed goal or has a bounded maintenance allocation | #5786 |
-| Factory index | A materialised join of goal and task records, sessions, runs, drainer jobs, issues and PRs, decision rows, distress, platform health, provider quota, and reservations, served as MCP tools (`factory_status`, `task_status`, `queue_next`, `overlaps`), where `queue_next` only recommends; every row carries source time and freshness, and cloud sessions are an explicit coverage gap; index rows are untrusted evidence, so every mutation revalidates target state, ownership, health, and reservations at execution time | #5786 |
-| Scheduling | The conductor proposes work through #3840's existing dispatch boundary, with no second queue; the server admits it against every active provider window, observation freshness, in-flight reservations, VM and CI and review throughput, and work-in-progress limits; capacity for Joe's interactive work, the conductor, and the review and correction needed to finish admitted work is reserved first, and unknown capacity is not headroom; reservations are atomic and shared across lanes; a reset permits only a probe | #5804 |
-| Continuity | The existing receipt escalation document retains producer-authored Conductor briefs and authenticated operator replies with actor, source, time, conversation, task, decision and request identity. Generic coding-agent turns have no Conductor identity and are excluded. Fresh Conductor context combines public exact-receipt knowledge with only the authenticated operator's receipt-specific personal scope and current factory control, queue, task, budget and decision records. Shared receipt raws exclude operator replies and actor-addressed briefs. When the dedicated default-off gate is enabled, the Astra Planner receives only the public exact-receipt scope plus current task and acceptance records. Retrieved text is evidence only and never replays a command, changes queue order, reopens a resolved approval, or revives stopped authority | #5787 |
-| Authority | Read, coordinate, act, and escalate are separately gated tiers; every mutation validates principal, target, tier, charter version, executor ownership, and control generation on the server; every tool call has a ledger row with intent persisted before the side effect; timestamped health inputs drive normal, reduced-concurrency, admissions-paused, and recovering behaviour. Delivered staged by PR #6387 as enforcement of existing controls: the standing-human operator dependency, exact targets, `request_key` and `expected_version` on every supported mutation, and the existing audit records; no new tier or ledger, and live bearer, replay and stale-version checks remain on the issue | #5789 |
-| Stop | Pause admissions, pause task, and stop factory have distinct semantics; stop fences the conductor and its descendants, cancels queued starts, and survives any wakeup or restart; an unreachable worker stays explicitly unconfirmed. Delivered staged by PR #6387: stop state is reported from durable factory-owned evidence as cancellation requested, still running, unknown or unreachable, or cessation confirmed only on exact external proof; exact-attempt MCP stop stays unavailable and the unreachable-worker trial remains a live check on the issue | #5789 |
+| Responsiveness | Factory controls and exact decision requests are persisted and acknowledged independently of KG maintenance; pause and stop are authenticated deterministic controls that bypass the model; status reads from records when the model is busy | #5788; #5789 delivered staged |
+| Roles and context | Factory deploys and orchestrates agents on Ember; the operator-facing Conductor selects work and delegates one bounded task to the Astra Planner; the Planner creates or amends its DAG; the Executor dispatches recorded nodes under existing identities and authorization; operator instructions, approved decisions, and retrieved KG claims remain distinct | #5785, delivered by PR #6331 |
+| Work selection | Durable records link product outcome to milestone, task, and acceptance evidence; a completion claim or a session count does not satisfy acceptance; every selected task advances an agreed goal or has a bounded maintenance allocation | #5786, closed 2026-09-14; its status and evidence requirements were consolidated into #5788 without an outcome/milestone/task hierarchy, and the materialised index was dropped |
+| Factory index | A materialised join of goal and task records, sessions, runs, drainer jobs, issues and PRs, decision rows, distress, platform health, provider quota, and reservations, served as MCP tools (`factory_status`, `task_status`, `queue_next`, `overlaps`), where `queue_next` only recommends; every row carries source time and freshness, and cloud sessions are an explicit coverage gap; index rows are untrusted evidence, so every mutation revalidates target state, ownership, health, and reservations at execution time | #5786, closed 2026-09-14; its status and evidence requirements were consolidated into #5788, and the materialised index was dropped |
+| Scheduling | The conductor proposes work through #3840's existing dispatch boundary, with no second queue; the server admits it against every active provider window, observation freshness, in-flight reservations, VM and CI and review throughput, and work-in-progress limits; capacity for Joe's interactive work, the conductor, and the review and correction needed to finish admitted work is reserved first, and unknown capacity is not headroom; reservations are atomic and shared across lanes; a reset permits only a probe | #5804, closed not planned until a capacity or starvation problem is demonstrated |
+| Continuity | The existing receipt escalation document retains producer-authored Conductor briefs and authenticated operator replies with actor, source, time, conversation, task, decision and request identity. Generic coding-agent turns have no Conductor identity and are excluded. Fresh Conductor context combines public exact-receipt knowledge with only the authenticated operator's receipt-specific personal scope and current factory control, queue, task, budget and decision records. Shared receipt raws exclude operator replies and actor-addressed briefs. When the dedicated default-off gate is enabled, the Astra Planner receives only the public exact-receipt scope plus current task and acceptance records. Retrieved text is evidence only and never replays a command, changes queue order, reopens a resolved approval, or revives stopped authority | #5787, repository slice PR #6388; closed not planned and split to #6561, which owns enablement and live validation |
+| Authority | Read, coordinate, act, and escalate are separately gated tiers; every mutation validates principal, target, tier, charter version, executor ownership, and control generation on the server; every tool call has a ledger row with intent persisted before the side effect; timestamped health inputs drive normal, reduced-concurrency, admissions-paused, and recovering behaviour. Delivered staged by PR #6387 as enforcement of existing controls: the standing-human operator dependency, exact targets, `request_key` and `expected_version` on every supported mutation, and the existing audit records; no new tier or ledger. #5789 closed 2026-09-30; its closing comment reports anonymous and invalid-bearer 401s from the gateway but no legitimate-bearer, replay or stale-version drill. Legitimate-bearer discovery and replay remain live checks on open #5788; no issue owns the stale-version drill | #5789, closed |
+| Stop | Pause admissions, pause task, and stop factory have distinct semantics; stop fences the conductor and its descendants, cancels queued starts, and survives any wakeup or restart; an unreachable worker stays explicitly unconfirmed. Delivered staged by PR #6387: stop state is reported from durable factory-owned evidence as cancellation requested, still running, unknown or unreachable, or cessation confirmed only on exact external proof; exact-attempt MCP stop stays unavailable. The unreachable-worker stop trial did not run before #5789 closed; its closing comment leaves the trial unplanned and asks for a specific bug if an incident shows a gap | #5789, closed |
 
 Continuity updates have durable triggers rather than a session-end prompt:
 
@@ -2293,6 +2441,48 @@ per merged PR.
 
 ---
 
+### Browser capture workspace handoff
+
+`implement_browser_capture_` nodes select Luna for checklist execution and
+capture only. They do not enter source-writing branch waves. A separate review
+dependency consumes the evidence and owns acceptance. The supported capture
+format is the paired sheet bundle from the existing factory preview harness;
+the full-height harness must be present at the exact delivery head.
+
+The capture turn stores a small declaration. The server binds it to the exact
+completed turn, guest and lineage before cleanup removes active guest bindings.
+Review preparation confirms completed workspace export, pins the existing
+content fingerprint, and persists the handoff before dispatch. A reviewer uses
+a new session and CLI identity while adopting that exact workspace lineage.
+The trusted shim verifies server-pinned checker sources, then validates the
+inventory, input hashes, images, traces and source provenance before invoking
+the reviewer. An approval without the shim's matching preflight result fails.
+
+**Why.** A path in a guest and an archive enqueue acknowledgment are not durable
+evidence. Existing workspace export and restoration already provide the storage
+and content identity needed for independent review, without a second artifact
+service or a public URL. CI raw evidence remains until a real handoff is proven.
+
+New capture lineages register a three-day policy with the existing storage
+owner before the first model invocation. The allowed TTL is one hour to seven
+days; review leases are at most twelve hours and cannot extend the hard expiry.
+Expiry makes bulk archives eligible for fenced cleanup, subject to existing
+active-owner and metadata safety holds. Small turn results and provenance stay
+in the database. Capture starts use dedicated fresh lineages and cannot restore
+an existing workspace or transcript. The whole exported capture workspace,
+including its temporary checkout, is disposable; Git and Postgres are outside
+this cleanup scope. Existing archives are not retroactively opted in.
+
+`warmthS3Gc.captureEvidenceEnabled` is a separate, default-disabled destructive
+gate for these explicitly marked exports. It does not arm the global warmth
+collector. Capture-only selection happens before sweep caps and is rechecked
+under the lineage fence before deletion. A durable intent binds the exact
+inventory and policy so interrupted deletion can resume without expanding to
+new or changed objects. The policy survives until the last delete. Owner,
+active-review, fleet-freshness and restore holds still apply. Registration
+fails if neither cleanup scope is enabled. The GKE global safety disarm remains
+unchanged; local tests alone do not establish live expiry enforcement.
+
 ## 12. Decision history
 
 The ADR files were removed on 2026-09-06 (#4667); `git log -- docs/decisions/`
@@ -2308,7 +2498,7 @@ mismatch without silently rewriting the decision record.
 
 | ADR | Title | Status | Disposition |
 | --- | --- | --- | --- |
-| `services/001` | Discord History Backfill | Accepted, shipped (see: /projects/monolith/chat/backfill.py) | deleted |
+| `services/001` | Discord History Backfill | Accepted, shipped; obsolete history import removed in #7048 | deleted |
 | `services/002` | Discord Chat Automation & Reactivity | Draft, superseded in practice: reminders, ambient engagement, thread sessions and changelog posts shipped through chat/001, agents/035 and agents/043; #3901 to #3904 hold the remainder | deleted |
 | `services/003` | Knowledge Search Overlay | Deprecated | deleted |
 | `services/004` | D&D Sourcebook Knowledge Graph Integration | Deprecated | deleted |
@@ -2321,7 +2511,7 @@ mismatch without silently rewriting the decision record.
 | `services/011` | Grimoire Hot-Tier Schema on Postgres | Accepted, shipped (see: /projects/monolith/grimoire/models.py) | deleted |
 | `services/012` | Grimoire Postgres-First, Loom-Shaped | Accepted, shipped (see: /projects/monolith/grimoire/ingest.py) | deleted |
 | `services/013` | Grimoire Knowledge Audiences: Corpus-Derived Character Knowledge as Compiled Grants | Accepted, shipped (see: /projects/monolith/grimoire/visibility.py) | deleted |
-| `services/014` | Grimoire post-extraction quality passes (stat verifier, alias merge) | Accepted, not shipped (#3912, #3913) | deleted |
+| `services/014` | Grimoire post-extraction quality passes (stat verifier, alias merge) | Accepted, shipped (#3912, #3913) | deleted |
 
 ### Chat
 
@@ -2428,11 +2618,44 @@ the race; retries cover a transient connection failure without re-executing a
 request that reached the application.
 
 
+**Why receipt schema precedes runtime rollout.** The nullable `attempt_phase`
+column is added before the staged-receipt runtime in
+[PR #7619](https://github.com/jomcgi-org/homelab/pull/7619). Atlas migration and
+Deployment resources can apply concurrently, and flag-off binaries still name
+the column. This schema-only prerequisite is inert to existing code and does not
+rewrite receipts. A metadata-only postcondition requires exactly one live,
+nullable scalar pg_catalog.text column with no default, identity or generated
+expression; a mismatch raises a fixed error without repairing data or schema.
+An Applied result therefore establishes this shape even when ADD skipped an
+existing column. Verify Atlas application before landing the runtime, keep its
+flag off until every compatible backend and progress-ingest replica is deployed,
+and enable only through a separate reviewed GitOps change. Keep the additive
+column on rollback; live recovery acceptance remains on
+[#7583](https://github.com/jomcgi-org/homelab/issues/7583).
+
+**Why receipt preparation does not retire an attempt.** Receipt preparation runs
+in a worker thread that can outlive cancellation. Retiring the previous receipt
+there let a rollout record a first response-loss hold whose exact receipt was
+subsequently superseded by an unposted retry. The staged protocol adds nullable
+`attempt_phase` without rewriting legacy rows. Prepared rows remain excluded by
+the existing `superseded_at` reader fence; promotion under the original ownership
+locks and a bounded executor handoff guard alone records conservative attempt
+intent and retires the predecessor. An indeterminate commit retains uncertainty;
+it never supplies cessation or zero-execution proof. The callback boundary still
+requires its exact credential, and only a fresh empty preparation can promote.
+This additive representation keeps prepared rows inert to old binaries during
+rollback. The chart defaults off until migration and complete receiver/executor
+rollout are verified; the activation and live acceptance sequence is in
+[FACTORY.md](factory/orchestration/FACTORY.md#execution-and-evidence), tracked by
+[#7583](https://github.com/jomcgi-org/homelab/issues/7583).
+
 **Why bounded permit diagnostics.** Unknown execution retains admission capacity
 until exact cessation evidence is reconciled. The operator-only
-`factory_permit_diagnostics` read accepts at most twenty exact permit IDs and
-projects reservation, session, pending-claim, DBOS status, routine lease and
-stored supervision refusal metadata. It excludes prompts, results, payloads,
+`factory_diagnostics` kind `permits` read accepts at most twenty exact permit
+IDs and projects reservation, session, pending-claim, DBOS status, routine
+lease and stored supervision refusal metadata, bounded dispatch ownership and up to five
+result-receipt metadata rows. Receipt presence is not validity or adoption proof.
+It excludes prompts, results, payloads,
 credentials and raw evidence. Observation timestamps describe persisted evidence,
 not a fresh guest check, and the read never settles a permit or authorizes recovery.
 Routine-job MCP listing is paginated (twenty rows by default, fifty maximum),
@@ -2542,7 +2765,12 @@ operation records the superseded hold and operator authorization, then removes
 only `landing_hold`. It preserves pause and settlement state, all accounting,
 the existing graph, independent-review gates and outstanding operational checks.
 An already merged PR can be acknowledged without claiming its review or rollout
-passed. Restricted review-only recovery holds remain fenced.
+passed. After a rebase changes the head, the same preview/apply flow can refresh
+authorization for the same PR only when the receipt has a matching prior release
+audit. The preview identifies release versus refresh, binds the prior direction
+and records the superseded authorization in the next audit. It cannot authorize
+an unheld receipt without that history. Restricted review-only recovery holds
+remain fenced.
 
 **Why an explicit release.** An operator can authorize landing after a task has
 produced its staged PR, but the sticky hold otherwise keeps dequeuing that PR
@@ -2550,6 +2778,79 @@ and blocks reconciliation of an external merge. A merge or changed issue body
 is not proof that the operator authorized removing the hold. A separate exact
 preview/apply operation records that decision without conflating it with task
 resume, review approval or delivery acceptance.
+
+The operator-only `factory_prepare_validation` MCP adapter derives a narrow
+policy for one existing primary-repository receipt and delegates configuration
+to `factory_controls.set_control`. Preview binds the complete policy, control
+version and receipt inventory. Apply rechecks under the same control lock and
+records actor-scoped idempotency plus the previous and proposed policies. It
+leaves admissions paused, disables automatic landing and broad intake, preserves
+generation and all task bounds, and does not mutate receipts or release holds.
+Recovery eligibility and execution remain separate existing gates.
+`factory_find_receipts` supplies an exact, read-only identity lookup across
+receipt history, with intersecting selectors and explicit ambiguity.
+
+The backlog preview/apply pair accepts an explicit `include_refinement` opt-in.
+It requires the same paused, safe posture, no queued work, and no uncertain or
+orphan execution. It enables normal eligible discovery and refinement, clears
+the batch allowlist and pins `intake.refine_brief_only` for new advisory tasks.
+It preserves all selections, generations, models, budgets, filters and existing
+receipts, even when idle. Preparation stays paused until a separate enable.
+The legacy default and its replay request shape remain unchanged.
+
+**Why broad readiness still needs fences.** Useful replenishment needs refined
+issues to enter normal implementation eligibility. Brief-only limits belong on
+the advisory receipt, not a batch-wide ban on delivery. These refinements retain
+private decisions and proposed gates, with only brief comments and verdict labels
+as external effects. Natural selection, receipt creation and final claim refuse
+cancelled, landing-held or failed-refinement issue history across classes and
+generations. A refinement guest can apply `agent-ready` before server verification
+rejects its artifact. A cooldown expiring cannot verify that brief, so recovery
+requires explicit operator re-admission. Existing ready issues with no failed
+refinement history continue normally. A stale
+queued natural receipt is cancelled and audited so it cannot block unrelated
+work. Explicit operator re-admission remains separate, and a delivery inherits
+its prior refinement's landing hold as well as its conductor gates. Readiness
+does not release cancellation, landing, source, ownership or provider authority.
+
+`factory_refinement_batch` (`preview`, then `apply`) prepares one to ten fresh
+primary-repository issues for advisory work while existing admitted work
+retains its pinned policy. Preparation requires paused admissions,
+selected-only intake or a prior batch with no running refinements, no queued
+work, no unknown starts and the same safe posture
+as active discovery restoration. Preview binds fresh issue ownership and PR
+references, receipt and work-item history, reservations and the policy version.
+Apply repeats those checks, records the exact digest and request key, and leaves
+admissions paused. It changes only intake enablement, refinement enablement and
+the exact `intake.refinement_batch` allowlist. No task budget, generation, model,
+existing selection or hold changes.
+An exact replacement batch may supersede completed or unstarted selections under
+a fresh preview; it cannot revive an issue with receipt history. Unrelated
+admitted work continues, so replenishment does not require a factory-wide drain.
+
+**Why a separate batch.** Enabling global refinement can turn every unready issue
+into work. A nonempty batch restricts both natural candidate selection and queued
+admission to the named primary-repository refinement issues, including the SQL admission predicate
+and capacity/health projections. After separate enable, native refinement may
+write brief comments and verdict labels. The admitted receipt pins this brief-only
+scope: human decisions remain on the private board and audit, excluded from both
+immediate notifications and the daily digest even after another batch replaces it.
+Per-task admission audit evidence retains that restriction when a later authorized
+rebrief reuses the receipt. Rebrief eligibility uses the same admission predicate,
+so an earlier batch cannot leave an ineligible queued receipt blocking replenishment.
+Typed gates are recorded as proposals, without conductor decisions, issue/PR body
+edits, delivery adoption or operational handoffs. Becoming agent-ready
+does not grant implementation authority. Closure and landing remain off, and a
+subsequent delivery requires its own reviewed admission. This control is inert
+until explicitly applied and enabled; it does not authorize restoring broad
+discovery or releasing an existing landing hold.
+
+**Why preparation is separate from execution.** Pausing admissions alone does
+not disable automatic landing, and existing recovery may require admission to
+be enabled. A previewable configuration step lets an operator inspect the
+narrow policy before any recovery or admission action. It cannot itself prove
+that an expired or externally delivered task is eligible to restart. No new
+principal, credential or permission grant accompanies this MCP exposure.
 
 A typed `live_validation` gate may carry `leave_unmerged=true`. The gate owner
 persists the same sticky landing hold before any GitHub write. Operational
@@ -2571,6 +2872,24 @@ plus turn, planner-turn, attempt and deadline limits. The funding judge stays on
 because it renews leases, deadlines and turn ceilings, and successive automatic
 grants still require new work evidence: useful investigation counts, while
 planner and funding turns alone do not. Historical charges remain recorded.
+
+Automatic funding may renew turn, planner, review and lease bounds within the
+current approved task budget. The judge proposes a budget; it cannot approve an
+increase. Settlement compares that proposal, including any recorded deficit,
+with the effective budget under the existing control and task locks. A higher
+proposal settles the review and pauses the same active receipt with
+`funding_budget_approval_required`, without a funding overlay or new allowance.
+The operator can use the existing exact-receipt amendment preview/apply, then
+explicitly resume. A smaller amendment does not authorize a larger proposal.
+Dispatch-refusal grants and their validated inherited source audits keep their
+existing operator authority. Existing grants and charged history are preserved.
+
+**Why approval is separate from accounting.** A recovered invocation can report
+charges above the approved budget. Those charges remain visible, but neither
+that report nor an automatic judge proposal is authority to increase the
+budget. An automatic tranche retains the existing approved budget even when
+the judge estimates less. This adds no fixed dollar ceiling or runtime cost
+cutoff and does not change graph or dispatch admission.
 
 An operator may also select sticky `nonrenewable_recovery=true` and bound the
 remaining planning attempts with `max_planner_turns`. This uses the same
@@ -2607,3 +2926,68 @@ dispatch pins and deadline supervision. A second recovery cannot renew it.
 **Why:** ordinary Continue deliberately creates a new task and clears its
 pinned policy. Merely reopening the old task would replay its previous decision
 or retry its failed preflight before the operator's replacement plan was read.
+
+The proposed internal recovery worker is staged off behind
+`swarm.factoryRecoveryDelegationEnabled`; its exact grant contract is in
+[FACTORY.md](factory/orchestration/FACTORY.md#proposed-internal-recovery-authorization).
+Standing humans record bounded requests, and a distinct deterministic worker
+calls the existing guarded owners internally. Authorization and execution are
+separate append-only audit identities; no delegated credential is minted.
+**Why.** Routine recovery should not depend on chat connector publication, but
+settled task reactivation and permanent restore fencing remain privileged.
+Sharing their owner implementations preserves proof and accounting invariants
+without making the Planner an operator. Unchanged empty retrospectives receive
+one report-only diagnosis under the existing program rather than repeating the
+same model call; that deduplication is independently staged off.
+
+### Public factory and graph warm snapshots
+
+The public frontend prewarms six fixed, anonymous backend projections at startup
+and checks them every ten seconds. Factory inputs reuse the existing publication
+jobs' public snapshots; graph and fact JSON is materialized from `public_reader`
+views. Each frontend process retains at most one serialized body per projection
+(up to 16 MiB each), keyed by build version, deployment API base and projection.
+There is no caller-controlled cache key, credential forwarding or private route.
+
+**Why.** An edge miss previously repeated backend work during SSR or graph load.
+A fresh process snapshot makes that path independent of backend latency. Requests
+share one refresh promise per projection per process. Refresh begins with twenty
+seconds left on a maximum sixty-second lease; a failed refresh backs off for five
+seconds and never extends the prior lease. Process restart is cold until prewarm
+finishes. No distributed cache, new database grants or Cloudflare configuration
+is introduced. Deployment/publication changes are observed within the lease;
+frontend builds reset process entries and version all emitted validators.
+
+Every hop consumes response age. The factory HTML uses its shortest constituent
+lease, and partial/error pages are no-store. Public fact aggregate leases end at
+the earliest review, validity, evidence-time transition or UTC midnight. Graph
+leases end at the earlier review or validity deadline; expired, future-valid and
+invalidated nodes are excluded on refresh. Browser graph reuse and displayed nodes
+expire with the response lease, including after client navigation. These changes
+support #6823's freshness acceptance; its migration/rollout acceptance and #3879's
+Cloudflare dashboard/HIT verification remain open and separately owned.
+
+Acceptance targets for this slice: fresh process hits perform zero backend
+requests; twenty concurrent same-key cold reads perform one backend request;
+no cached current data is reused at or after expiry. Once permitted, measure two
+ordinary requests per selected public URL and correlate edge status/age with
+origin traces. Targets, not measured claims: warm origin JSON TTFB p95 below
+100 ms, warm factory SSR TTFB p95 below 200 ms, and edge HIT TTFB below 200 ms
+from the same observation location. Network, parsing and canvas rendering are
+separate from origin TTFB. No live target is accepted from unit tests alone.
+
+### Manual factory read verification
+
+The default-off operator synthetic endpoint runs the production status reader
+against transaction-local PostgreSQL fixtures and returns correctness, SQL work
+and timing evidence. It uses the existing OTLP trace path and tags the observed
+chart/image plus operator-supplied source and Kargo Promotion correlation.
+Fixtures never enter intake or persistent business schemas. The
+[runbook](../../docs/runbooks/private-action-synthetics.md) records its fixed
+bounds, first-run scope and current rollout/rollback limitations.
+
+**Why.** Settled history can increase status work while ordinary readiness stays
+green. A repeatable fixture and work baseline expose that regression without a
+pre-release performance gate. Latency, cache occupancy and process memory remain
+observations until enough comparable production evidence exists. The existing
+Kargo history and guarded promotion tool remain the deployment authority.

@@ -3,6 +3,13 @@
 Scoped guidance for `projects/monolith`, for any agent. The repo-root `AGENTS.md` still applies.
 See `README.md` in this directory for the domain map and public/private tier boundary.
 
+## Factory work
+
+Read [FACTORY.md](factory/orchestration/FACTORY.md) first for factory design and
+execution contracts. [Architecture section 4](ARCHITECTURE.md#4-agents) records
+monolith ownership, trust boundaries, rationale and outstanding acceptance.
+Follow the assigned factory role; review and landing belong to their owners.
+
 ## Scheduled execution uses Argo
 
 Argo CronWorkflows invoke handlers through `app/jobs_main.py`. There is no

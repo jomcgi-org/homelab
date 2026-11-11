@@ -371,6 +371,21 @@ pub fn max_checkpoints(max_context: usize) -> usize {
     2 + (13..20).filter(|k| 1usize << k < max_context).count()
 }
 
+/// Records the running token `count` at `now` in a window of about the last
+/// second and returns the decode rate over that window.
+fn record_rate(rate: &mut VecDeque<(Instant, usize)>, now: Instant, count: usize) -> Option<f64> {
+    rate.push_back((now, count));
+    while rate.len() > 2 && now - rate[1].0 >= Duration::from_secs(1) {
+        rate.pop_front();
+    }
+    match (rate.front(), rate.back()) {
+        (Some(&(t0, n0)), Some(&(t1, n1))) if t1 > t0 => {
+            Some((n1 - n0) as f64 / (t1 - t0).as_secs_f64())
+        }
+        _ => None,
+    }
+}
+
 /// Caches `seq`; the session must hold exactly its tokens.
 fn keep(cache: &mut dyn PrefixCache<Seq>, seq: CachedSeq<Seq>) {
     debug_assert_eq!(
@@ -587,17 +602,7 @@ impl Engine {
                     l.record(d.drafted, d.accepted);
                 }
             }
-            let now = Instant::now();
-            rate.push_back((now, emitted + d.tokens.len() - 1));
-            while rate.len() > 2 && now - rate[1].0 >= Duration::from_secs(1) {
-                rate.pop_front();
-            }
-            let tps = match (rate.front(), rate.back()) {
-                (Some(&(t0, n0)), Some(&(t1, n1))) if t1 > t0 => {
-                    Some((n1 - n0) as f64 / (t1 - t0).as_secs_f64())
-                }
-                _ => None,
-            };
+            let tps = record_rate(&mut rate, Instant::now(), emitted + d.tokens.len() - 1);
             self.publish(ids.len() + d.tokens.len(), tps);
             ids.push(next);
             // `tokens[..n - 1]` are accepted drafts, already fed; `tokens[n - 1]` is
@@ -815,31 +820,7 @@ mod tests {
         max_tokens: usize,
         stop: &[u32],
     ) -> (usize, Vec<u32>, Option<FinishReason>) {
-        let (tx, mut rx) = mpsc::channel(64);
-        handle
-            .submit(Job {
-                prompt: prompt.to_vec(),
-                reuse_at: Vec::new(),
-                sampling: SamplingParams {
-                    temperature: 0.0,
-                    ..Default::default()
-                },
-                max_tokens,
-                stop_ids: stop.to_vec(),
-                events: tx,
-                ticket: None,
-            })
-            .unwrap();
-        let (mut cached, mut tokens, mut finish) = (0, Vec::new(), None);
-        while let Some(e) = rx.blocking_recv() {
-            match e {
-                Event::Started { cached: c, .. } => cached = c,
-                Event::Token(t) => tokens.push(t),
-                Event::Finished(f) => finish = Some(f),
-                Event::Failed(m) => panic!("{m}"),
-            }
-        }
-        (cached, tokens, finish)
+        collect(submit(handle, prompt, max_tokens, stop))
     }
 
     fn engine(draft: usize) -> EngineHandle {

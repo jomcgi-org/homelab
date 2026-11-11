@@ -48,9 +48,13 @@
       ),
     ),
   );
-  let pageOffset = $derived(
-    scanFraction * Math.max(0, (recording.document?.pages ?? 1) - 4),
-  );
+  // Pages fill in place. A strip that slid past made readers motion-sick.
+  // svelte-ignore state_referenced_locally (A replay is keyed by its recording.)
+  const pageCount = recording.document?.pages ?? 1;
+  let pagesRead = $derived(Math.ceil(scanFraction * pageCount));
+  const sectionOf = (page) =>
+    reportSections.filter((section) => section.from <= page).at(-1)?.label;
+  let readingSection = $derived(sectionOf(Math.max(1, pagesRead)));
   const prefillRate = (uncachedTokens * 1000) / turn.metrics.ttftMs;
   // Output rate over the last 1.5 s of decode steps, for the live readout.
   // svelte-ignore state_referenced_locally (A replay is keyed by its recording.)
@@ -223,28 +227,13 @@
           <span>{uncachedTokens.toLocaleString("en-US")} input tokens</span
           ><span>Thinking off</span>
         </div>
-        <div class="scan-window document-strip" aria-hidden="true">
-          <div
-            class="document-pages"
-            style={`transform:translateX(-${pageOffset * 150}px)`}
-          >
-            {#each Array.from({ length: recording.document.pages }, (_, i) => i + 1) as page}
-              <div class="document-page">
-                <span class="page-heading"
-                  >{reportSections
-                    .filter((section) => section.from <= page)
-                    .at(-1)?.label}</span
-                >
-                <div class="page-lines">
-                  {#each Array.from({ length: 12 }, (_, i) => i) as line}<i
-                      style={`width:${45 + ((page * 17 + line * 23) % 50)}%`}
-                    ></i>{/each}
-                </div>
-                <span class="page-number">{page}</span>
-              </div>
-            {/each}
-          </div>
-        </div>
+        <p class="scan-section">{readingSection ?? ""}</p>
+        <ol class="document-pages" aria-hidden="true">
+          {#each Array.from({ length: pageCount }, (_, i) => i + 1) as page}<li
+              class:read={page <= pagesRead}
+              title={sectionOf(page)}
+            ></li>{/each}
+        </ol>
       </div>
     {:else}
       <div
@@ -364,57 +353,33 @@
     font: 0.7rem var(--font-code);
     margin-bottom: 0.9rem;
   }
-  .scan-window {
-    overflow: hidden;
-    font: 0.75rem/2 var(--font-code);
-    color: var(--ink-2);
+  .scan-section {
+    margin: 0 0 0.6rem;
+    min-height: 1.4em;
+    color: var(--ink);
+    font: 0.75rem/1.4 var(--font-code);
   }
   .question a {
     color: inherit;
     text-decoration-color: var(--tone-ram);
     text-underline-offset: 0.2em;
   }
-  .document-strip {
-    overflow: hidden;
-    height: 230px;
-  }
   .document-pages {
     display: flex;
-    gap: 14px;
-    width: max-content;
-    will-change: transform;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
   }
-  .document-page {
-    width: 136px;
-    height: 218px;
-    padding: 14px 12px;
-    background: var(--sheet);
+  .document-pages li {
+    width: 1.5rem;
+    aspect-ratio: 17 / 22;
     border: 1px solid var(--tone-ram);
-    box-sizing: border-box;
-    display: flex;
-    flex-direction: column;
+    background: var(--sheet);
   }
-  .page-heading {
-    color: var(--ink);
-    font: 0.65rem/1.4 var(--font-code);
-    min-height: 3rem;
-  }
-  .page-lines {
-    display: flex;
-    flex-direction: column;
-    gap: 7px;
-    flex: 1;
-  }
-  .page-lines i {
-    display: block;
-    height: 2px;
-    background: var(--ink-3);
-    opacity: 0.5;
-  }
-  .page-number {
-    font: 0.6rem var(--font-code);
-    color: var(--ink-2);
-    align-self: flex-end;
+  .document-pages li.read {
+    background: var(--tone-ram);
   }
   .answer {
     font-size: 0.9rem;
@@ -523,18 +488,9 @@
       min-height: max(28.25rem, calc(100cqw * 0.49405 + 12rem));
     }
   }
-  /* Short laptop screens get the phone's compact page strip, and the code
-     view may shrink further, so the landing still fits one screen. */
+  /* On short laptop screens the code view may shrink further, so the
+     landing still fits one screen. */
   @media (max-height: 820px) {
-    .landing .document-strip {
-      height: 140px;
-    }
-    .landing .document-page {
-      height: 128px;
-    }
-    .landing .page-lines i:nth-child(n + 5) {
-      display: none;
-    }
     .landing :global(.code-output pre) {
       height: clamp(5.5rem, calc(100svh - 36.5rem), 15rem);
     }
@@ -548,15 +504,6 @@
     }
     .landing .input-scan {
       padding: 0.65rem;
-    }
-    .landing .document-strip {
-      height: 140px;
-    }
-    .landing .document-page {
-      height: 128px;
-    }
-    .landing .page-lines i:nth-child(n + 5) {
-      display: none;
     }
     .landing .question {
       font-size: 0.9rem;

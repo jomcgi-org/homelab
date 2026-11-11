@@ -1,9 +1,8 @@
 """Tests for token-efficient output formatting."""
 
-from pathlib import Path
 from unittest.mock import patch
 
-import pytest
+import pytest  # noqa: F401
 
 from tools.cli.output import compact_line, format_edges, search_line, write_to_tmpfile
 

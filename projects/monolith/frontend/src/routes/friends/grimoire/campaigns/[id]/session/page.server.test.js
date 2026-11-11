@@ -35,12 +35,16 @@ function backend(role) {
     if (url.includes("/events")) return response([]);
     if (url.includes("/journal")) return response({});
     if (url.endsWith("/members")) return response(members);
-    if (url.endsWith("/voices")) return response([{ speaker_key: "narrator" }]);
-    if (url.includes("/entities?"))
-      return response({
-        items: [{ id: "npc", entity_type: "npc", name: "NPC_CANARY" }],
-        next_cursor: null,
-      });
+    // The backend names NPC presets in the DM view only.
+    if (url.endsWith("/voices"))
+      return response(
+        role === "dm"
+          ? [
+              { speaker_key: "narrator", speaker_name: null },
+              { speaker_key: "npc", speaker_name: "NPC_CANARY" },
+            ]
+          : [{ speaker_key: "narrator" }],
+      );
     throw new Error(`Unexpected request ${url}`);
   });
 }
@@ -73,7 +77,6 @@ const dmOnlyKeys = [
 describe("session page load", () => {
   beforeEach(() => {
     process.env.API_BASE = "http://backend.test";
-    process.env.GRIMOIRE_PLAY_ENABLED = "true";
   });
 
   it("keeps a search-linked session in both the initial load and the state BFF", async () => {
@@ -110,15 +113,6 @@ describe("session page load", () => {
     ).toBe(true);
   });
 
-  it("is unavailable while play is disabled", async () => {
-    delete process.env.GRIMOIRE_PLAY_ENABLED;
-    const fetch = backend("dm");
-    await expect(
-      load({ fetch, cookies, params: { id: "campaign" }, setHeaders: vi.fn() }),
-    ).rejects.toMatchObject({ status: 404 });
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
   it("gives a player no DM-only controls or audience roster", async () => {
     const { data, fetch, setHeaders } = await loadAs("player");
     expect(data.campaign.role).toBe("player");
@@ -149,9 +143,13 @@ describe("session page load", () => {
     const { data, fetch } = await loadAs("dm");
     expect(data.campaign.role).toBe("dm");
     expect(data.members).toEqual(members);
-    expect(data.npcs[0].name).toBe("NPC_CANARY");
+    expect(data.voices[1].speaker_name).toBe("NPC_CANARY");
+    expect(data).not.toHaveProperty("npcs");
     expect(fetch.mock.calls.some(([url]) => url.endsWith("/members"))).toBe(
       true,
+    );
+    expect(fetch.mock.calls.some(([url]) => url.includes("/entities"))).toBe(
+      false,
     );
   });
 });

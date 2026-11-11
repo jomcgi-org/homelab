@@ -27,6 +27,35 @@ from pathlib import Path
 import pytest
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("overlay", ["chart", "hub", "dev", "recovery"])
+def test_planner_hold_refusal_is_default_off_and_configurable(enabled, overlay):
+    chart = find_chart_dir()
+    command = [os.environ.get("HELM_BIN", "helm"), "template", "test", str(chart)]
+    if overlay == "hub":
+        files = [
+            chart.parent / "deploy" / name
+            for name in ("values.yaml", "values-gke.yaml")
+        ]
+    elif overlay in ("dev", "recovery"):
+        files = [chart.parent / "dev/deploy/values.yaml"]
+        if overlay == "recovery":
+            files.append(chart.parent / "dev/deploy/values-recovery-gke.yaml")
+    else:
+        files = []
+    for path in files:
+        command += ["--values", str(path)]
+    command += ["--set", "swarm.enabled=true"]
+    if enabled:
+        command += ["--set", "swarm.factoryPlannerHoldRefusalEnabled=true"]
+    rendered = subprocess.check_output(command, text=True)
+    expected = str(enabled).lower()
+    assert re.search(
+        rf'- name: FACTORY_PLANNER_HOLD_REFUSAL_ENABLED\n\s+value: "{expected}"',
+        rendered,
+    )
+
+
 def find_config_modules():
     """Discover all config.py files in the monolith directory tree.
 
@@ -232,86 +261,101 @@ def test_factory_webhook_and_pointer_ship_staged_off(chart_context):
     )
 
 
-def test_session_stop_control_is_default_off_and_wires_both_containers(
-    chart_context,
-):
-    """Backend enforcement and frontend visibility share one explicit flag."""
-    pattern = r'- name: AGENT_SESSION_STOP_CONTROL_ENABLED\n\s+value: "(true|false)"'
-    assert re.findall(pattern, chart_context["rendered"]) == ["false", "false"]
+_RETIRED_FACTORY_FLAGS = (
+    "AGENT_CLAIM_HEARTBEAT_SESSION_LOCK_ENABLED",
+    "AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED",
+    "AGENT_GUEST_ANSWER_SETTLEMENT_ENABLED",
+    "AGENT_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED",
+    "AGENT_PROBE_SUPERVISION_ENABLED",
+    "AGENT_RESPONSE_LOST_DRAIN_RELAY_ENABLED",
+    "AGENT_RESPONSE_LOST_RECOVERY_ENABLED",
+    "AGENT_RESULT_RECEIPTS_ENABLED",
+    "AGENT_RESULT_RECEIPT_ADOPTION_ENABLED",
+    "AGENT_SESSION_STOP_CONTROL_ENABLED",
+    "AGENT_ROLLOUT_HANDOFF_ENABLED",
+    "AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED",
+    "CNPG_BACKUP_HEALTH_ENABLED",
+    "CONDUCTOR_CONTINUITY_ENABLED",
+    "DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED",
+    "DRAINER_NOTIFY_FAILURES",
+    "EMBERVM_CREATE_OUTCOME_LATCH_ENABLED",
+    "FACTORY_ACTIVE_CESSATION_ENABLED",
+    "FACTORY_DEADLINE_BACKSTOP_ENABLED",
+    "FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED",
+    "FACTORY_ESCALATION_REVALIDATION_ENABLED",
+    "FACTORY_INVOKE_FAILURE_CESSATION_ENABLED",
+    "FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED",
+    "FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED",
+    "FACTORY_MERIT_JUDGE_ENABLED",
+    "FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED",
+    "FACTORY_NOTIFY_DIGEST_ENABLED",
+    "FACTORY_OPERATIONAL_HANDOFF_ENABLED",
+    "FACTORY_STOP_SUPERVISION_ENABLED",
+    "KG_DOCFIX_REVIEW_ENABLED",
+    "KG_FEED_ENABLED",
+    "SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION",
+)
 
-    chart_dir = chart_context["chart_dir"]
-    helm_bin = os.environ.get("HELM_BIN", "helm")
-    result = subprocess.run(
+
+def test_retired_factory_flags_never_render(chart_context):
+    """Their behaviour is unconditional, so no switch remains to set."""
+    for name in _RETIRED_FACTORY_FLAGS:
+        assert f"name: {name}\n" not in chart_context["rendered"], name
+
+
+@pytest.mark.parametrize(
+    "env,value",
+    [
+        (
+            "FACTORY_RECOVERY_DELEGATION_ENABLED",
+            "swarm.factoryRecoveryDelegationEnabled",
+        ),
+        (
+            "FACTORY_LEARNING_INPUT_DEDUP_ENABLED",
+            "agents.drainer.learningInputDedupEnabled",
+        ),
+    ],
+)
+def test_recovery_features_ship_disabled_until_explicit_opt_in(
+    chart_context, env, value
+):
+    pattern = rf'- name: {env}\n\s+value: "(true|false)"'
+    assert re.findall(pattern, chart_context["rendered"]) == ["false"]
+    rendered = subprocess.run(
         [
-            helm_bin,
+            os.environ.get("HELM_BIN", "helm"),
             "template",
             "monolith",
-            str(chart_dir),
-            "--namespace",
-            "default",
-            "--values",
-            str(chart_dir / "values.yaml"),
+            str(chart_context["chart_dir"]),
             "--values",
             str(chart_context["deploy_values_file"]),
             "--set",
-            "agents.sessions.stopControlEnabled=true",
+            value + "=true",
         ],
         capture_output=True,
         text=True,
-    )
-    assert result.returncode == 0, result.stderr
-    assert re.findall(pattern, result.stdout) == ["true", "true"]
+        check=True,
+    ).stdout
+    assert re.findall(pattern, rendered) == ["true"]
 
 
-def test_factory_lost_before_session_sweep_ships_staged_off(chart_context):
-    """The chart wires the runtime gate without enabling the new sweep."""
+def test_repo_diff_reconcile_enabled_in_deploy(chart_context):
+    """Production runs the idempotent placeholder-range backfill."""
     rendered = chart_context["rendered"]
 
     assert re.search(
-        r'- name: FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED\n\s+value: "false"',
+        r'- name: KG_REPO_DIFF_RECONCILE_ENABLED\n\s+value: "true"',
         rendered,
     )
 
 
-def test_drainer_lost_before_session_sweep_ships_staged_off(chart_context):
-    """The chart wires the drainer sweep gate without enabling it."""
+def test_knowledge_recall_limit_in_deploy_is_five_notes(chart_context):
+    """Recall always runs (#5680 read side); the deploy values set its limit."""
     rendered = chart_context["rendered"]
 
-    assert re.search(
-        r'- name: DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED\n\s+value: "false"',
-        rendered,
-    )
-
-
-def test_repo_diff_reconcile_ships_default_off(chart_context):
-    """The chart wires the reconcile gate without enabling the backfill."""
-    rendered = chart_context["rendered"]
-
-    assert re.search(
-        r'- name: KG_REPO_DIFF_RECONCILE_ENABLED\n\s+value: "false"',
-        rendered,
-    )
-
-
-def test_knowledge_recall_enabled_in_deploy_with_five_notes(chart_context):
-    """The API deployment receives both knowledge recall controls.
-
-    The chart default is off; production flips it on in deploy/values.yaml
-    (#5680 read side), and this renders with the deploy values.
-    """
-    rendered = chart_context["rendered"]
-
-    assert re.search(
-        r'- name: KNOWLEDGE_RECALL_ENABLED\n\s+value: "true"',
-        rendered,
-    )
+    assert "name: KNOWLEDGE_RECALL_ENABLED" not in rendered
     assert re.search(
         r'- name: KNOWLEDGE_RECALL_LIMIT\n\s+value: "5"',
-        rendered,
-    )
-    # #6561: production enables Conductor continuity; the chart default stays off.
-    assert re.search(
-        r'- name: CONDUCTOR_CONTINUITY_ENABLED\n\s+value: "true"',
         rendered,
     )
 
@@ -416,14 +460,9 @@ def test_backend_exposes_chart_version_for_kargo_gate(chart_context):
 
 
 @pytest.mark.parametrize(
-    ("overlays", "expected"),
-    [
-        ((), "false"),
-        (("values.yaml",), "false"),
-        (("values.yaml", "values-gke.yaml"), "true"),
-    ],
+    "overlays", [(), ("values.yaml",), ("values.yaml", "values-gke.yaml")]
 )
-def test_rollout_handoff_flag_and_grace_render_in_hub_order(overlays, expected):
+def test_rollout_grace_renders_in_hub_order(overlays):
     chart = find_chart_dir()
     command = [os.environ.get("HELM_BIN", "helm"), "template", "monolith", str(chart)]
     for overlay in overlays:
@@ -435,9 +474,6 @@ def test_rollout_handoff_flag_and_grace_render_in_hub_order(overlays, expected):
         doc
         for doc in rendered.split("\n---")
         if "kind: Deployment" in doc and "- name: backend" in doc
-    )
-    assert re.search(
-        rf'- name: AGENT_ROLLOUT_HANDOFF_ENABLED\n\s+value: "{expected}"', backend
     )
     assert re.search(r"terminationGracePeriodSeconds: 45\b", backend)
     assert "minReadySeconds: 10" in backend
@@ -465,7 +501,6 @@ def test_discord_ambient_pause_keeps_bot_and_kg_enabled(chart_context):
     rendered = chart_context["rendered"]
     assert re.search(r'- name: DISCORD_AMBIENT_ENABLED\n\s+value: "false"', rendered)
     assert "name: DISCORD_BOT_TOKEN" in rendered
-    assert re.search(r'- name: KG_FEED_ENABLED\n\s+value: "true"', rendered)
     assert "name: MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID" in rendered
 
 

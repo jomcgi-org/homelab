@@ -18,18 +18,16 @@ from sqlmodel.pool import StaticPool
 from chat import acl, orchestrator, orchestrator_client
 from chat.models import OrchestratorBrief
 from chat.orchestrator import (
-    Brief,
     BriefParseError,
     ChatVerdict,
     Directive,
     FailOpen,
-    PlanVerdict,
     RequestContext,
+    SessionVerdict,
     assemble_prompt,
     parse_brief,
 )
 from chat.orchestrator_client import OrchestratorResponse
-from chat.orchestrator_plan import Plan
 
 
 @pytest.fixture(name="engine")
@@ -60,13 +58,8 @@ def _rows(engine) -> list[OrchestratorBrief]:
 _GOOSE_JSON = json.dumps(
     {
         "route": "goose",
-        "recipe": "implement",
         "repo": "jomcgi/homelab",
         "repo_paths": ["projects/monolith/chat/bot.py"],
-        "hints": "the flow lives in start_agent_flow",
-        "constraints": "do not change the failopen path",
-        "done_criteria": ["CI green", "PR opened"],
-        "stages": [{"title": "read the flow"}, {"title": "wire the verdict"}],
     }
 )
 
@@ -170,11 +163,8 @@ class TestAssemblePrompt:
 class TestParseBrief:
     def test_goose_happy(self):
         brief = parse_brief(_GOOSE_JSON, allowed_scopes=frozenset({"jomcgi/homelab"}))
-        assert isinstance(brief, Brief)
-        assert brief.recipe == "implement"
+        assert isinstance(brief, SessionVerdict)
         assert brief.repo == "jomcgi/homelab"
-        assert brief.stages == ["read the flow", "wire the verdict"]
-        assert brief.done_criteria == ["CI green", "PR opened"]
         assert brief.repo_replaced is False
 
     def test_chat_happy(self):
@@ -195,13 +185,18 @@ class TestParseBrief:
         brief = parse_brief(
             json.dumps(data), allowed_scopes=frozenset({"jomcgi/homelab"})
         )
-        assert isinstance(brief, Brief)
+        assert isinstance(brief, SessionVerdict)
 
-    def test_missing_goose_key_raises(self):
-        data = json.loads(_GOOSE_JSON)
-        del data["stages"]
-        with pytest.raises(BriefParseError):
-            parse_brief(json.dumps(data), allowed_scopes=frozenset({"jomcgi/homelab"}))
+    def test_goose_needs_only_the_route(self):
+        verdict = parse_brief('{"route":"goose"}', allowed_scopes=frozenset())
+        assert verdict == SessionVerdict()
+
+    def test_legacy_plan_fields_do_not_gate_routing(self):
+        verdict = parse_brief(
+            '{"route":"goose","recipe":null,"stages":false,"plan":{}}',
+            allowed_scopes=frozenset(),
+        )
+        assert verdict == SessionVerdict()
 
     def test_chat_missing_direction_raises(self):
         data = {"route": "chat", "reply_guidance": {"context": "x"}}
@@ -219,7 +214,7 @@ class TestParseBrief:
     def test_repo_out_of_scope_is_discarded_and_flagged(self):
         # Invoker holds a different repo, so the brief's repo is discarded.
         brief = parse_brief(_GOOSE_JSON, allowed_scopes=frozenset({"weave-hand/loom"}))
-        assert isinstance(brief, Brief)
+        assert isinstance(brief, SessionVerdict)
         assert brief.repo == ""
         assert brief.repo_replaced is True
 
@@ -253,38 +248,6 @@ def _response(content: str) -> OrchestratorResponse:
     )
 
 
-# A valid submit_plan tool-call arguments object (passes validate_plan): every
-# stepped sub-recipe is a catalog id and appears in enabled_subrecipes.
-_PLAN_ARGS = {
-    "enabled_subrecipes": ["query", "implement"],
-    "steps": [
-        {"sub_recipe": "query", "context": "read start_agent_flow in bot.py"},
-        {"sub_recipe": "implement", "context": "wire the verdict through, open a PR"},
-    ],
-    "done_criteria": ["CI green", "PR opened"],
-}
-
-
-def _tool_response() -> OrchestratorResponse:
-    """The plan (second) call's response. Distinct latency so the goose row's
-    ``plan_latency_ms`` is provably sourced from the plan call, not the route
-    call (which is 42ms above)."""
-    return OrchestratorResponse(
-        content=json.dumps(_PLAN_ARGS),
-        prompt_tokens=200,
-        completion_tokens=30,
-        cached_tokens=150,
-        latency_ms=33,
-    )
-
-
-def _plan_call(args: dict | None = None) -> AsyncMock:
-    """Mock ``orchestrator_client.call_tool`` returning ``(args, response)``."""
-    return AsyncMock(
-        return_value=(args if args is not None else _PLAN_ARGS, _tool_response())
-    )
-
-
 class TestCompile:
     @pytest.mark.asyncio
     async def test_ungranted_no_call_no_row(self, engine, monkeypatch):
@@ -313,26 +276,18 @@ class TestCompile:
         assert _rows(engine) == []
 
     @pytest.mark.asyncio
-    async def test_happy_goose_returns_plan_verdict_writes_one_row(
+    async def test_happy_goose_returns_session_verdict_with_one_call_and_row(
         self, engine, monkeypatch
     ):
-        # Goose route: the route call decides goose, the second submit_plan call
-        # yields the plan. compile returns a PlanVerdict and writes EXACTLY ONE
-        # telemetry row (the plan call does not write its own row).
         monkeypatch.setenv("ORCHESTRATOR_MODEL", "test/model")
         monkeypatch.setattr(acl, "is_granted", lambda *a, **k: True)
         monkeypatch.setattr(
             orchestrator_client, "call", AsyncMock(return_value=_response(_GOOSE_JSON))
         )
-        monkeypatch.setattr(orchestrator_client, "call_tool", _plan_call())
         monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
 
         verdict = await orchestrator.compile(_ctx())
-        assert isinstance(verdict, PlanVerdict)
-        # The plan is the parsed, validated typed Plan.
-        assert isinstance(verdict.plan, Plan)
-        assert [s.sub_recipe for s in verdict.plan.steps] == ["query", "implement"]
-        # Repo scope carried from the route-decision Brief (invoker holds it).
+        assert isinstance(verdict, SessionVerdict)
         assert verdict.repo == "jomcgi/homelab"
         assert verdict.repo_paths == ["projects/monolith/chat/bot.py"]
         assert verdict.repo_replaced is False
@@ -346,61 +301,15 @@ class TestCompile:
         assert rows[0].cached_tokens == 80
         assert rows[0].latency_ms == 42
         assert rows[0].error is None
-        # Plan fields ride in the existing brief_json column (no new DB column).
-        assert rows[0].brief_json["plan_step_count"] == 2
-        assert rows[0].brief_json["plan_latency_ms"] == 33
-        assert rows[0].brief_json["plan"]["steps"][0]["sub_recipe"] == "query"
-        assert rows[0].brief_json["repo"] == "jomcgi/homelab"
-
-    @pytest.mark.asyncio
-    async def test_plan_call_unavailable_fails_open_one_row(self, engine, monkeypatch):
-        # Route call succeeds (goose), but the second submit_plan call is
-        # unavailable: compile fails open to today's baked recipe path, writing
-        # exactly one failopen row.
-        monkeypatch.setenv("ORCHESTRATOR_MODEL", "test/model")
-        monkeypatch.setattr(acl, "is_granted", lambda *a, **k: True)
-        monkeypatch.setattr(
-            orchestrator_client, "call", AsyncMock(return_value=_response(_GOOSE_JSON))
-        )
-        monkeypatch.setattr(
-            orchestrator_client,
-            "call_tool",
-            AsyncMock(
-                side_effect=orchestrator_client.OrchestratorUnavailable(
-                    "plan timed out"
-                )
-            ),
-        )
-        monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
-
-        verdict = await orchestrator.compile(_ctx())
-        assert isinstance(verdict, FailOpen)
-        rows = _rows(engine)
-        assert len(rows) == 1
-        assert rows[0].route == "failopen"
-        assert rows[0].brief_json is None
-        assert "plan timed out" in rows[0].error
-
-    @pytest.mark.asyncio
-    async def test_invalid_plan_fails_open_one_row(self, engine, monkeypatch):
-        # Route call succeeds (goose), but the plan is semantically invalid
-        # (empty steps): validate_plan errors force a fail-open, one failopen row.
-        monkeypatch.setenv("ORCHESTRATOR_MODEL", "test/model")
-        monkeypatch.setattr(acl, "is_granted", lambda *a, **k: True)
-        monkeypatch.setattr(
-            orchestrator_client, "call", AsyncMock(return_value=_response(_GOOSE_JSON))
-        )
-        empty = {"enabled_subrecipes": [], "steps": [], "done_criteria": []}
-        monkeypatch.setattr(orchestrator_client, "call_tool", _plan_call(empty))
-        monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
-
-        verdict = await orchestrator.compile(_ctx())
-        assert isinstance(verdict, FailOpen)
-        rows = _rows(engine)
-        assert len(rows) == 1
-        assert rows[0].route == "failopen"
-        assert rows[0].brief_json is None
-        assert "invalid plan" in rows[0].error
+        assert verdict.brief_id == rows[0].id
+        assert rows[0].prompt_tokens == 100
+        assert rows[0].completion_tokens == 20
+        assert rows[0].brief_json == {
+            "repo": "jomcgi/homelab",
+            "repo_paths": ["projects/monolith/chat/bot.py"],
+            "repo_replaced": False,
+        }
+        orchestrator_client.call.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_happy_chat_writes_chat_row(self, engine, monkeypatch):
@@ -465,7 +374,6 @@ class TestCompile:
         monkeypatch.setattr(
             orchestrator_client, "call", AsyncMock(return_value=_response(_GOOSE_JSON))
         )
-        monkeypatch.setattr(orchestrator_client, "call_tool", _plan_call())
         monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
 
         # Invoker holds only loom, but the brief named jomcgi/homelab.
@@ -474,8 +382,8 @@ class TestCompile:
             allowed_scopes=frozenset({"weave-hand/loom"}),
         )
         verdict = await orchestrator.compile(ctx)
-        assert isinstance(verdict, PlanVerdict)
-        # The out-of-scope repo replacement carries through to the PlanVerdict.
+        assert isinstance(verdict, SessionVerdict)
+        # The out-of-scope repo replacement carries through to the SessionVerdict.
         assert verdict.repo == "weave-hand/loom"
         assert verdict.repo_replaced is True
         assert _rows(engine)[0].brief_json["repo_replaced"] is True
@@ -507,7 +415,7 @@ class TestCompile:
 
     @pytest.mark.asyncio
     async def test_goose_verdict_carries_brief_row_id(self, engine, monkeypatch):
-        # The goose PlanVerdict carries the id of the telemetry row it wrote, so
+        # The goose SessionVerdict carries the id of the telemetry row it wrote, so
         # start_agent_flow can backfill thread_id once the thread exists (the
         # orchestrator runs before the thread is created, so the row is written
         # with a null thread_id).
@@ -516,11 +424,10 @@ class TestCompile:
         monkeypatch.setattr(
             orchestrator_client, "call", AsyncMock(return_value=_response(_GOOSE_JSON))
         )
-        monkeypatch.setattr(orchestrator_client, "call_tool", _plan_call())
         monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
 
         verdict = await orchestrator.compile(_ctx(thread_id=None))
-        assert isinstance(verdict, PlanVerdict)
+        assert isinstance(verdict, SessionVerdict)
         rows = _rows(engine)
         assert len(rows) == 1
         assert verdict.brief_id == rows[0].id
@@ -589,3 +496,19 @@ class TestLinkThread:
         monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
         orchestrator.link_thread(999999, "12345")
         assert _rows(engine) == []
+
+    def test_historical_plan_telemetry_remains_readable(self, engine, monkeypatch):
+        monkeypatch.setattr(orchestrator, "get_engine", lambda: engine)
+        historical = {
+            "repo": "jomcgi/homelab",
+            "plan": {"enabled_subrecipes": ["query"], "steps": []},
+            "plan_step_count": 0,
+            "plan_latency_ms": 33,
+        }
+        brief_id = orchestrator._record(
+            _ctx(thread_id=None), "goose", "m", historical, 42, 100, 20, 80, None
+        )
+        orchestrator.link_thread(brief_id, "12345")
+        row = _rows(engine)[0]
+        assert row.brief_json == historical
+        assert row.thread_id == "12345"

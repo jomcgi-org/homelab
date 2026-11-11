@@ -86,6 +86,7 @@ def assert_default_off(hub):
         "./monolith",
         "./monolith-public",
         "./monolith-agents",
+        "./scotland-connector",
         "./inference",
         "./context-forge-gateway",
     ]

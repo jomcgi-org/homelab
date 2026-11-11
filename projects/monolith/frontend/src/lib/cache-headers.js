@@ -8,7 +8,7 @@ const ONE_YEAR = 31_536_000;
 // function of (data x build): a layout-only deploy changes the HTML and its
 // hashed asset references but not the underlying data, so a data-derived ETag
 // stays fixed and both browsers and the CDN keep revalidating to a 304 against
-// pre-deploy HTML (see projects/monolith/dr_jobs/router.py for the data-side
+// pre-deploy HTML (see projects/monolith/ships/router.py for the data-side
 // ETag). Prefixing the build version busts the validator on any deploy that
 // changes the build, while still 304-ing cheaply when neither data nor build
 // moved. `version` is SvelteKit's per-build timestamp, so it changes iff the
@@ -143,22 +143,22 @@ export const NOTES_PAGE_CACHE_CONTROL = `public, s-maxage=${ONE_HOUR}, stale-whi
 // browsers and Cloudflare may refresh it every five minutes in the background.
 export const SEARCH_INDEX_CACHE_CONTROL = `public, max-age=300, s-maxage=300, stale-while-revalidate=${ONE_DAY}`;
 
-// /slop/factory/merges: the snapshot refreshes periodically, so keep browsers
-// revalidating while Cloudflare serves a 30-minute fresh response and one day
-// of stale data during background refreshes.
-export const MERGES_CACHE_CONTROL = `public, max-age=0, s-maxage=1800, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
-
-// /slop/factory/goals: orchestrator-declared goals move on declaration, not on
-// a snapshot cadence, so the proxy keeps the same 30-minute shared freshness
-// as the merges snapshot. Same shape as MERGES_CACHE_CONTROL above.
-export const FACTORY_GOALS_CACHE_CONTROL = `public, max-age=0, s-maxage=1800, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
-
 // /docs pages: the manifest is baked into the build, so doc content changes only
 // on deploy. The build-versioned page ETag busts revalidation on every deploy,
 // so a long edge cache is safe: 1h fresh, 1d background refresh, 1y serve-stale
 // on origin error (cluster-down resilience). The browser revalidates each load
 // and 304s cheaply when neither data nor build moved.
 export const DOCS_CACHE_CONTROL = `public, s-maxage=${ONE_HOUR}, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
+
+// /manifest.webmanifest on the apex: fixed per build and fetched when a
+// browser offers to install the site, so an hour at the edge; browsers keep it
+// ten minutes. The private host's manifest is behind Access and stays private.
+export const MANIFEST_CACHE_CONTROL = `public, max-age=600, s-maxage=${ONE_HOUR}, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
+
+// /scotland/marketplace.json: the Claude Code plugin catalog is fixed per
+// build and fetched only when someone adds or refreshes the marketplace, so
+// an hour at the edge is plenty; browsers revalidate.
+export const MARKETPLACE_CACHE_CONTROL = `public, max-age=0, s-maxage=${ONE_HOUR}, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
 
 // These app data endpoints (SSR-fetched JSON) all carry `max-age=0` so the
 // BROWSER revalidates every load instead of holding a stale copy. Without an
@@ -197,12 +197,6 @@ export const SHIPS_HEAT_CACHE_CONTROL =
 export const HIKES_WALKS_CACHE_CONTROL =
   "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400";
 
-// /app/dr-jobs listings: the NHS scrape runs daily, so 30 min edge freshness
-// with a 1 h SWR window is plenty. Mirrors _LISTINGS_CACHE_CONTROL in
-// projects/monolith/dr_jobs/router.py, keep in sync.
-export const DR_JOBS_LISTINGS_CACHE_CONTROL =
-  "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400";
-
 // /app/stars sites: the refresh job runs 3-hourly and elapsed hours are pruned
 // hourly, so 30 min edge freshness with a 1 h SWR window is plenty. Mirrors
 // _SITES_CACHE_CONTROL in projects/monolith/stars/router.py, keep in sync.
@@ -226,24 +220,6 @@ export const STARS_HISTORY_CACHE_CONTROL =
 // Mirrors _CACHE in projects/monolith/trips/read_router.py, keep in sync.
 export const TRIPS_CACHE_CONTROL =
   "public, max-age=60, s-maxage=300, stale-while-revalidate=3600";
-
-// /app/campsites snapshot: availability + 14-day weather, refreshed hourly by
-// the campsites-refresh CronWorkflow. 60s edge freshness so a deploy becomes
-// visible within ~1 min without a CDN purge: on deploy the SvelteKit build
-// version changes, which busts the versioned page ETag, and the short s-maxage
-// means the CDN revalidates and picks up the new build within a minute instead of
-// holding the pre-deploy render for up to 30 min. Browser max-age=0 already
-// revalidates each load, and the (build x data)-derived ETag keeps the extra
-// revalidations cheap 304s when nothing moved. 1 h SWR / 1 d SIE preserve CDN
-// offload and origin-outage resilience. Mirrors _SNAPSHOT_CACHE_CONTROL in
-// projects/monolith/campsites/router.py, keep in sync.
-export const CAMPSITES_SNAPSHOT_CACHE_CONTROL =
-  "public, max-age=0, s-maxage=60, stale-while-revalidate=3600, stale-if-error=86400";
-
-// /slop/factory/data/activity: public aggregate agent activity, refreshed every
-// 5 min. Moved out of /slop/factory/activity when that path became a page.
-// Mirrors _ACTIVITY_CACHE_CONTROL in agent_sessions/public_router.py.
-export const AGENT_ACTIVITY_CACHE_CONTROL = "public, max-age=300, s-maxage=300";
 
 // /slop/factory/activity pages: the factory board, one task, one session. The
 // lane moves on the order of a turn, so a minute of freshness is the most a

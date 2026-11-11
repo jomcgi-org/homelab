@@ -1,8 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { servingWakeMs } from "$lib/public/fcstory/metrics.js";
-  import "$lib/public/ember/ember.css";
-  import "./landing.css";
+  import EmberSheet from "$lib/public/ember/EmberSheet.svelte";
 
   // Headline numbers count up from zero on load; skipped under reduced
   // motion (which also keeps visual-regression captures deterministic).
@@ -36,1136 +35,553 @@
   />
 </svelte:head>
 
-<div class="ember-site">
-  <header class="topbar">
-    <span
-      ><a class="brand" href="/"><strong>jomcgi.dev</strong></a> / ember</span
-    >
+<EmberSheet sections={[{ id: "classes", label: "What it runs" }]}>
+  <header class="edition ed-lead masthead">
+    <h1><span class="word">Ember</span></h1>
+    <p class="lede">
+      Every job gets its own tiny virtual machine. Idle ones sleep as snapshots; <b
+        >disk to answering queries in 78&nbsp;ms</b
+      >. Built from scratch on this cluster.
+    </p>
+    <p class="live">
+      <a href="/ember/firecracker#replay">Replay a recorded VM restore</a>
+    </p>
+    <p class="stats">
+      <span><b>{bestWake} ms</b> best wake</span>
+      <span class="sep">·</span>
+      <span><b>~{vmRestore} ms</b> VM restore</span>
+      <span class="sep">·</span>
+      <span>recorded runs</span>
+      <span class="sep">·</span>
+      <a
+        class="src"
+        href="https://github.com/jomcgi/homelab/blob/main/projects/embervm/ARCHITECTURE.md"
+        >source</a
+      >
+    </p>
+    <p class="ctas">
+      <a class="cta cta-primary" href="/ember/firecracker#replay"
+        >watch a replay</a
+      >
+      <a
+        class="cta"
+        href="https://github.com/jomcgi/homelab/blob/main/projects/embervm/ARCHITECTURE.md"
+        >read the docs</a
+      >
+    </p>
   </header>
 
-  <main class="doc">
-    <header class="masthead">
-      <h1><span class="word">Ember</span></h1>
-      <p class="lede">
-        Every job gets its own tiny virtual machine. Idle ones sleep as
-        snapshots; <b>disk to answering queries in 78&nbsp;ms</b>. Built from
-        scratch on this cluster.
-      </p>
-      <p class="live">
-        <a href="/ember/firecracker#replay">Replay a recorded VM restore</a>
-      </p>
-      <p class="stats">
-        <span><b>{bestWake} ms</b> best wake</span>
-        <span class="sep">·</span>
-        <span><b>~{vmRestore} ms</b> VM restore</span>
-        <span class="sep">·</span>
-        <span>recorded runs</span>
-        <span class="sep">·</span>
-        <a
-          class="src"
-          href="https://github.com/jomcgi/homelab/blob/main/projects/embervm/ARCHITECTURE.md"
-          >source</a
-        >
-      </p>
-      <p class="ctas">
-        <a class="cta cta-primary" href="/ember/firecracker#replay"
-          >watch a replay</a
-        >
-        <a
-          class="cta"
-          href="https://github.com/jomcgi/homelab/blob/main/projects/embervm/ARCHITECTURE.md"
-          >read the docs</a
-        >
-      </p>
-    </header>
-
-    <section>
-      <h2 class="h2" id="classes">
-        <a class="anchor" href="#classes">What it runs</a>
-      </h2>
-      <div class="classes">
-        <details class="class" name="em-classes">
-          <summary>
-            <span class="cname">task</span>
-            <span class="ctag">run once</span>
-          </summary>
-          <div class="cmore">
-            <p>
-              A fresh VM per job, <b>no network device</b>, destroyed after. The
-              guest reaches exactly one thing: its channel to the host daemon.
-            </p>
-            <p class="sigs">
-              <a class="sig" href="/ember/firecracker#replay"
-                >replay a VM restore →</a
-              >
-            </p>
-          </div>
-        </details>
-        <details class="class" name="em-classes">
-          <summary>
-            <span class="cname">session</span>
-            <span class="ctag">sleep &amp; wake</span>
-          </summary>
-          <div class="cmore">
-            <p>
-              An agent's sandbox. <b>Banked</b> between turns, <b>relit</b> with memory,
-              processes and open files intact; snapshots offload to S3, so a session
-              survives its node.
-            </p>
-            <p class="sigs">
-              <a class="sig" href="/ember/agents">one microVM per agent →</a>
-            </p>
-          </div>
-        </details>
-        <details class="class" name="em-classes">
-          <summary>
-            <span class="cname">serving</span>
-            <span class="ctag">always answering</span>
-          </summary>
-          <div class="cmore">
-            <p>
-              A warm HTTP endpoint. Requests go through a node-local Envoy
-              straight into the VM; <b
-                >the control plane can restart mid-request</b
-              > and traffic notices nothing.
-            </p>
-          </div>
-        </details>
-        <details class="class" name="em-classes">
-          <summary>
-            <span class="cname">stateful</span>
-            <span class="ctag">a database that sleeps</span>
-          </summary>
-          <div class="cmore">
-            <p>
-              Postgres banked to disk when idle, woken by the next connection. <b
-                >Zero compute while asleep</b
-              >, and the disk outlives the VM.
-            </p>
-            <p class="sigs">
-              <a class="sig" href="/ember/firecracker#replay"
-                >replay a VM restore →</a
-              >
-            </p>
-          </div>
-        </details>
-        <details class="class" name="em-classes">
-          <summary>
-            <span class="cname">composite</span>
-            <span class="ctag">wakes as one</span>
-          </summary>
-          <div class="cmore">
-            <p>
-              Several VMs, one private network, banked and relit as a unit. A
-              scratch Kubernetes cluster ran as one workload.
-            </p>
-          </div>
-        </details>
-        <details class="class" name="em-classes">
-          <summary>
-            <span class="cname">isolation</span>
-            <span class="ctag">hostile by default</span>
-          </summary>
-          <div class="cmore">
-            <p>
-              <b
-                >No VM, and nothing it was restored from, is ever shared between
-                two customers.</b
-              > Task and session guests have no network device at all. Quotas fail
-              closed: quota 0 is a hard stop at submit.
-            </p>
-          </div>
-        </details>
-        <details class="class" name="em-classes">
-          <summary>
-            <span class="cname">the moving parts</span>
-            <span class="ctag">how it fits together</span>
-          </summary>
-          <div class="cmore">
-            <p>
-              An <b>Elixir control plane</b> manages Firecracker VM lifecycle on Kubernetes;
-              a Go daemon on each node owns the machines. Workloads are declared as
-              Kubernetes custom resources.
-            </p>
-            <pre
-              class="api">POST /v1/workloads/:name/tasks     → 202 + a task_id
+  <section class="edition">
+    <h2 class="ed-head" id="classes">
+      <a class="anchor" href="#classes">What it runs</a>
+    </h2>
+    <div class="classes">
+      <details class="class" name="em-classes">
+        <summary>
+          <span class="cname">task</span>
+          <span class="ctag">run once</span>
+        </summary>
+        <div class="cmore">
+          <p>
+            A fresh VM per job, <b>no network device</b>, destroyed after. The
+            guest reaches exactly one thing: its channel to the host daemon.
+          </p>
+          <p class="sigs">
+            <a class="sig" href="/ember/firecracker#replay"
+              >replay a VM restore →</a
+            >
+          </p>
+        </div>
+      </details>
+      <details class="class" name="em-classes">
+        <summary>
+          <span class="cname">session</span>
+          <span class="ctag">sleep &amp; wake</span>
+        </summary>
+        <div class="cmore">
+          <p>
+            An agent's sandbox. <b>Banked</b> between turns, <b>relit</b> with memory,
+            processes and open files intact; snapshots offload to S3, so a session
+            survives its node.
+          </p>
+          <p class="sigs">
+            <a class="sig" href="/ember/agents">one microVM per agent →</a>
+          </p>
+        </div>
+      </details>
+      <details class="class" name="em-classes">
+        <summary>
+          <span class="cname">serving</span>
+          <span class="ctag">always answering</span>
+        </summary>
+        <div class="cmore">
+          <p>
+            A warm HTTP endpoint. Requests go through a node-local Envoy
+            straight into the VM; <b
+              >the control plane can restart mid-request</b
+            > and traffic notices nothing.
+          </p>
+        </div>
+      </details>
+      <details class="class" name="em-classes">
+        <summary>
+          <span class="cname">stateful</span>
+          <span class="ctag">a database that sleeps</span>
+        </summary>
+        <div class="cmore">
+          <p>
+            Postgres banked to disk when idle, woken by the next connection. <b
+              >Zero compute while asleep</b
+            >, and the disk outlives the VM.
+          </p>
+          <p class="sigs">
+            <a class="sig" href="/ember/firecracker#replay"
+              >replay a VM restore →</a
+            >
+          </p>
+        </div>
+      </details>
+      <details class="class" name="em-classes">
+        <summary>
+          <span class="cname">composite</span>
+          <span class="ctag">wakes as one</span>
+        </summary>
+        <div class="cmore">
+          <p>
+            Several VMs, one private network, banked and relit as a unit. A
+            scratch Kubernetes cluster ran as one workload.
+          </p>
+        </div>
+      </details>
+      <details class="class" name="em-classes">
+        <summary>
+          <span class="cname">isolation</span>
+          <span class="ctag">hostile by default</span>
+        </summary>
+        <div class="cmore">
+          <p>
+            <b
+              >No VM, and nothing it was restored from, is ever shared between
+              two customers.</b
+            > Task and session guests have no network device at all. Quotas fail closed:
+            quota 0 is a hard stop at submit.
+          </p>
+        </div>
+      </details>
+      <details class="class" name="em-classes">
+        <summary>
+          <span class="cname">the moving parts</span>
+          <span class="ctag">how it fits together</span>
+        </summary>
+        <div class="cmore">
+          <p>
+            An <b>Elixir control plane</b> manages Firecracker VM lifecycle on Kubernetes;
+            a Go daemon on each node owns the machines. Workloads are declared as
+            Kubernetes custom resources.
+          </p>
+          <pre class="api">POST /v1/workloads/:name/tasks     → 202 + a task_id
 POST /v1/workloads/:name/sessions  → a session_id, then /v1/sessions/:id/invoke
 serving                            → plain HTTP, straight into the VM</pre>
-            <div class="arch">
-              <svg
-                viewBox="0 0 720 300"
-                role="img"
-                aria-label="Ember architecture: callers reach the Elixir control plane, which dispatches over gRPC to the Go node daemon driving Firecracker VMs; serving traffic bypasses the control plane entirely via a node-local Envoy programmed over xDS. Snapshots and boot images are banked to S3."
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex (The labelled diagram region scrolls horizontally on phones.) -->
+          <div
+            class="arch"
+            role="region"
+            aria-label="Ember architecture diagram"
+            tabindex="0"
+          >
+            <svg
+              viewBox="0 0 720 300"
+              role="img"
+              aria-label="Ember architecture: callers reach the Elixir control plane, which dispatches over gRPC to the Go node daemon driving Firecracker VMs; serving traffic bypasses the control plane entirely via a node-local Envoy programmed over xDS. Snapshots and boot images are banked to S3."
+            >
+              <defs>
+                <marker
+                  id="arrow-ember"
+                  markerWidth="8"
+                  markerHeight="8"
+                  refX="7"
+                  refY="4"
+                  orient="auto"
+                >
+                  <path class="mk mk-control" d="M1,1 L7,4 L1,7" />
+                </marker>
+                <marker
+                  id="arrow-frost"
+                  markerWidth="8"
+                  markerHeight="8"
+                  refX="7"
+                  refY="4"
+                  orient="auto"
+                >
+                  <path class="mk mk-data" d="M1,1 L7,4 L1,7" />
+                </marker>
+                <marker
+                  id="arrow-amber"
+                  markerWidth="8"
+                  markerHeight="8"
+                  refX="7"
+                  refY="4"
+                  orient="auto"
+                >
+                  <path class="mk mk-xds" d="M1,1 L7,4 L1,7" />
+                </marker>
+                <marker
+                  id="arrow-slate"
+                  markerWidth="8"
+                  markerHeight="8"
+                  refX="7"
+                  refY="4"
+                  orient="auto"
+                >
+                  <path class="mk mk-bank" d="M1,1 L7,4 L1,7" />
+                </marker>
+              </defs>
+
+              <rect class="lane" x="150" y="18" width="230" height="264" />
+              <text x="162" y="38" class="lane-label"
+                >CONTROL PLANE · ELIXIR/OTP</text
               >
-                <defs>
-                  <marker
-                    id="arrow-ember"
-                    markerWidth="8"
-                    markerHeight="8"
-                    refX="7"
-                    refY="4"
-                    orient="auto"
-                  >
-                    <path class="mk mk-control" d="M1,1 L7,4 L1,7" />
-                  </marker>
-                  <marker
-                    id="arrow-frost"
-                    markerWidth="8"
-                    markerHeight="8"
-                    refX="7"
-                    refY="4"
-                    orient="auto"
-                  >
-                    <path class="mk mk-data" d="M1,1 L7,4 L1,7" />
-                  </marker>
-                  <marker
-                    id="arrow-amber"
-                    markerWidth="8"
-                    markerHeight="8"
-                    refX="7"
-                    refY="4"
-                    orient="auto"
-                  >
-                    <path class="mk mk-xds" d="M1,1 L7,4 L1,7" />
-                  </marker>
-                  <marker
-                    id="arrow-slate"
-                    markerWidth="8"
-                    markerHeight="8"
-                    refX="7"
-                    refY="4"
-                    orient="auto"
-                  >
-                    <path class="mk mk-bank" d="M1,1 L7,4 L1,7" />
-                  </marker>
-                </defs>
+              <rect class="lane" x="420" y="18" width="286" height="264" />
+              <text x="432" y="38" class="lane-label"
+                >EACH FIRECRACKER NODE</text
+              >
 
-                <rect
-                  class="lane"
-                  x="150"
-                  y="18"
-                  width="230"
-                  height="264"
-                  rx="10"
-                />
-                <text x="162" y="38" class="lane-label"
-                  >CONTROL PLANE · ELIXIR/OTP</text
-                >
-                <rect
-                  class="lane"
-                  x="420"
-                  y="18"
-                  width="286"
-                  height="264"
-                  rx="10"
-                />
-                <text x="432" y="38" class="lane-label"
-                  >EACH FIRECRACKER NODE</text
-                >
+              <rect x="14" y="74" width="100" height="44" class="box" />
+              <text x="64" y="93" text-anchor="middle" class="node-label"
+                >caller</text
+              >
+              <text x="64" y="107" text-anchor="middle" class="node-sub"
+                >task / session</text
+              >
 
-                <rect
-                  x="14"
-                  y="74"
-                  width="100"
-                  height="44"
-                  rx="8"
-                  class="box"
-                />
-                <text x="64" y="93" text-anchor="middle" class="node-label"
-                  >caller</text
-                >
-                <text x="64" y="107" text-anchor="middle" class="node-sub"
-                  >task / session</text
-                >
+              <rect x="14" y="196" width="100" height="44" class="box" />
+              <text x="64" y="215" text-anchor="middle" class="node-label"
+                >edge</text
+              >
+              <text x="64" y="229" text-anchor="middle" class="node-sub"
+                >HTTPRoute</text
+              >
 
-                <rect
-                  x="14"
-                  y="196"
-                  width="100"
-                  height="44"
-                  rx="8"
-                  class="box"
-                />
-                <text x="64" y="215" text-anchor="middle" class="node-label"
-                  >edge</text
-                >
-                <text x="64" y="229" text-anchor="middle" class="node-sub"
-                  >HTTPRoute</text
-                >
+              <rect x="170" y="66" width="120" height="46" class="box" />
+              <text x="230" y="86" text-anchor="middle" class="node-label"
+                >HTTP API</text
+              >
+              <text x="230" y="101" text-anchor="middle" class="node-sub"
+                >/v1/workloads</text
+              >
 
-                <rect
-                  x="170"
-                  y="66"
-                  width="120"
-                  height="46"
-                  rx="8"
-                  class="box"
-                />
-                <text x="230" y="86" text-anchor="middle" class="node-label"
-                  >HTTP API</text
-                >
-                <text x="230" y="101" text-anchor="middle" class="node-sub"
-                  >/v1/workloads</text
-                >
+              <rect x="170" y="130" width="120" height="42" class="box" />
+              <text x="230" y="149" text-anchor="middle" class="node-label"
+                >op-log</text
+              >
+              <text x="230" y="163" text-anchor="middle" class="node-sub"
+                >Postgres</text
+              >
 
-                <rect
-                  x="170"
-                  y="130"
-                  width="120"
-                  height="42"
-                  rx="8"
-                  class="box"
-                />
-                <text x="230" y="149" text-anchor="middle" class="node-label"
-                  >op-log</text
-                >
-                <text x="230" y="163" text-anchor="middle" class="node-sub"
-                  >Postgres</text
-                >
+              <rect x="170" y="192" width="120" height="42" class="box" />
+              <text x="230" y="211" text-anchor="middle" class="node-label"
+                >xDS publisher</text
+              >
+              <text x="230" y="225" text-anchor="middle" class="node-sub"
+                >programs Envoy</text
+              >
 
-                <rect
-                  x="170"
-                  y="192"
-                  width="120"
-                  height="42"
-                  rx="8"
-                  class="box"
-                />
-                <text x="230" y="211" text-anchor="middle" class="node-label"
-                  >xDS publisher</text
-                >
-                <text x="230" y="225" text-anchor="middle" class="node-sub"
-                  >programs Envoy</text
-                >
+              <rect x="436" y="60" width="130" height="46" class="box" />
+              <text x="501" y="80" text-anchor="middle" class="node-label"
+                >noded</text
+              >
+              <text x="501" y="95" text-anchor="middle" class="node-sub"
+                >Go daemon</text
+              >
 
-                <rect
-                  x="436"
-                  y="60"
-                  width="130"
-                  height="46"
-                  rx="8"
-                  class="box"
-                />
-                <text x="501" y="80" text-anchor="middle" class="node-label"
-                  >noded</text
-                >
-                <text x="501" y="95" text-anchor="middle" class="node-sub"
-                  >Go daemon</text
-                >
+              <rect x="622" y="60" width="72" height="46" class="box" />
+              <text x="658" y="80" text-anchor="middle" class="node-label"
+                >VM</text
+              >
+              <text x="658" y="95" text-anchor="middle" class="node-sub"
+                >vsock only</text
+              >
 
-                <rect
-                  x="622"
-                  y="60"
-                  width="72"
-                  height="46"
-                  rx="8"
-                  class="box"
-                />
-                <text x="658" y="80" text-anchor="middle" class="node-label"
-                  >VM</text
-                >
-                <text x="658" y="95" text-anchor="middle" class="node-sub"
-                  >vsock only</text
-                >
+              <rect x="436" y="136" width="130" height="40" class="box" />
+              <text x="501" y="154" text-anchor="middle" class="node-label"
+                >S3</text
+              >
+              <text x="501" y="168" text-anchor="middle" class="node-sub"
+                >snapshots + images</text
+              >
+              <path class="path-bank" d="M494,106 L494,132" />
+              <path class="path-bank" d="M508,132 L508,106" />
+              <text
+                x="548"
+                y="124"
+                text-anchor="middle"
+                class="edge-label el-bank">bank</text
+              >
 
-                <rect
-                  x="436"
-                  y="136"
-                  width="130"
-                  height="40"
-                  rx="8"
-                  class="box"
-                />
-                <text x="501" y="154" text-anchor="middle" class="node-label"
-                  >S3</text
-                >
-                <text x="501" y="168" text-anchor="middle" class="node-sub"
-                  >snapshots + images</text
-                >
-                <path class="path-bank" d="M494,106 L494,132" />
-                <path class="path-bank" d="M508,132 L508,106" />
-                <text
-                  x="548"
-                  y="124"
-                  text-anchor="middle"
-                  class="edge-label el-bank">bank</text
-                >
+              <rect x="436" y="196" width="130" height="46" class="box" />
+              <text x="501" y="216" text-anchor="middle" class="node-label"
+                >node Envoy</text
+              >
+              <text x="501" y="231" text-anchor="middle" class="node-sub"
+                >exact-match</text
+              >
 
-                <rect
-                  x="436"
-                  y="196"
-                  width="130"
-                  height="46"
-                  rx="8"
-                  class="box"
-                />
-                <text x="501" y="216" text-anchor="middle" class="node-label"
-                  >node Envoy</text
-                >
-                <text x="501" y="231" text-anchor="middle" class="node-sub"
-                  >exact-match</text
-                >
+              <rect x="622" y="196" width="72" height="46" class="box" />
+              <text x="658" y="216" text-anchor="middle" class="node-label"
+                >VM</text
+              >
+              <text x="658" y="231" text-anchor="middle" class="node-sub"
+                >tap NIC</text
+              >
 
-                <rect
-                  x="622"
-                  y="196"
-                  width="72"
-                  height="46"
-                  rx="8"
-                  class="box"
-                />
-                <text x="658" y="216" text-anchor="middle" class="node-label"
-                  >VM</text
-                >
-                <text x="658" y="231" text-anchor="middle" class="node-sub"
-                  >tap NIC</text
-                >
+              <path class="path-control" d="M114,92 L166,90" />
+              <path class="path-control" d="M290,86 L432,83" />
+              <text
+                x="360"
+                y="75"
+                text-anchor="middle"
+                class="edge-label el-control">gRPC</text
+              >
+              <path class="path-control" d="M566,83 L618,83" />
+              <text
+                x="592"
+                y="76"
+                text-anchor="middle"
+                class="edge-label el-control">vsock</text
+              >
 
-                <path class="path-control" d="M114,92 L166,90" />
-                <path class="path-control" d="M290,86 L432,83" />
-                <text
-                  x="360"
-                  y="75"
-                  text-anchor="middle"
-                  class="edge-label el-control">gRPC</text
-                >
-                <path class="path-control" d="M566,83 L618,83" />
-                <text
-                  x="592"
-                  y="76"
-                  text-anchor="middle"
-                  class="edge-label el-control">vsock</text
-                >
+              <path
+                class="path-data"
+                d="M114,222 C 140,222 138,262 170,262 L 350,262 C 400,262 396,222 432,222"
+              />
+              <text
+                x="260"
+                y="277"
+                text-anchor="middle"
+                class="edge-label el-data">bypasses the control plane</text
+              >
+              <path class="path-data" d="M566,219 L618,219" />
+              <text
+                x="592"
+                y="212"
+                text-anchor="middle"
+                class="edge-label el-data">DNAT</text
+              >
 
-                <path
-                  class="path-data"
-                  d="M114,222 C 140,222 138,262 170,262 L 350,262 C 400,262 396,222 432,222"
-                />
-                <text
-                  x="260"
-                  y="277"
-                  text-anchor="middle"
-                  class="edge-label el-data">bypasses the control plane</text
-                >
-                <path class="path-data" d="M566,219 L618,219" />
-                <text
-                  x="592"
-                  y="212"
-                  text-anchor="middle"
-                  class="edge-label el-data">DNAT</text
-                >
-
-                <path class="path-xds" d="M290,213 C 340,213 380,208 432,207" />
-                <text
-                  x="360"
-                  y="199"
-                  text-anchor="middle"
-                  class="edge-label el-xds">xDS</text
-                >
-              </svg>
-              <div class="legend">
-                <span
-                  ><i class="swatch sw-control"></i> control path (tasks &amp; sessions)</span
-                >
-                <span><i class="swatch sw-data"></i> serving data path</span>
-                <span
-                  ><i class="swatch sw-xds"></i> configuration, ahead of time</span
-                >
-              </div>
+              <path class="path-xds" d="M290,213 C 340,213 380,208 432,207" />
+              <text
+                x="360"
+                y="199"
+                text-anchor="middle"
+                class="edge-label el-xds">xDS</text
+              >
+            </svg>
+            <div class="legend">
+              <span
+                ><i class="swatch sw-control"></i> control path (tasks &amp; sessions)</span
+              >
+              <span><i class="swatch sw-data"></i> serving data path</span>
+              <span
+                ><i class="swatch sw-xds"></i> configuration, ahead of time</span
+              >
             </div>
-            <p class="sigs">
-              <a class="sig" href="/ember/firecracker"
-                >how a VM resumes in 22 ms →</a
-              >
-              <a
-                class="sig"
-                href="https://github.com/jomcgi/homelab/blob/main/projects/embervm/ARCHITECTURE.md"
-                >full architecture →</a
-              >
-            </p>
           </div>
-        </details>
-      </div>
-    </section>
+          <p class="sigs">
+            <a class="sig" href="/ember/firecracker"
+              >how a VM resumes in 22 ms →</a
+            >
+            <a
+              class="sig"
+              href="https://github.com/jomcgi/homelab/blob/main/projects/embervm/ARCHITECTURE.md"
+              >full architecture →</a
+            >
+          </p>
+        </div>
+      </details>
+    </div>
+  </section>
 
-    <footer class="foot">
-      <span
-        >Elixir/OTP control plane · Go node daemon · Firecracker microVMs · 10
-        of 12 roadmap milestones shipped</span
+  <footer class="edition ed-lead foot">
+    <span
+      >Elixir/OTP control plane · Go node daemon · Firecracker microVMs · 10 of
+      12 roadmap milestones shipped</span
+    >
+    <span class="foot-links">
+      <a href="https://github.com/jomcgi/homelab/tree/main/projects/embervm"
+        >github.com/jomcgi/homelab</a
       >
-      <span class="foot-links">
-        <a href="https://github.com/jomcgi/homelab/tree/main/projects/embervm"
-          >github.com/jomcgi/homelab</a
-        >
-        <a href="/">jomcgi.dev</a>
-      </span>
-    </footer>
-  </main>
-</div>
+      <a href="/">jomcgi.dev</a>
+    </span>
+  </footer>
+</EmberSheet>
 
 <style>
-  .ember-site {
-    min-height: 100dvh;
-  }
-
-  /* ---------- topbar ---------- */
-  .topbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 16px;
-    padding: 14px 28px;
-    font-family: var(--em-mono);
-    font-size: 12.5px;
-    color: var(--em-muted);
-  }
-
-  .topbar strong {
-    color: var(--em-ink);
-    font-weight: 600;
-  }
-
-  .topbar .brand {
-    color: inherit;
-    text-decoration: none;
-    border-radius: 4px;
-  }
-
-  .topbar .brand:hover {
-    text-decoration: underline;
-    text-underline-offset: 3px;
-  }
-
-  .topbar .brand:focus-visible {
-    outline: 2px solid var(--em-ember-deep);
-    outline-offset: 3px;
-  }
-
-  .saved {
-    color: var(--em-faint);
-  }
-
-  .saved b {
-    color: var(--em-ember-deep);
-    font-weight: 600;
-  }
-
-  /* ---------- document frame ---------- */
-  .doc {
-    max-width: 880px;
-    margin: 0 auto;
-    padding: 24px 24px 90px;
-  }
-
-  /* ---------- masthead ---------- */
-  .masthead {
-    padding: 56px 0 8px;
-  }
-
-  .masthead h1 {
-    margin: 0 0 10px;
-    font-size: clamp(44px, 7vw, 76px);
-    font-weight: 850;
-    letter-spacing: -0.035em;
-    line-height: 0.95;
-    color: var(--em-ink);
-  }
-
-  .masthead .word {
-    color: var(--em-ember);
-  }
-
-  .lede {
-    margin: 0;
-    /* Capped measure: the doc column is 880px, too wide for comfortable
-       reading at this size. Air is part of the say-less pass. */
-    max-width: 30em;
-    font-size: clamp(17px, 2.1vw, 21px);
-    line-height: 1.5;
-    color: var(--em-ink);
-  }
-
-  .lede b {
-    font-weight: 650;
-  }
-
-  .live {
-    margin: 18px 0 0;
-    font-family: var(--em-mono);
-    font-size: 13px;
-    color: var(--em-muted);
-    display: flex;
-    align-items: center;
-    gap: 9px;
-  }
-
-  .dot {
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    flex: none;
-    transition:
-      background 0.6s ease,
-      box-shadow 0.6s ease;
-  }
-
-  .dot.cold {
-    background: radial-gradient(
-      circle at 35% 35%,
-      var(--eml-dot-cold-hi),
-      var(--em-frost) 70%,
-      var(--eml-dot-cold-lo)
-    );
-    box-shadow: 0 0 7px 1px rgba(61, 126, 194, 0.4);
-    animation: breathe-cold 4.2s ease-in-out infinite;
-  }
-
-  .dot.waking {
-    background: radial-gradient(
-      circle at 35% 35%,
-      var(--eml-dot-wake-hi),
-      var(--em-amber) 65%,
-      var(--em-ember)
-    );
-    box-shadow: 0 0 10px 2px rgba(242, 176, 78, 0.55);
-    animation: breathe-warm 0.9s ease-in-out infinite;
-  }
-
-  .dot.preempted {
-    background: var(--em-amber);
-    box-shadow: 0 0 10px 2px
-      color-mix(in srgb, var(--em-amber) 55%, transparent);
-    animation: breathe-warm 0.9s ease-in-out infinite;
-  }
-
-  .dot.live {
-    background: radial-gradient(
-      circle at 35% 35%,
-      var(--eml-dot-warm-hi),
-      var(--em-ember) 65%,
-      var(--em-ember-deep)
-    );
-    box-shadow: 0 0 8px 1px rgba(224, 66, 26, 0.55);
-    animation: breathe-warm 3.2s ease-in-out infinite;
-  }
-
-  @keyframes breathe-cold {
-    0%,
-    100% {
-      box-shadow: 0 0 4px 0 rgba(61, 126, 194, 0.25);
-    }
-    50% {
-      box-shadow: 0 0 10px 2px rgba(61, 126, 194, 0.45);
-    }
-  }
-
-  @keyframes breathe-warm {
-    0%,
-    100% {
-      box-shadow: 0 0 5px 0 rgba(224, 66, 26, 0.35);
-    }
-    50% {
-      box-shadow: 0 0 12px 3px rgba(224, 66, 26, 0.6);
-    }
-  }
-
-  .live a {
-    color: var(--em-ember-deep);
-    text-decoration: none;
-    border-bottom: 1px solid var(--em-ember-dim);
-  }
-
-  .live a:hover {
-    border-bottom-color: var(--em-ember-deep);
-  }
-
-  .live a:focus-visible,
-  .sig:focus-visible,
-  .anchor:focus-visible,
-  .foot a:focus-visible {
-    outline: 2px solid var(--em-ember-deep);
-    outline-offset: 3px;
-  }
-
-  .stats {
-    margin: 16px 0 0;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 6px 12px;
-    font-family: var(--em-mono);
-    font-size: 12.5px;
-    line-height: 1.6;
-    color: var(--em-faint);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .stats b {
-    color: var(--em-ember-deep);
-    font-weight: 600;
-  }
-
-  .stats .sep {
-    color: var(--eml-line-strong);
-  }
-
-  .stats .src {
-    color: var(--em-ember-deep);
-    text-decoration: none;
-    border-bottom: 1px solid var(--em-ember-dim);
-  }
-
-  .stats .src:hover {
-    border-bottom-color: var(--em-ember-deep);
-  }
-
-  .stats .src:focus-visible {
-    outline: 2px solid var(--em-ember-deep);
-    outline-offset: 3px;
-  }
-
-  /* ---------- hero CTAs, picomq-style pair ---------- */
-  .ctas {
-    margin: 22px 0 0;
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-
-  .cta {
-    font-family: var(--em-mono);
-    font-size: 13px;
-    padding: 10px 18px;
-    border-radius: 8px;
-    text-decoration: none;
-    color: var(--em-ink);
-    border: 1px solid var(--eml-line-strong);
-    background: var(--eml-panel-warm);
-    box-shadow: var(--em-shadow-soft);
-    transition:
-      box-shadow 0.18s ease,
-      transform 0.18s ease;
-  }
-
-  .cta:hover {
-    box-shadow: var(--em-shadow);
-    transform: translateY(-1px);
-  }
-
-  /* Ground-on-ember text: the deep ember passes AA at this size. */
-  .cta-primary {
-    background: var(--em-ember-deep);
-    border-color: var(--em-ember-deep);
-    color: var(--em-ground);
-  }
-
-  .cta:focus-visible {
-    outline: 2px solid var(--em-ember-deep);
-    outline-offset: 3px;
-  }
-
-  /* ---------- section headings, README style ---------- */
-  .h2 {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    margin: 64px 0 18px;
-    font-size: 24px;
-    font-weight: 750;
-    letter-spacing: -0.015em;
-    color: var(--em-ink);
-  }
-
-  .h2::before {
-    content: "##";
-    font-family: var(--em-mono);
-    font-size: 16px;
-    font-weight: 400;
-    color: var(--em-ember);
-    transform: translateY(-2px);
-  }
-
-  .anchor {
-    color: inherit;
-    text-decoration: none;
-  }
-
-  .body {
-    margin: 0 0 14px;
-    max-width: 46em;
-    font-size: 15.5px;
-    line-height: 1.55;
-    color: var(--em-muted);
-  }
-
-  .body b {
-    color: var(--em-ink);
-    font-weight: 600;
-  }
-
-  .classes-after {
-    margin: 14px 0 0;
-  }
-
-  /* The invocation surface, shown rather than described. Mono on the shared
-     track tint; same soft-border language as the arch panel. */
-  .api {
-    margin: 16px 0 0;
-    padding: 13px 16px;
-    background: var(--em-track);
-    border: 1px solid var(--em-line);
-    border-radius: 8px;
-    font-family: var(--em-mono);
-    font-size: 12.5px;
-    line-height: 1.8;
-    color: var(--em-muted);
-    overflow-x: auto;
-  }
-
-  .classes code {
-    font-family: var(--em-mono);
-    font-size: 0.88em;
-    background: var(--em-track);
-    border-radius: 4px;
-    padding: 1px 5px;
-    color: var(--em-ink);
-  }
-
-  /* ---------- ruled class rows: one line visible, detail on demand ------
-     The picomq-style accordion, done as native <details name="em-classes">
-     so one row is open at a time with no JS; older browsers just get
-     independent toggles. The affordance is a mono plus that rotates to a
-     multiply: rotation only, per the transform-and-opacity motion rule. */
-  .classes {
-    display: flex;
-    flex-direction: column;
-    border-top: 1px solid var(--eml-line-strong);
-    margin: 0;
-  }
-
-  .class {
-    border-bottom: 1px solid var(--em-line);
-  }
-
-  .class summary {
-    display: grid;
-    grid-template-columns: 210px minmax(0, 1fr) 18px;
-    gap: 18px;
-    align-items: baseline;
-    padding: 14px 4px;
-    cursor: pointer;
-    list-style: none;
-  }
-
-  .class summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .cname {
-    font-family: var(--em-mono);
-    font-size: 14px;
-    font-weight: 600;
-    line-height: 1.45;
-    color: var(--em-ember-deep);
-  }
-
-  .ctag {
-    font-size: 13.5px;
-    color: var(--em-faint);
-  }
-
-  .class summary::after {
-    content: "+";
-    font-family: var(--em-mono);
-    font-size: 15px;
-    line-height: 1;
-    color: var(--em-faint);
-    justify-self: end;
-    align-self: center;
-  }
-
-  .class[open] summary::after {
-    transform: rotate(45deg);
-  }
-
-  .class summary:hover .ctag {
-    color: var(--em-muted);
-  }
-
-  .class summary:focus-visible {
-    outline: 2px solid var(--em-ember-deep);
-    outline-offset: 3px;
-  }
-
-  .cmore {
-    padding: 0 26px 16px 228px;
-  }
-
-  .cmore p {
-    margin: 0;
-    font-size: 15px;
-    line-height: 1.55;
-    color: var(--em-muted);
-  }
-
-  .cmore b {
-    color: var(--em-ink);
-    font-weight: 600;
-  }
-
-  .sigs {
-    margin: 12px 0 0;
-    display: flex;
-    gap: 8px 18px;
-    flex-wrap: wrap;
-  }
-
-  .cmore .arch {
-    margin-top: 14px;
-  }
-
-  .sig {
-    font-family: var(--em-mono);
-    font-size: 12.5px;
-    color: var(--em-ember-deep);
-    text-decoration: none;
-    border-bottom: 1px solid var(--em-ember-dim);
-    margin-left: 6px;
-    white-space: nowrap;
-  }
-
-  .sig:hover {
-    border-bottom-color: var(--em-ember-deep);
-  }
-
-  /* ---------- architecture ---------- */
-  .arch {
-    background: var(--eml-panel-warm);
-    border: 1px solid var(--em-line);
-    border-radius: 12px;
-    box-shadow: var(--em-shadow-soft);
-    padding: 22px 22px 16px;
-    overflow-x: auto;
-  }
-
-  .arch svg {
-    display: block;
-    min-width: 620px;
-    width: 100%;
-    height: auto;
-  }
-
-  .arch .lane {
-    fill: none;
-    stroke: var(--eml-line-strong);
-    stroke-dasharray: 3 4;
-  }
-
-  .arch .box {
-    fill: var(--em-ground);
-    stroke: var(--eml-line-strong);
-  }
-
-  .arch .lane-label {
-    font-family: var(--em-mono);
-    font-size: 11px;
-    fill: var(--em-faint);
-    letter-spacing: 0.06em;
-  }
-
-  .arch .node-label {
-    font-family: var(--em-sans);
-    font-size: 13px;
-    font-weight: 600;
-    fill: var(--em-ink);
-  }
-
-  .arch .node-sub {
-    font-family: var(--em-mono);
-    font-size: 10.5px;
-    fill: var(--em-faint);
-  }
-
-  .arch .mk {
-    fill: none;
-    stroke-width: 1.6;
-  }
-
-  .arch .mk-control {
-    stroke: var(--em-ember);
-  }
-
-  .arch .mk-data {
-    stroke: var(--em-frost);
-  }
-
-  .arch .mk-xds {
-    stroke: var(--em-amber);
-  }
-
-  .arch .mk-bank {
-    stroke: var(--eml-line-strong);
-  }
-
-  .arch .path-control {
-    stroke: var(--em-ember);
-    stroke-width: 2;
-    fill: none;
-    marker-end: url(#arrow-ember);
-  }
-
-  .arch .path-data {
-    stroke: var(--em-frost);
-    stroke-width: 2;
-    fill: none;
-    marker-end: url(#arrow-frost);
-  }
-
-  .arch .path-xds {
-    stroke: var(--em-amber);
-    stroke-width: 1.6;
-    stroke-dasharray: 5 4;
-    fill: none;
-    marker-end: url(#arrow-amber);
-  }
-
-  .arch .path-bank {
-    stroke: var(--eml-line-strong);
-    stroke-width: 1.6;
-    stroke-dasharray: 4 4;
-    fill: none;
-    marker-end: url(#arrow-slate);
-  }
-
-  .arch .edge-label {
-    font-family: var(--em-mono);
-    font-size: 10.5px;
-  }
-
-  .arch .el-control {
-    fill: var(--em-ember-deep);
-  }
-
-  .arch .el-data {
-    fill: var(--em-frost);
-  }
-
-  .arch .el-xds {
-    fill: var(--eml-amber-deep);
-  }
-
-  .arch .el-bank {
-    fill: var(--em-faint);
-  }
-
+  .masthead .lede {
+    max-width: 60ch;
+  }
+  .stats,
+  .ctas,
+  .foot-links,
+  .sigs,
   .legend {
     display: flex;
     flex-wrap: wrap;
-    gap: 18px;
-    margin-top: 12px;
-    font-family: var(--em-mono);
-    font-size: 11.5px;
-    color: var(--em-muted);
+    gap: 0.6rem 1rem;
   }
-
+  .stats,
+  .ctas,
+  .foot,
+  .sigs,
+  .legend {
+    font-family: var(--font-code);
+    font-size: 0.8rem;
+  }
+  .ctas a,
+  .sig {
+    text-underline-offset: 0.2em;
+  }
+  .class + .class {
+    border-top: 1px solid var(--stroke);
+  }
+  .class summary {
+    display: grid;
+    grid-template-columns: minmax(8em, 1fr) minmax(0, 2fr) auto;
+    align-items: baseline;
+    gap: 0.5rem 1rem;
+    padding: 1rem;
+    cursor: pointer;
+    list-style: none;
+  }
+  .class summary::-webkit-details-marker {
+    display: none;
+  }
+  .class summary::after {
+    content: "+";
+  }
+  .class[open] summary::after {
+    content: "−";
+  }
+  .cname {
+    font-weight: 600;
+  }
+  .ctag {
+    color: var(--ink-2);
+    font-size: 0.85rem;
+  }
+  .cmore {
+    padding: 0 1rem 1rem;
+  }
+  .cmore p {
+    margin: 0 0 1rem;
+  }
+  .cmore .sigs {
+    margin: 1rem 0 0;
+  }
+  .api {
+    padding: 1rem;
+    border: 1px solid var(--stroke);
+    background: var(--band);
+    color: var(--ink);
+    font-family: var(--font-code);
+    font-size: 0.8rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  /* Keep the drawing legible on phones in its own keyboard-scrollable region. */
+  .arch {
+    overflow-x: auto;
+    border: 1px solid var(--stroke);
+    padding: 1rem;
+  }
+  .arch svg {
+    display: block;
+    width: 100%;
+    min-width: 620px;
+    height: auto;
+  }
+  .arch .lane {
+    fill: none;
+    stroke: var(--stroke);
+    stroke-dasharray: 3 4;
+  }
+  .arch .box {
+    fill: var(--sheet);
+    stroke: var(--stroke);
+  }
+  .arch .lane-label,
+  .arch .node-sub,
+  .arch .edge-label {
+    font-family: var(--font-code);
+    font-size: 10.5px;
+    fill: var(--ink-2);
+  }
+  .arch .node-label {
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 600;
+    fill: var(--ink);
+  }
+  .arch .mk,
+  .arch .path-control,
+  .arch .path-data,
+  .arch .path-xds,
+  .arch .path-bank {
+    fill: none;
+    stroke-width: 1;
+    stroke: var(--ink);
+  }
+  .arch .path-control {
+    marker-end: url(#arrow-ember);
+    stroke: var(--accent-ink);
+  }
+  .arch .mk-control {
+    stroke: var(--accent-ink);
+  }
+  .arch .path-data {
+    marker-end: url(#arrow-frost);
+  }
+  .arch .path-xds {
+    marker-end: url(#arrow-amber);
+    stroke-dasharray: 5 4;
+  }
+  .arch .path-bank {
+    marker-end: url(#arrow-slate);
+    stroke-dasharray: 4 4;
+  }
+  .legend {
+    margin-top: 1rem;
+  }
   .legend span {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
+    gap: 0.5rem;
   }
-
   .swatch {
     width: 18px;
-    height: 0;
-    border-top: 2px solid;
-    display: inline-block;
+    border-top: 1px solid var(--ink);
   }
-
   .sw-control {
-    border-color: var(--em-ember);
+    border-color: var(--accent-ink);
   }
-
-  .sw-data {
-    border-color: var(--em-frost);
-  }
-
   .sw-xds {
-    border-color: var(--em-amber);
     border-top-style: dashed;
   }
-
-  /* ---------- footer ---------- */
   .foot {
-    margin-top: 70px;
-    padding-top: 18px;
-    border-top: 2px solid var(--em-ember-deep);
-    display: flex;
-    justify-content: space-between;
-    gap: 16px;
-    flex-wrap: wrap;
-    font-family: var(--em-mono);
-    font-size: 12.5px;
-    color: var(--em-faint);
+    overflow-wrap: anywhere;
   }
-
   .foot-links {
-    display: flex;
-    gap: 18px;
+    margin-top: 1rem;
   }
-
-  .foot a {
-    color: var(--em-muted);
-    text-decoration: none;
-    border-bottom: 1px solid var(--eml-line-strong);
-  }
-
-  .foot a:hover {
-    color: var(--em-ember-deep);
-    border-bottom-color: var(--em-ember-dim);
-  }
-
-  /* ---------- responsive ---------- */
-  @media (max-width: 900px) {
-    .topbar {
-      padding: 12px 16px;
-    }
-
-    .doc {
-      padding: 16px 16px 60px;
-    }
-  }
-
   @media (max-width: 640px) {
     .class summary {
-      grid-template-columns: minmax(0, 1fr) 18px;
-      gap: 6px 14px;
+      grid-template-columns: minmax(0, 1fr) auto;
     }
-
-    .class summary .ctag {
+    .ctag {
       grid-column: 1;
     }
-
     .class summary::after {
-      grid-row: 1;
       grid-column: 2;
-    }
-
-    .cmore {
-      padding-left: 4px;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .dot,
-    .cta {
-      transition: none;
-    }
-
-    .dot.cold,
-    .dot.waking,
-    .dot.preempted,
-    .dot.live {
-      animation: none;
+      grid-row: 1;
     }
   }
 </style>

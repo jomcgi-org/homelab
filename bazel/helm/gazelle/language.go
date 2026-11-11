@@ -42,9 +42,7 @@ func (l *argoCDLang) KnownDirectives() []string {
 	return []string{
 		"argocd",
 		"argocd_enabled",
-		"argocd_generate_diff",
 		"argocd_generate_manifests",
-		"kubectl_context",
 	}
 }
 

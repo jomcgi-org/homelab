@@ -20,6 +20,24 @@ describe("/public/llms.txt", () => {
     expect(body).toContain("\n\n## Elsewhere");
   });
 
+  it("points assistants at the Scotland connector", async () => {
+    const body = await GET().text();
+
+    expect(body).toContain("## Scotland connector");
+    for (const url of [
+      "https://jomcgi.dev/scotland)",
+      "https://jomcgi.dev/scotland/mcp ",
+      "https://jomcgi.dev/scotland/v1/openapi.json",
+      "https://jomcgi.dev/scotland/v1/method",
+      "https://jomcgi.dev/scotland/marketplace.json",
+      "https://jomcgi.dev/scotland/privacy",
+      "https://jomcgi.dev/scotland/terms",
+      "https://jomcgi.dev/scotland/support",
+    ]) {
+      expect(body).toContain(url);
+    }
+  });
+
   it("lists posts newest first with a blank line before Elsewhere", async () => {
     manifest.push(
       { slug: "older", title: "Older", date: "2026-08-01", summary: "A." },

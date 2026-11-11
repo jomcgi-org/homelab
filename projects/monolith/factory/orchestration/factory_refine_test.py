@@ -186,6 +186,15 @@ def audit_actions(db):
     return [row.action for row in audit_rows(db)]
 
 
+def digested_messages(db):
+    """Refine briefs digest instead of paging; these are the recorded texts."""
+    return [
+        json.loads(row.detail_json)["message"]
+        for row in audit_rows(db)
+        if row.action == "task_needs_person_digested"
+    ]
+
+
 def options(first="split"):
     """A valid option list whose head matches ``first``'s recommendation."""
     head = {
@@ -287,6 +296,9 @@ def test_advisory_diagnosis_pauses_and_audits_without_a_node(db):
     conductor.reconcile_task(task["id"], policy, object())
     assert graph.load_graph(task["id"]) == []
     assert controls.task_snapshot(task["id"])["task_paused"] is True
+    card = controls.escalation_view(controls.task_snapshot(task["id"]))
+    assert card["open"] and not card["briefing"] and card["options"]
+    assert "advisory_class_unimplemented: advisory-diagnosis" in card["reason"]
     with Session(db) as session:
         audit = session.exec(
             select(FactoryAudit).where(
@@ -294,6 +306,63 @@ def test_advisory_diagnosis_pauses_and_audits_without_a_node(db):
             )
         ).one()
     assert json.loads(audit.detail_json)["task_class"] == "advisory-diagnosis"
+
+
+@pytest.mark.parametrize("path", ["insertion", "advisory"])
+@pytest.mark.parametrize(
+    "pending", [None, "accepted", "outcome_unknown", "legacy_claim"]
+)
+def test_refine_insertion_refusal_creates_question(db, monkeypatch, path, pending):
+    from factory.orchestration import factory_decisions as decisions, factory_pause
+
+    task, policy = make_task()
+    if pending:
+        factory_pause.pause(task["id"], "test:original", "original reason")
+    before = controls.task_snapshot(task["id"])
+    if pending:
+        with controls._locked_session() as (session, _control):
+            if pending == "legacy_claim":
+                decisions._claim(before["id"], "stop", "operator", session=session)
+            else:
+                decisions._request_event(
+                    session,
+                    "operator",
+                    {"receipt_id": before["id"], "request_key": "pending"},
+                    {"state": pending},
+                )
+        assert controls.set_control("resume_task", "operator", task_id=task["id"])["ok"]
+        task = conductor._task(task["id"])
+    assert not controls.task_snapshot(task["id"])["task_paused"]
+    monkeypatch.setattr(
+        conductor,
+        "_add",
+        lambda *_a, **_kw: graph.GraphOp(
+            ok=False, version=0, refusal_code="envelope_exceeded", detail="refused"
+        ),
+    )
+    refine.reconcile(
+        task,
+        policy,
+        [],
+        [],
+        0,
+        task_class="refine" if path == "insertion" else "unknown",
+    )
+    snapshot = controls.task_snapshot(task["id"])
+    card = controls.escalation_view(snapshot)
+    if pending:
+        assert snapshot["task_paused"]
+        assert snapshot["pause_warning"] == "active_paused_without_actionable_question"
+        assert snapshot["escalation"] == before["escalation"]
+        assert not snapshot["paused_card_actionable"]
+        return
+    assert snapshot["task_paused"] and snapshot["pause_warning"] is None
+    assert card["open"] and not card["briefing"] and card["options"]
+    assert card["reason"] == (
+        "refine_insertion: envelope_exceeded"
+        if path == "insertion"
+        else "advisory_class_unimplemented: unknown"
+    )
 
 
 def test_verified_agent_ready_settles_succeeded(db, monkeypatch):
@@ -397,7 +466,7 @@ def test_unverified_comment_is_refused(db, monkeypatch, case):
     )
 
 
-def test_needs_human_notifies_once(db, monkeypatch):
+def test_needs_human_digests_once(db, monkeypatch):
     from agent import api as notify_module
 
     task, policy = make_task()
@@ -417,31 +486,135 @@ def test_needs_human_notifies_once(db, monkeypatch):
     nodes = graph.load_graph(task["id"])
     refine.reconcile(task, policy, nodes, [run], 1)
     refine.reconcile(task, policy, nodes, [run], 1)
-    assert len(sent) == 1 and sent[0][1] == "warn"
-    assert "recommend: split" in sent[0][0]
+    # A refine brief is a scoping question, not authority: it digests.
+    assert sent == []
+    (message,) = digested_messages(db)
+    assert "recommend: split" in message
     assert controls.task_snapshot(task["id"])["state"] == "succeeded"
 
 
-def test_notify_failure_still_settles(db, monkeypatch):
-    """#6208 uses the shared task notification audit, including failed sends."""
+@pytest.mark.parametrize(
+    "scope", [{"refinement_batch": [7]}, {"refine_brief_only": True}]
+)
+def test_bounded_brief_keeps_decision_without_external_notification(
+    db, monkeypatch, scope
+):
     from agent import api as notify_module
+    from factory.orchestration import factory_notify_policy
 
-    task, policy = make_task()
+    task, policy = make_task(intake={"enabled": True, "refine_enabled": True, **scope})
     add_refine_node(task, policy)
     comment = verified_github(monkeypatch, task, "needs-human")
+    sent = []
 
-    async def notify(*_args, **_kwargs):
-        raise RuntimeError("Discord unavailable")
+    async def notify(*args, **kwargs):
+        sent.append((args, kwargs))
 
     monkeypatch.setattr(notify_module, "notify", notify)
+    run = settle_attempt(task, "succeeded", human_artifact(comment["html_url"]))
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["state"] == "succeeded"
+    assert snapshot["escalation"]["question"]
+    assert sent == []
+
+    assert "task_notification_private" in audit_actions(db)
+    assert "refine_needs_human_notified" not in audit_actions(db)
+    assert factory_notify_policy.DIGESTED not in audit_actions(db)
+    # Replacing the live batch cannot release the admitted task's pinned scope.
+    assert controls.set_control("pause_admissions", "operator")["ok"]
+    assert controls.set_control(
+        "configure", "operator", policy={**policy, "intake": {}}
+    )["ok"]
+    assert conductor._notify_person_once(
+        task["id"], "Watchdog decision", kind="watchdog:looping"
+    )
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(
+                actor="test",
+                action="watchdog_assessed",
+                task_id=task["id"],
+                detail_json='{"verdict":"resume"}',
+            )
+        )
+        session.add(
+            FactoryAudit(
+                actor="test", action="funding_granted", task_id=None, detail_json="{}"
+            )
+        )
+        session.commit()
+        visible = factory_notify_policy._items(session, 0)
+        assert [row.task_id for row in visible] == [None]
+    assert sent == []
+
+    from factory.orchestration.factory_decisions import _requeue
+
+    with Session(db) as session:
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        _requeue(row)
+        session.add(row)
+        session.commit()
+        assert [row.task_id for row in factory_notify_policy._items(session, 0)] == [
+            None
+        ]
+    assert conductor._notify_person_once(
+        task["id"], "Historical decision", kind="intervention"
+    )
+    assert sent == []
+    assert controls.set_control("enable", "operator")["ok"]
+    admitted = admit_next("scheduler")
+    assert admitted["ok"] and admitted["task_id"] != task["id"]
+    assert conductor._notify_person_once(
+        admitted["task_id"], "New separately scoped decision"
+    )
+    assert len(sent) == 1
+
+
+def test_bounded_brief_does_not_execute_typed_gate(db, monkeypatch):
+    task, policy = make_task(
+        intake={"enabled": True, "refine_enabled": True, "refinement_batch": [7]}
+    )
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task)
+    gate = {
+        "kind": "parameter",
+        "classification": "reversible",
+        "effects": {key: False for key in refine.factory_gates.GATE_EFFECTS},
+        "value": "N=3, dry-run only",
+        "reason": "Bounds the proposed implementation.",
+    }
+    called = []
+    monkeypatch.setattr(
+        landing,
+        "github_write",
+        lambda *args, **kwargs: pytest.fail("unexpected GitHub write"),
+    )
+    monkeypatch.setattr(
+        refine.factory_gates, "resolve", lambda *args: called.append(args) or True
+    )
     run = settle_attempt(
         task,
         "succeeded",
-        human_artifact(comment["html_url"], "split", question="Choose one target"),
+        {"outcome": "agent-ready", "comment_url": comment["html_url"], "gate": gate},
     )
     refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
-    assert controls.task_snapshot(task["id"])["state"] == "succeeded"
-    assert "task_notification_failed" in audit_actions(db)
+    assert (
+        controls.task_snapshot(task["id"])["evidence"]["state"] == "refine_agent_ready"
+    )
+    assert called == []
+    assert "refine_gate_proposed" in audit_actions(db)
+    assert conductor._task(task["id"])["conductor_gates"] == []
+    prompt = refine.refine_prompt(
+        task, controls.task_snapshot(task["id"]), closing=False
+    )
+    assert "Do not send external notifications" in prompt
+    assert "proposals only" in prompt
+    assert "Do not apply agent-ready to such a gate" in prompt
+    assert "Reusing existing credentials still counts as uses_credentials" in prompt
+    assert refine.factory_gates.GATE_PROMPT not in prompt
 
 
 def test_two_failed_attempts_fail_without_touching_github(db, monkeypatch):
@@ -1309,7 +1482,9 @@ def test_a_close_verdict_is_downgraded_while_closing_is_off(db, monkeypatch):
     assert snapshot["evidence"]["state"] == "refine_needs_human"
     assert "refine_close_downgraded" in audit_actions(db)
     assert "intake_closed" not in audit_actions(db)
-    assert len(sent) == 1 and "recommend: close" in sent[0][0]
+    assert sent == []
+    (message,) = digested_messages(db)
+    assert "recommend: close" in message
 
 
 def test_a_protected_issue_is_never_closed(db, monkeypatch):
@@ -1563,7 +1738,8 @@ def test_the_notification_links_the_escalations_view(db, monkeypatch):
     monkeypatch.setattr(notify_module, "notify", notify)
     run = settle_attempt(task, "succeeded", human_artifact(comment["html_url"]))
     refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
-    assert refine.ESCALATIONS_URL in sent[0]
+    assert sent == []
+    assert refine.ESCALATIONS_URL in digested_messages(db)[0]
 
 
 def test_needs_human_without_options_is_refused(db, monkeypatch):
@@ -1699,7 +1875,19 @@ def test_a_re_brief_replaces_the_options_the_operator_sent_back(db, monkeypatch)
         lambda *_args, **_kwargs: {"id": 1},
         raising=False,
     )
-    assert decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")["ok"]
+    with Session(db) as session:
+        identity = decisions._fields(session.get(FactoryReceipt, receipt_id))[
+            "decision_id"
+        ]
+    assert decisions.request_decision(
+        receipt_id,
+        identity,
+        "chat",
+        "joe@example.test",
+        request_key="chat-1",
+        note="Which tier?",
+        action="chat",
+    )["ok"]
 
     # The lane briefs it again and settles onto the same receipt.
     admitted = admit_next("scheduler")
@@ -1874,6 +2062,40 @@ def test_reversible_refine_default_posts_comment_and_continues(
     delivery = admit_next("scheduler")
     assert delivery["ok"]
     assert conductor._task(delivery["task_id"])["conductor_gates"] == [gate]
+
+
+def test_refine_planner_hold_refusal_cannot_settle_success(db, monkeypatch):
+    from factory.orchestration import factory_gates as gates
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task, "needs-human")
+    gate = {
+        "kind": "live_validation",
+        "classification": "reversible",
+        "effects": dict.fromkeys(gates.GATE_EFFECTS, False),
+        "reason": "stage",
+        "scope": "Repository-only default-off work",
+        "live_checks": ["Verify rollout"],
+        "leave_unmerged": True,
+    }
+    run = settle_attempt(
+        task, "succeeded", human_artifact(comment["html_url"], "deliver", gate=gate)
+    )
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["state"] != "succeeded"
+    assert "Remove leave_unmerged" in snapshot["evidence"]["reason"]
+    assert "landing_hold" not in snapshot["direction"]
+    with Session(db) as session:
+        events = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "landing_hold_refused",
+            )
+        ).all()
+        assert len(events) == 1
 
 
 def test_refine_rejects_irreversible_gate_claimed_ready(db, monkeypatch):
@@ -2152,3 +2374,24 @@ def test_queued_human_work_is_cancelled_before_task_admission(db):
         ).one()
         assert row.state == "cancelled"
         assert row.task_id is None
+
+
+def test_owner_pr_refinement_cannot_close_pr_even_when_issue_closure_enabled(db):
+    task, policy = make_task(intake={"enabled": True, "close_enabled": True})
+    with Session(db) as session:
+        receipt = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        receipt.direction_json = json.dumps(
+            {"owner_pr": {"direct": True, "author_id": 42}}
+        )
+        session.commit()
+    assert refine.closing_allowed(policy, exclude_task_id=task["id"]) == (
+        False,
+        "owner_pr_disposition_requires_delivery_owner",
+    )
+    snapshot = controls.task_snapshot(task["id"])
+    prompt = refine.refine_prompt(task, snapshot, closing=False)
+    assert "Do not demand a new issue" in prompt
+    assert "standing maintenance policy" in prompt
+    assert "never edit source" in prompt

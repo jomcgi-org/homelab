@@ -264,7 +264,6 @@ class TestLayoutParamsFromEnv:
         assert params.scaling_ratio == 2.0
         assert params.gravity == 0.1
         assert params.max_iter == 100
-        assert params.linlog is False
         assert params.core_fraction == 0.99
         assert params.node_size_scale == 0.005
         assert params.seed == 42
@@ -275,7 +274,6 @@ class TestLayoutParamsFromEnv:
                 "KNOWLEDGE_LAYOUT_SCALING_RATIO": "3.5",
                 "KNOWLEDGE_LAYOUT_GRAVITY": "1.0",
                 "KNOWLEDGE_LAYOUT_MAX_ITER": "200",
-                "KNOWLEDGE_LAYOUT_LINLOG": "1",
                 "KNOWLEDGE_LAYOUT_CORE_FRACTION": "0.8",
                 "KNOWLEDGE_LAYOUT_NODE_SIZE_SCALE": "0.01",
                 "KNOWLEDGE_LAYOUT_SEED": "7",
@@ -284,20 +282,9 @@ class TestLayoutParamsFromEnv:
         assert params.scaling_ratio == 3.5
         assert params.gravity == 1.0
         assert params.max_iter == 200
-        assert params.linlog is True
         assert params.core_fraction == 0.8
         assert params.node_size_scale == 0.01
         assert params.seed == 7
-
-    @pytest.mark.parametrize("truthy", ["1", "true", "TRUE", "True", "yes", "YES"])
-    def test_parses_truthy_linlog_values(self, truthy: str):
-        params = LayoutParams.from_env({"KNOWLEDGE_LAYOUT_LINLOG": truthy})
-        assert params.linlog is True
-
-    @pytest.mark.parametrize("falsy", ["0", "false", "FALSE", "no", "", "off", "nope"])
-    def test_parses_falsy_linlog_values(self, falsy: str):
-        params = LayoutParams.from_env({"KNOWLEDGE_LAYOUT_LINLOG": falsy})
-        assert params.linlog is False
 
     def test_validates_invalid_env_values(self):
         with pytest.raises(ValueError):

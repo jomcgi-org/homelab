@@ -12,34 +12,64 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlmodel import Session, SQLModel, create_engine, select
-from sqlmodel.pool import StaticPool
+from sqlmodel import SQLModel, select
 
 import stars.jobs as jobs
 from shared.forecast_freshness import top_of_hour
-from stars.models import SiteHour
+from stars.models import Site, SiteHour
+from shared.testing.sqlite import sqlite_session
+
+
+def test_entity_success_time_includes_empty_and_survives_prune(session, monkeypatch):
+    now = datetime(2026, 10, 23, 14, tzinfo=timezone(timedelta(hours=2)))
+    old = now.astimezone(timezone.utc) - timedelta(days=1)
+    session.add_all(
+        [
+            Site(id=key, lat=57, lon=-4, forecast_fetched_at=old)
+            for key in ("full", "empty", "failed")
+        ]
+    )
+    session.add(Site(id="never", lat=57, lon=-4))
+    _seed_hour(session, "failed", now + timedelta(hours=1), symbol="previous")
+    session.commit()
+    assert (
+        jobs._write_sites(session, {"full": [_hour(now.isoformat())], "empty": []}, now)
+        == 1
+    )
+    session.commit()
+    session.expire_all()
+    for key in ("full", "empty"):
+        assert _utc(session.get(Site, key).forecast_fetched_at) == now
+    assert _utc(session.get(Site, "failed").forecast_fetched_at) == old
+    assert session.get(Site, "never").forecast_fetched_at is None
+    assert (
+        session.get(SiteHour, ("failed", now + timedelta(hours=1))).symbol == "previous"
+    )
+    assert jobs._write_sites(session, {}, now + timedelta(hours=1)) == 0
+    # An all-empty successful refresh advances each successful entity while a
+    # failed fetch remains absent and keeps both its old rows and timestamp.
+    later = now + timedelta(minutes=30)
+    assert jobs._write_sites(session, {"full": [], "empty": []}, later) == 0
+    session.commit()
+    session.expire_all()
+    for key in ("full", "empty"):
+        assert _utc(session.get(Site, key).forecast_fetched_at) == later
+    assert _utc(session.get(Site, "failed").forecast_fetched_at) == old
+    assert (
+        session.get(SiteHour, ("failed", now + timedelta(hours=1))).symbol == "previous"
+    )
+    monkeypatch.setattr(jobs, "top_of_hour", lambda: now + timedelta(hours=2))
+    assert jobs._prune_elapsed(session) == 1
+    session.commit()
+    session.expire_all()
+    assert _utc(session.get(Site, "full").forecast_fetched_at) == later
+    assert _utc(session.get(Site, "empty").forecast_fetched_at) == later
 
 
 @pytest.fixture(name="session")
 def session_fixture():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
+    with sqlite_session() as session:
+        yield session
 
 
 def _utc(dt):

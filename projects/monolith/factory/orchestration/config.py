@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 
+from core.env import flag
+
 
 def enabled() -> bool:
-    return os.environ.get("SWARM_ENABLED", "false").lower() == "true"
+    return flag("SWARM_ENABLED")
 
 
 def implementer_model() -> str:
@@ -36,11 +38,3 @@ def decision_timeout_seconds() -> int:
 
 def codex_concurrency() -> int:
     return int(os.environ.get("SWARM_CODEX_CONCURRENCY", "2"))
-
-
-def factory_lost_before_session_sweep_enabled() -> bool:
-    """Whether the conductor may automatically settle sessionless starts."""
-    return (
-        os.environ.get("FACTORY_LOST_BEFORE_SESSION_SWEEP_ENABLED", "false").lower()
-        == "true"
-    )

@@ -221,8 +221,8 @@ async def _resolve_channel(bot, row: dict):
 
 
 async def _post_row(bot, row: dict, *, channel=None):
-    """Post one outbox row via the bot. Mirrors chat.bot.send_message's channel
-    resolution (cache, then API fetch).
+    """Post one outbox row via the bot, resolving the channel from the cache,
+    then the API.
 
     Returns the ``discord.Message`` a content/embed post created (so a post-hook
     like the directive-proposal wiring can react on it).
@@ -327,7 +327,7 @@ async def drain_once(bot, engine) -> int:
 
 
 async def run_outbox_drain(bot, engine, poll_interval: float = 3.0) -> None:
-    """Leader-only loop: drain the outbox forever. Started in _start_singletons
+    """Leader-only loop: drain the outbox forever. Started in chat.leader.leader_start
     alongside the bot, so it only runs on the elected leader (the replica that
     actually holds the bot connection)."""
     logger.info("Discord outbox drain started (poll=%.1fs)", poll_interval)

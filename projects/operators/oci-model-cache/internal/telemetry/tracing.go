@@ -28,7 +28,6 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // InitializeTracing sets up OpenTelemetry tracing using standard OTEL environment variables.
@@ -134,9 +133,4 @@ func Shutdown(ctx context.Context, tp *sdktrace.TracerProvider) error {
 	}
 
 	return nil
-}
-
-// GetTracer returns a tracer for the given name.
-func GetTracer(name string) trace.Tracer {
-	return otel.Tracer(name)
 }

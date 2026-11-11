@@ -78,7 +78,6 @@ noded:
     enabled: true
     onepassword:
       itemPath: vaults/k8s-homelab/items/embervm-recovery-noded-token
-  requireRestoreCapability: true
   warmthHeartbeat:
     intervalSeconds: 30
     staleAfterSeconds: 600
@@ -96,8 +95,6 @@ noded:
     # use this profile for workspace restoration or executor-loss recovery.
     endpoint: ''
     bucket: ''
-    compress: true
-    encrypt: true
     credentials:
       enabled: false
       secretName: ''
@@ -129,8 +126,6 @@ workloads:
     rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/runtime-pi/rootfs.ext4
   scratchPostgres:
     rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/scratch-postgres/rootfs.ext4
-  bazelQuery:
-    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/bazel-query/rootfs.ext4
   shotter:
     rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/shotter/rootfs.ext4
   pingWorkload:
@@ -160,8 +155,6 @@ sandboxWorkloads:
     enabled: false
   sandboxJavascript:
     enabled: false
-bazelQueryWorkload:
-  enabled: false
 shotterWorkload:
   enabled: false
 piRuntimeWorkload:
@@ -180,9 +173,6 @@ runtimePython:
   guestImage:
     repository: ''
 runtimePi:
-  guestImage:
-    repository: ''
-bazelQuery:
   guestImage:
     repository: ''
 shotter:
@@ -293,25 +283,17 @@ warmthS3Gc:
   sessionWorkspaceTtlMs: ''
   groupSetTtlMs: ''
   intervalMs: ''
-durabilityHealth:
-  enabled: ''
-  expectedNodes: []
 rootfsReclaim:
   enabled: ''
 envelopeRewrap:
   enabled: false
 grpcConnectionSweeper:
-  enabled: ''
   sweepIntervalMs: ''
-statefulSweeper:
-  pressureBanking:
-    enabled: false
 tracing:
   endpoint: ''
   serviceName: embervm-recovery-control
 hypervisorEpoch: fc-v1.16.1-r2-recovery-gke-1
 
-# Retain the verified node-confirmed ordering and serialize create workers.
-nodeConfirmedDestroy: true
+# Serialize create workers.
 controlPlane:
   createConcurrency: 1

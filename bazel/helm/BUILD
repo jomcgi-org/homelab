@@ -1,17 +1,17 @@
-load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 
+# The standalone CRD schema command needs only its existing binary. File mode
+# generates main-module binaries without a duplicate package-wide library.
+# gazelle:python_generation_mode file
 # gazelle:exclude **/*.bzl
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load(":generation_contract_test.bzl", "helm_admissibility_consumers_test")
 
 exports_files([
-    "argocd-live-diff.sh",
     "chart-admissibility-test.sh",
     "chart-version.sh",
     "check-missed-bump.sh",
-    "helm-assert-annotations.sh",
     "helm-template-test.sh",
     "lint.sh",
     "push.sh.tpl",
@@ -51,6 +51,7 @@ MANIFEST_SETS = [
     "//projects/monolith/deploy:manifests_gke/all.yaml",
     "//projects/monolith/dev/deploy:manifests/all.yaml",
     "//projects/operators/oci-model-cache/deploy:manifests/all.yaml",
+    "//projects/scotland-connector/deploy:manifests/all.yaml",
     # Platform charts rendered by argocd_app. The plain `manifests` target is
     # the chart's default-values render (the home overlay until #6914 retired
     # it); `manifests_gke` is the hub overlay.
@@ -177,13 +178,10 @@ sh_test(
 sh_test(
     name = "chart_admissibility_completeness_regression_test",
     srcs = ["chart-admissibility-completeness_test.sh"],
-    data = [":chart-admissibility-completeness-test.sh"],
-)
-
-sh_test(
-    name = "argocd_live_diff_test",
-    srcs = ["argocd-live-diff_test.sh"],
-    data = [":argocd-live-diff.sh"],
+    data = [
+        ":chart-admissibility-completeness-test.sh",
+        ":testlib.sh",
+    ],
 )
 
 sh_test(
@@ -195,13 +193,32 @@ sh_test(
 sh_test(
     name = "standalone_lint_test",
     srcs = ["lint_test.sh"],
-    data = [":lint.sh"],
+    data = [
+        ":lint.sh",
+        ":testlib.sh",
+    ],
+)
+
+sh_test(
+    name = "lint_inputs_test",
+    srcs = ["lint-inputs_test.sh"],
+    args = ["$(rootpath @multitool//tools/helm)"],
+    data = [
+        ":test.bzl",
+        ":testlib.sh",
+        "//projects/platform/cf-ingress-library:chart",
+        "//projects/shared/helm/homelab-library/chart",
+        "@multitool//tools/helm",
+    ],
 )
 
 sh_test(
     name = "standalone_render_test",
     srcs = ["render_test.sh"],
-    data = [":render.sh"],
+    data = [
+        ":render.sh",
+        ":testlib.sh",
+    ],
 )
 
 sh_test(
@@ -238,7 +255,6 @@ bzl_library(
         "defs.bzl",  # keep
         "images.bzl",  # keep
         "push.bzl",  # keep
-        "render.bzl",  # keep
         "test.bzl",  # keep
     ],
     visibility = ["//visibility:public"],
@@ -247,13 +263,6 @@ bzl_library(
         "@bazel_skylib//lib:paths",  # keep
         "@rules_shell//shell:rules_bzl",  # keep
     ],
-)
-
-py_library(
-    name = "helm",
-    srcs = ["crd-schemas.py"],
-    visibility = ["//:__subpackages__"],
-    deps = ["@pip//pyyaml"],
 )
 
 # Markdown read by the monolith doc-manifest genrules (#6446). See

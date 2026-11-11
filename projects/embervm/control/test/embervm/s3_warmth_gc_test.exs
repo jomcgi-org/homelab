@@ -11,6 +11,171 @@ defmodule Embervm.S3WarmthGcTest do
   @wall 1_750_000_000_000
   @day 86_400_000
 
+  describe "opted-in browser evidence retention" do
+    defp capture_identity do
+      %{session_id: "capture-new", lineage_id: "capture-lineage", workload: "wl", principal: "owner"}
+    end
+
+    test "registration requires enabled cleanup and a new empty lineage; replay preserves deadline" do
+      identity = capture_identity()
+      row = Map.merge(identity, %{generation: 0, state: :running, created_at: @wall})
+      {agent, s3} = new_s3(%{})
+      s3 = Map.put(s3, :put, fn key, body ->
+        Agent.update(agent, fn st -> %{st | objects: Map.put(st.objects, key, {byte_size(body), @wall, body}), puts: st.puts ++ [{key, body}]} end)
+        :ok
+      end)
+      disabled = start_gc(s3, enabled: false, session_store: start_store([row]))
+      assert {:error, :capture_cleanup_disabled} = S3WarmthGc.register_capture(disabled, identity)
+      assert puts(agent) == []
+      gc = start_gc(s3, enabled: false, capture_evidence_enabled: true, session_store: start_store([row]))
+      assert {:ok, policy} = S3WarmthGc.register_capture(gc, identity)
+      assert policy["expires_at"] == @wall + 3 * @day
+      assert {:ok, ^policy} = S3WarmthGc.register_capture(gc, identity, 7 * @day)
+      assert length(puts(agent)) == 1
+      assert {:error, :capture_retention_owner_mismatch} = S3WarmthGc.lease_capture(gc, %{identity | principal: "other"}, 1_000)
+      assert {:ok, _} = S3WarmthGc.lease_capture(gc, identity, 12 * 3_600_000)
+      for objects <- [artifact("session-workspace/wl/capture-lineage", @wall - @day), %{"session-workspace/wl/capture-lineage/partial.tar" => {1, @wall, "x"}}] do
+        {old_agent, old_s3} = new_s3(objects)
+        old_gc = start_gc(old_s3, enabled: true, session_store: start_store([row]))
+        assert {:error, :capture_must_be_new_unarchived_lineage} = S3WarmthGc.register_capture(old_gc, identity)
+        assert puts(old_agent) == []
+      end
+    end
+
+    test "expired capture blobs are deleted while a review lease and legacy age floor hold" do
+      identity = capture_identity()
+      prefix = "session-workspace/wl/capture-lineage"
+      {:ok, policy} = Embervm.CaptureEvidenceRetention.new(identity, @wall - 3 * @day)
+      for {marker, owner_state, should_delete} <- [{policy, :parked, true}, {policy, :running, false}, {Map.put(policy, "lease_until", @wall + 1_000), :parked, false}, {nil, :parked, false}, {%{"invalid" => true}, :parked, false}] do
+        objects = artifact(prefix, @wall - 3 * @day)
+        objects = if marker do
+          body = :json.encode(marker) |> IO.iodata_to_binary()
+          Map.put(objects, prefix <> "/evidence-retention.json", {byte_size(body), @wall, body})
+        else
+          objects
+        end
+        {agent, s3} = new_s3(objects)
+        table = new_cap_table()
+        put_node_fact(table, "node-4", [], [])
+        gc = start_gc(s3, enabled: true, capacity_table: table,
+          stateful_store: start_store([stateful_row(:destroyed, "wl", "none")]),
+          group_store: start_store([]), session_store: start_store([session_row(owner_state, "wl", "capture-lineage", nil)]),
+          volume_fun: fn _ -> nil end)
+        assert {:ok, _} = S3WarmthGc.sweep_now(gc)
+        if should_delete do
+          assert Enum.sort(deleted(agent)) == Enum.sort([prefix <> "/evidence-delete-intent.json" | Map.keys(objects)])
+        else
+          assert deleted(agent) == []
+        end
+      end
+    end
+  end
+
+  describe "capture-only cleanup gate" do
+    defp capture_objects do
+      prefix = "session-workspace/wl/capture-only"
+      identity = %{session_id: "capture", lineage_id: "capture-only", workload: "wl", principal: "owner"}
+      {:ok, policy} = Embervm.CaptureEvidenceRetention.new(identity, @wall - 4 * @day)
+      body = :json.encode(policy) |> IO.iodata_to_binary()
+      {prefix, Map.put(artifact(prefix, @wall - 4 * @day), prefix <> "/evidence-retention.json", {byte_size(body), @wall - 4 * @day, body})}
+    end
+
+    defp capture_gc(s3, opts \\ []) do
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+      start_gc(s3, Keyword.merge([enabled: false, capture_evidence_enabled: true,
+        max_prefixes: 1, capacity_table: table,
+        stateful_store: start_store([stateful_row(:destroyed, "wl", "none")]), group_store: start_store([]),
+        session_store: start_store([session_row(:parked, "wl", "capture-only", nil)]), volume_fun: fn _ -> nil end], opts))
+    end
+
+    test "mixed resources are scoped before caps and both gates default off" do
+      {prefix, captures} = capture_objects()
+      objects = Map.merge(captures, artifact("stateful/amd/wl/old-unrelated", @wall - 30 * @day))
+      objects = Map.merge(objects, artifact("session-workspace/wl/legacy", @wall - 30 * @day))
+      {agent, s3} = new_s3(objects)
+      disabled = capture_gc(s3, capture_evidence_enabled: false)
+      assert {:ok, _} = S3WarmthGc.sweep_now(disabled)
+      assert deleted(agent) == []
+      gc = capture_gc(s3)
+      assert {:ok, %{plan: [%{prefix: ^prefix}], deleted: [^prefix]}} = S3WarmthGc.sweep_now(gc)
+      assert Enum.all?(deleted(agent), &String.starts_with?(&1, prefix <> "/"))
+      assert List.last(deleted(agent)) == prefix <> "/evidence-retention.json"
+    end
+
+    test "interrupted delete resumes exact intent and keeps policy until payload is gone" do
+      {prefix, objects} = capture_objects()
+      {agent, s3} = new_s3(objects)
+      {:ok, fail} = Agent.start_link(fn -> true end)
+      failing_s3 = Map.put(s3, :delete, fn key ->
+        if key == prefix <> "/memfile" and Agent.get_and_update(fail, &{&1, false}),
+          do: {:error, :injected_failure}, else: s3.delete.(key)
+      end)
+      gc = capture_gc(failing_s3)
+      assert {:ok, %{deleted: []}} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == [prefix <> "/meta.json"]
+      assert {:ok, _} = s3.get.(prefix <> "/evidence-retention.json")
+      assert {:ok, _} = s3.get.(prefix <> "/evidence-delete-intent.json")
+      assert {:ok, %{deleted: [^prefix]}} = S3WarmthGc.sweep_now(gc)
+      assert List.last(deleted(agent)) == prefix <> "/evidence-retention.json"
+      assert {:ok, %{deleted: []}} = S3WarmthGc.sweep_now(gc)
+    end
+
+    test "every deletion boundary resumes without dropping the retention policy early" do
+      for boundary <- ["meta.json", "memfile", "evidence-delete-intent.json", "evidence-retention.json"] do
+        {prefix, objects} = capture_objects()
+        {agent, s3} = new_s3(objects)
+        {:ok, fail} = Agent.start_link(fn -> true end)
+        fail_once = Map.put(s3, :delete, fn key ->
+          if key == prefix <> "/" <> boundary and Agent.get_and_update(fail, &{&1, false}),
+            do: {:error, :injected_failure}, else: s3.delete.(key)
+        end)
+        gc = capture_gc(fail_once)
+        assert {:ok, %{deleted: []}} = S3WarmthGc.sweep_now(gc)
+        assert {:ok, _} = s3.get.(prefix <> "/evidence-retention.json")
+        assert {:ok, %{deleted: [^prefix]}} = S3WarmthGc.sweep_now(gc)
+        assert {:ok, []} = s3.list.(prefix <> "/")
+        assert List.last(deleted(agent)) == prefix <> "/evidence-retention.json"
+      end
+    end
+
+    test "scope and archive generation are rechecked after manifest under the fence" do
+      for mutation <- [:policy_removed, :meta_changed] do
+        {prefix, objects} = capture_objects()
+        {agent, s3} = new_s3(objects)
+        changing = Map.put(s3, :put, fn key, body ->
+          if String.starts_with?(key, "gc-manifests/") do
+            Agent.update(agent, fn st ->
+              changed = case mutation do
+                :policy_removed -> Map.delete(st.objects, prefix <> "/evidence-retention.json")
+                :meta_changed -> Map.put(st.objects, prefix <> "/meta.json", {1, @wall, "changed-generation"})
+              end
+              %{st | objects: changed}
+            end)
+          end
+          s3.put.(key, body)
+        end)
+        assert {:ok, %{deleted: []}} = S3WarmthGc.sweep_now(capture_gc(changing))
+        assert deleted(agent) == []
+      end
+    end
+
+    test "retry refuses new keys and changed archive generation" do
+      for mutation <- [:new_key, :new_generation] do
+        {prefix, objects} = capture_objects()
+        {agent, s3} = new_s3(objects)
+        failing_s3 = Map.put(s3, :delete, fn _ -> {:error, :injected_failure} end)
+        assert {:ok, %{deleted: []}} = S3WarmthGc.sweep_now(capture_gc(failing_s3))
+        case mutation do
+          :new_key -> s3.put.(prefix <> "/new-payload", "new")
+          :new_generation -> s3.put.(prefix <> "/meta.json", ~s({"createdAtUnixMs":#{@wall},"generation":2}))
+        end
+        assert {:ok, %{deleted: []}} = S3WarmthGc.sweep_now(capture_gc(s3))
+        assert deleted(agent) == []
+      end
+    end
+  end
+
   # -- fakes -------------------------------------------------------------------
 
   # A minimal store stub answering :all with a fixed row list (drop-in for
@@ -75,7 +240,7 @@ defmodule Embervm.S3WarmthGcTest do
         :ok
       end,
       put: fn key, body ->
-        Agent.update(agent, fn st -> %{st | puts: st.puts ++ [{key, body}]} end)
+        Agent.update(agent, fn st -> %{st | objects: Map.put(st.objects, key, {byte_size(body), @wall, body}), puts: st.puts ++ [{key, body}]} end)
         :ok
       end
     }

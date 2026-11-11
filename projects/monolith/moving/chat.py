@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from datetime import date, datetime, timezone
 from typing import Literal
 
@@ -21,6 +22,7 @@ from core.db import get_session
 from moving.router import build_state
 from moving.viewer import get_viewer
 import shared.inference
+from shared.text_stream import RawUsage, stream_text
 
 logger = logging.getLogger(__name__)
 
@@ -117,38 +119,21 @@ async def stream_chat(
     inference_url: str,
 ) -> AsyncIterator[str]:
     """Stream OpenAI-compatible text deltas with no tools or session state."""
-    body = {
-        "model": MOVING_CHAT_MODEL,
-        "messages": messages,
-        "max_tokens": MAX_TOKENS,
-        "stream": True,
-        "stream_options": {"include_usage": True},
-    }
     usage_dict = None
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        async with client.stream(
-            "POST",
-            f"{inference_url}/v1/chat/completions",
-            headers=shared.inference.auth_headers(inference_url),
-            json=body,
-        ) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line[len("data:") :].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                except ValueError:
-                    continue
-                if chunk.get("usage"):
-                    usage_dict = chunk["usage"]
-                for choice in chunk.get("choices") or []:
-                    text = (choice.get("delta") or {}).get("content")
-                    if text:
-                        yield text
+    async with aclosing(
+        stream_text(
+            endpoint=inference_url,
+            model=MOVING_CHAT_MODEL,
+            messages=messages,
+            max_tokens=MAX_TOKENS,
+            timeout=_TIMEOUT,
+        )
+    ) as events:
+        async for event in events:
+            if isinstance(event, RawUsage):
+                usage_dict = event.value
+            else:
+                yield event.text
     shared.inference.record_usage(usage_dict, MOVING_CHAT_MODEL, "moving")
 
 

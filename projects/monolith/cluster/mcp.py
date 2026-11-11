@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 
+from auth.api import current_principal
 from core.mcp_app import mcp
 from cluster import kargo as kargo_plan
 from cluster import summarize
@@ -32,6 +33,21 @@ logger = logging.getLogger(__name__)
 
 # Workload kinds scanned by the health rollup (replicasets excluded as noise).
 _HEALTH_KINDS = ("deployments", "statefulsets", "daemonsets", "pods", "applications")
+
+
+def _caller() -> tuple[str, str]:
+    """The verified subject and authority of this request, for attribution.
+
+    Read once per mutation, at invocation, from the request-local principal
+    ``PrincipalMiddleware`` set. Never from tool arguments, so a caller cannot
+    name someone else. A request with no bearer (only reachable with the group
+    policy's escape hatch off) carries the anonymous principal, whose subject
+    is ``anonymous``; that is what gets recorded, never a stand-in operator.
+    A shared token yields one shared subject: this names the token, not a
+    session.
+    """
+    principal = current_principal()
+    return principal.subject, principal.authority.value
 
 
 @mcp.tool
@@ -182,13 +198,27 @@ async def k8s_sync_argocd_app(
         prune: Delete resources no longer tracked by Git.
         dry_run: Server-side dry run only (no changes applied).
     """
+    subject, authority = _caller()
     k8s = KubernetesClient()
     try:
-        return await k8s.sync_argocd_app(name, prune=prune, dry_run=dry_run)
+        result = await k8s.sync_argocd_app(
+            name, prune=prune, dry_run=dry_run, initiated_by=subject
+        )
     except Exception as exc:
         return {"error": f"sync failed: {exc}"}
     finally:
         await k8s.close()
+    # The PATCH was accepted; the controller has not run the sync yet.
+    logger.info(
+        "k8s_sync_argocd_app: sync of argocd/%s requested by subject=%s "
+        "authority=%s (prune=%s, dry_run=%s)",
+        name,
+        subject,
+        authority,
+        prune,
+        dry_run,
+    )
+    return result
 
 
 @mcp.tool
@@ -281,6 +311,7 @@ async def kargo_promote(
             included) without creating anything.
         rollback: Allow a version older than the Stage runs or last promoted.
     """
+    subject, authority = _caller()
     k8s = KubernetesClient()
     try:
         obj = await k8s.get_argocd_application(app)
@@ -299,6 +330,7 @@ async def kargo_promote(
             stage_name=stage,
             chart=rollout.app_chart(obj),
             version=chart_version,
+            requester=subject,
             promotions=promotions,
             rollback=rollback,
         )
@@ -313,11 +345,14 @@ async def kargo_promote(
     finally:
         await k8s.close()
     logger.info(
-        "kargo_promote: %s %s to %s/%s (dry_run=%s, rollback=%s)",
+        "kargo_promote: %s %s to %s/%s requested by subject=%s authority=%s "
+        "(dry_run=%s, rollback=%s)",
         app,
         chart_version,
         namespace,
         stage,
+        subject,
+        authority,
         dry_run,
         rollback,
     )

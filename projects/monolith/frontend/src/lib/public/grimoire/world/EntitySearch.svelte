@@ -31,7 +31,7 @@
   function typeVar(entityType) {
     return KNOWN_TYPES.has(entityType)
       ? `var(--grim-type-${entityType})`
-      : "var(--grim-text-faint)";
+      : "var(--ink-2)";
   }
 
   function typeLabel(entityType) {
@@ -287,7 +287,7 @@
     transform: translateY(-50%);
     width: 16px;
     height: 16px;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     pointer-events: none;
   }
 
@@ -295,18 +295,17 @@
     width: 100%;
     height: 42px;
     padding: 0 34px 0 38px;
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line);
-    border-radius: 9px;
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     font-size: 15px;
     font-family: inherit;
-    color: var(--grim-ink);
+    color: var(--ink);
     outline: none;
   }
 
   .search-input:focus-visible {
-    border-color: var(--grim-accent);
-    box-shadow: 0 0 0 3px var(--grim-accent-soft);
+    border-color: var(--accent-ink);
   }
 
   .spin {
@@ -316,9 +315,9 @@
     width: 14px;
     height: 14px;
     margin-top: -7px;
-    border: 2px solid var(--grim-line);
-    border-top-color: var(--grim-accent);
-    border-radius: 50%;
+    border: 1px solid var(--stroke);
+    border-top-color: var(--accent-ink);
+    border-radius: 0;
     animation: spin 0.7s linear infinite;
   }
 
@@ -345,18 +344,17 @@
     list-style: none;
     max-height: min(50vh, 360px);
     overflow-y: auto;
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line);
-    border-radius: 10px;
-    box-shadow: 0 12px 32px rgba(20, 30, 50, 0.16);
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
   }
 
   .group-head {
-    font-family: var(--font-mono);
+    font-family: var(--font-code);
     font-size: 9.5px;
     letter-spacing: 0.13em;
     text-transform: uppercase;
-    color: var(--grim-text-faint);
+    color: var(--ink-2);
     padding: 8px 8px 4px;
   }
 
@@ -365,24 +363,24 @@
     align-items: center;
     gap: 9px;
     padding: 7px 8px;
-    border-radius: 7px;
+    border-radius: 0;
     cursor: pointer;
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .result.active {
-    background: var(--grim-accent-soft);
+    background: var(--band);
   }
 
   .dot {
     width: 9px;
     height: 9px;
-    border-radius: 50%;
+    border-radius: 0;
     flex: none;
   }
 
   .result-name {
-    font-family: var(--grim-serif);
+    font-family: var(--font-ui);
     font-size: 14.5px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -400,30 +398,30 @@
     align-items: center;
     gap: 6px;
     cursor: pointer;
-    background: var(--grim-surface);
-    border: 1px solid var(--grim-line);
-    border-radius: 999px;
+    background: var(--sheet);
+    border: 1px solid var(--stroke);
+    border-radius: 0;
     padding: 5px 11px 5px 9px;
     font-size: 12px;
     font-family: inherit;
-    color: var(--grim-text-dim);
+    color: var(--ink-2);
     min-height: 30px;
   }
 
   .chip:hover {
-    color: var(--grim-ink);
+    color: var(--ink);
   }
 
   .chip .sw {
     width: 8px;
     height: 8px;
-    border-radius: 50%;
+    border-radius: 0;
     flex: none;
   }
 
   .chip.on {
-    color: var(--grim-ink);
-    border-color: color-mix(in srgb, var(--grim-accent) 45%, var(--grim-line));
-    background: var(--grim-accent-soft);
+    color: var(--ink);
+    border-color: color-mix(in srgb, var(--accent-ink) 45%, var(--stroke));
+    background: var(--band);
   }
 </style>

@@ -41,6 +41,8 @@ flowchart TD
 | `crates/oominf-server`      | HTTP APIs, chat templates, parsers, sampling, scheduler, prefix store                                                |
 | `crates/oominf`             | The `oominf` CLI and composition root (`main.rs`, `load.rs`, `profile.rs`, `doctor.rs`)                              |
 | `bench/`                    | `gate.sh` (tier 0 correctness gates), `quality.sh` (tier 1 numerics), `http_bench.py`, `lookup.py`, `make_prompt.py` |
+| `bench/release_inventory.py` | Pinned upstream tensor byte counts, grouped with the converter's categories                                          |
+| `release/`                  | Model-card and license source                                                                                       |
 | `specs/`                    | TLA+ specs and `run.sh`                                                                                              |
 | `reference/`                | Fixture generator (Python, `uv`)                                                                                     |
 | `evals/`                    | Task benchmark harness (Python, `uv`)                                                                                |

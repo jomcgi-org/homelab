@@ -1,7 +1,8 @@
 """Scheduled job handlers for the hikes domain.
 
 scrape_walks_handler runs the weekly WalkHighlands scrape and
-refresh_forecasts_handler the 6-hourly met.no window refresh. In both, the
+refresh_forecasts_handler the 2-hourly met.no window refresh, which then
+materializes the connector snapshot (hikes.materialize). In both, the
 network phase runs in the async handler and the synchronous Session I/O is
 delegated to a worker thread (asyncio.to_thread) so it never blocks the event
 loop, mirroring ships.retention / ships.ingest. The scheduler passes a
@@ -13,10 +14,12 @@ import logging
 from datetime import datetime, timezone
 
 import httpx
-from sqlmodel import Session, delete, select
+from sqlmodel import Session, delete, select, update
 
+from core.clock import as_utc
 from hikes import models
 from hikes.forecast import fetch_all_windows
+from hikes.materialize import materialize_handler
 from hikes.walkhighlands import Walk as ScrapedWalk
 from hikes.walkhighlands import fetch_all_walks
 from shared.forecast_freshness import top_of_hour
@@ -136,6 +139,20 @@ def _load_coords() -> list[tuple[str, float, float]]:
         )
 
 
+_EXTRA_COLUMNS = (
+    "fog_pct",
+    "low_cloud_pct",
+)
+
+
+def _extras(window: list) -> dict:
+    """The complete-forecast columns of an hour tuple, None past its end."""
+    return {
+        name: window[5 + i] if len(window) > 5 + i else None
+        for i, name in enumerate(_EXTRA_COLUMNS)
+    }
+
+
 def _write_walk_hours(
     session: Session, windows_by_uuid: dict[str, list], now: datetime
 ) -> int:
@@ -144,14 +161,22 @@ def _write_walk_hours(
     One bulk delete of the fetched walks' existing hours, then one add_all of
     the new typed rows, so there is no per-iteration session.add. Walks absent
     from ``windows_by_uuid`` (failed fetch) are untouched: stale beats empty.
-    A walk present with an empty window list correctly ends up with no hours
-    (its fetch succeeded but yielded nothing viable).
+    A walk present with an empty list correctly ends up with no hours (its
+    fetch succeeded but yielded no daylight hours in range).
 
-    Each window tuple is [ts_unix, temp_c, precip_mm, wind_kmh, cloud_pct] as
-    emitted by hikes.forecast.compute_windows; the unix timestamp becomes the
-    tz-aware UTC hour_time.
+    Each tuple is a hikes.forecast.HOUR_FIELDS row as compute_hours emits it,
+    every daylight hour good or not; a five-field window tuple leaves the
+    complete-forecast columns null. The unix timestamp becomes the tz-aware
+    UTC hour_time.
     """
     walk_uuids = list(windows_by_uuid.keys())
+    now = as_utc(now)
+    session.execute(
+        update(models.Walk)
+        .where(models.Walk.uuid.in_(walk_uuids))
+        .values(forecast_fetched_at=now)
+        .execution_options(synchronize_session=False)
+    )
     session.execute(
         delete(models.WalkHour).where(models.WalkHour.walk_uuid.in_(walk_uuids))
     )
@@ -163,6 +188,7 @@ def _write_walk_hours(
             precip_mm=window[2],
             wind_kmh=window[3],
             cloud_pct=window[4],
+            **_extras(window),
             fetched_at=now,
         )
         for walk_uuid, windows in windows_by_uuid.items()
@@ -212,7 +238,7 @@ def _run_prune() -> int:
 
 
 async def refresh_forecasts_handler(session: Session) -> datetime | None:
-    """6-hourly met.no refresh: recompute viable hiking windows per walk.
+    """2-hourly met.no refresh: recompute every walk's daylight forecast hours.
 
     Loads the coordinate corpus, runs the whole network phase, then
     wholesale-replaces each fetched walk's typed walk_hours rows in one
@@ -230,11 +256,13 @@ async def refresh_forecasts_handler(session: Session) -> datetime | None:
 
     total_hours = await asyncio.to_thread(_persist_windows, windows_by_uuid, now)
     logger.info(
-        "hikes forecast: %d walks, %d forecasts fetched, %d viable hours",
+        "hikes forecast: %d walks, %d forecasts fetched, %d daylight hours",
         len(coords),
         len(windows_by_uuid),
         total_hours,
     )
+    # The connector's snapshot (walks.json in R2); a no-op without S3 env.
+    await materialize_handler()
     return None
 
 

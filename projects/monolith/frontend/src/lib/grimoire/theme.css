@@ -186,6 +186,82 @@
  * while a grimoire page is mounted (scoped via :has so the rest of the public
  * site keeps its own background). Hardcoded because body is outside .grimoire
  * and can't read --grim-paper; the value mirrors --grim-paper. */
-body:has(.grimoire) {
+body:has(.grimoire):not(:has(.td)) {
   background: #f3f5f7;
+}
+
+/* ── On the sheet ─────────────────────────────────────────────
+ * Since 2026-10-17 every surface converges on the technical-drawing
+ * language (#7016). Inside a .td scope the ledger's roles resolve to the
+ * sheet's tokens, so the campaign screens follow the page scheme, day and
+ * night, without a rewrite: one grotesk, one bright sheet, hairline rules,
+ * the accent as the only chrome colour. The entity-type palette stays, as
+ * meaningful colour. The values above remain for a .grimoire tree outside a
+ * sheet until the last one moves. */
+.td .grimoire,
+.td.grimoire {
+  --grim-accent: var(--accent-ink);
+  --grim-accent-strong: var(--accent-ink);
+  --grim-on-accent: var(--sheet);
+  --grim-serif: var(--font-ui);
+  --grim-paper: var(--sheet);
+  --grim-paper-line: var(--line);
+  --grim-ink: var(--ink);
+  --grim-ink-soft: var(--ink-2);
+  --grim-surface: var(--sheet);
+  --grim-surface-2: var(--band);
+  --grim-line: var(--stroke);
+  --grim-line-soft: var(--line);
+  --grim-text-dim: var(--ink-2);
+  --grim-text-faint: var(--ink-2);
+  --grim-accent-soft: var(--band);
+  --grim-nav-surface: var(--band);
+  --grim-nav-line: var(--stroke);
+  --grim-nav-ink: var(--ink);
+  --grim-nav-text-dim: var(--ink-2);
+  /* The shared private-tier names the panels still read. */
+  --bg: var(--sheet);
+  --fg: var(--ink);
+  --text: var(--ink);
+  --muted: var(--ink-2);
+  --border: var(--stroke);
+  --font-mono: var(--font-code);
+  font-family: var(--font-ui);
+}
+
+/* Document scale and square corners, as on every sheet: a headline is
+   weight, not size, and a panel is drawn, not moulded. */
+.td .grimoire h1 {
+  font-size: clamp(1.4rem, 2.5vw, 1.8rem);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+}
+.td .grimoire h2 {
+  font-size: 1.15rem;
+}
+.td
+  .grimoire
+  :where(
+    article,
+    section,
+    aside,
+    nav,
+    button,
+    input,
+    textarea,
+    select,
+    details,
+    summary,
+    blockquote,
+    a
+  ) {
+  border-radius: 0;
+}
+
+/* Ornament budget: zero. The engraved flourish is a hairline on a sheet. */
+.td .grim-rule {
+  height: 1px;
+  background: var(--stroke);
+  clip-path: none;
 }

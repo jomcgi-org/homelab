@@ -24,4 +24,3 @@ export const rows = [
 ];
 
 export const RATE_MAX = 60;
-export const TTFT_MAX = 24;

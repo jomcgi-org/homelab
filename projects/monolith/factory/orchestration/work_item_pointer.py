@@ -20,7 +20,7 @@ in its own locked transaction, then the loop continues to the next item.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 import logging
 import os
 
@@ -28,7 +28,8 @@ import httpx
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from core.clock import aware
+from core.env import flag
+from core.clock import aware, utc_now as _now
 from factory.orchestration.factory_controls import _audit, _locked_session
 from factory.orchestration.factory_models import FactoryAudit, WorkItem, WorkItemEvent
 
@@ -39,7 +40,7 @@ POINTER_ERROR_THROTTLE = timedelta(hours=1)
 
 
 def pointer_enabled() -> bool:
-    return os.getenv("FACTORY_WORK_ITEM_POINTER_ENABLED", "false").lower() == "true"
+    return flag("FACTORY_WORK_ITEM_POINTER_ENABLED")
 
 
 def pointer_base_url() -> str:
@@ -72,10 +73,6 @@ def _github():
     from factory.orchestration.factory_landing import github_write
 
     return github_write
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _comment_id(response: object) -> int:

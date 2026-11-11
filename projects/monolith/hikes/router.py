@@ -36,6 +36,7 @@ from sqlmodel import Session, select
 
 from core.clock import as_utc, iso
 from core.db import get_session
+from hikes.forecast import MAX_PRECIPITATION_MM, MAX_WIND_KMH, is_viable
 from hikes.models import Walk, WalkHour
 from shared.forecast_freshness import top_of_hour
 
@@ -81,28 +82,26 @@ def _longest_good_run(hour_indices: list[int]) -> int:
     walk's daylight band, so an interior missing hour means bad weather, not
     darkness: bridging exactly one such gap implements "I'll accept one bad hour
     in the slot". The return value counts GOOD hours only; the tolerated bad hour
-    is not counted toward the run length. A gap of two or more missing hours, or a
-    second single-hour gap, ends the run.
+    is not counted toward the run length. A gap of two or more missing hours ends
+    the run; a second single-hour gap slides its start past the previous gap.
     """
     if not hour_indices:
         return 0
 
-    best = 0
-    run = 1  # good hours in the current run (the first hour starts it)
-    gap_used = False
+    best = 1
+    start = 0
+    gap_after = None  # index of the first good hour after the current gap
     for i in range(1, len(hour_indices)):
         delta = hour_indices[i] - hour_indices[i - 1]
-        if delta == 1:
-            run += 1
-        elif delta == 2 and not gap_used:
-            # One missing hour: bridge it once, spending the bad-hour allowance.
-            run += 1
-            gap_used = True
-        else:
-            best = max(best, run)
-            run = 1
-            gap_used = False
-    return max(best, run)
+        if delta == 2:
+            if gap_after is not None:
+                start = gap_after
+            gap_after = i
+        elif delta != 1:
+            start = i
+            gap_after = None
+        best = max(best, i - start + 1)
+    return best
 
 
 def _doable_days(hours: list[datetime], duration_h: float) -> list[str]:
@@ -139,22 +138,36 @@ def _doable_days(hours: list[datetime], duration_h: float) -> list[str]:
     return sorted(doable)
 
 
-def _window_tuple(row: WalkHour) -> list:
-    """Reassemble the compact wire tuple from a typed walk_hours row.
+def _viable() -> tuple:
+    """SQL filters for the hours the hikes app counts as good.
+
+    The forecast job stores every daylight hour; this is
+    hikes.forecast.is_viable on the stored columns, exact at the boundary
+    because wind is stored to two decimals.
+    """
+    return (
+        WalkHour.precip_mm <= MAX_PRECIPITATION_MM,
+        WalkHour.wind_kmh <= MAX_WIND_KMH,
+    )
+
+
+def _window_tuple(row) -> list:
+    """Reassemble the compact wire tuple from a walk_hours row's columns.
 
     The client reads windows as [ts_unix_seconds, temp_c, precip_mm, wind_kmh,
     cloud_pct] tuples (see frontend hikes/filters.js). Storage is normalised to
     typed rows, but the wire format is unchanged, so the frontend needs no edit.
-    wind_kmh and cloud_pct were integers in the legacy tuple, so cast them back
-    from the DOUBLE PRECISION columns; temp_c/precip_mm stay as stored.
+    wind_kmh and cloud_pct were integers in the legacy tuple, so round them
+    back from the DOUBLE PRECISION columns (wind is stored to two decimals);
+    temp_c/precip_mm stay as stored.
     """
     coerced = as_utc(row.hour_time)
     return [
         int(coerced.timestamp()),
         row.temp_c,
         row.precip_mm,
-        int(row.wind_kmh),
-        int(row.cloud_pct),
+        round(row.wind_kmh),
+        round(row.cloud_pct),
     ]
 
 
@@ -198,16 +211,24 @@ def get_walks(
     # Read-time correctness filter: only hours at or after the current clock
     # hour. The prune job is best-effort housekeeping; the endpoint must not
     # trust the table to be already pruned.
+    # Every daylight hour is stored; the planner counts the viable ones, and
+    # freshness counts them all, so a refresh that finds only bad weather
+    # still turns the ETag over.
     hour_rows = session.exec(
-        select(WalkHour.walk_uuid, WalkHour.hour_time, WalkHour.fetched_at).where(
-            WalkHour.hour_time >= cutoff
-        )
+        select(
+            WalkHour.walk_uuid,
+            WalkHour.hour_time,
+            WalkHour.fetched_at,
+            WalkHour.precip_mm,
+            WalkHour.wind_kmh,
+        ).where(WalkHour.hour_time >= cutoff)
     ).all()
 
     hours_by_walk: dict[str, list[datetime]] = {}
     max_fetched: datetime | None = None
-    for walk_uuid, hour_time, fetched_at in hour_rows:
-        hours_by_walk.setdefault(walk_uuid, []).append(hour_time)
+    for walk_uuid, hour_time, fetched_at, precip_mm, wind_kmh in hour_rows:
+        if is_viable(precip_mm, wind_kmh):
+            hours_by_walk.setdefault(walk_uuid, []).append(hour_time)
         coerced = as_utc(fetched_at)
         if coerced is not None and (max_fetched is None or coerced > max_fetched):
             max_fetched = coerced
@@ -266,9 +287,18 @@ def get_walk_detail(
         raise HTTPException(status_code=404, detail="walk not found")
 
     cutoff = top_of_hour(datetime.now(timezone.utc))
+    # Only the columns the window tuple needs: monolith-public serves this
+    # route and promotes separately from the monolith chart that applies
+    # migrations, so the hikes app must not depend on newer columns.
     hour_rows = session.exec(
-        select(WalkHour)
-        .where(WalkHour.walk_uuid == uuid, WalkHour.hour_time >= cutoff)
+        select(
+            WalkHour.hour_time,
+            WalkHour.temp_c,
+            WalkHour.precip_mm,
+            WalkHour.wind_kmh,
+            WalkHour.cloud_pct,
+        )
+        .where(WalkHour.walk_uuid == uuid, WalkHour.hour_time >= cutoff, *_viable())
         .order_by(WalkHour.hour_time)
     ).all()
 

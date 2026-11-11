@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Callable, Iterable
+
+from core.env import flag
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +13,7 @@ POLL_ENABLED_ENV = "FACTORY_AGENT_BOARD_POLL_ENABLED"
 
 
 def poll_enabled() -> bool:
-    return os.getenv(POLL_ENABLED_ENV, "false").lower() == "true"
+    return flag(POLL_ENABLED_ENV)
 
 
 def _read_active(lanes: tuple[str, ...]) -> frozenset[str]:
@@ -48,4 +49,4 @@ def eligible_lanes(
     return tuple(lane for lane in original if f"blocker:lane:{lane}" not in blocked)
 
 
-__all__ = ["eligible_lanes", "poll_enabled"]
+__all__ = ["eligible_lanes"]

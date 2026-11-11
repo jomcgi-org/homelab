@@ -1,7 +1,7 @@
 """Guard the operators group entitlement and akadmin membership ownership.
 
-The operators group gates the standing human factory and intervention guards,
-which match the literal group name. This test pins the source-only contract:
+The standing human factory guards match the literal operators group name.
+This test pins the source-only contract:
 
 1. Exactly one authentik_core.group declares stable id/name operators with
    attrs.is_superuser false.

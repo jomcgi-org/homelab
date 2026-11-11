@@ -1,5 +1,5 @@
 # gazelle:ignore
-load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 load("//bazel/tools/oci:go_image.bzl", "go_image")
 
 # Minimal serving-class prover. One binary, two listeners: the guest answers
@@ -18,12 +18,12 @@ go_library(
     visibility = ["//visibility:private"],
     deps = select({
         "@rules_go//go/platform:android": [
+            "//projects/firecracker/substrate/guestvsock",
             "//projects/firecracker/substrate/vsockproto",
-            "@org_golang_x_sys//unix",
         ],
         "@rules_go//go/platform:linux": [
+            "//projects/firecracker/substrate/guestvsock",
             "//projects/firecracker/substrate/vsockproto",
-            "@org_golang_x_sys//unix",
         ],
         "//conditions:default": [
             "//projects/firecracker/substrate/vsockproto",
@@ -34,6 +34,17 @@ go_library(
 go_binary(
     name = "ping",
     embed = [":ping_lib"],
+)
+
+go_test(
+    name = "ping_test",
+    srcs = ["vsock_linux_test.go"],
+    embed = [":ping_lib"],
+    deps = select({
+        "@rules_go//go/platform:android": ["//projects/firecracker/substrate/guestvsock"],
+        "@rules_go//go/platform:linux": ["//projects/firecracker/substrate/guestvsock"],
+        "//conditions:default": [],
+    }),
 )
 
 go_image(
