@@ -15,36 +15,41 @@ const scrollToBottom = () =>
  * events; a reader who has scrolled up to re-read is left where they are and
  * told how many arrived, so the page never moves under them.
  */
-export function useFollowFeed(lastSeq: number, active: boolean) {
+export function useFollowFeed(count: number, active: boolean) {
   const seen = useRef(0);
+  // Where the reader was before new entries grew the page. Measuring after
+  // they arrive would count a tall entry as the reader having scrolled up.
+  const following = useRef(true);
   const [behind, setBehind] = useState(0);
 
   useEffect(() => {
-    if (!active || lastSeq === 0 || lastSeq === seen.current) return;
+    if (!active) return;
+    const track = () => {
+      following.current = nearBottom();
+      if (following.current) setBehind(0);
+    };
+    window.addEventListener("scroll", track, { passive: true });
+    return () => window.removeEventListener("scroll", track);
+  }, [active]);
+
+  useEffect(() => {
+    if (!active || count === seen.current) return;
     const first = seen.current === 0;
-    const arrived = lastSeq - seen.current;
-    seen.current = lastSeq;
-    if (first || nearBottom()) {
+    const arrived = count - seen.current;
+    seen.current = count;
+    if (arrived <= 0) return;
+    if (first || following.current) {
       // After layout, so the new entries are already in the page height.
       requestAnimationFrame(scrollToBottom);
       setBehind(0);
     } else {
-      setBehind((count) => count + arrived);
+      setBehind((held) => held + arrived);
     }
-  }, [lastSeq, active]);
-
-  // Scrolling back down by hand clears the notice.
-  useEffect(() => {
-    if (behind === 0) return;
-    const clear = () => {
-      if (nearBottom()) setBehind(0);
-    };
-    window.addEventListener("scroll", clear, { passive: true });
-    return () => window.removeEventListener("scroll", clear);
-  }, [behind]);
+  }, [count, active]);
 
   const toLatest = useCallback(() => {
     scrollToBottom();
+    following.current = true;
     setBehind(0);
   }, []);
 
