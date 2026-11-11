@@ -138,6 +138,14 @@ typescript_bin.tsc_test(
     data = [":test_src"],
 )
 
+# The anonymous invitation landing's browser script. grimoire/join_landing.py
+# embeds it in the page it serves; its DOM tests run in :test.
+filegroup(
+    name = "join_landing_script",
+    srcs = ["src/lib/join-landing.js"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 # Compared byte for byte with the generator's output by
 # //projects/monolith:grimoire_browser_api_schema_test.
 filegroup(

@@ -11,10 +11,13 @@ from fastapi import FastAPI
 
 def register(app: FastAPI) -> None:
     """Register the grimoire router with the app (private tier only)."""
+    from grimoire.join_landing import router as join_landing_router
     from grimoire.router import router
     from grimoire.web import mount_web
 
     app.include_router(router)
+    # Before the web app: its catch-all would otherwise answer /grimoire/join.
+    app.include_router(join_landing_router)
     mount_web(app)
 
 

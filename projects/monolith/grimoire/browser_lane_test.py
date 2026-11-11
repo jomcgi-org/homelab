@@ -17,7 +17,11 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 
 from grimoire import access, register
-from grimoire.browser_lane import BROWSER_API_PREFIXES, is_browser_path
+from grimoire.browser_lane import (
+    BROWSER_API_PREFIXES,
+    GRIMOIRE_API_PREFIXES,
+    is_browser_path,
+)
 
 ISSUER = "https://auth.example.test/application/o/grimoire/"
 ORIGIN = "https://friends.example.test"
@@ -187,11 +191,12 @@ def test_routes_without_an_identity_check_stay_off_the_browser_lane():
 
 
 def test_prefixes_match_whole_segments():
-    assert BROWSER_API_PREFIXES == (
+    assert GRIMOIRE_API_PREFIXES == (
         "/api/grimoire/lobby",
         "/api/grimoire/campaigns",
         "/api/grimoire/invitations",
     )
+    assert BROWSER_API_PREFIXES[: len(GRIMOIRE_API_PREFIXES)] == GRIMOIRE_API_PREFIXES
     assert is_browser_path("/api/grimoire/campaigns/abc/notes")
     assert not is_browser_path("/api/grimoire/campaigns-export")
     assert not is_browser_path("/api/grimoire/chunks/abc/image")
