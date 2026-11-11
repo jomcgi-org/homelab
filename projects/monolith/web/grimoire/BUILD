@@ -56,7 +56,7 @@ js_library(
 vite_bin.vite_binary(name = "vite")
 
 # The production bundle, shipped in the backend image and served under
-# GRIMOIRE_BASE (see vite.config.ts and framework/static_app.py).
+# GRIMOIRE_BASE (see vite.config.ts and grimoire/web.py).
 js_run_binary(
     name = "build",
     srcs = [":src"],
