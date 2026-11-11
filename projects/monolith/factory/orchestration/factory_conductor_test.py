@@ -23144,7 +23144,6 @@ def test_head_moved_recovery_verifies_new_head_and_reviews_it_fresh(
     assert "no conflict markers" in prompt
     assert "lands by rebase" in prompt
     assert "force-with-lease" in prompt
-    assert "force-with-lease" not in prompt
     assert "Report the exact resulting PR head" in prompt
     assert nodes["review_1"]["deps"] == ["correct_1"]
     assert "at its exact current head" in nodes["review_1"]["prompt"]
