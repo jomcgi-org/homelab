@@ -1689,7 +1689,13 @@ py_library(
     ),  # keep
     # entities.yaml is 2.5 KB and deliberately ships as runfiles data, unlike
     # the multi-megabyte ndjson manifest isolated in its own image layer.
-    data = ["knowledge/entities.yaml"],
+    data = [
+        "knowledge/entities.yaml",
+        # grimoire/join_landing.py reads this script at import, so the app
+        # cannot start without it; the "grimoire/**/*.py" glob does not
+        # capture it.
+        "//projects/monolith/web/grimoire:join_landing_script",
+    ],
     visibility = ["//:__subpackages__"],
     deps = [
         ":pkg_platform_auth",
