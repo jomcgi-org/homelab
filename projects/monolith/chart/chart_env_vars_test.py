@@ -29,7 +29,7 @@ import pytest
 
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("overlay", ["chart", "hub", "dev", "recovery"])
-def test_planner_hold_refusal_is_default_off_and_configurable(enabled, overlay):
+def test_planner_hold_refusal_is_on_for_the_hub_and_configurable(enabled, overlay):
     chart = find_chart_dir()
     command = [os.environ.get("HELM_BIN", "helm"), "template", "test", str(chart)]
     if overlay == "hub":
@@ -49,7 +49,8 @@ def test_planner_hold_refusal_is_default_off_and_configurable(enabled, overlay):
     if enabled:
         command += ["--set", "swarm.factoryPlannerHoldRefusalEnabled=true"]
     rendered = subprocess.check_output(command, text=True)
-    expected = str(enabled).lower()
+    # Stage 2 of #7449 enables refusal on the hub; other overlays stay off.
+    expected = str(enabled or overlay == "hub").lower()
     assert re.search(
         rf'- name: FACTORY_PLANNER_HOLD_REFUSAL_ENABLED\n\s+value: "{expected}"',
         rendered,
