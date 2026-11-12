@@ -33,6 +33,7 @@ export function Lobby() {
       actions={
         <>
           <Button label="Character sheets" href={paths.sheets()} />
+          <Button label="Roadmap" href={paths.roadmap} />
           {lobby.data?.can_administer_accounts && (
             <>
               <Button label="Accounts" href={paths.platform} />

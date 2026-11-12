@@ -1,6 +1,7 @@
-"""In-app feedback: private intake, operator triage, and what reaches GitHub."""
+"""In-app feedback: intake, triage, the shared roadmap, and what reaches GitHub."""
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -14,10 +15,11 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from grimoire import feedback, register
 from grimoire.access import get_authenticated_identity
-from grimoire.models import Feedback
+from grimoire.models import Feedback, FeedbackVote
 
 ISSUER = "https://auth.example/application/o/grimoire/"
 API = "/api/grimoire/feedback"
+ROADMAP = API + "/roadmap"
 SECRET_TEXT = "The dice roller eats my modifier. Signed, a recognisable friend."
 
 
@@ -65,6 +67,11 @@ def setup(tmp_path, monkeypatch):
         raise AssertionError("create_issue called unexpectedly")
 
     monkeypatch.setattr(feedback, "create_issue", unexpected)
+
+    def unexpected_read(*_args, **_kwargs):
+        raise AssertionError("list_issue_states called unexpectedly")
+
+    monkeypatch.setattr(feedback, "list_issue_states", unexpected_read)
     try:
         with TestClient(app) as client:
             for user in ("owner", "player", "admin"):
@@ -126,6 +133,9 @@ def test_submit_stores_trimmed_text_and_answers_with_the_id_only(setup):
     assert row["status"] == "new"
     assert row["issue_number"] is None and row["resolved_at"] is None
     assert isinstance(row["created_at"], datetime)
+    assert row["shared"] is True
+    assert row["title"] is None and row["reason"] is None
+    assert row["issue_state"] is None and row["issue_checked_at"] is None
 
 
 @pytest.mark.parametrize(
@@ -243,6 +253,7 @@ def test_list_shows_new_items_newest_first_with_campaign_names(setup):
         "text": "first",
         "status": "new",
         "issue_number": None,
+        "votes": 0,
     }
     assert datetime.fromisoformat(items[1]["created_at"]).tzinfo is not None
     assert items[0]["campaign_id"] is None and items[0]["campaign_name"] is None
@@ -305,6 +316,8 @@ def test_file_publishes_only_what_the_operator_wrote(setup, github):
     assert row["issue_number"] == 4321
     assert isinstance(row["resolved_at"], datetime)
     assert row["text"] == SECRET_TEXT
+    assert row["title"] == "Dice modifier is dropped"
+    assert row["issue_state"] == "open"
     (filed,) = client.get(API + "?status=filed", headers=h("admin")).json()
     assert filed["issue_number"] == 4321
 
@@ -431,3 +444,424 @@ def test_unknown_or_malformed_ids(setup):
     missing = client.post(f"{API}/{uuid4()}/dismiss", headers=h("admin"))
     assert missing.status_code == 404
     assert client.post(f"{API}/nope/dismiss", headers=h("admin")).status_code == 422
+
+
+# --- The roadmap ---------------------------------------------------------
+
+ROADMAP_KEYS = {
+    "id",
+    "state",
+    "text",
+    "votes",
+    "voted",
+    "mine",
+    "created_at",
+    "issue_url",
+    "reason",
+}
+ISSUE_URL = f"https://github.com/{feedback.GITHUB_REPO}/issues/4321"
+
+
+def roadmap(client, user):
+    response = client.get(ROADMAP, headers=h(user))
+    assert response.status_code == 200, response.text
+    return {item["id"]: item for item in response.json()}
+
+
+def edit(engine, feedback_id, **values):
+    with Session(engine) as session:
+        row = session.get(Feedback, feedback_id)
+        for name, value in values.items():
+            setattr(row, name, value)
+        session.commit()
+
+
+def file(client, feedback_id, title="Dice modifier is dropped"):
+    response = client.post(
+        f"{API}/{feedback_id}/file",
+        headers=h("admin"),
+        json={"title": title, "body": "B"},
+    )
+    assert response.status_code == 200, response.text
+
+
+@pytest.fixture
+def issues(monkeypatch):
+    """Stand in for the GitHub issue list: set `states`, read `calls`."""
+
+    fake = SimpleNamespace(states={}, error=None, calls=[])
+
+    def list_issue_states(repo, labels, *, user_agent):
+        fake.calls.append({"repo": repo, "labels": labels})
+        if fake.error:
+            raise fake.error
+        return {**fake.states}
+
+    monkeypatch.setattr(feedback, "list_issue_states", list_issue_states)
+    return fake
+
+
+def test_roadmap_requires_an_identity(setup):
+    client, _engine, _cid = setup
+    send(client)
+    assert client.get(ROADMAP).status_code == 403
+
+
+def test_roadmap_shows_a_shared_note_to_everyone_without_its_sender(setup):
+    client, _engine, cid = setup
+    feedback_id = send(
+        client, "owner", page="/campaigns/secret-page", campaign_id=cid
+    ).json()["id"]
+    response = client.get(ROADMAP, headers=h("player"))
+    (item,) = response.json()
+    assert set(item) == ROADMAP_KEYS
+    assert item == {
+        "id": feedback_id,
+        "state": "new",
+        "text": SECRET_TEXT,
+        "votes": 0,
+        "voted": False,
+        "mine": False,
+        "created_at": item["created_at"],
+        "issue_url": None,
+        "reason": None,
+    }
+    assert datetime.fromisoformat(item["created_at"]).tzinfo is not None
+    for private in ("owner@example.test", "secret-page", cid, "A table"):
+        assert private not in response.text
+    assert roadmap(client, "owner")[feedback_id]["mine"] is True
+
+
+def test_roadmap_is_newest_first_and_bounded(setup, monkeypatch):
+    client, engine, _cid = setup
+    first = send(client, text="first").json()["id"]
+    second = send(client, text="second").json()["id"]
+    edit(engine, first, created_at=datetime.now(UTC) - timedelta(minutes=5))
+    assert list(roadmap(client, "owner")) == [second, first]
+    monkeypatch.setattr(feedback, "ROADMAP_LIMIT", 1)
+    assert list(roadmap(client, "owner")) == [second]
+
+
+def test_an_unshared_note_is_visible_only_to_its_author(setup):
+    client, engine, _cid = setup
+    feedback_id = send(client, "player").json()["id"]
+    edit(engine, feedback_id, shared=False)
+    assert roadmap(client, "owner") == {}
+    assert roadmap(client, "admin") == {}
+    mine = roadmap(client, "player")[feedback_id]
+    assert mine["text"] == SECRET_TEXT and mine["mine"] is True
+    # Dismissed, it still shows only to the person who wrote it.
+    client.post(
+        f"{API}/{feedback_id}/dismiss", headers=h("admin"), json={"reason": "No."}
+    )
+    assert roadmap(client, "owner") == {}
+    mine = roadmap(client, "player")[feedback_id]
+    assert mine["state"] == "rejected" and mine["reason"] == "No."
+
+
+def test_an_unshared_filed_note_shows_others_only_the_operator_title(
+    setup, github, issues
+):
+    client, engine, _cid = setup
+    feedback_id = send(client, "player").json()["id"]
+    edit(engine, feedback_id, shared=False)
+    file(client, feedback_id)
+    response = client.get(ROADMAP, headers=h("owner"))
+    assert SECRET_TEXT not in response.text
+    (item,) = response.json()
+    assert item["text"] == "Dice modifier is dropped"
+    assert item["state"] == "accepted"
+    assert item["issue_url"] == ISSUE_URL
+    assert item["mine"] is False
+
+
+def test_a_filed_note_without_a_title_is_a_plain_suggestion_to_others(
+    setup, github, issues
+):
+    client, engine, _cid = setup
+    feedback_id = send(client, "player").json()["id"]
+    file(client, feedback_id)
+    # A row filed before titles were stored, sent before notes were shared.
+    edit(engine, feedback_id, shared=False, title=None, issue_state=None)
+    response = client.get(ROADMAP, headers=h("owner"))
+    assert SECRET_TEXT not in response.text
+    (item,) = response.json()
+    assert item["text"] == "Suggestion"
+    assert item["state"] == "accepted"
+    assert item["issue_url"] == ISSUE_URL
+    assert roadmap(client, "player")[feedback_id]["text"] == SECRET_TEXT
+
+
+def test_a_shared_filed_note_shows_the_operator_title_to_everyone(
+    setup, github, issues
+):
+    client, _engine, _cid = setup
+    feedback_id = send(client, "player").json()["id"]
+    file(client, feedback_id, title="Keep the modifier")
+    for user in ("owner", "player"):
+        assert roadmap(client, user)[feedback_id]["text"] == "Keep the modifier"
+
+
+def test_a_dismissed_shared_note_is_rejected_with_its_reason(setup):
+    client, engine, _cid = setup
+    feedback_id = send(client, "player").json()["id"]
+    response = client.post(
+        f"{API}/{feedback_id}/dismiss",
+        headers=h("admin"),
+        json={"reason": "  Covered by the sheet rework.  "},
+    )
+    assert response.status_code == 204
+    (row,) = rows(engine)
+    assert row["reason"] == "Covered by the sheet rework."
+    item = roadmap(client, "owner")[feedback_id]
+    assert item["state"] == "rejected"
+    assert item["reason"] == "Covered by the sheet rework."
+    assert item["issue_url"] is None
+    assert item["text"] == SECRET_TEXT
+
+
+@pytest.mark.parametrize("body", [None, {}, {"reason": None}, {"reason": "   "}])
+def test_dismiss_reason_is_optional(setup, body):
+    client, engine, _cid = setup
+    feedback_id = send(client).json()["id"]
+    response = client.post(
+        f"{API}/{feedback_id}/dismiss", headers=h("admin"), json=body
+    )
+    assert response.status_code == 204
+    (row,) = rows(engine)
+    assert row["status"] == "dismissed" and row["reason"] is None
+    assert roadmap(client, "owner")[feedback_id]["reason"] is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"reason": "x" * 201},
+        {"reason": "a\x00b"},
+        {"reason": "two\nlines"},
+        {"reason": 7},
+        {"reason": "fine", "status": "filed"},
+        ["fine"],
+    ],
+)
+def test_dismiss_rejects_invalid_reasons(setup, body):
+    client, engine, _cid = setup
+    feedback_id = send(client).json()["id"]
+    response = client.post(
+        f"{API}/{feedback_id}/dismiss", headers=h("admin"), json=body
+    )
+    assert response.status_code == 422
+    assert [row["status"] for row in rows(engine)] == ["new"]
+
+
+def test_dismiss_accepts_the_longest_reason(setup):
+    client, engine, _cid = setup
+    feedback_id = send(client).json()["id"]
+    response = client.post(
+        f"{API}/{feedback_id}/dismiss", headers=h("admin"), json={"reason": "x" * 200}
+    )
+    assert response.status_code == 204
+    assert rows(engine)[0]["reason"] == "x" * 200
+
+
+# --- Votes ---------------------------------------------------------------
+
+
+def vote(client, user, feedback_id, method="put"):
+    return client.request(method, f"{API}/{feedback_id}/vote", headers=h(user))
+
+
+def test_votes_are_idempotent_and_counted_per_voter(setup):
+    client, engine, _cid = setup
+    feedback_id = send(client, "player").json()["id"]
+    for _ in range(2):
+        response = vote(client, "owner", feedback_id)
+        assert response.status_code == 200, response.text
+        assert response.json() == {"votes": 1, "voted": True}
+    assert vote(client, "admin", feedback_id).json() == {"votes": 2, "voted": True}
+    with Session(engine) as session:
+        assert sorted(v.voter_email for v in session.exec(select(FeedbackVote))) == [
+            "admin@example.test",
+            "owner@example.test",
+        ]
+    assert roadmap(client, "owner")[feedback_id]["votes"] == 2
+    assert roadmap(client, "owner")[feedback_id]["voted"] is True
+    assert roadmap(client, "player")[feedback_id]["voted"] is False
+    # The operator inbox carries the count for triage.
+    (item,) = client.get(API, headers=h("admin")).json()
+    assert item["votes"] == 2
+    for _ in range(2):
+        response = vote(client, "owner", feedback_id, "delete")
+        assert response.status_code == 200
+        assert response.json() == {"votes": 1, "voted": False}
+    assert roadmap(client, "owner")[feedback_id]["votes"] == 1
+    assert roadmap(client, "owner")[feedback_id]["voted"] is False
+
+
+@pytest.mark.parametrize("method", ["put", "delete"])
+def test_an_author_cannot_vote_for_their_own_note(setup, method):
+    client, engine, _cid = setup
+    feedback_id = send(client, "player").json()["id"]
+    response = vote(client, "player", feedback_id, method)
+    assert response.status_code == 409
+    assert response.json() == {"detail": "This one is yours."}
+    with Session(engine) as session:
+        assert session.exec(select(FeedbackVote)).all() == []
+
+
+@pytest.mark.parametrize("method", ["put", "delete"])
+def test_votes_need_an_identity_and_a_visible_note(setup, method):
+    client, engine, _cid = setup
+    feedback_id = send(client, "player").json()["id"]
+    assert client.request(method, f"{API}/{feedback_id}/vote").status_code == 403
+    assert vote(client, "owner", uuid4(), method).status_code == 404
+    assert vote(client, "owner", "nope", method).status_code == 422
+    edit(engine, feedback_id, shared=False)
+    hidden = vote(client, "owner", feedback_id, method)
+    assert hidden.status_code == 404
+    assert hidden.json() == {"detail": "feedback not found"}
+    with Session(engine) as session:
+        assert session.exec(select(FeedbackVote)).all() == []
+
+
+def test_votes_stay_open_on_accepted_and_close_on_resolved(setup, github, issues):
+    client, engine, _cid = setup
+    accepted = send(client, "player").json()["id"]
+    file(client, accepted)
+    assert vote(client, "owner", accepted).json() == {"votes": 1, "voted": True}
+    dismissed = send(client, "player").json()["id"]
+    client.post(f"{API}/{dismissed}/dismiss", headers=h("admin"))
+    for state in ("completed", "not_planned"):
+        edit(engine, accepted, issue_state=state)
+        for feedback_id in (accepted, dismissed):
+            for method in ("put", "delete"):
+                response = vote(client, "owner", feedback_id, method)
+                assert response.status_code == 409
+                assert response.json() == {"detail": "Voting has closed on this one."}
+    # The vote cast while it was open is kept.
+    assert roadmap(client, "owner")[accepted]["votes"] == 1
+
+
+# --- Issue states read back from GitHub ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "issue_state,state",
+    [("open", "accepted"), ("completed", "completed"), ("not_planned", "rejected")],
+)
+def test_roadmap_state_follows_the_github_issue(
+    setup, github, issues, issue_state, state
+):
+    client, engine, _cid = setup
+    feedback_id = send(client, "player").json()["id"]
+    file(client, feedback_id)
+    issues.states = {4321: issue_state, 99: "completed"}
+    item = roadmap(client, "owner")[feedback_id]
+    assert item["state"] == state
+    assert item["issue_url"] == ISSUE_URL
+    assert item["reason"] is None
+    assert issues.calls == [
+        {"repo": feedback.GITHUB_REPO, "labels": ["grimoire", "feedback"]}
+    ]
+    (row,) = rows(engine)
+    assert row["issue_state"] == issue_state
+    assert isinstance(row["issue_checked_at"], datetime)
+    # The triage status is unchanged: GitHub owns only the issue state.
+    assert row["status"] == "filed"
+
+
+def test_roadmap_without_filed_notes_never_calls_github(setup):
+    client, _engine, _cid = setup
+    feedback_id = send(client).json()["id"]
+    client.post(f"{API}/{feedback_id}/dismiss", headers=h("admin"))
+    send(client)
+    # The fixture's stand-in fails the test if GitHub is read.
+    assert len(roadmap(client, "owner")) == 2
+
+
+def test_issue_states_are_read_at_most_once_per_interval(
+    setup, github, issues, monkeypatch
+):
+    client, engine, _cid = setup
+    feedback_id = send(client, "player").json()["id"]
+    file(client, feedback_id)
+    now = datetime.now(UTC)
+    monkeypatch.setattr(feedback, "utc_now", lambda: now)
+    for user in ("owner", "player", "owner"):
+        assert roadmap(client, user)[feedback_id]["state"] == "accepted"
+    assert len(issues.calls) == 1
+    issues.states = {4321: "completed"}
+    now += timedelta(minutes=9, seconds=59)
+    assert roadmap(client, "owner")[feedback_id]["state"] == "accepted"
+    assert len(issues.calls) == 1
+    now += timedelta(seconds=2)
+    assert roadmap(client, "owner")[feedback_id]["state"] == "completed"
+    assert len(issues.calls) == 2
+    # An issue missing from the answer keeps its stored state.
+    issues.states = {}
+    now += timedelta(minutes=11)
+    assert roadmap(client, "owner")[feedback_id]["state"] == "completed"
+    assert len(issues.calls) == 3
+    # A note filed since the last read triggers one straight away.
+    second = send(client, "player").json()["id"]
+    file(client, second)
+    edit(engine, second, issue_number=4322)
+    issues.states = {4322: "not_planned"}
+    assert roadmap(client, "owner")[second]["state"] == "rejected"
+    assert len(issues.calls) == 4
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        httpx.ConnectTimeout("timed out"),
+        httpx.HTTPStatusError(
+            "refused",
+            request=httpx.Request("GET", "https://api.github.com/x"),
+            response=httpx.Response(403),
+        ),
+        ValueError("GitHub issue list had an unexpected shape"),
+    ],
+)
+def test_github_failure_serves_the_stored_states(
+    setup, github, issues, monkeypatch, caplog, error
+):
+    client, engine, _cid = setup
+    feedback_id = send(client, "player").json()["id"]
+    file(client, feedback_id)
+    edit(engine, feedback_id, issue_state="completed")
+    now = datetime.now(UTC)
+    monkeypatch.setattr(feedback, "utc_now", lambda: now)
+    issues.error = error
+    with caplog.at_level("WARNING", logger="monolith.grimoire.feedback"):
+        assert roadmap(client, "owner")[feedback_id]["state"] == "completed"
+        # The failed attempt is throttled like a successful one.
+        assert roadmap(client, "owner")[feedback_id]["state"] == "completed"
+    assert len(issues.calls) == 1
+    assert [record.getMessage() for record in caplog.records] == [
+        f"grimoire feedback: issue states not refreshed ({type(error).__name__})"
+    ]
+    issues.error = None
+    issues.states = {4321: "open"}
+    now += timedelta(minutes=11)
+    assert roadmap(client, "owner")[feedback_id]["state"] == "accepted"
+
+
+def test_a_database_failure_while_saving_states_still_serves_the_roadmap(
+    setup, github, issues, monkeypatch
+):
+    client, _engine, _cid = setup
+    feedback_id = send(client, "player").json()["id"]
+    file(client, feedback_id)
+    issues.states = {4321: "completed"}
+    commit = Session.commit
+
+    def fail_commit(session):
+        if issues.calls:
+            raise OperationalError("commit", {}, RuntimeError("database unavailable"))
+        return commit(session)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Session, "commit", fail_commit)
+        assert roadmap(client, "owner")[feedback_id]["state"] == "accepted"
+    assert len(issues.calls) == 1

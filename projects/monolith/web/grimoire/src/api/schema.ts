@@ -98,6 +98,10 @@ export interface CharacterView {
   sheet: Record<string, unknown>;
 }
 
+export interface DismissRequest {
+  reason?: string | null;
+}
+
 export interface DmVoiceView {
   voice_hint?: VoiceHint;
   rate?: number;
@@ -137,6 +141,7 @@ export interface FeedbackView {
   text: string;
   status: "new" | "filed" | "dismissed";
   issue_number: number | null;
+  votes: number;
 }
 
 export interface GameSessionUpdateRequest {
@@ -330,6 +335,18 @@ export interface NotePatchRequest {
   links?: NoteLinks | null;
 }
 
+export interface RoadmapItem {
+  id: string;
+  state: "new" | "accepted" | "completed" | "rejected";
+  text: string;
+  votes: number;
+  voted: boolean;
+  mine: boolean;
+  created_at: string;
+  issue_url: string | null;
+  reason: string | null;
+}
+
 export interface RollRequest {
   formula: string;
   label?: string | null;
@@ -414,6 +431,11 @@ export interface VoiceView {
   pitch?: number;
   speaker_key: string;
   updated_at: string;
+}
+
+export interface VoteReceipt {
+  votes: number;
+  voted: boolean;
 }
 
 /** One entry per browser-routed operation, keyed `METHOD /path`. */
@@ -758,15 +780,30 @@ export interface Operations {
     body: FeedbackRequest;
     response: FeedbackReceipt;
   };
-  "POST /feedback/{feedback_id}/dismiss": {
+  "GET /feedback/roadmap": {
     query: undefined;
     body: undefined;
+    response: Array<RoadmapItem>;
+  };
+  "POST /feedback/{feedback_id}/dismiss": {
+    query: undefined;
+    body: DismissRequest | null;
     response: undefined;
   };
   "POST /feedback/{feedback_id}/file": {
     query: undefined;
     body: FeedbackIssueRequest;
     response: FeedbackIssue;
+  };
+  "PUT /feedback/{feedback_id}/vote": {
+    query: undefined;
+    body: undefined;
+    response: VoteReceipt;
+  };
+  "DELETE /feedback/{feedback_id}/vote": {
+    query: undefined;
+    body: undefined;
+    response: VoteReceipt;
   };
   "POST /invitations/{invitation_id}/{decision}": {
     query: undefined;

@@ -826,3 +826,116 @@ def test_create_issue_total_deadline_cancels_io(monkeypatch, phase):
     if phase == "body":
         assert chunks
         assert closed == [True]
+
+
+def test_list_issue_states_maps_one_bounded_request(monkeypatch):
+    monkeypatch.setenv("GITHUB_API_TOKEN", "fake-issue-token")
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json=[
+                {"number": 1, "state": "open", "state_reason": None},
+                {"number": 2, "state": "open", "state_reason": "reopened"},
+                {"number": 3, "state": "closed", "state_reason": "completed"},
+                {"number": 4, "state": "closed", "state_reason": None},
+                {"number": 5, "state": "closed", "state_reason": "not_planned"},
+                {"number": 6, "state": "closed", "state_reason": "duplicate"},
+                {"number": 7, "state": "closed", "pull_request": {"url": "x"}},
+                {"number": 8, "state": "open", "pull_request": {"url": "x"}},
+            ],
+        )
+
+    _issue_transport(monkeypatch, handler)
+
+    states = github.list_issue_states(
+        "owner/repo", ["grimoire", "feedback"], user_agent="test-agent"
+    )
+
+    assert states == {
+        1: "open",
+        2: "open",
+        3: "completed",
+        4: "completed",
+        5: "not_planned",
+        6: "not_planned",
+    }
+    assert len(seen) == 1
+    assert seen[0].method == "GET"
+    assert seen[0].url.path == "/repos/owner/repo/issues"
+    assert dict(seen[0].url.params) == {
+        "labels": "grimoire,feedback",
+        "state": "all",
+        "sort": "updated",
+        "direction": "desc",
+        "per_page": "100",
+    }
+    assert seen[0].content == b""
+    assert seen[0].headers["authorization"] == "Bearer fake-issue-token"
+    assert seen[0].headers["user-agent"] == "test-agent"
+    assert seen[0].extensions["timeout"] == {
+        "connect": 2,
+        "write": 2,
+        "read": 3,
+        "pool": 1,
+    }
+
+
+def test_list_issue_states_accepts_an_empty_list(monkeypatch):
+    _issue_transport(monkeypatch, lambda request: httpx.Response(200, json=[]))
+    assert github.list_issue_states("owner/repo", ["a"], user_agent="t") == {}
+
+
+@pytest.mark.parametrize(
+    "response,error",
+    [
+        (httpx.Response(403, json={"message": "no"}), httpx.HTTPStatusError),
+        (httpx.Response(301, headers={"location": "/x"}), httpx.HTTPStatusError),
+        (httpx.Response(200, json={"number": 1, "state": "open"}), ValueError),
+        (httpx.Response(200, json=["issue"]), ValueError),
+        (httpx.Response(200, json=[{"number": "1", "state": "open"}]), ValueError),
+        (httpx.Response(200, json=[{"number": 1, "state": "merged"}]), ValueError),
+        (httpx.Response(200, content=b"not json"), ValueError),
+        (httpx.Response(200, content=b"x" * 1_000_001), ValueError),
+    ],
+)
+def test_list_issue_states_fails_closed(monkeypatch, response, error):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return response
+
+    _issue_transport(monkeypatch, handler)
+
+    with pytest.raises(error):
+        github.list_issue_states("owner/repo", ["a"], user_agent="test-agent")
+    assert len(calls) == 1
+
+
+def test_list_issue_states_rejects_a_malformed_repository(monkeypatch):
+    _issue_transport(monkeypatch, lambda request: pytest.fail("no request expected"))
+    with pytest.raises(ValueError):
+        github.list_issue_states("owner/repo/../x", ["a"], user_agent="test-agent")
+
+
+def test_list_issue_states_total_deadline_cancels_io(monkeypatch):
+    calls = []
+    cancelled = []
+
+    async def handler(request):
+        calls.append(request)
+        try:
+            await asyncio.sleep(0.25)
+        finally:
+            cancelled.append(True)
+        return httpx.Response(200, json=[])
+
+    _issue_transport(monkeypatch, handler)
+    monkeypatch.setattr(github, "_ISSUE_WRITE_TIMEOUT_SECONDS", 0.05)
+    with pytest.raises(httpx.ReadTimeout, match="deadline exceeded"):
+        github.list_issue_states("owner/repo", ["a"], user_agent="test-agent")
+    assert len(calls) == 1
+    assert cancelled == [True]

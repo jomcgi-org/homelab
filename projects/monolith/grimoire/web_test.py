@@ -107,6 +107,7 @@ PAGES = [
     "/grimoire/platform",
     "/grimoire/platform/profile",
     "/grimoire/feedback",
+    "/grimoire/roadmap",
     "/grimoire/campaigns/1b2c/session",
     "/grimoire/campaigns/1b2c/notes",
     "/grimoire/campaigns/1b2c/journal",

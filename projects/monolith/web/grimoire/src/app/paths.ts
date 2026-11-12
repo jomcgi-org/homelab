@@ -14,6 +14,7 @@ export const paths = {
   platform: "/platform",
   profile: "/platform/profile",
   feedback: "/feedback",
+  roadmap: "/roadmap",
   entity: (campaignId: string, entityId: string) =>
     `/campaigns/${campaignId}/entities/${entityId}`,
 };

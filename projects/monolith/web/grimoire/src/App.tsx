@@ -39,6 +39,9 @@ const FeedbackInbox = lazy(() =>
     default: m.FeedbackInbox,
   })),
 );
+const Roadmap = lazy(() =>
+  import("./screens/roadmap/Roadmap").then((m) => ({ default: m.Roadmap })),
+);
 const Profile = lazy(() =>
   import("./screens/platform/Profile").then((m) => ({ default: m.Profile })),
 );
@@ -63,6 +66,7 @@ export function App() {
           <Route path="platform" element={<Platform />} />
           <Route path="platform/profile" element={<Profile />} />
           <Route path="feedback" element={<FeedbackInbox />} />
+          <Route path="roadmap" element={<Roadmap />} />
           <Route path="campaigns/:campaignId">
             <Route path="session" element={<Session />} />
             <Route path="notes" element={<Notes />} />

@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import event, text
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, create_engine, select
 
 from grimoire import feedback
@@ -253,6 +254,159 @@ def test_feedback_migration_has_no_public_reader_privileges(database):
             assert not connection.execute(
                 text(
                     "SELECT has_table_privilege('public_reader', 'grimoire.feedback', :privilege)"
+                ),
+                {"privilege": privilege},
+            ).scalar_one()
+
+
+def filed_row(engine, email, **values):
+    with Session(engine) as session:
+        row = Feedback(
+            author_email=email,
+            page="/",
+            text="Fixture",
+            shared=True,
+            status="filed",
+            issue_number=4321,
+            title="Public",
+            issue_state="open",
+            resolved_at=datetime.now(UTC),
+            **values,
+        )
+        session.add(row)
+        session.commit()
+        return row.id
+
+
+def test_one_request_refreshes_issue_states_while_others_serve_stored(
+    database, monkeypatch
+):
+    engine, email = database
+    row_id = filed_row(engine, email)
+    reading, release = Event(), Event()
+    calls = []
+
+    def list_issue_states(repo, labels, *, user_agent):
+        calls.append((repo, labels))
+        reading.set()
+        assert release.wait(10), "the GitHub read was never released"
+        return {4321: "completed"}
+
+    monkeypatch.setattr(feedback, "list_issue_states", list_issue_states)
+
+    def read(viewer):
+        with Session(engine) as session:
+            session.connection().exec_driver_sql("SET LOCAL statement_timeout = '10s'")
+            items = feedback.read_roadmap(None, viewer, session)
+            return {item.id: item.state for item in items}[row_id]
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            first = workers.submit(read, email + "-first")
+            assert reading.wait(5)
+            # The refresher holds the advisory lock across its GitHub read. A
+            # second request does not wait for it and does not call GitHub.
+            assert read(email + "-second") == "accepted"
+            assert len(calls) == 1
+            release.set()
+            assert first.result(timeout=5) == "completed"
+    finally:
+        release.set()
+    # Within the interval nothing is read again, and commit freed the lock.
+    assert read(email + "-third") == "completed"
+    assert calls == [(feedback.GITHUB_REPO, ["grimoire", "feedback"])]
+    with Session(engine) as session:
+        assert session.execute(
+            text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
+            {"key": "grimoire-feedback-roadmap"},
+        ).scalar_one()
+        row = session.get(Feedback, row_id)
+        assert row.issue_state == "completed"
+        assert row.issue_checked_at.tzinfo is not None
+
+
+def test_votes_and_dismiss_reasons_satisfy_the_migrated_schema(database, monkeypatch):
+    engine, email = database
+    monkeypatch.setattr(feedback, "list_issue_states", lambda *a, **k: {})
+    seed(engine, email, [datetime.now(UTC)] * 2)
+    with Session(engine) as session:
+        kept, dismissed = session.exec(
+            select(Feedback.id).where(Feedback.author_email == email)
+        ).all()
+        # Rows written without the flag take the migration default.
+        session.execute(
+            text("UPDATE grimoire.feedback SET shared = true WHERE author_email = :e"),
+            {"e": email},
+        )
+        session.commit()
+    voter = email + "-voter"
+    for _ in range(2):
+        with Session(engine) as session:
+            receipt = feedback.vote_for_feedback(UUID(kept), None, voter, session)
+            assert (receipt.votes, receipt.voted) == (1, True)
+    with Session(engine) as session:
+        with pytest.raises(HTTPException) as own:
+            feedback.vote_for_feedback(UUID(kept), None, email, session)
+        assert own.value.status_code == 409
+    with Session(engine) as session:
+        feedback.dismiss_feedback(
+            UUID(dismissed),
+            None,
+            session,
+            feedback.DismissRequest(reason="x" * 200),
+        )
+    with Session(engine) as session:
+        items = {i.id: i for i in feedback.read_roadmap(None, voter, session)}
+        assert (items[kept].votes, items[kept].voted) == (1, True)
+        assert items[dismissed].state == "rejected"
+        assert items[dismissed].reason == "x" * 200
+        assert items[kept].created_at.tzinfo is not None
+    with Session(engine) as session:
+        receipt = feedback.withdraw_vote(UUID(kept), None, voter, session)
+        assert (receipt.votes, receipt.voted) == (0, False)
+        feedback.vote_for_feedback(UUID(kept), None, voter, session)
+    # Deleting a note removes its votes.
+    with engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM grimoire.feedback WHERE id = :id"), {"id": kept}
+        )
+        assert not connection.execute(
+            text("SELECT count(*) FROM grimoire.feedback_vote WHERE feedback_id = :id"),
+            {"id": kept},
+        ).scalar_one()
+
+
+@pytest.mark.parametrize(
+    "column,value",
+    [
+        ("issue_state", "merged"),
+        ("reason", "x" * 201),
+        ("reason", ""),
+        ("title", "x" * 121),
+    ],
+    ids=["unknown-state", "long-reason", "empty-reason", "long-title"],
+)
+def test_roadmap_columns_are_constrained(database, column, value):
+    engine, email = database
+    seed(engine, email, [datetime.now(UTC)])
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            text(
+                f"UPDATE grimoire.feedback SET {column} = :value "
+                "WHERE author_email = :email"
+            ),
+            {"value": value, "email": email},
+        )
+
+
+def test_vote_table_has_no_public_reader_privileges(database):
+    engine, _email = database
+    with engine.connect() as connection:
+        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+            assert not connection.execute(
+                text(
+                    "SELECT has_table_privilege("
+                    "'public_reader', 'grimoire.feedback_vote', :privilege)"
                 ),
                 {"privilege": privilege},
             ).scalar_one()

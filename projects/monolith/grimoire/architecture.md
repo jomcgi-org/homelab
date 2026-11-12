@@ -724,19 +724,70 @@ transaction lock per sender serializes the count and the insert through commit.
 The count takes a fresh READ COMMITTED snapshot after lock acquisition. A
 pathname cannot carry a host, query, fragment, backslash or control character.
 
-Only operators read the rows, at `/grimoire/feedback`. The routes apply the
-lobby's `can_administer_accounts` rule (`operators` group) on every request.
+Only operators read the full rows, at `/grimoire/feedback`. The routes apply
+the lobby's `can_administer_accounts` rule (`operators` group) on every request.
 The lobby carries `new_feedback_count` for operators and zero for everyone
 else.
 
-An operator dismisses an item or files it. Filing creates one issue in
+An operator dismisses an item, with an optional one-line reason of up to 200
+characters, or files it. Filing creates one issue in
 `GITHUB_REPO` through `core.github.create_issue`, holding only the title and
 body the operator typed, the footer `Filed from Grimoire feedback.` and the
 labels `grimoire` and `feedback`. The issue carries no readiness label, so the
 factory's refine step picks it up. A GitHub failure answers 502 and leaves the
-row `new`; a row that is already filed or dismissed answers 409.
+row `new`; a row that is already filed or dismissed answers 409. The row keeps
+the operator's title and starts with `issue_state = 'open'`.
 
-**Why.** `jomcgi-org/homelab` is public. A friend's raw words can name people
+#### Roadmap
+
+Every signed-in user reads `GET /api/grimoire/feedback/roadmap` at
+`/grimoire/roadmap`: the 200 newest visible items, each in one of four states.
+
+| State       | Meaning                                                      |
+| ----------- | ------------------------------------------------------------ |
+| `new`       | Sent, not yet triaged.                                       |
+| `accepted`  | Filed, and its issue is open.                                |
+| `completed` | Its issue was closed as completed.                           |
+| `rejected`  | Dismissed, or its issue was closed as not planned or duplicate. |
+
+A note sent after `20261113090000_grimoire_feedback_roadmap.sql` is `shared`:
+everyone sees its text. A filed item shows the operator's title instead. Each
+item carries its vote count, whether the caller voted, whether the caller wrote
+it, its issue link once filed, and the dismiss reason once rejected.
+
+These stay private: the author, the page and the campaign of every note, and
+the text of notes sent before the migration (`shared = false`). An unshared
+note appears on its author's roadmap only. Once filed it appears for everyone
+under the operator's title, or as "Suggestion" when it was filed before titles
+were stored. The query applies this rule; the browser receives no hidden rows.
+
+GitHub is the source of truth after filing. A roadmap read refreshes
+`issue_state` when any filed row has an `issue_checked_at` that is null or
+older than ten minutes. `core.github.list_issue_states` makes one request for
+the 100 most recently updated issues labelled `grimoire` and `feedback`, with
+the eight-second deadline and one-megabyte cap of `create_issue`. A request
+takes `pg_try_advisory_xact_lock` first; a request that does not get the lock
+serves the stored states. A failed read is logged by exception type, stamped
+like a successful one, and the stored states are served. An issue missing from
+the answer keeps its stored state.
+
+`PUT` and `DELETE /api/grimoire/feedback/{id}/vote` record or withdraw one
+"Me too" per user in `grimoire.feedback_vote`. Both are idempotent and answer
+with the new count. Votes are open while an item is `new` or `accepted`; a
+resolved item or the caller's own answers 409, and an item the caller cannot
+see answers 404. The operator inbox shows the count.
+
+**Why.** Friends kept sending suggestions someone else had already sent, and
+nobody heard what became of theirs. The roadmap shows both, so a friend checks
+it before writing and adds a vote to an existing item. Notes sent before the
+roadmap were written to be read by an operator only, so they are never shown to
+anyone else. The author's name is left off every item so a suggestion is judged
+on what it says. Authors cannot vote for their own item, so a count means other
+people want it too. Reading issue states on the roadmap request needs no
+scheduled job; the ten-minute throttle and the try-lock keep it to one bounded
+GitHub call per interval however many people are reading.
+
+`jomcgi-org/homelab` is public. A friend's raw words can name people
 or a campaign, and the factory reads the issue, so nothing from the row is
 published: the dialog shows the private text separately for reference with an
 initially empty, required public body. This staged repository delivery explicitly
@@ -753,13 +804,18 @@ an unreadable gateway response, filing shows the same reconciliation warning.
 Neither path retries automatically.
 
 **Tested.** `grimoire/feedback_test.py` asserts on the captured GitHub payload
-and covers the rate limit, the operator rule and the failure paths.
-`core/github_test.py` covers `create_issue`.
+and covers the rate limit, the operator rule and the failure paths. It also
+covers the roadmap's visibility rule and exact field set, votes, dismiss
+reasons, the state mapping, the refresh throttle and a GitHub outage.
+`core/github_test.py` covers `create_issue` and `list_issue_states`.
 `grimoire/feedback_postgres_test.py` uses the ephemeral PostgreSQL migration
 harness and separate connections to cover simultaneous quota requests, the
 rolling boundary, sender isolation, concurrent resolution and public-reader
 privileges. The concurrency tests pause after count or row locking and inspect
-PostgreSQL's waiters before releasing the first transaction.
+PostgreSQL's waiters before releasing the first transaction. It also holds one
+roadmap request inside its GitHub read while a second serves stored states
+without calling GitHub, and checks the new column constraints and the vote
+cascade.
 
 ## Friend onboarding and campaign ownership
 

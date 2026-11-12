@@ -25,6 +25,7 @@ from sqlalchemy import (
     REAL,
     String,
     UniqueConstraint,
+    false,
     func,
     text,
 )
@@ -1588,14 +1589,17 @@ class KnowledgeGrant(SQLModel, table=True):
 
 
 FeedbackStatus = Literal["new", "filed", "dismissed"]
+FeedbackIssueState = Literal["open", "completed", "not_planned"]
 
 
 class Feedback(SQLModel, table=True):
-    """In-app feedback awaiting operator triage. Mirrors
-    chart/migrations/20261112120000_grimoire_feedback.sql - keep in sync.
+    """In-app feedback and its roadmap state. Mirrors
+    chart/migrations/20261112120000_grimoire_feedback.sql and
+    20261113090000_grimoire_feedback_roadmap.sql - keep in sync.
 
-    Private: `author_email` and `text` leave only through the operator triage
-    API and are never sent to GitHub.
+    `author_email`, `page` and `campaign_id` leave only through the operator
+    triage API. `text` reaches the roadmap only for `shared` rows and the
+    author's own. Nothing from the row is sent to GitHub.
     """
 
     __tablename__ = "feedback"
@@ -1613,6 +1617,12 @@ class Feedback(SQLModel, table=True):
         ),
         CheckConstraint(
             "(status = 'new') = (resolved_at IS NULL)", name="feedback_resolved_chk"
+        ),
+        CheckConstraint("length(title) BETWEEN 1 AND 120", name="feedback_title_chk"),
+        CheckConstraint("length(reason) BETWEEN 1 AND 200", name="feedback_reason_chk"),
+        CheckConstraint(
+            "issue_state IN ('open', 'completed', 'not_planned')",
+            name="feedback_issue_state_chk",
         ),
         {"schema": "grimoire", "extend_existing": True},
     )
@@ -1638,6 +1648,45 @@ class Feedback(SQLModel, table=True):
     issue_number: int | None = Field(default=None, sa_column=Column(Integer))
     resolved_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    # False for rows sent before the roadmap existed: they were private notes.
+    shared: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=false()),
+    )
+    # The operator's issue title, shown on the roadmap in place of `text`.
+    title: str | None = Field(default=None, sa_column=Column(String))
+    # Why the operator dismissed it, shown on the roadmap.
+    reason: str | None = Field(default=None, sa_column=Column(String))
+    # The GitHub issue's state as last read; GitHub is the source of truth.
+    issue_state: FeedbackIssueState | None = Field(
+        default=None, sa_column=Column(String)
+    )
+    issue_checked_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+
+
+class FeedbackVote(SQLModel, table=True):
+    """One "me too" per voter and feedback row. Mirrors
+    chart/migrations/20261113090000_grimoire_feedback_roadmap.sql - keep in sync.
+    """
+
+    __tablename__ = "feedback_vote"
+    __table_args__ = ({"schema": "grimoire", "extend_existing": True},)
+
+    feedback_id: str = Field(
+        sa_column=_uuid_column(
+            primary_key=True,
+            nullable=False,
+            fk="grimoire.feedback.id",
+            ondelete="CASCADE",
+        )
+    )
+    voter_email: str = Field(sa_column=Column(String, primary_key=True, nullable=False))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
     )
 
 

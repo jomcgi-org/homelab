@@ -1,33 +1,38 @@
-"""In-app feedback from the friends web app, triaged privately by an operator.
+"""In-app feedback from the friends web app: intake, triage and the roadmap.
 
-A friend's text and identity stay in ``grimoire.feedback``. The repository is
-public, so nothing is published automatically: filing sends GitHub only the
-title and body the operator wrote, a fixed footer and fixed labels.
+Every signed-in user reads the roadmap, so a friend can see what was already
+suggested and what happened to it. The sender's identity, page and campaign
+stay with operators. The repository is public, so nothing is published
+automatically: filing sends GitHub only the title and body the operator wrote,
+a fixed footer and fixed labels.
 """
 
 import logging
 from datetime import datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 import httpx
 from auth.api import Principal
 from core.clock import aware, utc_now
 from core.db import get_session
-from core.github import GITHUB_REPO, create_issue
+from core.github import GITHUB_REPO, create_issue, list_issue_states
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import delete, func, or_, text, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlmodel import Session, select
 
 from grimoire.access import get_authenticated_email, get_authenticated_identity
-from grimoire.models import Campaign, Feedback, FeedbackStatus
+from grimoire.models import Campaign, Feedback, FeedbackStatus, FeedbackVote
 
 logger = logging.getLogger("monolith.grimoire.feedback")
 
 DAILY_LIMIT = 10
 LIST_LIMIT = 100
+ROADMAP_LIMIT = 200
+ISSUE_REFRESH_INTERVAL = timedelta(minutes=10)
+UNTITLED = "Suggestion"
 ISSUE_LABELS = ("grimoire", "feedback")
 ISSUE_FOOTER = "Filed from Grimoire feedback."
 
@@ -74,6 +79,37 @@ class FeedbackView(BaseModel):
     text: str
     status: FeedbackStatus
     issue_number: int | None
+    votes: int
+
+
+RoadmapState = Literal["new", "accepted", "completed", "rejected"]
+
+
+class RoadmapItem(BaseModel):
+    """What every signed-in user sees. No author, page or campaign."""
+
+    id: str
+    state: RoadmapState
+    text: str
+    votes: int
+    voted: bool
+    mine: bool
+    created_at: datetime
+    issue_url: str | None
+    reason: str | None
+
+
+class VoteReceipt(BaseModel):
+    votes: int
+    voted: bool
+
+
+class DismissRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    # One line, shown on the roadmap. Control characters include NUL.
+    reason: str | None = Field(
+        default=None, max_length=200, pattern=r"^[^\x00-\x1f\x7f]*$"
+    )
 
 
 class FeedbackIssueRequest(BaseModel):
@@ -136,7 +172,11 @@ def submit_feedback(
             "Try again tomorrow.",
         )
     row = Feedback(
-        author_email=email, campaign_id=campaign_id, page=body.page, text=body.text
+        author_email=email,
+        campaign_id=campaign_id,
+        page=body.page,
+        text=body.text,
+        shared=True,
     )
     session.add(row)
     session.commit()
@@ -150,7 +190,7 @@ def list_feedback(
     status: FeedbackStatus = "new",
 ) -> list[FeedbackView]:
     rows = session.exec(
-        select(Feedback, Campaign.name)
+        select(Feedback, Campaign.name, _vote_count())
         .outerjoin(Campaign, Campaign.id == Feedback.campaign_id)
         .where(Feedback.status == status)
         .order_by(Feedback.created_at.desc(), Feedback.id)
@@ -167,9 +207,192 @@ def list_feedback(
             text=row.text,
             status=row.status,
             issue_number=row.issue_number,
+            votes=votes,
         )
-        for row, campaign_name in rows
+        for row, campaign_name, votes in rows
     ]
+
+
+def _vote_count():
+    return (
+        select(func.count())
+        .select_from(FeedbackVote)
+        .where(FeedbackVote.feedback_id == Feedback.id)
+        .correlate(Feedback)
+        .scalar_subquery()
+    )
+
+
+def _issue_url(number: int) -> str:
+    return f"https://github.com/{GITHUB_REPO}/issues/{number}"
+
+
+def _state(row: Feedback) -> RoadmapState:
+    if row.status == "new":
+        return "new"
+    if row.status == "dismissed" or row.issue_state == "not_planned":
+        return "rejected"
+    # A filed row not yet read back from GitHub counts as open.
+    return "completed" if row.issue_state == "completed" else "accepted"
+
+
+def _visible(email: str):
+    """Shared notes, the caller's own, and anything filed (by its title)."""
+    return or_(
+        Feedback.shared, Feedback.author_email == email, Feedback.status == "filed"
+    )
+
+
+def _refresh_issue_states(session: Session) -> None:
+    """Read issue states back from GitHub, at most once per interval.
+
+    One request refreshes while the others serve what is stored. A failed
+    attempt is stamped too, so an outage costs one bounded call per interval.
+    """
+    if session.get_bind().dialect.name == "postgresql":
+        held = session.execute(
+            text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
+            {"key": "grimoire-feedback-roadmap"},
+        ).scalar_one()
+        if not held:
+            return
+    now = utc_now()
+    stale = session.exec(
+        select(Feedback.id)
+        .where(
+            Feedback.status == "filed",
+            or_(
+                Feedback.issue_checked_at.is_(None),
+                Feedback.issue_checked_at < now - ISSUE_REFRESH_INTERVAL,
+            ),
+        )
+        .limit(1)
+    ).first()
+    if stale is None:
+        return
+    try:
+        states = list_issue_states(
+            GITHUB_REPO, list(ISSUE_LABELS), user_agent="monolith-grimoire-feedback"
+        )
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning(
+            "grimoire feedback: issue states not refreshed (%s)", type(exc).__name__
+        )
+        states = {}
+    filed = Feedback.status == "filed"
+    session.execute(update(Feedback).where(filed).values(issue_checked_at=now))
+    for state in ("open", "completed", "not_planned"):
+        numbers = [number for number, value in states.items() if value == state]
+        if numbers:
+            session.execute(
+                update(Feedback)
+                .where(filed, Feedback.issue_number.in_(numbers))
+                .values(issue_state=state)
+            )
+    session.commit()
+
+
+@router.get("/roadmap", response_model=list[RoadmapItem])
+def read_roadmap(
+    _principal: Identity, email: AuthEmail, session: DatabaseSession
+) -> list[RoadmapItem]:
+    try:
+        _refresh_issue_states(session)
+    except SQLAlchemyError as exc:
+        session.rollback()
+        logger.warning(
+            "grimoire feedback: issue states not saved (%s)", type(exc).__name__
+        )
+    rows = session.exec(
+        select(Feedback, _vote_count())
+        .where(_visible(email))
+        .order_by(Feedback.created_at.desc(), Feedback.id)
+        .limit(ROADMAP_LIMIT)
+    ).all()
+    voted = set(
+        session.exec(
+            select(FeedbackVote.feedback_id).where(
+                FeedbackVote.voter_email == email,
+                FeedbackVote.feedback_id.in_([row.id for row, _votes in rows]),
+            )
+        ).all()
+    )
+    items = []
+    for row, votes in rows:
+        mine = row.author_email == email
+        state = _state(row)
+        # An unshared note's words are shown only to the person who wrote them.
+        if row.title:
+            shown = row.title
+        elif row.shared or mine:
+            shown = row.text
+        else:
+            shown = UNTITLED
+        items.append(
+            RoadmapItem(
+                id=row.id,
+                state=state,
+                text=shown,
+                votes=votes,
+                voted=row.id in voted,
+                mine=mine,
+                created_at=aware(row.created_at),
+                issue_url=_issue_url(row.issue_number) if row.issue_number else None,
+                reason=row.reason if state == "rejected" else None,
+            )
+        )
+    return items
+
+
+def _votable(session: Session, feedback_id: UUID, email: str) -> Feedback:
+    row = session.exec(
+        select(Feedback).where(Feedback.id == str(feedback_id), _visible(email))
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="feedback not found")
+    if row.author_email == email:
+        raise HTTPException(status_code=409, detail="This one is yours.")
+    if _state(row) not in ("new", "accepted"):
+        raise HTTPException(status_code=409, detail="Voting has closed on this one.")
+    return row
+
+
+def _vote_receipt(session: Session, row_id: str, voted: bool) -> VoteReceipt:
+    votes = session.exec(
+        select(func.count())
+        .select_from(FeedbackVote)
+        .where(FeedbackVote.feedback_id == row_id)
+    ).one()
+    return VoteReceipt(votes=votes, voted=voted)
+
+
+@router.put("/{feedback_id}/vote", response_model=VoteReceipt)
+def vote_for_feedback(
+    feedback_id: UUID, _principal: Identity, email: AuthEmail, session: DatabaseSession
+) -> VoteReceipt:
+    row_id = _votable(session, feedback_id, email).id
+    if session.get(FeedbackVote, (row_id, email)) is None:
+        session.add(FeedbackVote(feedback_id=row_id, voter_email=email))
+        try:
+            session.commit()
+        except IntegrityError:
+            # A parallel request stored the same vote first.
+            session.rollback()
+    return _vote_receipt(session, row_id, True)
+
+
+@router.delete("/{feedback_id}/vote", response_model=VoteReceipt)
+def withdraw_vote(
+    feedback_id: UUID, _principal: Identity, email: AuthEmail, session: DatabaseSession
+) -> VoteReceipt:
+    row_id = _votable(session, feedback_id, email).id
+    session.execute(
+        delete(FeedbackVote).where(
+            FeedbackVote.feedback_id == row_id, FeedbackVote.voter_email == email
+        )
+    )
+    session.commit()
+    return _vote_receipt(session, row_id, False)
 
 
 def _new_row(session: Session, feedback_id: UUID) -> Feedback:
@@ -211,6 +434,8 @@ def file_feedback(
         ) from None
     row.status = "filed"
     row.issue_number = number
+    row.title = body.title
+    row.issue_state = "open"
     row.resolved_at = utc_now()
     try:
         session.commit()
@@ -227,7 +452,7 @@ def file_feedback(
         ) from None
     return FeedbackIssue(
         issue_number=number,
-        issue_url=f"https://github.com/{GITHUB_REPO}/issues/{number}",
+        issue_url=_issue_url(number),
     )
 
 
@@ -236,8 +461,10 @@ def dismiss_feedback(
     feedback_id: UUID,
     _operator: Operator,
     session: DatabaseSession,
+    body: DismissRequest | None = None,
 ) -> None:
     row = _new_row(session, feedback_id)
     row.status = "dismissed"
+    row.reason = (body.reason if body else None) or None
     row.resolved_at = utc_now()
     session.commit()
