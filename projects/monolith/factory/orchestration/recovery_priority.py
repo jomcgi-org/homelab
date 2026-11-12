@@ -39,6 +39,8 @@ def retry_pending(db, control):
     from factory.orchestration import factory_landing as landing
     from factory.orchestration.factory_intake import lane_of
     from factory.orchestration.factory_intake_loop import _label_names
+    from factory.orchestration.factory_rollback_runtime import parent_held
+    from factory.orchestration import owner_prs
 
     for request in requests:
         row = controls._receipt(db, request.task_id)
@@ -75,6 +77,7 @@ def retry_pending(db, control):
             or row.task_paused
             or row.cancellation_requested
             or controls.landing_held(row)
+            or parent_held(db, row)
             or controls.operator_landing_target(request.task_id)
             or controls.review_recovery_held(request.task_id, session=db)
             or not controls.execution_capacity_available(db, control, row)
@@ -105,6 +108,17 @@ def retry_pending(db, control):
                 or node_id in landing._queued_ids([node_id])
             ):
                 continue
+            direction = json.loads(row.direction_json or "{}")
+            owner_prs.assert_unheld(
+                {
+                    "repo": row.repo,
+                    "owner_pr": direction.get("owner_pr"),
+                    "delivery_pr_number": detail["pr_number"],
+                },
+                pr,
+                read_get=landing.github_get,
+                read_list=landing.github_list,
+            )
             controls.request_landing_recovery(
                 request.task_id,
                 detail["pr_number"],

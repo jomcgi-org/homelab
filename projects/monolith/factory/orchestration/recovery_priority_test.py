@@ -616,3 +616,71 @@ def test_recovery_and_admission_share_transaction_rollback(db, policy, monkeypat
     monkeypatch.setattr(controls, "request_landing_recovery", original)
     assert not admit_next("test", lanes=("delivery",))["ok"]
     assert state(db, recovery) == "admitted"
+
+
+@pytest.mark.parametrize(
+    "guard",
+    [
+        "parent_missing",
+        "parent_paused",
+        "parent_cancelled",
+        "parent_held",
+        "owner_author",
+        "owner_hold",
+        "owner_unreadable",
+        "owner_unheld",
+    ],
+)
+def test_parent_and_owner_pr_holds_remain_binding(db, policy, monkeypatch, guard):
+    from factory.orchestration import owner_prs
+
+    holder = receipt(db, policy, 1, "admitted")
+    recovery = receipt(db, policy, 2)
+    assert request_recovery(recovery)["pending"]
+    queued = queue(db, policy)
+    direction = {}
+    if guard.startswith("parent_"):
+        parent = "missing"
+        if guard != "parent_missing":
+            parent = receipt(db, policy, 4, "succeeded")
+            with Session(db) as session, session.begin():
+                row = controls._receipt(session, parent)
+                if guard == "parent_paused":
+                    row.task_paused = True
+                elif guard == "parent_cancelled":
+                    row.cancellation_requested = True
+                else:
+                    row.direction_json = '{"landing_hold":null}'
+        direction["rollback_parent_task_id"] = parent
+    else:
+        direction["owner_pr"] = {"author_id": 42}
+        original_get = landing.github_get
+
+        def observation(repo, suffix):
+            result = original_get(repo, suffix)
+            if suffix.startswith("pulls/"):
+                result["user"] = {"id": 43 if guard == "owner_author" else 42}
+                if guard == "owner_hold":
+                    result["labels"] = [{"name": "do-not-merge"}]
+            return result
+
+        def comments(repo, suffix):
+            if guard == "owner_unreadable":
+                raise ValueError("owner PR discussion unavailable")
+            return []
+
+        monkeypatch.setattr(landing, "github_get", observation)
+        monkeypatch.setattr(landing, "github_list", comments)
+        monkeypatch.setattr(owner_prs.hold_release, "read_release", lambda *args: None)
+    with Session(db) as session, session.begin():
+        controls._receipt(session, recovery).direction_json = json.dumps(direction)
+    state(db, holder, "succeeded")
+    result = admit_next("test", lanes=("delivery",))
+    if guard == "owner_unheld":
+        assert not result["ok"]
+        assert state(db, recovery) == "admitted"
+        assert len(audits(db, recovery, "landing_recovery_started")) == 1
+    else:
+        assert result["receipt_id"] == queued["receipt_id"]
+        assert state(db, recovery) == "landing"
+        assert not audits(db, recovery, "landing_recovery_started")
