@@ -6209,6 +6209,25 @@ def test_operator_ownership_projection_matches_actor_key_and_claim_folds(db):
             {"receipt_id": 2, "option_key": "one", "decision_id": "new"},
         ),
         ("a", "decision_request", request(3, "separate", "accepted")),
+        ("a", "decision_claimed", {"receipt_id": 3, "option_key": "close"}),
+        (
+            "operator",
+            "decision_request_settled",
+            {"receipt_id": 3, "option_key": "close", "released_claim": False},
+        ),
+        ("a", "decision_request", request(3, "separate", "abandoned")),
+        (
+            "operator",
+            "decision_request_settled",
+            {"receipt_id": 3, "option_key": "close", "released_claim": True},
+        ),
+        # A later answer for a different option cannot clear a stale close claim.
+        ("a", "decision_claimed", {"receipt_id": 3, "option_key": "hold"}),
+        ("a", "decision_applied", {"receipt_id": 3, "option_key": "hold"}),
+        ("a", "decision_request", request(3, "later", "completed")),
+        # A late executor restores the original claim after abandonment.
+        ("a", "decision_claimed", {"receipt_id": 3, "option_key": "close"}),
+        ("a", "decision_request", request(3, "separate", "outcome_unknown")),
     ]
     for actor, action, detail in events:
         with Session(db) as writer, writer.begin():

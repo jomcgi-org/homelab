@@ -534,7 +534,7 @@ def _decision_ownership_queries(receipt_ids: set[int], dialect: str):
     Durable requests are last-write-wins per (actor, request_key), globally.
     Filter receipts AFTER ranking, so key reuse for a different receipt cannot
     resurrect an older request. Legacy claims fold separately per receipt and
-    option: the latest claimed/failed/applied action owns that option's state.
+    option: the latest claimed/failed/applied or releasing settlement owns it.
     Neither query transfers historical audit documents to Python.
     """
     from sqlalchemy import func
@@ -563,6 +563,7 @@ def _decision_ownership_queries(receipt_ids: set[int], dialect: str):
     )
     receipt = _audit_text(("receipt_id",), dialect)
     option = _audit_text(("option_key",), dialect)
+    released = _audit_text(("released_claim",), dialect)
     claims = (
         select(
             receipt.label("receipt"),
@@ -572,7 +573,8 @@ def _decision_ownership_queries(receipt_ids: set[int], dialect: str):
             .label("rank"),
         )
         .where(
-            A.action.in_(("decision_claimed", "decision_failed", "decision_applied")),
+            A.action.in_(("decision_claimed", "decision_failed", "decision_applied"))
+            | ((A.action == "decision_request_settled") & released.in_(("true", "1"))),
             receipt.in_(ids),
             option.is_not(None),
             option != "",

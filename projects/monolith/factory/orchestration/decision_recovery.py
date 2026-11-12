@@ -85,16 +85,29 @@ def execution_lock(receipt_id: int):
 
 
 def _events(db, receipt_id: int):
-    # Native JSON extraction keeps the read targeted even with a large audit log.
+    # Select relevant actor/key histories, including events on other receipts.
+    # Receipt-local ranking could resurrect an older request and let settlement
+    # overwrite an unrelated receipt's globally latest unknown-outcome fence.
     from factory.orchestration.mcp import _audit_text
 
-    return db.exec(
-        select(FactoryAudit)
+    dialect = db.get_bind().dialect.name
+    key = _audit_text(("request", "request_key"), dialect)
+    keys = (
+        select(FactoryAudit.actor.label("actor"), key.label("request_key"))
         .where(
             FactoryAudit.action == "decision_request",
-            _audit_text(("request", "receipt_id"), db.get_bind().dialect.name)
-            == str(receipt_id),
+            _audit_text(("request", "receipt_id"), dialect) == str(receipt_id),
         )
+        .distinct()
+        .subquery()
+    )
+    return db.exec(
+        select(FactoryAudit)
+        .join(
+            keys,
+            (FactoryAudit.actor == keys.c.actor) & (key == keys.c.request_key),
+        )
+        .where(FactoryAudit.action == "decision_request")
         .order_by(FactoryAudit.id)
     ).all()
 
@@ -120,7 +133,9 @@ def unresolved(db, receipt_id: int, limit: int = 10) -> dict:
     rows = []
     for key, row in latest.items():
         view = _view(row)
-        if view["result"]["state"] not in ("accepted", "outcome_unknown"):
+        if view["request"]["receipt_id"] != receipt_id or view["result"][
+            "state"
+        ] not in ("accepted", "outcome_unknown"):
             continue
         request = view["request"]
         rows.append(
@@ -156,7 +171,10 @@ def inspect_request(receipt_id: int, audit_id: int, principal) -> dict:
     with controls._read_session() as db:
         rows = _events(db, receipt_id)
         target = next((row for row in rows if row.id == audit_id), None)
-        if target is None:
+        if (
+            target is None
+            or json.loads(target.detail_json)["request"]["receipt_id"] != receipt_id
+        ):
             raise ValueError("no such request on this receipt")
         view = _view(target)
         key = view["request"]["request_key"]
@@ -227,6 +245,7 @@ def settle(receipt_id: int, body: Settlement, principal) -> dict:
             if (
                 view["audit_id"] != body.expected_audit_id
                 or view["sha256"] != body.expected_sha256
+                or request["receipt_id"] != receipt_id
                 or request.get("decision_id") != body.decision_id
             ):
                 raise ValueError("stale request evidence")

@@ -880,8 +880,11 @@ def recovery_body(db, receipt_id, *, conclusion="no_effects", key="settle-1"):
     )
 
 
-def test_recovery_no_effects_allows_only_a_new_explicit_answer(db, github, monkeypatch):
-    from factory.orchestration import decision_recovery as recovery
+@pytest.mark.parametrize("later_option", ["close", "hold"])
+def test_recovery_no_effects_allows_only_a_new_explicit_answer(
+    db, github, monkeypatch, later_option
+):
+    from factory.orchestration import decision_recovery as recovery, mcp
 
     receipt_id, identity = abandoned_request(db, github, monkeypatch)
     body = recovery_body(db, receipt_id)
@@ -903,6 +906,9 @@ def test_recovery_no_effects_allows_only_a_new_explicit_answer(db, github, monke
     ] == body.evidence.model_dump(mode="json")
     assert not settled["settlements_truncated"]
     assert not github.writes
+    with Session(db) as session:
+        assert not controls.decision_in_flight(session, receipt_id)
+        assert not mcp._decisions_in_flight(session, {receipt_id})
     assert recovery.settle(receipt_id, body, recovery_operator()) == result
     assert durable_answer(receipt_id, identity) == result
     assert (
@@ -910,10 +916,15 @@ def test_recovery_no_effects_allows_only_a_new_explicit_answer(db, github, monke
         == "conflicting_decision_request"
     )
     assert (
-        durable_answer(receipt_id, identity, key="explicit-later")["state"]
+        durable_answer(receipt_id, identity, key="explicit-later", option=later_option)[
+            "state"
+        ]
         == "completed"
     )
-    assert len(github.comments) == 1
+    assert len(github.comments) == (1 if later_option == "close" else 0)
+    with Session(db) as session:
+        assert not controls.decision_in_flight(session, receipt_id)
+        assert not mcp._decisions_in_flight(session, {receipt_id})
     # Same settlement replay is the acknowledgement, even after later state changes.
     assert recovery.settle(receipt_id, body, recovery_operator()) == result
 
@@ -965,6 +976,56 @@ def test_recovery_projects_exact_predecessor_and_preserves_other_receipts(
             session.get(FactoryReceipt, other["receipt"]["id"]).model_dump() == before
         )
         assert not recovery.unresolved(session, other["receipt"]["id"])["items"]
+
+
+@pytest.mark.parametrize("latest_state", ["accepted", "outcome_unknown", "completed"])
+def test_recovery_ranks_actor_key_globally_before_receipt(
+    db, github, monkeypatch, latest_state
+):
+    from factory.orchestration import decision_recovery as recovery
+
+    receipt_id, _identity = abandoned_request(db, github, monkeypatch)
+    body = recovery_body(db, receipt_id)
+    other_receipt = receipt_id + 1000
+    with controls._locked_session() as (session, _control):
+        original = controls._request_records(session)[("operator", "request-1")]
+        decisions._request_event(
+            session,
+            "operator",
+            {**original["request"], "receipt_id": other_receipt},
+            {"state": latest_state},
+        )
+    with Session(db) as session:
+        before = controls._request_records(session)
+        assert not controls._pending_request(session, receipt_id)
+        assert not recovery.unresolved(session, receipt_id)["items"]
+        assert bool(recovery.unresolved(session, other_receipt)["items"]) == (
+            latest_state != "completed"
+        )
+    inspection = recovery.inspect_request(
+        receipt_id, body.expected_audit_id, recovery_operator()
+    )
+    assert inspection["original"]["request"]["receipt_id"] == receipt_id
+    assert inspection["latest"]["request"]["receipt_id"] == other_receipt
+    assert inspection["event_count"] == 2
+    with pytest.raises(ValueError, match="no such request on this receipt"):
+        recovery.inspect_request(
+            receipt_id, inspection["latest"]["audit_id"], recovery_operator()
+        )
+    with pytest.raises(ValueError, match="stale request evidence"):
+        recovery.settle(receipt_id, body, recovery_operator())
+    # Even an exact digest of the global latest event cannot settle it through
+    # the earlier receipt's route.
+    body.expected_audit_id = inspection["latest"]["audit_id"]
+    body.expected_sha256 = inspection["latest"]["sha256"]
+    with pytest.raises(ValueError, match="stale request evidence"):
+        recovery.settle(receipt_id, body, recovery_operator())
+    with Session(db) as session:
+        assert controls._request_records(session) == before
+        assert controls._pending_request(session, other_receipt) == (
+            latest_state != "completed"
+        )
+    assert not github.writes
 
 
 def test_recovery_partial_post_write_failure_remains_unknown(db, github, monkeypatch):
@@ -1169,6 +1230,91 @@ def test_recovery_late_resolution_cannot_overwrite_abandonment(db, github, monke
         )
     assert durable_answer(receipt_id, identity) == result
     assert not github.writes
+
+
+@pytest.mark.parametrize("action", ["decide", "chat"])
+@pytest.mark.parametrize("write_error", [False, True])
+def test_recovery_lost_execution_lock_refences_late_effects(
+    db, github, monkeypatch, action, write_error
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
+    from threading import Event
+    from factory.orchestration import decision_recovery as recovery, mcp
+
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    started, release = Event(), Event()
+    execution_lock = recovery.execution_lock
+    method = "_apply" if action == "decide" else "_post_comment"
+    write = getattr(decisions, method)
+
+    @contextmanager
+    def lost_lock(receipt_id):
+        # Simulate the separate lock connection disappearing during GitHub I/O.
+        with execution_lock(receipt_id) as acquired:
+            pass
+        yield acquired
+
+    def blocked(*args):
+        started.set()
+        assert release.wait(10)
+        result = write(*args)
+        if write_error:
+            raise httpx.ReadTimeout("response lost after writes")
+        return result
+
+    def answer():
+        return decisions.request_decision(
+            receipt_id,
+            identity,
+            "close" if action == "decide" else "chat",
+            "operator",
+            request_key="request-1",
+            action=action,
+            note="Original operator direction",
+        )
+
+    monkeypatch.setattr(recovery, "execution_lock", lost_lock)
+    monkeypatch.setattr(decisions, method, blocked)
+    with ThreadPoolExecutor() as pool:
+        running = pool.submit(answer)
+        assert started.wait(10)
+        try:
+            body = recovery_body(db, receipt_id)
+            assert (
+                recovery.settle(receipt_id, body, recovery_operator())["state"]
+                == "abandoned"
+            )
+            assert not github.writes
+        finally:
+            release.set()
+        result = running.result()
+    assert github.writes
+    assert result["state"] == "outcome_unknown"
+    assert result["late_effects"] is True
+    with Session(db) as session:
+        assert controls._pending_request(session, receipt_id)
+        assert decisions._unsettled_legacy_claim(session, receipt_id, identity)
+        assert controls.decision_in_flight(session, receipt_id)
+        assert mcp._decisions_in_flight(session, {receipt_id}) == {receipt_id}
+        assert (
+            recovery.unresolved(session, receipt_id)["items"][0]["state"]
+            == "outcome_unknown"
+        )
+    inspection = recovery.inspect_request(
+        receipt_id, body.expected_audit_id, recovery_operator()
+    )
+    assert inspection["original"]["result"]["state"] == "accepted"
+    assert inspection["latest"]["result"] == result
+    assert inspection["settlements"][0]["result"]["state"] == "abandoned"
+    writes = list(github.writes)
+    assert answer() == result
+    assert (
+        durable_answer(receipt_id, identity, key="later", option="hold")["state"]
+        == "refused"
+    )
+    assert github.writes == writes
 
 
 @pytest.mark.parametrize("settled", [False, True])

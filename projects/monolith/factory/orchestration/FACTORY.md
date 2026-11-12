@@ -560,6 +560,10 @@ includes `unresolved_requests` on cards with pending predecessors: at most ten o
 identities with receipt, decision, action, option, first/latest timestamps,
 latest state, audit ID, result digest and native inspection/settlement paths.
 `total` and `truncated` identify overflow. Unknown outcomes remain unknown.
+Request history is last-write-wins globally per actor/key before selecting a
+receipt. Inspection shows cross-receipt history; only the global latest event's
+receipt can settle it. Releasing settlements clear the same legacy option claim
+in both the mutation readers and the batched SQL board projection.
 
 Both native routes require a standing human in `operators`, independently of
 the browser's `X-Auth-Email` decision permission:
@@ -606,8 +610,12 @@ It never authorizes another effectful attempt.
 Exact settlement-key replay returns its durable acknowledgement; changed
 arguments refuse. Original request keys replay the settled result. Fresh keys
 cannot reinterpret an unknown outcome, and stale settlement evidence refuses.
-Late durable resolution cannot overwrite abandonment. No audit history is
-deleted, and settlement never resumes tasks, changes holds or applies a decision.
+Late durable resolution cannot overwrite abandonment. If a lost lock connection
+lets an abandoned executor report possible effects, its exception path appends
+`outcome_unknown` with `late_effects` and restores the option claim atomically.
+Both answer and chat paths remain fenced; inspection retains the abandonment
+audit alongside the later result. No audit history is deleted, and settlement
+never resumes tasks, changes holds or applies a decision.
 
 Operational acceptance remains on #7729 with the authorized owner:
 

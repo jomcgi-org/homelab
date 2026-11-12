@@ -1541,8 +1541,27 @@ def _request_decision(
         }
         with _locked_session() as (db, _control):
             prior = _request_records(db).get((actor, request_key))
-            if prior and prior["result"]["state"] in ("completed", "abandoned"):
+            if prior and prior["result"]["state"] == "completed":
                 return prior["result"]
+            if prior and prior["result"]["state"] == "abandoned":
+                # The lock connection may have disappeared while GitHub I/O
+                # continued. A no-effects attestation cannot conceal a late
+                # executor's report. Restore both fences in this transaction.
+                result["late_effects"] = True
+                result["reason"] = (
+                    "possible effects reported after abandonment; "
+                    "reconciliation is required"
+                )
+                _audit(
+                    db,
+                    actor,
+                    "decision_claimed",
+                    receipt_id=receipt_id,
+                    decision_id=decision_id,
+                    option_key=option_key,
+                    request_key=request_key,
+                    reason="late_effects_after_abandonment",
+                )
             _request_event(db, actor, request, result)
         return result
 
