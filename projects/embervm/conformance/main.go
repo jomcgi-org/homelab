@@ -159,6 +159,13 @@ func loadConfig() (config, error) {
 	default:
 		return config{}, fmt.Errorf("S9_CODEX_PROBE must be true or false")
 	}
+	switch os.Getenv("S9_CODEX_RESUME_REPORT_ONLY") {
+	case "", "false":
+	case "true":
+		cfg.codexResumeReportOnly = true
+	default:
+		return config{}, fmt.Errorf("S9_CODEX_RESUME_REPORT_ONLY must be true or false")
+	}
 	if cfg.codexProbe && !validCodexGuestDigest(cfg.codexGuestDigest) {
 		return config{}, fmt.Errorf("S9_CODEX_GUEST_DIGEST must be the candidate sha256 image digest")
 	}

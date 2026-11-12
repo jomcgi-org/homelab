@@ -56,13 +56,17 @@ type config struct {
 	egressProbe   bool
 	// S9 is an authenticated Codex shell and native resume check. It is
 	// disabled until a dev broker grant and a stamped candidate image exist.
-	codexProbe         bool
-	codexWorkload      string
-	codexModel         string
-	codexProviderModel string
-	codexGuestDigest   string
-	codexCLIVersion    string
-	budgets            map[string]time.Duration
+	codexProbe bool
+	// codexResumeReportOnly records a resumed (post-park) turn failure in the
+	// detail but still passes S9, so the first-turn auth check gates promotion
+	// alone (#7731). The zero value keeps resume a hard gate.
+	codexResumeReportOnly bool
+	codexWorkload         string
+	codexModel            string
+	codexProviderModel    string
+	codexGuestDigest      string
+	codexCLIVersion       string
+	budgets               map[string]time.Duration
 }
 
 type controlPlaneClient struct {

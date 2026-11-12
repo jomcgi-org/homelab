@@ -848,3 +848,26 @@ func TestS9ReadinessIncludesTheCodexWorkload(t *testing.T) {
 		t.Fatalf("readiness result = %#v, creates=%d", got, creates.Load())
 	}
 }
+
+func TestS9ResumeReportOnlyPassesOnResumeFailure(t *testing.T) {
+	cfg := codexTestConfig()
+	cfg.codexResumeReportOnly = true
+	fake, client := newCodexTestServer(t, cfg, "stale_resume")
+	got := (&codexProbeGate{}).run(context.Background(), cfg, client)
+	if got.Verdict != verdictPass || !strings.Contains(got.Detail, "resume report-only (#7731) failed") {
+		t.Fatalf("report-only resume = %#v", got)
+	}
+	if fake.deletes.Load() == 0 {
+		t.Fatal("report-only resume left the session alive")
+	}
+}
+
+func TestS9ResumeReportOnlyStillBlocksFirstTurn(t *testing.T) {
+	cfg := codexTestConfig()
+	cfg.codexResumeReportOnly = true
+	_, client := newCodexTestServer(t, cfg, "provider_error")
+	got := (&codexProbeGate{}).run(context.Background(), cfg, client)
+	if got.Verdict != verdictFail || !strings.Contains(got.Detail, "first Codex shell turn") {
+		t.Fatalf("first-turn failure = %#v", got)
+	}
+}
