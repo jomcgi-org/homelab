@@ -834,6 +834,7 @@ js_library(
         "src/lib/public/sse-parser.js",
         "src/lib/public/styles/design-system.css",
         "src/lib/public/styles/technical-drawing.css",
+        "src/lib/sse-stream.js",
         "src/lib/styles/shared/tokens.css",
         "src/routes/+error.svelte",
         "src/routes/+layout.svelte",

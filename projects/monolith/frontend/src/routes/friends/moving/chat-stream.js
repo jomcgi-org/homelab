@@ -1,4 +1,5 @@
 import { createSseParser } from "$lib/public/sse-parser.js";
+import { consumeSseStream } from "$lib/sse-stream.js";
 
 export { createSseParser };
 
@@ -74,19 +75,15 @@ export async function streamChatMessage(
     return;
   }
 
-  const reader = response.body?.getReader?.();
-  if (!reader) {
+  if (!response.body?.getReader) {
     onFrame?.({ type: "error", data: { message: FALLBACK_ERROR } });
     return;
   }
-  const decoder = new TextDecoder();
-  const parser = createSseParser();
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
+  await consumeSseStream(
+    response.body,
+    (frame) => {
       onFrame?.(frame);
-    }
-  }
-  for (const frame of parser.flush()) onFrame?.(frame);
+    },
+    { signal },
+  );
 }

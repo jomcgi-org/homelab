@@ -18,6 +18,7 @@
 //   data: {"type":"error","data":{"code":"error","message":<text>}}
 
 import { createSseParser } from "../../sse-parser.js";
+import { consumeSseStream } from "$lib/sse-stream.js";
 
 export { createSseParser };
 
@@ -175,15 +176,12 @@ export async function streamChatMessage(
     return;
   }
 
-  const reader = resp.body?.getReader?.();
-  if (!reader) return;
-  const decoder = new TextDecoder();
-  const parser = createSseParser();
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    const chunk = decoder.decode(value, { stream: true });
-    for (const frame of parser.push(chunk)) onFrame?.(frame);
-  }
-  for (const frame of parser.flush()) onFrame?.(frame);
+  if (!resp.body?.getReader) return;
+  await consumeSseStream(
+    resp.body,
+    (frame) => {
+      onFrame?.(frame);
+    },
+    { signal },
+  );
 }
