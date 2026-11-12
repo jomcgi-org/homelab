@@ -149,6 +149,8 @@ def unresolved(db, receipt_id: int, limit: int = 10) -> dict:
 
 
 def inspect_request(receipt_id: int, audit_id: int, principal) -> dict:
+    from factory.orchestration.mcp import _audit_text
+
     if not is_operator(principal):
         raise ValueError("standing operator authority is required")
     with controls._read_session() as db:
@@ -164,11 +166,25 @@ def inspect_request(receipt_id: int, audit_id: int, principal) -> dict:
             if row.actor == target.actor
             and json.loads(row.detail_json)["request"]["request_key"] == key
         ]
+        dialect = db.get_bind().dialect.name
+        settlements = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.action == "decision_request_settled",
+                _audit_text(("receipt_id",), dialect) == str(receipt_id),
+                _audit_text(("settlement", "actor"), dialect) == target.actor,
+                _audit_text(("settlement", "request_key"), dialect) == key,
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(11)
+        ).all()
         return {
             "observed_at": iso(controls._now()),
             "original": _view(history[0]),
             "latest": _view(history[-1]),
             "event_count": len(history),
+            "settlements": [_view(event) for event in settlements[:10]],
+            "settlements_truncated": len(settlements) > 10,
         }
 
 

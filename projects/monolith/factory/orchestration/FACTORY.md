@@ -566,7 +566,9 @@ the browser's `X-Auth-Email` decision permission:
 
 - `GET /api/swarm/factory/decision-requests/{receipt_id}/{audit_id}` returns
   the original request (including its actual note), latest result, event count
-  and observation time. The audit ID must belong to that receipt. Use the latest
+  and observation time, plus the ten latest exact-request settlement audits with
+  their authorizer, evidence and timestamps (`settlements_truncated` marks overflow).
+  The audit ID must belong to that receipt. Use the latest
   event's `audit_id` and `sha256` for settlement.
 - `POST /api/swarm/factory/decision-requests/{receipt_id}/settle` takes `actor`
   and `request_key` from the original request, `decision_id`, `expected_audit_id`,

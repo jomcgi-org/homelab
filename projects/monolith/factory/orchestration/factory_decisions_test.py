@@ -892,6 +892,16 @@ def test_recovery_no_effects_allows_only_a_new_explicit_answer(db, github, monke
     assert inspection["latest"]["result"]["state"] == "accepted"
     result = recovery.settle(receipt_id, body, recovery_operator())
     assert result["state"] == "abandoned"
+    settled = recovery.inspect_request(
+        receipt_id, body.expected_audit_id, recovery_operator()
+    )
+    assert settled["original"]["result"]["state"] == "accepted"
+    assert settled["latest"]["result"] == result
+    assert settled["settlements"][0]["actor"] == "reconciler"
+    assert settled["settlements"][0]["settlement"][
+        "evidence"
+    ] == body.evidence.model_dump(mode="json")
+    assert not settled["settlements_truncated"]
     assert not github.writes
     assert recovery.settle(receipt_id, body, recovery_operator()) == result
     assert durable_answer(receipt_id, identity) == result
