@@ -17,23 +17,41 @@ import (
 const (
 	codexProbeEffort     = "xhigh"
 	codexGuestDigestPath = "/embervm-image-digest"
+	// codexProbeFailRetryAfter bounds how long a retained failure blocks a
+	// fresh probe. A provider-side fix, such as restoring the dev broker grant,
+	// otherwise stays invisible until the chart version or runner changes.
+	codexProbeFailRetryAfter = time.Hour
 )
 
 // Bound provider traffic and unresolved session side effects within this runner
 // process and chart version. Charge before the first invoke, or when creation
 // or cleanup leaves an unknown outcome. Only a proven no-allocation denial or
 // confirmed pre-invoke cleanup leaves the budget untouched. Success is retained;
-// two charged failures retain a fail-closed verdict. A process restart clears
-// this cache. Ordinary lifecycle scenarios keep running either way.
+// two charged failures retain a fail-closed verdict for
+// codexProbeFailRetryAfter, so provider spend stays at two charged attempts
+// per hour. A process restart clears this cache. Ordinary lifecycle scenarios
+// keep running either way.
 type codexProbeGate struct {
 	chartVersion string
 	attempts     int
 	last         *scenarioVerdict
+	lastAt       time.Time
+	now          func() time.Time
+}
+
+func (g *codexProbeGate) clock() time.Time {
+	if g.now != nil {
+		return g.now()
+	}
+	return time.Now()
 }
 
 func (g *codexProbeGate) run(ctx context.Context, cfg config, client *controlPlaneClient) scenarioVerdict {
 	if g.chartVersion != cfg.chartVersion {
 		g.chartVersion, g.attempts, g.last = cfg.chartVersion, 0, nil
+	}
+	if g.last != nil && g.last.Verdict != verdictPass && g.attempts >= 2 && g.clock().Sub(g.lastAt) >= codexProbeFailRetryAfter {
+		g.attempts, g.last = 0, nil
 	}
 	if g.last != nil && (g.last.Verdict == verdictPass || g.attempts >= 2) {
 		result := *g.last
@@ -45,7 +63,7 @@ func (g *codexProbeGate) run(ctx context.Context, cfg config, client *controlPla
 		// side effects are charged before this gate returns, never by a worker.
 		return runS9(scenarioCtx, cfg, client, func() { g.attempts++ })
 	})
-	g.last = &result
+	g.last, g.lastAt = &result, g.clock()
 	return result
 }
 

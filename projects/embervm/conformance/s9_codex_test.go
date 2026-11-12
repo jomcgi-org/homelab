@@ -490,6 +490,30 @@ func TestS9StopsProviderTrafficAfterTwoFailedAttempts(t *testing.T) {
 	}
 }
 
+func TestS9RetriesRetainedFailureAfterRetryWindow(t *testing.T) {
+	cfg := codexTestConfig()
+	fake, client := newCodexTestServer(t, cfg, "provider_error")
+	now := time.Date(2026, 11, 12, 15, 0, 0, 0, time.UTC)
+	gate := &codexProbeGate{now: func() time.Time { return now }}
+	for range 3 {
+		_ = gate.run(context.Background(), cfg, client)
+	}
+	if fake.creates.Load() != 2 {
+		t.Fatalf("attempt limit = %d creates", fake.creates.Load())
+	}
+	now = now.Add(codexProbeFailRetryAfter - time.Second)
+	if got := gate.run(context.Background(), cfg, client); !strings.Contains(got.Detail, "retained") || fake.creates.Load() != 2 {
+		t.Fatalf("failure not retained inside the window: %#v, creates=%d", got, fake.creates.Load())
+	}
+	now = now.Add(time.Second)
+	if got := gate.run(context.Background(), cfg, client); strings.Contains(got.Detail, "retained") || fake.creates.Load() != 3 {
+		t.Fatalf("failure retained after the window: %#v, creates=%d", got, fake.creates.Load())
+	}
+	if gate.attempts != 1 {
+		t.Fatalf("retry window did not reset the attempt budget: attempts=%d", gate.attempts)
+	}
+}
+
 func TestS9SafePreInvokeFailuresRemainRedWithoutSpendingAttempts(t *testing.T) {
 	for _, mode := range []string{"no_capacity", "readiness_failed", "readiness_timeout"} {
 		t.Run(mode, func(t *testing.T) {
