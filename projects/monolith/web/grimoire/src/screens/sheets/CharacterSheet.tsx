@@ -98,8 +98,13 @@ function Workspace({ history }: { history: SheetHistory }) {
           Version {submitted.version} is waiting for the DM.
         </Text>
       )}
-      {/* The editor previews the mechanics itself. */}
-      {latest && !editing && <SheetSummary version={latest} />}
+      {/*
+        The editor previews the mechanics of a draft itself. An approved
+        sheet is the character's record, so its numbers always show.
+      */}
+      {latest && (!editing || latest.status === "approved") && (
+        <SheetSummary version={latest} />
+      )}
       {role === "dm" && submitted && (
         <Decision
           campaignId={character.campaign_id}
