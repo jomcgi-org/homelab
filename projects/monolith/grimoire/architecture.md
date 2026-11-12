@@ -719,7 +719,8 @@ Every page header has a Feedback action. `POST /api/grimoire/feedback` stores
 the text (up to 2,000 characters), the in-app path, the campaign when the path
 has one, and the sender's verified email in `grimoire.feedback`. A campaign
 the sender does not belong to is dropped from the row. Each sender may
-store ten rows in any 24 hours; the next request answers 429.
+store ten rows in any 24 hours; the next request answers 429. An advisory
+lock per sender serializes the count and the insert.
 
 Only operators read the rows, at `/grimoire/feedback`. The routes apply the
 lobby's `can_administer_accounts` rule (`operators` group) on every request.

@@ -17,7 +17,7 @@ from core.db import get_session
 from core.github import GITHUB_REPO, create_issue
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlmodel import Session, select
 
 from grimoire.access import get_authenticated_email, get_authenticated_identity
@@ -105,6 +105,14 @@ def submit_feedback(
             campaign_id = str(body.campaign_id)
         except HTTPException:
             campaign_id = None
+    # Serialize one sender's submissions so parallel requests cannot all read
+    # the same count and overshoot the limit. SQLite has no advisory locks and
+    # only backs single-connection tests.
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": f"grimoire-feedback:{email}"},
+        )
     recent = session.exec(
         select(func.count())
         .select_from(Feedback)
