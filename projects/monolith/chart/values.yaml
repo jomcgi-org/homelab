@@ -1756,7 +1756,7 @@ swarm:
   factoryDrainedLossSettlementEnabled: false
   # Advisory planner adapter only; no production binding verifier exists yet.
   factoryPlannerPreviewEnabled: false
-  # Stage #7449 disabled until one verified rollout, following #7450.
+  # #7449 planner hold refusal. Off by default; the GKE hub overlay enables it.
   factoryPlannerHoldRefusalEnabled: false
   # Decide a card on a receipt that is still admitted, uncertain or landing
   # whatever the current policy generation: active work keeps its pinned
