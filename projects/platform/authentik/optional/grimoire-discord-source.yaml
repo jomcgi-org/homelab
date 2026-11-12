@@ -1,0 +1,135 @@
+  # Optional Discord sign-in for Grimoire (#7461). Spliced into grimoire-auth.yaml
+  # by templates/blueprints-configmap.yaml when grimoireDiscordSource.enabled,
+  # so !KeyOf resolves inside one blueprint. The Discord application is
+  # registered by hand; its callback is
+  # https://auth.jomcgi.dev/source/oauth/callback/discord/ and its credentials
+  # live in the 1Password item grimoire-discord-oauth.
+  #
+  # Identity is the Discord account id. Email is contact information only:
+  # user_matching_mode identifier never links an existing account by email,
+  # and the gate below refuses an email another account already uses.
+  - model: authentik_policies_expression.expressionpolicy
+    id: discord-enrollment-gate
+    identifiers:
+      name: grimoire-discord-enrollment-gate
+    attrs:
+      expression: |
+        from authentik.core.models import User
+        info = request.context.get("oauth_userinfo") or {}
+        if not info.get("id"):
+            ak_message("Sign in with Discord to join Grimoire.")
+            return False
+        email = str(info.get("email") or "").strip().lower()
+        if not email or info.get("verified") is not True:
+            ak_message("Grimoire needs a Discord account with a verified email.")
+            return False
+        if User.objects.filter(email__iexact=email).exists():
+            ak_message("An account already uses this email. Sign in with that account instead.")
+            return False
+        return True
+  - model: authentik_sources_oauth.oauthsourcepropertymapping
+    id: discord-user-properties
+    identifiers:
+      name: grimoire-discord-user-properties
+    attrs:
+      expression: |
+        # Stable, collision-free username; Discord handles can shadow human
+        # accounts. Email is kept only when Discord has verified it.
+        name = info.get("global_name") or info.get("username") or ""
+        email = info.get("email") if info.get("verified") is True else None
+        return {"username": "discord-" + str(info["id"]), "name": name, "email": email}
+  - model: authentik_flows.flow
+    id: discord-enrollment
+    identifiers:
+      slug: grimoire-discord-enrollment
+    attrs:
+      name: Grimoire Discord enrollment
+      title: Join Grimoire
+      designation: enrollment
+      authentication: require_unauthenticated
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf discord-enrollment
+      policy: !KeyOf discord-enrollment-gate
+      order: 0
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
+  - model: authentik_stages_user_write.userwritestage
+    id: discord-write
+    identifiers:
+      name: grimoire-discord-create-user
+    attrs:
+      user_creation_mode: always_create
+      user_type: external
+      create_users_group: null
+      user_path_template: grimoire
+  - model: authentik_stages_user_login.userloginstage
+    id: discord-login
+    identifiers:
+      name: grimoire-discord-login
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf discord-enrollment
+      stage: !KeyOf discord-write
+      order: 10
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf discord-enrollment
+      stage: !KeyOf discord-login
+      order: 20
+  - model: authentik_sources_oauth.oauthsource
+    id: discord-source
+    identifiers:
+      slug: discord
+    attrs:
+      name: Discord
+      provider_type: discord
+      authorization_url: https://discord.com/api/oauth2/authorize
+      access_token_url: https://discord.com/api/oauth2/token
+      profile_url: https://discord.com/api/users/@me
+      consumer_key: !Env GRIMOIRE_DISCORD_CLIENT_ID
+      consumer_secret: !Env GRIMOIRE_DISCORD_CLIENT_SECRET
+      user_matching_mode: identifier
+      user_path_template: grimoire
+      authentication_flow: !Find [authentik_flows.flow, [slug, default-source-authentication]]
+      enrollment_flow: !KeyOf discord-enrollment
+      user_property_mappings:
+        - !KeyOf discord-user-properties
+  # A Grimoire-only sign-in flow: the shared default flow and every other
+  # application keep their current login page. Password accounts still work.
+  - model: authentik_stages_identification.identificationstage
+    id: discord-identification
+    identifiers:
+      name: grimoire-identification
+    attrs:
+      user_fields: [username, email]
+      password_stage: !Find [authentik_stages_password.passwordstage, [name, default-authentication-password]]
+      sources:
+        - !KeyOf discord-source
+      show_source_labels: true
+  - model: authentik_flows.flow
+    id: discord-authentication
+    identifiers:
+      slug: grimoire-authentication
+    attrs:
+      name: Grimoire sign-in
+      title: Sign in to Grimoire
+      designation: authentication
+      authentication: none
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf discord-authentication
+      stage: !KeyOf discord-identification
+      order: 10
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf discord-authentication
+      stage: !Find [authentik_stages_authenticator_validate.authenticatorvalidatestage, [name, default-authentication-mfa-validation]]
+      order: 30
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf discord-authentication
+      stage: !Find [authentik_stages_user_login.userloginstage, [name, default-authentication-login]]
+      order: 100

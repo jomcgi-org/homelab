@@ -3,6 +3,13 @@
 grimoireLinkEnrollment:
   enabled: false
 
+# Optional Discord sign-in and self-enrollment for Grimoire (#7461). Adds a
+# Grimoire-only authentication flow with a Discord source; the shared default
+# login flow and every other application are unchanged. Requires the
+# grimoire-discord-oauth 1Password item. No group, permission or token.
+grimoireDiscordSource:
+  enabled: false
+
 platformManagement:
   # Adds protected account-type claims for explicit operator bootstrap before
   # enrollment/enforcement. No group, permission or flow gate changes.
@@ -57,6 +64,20 @@ authentik:
           secretKeyRef:
             name: grimoire-oidc-client
             key: client-secret
+      # Read by the optional Discord source blueprint. The Secret exists only
+      # while grimoireDiscordSource.enabled, so both references are optional.
+      - name: GRIMOIRE_DISCORD_CLIENT_ID
+        valueFrom:
+          secretKeyRef:
+            name: grimoire-discord-oauth
+            key: client-id
+            optional: true
+      - name: GRIMOIRE_DISCORD_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: grimoire-discord-oauth
+            key: client-secret
+            optional: true
       - name: AUTHENTIK_POSTGRESQL__HOST
         value: authentik-pg-rw
       - name: AUTHENTIK_POSTGRESQL__NAME

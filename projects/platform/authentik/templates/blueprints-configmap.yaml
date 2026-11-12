@@ -27,6 +27,10 @@ data:
 {{- $content = replace "        # PLATFORM_PROFILE_MAPPING" "        - !KeyOf platform-profile" $content }}
 {{- $content = replace "entries:\n" (printf "entries:\n%s\n" ($.Files.Get "optional/grimoire-management-profile.yaml")) $content }}
 {{- end }}
+{{- if and $.Values.grimoireDiscordSource.enabled (eq $path "blueprints/grimoire-auth.yaml") }}
+{{- $content = replace "      # DISCORD_AUTHENTICATION_FLOW" "      authentication_flow: !KeyOf discord-authentication" $content }}
+{{- $content = replace "entries:\n" (printf "entries:\n%s\n" ($.Files.Get "optional/grimoire-discord-source.yaml")) $content }}
+{{- end }}
 {{- if and $.Values.platformManagement.enabled (eq $path "blueprints/mcp-auth.yaml") }}
 {{- $content = replace "        # PLATFORM_MANAGEMENT_PROFILE" "        - !KeyOf platform-management-profile" $content }}
 {{- $content = replace "entries:\n" (printf "entries:\n%s\n" ($.Files.Get "optional/platform-management-profile.yaml")) $content }}
