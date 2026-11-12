@@ -283,7 +283,8 @@ defmodule Embervm.SessionManagerTest do
           :orphan_grace_ms,
           :departure_retry_interval_ms,
           :pressure_retry_interval_ms,
-          :pressure_wait_bound_ms
+          :pressure_wait_bound_ms,
+          :artifact_store_configured
         ])
 
     {:ok, mgr} = SessionManager.start_link(mgr_opts)
@@ -3492,6 +3493,33 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, %{status_code: 200}} =
              SessionManager.invoke(ctx.mgr, created.session_id, %{body: "wake"})
 
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :running
+  end
+
+  test "store-less same-node rejoin skips the workspace restore (#7731)" do
+    # With no artifact store the workspace never left the node: a restore RPC
+    # can only be refused (capability stamping and noded both need a store).
+    parent = self()
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-rejoin-storeless"),
+        channel_fun: fake_channel_fun(),
+        artifact_store_configured: false,
+        restore_artifact_fun: fn _ch, req ->
+          send(parent, {:unexpected_restore, req})
+          {:error, %GRPC.RPCError{status: 9}}
+        end
+      )
+
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+
+    assert {:ok, %{status_code: 200}} =
+             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "wake"})
+
+    refute_received {:unexpected_restore, %{artifact: %{kind: :ARTIFACT_KIND_SESSION_WORKSPACE}}}
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.state == :running
   end

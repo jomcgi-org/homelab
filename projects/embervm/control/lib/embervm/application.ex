@@ -1096,7 +1096,8 @@ defmodule Embervm.Application do
       # #4355 pressure-parked wake retry cadence and bound.
       pressure_retry_interval_ms: session_pressure_retry_interval_ms(),
       pressure_wait_bound_ms: session_pressure_wait_bound_ms(),
-      residency_restore_limit: residency_positive_limit("EMBERVM_RESIDENCY_RESTORE_LIMIT", 2)
+      residency_restore_limit: residency_positive_limit("EMBERVM_RESIDENCY_RESTORE_LIMIT", 2),
+      artifact_store_configured: artifact_store_client() != nil
     ] ++ wake_opts()
   end
 
