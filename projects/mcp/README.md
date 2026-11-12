@@ -26,6 +26,7 @@ projects/mcp/
     │   ├── Chart.yaml          # Chart metadata; declares mcp-stack + homelab-library deps
     │   ├── values.yaml         # Chart defaults (feature flags off, auth flags, inert teamMapping)
     │   ├── files/reconcile_team_mapping.py   # Team-mapping reconciler run by the CronJob
+    │   ├── files/reconcile_tools.py          # Tool reconciler run by the same CronJob
     │   └── templates/
     │       ├── httproute.yaml            # mcp.jomcgi.dev: RFC 9728 discovery + /mcp rewrite
     │       ├── httproute-scoped.yaml     # Per-tier hostnames (friends.jomcgi.dev), allowlist routes

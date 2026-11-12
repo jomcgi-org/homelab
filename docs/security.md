@@ -29,8 +29,8 @@ closed, not planned). The closed
 [#5461](https://github.com/jomcgi-org/homelab/issues/5461) decisions authorize
 no teardown, migration or hardware disposal. The cluster roots are
 `projects/platform-gke/kustomization.yaml` and
-`projects/gke-apps/kustomization.yaml`; every chart carries a
-`values-gke.yaml` overlay, and that overlay is where most security-relevant
+`projects/gke-apps/kustomization.yaml`; most charts carry a
+`values-gke.yaml` overlay, and where one exists it is where most security-relevant
 keys are set, so read it before the base values file.
 
 (see: `projects/platform-gke/`, `projects/gke-apps/`, `projects/platform/ARCHITECTURE.md` section 1)
@@ -52,7 +52,7 @@ are the live `HTTPRoute` set on the shared Gateway (`kubectl get httproutes -A`)
 | Lane | Host | Who | Gate |
 |------|------|-----|------|
 | Public | `jomcgi.dev` | anyone | none at the edge; served by a separate binary and Postgres roles (below), rate-limited per route |
-| Friends | `friends.jomcgi.dev` | authentik `family` on `/moving`, `homelab-admin` on `/preview/` | Envoy `SecurityPolicy` doing authentik OIDC plus a `groups` claim check, `defaultAction: Deny`; no Cloudflare Access application |
+| Friends | `friends.jomcgi.dev` | authentik `family` on `/moving`, `homelab-admin` on `/preview/`, any active human account with an email on `/grimoire` | Envoy `SecurityPolicy` doing authentik OIDC plus a `groups` claim check, `defaultAction: Deny`; no Cloudflare Access application |
 | Private | `private.jomcgi.dev` | Joe, plus service tokens | Cloudflare Access at the edge, then a `SecurityPolicy` validating the Access JWT on the monolith and Kargo routes |
 | Machine | `mcp.jomcgi.dev` | MCP clients | no `SecurityPolicy`; Context Forge validates the authentik bearer itself |
 | Identity provider | `auth.jomcgi.dev` | anyone, for the login flow | authentik's own session and MFA; the admin console is behind Cloudflare Access, configured in the dashboard |
@@ -81,8 +81,9 @@ what the same person already holds.
 
 **authentik is the standing identity provider.** Blueprints in
 `projects/platform/authentik/blueprints/` define one OAuth2 provider and
-one application per lane (`dev`, `kargo`, `preview`, `moving`, `mcp`), each
-bound to a group (`homelab-admin` or `family`). Renaming a group in authentik
+one application per lane (`dev`, `kargo`, `preview`, `moving`, `grimoire`, `mcp-friends`,
+`mcp-agents`), each bound to a group (`homelab-admin` or `family`) or, for
+Grimoire, to the `grimoire-human-access` policy. Renaming a group in authentik
 silently breaks every lane bound to it: the `groups` claim is matched by
 name. authentik runs on the hub with its own CNPG cluster and publishes
 `auth.jomcgi.dev` with no `SecurityPolicy`, because the login and setup
@@ -154,19 +155,23 @@ to `kg-agents`, so accepting the human issuer is a broader source boundary than
 the guest-only topology implies. Network reachability supplies no application
 authorization.
 
-**SPIFFE identity exists and nothing presents it yet.** SPIRE runs on the
+**SPIFFE mTLS is live on the token broker path; the noded hop still uses a
+bearer.** SPIRE runs on the
 hub (`projects/platform/spire`, Application `projects/platform-gke/spire`):
 trust domain `embervm.jomcgi.dev`, server on the core pool with its
 datastore as a database on `monolith-pg`, an agent on every node attesting
-with `k8s_psat`, and the CSI driver. Three `ClusterSPIFFEID` objects issue
+with `k8s_psat`, and the CSI driver. Four `ClusterSPIFFEID` objects issue
 an X.509-SVID of the form `spiffe://embervm.jomcgi.dev/ns/<ns>/sa/<sa>` to
-every pod in the `embervm`, `monolith` and `monolith-agents` namespaces
-(`kubectl get clusterspiffeids`). The token broker chart can mount the
-Workload API and serve `/token` over SPIFFE mTLS on a second port, gated on
-`tokenBroker.spiffe.enabled`, which is false with no hub override (#5755);
-nothing else mounts it, the control-plane-to-noded hop still carries a
-static bearer token, and guests hold no identity. Phase 2 is #5755 to
-#5759; the phase plan is #5706.
+every pod in the `embervm`, `embervm-dev`, `monolith` and `monolith-agents`
+namespaces (`kubectl get clusterspiffeids`). The hub overlays enable the
+token broker's SPIFFE mTLS listener on 8443 (`tokenBroker.spiffe.enabled`
+in `projects/embervm/deploy/values-gke.yaml`), with the EmberVM egress
+sidecar and the private monolith as its clients; the plaintext port is still
+served as the rollback. noded also serves a SPIFFE mTLS NodeService listener
+on 9443 (`noded.spiffe.enabled`), but the control plane does not dial it
+yet (`spiffe.dialNoded` is false), so that hop still carries a static bearer
+token. Guests hold no identity. Phase 2 is #5755 to #5759; the phase plan
+is #5706.
 
 Restore-capability MAC key decoupling is phase 2a (#5756). Its rollout order is:
 ship the default-off shared Secret wiring and a noded verifier that accepts the
@@ -212,7 +217,7 @@ Tunnel protocol is pinned to `http2`. The Tailscale operator is the second
 way in: it publishes the Kubernetes API to the tailnet and impersonates the
 tailnet identity as a Kubernetes user bound to `cluster-admin` for the
 admins listed in `projects/platform-gke/tailscale/values.yaml`, exposes the
-monolith API as a tailnet host, and runs three egress bridges to the home
+monolith API as a tailnet host, and runs one egress bridge (`inference-bridge-freetoken`) to the home
 inference host.
 
 **GKE Dataplane V2 is the CNI, and there is no enforced private-monolith
@@ -379,8 +384,8 @@ Firecracker jailer when `noded.jailer.enabled` is true: a per-VM chroot, a
 uid and gid from a block each daemon leases, a cgroup leaf under a capped
 parent and its own PID namespace. It fails closed: an armed brick that cannot
 contain guests exits before it registers, and a launch that cannot be
-contained is refused rather than run unjailed. The chart default is false
-with no override yet, so today noded execs the VMM directly, as root, inside
+contained is refused rather than run unjailed. It was armed on the hub (#5843) and disarmed on 2026-09-06; the hub overlay
+pins it to false, so today noded execs the VMM directly, as root, inside
 the privileged brick pod: a VMM escape lands in a process holding
 `/dev/kvm`, the store credential and the noded bearer token (#5255). Arming
 is a values flip per stage, embervm-dev first and production after a dev

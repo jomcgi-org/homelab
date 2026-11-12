@@ -203,7 +203,7 @@ Three sections, in order (sibling-identical shape):
    and which diff line addresses it.
 3. **Out of scope, observed.** Anything the evidence points at outside the three
    code levers and the channel directives (for example an upstream agent-run
-   failure, which belongs to improve-recipes).
+   failure, which is reported, not fixed here).
 
 ## 9. Guardrails
 
@@ -221,8 +221,8 @@ Optional argument: a lookback window, or one `episode_id` for a targeted "that
 just went badly" analysis.
 
 Find the monolith pod. There is no pod named "backend": the API lives in the
-`backend` CONTAINER of the `monolith-*` pod (alongside frontend; the mesh is
-Cilium now, so there is no linkerd-proxy sidecar):
+`backend` CONTAINER of the `monolith-*` pod (alongside `frontend`, `progress-ingest`
+and `tokenbroker-spiffe-helper`):
 
 ```bash
 kubectl get pods -n monolith -o name | grep '^pod/monolith-' | grep -v pg | grep -v atlas | grep -v searxng | head -1
@@ -279,7 +279,7 @@ Written per episode via `put-eval <episode_id> <base64-payload>` to
 
 ## After merge
 
-Prompt and gate edits ship with the MONOLITH image: the merged PR's chart bump
-rolls them out. Channel directive proposals land as inactive rows and take
+Prompt and gate edits ship with the MONOLITH image: the chart version CI writes
+back to main after merge rolls them out. Channel directive proposals land as inactive rows and take
 effect on a human 👍 in Discord. The next improve-ambient procedure run's before/after
 aggregates are the verdict on whether the change worked.

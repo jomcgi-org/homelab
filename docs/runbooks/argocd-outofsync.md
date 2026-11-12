@@ -21,6 +21,7 @@ Look at `status.sync.status`, `status.operationState` (phase, message, startedAt
 **Fix:** force a fresh sync via the `monolith-k8s-sync-argocd-app` MCP tool (name=`<app>`), or a hard refresh. Note (third documented occurrence, 2026-07-04): the MCP sync can report `synced: true` while changing nothing; the reliable escalation is a hard-refresh annotation, which forces the repo-server to re-pull and re-render:
 
 ```bash
+# Joe-run: agent cluster access is read-only
 kubectl -n argocd annotate application <app> argocd.argoproj.io/refresh=hard --overwrite
 ```
 
@@ -107,12 +108,13 @@ default TCP during the server-side dry run when the upstream chart omits it.
 **Fix:** terminate the stuck operation directly:
 
 ```bash
+# Joe-run: agent cluster access is read-only
 kubectl -n argocd patch application <app> --type merge -p '{"status":{"operationState":{"phase":"Terminating"}}}'
 ```
 
 The Application CRD has no status subresource, so a plain merge patch on `status` is correct here, this is not a workaround. It takes 20-40 seconds to take effect: do not conclude the patch failed if nothing has changed after 5 seconds.
 
-**Without kubectl (off-LAN):** the MCP tool `monolith-k8s-sync-argocd-app` patches `.operation` on the Application directly. The controller then finalizes the stale operation as Succeeded and any queued Kargo `argocd-update` proceeds. This is the path that cleared the 2026-08-24 embervm-dev wedge (#5250), where `operationState` sat at `phase: Running` with `finishedAt` already set because the resource it was waiting on had been pruned by the same sync. Capture the `operationState` JSON before clearing if it recurs.
+**Without kubectl write access (agents):** the MCP tool `monolith-k8s-sync-argocd-app` patches `.operation` on the Application directly. The controller then finalizes the stale operation as Succeeded and any queued Kargo `argocd-update` proceeds. This is the path that cleared the 2026-08-24 embervm-dev wedge (#5250), where `operationState` sat at `phase: Running` with `finishedAt` already set because the resource it was waiting on had been pruned by the same sync. Capture the `operationState` JSON before clearing if it recurs.
 
 ## Fleet-wide freeze via the root app
 
@@ -159,7 +161,7 @@ bazel/tools/cluster/scripts/argocd-api.sh /api/v1/applications/monolith/managed-
 
 It handles the port-forward, reads the admin password from `argocd-initial-admin-secret`, exchanges it for a session JWT, and calls the path with that token. Two things that bite if you hand-roll this instead:
 
-- The API is served at a SUBPATH and over plain HTTP. `server.rootpath=/app/argocd` and `server.insecure=true` (both in `argocd-cmd-params-cm`) mean `/api/v1/...` is a 404 and an `https://` request to the forwarded port never handshakes. The script reads both from the cluster rather than hardcoding them. Getting either wrong fails as an EMPTY response, not an error, which reads as "this app has no diff".
+- The path prefix and scheme are configuration, not constants. On the hub `server.rootpath` is empty and `server.insecure` is `false` (both in `argocd-cmd-params-cm`), so the API is at `/api/v1/...` over HTTPS. The script reads both from the cluster rather than hardcoding them. Getting either wrong fails as an EMPTY response, not an error, which reads as "this app has no diff".
 - The session POST needs `-H 'Content-Type: application/json'`, otherwise the API returns 415.
 - Admin credentials come from the `argocd-initial-admin-secret` secret in the `argocd` namespace, base64-decoded.
 

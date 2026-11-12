@@ -20,7 +20,7 @@ flowchart LR
 
 ## Architecture
 
-The chart deploys four Kyverno controllers plus four custom ClusterPolicies:
+The chart deploys four Kyverno controllers plus three custom ClusterPolicy templates:
 
 - **Admission Controller** - Intercepts API server requests to mutate and validate resources against policies
 - **Background Controller** - Applies policies retroactively to existing resources (not just new ones)
@@ -29,15 +29,13 @@ The chart deploys four Kyverno controllers plus four custom ClusterPolicies:
 
 Custom policies included:
 
-- **OTel Injection** (`inject-otel-env-vars`) - Mutates Deployments, StatefulSets, and DaemonSets to inject `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_PROTOCOL` environment variables
+- **OTel Injection** (`inject-otel-env-vars`, disabled by default) - Mutates Deployments, StatefulSets, and DaemonSets to inject `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_PROTOCOL` environment variables
 - **Require Resource Requests** (`require-resource-requests`) - Audits workloads for missing CPU/memory resource requests
 - **Clone Monolith Workflow Secrets** (`clone-monolith-workflows-secrets`) - Clones the monolith Postgres app secret and the other job-pod Secrets into `monolith-workflows`, triggered on each source Secret so a recreated source is re-cloned
-- **Clone SigNoz API Key** (`clone-signoz-api-key`) - Replicates the SigNoz `signoz-api-key` secret from the `signoz` namespace into the namespaces that call the SigNoz API
 
 ## Key Features
 
-- **Cluster-wide observability** - All workloads automatically get OTel configuration
-- **Opt-out model** - Label with `otel.instrumentation: disabled` to exclude
+- **OTel injection is off** - Services opt in through the collector allowlist; when the policy is enabled, label with `otel.instrumentation: disabled` to exclude
 - **Background enforcement** - Policies apply to both existing and new resources
 - **Audit mode** - Policies use `validationFailureAction: Audit` (non-blocking)
 - **Policy exceptions** - Supports Kyverno PolicyExceptions for fine-grained overrides
@@ -46,7 +44,7 @@ Custom policies included:
 
 | Value                                       | Description                                | Default                                               |
 | ------------------------------------------- | ------------------------------------------ | ----------------------------------------------------- |
-| `otelInjection.enabled`                     | Enable OTel env var injection policy       | `true`                                                |
+| `otelInjection.enabled`                     | Enable OTel env var injection policy       | `false`                                               |
 | `otelInjection.endpoint`                    | OTel collector endpoint                    | `""`                                                  |
 | `otelInjection.protocol`                    | OTel exporter protocol                     | `grpc`                                                |
 | `otelInjection.targetKinds`                 | Resource kinds to inject into              | `[Deployment, StatefulSet, DaemonSet]`                |

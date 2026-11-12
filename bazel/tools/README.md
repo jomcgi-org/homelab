@@ -5,12 +5,13 @@ Shared Bazel build tooling: rules, wrappers, and helper binaries used across the
 | Subdir | What it provides | Load path / notes |
 | --- | --- | --- |
 | [cluster](cluster/) | Session-authenticated ArgoCD API helper | `//bazel/tools/cluster:argocd_api`; `scripts/argocd-api.sh` |
+| [buildbuddy](buildbuddy/) | `bb_usage.py`: measures BuildBuddy cache traffic and stores dated snapshots | `docs/agents/buildbuddy-usage.md` |
 | [ci](ci/) | Unified local feedback loop: selective lint/regen + `bb remote` Linux test (matches Workflows Test flags) | `ci` on PATH via direnv; `bazel/tools/ci/ci` |
 | [embervm](embervm/) | Read-only Firecracker guest RSS and PSS overhead measurement for running EmberVM brick pods | Shell script + `sh_test` |
 | [format](format/) | The top-level `format` multirun target plus helper scripts for updating apko locks, Python requirements, and Atlas migration checksums | No new `.bzl` rules; orchestrates aspect_rules_lint |
 | [git](git/) | Git hook scripts: commit-message ASCII check, stale-PR guard, post-rewrite format trigger, and main-branch protection | Shell scripts; no `.bzl` files |
 | [hf2oci](hf2oci/README.md) | Go binary that streams HuggingFace model weights directly into OCI layers without writing temporary files to disk | See linked README |
-| [hooks](hooks/) | Minimal Claude PreToolUse hooks (prefer `ci`/`bb remote`, em-dash, public_reader grants, plans-retired) | Shell scripts + `sh_test` |
+| [hooks](hooks/) | Minimal Claude PreToolUse hooks (prefer `ci`/`bb remote`, read-only kubectl, em-dash, public_reader grants, plans-retired, architecture-doc reminder) | Shell scripts + `sh_test` |
 | [http](http/) | `multiarch_http_archive` and `multiarch_http_file` repository rules for downloading dual-arch binaries from HTTP archives and packaging them as platform-specific tars for apko images | `//bazel/tools/http:multiarch_http_archive.bzl` |
 | [image](image/README.md) | Builds the developer tools OCI image (vendored CLI tools, Node.js, Python, pnpm, prettier, homelab CLI) and exposes `multitool_tar`, `node_tar`, and `python_tar` macros | See linked README |
 | [js](js/README.md) | Bazel helpers for frontend builds: `exec_filegroup` and `node_modules_tar` | See linked README |
@@ -18,5 +19,6 @@ Shared Bazel build tooling: rules, wrappers, and helper binaries used across the
 | [oci](oci/README.md) | Bazel rules and macros for building and pushing container images: `apko_image`, `go_image`, `py3_image`, and the `OciImageInfo` provider | See linked README |
 | [platforms](platforms/) | Bazel `platform` targets for `linux_aarch64`, `linux_x86_64`, and `darwin_aarch64`, used by image build transitions and cross-compilation | No `.bzl` files |
 | [postgres](postgres/) | Module extension registering `oci_postgres`, which extracts PostgreSQL 16 and pgvector binaries from an OCI image for use as test data dependencies | `//bazel/tools/postgres:extensions.bzl` |
+| [previews](previews/) | Fixture preview capture, comparison and publishing | `docs/runbooks/fixture-previews.md` |
 | [pytest](pytest/) | Thin `py_test` wrapper macro that sets `pytest_main = True` by default across all Python test targets in the repo | `//bazel/tools/pytest:defs.bzl` |
 | [python](python/) | Gazelle Python manifest configuration (`gazelle_python_manifest`, `modules_mapping`) for keeping import-to-package mappings current during BUILD file generation | Gazelle config; no `.bzl` rules |

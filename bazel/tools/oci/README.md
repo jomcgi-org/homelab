@@ -122,15 +122,16 @@ apko ignores a declared arch nobody builds. Changing `archs` requires
 regenerating the lock, which checksums the entire config.
 
 ```python
-# projects/monolith/obsidian-image/BUILD
+# projects/scotland-connector/image/BUILD
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
 apko_image(
     name = "image",
     arm64 = False,
     config = "apko.yaml",
-    contents = "@monolith_obsidian_lock//:contents",
-    repository = "ghcr.io/jomcgi/homelab/projects/monolith/obsidian",
+    contents = "@scotland_connector_lock//:contents",
+    repository = "ghcr.io/jomcgi/homelab/projects/scotland-connector",
+    tars = [":connector_tar_amd64"],
 )
 ```
 
@@ -233,7 +234,7 @@ helm_chart(
     images = {
         "backend.image":               "//projects/monolith:image.info",
         "frontend.image":              "//projects/monolith/frontend:image.info",
-        "knowledge.headlessSync.image": "//projects/monolith/obsidian-image:image.info",
+        "jobs.image":                  "//projects/monolith:jobs_image.info",
     },
     publish = True,
 )

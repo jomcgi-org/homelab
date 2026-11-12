@@ -58,7 +58,7 @@ EmberVM dev adds a functional check after `argocd-wait`. The `conformance` HTTP
 step polls the dev runner's verdict endpoint and accepts a pass only when
 `chart_version` matches the Freight being promoted. Missing or stale verdicts
 keep polling. Two consecutive failed cycles for that chart fail the step;
-the configured verdict timeout is seventy-five minutes. This gate is separate
+the configured verdict timeout is ninety minutes. This gate is separate
 from `promotion.revisionGate`.
 
 EmberVM prod requests Freight from `dev`, with `requiredSoakTime: 5m0s`.
@@ -92,7 +92,7 @@ that directory; the parent definition is
 in Git and deploy through that parent.
 
 The root's `ignoreDifferences` list covers `monolith`, `monolith-agents`,
-`monolith-public`, `embervm` and `embervm-dev`, each at
+`monolith-public`, `embervm`, `embervm-dev` and `scotland-connector`, each at
 `/spec/sources/0/targetRevision`. It is paired with
 `RespectIgnoreDifferences=true`. Diff suppression alone hides drift; the sync
 option also prevents a later apply from stamping the Git pin over a promotion.
