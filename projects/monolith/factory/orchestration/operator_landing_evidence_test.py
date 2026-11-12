@@ -42,6 +42,7 @@ class Repository:
     def __init__(self):
         self.data = {}
         self.calls = []
+        self.renames = {}
         self.before = {
             "src/a.py": ("100644", b"old\n"),
             "run.sh": ("100644", b"echo same\n"),
@@ -130,6 +131,8 @@ class Repository:
             self.data[f"git/commits/{commit}"] = {"sha": commit, "tree": {"sha": tree}}
         files = []
         for path in self.before.keys() | self.after.keys():
+            if path in self.renames.values():
+                continue
             before, after = self.before.get(path), self.after.get(path)
             if before == after:
                 continue
@@ -143,6 +146,8 @@ class Repository:
             mode, raw = after if after else before
             sha = raw if mode == "160000" else git_hash("blob", raw)
             files.append({"filename": path, "status": status, "sha": sha})
+            if path in self.renames:
+                files[-1].update(status="renamed", previous_filename=self.renames[path])
         self.data[COMPARE] = {
             "base_commit": {"sha": TIP},
             "merge_base_commit": {"sha": BASE},
@@ -181,6 +186,316 @@ def repository(monkeypatch):
 def rejected(repository):
     with pytest.raises(ValueError, match=f"^{mod.REFUSAL}$"):
         mod.evidence(repository.pull)
+
+
+def removal_and_rename(repository, *, edited=False):
+    """Same diff shape as #7380, including a wholly removed directory."""
+    repository.before = {
+        "chat_public/retention.py": ("100644", b"retention\n"),
+        "tests/old/retention_test.py": ("100644", b"old test\n"),
+    }
+    repository.after = {
+        "grimoire_chat/retention.py": (
+            "100644",
+            b"edited retention\n" if edited else b"retention\n",
+        ),
+    }
+    repository.tip = {
+        "chat_public/retention.py": ("100755", b"independent source edit\n"),
+        "grimoire_chat/retention.py": ("100644", b"independent destination\n"),
+    }
+    repository.renames = {"grimoire_chat/retention.py": "chat_public/retention.py"}
+    repository.rebuild()
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_removed_directory_and_rename_collect_and_confirm(repository, edited):
+    removal_and_rename(repository, edited=edited)
+    proof = mod.evidence(repository.pull)
+    renamed, removed = proof["files"]
+    assert renamed["status"] == "renamed"
+    assert renamed["previous_filename"] == "chat_public/retention.py"
+    assert renamed["base_blob_sha"] == git_hash("blob", b"retention\n")
+    assert (renamed["base_blob_sha"] != renamed["head_blob_sha"]) == edited
+    assert renamed["base_tip_blob_sha"] == git_hash(
+        "blob", b"independent destination\n"
+    )
+    assert renamed["previous_base_tip_blob_sha"] == git_hash(
+        "blob", b"independent source edit\n"
+    )
+    assert renamed["previous_base_tip_mode"] == "100755"
+    assert removed["status"] == "removed"
+    assert removed["base_blob_sha"] == git_hash("blob", b"old test\n")
+    assert (
+        removed["head_mode"]
+        is removed["head_blob_sha"]
+        is removed["head_content_sha256"]
+        is None
+    )
+    assert removed["base_tip_mode"] is None
+    assert proof["manifest_sha256"] == proof_hash(proof)
+    repository.calls.clear()
+    assert mod.confirm(repository.pull, proof) is None
+    assert repository.calls == [REF]
+
+
+@pytest.mark.parametrize("status", ["removed", "renamed"])
+def test_single_removal_or_pure_rename(repository, status):
+    repository.before = {"old/file.py": ("100644", b"old\n")}
+    repository.after = (
+        {} if status == "removed" else {"new/file.py": ("100644", b"old\n")}
+    )
+    repository.tip = repository.before.copy()
+    repository.renames = {} if status == "removed" else {"new/file.py": "old/file.py"}
+    repository.rebuild()
+    proof = mod.evidence(repository.pull)
+    assert len(proof["files"]) == 1 and proof["files"][0]["status"] == status
+    assert mod.confirm(repository.pull, proof) is None
+
+
+def test_64_logical_renames_cover_128_endpoints(repository):
+    repository.before = {
+        f"old/{index}.py": ("100644", b"same\n") for index in range(64)
+    }
+    repository.after = {f"new/{index}.py": ("100644", b"same\n") for index in range(64)}
+    repository.tip = repository.before.copy()
+    repository.renames = {f"new/{index}.py": f"old/{index}.py" for index in range(64)}
+    repository.rebuild()
+    proof = mod.evidence(repository.pull)
+    assert len(proof["files"]) == 64
+    assert mod.confirm(repository.pull, proof) is None
+    repository.before["old/64.py"] = ("100644", b"same\n")
+    repository.after["new/64.py"] = ("100644", b"same\n")
+    repository.renames["new/64.py"] = "old/64.py"
+    repository.rebuild()
+    rejected(repository)
+
+
+@pytest.mark.parametrize("status", ["copied", "changed", "deleted", "unknown"])
+def test_unknown_status_refused(repository, status):
+    repository.data[COMPARE]["files"][0]["status"] = status
+    rejected(repository)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing_source",
+        "wrong_source",
+        "same_source",
+        "duplicate_source",
+        "source_still_present",
+        "destination_existed",
+        "removed_still_present",
+        "wrong_removed_sha",
+        "wrong_rename_sha",
+        "omitted_removal",
+        "extra_entry",
+        "missing_previous",
+        "previous_on_removed",
+        "previous_on_added",
+        "unsafe_previous",
+        "extra_tree_change",
+        "partial_tree",
+    ],
+)
+def test_removed_and_renamed_metadata_must_cover_exact_tree_diff(repository, fault):
+    removal_and_rename(repository)
+    files = repository.data[COMPARE]["files"]
+    renamed = next(item for item in files if item["status"] == "renamed")
+    removed = next(item for item in files if item["status"] == "removed")
+    if fault in {"missing_source", "wrong_source", "same_source", "unsafe_previous"}:
+        renamed["previous_filename"] = {
+            "missing_source": "missing.py",
+            "wrong_source": removed["filename"],
+            "same_source": renamed["filename"],
+            "unsafe_previous": "../escape",
+        }[fault]
+    elif fault == "duplicate_source":
+        repository.after["another.py"] = ("100644", b"another destination\n")
+        repository.renames["another.py"] = renamed["previous_filename"]
+        repository.rebuild()
+    elif fault in {
+        "source_still_present",
+        "removed_still_present",
+        "extra_tree_change",
+    }:
+        path = (
+            renamed["previous_filename"]
+            if fault == "source_still_present"
+            else removed["filename"]
+        )
+        repository.after[path] = repository.before[path]
+        if fault == "extra_tree_change":
+            repository.after["extra.py"] = ("100644", b"unreported\n")
+        repository.rebuild()
+        repository.data[COMPARE]["files"] = files
+    elif fault == "destination_existed":
+        repository.before[renamed["filename"]] = ("100644", b"existing\n")
+        repository.rebuild()
+        repository.data[COMPARE]["files"] = files
+    elif fault in {"wrong_removed_sha", "wrong_rename_sha"}:
+        (removed if fault == "wrong_removed_sha" else renamed)["sha"] = STALE
+    elif fault == "omitted_removal":
+        files.remove(removed)
+    elif fault == "extra_entry":
+        files.append({"filename": "missing.py", "status": "removed", "sha": STALE})
+    elif fault == "missing_previous":
+        del renamed["previous_filename"]
+    elif fault == "previous_on_removed":
+        removed["previous_filename"] = "forged.py"
+    elif fault == "previous_on_added":
+        renamed["status"] = "added"
+    elif fault == "partial_tree":
+        repository.root_tree(BASE)["tree"].pop()
+    repository.pull["changed_files"] = len(repository.data[COMPARE]["files"])
+    rejected(repository)
+
+
+@pytest.mark.parametrize(
+    "status,side",
+    [
+        ("removed", "base"),
+        ("removed", "destination_tip"),
+        ("renamed", "base"),
+        ("renamed", "head"),
+        ("renamed", "source_tip"),
+        ("renamed", "destination_tip"),
+    ],
+)
+@pytest.mark.parametrize("raw", [b"binary\0", b"invalid\xff", b"x" * (512 * 1024 + 1)])
+def test_new_statuses_retain_text_and_blob_limits(repository, status, side, raw):
+    removal_and_rename(repository)
+    path = (
+        "tests/old/retention_test.py"
+        if status == "removed"
+        else "chat_public/retention.py"
+    )
+    snapshot = repository.before
+    if side == "head":
+        snapshot, path = repository.after, "grimoire_chat/retention.py"
+    elif side == "source_tip":
+        snapshot = repository.tip
+    elif side == "destination_tip":
+        snapshot = repository.tip
+        if status == "renamed":
+            path = "grimoire_chat/retention.py"
+    snapshot[path] = ("100644", raw)
+    repository.rebuild()
+    rejected(repository)
+
+
+@pytest.mark.parametrize("mode", ["120000", "160000"])
+@pytest.mark.parametrize("side", ["removed_base", "rename_source_tip"])
+def test_removed_source_and_rename_source_tip_modes_refuse(repository, mode, side):
+    removal_and_rename(repository)
+    raw = STALE if mode == "160000" else b"link"
+    if side == "removed_base":
+        repository.before["tests/old/retention_test.py"] = (mode, raw)
+    else:
+        repository.tip["chat_public/retention.py"] = (mode, raw)
+    repository.rebuild()
+    rejected(repository)
+
+
+def test_missing_rename_source_at_current_tip_is_recorded_as_absent(repository):
+    removal_and_rename(repository)
+    del repository.tip["chat_public/retention.py"]
+    repository.rebuild()
+    proof = mod.evidence(repository.pull)
+    renamed = proof["files"][0]
+    assert renamed["previous_base_tip_mode"] is None
+    assert renamed["previous_base_tip_blob_sha"] is None
+    assert renamed["previous_base_tip_content_sha256"] is None
+    assert mod.confirm(repository.pull, proof) is None
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["x" * 1025, "/".join(["dir"] * 32 + ["file.py"]), "../file.py", ".git/file.py"],
+)
+def test_rename_source_retains_path_and_depth_limits(repository, path):
+    removal_and_rename(repository)
+    renamed = next(
+        item
+        for item in repository.data[COMPARE]["files"]
+        if item["status"] == "renamed"
+    )
+    renamed["previous_filename"] = path
+    rejected(repository)
+
+
+@pytest.mark.parametrize("side", ["before", "after", "tip"])
+@pytest.mark.parametrize("mode", ["120000", "160000"])
+def test_rename_endpoints_retain_regular_mode_checks(repository, side, mode):
+    removal_and_rename(repository)
+    snapshot = getattr(repository, side)
+    path = (
+        "chat_public/retention.py" if side == "before" else "grimoire_chat/retention.py"
+    )
+    snapshot[path] = (mode, STALE if mode == "160000" else b"link")
+    repository.rebuild()
+    rejected(repository)
+
+
+@pytest.mark.parametrize(
+    "limit",
+    [
+        "MAX_READS",
+        "MAX_TREES",
+        "MAX_TREE_ENTRIES",
+        "MAX_CONTENT_BYTES",
+        "MAX_CHANGED_PATHS",
+    ],
+)
+def test_new_statuses_retain_observation_bounds(repository, monkeypatch, limit):
+    removal_and_rename(repository)
+    monkeypatch.setattr(mod, limit, 1)
+    rejected(repository)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "source_self",
+        "source_overlap",
+        "missing_source",
+        "extra_source",
+        "base_absent",
+        "head_absent",
+        "removed_has_head",
+        "removed_no_base",
+        "bad_source_tip",
+        "unknown_status",
+    ],
+)
+def test_new_manifest_semantics_refuse_recomputed_digest(repository, fault):
+    removal_and_rename(repository)
+    proof = mod.evidence(repository.pull)
+    renamed, removed = proof["files"]
+    if fault == "source_self":
+        renamed["previous_filename"] = renamed["path"]
+    elif fault == "source_overlap":
+        renamed["previous_filename"] = removed["path"]
+    elif fault == "missing_source":
+        del renamed["previous_filename"]
+    elif fault == "extra_source":
+        removed["previous_filename"] = "forged.py"
+    elif fault in {"base_absent", "head_absent", "removed_no_base"}:
+        item = removed if fault == "removed_no_base" else renamed
+        prefix = "head" if fault == "head_absent" else "base"
+        for suffix in ("mode", "blob_sha", "content_sha256"):
+            item[f"{prefix}_{suffix}"] = None
+    elif fault == "removed_has_head":
+        for suffix in ("mode", "blob_sha", "content_sha256"):
+            removed[f"head_{suffix}"] = renamed[f"head_{suffix}"]
+    elif fault == "bad_source_tip":
+        renamed["previous_base_tip_content_sha256"] = "invalid"
+    elif fault == "unknown_status":
+        renamed["status"] = "copied"
+    proof["manifest_sha256"] = proof_hash(proof)
+    with pytest.raises(ValueError, match=f"^{mod.REFUSAL}$"):
+        mod.confirm(repository.pull, proof)
 
 
 def test_complete_diff_distinguishes_merge_base_and_current_target(repository):
@@ -347,21 +662,19 @@ def test_tree_hash_requires_complete_exact_tree(repository, fault):
     [
         "symlink",
         "submodule",
-        "deleted_file",
         "deleted_directory",
         "file_to_directory",
         "directory_to_file",
         "tip_symlink",
     ],
 )
-def test_unsupported_changed_file_kinds_and_deletions_refuse(repository, fault):
+def test_unsupported_changed_file_kinds_refuse(repository, fault):
     if fault == "symlink":
         repository.after["src/a.py"] = ("120000", b"new-target")
     elif fault == "submodule":
         repository.after["src/a.py"] = ("160000", "f" * 40)
-    elif fault == "deleted_file":
-        del repository.after["run.sh"]
     elif fault == "deleted_directory":
+        # A removed directory still requires inspecting every removed mode.
         del repository.after["same/kept.txt"]
         del repository.after["same/link"]
     elif fault == "file_to_directory":
