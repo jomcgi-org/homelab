@@ -96,6 +96,9 @@ KG admission needs at least one fresh permitting grant observation. Exhausted ac
 
 The `human` issue label declares human ownership over `agent-ready`, task class and allowlisting, excludes both lanes and queued admission, and survives label removal. The optional `intake` block defaults to `enabled: false`, `max_per_day: 5`, `cooldown_hours: 24`, `refine_enabled: false`. `close_enabled` with `max_closes_per_day` (default 3) gates whether a refine verdict may close.
 
+Once `20261112000000_factory_daily_admission_limit_1000` is applied, the homelab
+daily admission cap is 1000; rollout is pending.
+
 An open `blocks` edge excludes its blocked receipt from sweeps and final admission. Sweeps refresh four minutes after a completed idle sweep, staging one observation per open `agent-ready` issue. [#7459](https://github.com/jomcgi-org/homelab/issues/7459) holds staged acceptance.
 
 Intake admits at most one issue per lane per tick and at most `max_per_day` deliveries over a rolling 24 hours. An issue with a `succeeded` receipt in any generation is excluded as `delivered`. Operator-posted receipts take a separate linked-PR path, and local-authority work items are a second source.
@@ -704,7 +707,7 @@ does not answer an existing operator card or re-admit an escalated receipt.
 
 ### Conductor-owned reversible gates
 
-**Why.** A landing hold is an operator act (#7449). With `FACTORY_PLANNER_HOLD_REFUSAL_ENABLED=true` the server accepts an unmerged hold only from an `operator:` cause, an authoritative work-item `human` label or a durable operator handoff; model prose cannot establish provenance. Refused planner gates persist `landing_hold_refused` evidence and actionable feedback before any gate or hold is written, and admission excludes only holds with matching planner provenance. Unknown and operator holds stay binding, including an operator reassertion after a refusal. The flag ships false everywhere and disabling it restores prior handling; a verified disabled rollout, reviewed activation coordinated with #7451 and the measurement remain on #7449.
+**Why.** A landing hold is an operator act (#7449). With `FACTORY_PLANNER_HOLD_REFUSAL_ENABLED=true` the server accepts an unmerged hold only from an `operator:` cause, an authoritative work-item `human` label or a durable operator handoff; model prose cannot establish provenance. Refused planner gates persist `landing_hold_refused` evidence and actionable feedback before any gate or hold is written, and admission excludes only holds with matching planner provenance. Unknown and operator holds stay binding, including an operator reassertion after a refusal. The flag is on for the GKE hub since 2026-11-12 and off in the chart default, dev and recovery overlays; disabling it restores prior handling. Rollback validation and the measurement remain on #7449.
 
 Refine, investigate and planner artifacts carry a typed `gate` when a missing parameter, unavailable live check or existing delivery target would otherwise raise a card. A `reversible` gate carries its proposed `value` and `reason`; `spending`, `prod_deletion` and `external_account` keep the human decision path, as does any true flag in the four-boolean `effects` object. A recorded live-validation scope and checklist never authorizes performing the checks: the conductor records a default-off or staged repository `scope`, appends `live_checks` as unchecked issue lines, and the PR body follows the `Conductor rescope:` rule under Execution.
 

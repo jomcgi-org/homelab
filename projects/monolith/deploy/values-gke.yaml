@@ -27,7 +27,10 @@ tokenBroker:
     enabled: true
 
 swarm:
-  factoryPlannerHoldRefusalEnabled: false
+  # Stage 2 of #7449: refuse planner-origin, all-false-effect leave_unmerged
+  # holds so default-off work reaches the merge queue. Operator, human and
+  # effect-bearing holds stay binding. Rollback is setting this back to false.
+  factoryPlannerHoldRefusalEnabled: true
   # One display-only GitHub comment per GitHub-sourced work item, linking its
   # durable factory record. Never read back. Rollback is this flag.
   factoryWorkItemPointerEnabled: true
