@@ -13,7 +13,7 @@ Mirrors chart/migrations/20260613000000_hikes_schema.sql (walks) and
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime
+from sqlalchemy import JSON, Column, DateTime
 from sqlmodel import Field, SQLModel
 
 
@@ -28,6 +28,9 @@ class Walk(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     ascent_m: int
     duration_h: float
     summary: str = Field(default="")
+    summit_names: list[str] | None = Field(
+        default=None, sa_column=Column(JSON, nullable=True)
+    )
     latitude: float
     longitude: float
     forecast_fetched_at: datetime | None = Field(

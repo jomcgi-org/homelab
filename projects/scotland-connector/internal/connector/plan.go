@@ -28,6 +28,7 @@ type PlanParams struct {
 
 // WalkFilter narrows a plan's walks by their Walkhighlands facts.
 type WalkFilter struct {
+	HillFilter
 	MinDurationH *float64 `json:"min_duration_h,omitempty"`
 	MaxDurationH *float64 `json:"max_duration_h,omitempty"`
 	MinLengthKm  *float64 `json:"min_length_km,omitempty"`
@@ -91,6 +92,10 @@ func activities(raw []string) ([]string, error) {
 // the minimum's error.
 func walkFilter(f WalkFilter) (WalkFilter, error) {
 	var out WalkFilter
+	var hillErr error
+	if out.HillFilter, hillErr = hillFilter(f.HillFilter); hillErr != nil {
+		return out, hillErr
+	}
 	between := func(v *float64, param string, lo, hi float64) (*float64, error) {
 		if v == nil {
 			return nil, nil
@@ -129,7 +134,7 @@ func walkFilter(f WalkFilter) (WalkFilter, error) {
 }
 
 func (f WalkFilter) matches(w *walks.Walk) bool {
-	return (f.MinDurationH == nil || w.DurationH >= *f.MinDurationH) &&
+	return f.HillFilter.matches(w) && (f.MinDurationH == nil || w.DurationH >= *f.MinDurationH) &&
 		(f.MaxDurationH == nil || w.DurationH <= *f.MaxDurationH) &&
 		(f.MinLengthKm == nil || w.LengthKm >= *f.MinLengthKm) &&
 		(f.MaxLengthKm == nil || w.LengthKm <= *f.MaxLengthKm) &&
@@ -432,6 +437,9 @@ func (s *Service) Plan(p PlanParams) (*Envelope, error) {
 		return nil, err
 	}
 	var inRange []walkCandidate
+	if err := q.HillFilter.available(wk, s.Hills != nil, has(q.Activities, ActivityWalk)); err != nil {
+		return nil, err
+	}
 	if wk != nil {
 		inRange = walksInRange(wk, q)
 	}
@@ -458,5 +466,10 @@ func (s *Service) Plan(p PlanParams) (*Envelope, error) {
 	if wk != nil {
 		meta.Notes = append(meta.Notes, noteWalkStart)
 	}
+	var options []WalkOption
+	for _, day := range res.Days {
+		options = append(options, day.Walks...)
+	}
+	hillMeta(&meta, wk, options)
 	return &Envelope{Data: res, Meta: meta, ETag: etag("plan-v2", meta.DataVersion, meta.AsOf, canonical(q)), Results: results}, nil
 }

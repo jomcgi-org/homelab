@@ -241,6 +241,51 @@ func TestUnavailableIsNotCached(t *testing.T) {
 	}
 }
 
+func TestHillFiltersReachBothRESTTools(t *testing.T) {
+	h := handler(true)
+	r, _ := get(t, h, "/v1/plan?lat=57&lon=-4&activities=walk&hill_class=Munro&hill_name=Ben%20Nevis")
+	if r.Code != http.StatusBadRequest || r.Header().Get("Retry-After") != "" || !strings.Contains(r.Body.String(), `"code":"feature_not_enabled"`) || !strings.Contains(r.Body.String(), "hill filters are not enabled") {
+		t.Fatal(r.Code, r.Body)
+	}
+	r, _ = postCheck(t, h, `{"items":[{"activity":"walk","date":"2026-10-20","walk_name":"Ben Nevis"}],"hill_class":"Munro","hill_name":"Ben Nevis"}`)
+	if r.Code != http.StatusBadRequest || r.Header().Get("Retry-After") != "" || !strings.Contains(r.Body.String(), `"code":"feature_not_enabled"`) || !strings.Contains(r.Body.String(), "hill filters are not enabled") {
+		t.Fatal(r.Code, r.Body)
+	}
+}
+
+func TestHillTermsAndResponseDescription(t *testing.T) {
+	var spec struct {
+		Info       struct{ Description string } `json:"info"`
+		Components struct {
+			Schemas map[string]specSchema
+		}
+	}
+	if err := json.Unmarshal(openAPI, &spec); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Bulk extraction or redistribution of responses is not permitted.", "This restriction does not limit the reuse rights granted by CC BY 4.0 for DoBIH-derived fields"} {
+		if !strings.Contains(spec.Info.Description, text) {
+			t.Fatalf("missing terms: %s", text)
+		}
+	}
+	description := spec.Components.Schemas["Walk"].Properties["hills"].Items.Properties["class"].Description
+	if !strings.Contains(description, "This summit's DoBIH classification") || strings.Contains(description, "Only walks matching") {
+		t.Fatal(description)
+	}
+	if codes := spec.Components.Schemas["ErrorResponse"].Properties["error"].Properties["code"].Enum; !strings.Contains(strings.Join(codes, ","), "feature_not_enabled") {
+		t.Fatal("missing disabled-feature error code", codes)
+	}
+	r, _ := get(t, handler(true), "/v1/method")
+	if r.Code != http.StatusOK {
+		t.Fatal(r.Code, r.Body)
+	}
+	for _, internal := range []string{"#7368", "Before activation, align", "Conductor rescope:"} {
+		if strings.Contains(r.Body.String(), internal) {
+			t.Fatalf("public method exposes internal delivery text: %s", internal)
+		}
+	}
+}
+
 func TestUnknownPathIs404(t *testing.T) {
 	for _, p := range []string{"/v1/sites", "/v1/dark-sky-windows", "/v1/walk-windows"} {
 		rec, body := get(t, handler(true), p)
@@ -251,18 +296,19 @@ func TestUnknownPathIs404(t *testing.T) {
 }
 
 type specSchema struct {
-	Type       any                   `json:"type"`
-	Ref        string                `json:"$ref"`
-	Minimum    *float64              `json:"minimum"`
-	Maximum    *float64              `json:"maximum"`
-	Default    any                   `json:"default"`
-	MaxLength  *int                  `json:"maxLength"`
-	MinItems   *int                  `json:"minItems"`
-	MaxItems   *int                  `json:"maxItems"`
-	Enum       []string              `json:"enum"`
-	Required   []string              `json:"required"`
-	Properties map[string]specSchema `json:"properties"`
-	Items      *specSchema           `json:"items"`
+	Description string                `json:"description"`
+	Type        any                   `json:"type"`
+	Ref         string                `json:"$ref"`
+	Minimum     *float64              `json:"minimum"`
+	Maximum     *float64              `json:"maximum"`
+	Default     any                   `json:"default"`
+	MaxLength   *int                  `json:"maxLength"`
+	MinItems    *int                  `json:"minItems"`
+	MaxItems    *int                  `json:"maxItems"`
+	Enum        []string              `json:"enum"`
+	Required    []string              `json:"required"`
+	Properties  map[string]specSchema `json:"properties"`
+	Items       *specSchema           `json:"items"`
 }
 
 // openapi.json is the published contract: its operations must be exactly
@@ -348,6 +394,14 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 			bounds(where, p.Schema, connector.MinTempLimitC, connector.MaxTempLimitC)
 		case "max_ascent_m":
 			bounds(where, p.Schema, 1, connector.MaxAscentM)
+		case "hill_class":
+			if strings.Join(p.Schema.Enum, ",") != "Munro,Munro Top,Corbett,Graham,Donald" {
+				t.Fatal(p.Schema)
+			}
+		case "hill_name":
+			if p.Schema.MaxLength == nil || *p.Schema.MaxLength != connector.MaxNameLength {
+				t.Fatal(p.Schema)
+			}
 		case "from":
 			if !strings.Contains(p.Description, fmt.Sprintf("up to %d days ahead", connector.MaxDaysAhead)) {
 				t.Errorf("%s description %q does not match the code's window", where, p.Description)
@@ -367,7 +421,7 @@ func TestOpenAPIMatchesCode(t *testing.T) {
 			t.Errorf("%s required = %v", where, p.Required)
 		}
 	}
-	if len(seen) != 15 {
+	if len(seen) != 17 {
 		t.Errorf("plan parameters = %v", seen)
 	}
 

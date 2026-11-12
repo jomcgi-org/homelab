@@ -37,6 +37,8 @@ type config struct {
 	walksKey                       string
 	auroraEnabled                  bool
 	auroraKey                      string
+	hillsEnabled                   bool
+	hillsKey                       string
 	refreshInterval, shutdownGrace time.Duration
 	publicBaseURL, version         string
 	allowedOrigins                 []string
@@ -61,11 +63,19 @@ func loadConfig() (config, error) {
 		historyKey:     env("STARS_HISTORY_KEY", "history-map.json"),
 		walksKey:       env("STARS_WALKS_KEY", "walks.json"),
 		auroraKey:      env("STARS_AURORA_KEY", "aurora.json"),
+		hillsKey:       env("STARS_HILLS_KEY", "hills.json"),
 		publicBaseURL:  strings.TrimRight(env("PUBLIC_BASE_URL", ""), "/"),
 		version:        env("SERVICE_VERSION", "dev"),
 		allowedOrigins: strings.Split(env("MCP_ALLOWED_ORIGINS", "https://claude.ai,https://claude.com,https://chatgpt.com"), ","),
 	}
 	var err error
+	switch env("HILLS_ENABLED", "false") {
+	case "false":
+	case "true":
+		c.hillsEnabled = true
+	default:
+		return c, errors.New("HILLS_ENABLED must be true or false")
+	}
 	switch env("AURORA_ENABLED", "false") {
 	case "false":
 	case "true":
@@ -100,6 +110,7 @@ type app struct {
 	store         *store.Store
 	walks         *store.WalkStore
 	aurora        *store.AuroraStore
+	hills         *store.HillStore
 	draining      *atomic.Bool
 }
 
@@ -134,6 +145,11 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 		return -1
 	}))
 	svc := &connector.Service{Data: st, Walks: ws, MethodURL: cfg.publicBaseURL + "/v1/method", Now: time.Now}
+	var hs *store.HillStore
+	if cfg.hillsEnabled {
+		hs = store.NewHills(cfg.bucket, cfg.hillsKey, cfg.refreshInterval, client, log)
+		svc.Hills = hs
+	}
 	var as *store.AuroraStore
 	if cfg.auroraEnabled {
 		as = store.NewAurora(cfg.bucket, cfg.auroraKey, cfg.refreshInterval, client, log)
@@ -182,7 +198,7 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 		_ = json.NewEncoder(w).Encode(body)
 	})
 	admin.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	return &app{public: public, admin: admin, store: st, walks: ws, aurora: as, draining: draining}, nil
+	return &app{public: public, admin: admin, store: st, walks: ws, aurora: as, hills: hs, draining: draining}, nil
 }
 
 // loadUntilReady retries the first load with backoff, then polls forever.
@@ -238,6 +254,9 @@ func run(log *slog.Logger) error {
 
 	go a.loadUntilReady(ctx, log)
 	go a.walks.Run(ctx)
+	if a.hills != nil {
+		go a.hills.Run(ctx)
+	}
 	if a.aurora != nil {
 		go a.aurora.Run(ctx)
 	}

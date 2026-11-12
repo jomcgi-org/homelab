@@ -101,6 +101,9 @@ func InCoverage(lat, lon float64) bool {
 // ErrUnavailable means no dataset has loaded yet.
 var ErrUnavailable = errors.New("connector: forecast data not loaded yet")
 
+// ErrHillsDisabled means the deployment has not enabled hill filters.
+var ErrHillsDisabled = errors.New("hill filters are not enabled")
+
 // ParamError is a caller mistake the caller can fix.
 type ParamError struct {
 	Param   string `json:"param"`
@@ -121,8 +124,10 @@ type WalksSource interface {
 
 // Service answers queries.
 type Service struct {
+	hillCache  hillJoinCache
 	Data       DatasetSource
 	Walks      WalksSource
+	Hills      interface{ Current() *walks.HillDataset }
 	AuroraData interface{ Current() *aurora.Snapshot }
 	// MethodURL is published in every envelope.
 	MethodURL string
@@ -131,11 +136,13 @@ type Service struct {
 
 // Source is one attribution in the envelope.
 type Source struct {
-	Name        string `json:"name"`
-	Attribution string `json:"attribution"`
-	License     string `json:"license"`
-	URL         string `json:"url"`
-	Use         string `json:"use"`
+	Version       string `json:"version,omitempty"`
+	Modifications string `json:"modifications,omitempty"`
+	Name          string `json:"name"`
+	Attribution   string `json:"attribution"`
+	License       string `json:"license"`
+	URL           string `json:"url"`
+	Use           string `json:"use"`
 }
 
 // Meta is the provenance block on every response.

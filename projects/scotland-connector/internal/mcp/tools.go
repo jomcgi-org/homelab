@@ -69,6 +69,8 @@ var Tools = []Tool{
     "min_length_km": {"type": "number", "minimum": 0.5, "maximum": 100, "description": "Only walks at least this long, in km."},
     "max_length_km": {"type": "number", "minimum": 0.5, "maximum": 100, "description": "Only walks at most this long, in km."},
     "max_ascent_m": {"type": "integer", "minimum": 1, "maximum": 3000, "description": "Only walks with at most this much ascent, in metres."},
+    "hill_class": {"type":"string", "enum":["Munro","Munro Top","Corbett","Graham","Donald"], "description":"Only walks matching this hill class. Requires the optional hill snapshot; disabled deployments report hill filters are not enabled."},
+    "hill_name": {"type":"string", "minLength":1, "maxLength":100, "description":"Exact normalized summit name or bracketed DoBIH alias; with hill_class both must match the same hill. Requires enabled hill filters."},
     "max_rain_mm_h": {"type": "number", "minimum": 0, "maximum": 10, "description": "Walks: an hour counts as good only with at most this much rain, in mm. 0 means dry; the default 2 allows light rain; higher accepts wetter hours."},
     "max_wind_kmh": {"type": "number", "minimum": 0, "maximum": 120, "description": "Walks: an hour counts as good only with mean wind at most this, in km/h, at the walk's start. Default 80."},
     "min_temp_c": {"type": "number", "minimum": -30, "maximum": 30, "description": "Walks: an hour counts as good only at or above this temperature, in degrees C. Default none."},
@@ -113,7 +115,9 @@ var Tools = []Tool{
     },
     "max_rain_mm_h": {"type": "number", "minimum": 0, "maximum": 10, "description": "Walks: an hour counts as good only with at most this much rain, in mm. 0 means dry; the default 2 allows light rain; higher accepts wetter hours."},
     "max_wind_kmh": {"type": "number", "minimum": 0, "maximum": 120, "description": "Walks: an hour counts as good only with mean wind at most this, in km/h, at the walk's start. Default 80."},
-    "min_temp_c": {"type": "number", "minimum": -30, "maximum": 30, "description": "Walks: an hour counts as good only at or above this temperature, in degrees C. Default none."}
+    "min_temp_c": {"type": "number", "minimum": -30, "maximum": 30, "description": "Walks: an hour counts as good only at or above this temperature, in degrees C. Default none."},
+    "hill_class": {"type":"string", "enum":["Munro","Munro Top","Corbett","Graham","Donald"], "description":"Filter checked walks and alternatives by hill class. Requires the optional hill snapshot; disabled deployments report hill filters are not enabled."},
+    "hill_name": {"type":"string", "minLength":1, "maxLength":100, "description":"Exact normalized summit name or bracketed DoBIH alias; both filters must match the same hill. Requires enabled hill filters."}
   },
   "required": ["items"],
   "additionalProperties": false

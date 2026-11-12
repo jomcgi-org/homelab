@@ -1,8 +1,8 @@
 """Unit tests for hikes/router.py: /api/hikes/walks (+ /{uuid} detail).
 
-Uses an in-memory SQLite DB seeded with real rows and a minimal FastAPI app
-that mounts only the hikes router, mirroring the schema-stripping +
-``app.dependency_overrides[get_session]`` pattern in ``stars/router_test.py``.
+Uses SQLite seeded with real rows and a minimal FastAPI app that mounts only
+the hikes router, overriding ``get_session`` as in ``stars/router_test.py``.
+The pre-migration fixture is file-backed and omits the new summit column.
 
 Hours are anchored on ``top_of_hour(now)`` so the read-time cutoff keeps the
 seeded "future" rows and drops the seeded "elapsed" one, the same way
@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlmodel import Session, delete, select
+from sqlmodel import Session, create_engine, delete, select
 
 from core.db import get_session
 from hikes.models import Walk, WalkHour
@@ -113,6 +113,70 @@ def _seed_walks(session: Session) -> None:
     )
     _seed_run(session, BEN, 12)
     session.commit()
+
+
+@pytest.fixture
+def pre_hill_client(tmp_path):
+    """Public app ahead of monolith's 20261110070000 migration."""
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'pre-hill.db'}",
+        connect_args={"check_same_thread": False},
+        execution_options={"schema_translate_map": {"hikes": None}},
+    )
+    Walk.__table__.create(engine)
+    WalkHour.__table__.create(engine)
+    with Session(engine) as session:
+        _seed_walks(session)
+    with engine.begin() as conn:
+        conn.exec_driver_sql("ALTER TABLE walks DROP COLUMN summit_names")
+        columns = conn.exec_driver_sql("PRAGMA table_info(walks)").all()
+        assert "summit_names" not in {row[1] for row in columns}
+
+    def legacy_session():
+        with Session(engine) as session:
+            yield session
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_session] = legacy_session
+    try:
+        with TestClient(app) as client:
+            yield client
+    finally:
+        engine.dispose()
+
+
+class TestBeforeHillMigration:
+    def test_list_and_conditional_get(self, pre_hill_client):
+        response = pre_hill_client.get("/api/hikes/walks")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["count"] == 2
+        assert body["generated_at"] == FETCHED.isoformat()
+        assert [walk["uuid"] for walk in body["walks"]] == [TEALLACH, BEN]
+        assert body["walks"][1]["viable_days"]
+        assert all("summit_names" not in walk for walk in body["walks"])
+        cached = pre_hill_client.get(
+            "/api/hikes/walks", headers={"If-None-Match": response.headers["ETag"]}
+        )
+        assert cached.status_code == 304
+
+    def test_detail(self, pre_hill_client):
+        response = pre_hill_client.get(f"/api/hikes/walks/{BEN}")
+        assert response.status_code == 200
+        assert response.json() == {
+            "uuid": BEN,
+            "summary": "A steep but rewarding Munro above Loch Lomond.",
+            "windows": [
+                [int((H1 + timedelta(hours=k)).timestamp()), 12.5, 0.0, 14, 40]
+                for k in range(12)
+            ],
+        }
+        assert response.headers["Cache-Control"]
+
+    def test_unknown_walk(self, pre_hill_client):
+        response = pre_hill_client.get("/api/hikes/walks/does-not-exist")
+        assert response.status_code == 404
 
 
 class TestWalks:

@@ -425,6 +425,8 @@ func (h *Handler) toolsCall(r *http.Request, e era, raw json.RawMessage) (any, i
 		switch {
 		case errors.As(err, &pe):
 			msg = "Invalid " + pe.Param + ": " + pe.Message
+		case errors.Is(err, connector.ErrHillsDisabled):
+			msg = err.Error()
 		case errors.Is(err, connector.ErrUnavailable):
 			outcome, msg = "unavailable", "Forecast data is still loading; retry in a minute."
 		case errors.Is(err, errBadArguments):

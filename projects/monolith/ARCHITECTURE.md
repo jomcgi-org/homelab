@@ -1966,6 +1966,30 @@ by trust in the guest.
 
 ## 8. Public apps
 
+Hikes can materialize optional `hills.json` beside `walks.json` from a
+separately supplied local standard DoBIH CSV. `hikes/dobih.py` selects Scottish
+supported classes and records source version, CC BY 4.0 attribution and the
+filtering/joining modification notice. The publisher's workbook-linked notes
+and licence were verified on 2026-11-10 (#7368 comment 6760868704). No release
+is committed or imported. `stars.hillsEnabled: false` exports
+`HIKES_HILLS_ENABLED` only to the existing hikes forecast job. Disabled execution reads no hill
+input and publishes no hills. Future activation also needs local
+`HIKES_DOBIH_CSV_PATH` and `HIKES_DOBIH_VERSION`, neither configured here.
+Existing schedules remain unchanged.
+
+Nullable `hikes.walks.summit_names` preserves labelled summit lists through
+normal scraper upserts. The additive JSONB column contains no seed data.
+Only enabled hill-source snapshots expose the optional field. Materialization
+runs off the async event loop; the worker owns its session. Bad hill input
+cannot replace a working object or fail the existing walk publication.
+The connector architecture describes explicit and conservative inferred joins.
+
+**Why.** An optional materialized object avoids the migration ConfigMap size
+limit and keeps ingestion out of public request paths. Default-off controls
+allow repository delivery before separately authorized import and activation.
+Operational acceptance remains on #7368, including both rollout checks and
+a live Ben Nevis answer.
+
 - `/app/hikes`: walk catalogue and forecasts, served as cacheable public data. (see: /projects/monolith/hikes/router.py)
 - `/app/trips`: geotagged trip and photo feed with a private ingest path and public cached reads. (see: /projects/monolith/trips/read_router.py)
 - `/app/stars`: astronomy forecasts and historical climatology heatmaps. (see: /projects/monolith/stars/router.py)
@@ -2193,6 +2217,7 @@ is tracked in [section 4](#factory-acceptance).
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Optional DoBIH hill materialization and summit evidence | section 8 | #7368 | default off; rollout, import, activation and live answer outstanding |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
 | Bound oversized source coverage with exact literal witnesses and reconsider deterministic blocks by cited blob identity | section 6, source coverage | #6995 | default-off contract; broader behavioral and negative claims require complete evidence |
