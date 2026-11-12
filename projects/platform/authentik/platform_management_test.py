@@ -56,6 +56,11 @@ def render(management, link, hub, *, retired_flag=False):
         f"platformManagement.enabled={str(management).lower()}",
         "--set",
         f"grimoireLinkEnrollment.enabled={str(link).lower()}",
+        # The hub overlay enables the Discord source, which splices into the
+        # Grimoire blueprint. That splice has its own test; this one compares
+        # the blueprints as authored.
+        "--set",
+        "grimoireDiscordSource.enabled=false",
     ]
     if retired_flag:
         # Regression: obsolete values cannot activate a flow or credential guard.

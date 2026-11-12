@@ -256,3 +256,31 @@ def test_mapping_uses_stable_username_and_verified_email_only():
     assert unverified["username"] == "discord-1234"
     assert unverified["name"] == "rowan"
     assert unverified["email"] is None
+
+
+def test_hub_enables_the_source_from_the_shared_discord_application():
+    hub = yaml.safe_load((CHART / "values-gke.yaml").read_text())
+    assert hub["grimoireDiscordSource"] == {"enabled": True}
+    result = subprocess.run(
+        [
+            os.environ.get("HELM_BIN", "helm"),
+            "template",
+            "authentik",
+            str(CHART),
+            "-f",
+            str(CHART / "values-gke.yaml"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    (item,) = [
+        d
+        for d in yaml.safe_load_all(result.stdout)
+        if d and d["kind"] == "OnePasswordItem" and "discord" in d["metadata"]["name"]
+    ]
+    # The cluster Secret keeps its name; the credentials come from Bosun's item.
+    assert item["metadata"]["name"] == "grimoire-discord-oauth"
+    assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/discord-bosun"

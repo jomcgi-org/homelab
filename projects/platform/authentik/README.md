@@ -59,12 +59,14 @@ default. `grimoireLinkEnrollment` gates the separate campaign-link flow;
 The optional platform enrollment flow was retired in #7075. Its former shared
 Grimoire profile mapping remains management-owned with the same object identity.
 
-`grimoireDiscordSource` (default off, #7461) splices a Discord OAuth source,
+`grimoireDiscordSource` (off in the base values, on in the hub overlay since
+2026-11-12, #7461) splices a Discord OAuth source,
 a verified-email enrollment gate and a Grimoire-only sign-in flow into the
 Grimoire blueprint, and points the Grimoire provider at that flow. Every other
-application keeps the shared default login. Enabling it needs the
-`vaults/k8s-homelab/items/grimoire-discord-oauth` item with `client-id` and
-`client-secret` from a Discord application whose redirect is
+application keeps the shared default login. It reads `client-id` and
+`client-secret` from the 1Password item at `grimoireDiscordSource.itemPath`,
+`vaults/k8s-homelab/items/discord-bosun`: the shared Bosun Discord
+application, whose redirect is
 `https://auth.jomcgi.dev/source/oauth/callback/discord/`. Discord identities
 match by account id only, never by email, and create external users under the
 `grimoire` path with no group.
@@ -72,9 +74,11 @@ match by account id only, never by email, and create external users under the
 Disabled does not mean identical manifests: the server and worker still gain
 optional Secret environment references, and the Grimoire blueprint contains a
 splice-marker comment. No Discord source or Discord OnePasswordItem is rendered.
-Registration, credential provisioning, owner approval of enablement and disposable
-account checks remain outside this staged change, along with campaign-creation
-restrictions and invitation/platform-auth decisions in #7461.
+Joe registered the application, provisioned the credentials and approved
+enablement on 2026-11-12. Any Discord account with a verified email can now
+enrol, and campaign creation is open to every account while platform
+enforcement is off. Disposable-account checks of the live flow, campaign-creation
+restrictions and the invitation/platform-auth decisions remain in #7461.
 
 The source contract was checked against Authentik's pinned
 [`version/2026.5.6`](https://github.com/goauthentik/authentik/tree/version/2026.5.6):
@@ -83,8 +87,8 @@ and `oauth_userinfo` to the flow policy context; `core/sources/flow_manager.py`
 carries that context into enrollment. `sources/oauth/types/discord.py` requests
 `email` and `identify`. `stages/identification/stage.py` validates the embedded
 password against the selected stage's backends. These source checks and real-Helm
-render tests do not establish a working Discord sign-in; that needs separately
-authorized disposable-account validation before enablement.
+render tests do not establish a working Discord sign-in; disposable-account
+validation of the live flow is still outstanding.
 
 authentik serves discovery per application at
 `/application/o/<slug>/.well-known/openid-configuration`. Ember's browser SSO
