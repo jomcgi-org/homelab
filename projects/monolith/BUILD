@@ -10025,3 +10025,13 @@ py_test(
         "@pip//pytest",
     ],
 )
+
+py_test(
+    name = "stop_acceptance_test",
+    srcs = [
+        "scripts/stop_acceptance.py",
+        "scripts/stop_acceptance_test.py",
+    ],
+    imports = ["."],
+    deps = ["@pip//pytest"],
+)
