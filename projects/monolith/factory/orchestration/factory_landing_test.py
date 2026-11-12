@@ -2810,6 +2810,9 @@ def test_deferred_github_read_skips_one_item_without_aborting_the_tick(db, monke
         ("_fence_ungranted_queue_entry", "github_get", 1, "ready"),
         ("_fence_ungranted_queue_entry", "github_get", 2, "queued"),
         ("_fence_ungranted_queue_entry", "_queued_ids", 2, "queued"),
+        ("_fence_operator_queue_entry", "github_get", 1, "operator-unheld"),
+        ("_fence_operator_queue_entry", "_queued_ids", 1, "operator-unheld"),
+        ("_fence_operator_queue_entry", "_queued_ids", 2, "operator-unheld-queued"),
         ("_recover_refused", "github_get", 1, "recovery"),
         ("_recover_refused", "_queued_ids", 1, "recovery"),
         ("_arm", "github_get", 1, "ready"),
@@ -2843,7 +2846,12 @@ def test_read_deferral_matrix_preserves_later_work_and_retries(
             direction = json.loads(row.direction_json)
             direction["landing_hold"] = {"actor": "operator"}
             row.direction_json = json.dumps(direction)
-    if setup in {"operator", "operator-queued"}:
+    if setup in {
+        "operator",
+        "operator-queued",
+        "operator-unheld",
+        "operator-unheld-queued",
+    }:
         monkeypatch.setattr(landing, "operator_target", lambda task: task == "t-1")
         monkeypatch.setattr(
             controls, "OPERATOR_DOCS_HANDOFF_TARGET", ("owner/repo", "t-1", 11, 3)
@@ -2865,6 +2873,7 @@ def test_read_deferral_matrix_preserves_later_work_and_retries(
                 "queued",
                 "held-queued",
                 "operator-queued",
+                "operator-unheld-queued",
                 "owner-held",
                 "human-queued",
             }
@@ -2934,7 +2943,14 @@ def test_read_deferral_matrix_preserves_later_work_and_retries(
     # read defers. That unknown outcome must not permit publication or closure.
     assert len(first_mutations) == int(
         nth == 2
-        and setup in {"held-queued", "operator-queued", "owner-held", "human-queued"}
+        and setup
+        in {
+            "held-queued",
+            "operator-queued",
+            "operator-unheld-queued",
+            "owner-held",
+            "human-queued",
+        }
     )
     assert receipt_state(db, "t-1") != "cancelled"
     assert landing._deferred_items.get() is None
@@ -3027,7 +3043,10 @@ def test_global_holder_deferral_fences_arming_but_not_independent_work(
     assert audits(db, "merge_armed", "t-1")
 
 
-def test_publication_collect_cooldown_uses_real_collector_and_retries(db, monkeypatch):
+@pytest.mark.parametrize("publish_enabled", [False, True])
+def test_publication_collect_cooldown_uses_real_collector_and_retries(
+    db, monkeypatch, publish_enabled
+):
     from factory.orchestration.github_read_cooldown import GitHubReadDeferred
 
     delivered(db, "t-1", 11, 3)
@@ -3074,7 +3093,7 @@ def test_publication_collect_cooldown_uses_real_collector_and_retries(db, monkey
             ]
         )
     calls = github(monkeypatch, pulls={3: pull(3), 4: pull(4, task_id="t-later")})
-    monkeypatch.setattr(review_publisher, "enabled", lambda: True)
+    monkeypatch.setattr(review_publisher, "enabled", lambda: publish_enabled)
     reviewed = review_publisher.collect
     active, reached, published = [], [], []
     original_get = landing.github_get
@@ -3109,7 +3128,7 @@ def test_publication_collect_cooldown_uses_real_collector_and_retries(db, monkey
     monkeypatch.setattr(landing, "github_get", read)
     landing.landing_tick(POLICY)
     assert reached == ["pulls/3"]
-    assert published == ["t-later"]
+    assert published == (["t-later"] if publish_enabled else [])
     assert calls["graphql"] == [{"pullRequestId": "PR_4"}]
     assert not audits(db, "merge_arm_refused", "t-1")
     assert not audits(db, "review_publish_refused", "t-1")
@@ -3117,7 +3136,7 @@ def test_publication_collect_cooldown_uses_real_collector_and_retries(db, monkey
     landing.github_graphql(landing._DISARM_AUTO_MERGE, {"pullRequestId": "PR_4"})
     monkeypatch.setattr(landing, "github_get", original_get)
     landing.landing_tick(POLICY)
-    assert "t-1" in published
+    assert ("t-1" in published) == publish_enabled
     assert audits(db, "merge_armed", "t-1")
 
 
