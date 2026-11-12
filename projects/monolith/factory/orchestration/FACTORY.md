@@ -98,7 +98,9 @@ The `human` issue label declares human ownership over `agent-ready`, task class 
 
 An open `blocks` edge excludes its blocked receipt from sweeps and final admission. Sweeps refresh four minutes after a completed idle sweep, staging one observation per open `agent-ready` issue. [#7459](https://github.com/jomcgi-org/homelab/issues/7459) holds staged acceptance.
 
-Intake admits at most one issue per lane per tick and at most `max_per_day` deliveries over a rolling 24 hours. An issue with a `succeeded` receipt in any generation is excluded as `delivered`. Operator-posted receipts take a separate linked-PR path, and local-authority work items are a second source.
+Intake admits at most one issue per lane per tick and at most `max_per_day` deliveries over a rolling 24 hours. An issue with a `succeeded` receipt in any generation is excluded as `delivered`. Operator-posted receipts take a separate linked-PR path, and local-authority work items with `execution_mode=factory` are a second source.
+
+Manual/external `tracking_only` records are excluded regardless of state or local authority. Their `ready` and `active` states describe the named owner's work, not factory admission. See [the private tracking contract](../TRACKING.md).
 
 Each intake class sets verification, implementer floor and gate:
 
@@ -700,7 +702,9 @@ does not answer an existing operator card or re-admit an escalated receipt.
 
 ### Work item pointer comments
 
-`FACTORY_WORK_ITEM_POINTER_ENABLED` and `FACTORY_WORK_ITEM_BASE_URL` enable one GitHub comment per GitHub-sourced work item, linking its durable factory record. It is display-only and never read back.
+`FACTORY_WORK_ITEM_POINTER_ENABLED` and `FACTORY_WORK_ITEM_BASE_URL` enable one GitHub comment per GitHub-sourced work item, linking its durable factory record. It is display-only and never read back. The sync excludes `tracking_only` work items. A tracking source URL is only a reference, including when it points to a GitHub issue.
+
+The board and work-item browser reads require exactly one nonempty verified Access email. The `FACTORY_OPERATOR_EMAILS` allowlist narrows controls only; readers Access admits retain board, escalation and work-item visibility (#6002). Tracking detail shows source, owner, recorded status and event history without factory receipts, relationship forms or execution controls.
 
 ### Conductor-owned reversible gates
 

@@ -512,7 +512,13 @@ def test_browser_routes_serve_the_full_work_item_document(db):
     browser_app.dependency_overrides[get_session] = session_override
     browser = TestClient(browser_app)
     try:
-        via_browser = browser.get(f"/api/agents/factory/work-items/{item_id}").json()
+        assert (
+            browser.get(f"/api/agents/factory/work-items/{item_id}").status_code == 403
+        )
+        via_browser = browser.get(
+            f"/api/agents/factory/work-items/{item_id}",
+            headers={"X-Auth-Email": "operator@example.test"},
+        ).json()
         with Session(db) as session:
             assert via_browser == jsonable_encoder(
                 work_items.work_item_document(session, item_id)
@@ -531,7 +537,8 @@ def test_browser_routes_serve_the_full_work_item_document(db):
         }
         with Session(db) as session:
             assert browser.get(
-                "/api/agents/factory/work-items?state=ready"
+                "/api/agents/factory/work-items?state=ready",
+                headers={"X-Auth-Email": "operator@example.test"},
             ).json() == jsonable_encoder(
                 {
                     "work_items": work_items.list_work_items(

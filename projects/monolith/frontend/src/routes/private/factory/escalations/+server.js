@@ -3,9 +3,10 @@
 // returns only the part this page renders.
 const API_BASE = process.env.API_BASE;
 
-export async function GET() {
+export async function GET({ request }) {
   try {
     const response = await fetch(`${API_BASE}/api/agents/factory`, {
+      headers: { "X-Auth-Email": request?.headers.get("x-auth-email") ?? "" },
       signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) {

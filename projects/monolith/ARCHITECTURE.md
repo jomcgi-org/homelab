@@ -2185,6 +2185,33 @@ the conflict; the cost is a filegroup in every doc-owning package, held
 complete by the coverage check. One pretty-printed committed file per doc was
 the fallback: mergeable, but still generated state in git.
 
+### Private manual and external tracking
+
+`factory/orchestration/tracking.py` records human and externally executed work
+under durable `WorkItem` IDs. `execution_mode` is immutable: existing rows
+default to `factory`; these records use `tracking_only`. They retain local
+authority, `mcp` provenance and a reference URL, with no GitHub execution key.
+The five private `factory_tracking_*` MCP tools require a standing human
+operator for reads and writes. The private browser reuses its verified
+Access-email gate. Source and owner text grant no authority.
+
+**Why.** State and local authority already select executable factory work.
+Tracking work needs those same visible states without admission or external
+ownership effects. Receipt creation, polling, admission, refinement, recovery
+and start reservation check execution mode. Database constraints and triggers
+reject conversion and receipt links to tracking rows. Pointer and publication
+queries exclude them. Request-key uniqueness, immutable result snapshots and
+version-checked writes commit with the existing attributable event history.
+Factory aliases retain their existing receipt semantics.
+
+The native private board and detail reuse the mobile sheet shipped by #7228.
+Tracking rows display the named owner, source, status and recorded completion;
+they have no receipt, factory relationship or execution controls. Public
+work-item snapshots and receipt projections exclude tracking identities.
+The transition, identity and retry contract is in [factory/TRACKING.md](factory/TRACKING.md).
+This is repository-only delivery under #7400. The migration is not run by an
+implementation session; deployment and #6577 cutover remain outside its scope.
+
 ## 11. Direction
 
 Decided and not yet built, each with the issue that tracks it. A row leaves
@@ -2193,6 +2220,7 @@ is tracked in [section 4](#factory-acceptance).
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Private tracking-only manual and external tasks through MCP | Joe's 2026-10-29 request, private manual and external tracking | #7400 | repository implementation; draft, unmerged delivery only |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
 | Bound oversized source coverage with exact literal witnesses and reconsider deterministic blocks by cited blob identity | section 6, source coverage | #6995 | default-off contract; broader behavioral and negative claims require complete evidence |

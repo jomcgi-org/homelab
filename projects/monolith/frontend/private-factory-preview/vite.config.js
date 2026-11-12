@@ -31,7 +31,7 @@ export default defineConfig({
             !/\/private\/factory\/execution\/(?:[\w-]+\/)*[\w+-]+\.(?:svelte|js|css)(?:\?|$)/.test(
               id,
             ) &&
-            !/\/private\/(?:\+layout\.svelte|\+page\.svelte|dashboard-sheet\.css|updates\/(?:\+page\.svelte|updates\.js)|qwen\/(?:\+page\.svelte|markdown\.js|metrics\.js)|factory\/(?:FactorySheet\.svelte|\+page\.svelte|factory-view\.js|execution\/(?:run-history|run-lexicon|dag)\.js|escalations\/(?:\+page\.svelte|escalations-view\.js)|work-items\/\[id\]\/(?:\+page\.svelte|work-item-view\.js)))(?:\?|$)/.test(
+            !/\/private\/(?:\+layout\.svelte|\+page\.svelte|dashboard-sheet\.css|updates\/(?:\+page\.svelte|updates\.js)|qwen\/(?:\+page\.svelte|markdown\.js|metrics\.js)|factory\/(?:FactorySheet\.svelte|TrackingItem\.svelte|tracking-view\.js|\+page\.svelte|factory-view\.js|execution\/(?:run-history|run-lexicon|dag)\.js|escalations\/(?:\+page\.svelte|escalations-view\.js)|work-items\/\[id\]\/(?:\+page\.svelte|work-item-view\.js)))(?:\?|$)/.test(
               id,
             )
           )

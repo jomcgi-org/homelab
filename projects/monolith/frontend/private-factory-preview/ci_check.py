@@ -28,6 +28,7 @@ def main():
             "run",
             "src/routes/private/factory/page.test.js",
             "src/routes/private/factory/factory-view.test.js",
+            "src/routes/private/factory/tracking-view.test.js",
             "src/routes/private/factory/escalations",
             "src/routes/private/factory/work-items/[id]",
         ],

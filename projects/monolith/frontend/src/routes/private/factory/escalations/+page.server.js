@@ -4,9 +4,10 @@
 // polls /factory/escalations itself.
 const API_BASE = process.env.API_BASE;
 
-export async function load({ fetch }) {
+export async function load({ fetch, request }) {
   try {
     const response = await fetch(`${API_BASE}/api/agents/factory`, {
+      headers: { "X-Auth-Email": request?.headers.get("x-auth-email") ?? "" },
       signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) {

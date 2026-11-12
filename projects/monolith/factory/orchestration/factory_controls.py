@@ -4306,6 +4306,14 @@ def request_control(
         return result
 
 
+def receipt_is_executable(db: Session, row: FactoryReceipt) -> bool:
+    """Fail closed on tracking or missing identities; preserve factory aliases."""
+    if row.work_item_id is None:
+        return True
+    item = db.get(WorkItem, row.work_item_id)
+    return bool(item is not None and item.execution_mode == "factory")
+
+
 def _can_start(
     db: Session, control: FactoryControl, task_id: str, start_key: str | None = None
 ) -> dict:
@@ -4314,6 +4322,8 @@ def _can_start(
 
     if row is not None and parent_held(db, row):
         return {"ok": False, "reason": "rollback_parent_held"}
+    if row is not None and not receipt_is_executable(db, row):
+        return {"ok": False, "reason": "work_item_not_executable"}
     if review_recovery_held(task_id, session=db):
         return {"ok": False, "reason": "review_only_recovery"}
     reason = None

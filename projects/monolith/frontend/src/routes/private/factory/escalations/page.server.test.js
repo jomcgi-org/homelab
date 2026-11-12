@@ -13,6 +13,15 @@ function jsonResponse(body, ok = true) {
   return { ok, status: ok ? 200 : 503, json: async () => body };
 }
 
+function viewerRequest(headers = { "x-auth-email": "viewer@example.test" }) {
+  return new Request("https://private.jomcgi.dev/factory/escalations", {
+    headers: {
+      "cf-access-authenticated-user-email": "forged@example.test",
+      ...headers,
+    },
+  });
+}
+
 describe("agents /private/factory/escalations load", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -24,7 +33,7 @@ describe("agents /private/factory/escalations load", () => {
       jsonResponse({ ok: true, escalations: [{ receipt_id: 3, open: true }] }),
     );
 
-    const result = await load({ fetch: fetchMock });
+    const result = await load({ fetch: fetchMock, request: viewerRequest() });
 
     expect(result).toEqual({
       escalations: [{ receipt_id: 3, open: true }],
@@ -32,7 +41,10 @@ describe("agents /private/factory/escalations load", () => {
     });
     expect(fetchMock).toHaveBeenCalledWith(
       "http://backend/api/agents/factory",
-      expect.anything(),
+      {
+        headers: { "X-Auth-Email": "viewer@example.test" },
+        signal: expect.any(AbortSignal),
+      },
     );
   });
 
@@ -56,13 +68,37 @@ describe("agents /private/factory/escalations load", () => {
       status: 200,
       json: async () => ({ escalations: [{ receipt_id: 3 }] }),
     }));
-    const ok = await GET();
+    const ok = await GET({ request: viewerRequest() });
+    expect(ok.status).toBe(200);
     expect(await ok.json()).toEqual({ escalations: [{ receipt_id: 3 }] });
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://backend/api/agents/factory",
+      {
+        headers: { "X-Auth-Email": "viewer@example.test" },
+        signal: expect.any(AbortSignal),
+      },
+    );
 
     globalThis.fetch = vi.fn(async () => ({ ok: false, status: 503 }));
-    const down = await GET();
+    const down = await GET({ request: viewerRequest() });
     expect(down.status).toBe(502);
     expect(await down.json()).toEqual({ error: "escalations unavailable" });
+  });
+
+  it("never substitutes an unverified identity on load or poll", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({}, false));
+    globalThis.fetch = fetchMock;
+    const request = viewerRequest({});
+
+    expect(await load({ fetch: fetchMock, request })).toEqual({
+      escalations: [],
+      error: true,
+    });
+    expect((await GET({ request })).status).toBe(502);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [, options] of fetchMock.mock.calls) {
+      expect(options.headers).toEqual({ "X-Auth-Email": "" });
+    }
   });
 });
 

@@ -4,7 +4,7 @@
 // here for a fast first paint; the page then polls /factory itself.
 const API_BASE = process.env.API_BASE;
 
-export async function load({ fetch, url, untrack }) {
+export async function load({ fetch, url, untrack, request }) {
   // untrack: the page owns ?task= after the first paint (toggle + goto with
   // replaceState), so the load must not depend on it or every toggle would
   // re-run this fetch and discard the result.
@@ -12,6 +12,7 @@ export async function load({ fetch, url, untrack }) {
   const query = task ? `?task=${encodeURIComponent(task)}` : "";
   try {
     const response = await fetch(`${API_BASE}/api/agents/factory${query}`, {
+      headers: { "X-Auth-Email": request?.headers.get("x-auth-email") ?? "" },
       signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) {

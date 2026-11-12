@@ -299,7 +299,7 @@ def main():
                 "populated",
                 "empty",
                 "unavailable",
-                *(("missing",) if view == "item" else ()),
+                *(("missing", "tracking") if view == "item" else ()),
             ):
                 context = browser.new_context(
                     viewport={"width": width, "height": 844 if width == 390 else 900},
@@ -394,7 +394,13 @@ def main():
                             "reducedMotion": motion,
                         }
                     )
-                    if scenario == "populated":
+                    if scenario == "tracking" and width == 390:
+                        assert page.locator(
+                            ".tracking-item .spec > div"
+                        ).first.evaluate(
+                            "el => getComputedStyle(el).gridTemplateColumns.split(' ').length === 1"
+                        ), "mobile tracking fields must stack for enlarged text"
+                    if scenario in ("populated", "tracking"):
                         # Double computed text sizes, rather than zooming the
                         # screenshot, to exercise actual wrapping and controls.
                         page.evaluate("""() => {
@@ -415,7 +421,12 @@ def main():
                           for (const el of document.querySelectorAll('[data-original-style]'))
                             el.setAttribute('style', el.dataset.originalStyle);
                         }""")
-                        actions(page, view, snapshot)
+                        if scenario == "populated":
+                            actions(page, view, snapshot)
+                        else:
+                            expect(page.locator("form")).to_have_count(0)
+                            page.locator(".event-summary").click()
+                            snapshot("tracking-history")
                         # A real scroll must retain the mobile index at the top.
                         if width == 390:
                             page.evaluate("window.scrollTo(0, 400)")
